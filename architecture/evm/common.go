@@ -19,6 +19,12 @@ func upstreamPostForward_markUnexpectedEmpty(
 		return rs, re
 	}
 
+	if rq != nil {
+		if rd := rq.Directives(); rd != nil && !rd.RetryEmpty {
+			return rs, re
+		}
+	}
+
 	// Build a simple message and include raw result in details for diagnostics.
 	method, _ := rq.Method()
 	details := map[string]interface{}{"method": method}
@@ -36,4 +42,30 @@ func upstreamPostForward_markUnexpectedEmpty(
 		),
 		u,
 	)
+}
+
+// normalizeEmptyArrayResponse returns a new NormalizedResponse with result `[]`,
+// inheriting metadata from rs. Takes ownership of rs (calls Release()).
+func normalizeEmptyArrayResponse(
+	ctx context.Context,
+	u common.Upstream,
+	rq *common.NormalizedRequest,
+	rs *common.NormalizedResponse,
+) (*common.NormalizedResponse, error) {
+	jrr, err := common.NewJsonRpcResponse(rq.ID(), []interface{}{}, nil)
+	if err != nil {
+		return nil, err
+	}
+	nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
+	nnr.SetFromCache(rs.FromCache())
+	nnr.SetEvmBlockRef(rs.EvmBlockRef())
+	nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
+	nnr.SetDuration(rs.Duration())
+	nnr.SetAttempts(rs.Attempts())
+	nnr.SetRetries(rs.Retries())
+	nnr.SetHedges(rs.Hedges())
+	nnr.SetUpstream(u)
+	rq.SetLastValidResponse(ctx, nnr)
+	rs.Release()
+	return nnr, nil
 }

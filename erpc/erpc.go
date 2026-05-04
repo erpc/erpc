@@ -33,6 +33,7 @@ func NewERPC(
 	}
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		appCtx,
 		cfg.RateLimiters,
 		logger,
 	)

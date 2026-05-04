@@ -132,7 +132,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("attempting to connect to Redis using provided URI")
 	options, err = redis.ParseURL(redisURI)
 	if err != nil {
-		return fmt.Errorf("failed to parse Redis URI: %w", err)
+		return common.NewTaskFatal(fmt.Errorf("failed to parse Redis URI: %w", err))
 	}
 
 	if r.initTimeout == 0 && options.DialTimeout > 0 {
@@ -156,7 +156,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	if cfgTLS := r.cfg.TLS; cfgTLS != nil && cfgTLS.Enabled {
 		tlsConfig, err := common.CreateTLSConfig(cfgTLS)
 		if err != nil {
-			return fmt.Errorf("failed to create TLS config: %w", err)
+			return common.NewTaskFatal(fmt.Errorf("failed to create TLS config: %w", err))
 		}
 
 		if options.TLSConfig == nil {
@@ -197,9 +197,9 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 			if len(options.TLSConfig.Certificates) > 0 {
 				errMsg += " Also verify the client certificate and key ('tls.certFile', 'tls.keyFile') if used."
 			}
-			return fmt.Errorf(errMsg)
+			return common.NewTaskFatal(errors.New(errMsg))
 		}
-		return fmt.Errorf("failed to connect to Redis: %w", err)
+		return err
 	}
 
 	if r.client != nil {
@@ -368,6 +368,29 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		// otherwise we will continue with the original partitionKey for lookup.
 		if revPartitionKey != "" {
 			partitionKey = revPartitionKey
+
+			// Verify the resolved key still exists and hasn't expired
+			// This handles the edge case where reverse index points to an expired key
+			resolvedKey := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+			ttlCtx, ttlCancel := context.WithTimeout(ctx, r.getTimeout)
+			ttl, ttlErr := r.client.TTL(ttlCtx, resolvedKey).Result()
+			ttlCancel()
+
+			if ttlErr != nil {
+				r.logger.Debug().Err(ttlErr).Str("key", resolvedKey).Msg("failed to check TTL for resolved key")
+			} else if ttl == -2*time.Second {
+				// Key doesn't exist (Redis returns -2 when key doesn't exist); treat as a miss
+				r.logger.Debug().Str("key", resolvedKey).Msg("resolved key from reverse index no longer exists")
+				err := common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
+				common.SetTraceSpanError(span, err)
+				return nil, err
+			} else if ttl == -1*time.Second {
+				// Key exists but has no TTL (persistent key), which is fine
+				r.logger.Trace().Str("key", resolvedKey).Msg("resolved key has no TTL (persistent)")
+			} else if ttl > 0 {
+				// Key exists and has TTL, which is fine
+				r.logger.Trace().Str("key", resolvedKey).Dur("ttl", ttl).Msg("resolved key still valid")
+			}
 		}
 	}
 
@@ -515,7 +538,7 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 
 // WatchCounterInt64 watches a counter in Redis. Returns a channel of updates and a cleanup function.
 // Callers of this method are responsible to re-try the operation if "values" channel is closed.
-func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
 	r.logger.Debug().Str("key", key).Msg("trying to watch counter int64 in Redis")
 	if err := r.checkReady(); err != nil {
 		return nil, nil, err
@@ -531,7 +554,7 @@ func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-c
 }
 
 // PublishCounterInt64 publishes a counter value to Redis.
-func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.PublishCounterInt64",
 		trace.WithAttributes(
 			attribute.String("key", key),
@@ -541,7 +564,9 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
-			attribute.Int64("value", value),
+			attribute.Int64("value", value.Value),
+			attribute.Int64("updated_at", value.UpdatedAt),
+			attribute.String("updated_by", value.UpdatedBy),
 		)
 	}
 
@@ -549,12 +574,25 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 		common.SetTraceSpanError(span, err)
 		return err
 	}
-	r.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to redis")
-	err := r.client.Publish(ctx, "counter:"+key, value).Err()
+
+	payload, err := common.SonicCfg.Marshal(value)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	r.logger.Debug().
+		Str("key", key).
+		Int64("value", value.Value).
+		Int64("updatedAt", value.UpdatedAt).
+		Str("updatedBy", value.UpdatedBy).
+		Msg("publishing counter update to redis")
+
+	err = r.client.Publish(ctx, "counter:"+key, payload).Err()
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
-	r.logger.Debug().Str("key", key).Int64("value", value).Msg("published counter int64 update to redis")
+	r.logger.Debug().Str("key", key).Int64("value", value.Value).Msg("published counter update to redis")
 	return err
 }
 

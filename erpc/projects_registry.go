@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -119,6 +121,13 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.proxyPoolRegistry,
 		metricsTracker,
 		scoreRefreshInterval,
+		&upstream.ScoringConfig{
+			RoutingStrategy:   prjCfg.RoutingStrategy,
+			ScoreGranularity:  prjCfg.ScoreGranularity,
+			PenaltyDecayRate:  prjCfg.ScorePenaltyDecayRate,
+			SwitchHysteresis:  prjCfg.ScoreSwitchHysteresis,
+			MinSwitchInterval: prjCfg.ScoreMinSwitchInterval.Duration(),
+		},
 		func(ups *upstream.Upstream) error {
 			ntwId := ups.NetworkId()
 			if ntwId == "" {
@@ -132,6 +141,16 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			return nil
 		},
 	)
+	// Apply score metrics mode per project with minimal surface area
+	modeStr := strings.TrimSpace(prjCfg.ScoreMetricsMode)
+	switch strings.ToLower(modeStr) {
+	case string(telemetry.ScoreModeDetailed):
+		upstreamsRegistry.SetScoreMetricsMode(telemetry.ScoreModeDetailed)
+	case string(telemetry.ScoreModeNone):
+		upstreamsRegistry.SetScoreMetricsMode(telemetry.ScoreModeNone)
+	default:
+		upstreamsRegistry.SetScoreMetricsMode(telemetry.ScoreModeCompact)
+	}
 
 	if prjCfg.Auth != nil {
 		consumerAuthRegistry, err := auth.NewAuthRegistry(r.appCtx, &lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)

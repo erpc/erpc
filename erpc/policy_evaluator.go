@@ -253,8 +253,11 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 			if state.isActive {
 				// Newly deactivated
 				state.isActive = false
-				state.resampleInterval = now.Add(p.config.ResampleInterval.Duration())
-				state.sampleCounter = p.config.ResampleCount
+				// Only initialize resampling state when resampling is enabled
+				if p.config.ResampleExcluded {
+					state.resampleInterval = now.Add(p.config.ResampleInterval.Duration())
+					state.sampleCounter = p.config.ResampleCount
+				}
 			}
 		}
 

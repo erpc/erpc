@@ -2,6 +2,8 @@ package data
 
 import (
 	"context"
+	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -9,147 +11,273 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/mock"
 )
 
 func init() {
 	util.ConfigureTestLogger()
 }
 
-// TestTimeoutCalculationFix verifies that timeout calculations don't produce negative or zero values
-func TestTimeoutCalculationFix(t *testing.T) {
-	t.Run("small lockTtl scenario", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+// Helper to build a registry with mock connector and custom time budgets
+func setupMockRegistry(t *testing.T, cfg *common.SharedStateConfig) (*sharedStateRegistry, *MockConnector) {
+	t.Helper()
+	connector := &MockConnector{}
+	r := &sharedStateRegistry{
+		appCtx:          context.Background(),
+		logger:          &log.Logger,
+		clusterKey:      cfg.ClusterKey,
+		connector:       connector,
+		fallbackTimeout: cfg.FallbackTimeout.Duration(),
+		lockTtl:         cfg.LockTtl.Duration(),
+		lockMaxWait:     cfg.LockMaxWait.Duration(),
+		updateMaxWait:   cfg.UpdateMaxWait.Duration(),
+		initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+	}
+	return r, connector
+}
 
-		// Create config with very small lockTtl that would previously cause negative timeout
-		cfg := &common.SharedStateConfig{
-			ClusterKey:      "test",
-			FallbackTimeout: common.Duration(3 * time.Second), // 3s
-			LockTtl:         common.Duration(5 * time.Second), // 5s - smaller than operationBuffer
-			Connector: &common.ConnectorConfig{
-				Id:     "test-memory",
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100,
-					MaxTotalSize: "10MB",
-				},
-			},
+func TestTryUpdate_LocalThenBackgroundPush(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(300 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(50 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(50 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
+
+	// Background reconcile acquires lock, reads remote (not found), sets and publishes current value 10
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Once()
+	c.On("Lock", mock.Anything, "test/my", mock.Anything).Return(lock, nil).Once()
+	c.On("Get", mock.Anything, ConnectorMainIndex, "test/my", "value", nil).Return([]byte(""), errors.New("not found")).Once()
+	c.On("Set", mock.Anything, "test/my", "value", mock.Anything, mock.Anything).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/my", mock.Anything).Return(nil).Maybe()
+
+	ctr := &counterInt64{registry: r, key: "test/my", ignoreRollbackOf: 1024}
+	val := ctr.TryUpdate(context.Background(), 10)
+	assert.Equal(t, int64(10), val)
+
+	// Give background time to run
+	time.Sleep(150 * time.Millisecond)
+	c.AssertExpectations(t)
+}
+
+func TestTryUpdateIfStale_UpdateFnBudgetExceeded(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(300 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(50 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(50 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
+
+	// Background reconcile will acquire the lock once and push the final value 999
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Once()
+	c.On("Lock", mock.Anything, "test/stale", mock.Anything).Return(lock, nil).Once()
+	c.On("Get", mock.Anything, ConnectorMainIndex, "test/stale", "value", nil).Return([]byte(""), errors.New("not found")).Once()
+	c.On("Set", mock.Anything, "test/stale", "value", mock.Anything, mock.Anything).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/stale", mock.Anything).Return(nil).Maybe()
+
+	ctr := &counterInt64{registry: r, key: "test/stale", ignoreRollbackOf: 1024}
+	ctr.value.Store(1)
+
+	start := time.Now()
+	val, err := ctr.TryUpdateIfStale(context.Background(), 1*time.Millisecond, func(ctx context.Context) (int64, error) {
+		select {
+		case <-time.After(200 * time.Millisecond):
+			return 999, nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
 		}
-
-		ssr, err := NewSharedStateRegistry(ctx, &log.Logger, cfg)
-		require.NoError(t, err)
-
-		counter1 := ssr.GetCounterInt64("test-timeout-1", 100)
-
-		// Test TryUpdate - operationBuffer = fallbackTimeout * 2 = 6s
-		// totalBuffer = 6s + 10s (DefaultOperationBuffer) = 16s
-		// lockTtl (5s) < totalBuffer (16s), so should use MinOperationBuffer (5s)
-		ctx1, cancel1 := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel1()
-
-		value := counter1.TryUpdate(ctx1, 42)
-		assert.Equal(t, int64(42), value, "TryUpdate should work with small lockTtl")
-
-		// Test TryUpdateIfStale with a different counter to avoid staleness issues
-		counter2 := ssr.GetCounterInt64("test-timeout-2", 100)
-
-		// Test TryUpdateIfStale - operationBuffer = fallbackTimeout * 4 = 12s
-		// totalBuffer = 12s + 10s (DefaultOperationBuffer) = 22s
-		// lockTtl (5s) < totalBuffer (22s), so should use MinOperationBuffer (5s)
-		ctx2, cancel2 := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel2()
-
-		value2, err2 := counter2.TryUpdateIfStale(ctx2, 1*time.Millisecond, func(ctx context.Context) (int64, error) {
-			return 123, nil
-		})
-
-		assert.NoError(t, err2)
-		assert.Equal(t, int64(123), value2, "TryUpdateIfStale should work with small lockTtl")
 	})
+	elapsed := time.Since(start)
 
-	t.Run("normal lockTtl scenario", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	// Foreground returns stale value quickly; background will continue and push
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), val)
+	assert.Less(t, elapsed, 150*time.Millisecond, "foreground should be bounded by updateMaxWait")
+	time.Sleep(250 * time.Millisecond)
+	assert.Equal(t, int64(999), ctr.GetValue())
+	c.AssertExpectations(t)
+}
 
-		// Create config with normal lockTtl values
-		cfg := &common.SharedStateConfig{
-			ClusterKey:      "test",
-			FallbackTimeout: common.Duration(3 * time.Second),  // 3s
-			LockTtl:         common.Duration(30 * time.Second), // 30s - normal value
-			Connector: &common.ConnectorConfig{
-				Id:     "test-memory",
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100,
-					MaxTotalSize: "10MB",
-				},
-			},
-		}
+func TestBackgroundReconcileUsesMax(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(300 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(30 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(30 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
 
-		ssr, err := NewSharedStateRegistry(ctx, &log.Logger, cfg)
-		require.NoError(t, err)
+	// Background: acquire lock, remote higher 15, then push 15
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Once()
+	c.On("Lock", mock.Anything, "test/recon", mock.Anything).Return(lock, nil).Once()
+	c.On("Get", mock.Anything, ConnectorMainIndex, "test/recon", "value", nil).
+		Return([]byte(`{"v":15,"t":9999999999999,"b":"test"}`), nil).Once()
+	// best-effort publish local snapshot
+	c.On("PublishCounterInt64", mock.Anything, "test/recon", mock.Anything).Return(nil).Maybe()
 
-		counter1 := ssr.GetCounterInt64("test-normal-1", 100)
+	ctr := &counterInt64{registry: r, key: "test/recon", ignoreRollbackOf: 1024}
+	ctr.value.Store(5)
+	val := ctr.TryUpdate(context.Background(), 10)
+	assert.Equal(t, int64(10), val)
 
-		// Test TryUpdate - operationBuffer = fallbackTimeout * 2 = 6s
-		// totalBuffer = 6s + 10s (DefaultOperationBuffer) = 16s
-		// lockTtl (30s) > totalBuffer (16s), so maxLockWaitTime = 30s - 16s = 14s
-		ctx1, cancel1 := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel1()
+	assert.Eventually(t, func() bool { return ctr.GetValue() == int64(15) }, 500*time.Millisecond, 10*time.Millisecond)
+	c.AssertExpectations(t)
+}
 
-		value := counter1.TryUpdate(ctx1, 456)
-		assert.Equal(t, int64(456), value, "TryUpdate should work with normal lockTtl")
+func TestTryUpdate_RemoteAhead_IsAdoptedInBackground(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(300 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(100 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(50 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
 
-		// Test TryUpdateIfStale with a different counter to avoid staleness issues
-		counter2 := ssr.GetCounterInt64("test-normal-2", 100)
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Once()
+	c.On("Lock", mock.Anything, "test/fg", mock.Anything).Return(lock, nil).Once()
+	// remote ahead at 20
+	c.On("Get", mock.Anything, ConnectorMainIndex, "test/fg", "value", nil).
+		Return([]byte(`{"v":20,"t":9999999999999,"b":"test"}`), nil).Once()
+	// best-effort publish local snapshot
+	c.On("PublishCounterInt64", mock.Anything, "test/fg", mock.Anything).Return(nil).Maybe()
 
-		// Test TryUpdateIfStale - operationBuffer = fallbackTimeout * 4 = 12s
-		// totalBuffer = 12s + 10s (DefaultOperationBuffer) = 22s
-		// lockTtl (30s) > totalBuffer (22s), so maxLockWaitTime = 30s - 22s = 8s
-		ctx2, cancel2 := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel2()
+	ctr := &counterInt64{registry: r, key: "test/fg", ignoreRollbackOf: 1024}
+	ctr.value.Store(5)
+	val := ctr.TryUpdate(context.Background(), 10)
+	assert.Equal(t, int64(10), val)
+	assert.Eventually(t, func() bool { return ctr.GetValue() == int64(20) }, 500*time.Millisecond, 10*time.Millisecond)
+	c.AssertExpectations(t)
+}
 
-		value2, err2 := counter2.TryUpdateIfStale(ctx2, 1*time.Millisecond, func(ctx context.Context) (int64, error) {
-			return 789, nil
-		})
+func TestTryUpdateIfStale_SlowFn_BackgroundPush(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(300 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(40 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(40 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
 
-		assert.NoError(t, err2)
-		assert.Equal(t, int64(789), value2, "TryUpdateIfStale should work with normal lockTtl")
+	// Background will acquire lock and push resulting value 77
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Once()
+	c.On("Lock", mock.Anything, "test/slow", mock.Anything).Return(lock, nil).Once()
+	c.On("Get", mock.Anything, ConnectorMainIndex, "test/slow", "value", nil).Return([]byte(""), errors.New("not found")).Once()
+	c.On("Set", mock.Anything, "test/slow", "value", mock.Anything, mock.Anything).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/slow", mock.Anything).Return(nil).Maybe()
+
+	ctr := &counterInt64{registry: r, key: "test/slow", ignoreRollbackOf: 1024}
+	ctr.value.Store(1)
+
+	start := time.Now()
+	val, err := ctr.TryUpdateIfStale(context.Background(), 1*time.Millisecond, func(ctx context.Context) (int64, error) {
+		// Runs longer than UpdateMaxWait; should continue and update in background
+		time.Sleep(120 * time.Millisecond)
+		return 77, nil
 	})
+	elapsed := time.Since(start)
 
-	t.Run("tight deadline scenario", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), val, "foreground should return stale value")
+	assert.Less(t, elapsed, 120*time.Millisecond, "foreground should not wait full fn time")
 
-		cfg := &common.SharedStateConfig{
-			ClusterKey:      "test",
-			FallbackTimeout: common.Duration(3 * time.Second),
-			LockTtl:         common.Duration(30 * time.Second),
-			Connector: &common.ConnectorConfig{
-				Id:     "test-memory",
-				Driver: common.DriverMemory,
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems:     100,
-					MaxTotalSize: "10MB",
-				},
-			},
-		}
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, int64(77), ctr.GetValue())
+	c.AssertExpectations(t)
+}
 
-		ssr, err := NewSharedStateRegistry(ctx, &log.Logger, cfg)
-		require.NoError(t, err)
+func TestBackgroundPushIsDeduped(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(300 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(30 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(30 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
 
-		counter := ssr.GetCounterInt64("test-deadline", 100)
+	// Only one background reconcile should run (deduped): acquire lock once and push once
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Once()
+	c.On("Lock", mock.Anything, "test/dedupe", mock.Anything).Return(lock, nil).Once()
+	c.On("Get", mock.Anything, ConnectorMainIndex, "test/dedupe", "value", nil).Return([]byte(""), errors.New("not found")).Once()
+	c.On("Set", mock.Anything, "test/dedupe", "value", mock.Anything, mock.Anything).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/dedupe", mock.Anything).Return(nil).Maybe()
 
-		// Test with very tight deadline (2 seconds)
-		ctx1, cancel1 := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel1()
+	ctr := &counterInt64{registry: r, key: "test/dedupe", ignoreRollbackOf: 1024}
+	ctr.value.Store(5)
 
-		start := time.Now()
-		value := counter.TryUpdate(ctx1, 999)
-		elapsed := time.Since(start)
+	// Two quick updates that will schedule background push; dedupe should ensure a single remote write
+	ctr.TryUpdate(context.Background(), 20)
+	ctr.TryUpdate(context.Background(), 20)
 
-		assert.Equal(t, int64(999), value, "TryUpdate should work with tight deadline")
-		assert.Less(t, elapsed, 2*time.Second, "Should not exceed deadline")
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, int64(20), ctr.GetValue())
+	c.AssertExpectations(t)
+}
+
+// TestContinueAsyncRefresh_DoesNotLeakOnStuckWorker proves the helper
+// goroutine exits even when the refresh function blocks past its context.
+// Before the fix, the helper read from resultCh with no deadline; a worker
+// that ignored its context would leak the helper for the process lifetime.
+func TestContinueAsyncRefresh_DoesNotLeakOnStuckWorker(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(100 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(10 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(10 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
+
+	// Background reconcile paths may fire; allow but don't require them.
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	c.On("Lock", mock.Anything, mock.Anything, mock.Anything).Return(lock, nil).Maybe()
+	c.On("Get", mock.Anything, ConnectorMainIndex, mock.Anything, "value", nil).Return([]byte(""), errors.New("not found")).Maybe()
+	c.On("Set", mock.Anything, mock.Anything, "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+	c.On("PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	ctr := &counterInt64{registry: r, key: "test/stuck", ignoreRollbackOf: 1024}
+	ctr.value.Store(1)
+
+	// Worker that ignores its context and only unblocks when we say so.
+	release := make(chan struct{})
+	defer close(release)
+
+	before := runtime.NumGoroutine()
+
+	// Foreground returns quickly via updateMaxWait; worker keeps running.
+	val, err := ctr.TryUpdateIfStale(context.Background(), 1*time.Millisecond, func(ctx context.Context) (int64, error) {
+		<-release
+		return 42, nil
 	})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), val, "foreground should return stale value")
+
+	// Helper is now waiting on resultCh. Wait longer than FallbackTimeout plus
+	// the 1s buffer so the helper's bounded timer fires.
+	time.Sleep(cfg.FallbackTimeout.Duration() + 1500*time.Millisecond)
+
+	// Helper must have exited even though the worker is still blocked.
+	// Exactly one lingering goroutine is expected (the stuck worker); the
+	// helper and any transient goroutines must be gone.
+	after := runtime.NumGoroutine()
+	assert.LessOrEqual(t, after-before, 1,
+		"expected at most the stuck worker to remain; got delta=%d", after-before)
 }

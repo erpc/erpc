@@ -21,10 +21,11 @@ const (
 	StateRetrying
 	StateReady
 	StateFailed
+	StateFatal
 )
 
 func (s InitializationState) String() string {
-	return []string{"uninitialized", "initializing", "partial", "retrying", "ready", "failed"}[s]
+	return []string{"uninitialized", "initializing", "partial", "retrying", "ready", "failed", "fatal"}[s]
 }
 
 type TaskState int
@@ -35,10 +36,11 @@ const (
 	TaskSucceeded
 	TaskTimedOut
 	TaskFailed
+	TaskFatal
 )
 
 func (s TaskState) String() string {
-	return []string{"pending", "running", "succeeded", "timedOut", "failed"}[s]
+	return []string{"pending", "running", "succeeded", "timedOut", "failed", "fatal"}[s]
 }
 
 type BootstrapTask struct {
@@ -98,7 +100,7 @@ func (t *BootstrapTask) createNewDoneChannel() chan struct{} {
 func (t *BootstrapTask) Wait(ctx context.Context) error {
 	for {
 		state := TaskState(t.state.Load())
-		if state == TaskSucceeded || state == TaskFailed || state == TaskTimedOut {
+		if state == TaskSucceeded || state == TaskFailed || state == TaskTimedOut || state == TaskFatal {
 			lastErr, ok := t.lastErr.Load().(wrappedError)
 			if ok && lastErr.err != nil {
 				return lastErr.err
@@ -292,6 +294,21 @@ func (i *Initializer) attemptRemainingTasks() {
 					}
 
 					if err != nil {
+						// Detect fatal control errors without importing the common package to avoid cycles
+						var fatal interface{ IsTaskFatal() bool }
+						if errors.As(err, &fatal) {
+							// Fatal errors should stop retries
+							// Unwrap underlying error if available
+							underlying := err
+							if uw, ok := err.(interface{ Unwrap() error }); ok && uw.Unwrap() != nil {
+								underlying = uw.Unwrap()
+							}
+							bt.lastErr.Store(wrappedError{err: underlying})
+							bt.state.Store(int32(TaskFatal))
+							// Log the underlying fatal error
+							i.logger.Error().Str("task", bt.Name).Err(underlying).Msg("initialization task fatal error")
+							return
+						}
 						// If context is cancelled there will be a reason already set for it on lastErr
 						if !errors.Is(err, context.Canceled) {
 							if cause := context.Cause(tctx); cause != nil {
@@ -324,7 +341,7 @@ func (i *Initializer) attemptRemainingTasks() {
 }
 
 func (i *Initializer) State() InitializationState {
-	var total, pending, running, succeeded, failed int
+	var total, pending, running, succeeded, failed, fatal int
 	i.tasks.Range(func(key, value interface{}) bool {
 		t := value.(*BootstrapTask)
 		state := TaskState(t.state.Load())
@@ -337,6 +354,8 @@ func (i *Initializer) State() InitializationState {
 			succeeded++
 		case TaskFailed:
 			failed++
+		case TaskFatal:
+			fatal++
 		}
 		total++
 		return true
@@ -348,10 +367,15 @@ func (i *Initializer) State() InitializationState {
 		Int("running", running).
 		Int("succeeded", succeeded).
 		Int("failed", failed).
+		Int("fatal", fatal).
 		Msg("calculating initialization state")
 
 	if total == succeeded {
 		return StateReady
+	}
+	// If any fatal exists, prefer Fatal state
+	if fatal > 0 {
+		return StateFatal
 	}
 	// If all tasks are done (some are failed, none running or pending), it's a "Failed" state
 	if failed > 0 && (pending+running+succeeded == 0) {
@@ -522,6 +546,10 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		i.autoRetryActive.Store(false)
 		return
 	}
+	if i.State() == StateFatal {
+		i.autoRetryActive.Store(false)
+		return
+	}
 
 	delay := i.conf.RetryMinDelay
 	// Wait for the first delay before doing the first retry
@@ -536,6 +564,10 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		i.attemptRemainingTasks()
 		err := i.WaitForTasks(ctx)
 		state := i.State()
+		if state == StateFatal {
+			i.autoRetryActive.Store(false)
+			return
+		}
 		if err == nil && state == StateReady {
 			i.autoRetryActive.Store(false)
 			return

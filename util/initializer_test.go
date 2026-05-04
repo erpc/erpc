@@ -3,6 +3,8 @@ package util
 import (
 	"context"
 	"errors"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -616,4 +618,35 @@ func TestInitializer_MarkAsFailedUnblocksWaitThenRetries(t *testing.T) {
 	assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()), "task should be succeeded after final attempt")
 
 	init.Stop(nil)
+}
+
+func TestInitializer_SyncOncePatternNoGoroutineLeak(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	init := setupInitializer(t, appCtx, nil)
+
+	slowTask := NewBootstrapTask("network/evm:1/provider/slow", func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	var once sync.Once
+	before := runtime.NumGoroutine()
+
+	for i := 0; i < 20; i++ {
+		once.Do(func() {
+			go func() {
+				_ = init.ExecuteTasks(appCtx, slowTask)
+			}()
+		})
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	after := runtime.NumGoroutine()
+
+	cancel()
+	init.Stop(nil)
+
+	// sync.Once ensures only 1 ExecuteTasks goroutine + initializer internals.
+	// Without it, 20 goroutines would pile up blocking in waitForTasks.
+	assert.Less(t, after-before, 5)
 }

@@ -24,10 +24,14 @@ import (
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// TimeoutFunc computes the timeout for a request. Returns nil when no timeout applies.
+type TimeoutFunc func(ctx context.Context, req *common.NormalizedRequest) *time.Duration
 
 // FailsafeExecutor wraps a failsafe executor with method and finality filters
 type FailsafeExecutor struct {
@@ -35,7 +39,7 @@ type FailsafeExecutor struct {
 	method     string                     // Legacy field for backward compatibility
 	finalities []common.DataFinalityState // Legacy field for backward compatibility
 	executor   failsafe.Executor[*common.NormalizedResponse]
-	timeout    *time.Duration
+	timeout    TimeoutFunc
 }
 
 type Upstream struct {
@@ -57,6 +61,8 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
+	chainIdValidated atomic.Bool
 }
 
 func NewUpstream(
@@ -76,15 +82,15 @@ func NewUpstream(
 	var failsafeExecutors []*FailsafeExecutor
 	if len(cfg.Failsafe) > 0 {
 		for _, fsCfg := range cfg.Failsafe {
-			policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, fsCfg)
+			policiesMap, err := CreateFailSafePolicies(appCtx, &lg, common.ScopeUpstream, cfg.Id, fsCfg, nil)
 			if err != nil {
 				return nil, err
 			}
-			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge", "timeout")
+			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge")
 
-			var timeoutDuration *time.Duration
+			var timeoutFn TimeoutFunc
 			if fsCfg.Timeout != nil {
-				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+				timeoutFn = NewTimeoutFunc(&lg, fsCfg.Timeout)
 			}
 
 			method := fsCfg.MatchMethod
@@ -96,7 +102,7 @@ func NewUpstream(
 				method:     method,
 				finalities: fsCfg.MatchFinality,
 				executor:   failsafe.NewExecutor(policiesArray...),
-				timeout:    timeoutDuration,
+				timeout:    timeoutFn,
 			})
 		}
 	}
@@ -392,24 +398,20 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			for _, rule := range rules {
-				if !rule.Limiter.TryAcquirePermit() {
-					lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
-					u.metricsTracker.RecordUpstreamSelfRateLimited(
-						u,
-						method,
-						nrq,
-					)
-					err = common.NewErrUpstreamRateLimitRuleExceeded(
-						cfg.Id,
-						cfg.RateLimitBudget,
-						fmt.Sprintf("%+v", rule.Config),
-					)
-					common.SetTraceSpanError(span, err)
-					return nil, err
-				} else {
-					lg.Trace().Str("budget", cfg.RateLimitBudget).Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
-				}
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream")
+			if err != nil {
+				common.SetTraceSpanError(span, err)
+				return nil, err
+			}
+			if !allowed {
+				lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit exceeded")
+				err = common.NewErrUpstreamRateLimitRuleExceeded(
+					cfg.Id,
+					cfg.RateLimitBudget,
+					fmt.Sprintf("method:%s", method),
+				)
+				common.SetTraceSpanError(span, err)
+				return nil, err
 			}
 		}
 	}
@@ -428,6 +430,9 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			ctx context.Context,
 			exec failsafe.Execution[*common.NormalizedResponse],
 		) (*common.NormalizedResponse, error) {
+			// Span to track pre-request overhead (metrics, finality calculation)
+			_, preReqSpan := common.StartDetailSpan(ctx, "Upstream.tryForward.PreRequest")
+
 			u.metricsTracker.RecordUpstreamRequest(
 				u,
 				method,
@@ -447,7 +452,16 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
+			preReqSpan.End()
+
+			// Span to track the actual client request
+			ctx, sendSpan := common.StartDetailSpan(ctx, "Upstream.tryForward.SendRequest",
+				trace.WithAttributes(
+					attribute.String("client.type", string(clientType)),
+				),
+			)
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
+			sendSpan.End()
 			isSuccess := false
 			if errCall == nil && nrs != nil {
 				nrs.SetUpstream(u)
@@ -494,9 +508,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.UserId(),
 						nrq.AgentName(),
 					).Inc()
+				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
+					// Cancelled request (e.g. hedge lost the race). Not the upstream's
+					// fault — skip failure recording and generic error metric. The
+					// network layer records hedge discards via MetricNetworkHedgeDiscardsTotal.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.recordRemoteRateLimit(method, nrq)
+						u.recordRemoteRateLimit(ctx, method, nrq)
 					}
 					u.metricsTracker.RecordUpstreamFailure(
 						u,
@@ -519,8 +537,17 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				}
 
-				timer.ObserveDuration(false)
+				// ExecutionException is a valid blockchain response (e.g. revert) — count its latency.
+				// All other errors should NOT contribute to the latency quantile.
+				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
+				timer.ObserveDuration(isRevert)
 				// We're converting a response+error into a pure error. Release the response to avoid retention.
+				// Only clear LVR for execution exceptions: these are "response+error" cases where
+				// this same response may have been stored as LVR above (line ~465). For missing-data
+				// and other retryable errors we keep LVR so network-level fallback can still work.
+				if isRevert {
+					nrq.ClearLastValidResponse()
+				}
 				if nrs != nil {
 					nrs.Release()
 					nrs = nil
@@ -549,7 +576,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					)
 				}
 			} else {
-				if nrs.IsResultEmptyish() {
+				emptyish := nrs.IsResultEmptyish()
+				if emptyish {
 					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(
 						u.ProjectId,
 						u.VendorName(),
@@ -561,9 +589,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				}
+				// Empty responses shouldn't contribute to latency quantiles — fast empty
+				// returns reflect data absence, not superior upstream performance.
+				timer.ObserveDuration(isSuccess && !emptyish)
 			}
 
-			timer.ObserveDuration(isSuccess)
 			if isSuccess {
 				u.recordRequestSuccess(method)
 			}
@@ -576,6 +606,9 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, fmt.Errorf("no failsafe executor found for request")
 		}
 
+		// Track time from failsafe executor start to first callback invocation
+		upstreamFailsafeStartTime := time.Now()
+
 		resp, execErr := failsafeExecutor.executor.
 			WithContext(ctx).
 			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
@@ -586,6 +619,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						attribute.Int("execution.attempt", exec.Attempts()),
 						attribute.Int("execution.retry", exec.Retries()),
 						attribute.Int("execution.hedge", exec.Hedges()),
+						attribute.Int64("failsafe_init_latency_ms", time.Since(upstreamFailsafeStartTime).Milliseconds()),
 					),
 				)
 				defer execSpan.End()
@@ -607,16 +641,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					}
 				}
 				if failsafeExecutor.timeout != nil {
-					var cancelFn context.CancelFunc
-					ectx, cancelFn = context.WithTimeout(
-						ectx,
-						// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
-						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-						//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
-						//      but allow the failsafe execution to fail with timeout first for proper error handling.
-						*failsafeExecutor.timeout+5*time.Millisecond,
-					)
-					defer cancelFn()
+					if td := failsafeExecutor.timeout(ectx, nrq); td != nil {
+						var cancelFn context.CancelFunc
+						ectx, cancelFn = context.WithTimeoutCause(ectx, *td, common.ErrDynamicTimeoutExceeded)
+						defer cancelFn()
+					}
 				}
 
 				nr, err := tryForward(ectx, exec)
@@ -640,7 +669,24 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 		if execErr != nil {
 			common.SetTraceSpanError(span, execErr)
-			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
+			// Mirror TranslateFailsafeError's retry-exhausted-wins ordering: if the
+			// retry policy exhausted on a timeout-tail attempt, the user-visible
+			// classification is ErrFailsafeRetryExceeded — counting that as a
+			// timeout fire would contradict the metric's own description.
+			var retryExceededErr retrypolicy.ExceededError
+			if failsafeExecutor.timeout != nil &&
+				!errors.As(execErr, &retryExceededErr) &&
+				errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
+				finality := nrq.Finality(ctx)
+				telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
+					u.ProjectId,
+					nrq.NetworkLabel(),
+					method,
+					finality.String(),
+					string(common.ScopeUpstream),
+				).Inc()
+			}
+			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime, failsafeExecutor.timeout != nil)
 		}
 
 		return resp, nil
@@ -676,6 +722,9 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 
 // TODO move to evm package
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
+	// Always make a real upstream call here. End-user requests can be short-circuited
+	// via higher-level hooks (e.g. project/network pre-forward for eth_chainId).
+
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
 	resp, err := u.Forward(ctx, pr, true)
@@ -780,7 +829,45 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		return false, fmt.Errorf("upstream is not an EVM type")
 	}
 
-	if confidence == common.AvailbilityConfidenceFinalized {
+	// Resolve configured availability bounds (min/max) and enforce before legacy logic
+	minBound, maxBound := u.resolveAvailabilityBounds()
+	if minBound != math.MinInt64 && blockNumber < minBound {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkLabel(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+		u.logger.Debug().
+			Int64("blockNumber", blockNumber).
+			Int64("minBound", minBound).
+			Str("method", forMethod).
+			Str("upstreamId", u.config.Id).
+			Msg("block rejected: below lower availability bound")
+		return false, nil
+	}
+	if maxBound != math.MaxInt64 && blockNumber > maxBound {
+		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkLabel(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+		u.logger.Debug().
+			Int64("blockNumber", blockNumber).
+			Int64("maxBound", maxBound).
+			Str("method", forMethod).
+			Str("upstreamId", u.config.Id).
+			Msg("block rejected: above upper availability bound")
+		return false, nil
+	}
+
+	switch confidence {
+	case common.AvailbilityConfidenceFinalized:
 		//
 		// UPPER BOUND: Check if the block is finalized
 		//
@@ -817,7 +904,7 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 
 		// Block is finalized and within range (or archive node)
 		return true, nil
-	} else if confidence == common.AvailbilityConfidenceBlockHead {
+	case common.AvailbilityConfidenceBlockHead:
 		//
 		// UPPER BOUND: Check if block is before the latest block
 		//
@@ -859,9 +946,165 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 
 		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's <= latest
 		return blockNumber <= latestBlock, nil
-	} else {
+	default:
 		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}
+}
+
+// resolveAvailabilityBounds computes effective [min,max] based on BlockAvailabilityConfig.
+// Returns MinInt64/MaxInt64 when a side is unbounded.
+func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
+	cfg := u.Config()
+	if cfg == nil || cfg.Evm == nil {
+		return math.MinInt64, math.MaxInt64
+	}
+	// Legacy fallback: if explicit blockAvailability is not configured, but
+	// MaxAvailableRecentBlocks is set, treat lower bound as latest - N.
+	if cfg.Evm.BlockAvailability == nil {
+		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+			latest := int64(0)
+			if u.evmStatePoller != nil {
+				latest = u.evmStatePoller.LatestBlock()
+			}
+			if latest > 0 {
+				return latest - cfg.Evm.MaxAvailableRecentBlocks, math.MaxInt64
+			}
+		}
+		return math.MinInt64, math.MaxInt64
+	}
+	latest := int64(0)
+
+	compute := func(bound *common.EvmAvailabilityBoundConfig, isLower bool) int64 {
+		if bound == nil {
+			if isLower {
+				return math.MinInt64
+			}
+			return math.MaxInt64
+		}
+		probe := bound.Probe
+		if probe == "" {
+			probe = common.EvmProbeBlockHeader
+		}
+
+		// Compute new value
+		var val int64
+		if bound.ExactBlock != nil {
+			val = *bound.ExactBlock
+		} else if bound.EarliestBlockPlus != nil {
+			eb := int64(0)
+			if u.evmStatePoller != nil && !u.evmStatePoller.IsObjectNull() {
+				eb = u.evmStatePoller.EarliestBlock(probe)
+			}
+			// eb == 0 means detection not yet complete - compute val = 0 + offset
+			// This may create an invalid range (min > max) which triggers fail-open at the end
+			// eb > 0 means detection successful - use the detected value
+			if eb >= 0 {
+				val = eb + *bound.EarliestBlockPlus
+			} else {
+				// If earliest is negative (shouldn't happen), treat as unbounded
+				if isLower {
+					val = math.MinInt64
+				} else {
+					val = math.MaxInt64
+				}
+			}
+		} else if bound.LatestBlockMinus != nil {
+			if latest == 0 {
+				if u.evmStatePoller != nil {
+					latest = u.evmStatePoller.LatestBlock()
+				}
+			}
+			if latest > 0 {
+				val = latest - *bound.LatestBlockMinus
+				u.logger.Debug().
+					Int64("latestBlock", latest).
+					Int64("minus", *bound.LatestBlockMinus).
+					Int64("computedBound", val).
+					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
+					Str("upstreamId", u.config.Id).
+					Msg("computed bound from latest block")
+			} else {
+				u.logger.Debug().
+					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
+					Str("upstreamId", u.config.Id).
+					Msg("latest block not available; treating bound as unbounded")
+				if isLower {
+					val = math.MinInt64
+				} else {
+					val = math.MaxInt64
+				}
+			}
+		} else {
+			// No-op bound
+			if isLower {
+				val = math.MinInt64
+			} else {
+				val = math.MaxInt64
+			}
+		}
+
+		return val
+	}
+
+	minVal := compute(cfg.Evm.BlockAvailability.Lower, true)
+	maxVal := compute(cfg.Evm.BlockAvailability.Upper, false)
+	// If both sides are finite and the computed range is invalid (min > max),
+	// fail-open for safety: treat as unbounded to avoid breaking production traffic.
+	if minVal != math.MinInt64 && maxVal != math.MaxInt64 && minVal > maxVal {
+		u.logger.Warn().
+			Int64("computedMinBound", minVal).
+			Int64("computedMaxBound", maxVal).
+			Str("upstreamId", u.config.Id).
+			Msg("computed block availability bounds are invalid (min > max); treating as unbounded for safety")
+		return math.MinInt64, math.MaxInt64
+	}
+	return minVal, maxVal
+}
+
+// EvmEffectiveLatestBlock returns the latest block adjusted for the upstream's upper availability bound.
+// If the upstream has a blockAvailability.upper config (e.g., latestBlockMinus: 5), this returns
+// min(latestBlock, upperBound) instead of the raw latest block.
+func (u *Upstream) EvmEffectiveLatestBlock() int64 {
+	if u == nil || u.evmStatePoller == nil || u.evmStatePoller.IsObjectNull() {
+		return 0
+	}
+	latestBlock := u.evmStatePoller.LatestBlock()
+	if latestBlock <= 0 {
+		return 0
+	}
+
+	_, maxBound := u.resolveAvailabilityBounds()
+	if maxBound != math.MaxInt64 && maxBound < latestBlock {
+		return maxBound
+	}
+	return latestBlock
+}
+
+// EvmEffectiveFinalizedBlock returns the finalized block adjusted for the upstream's upper availability bound.
+// If the upstream has a blockAvailability.upper config, this returns min(finalizedBlock, upperBound).
+func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
+	if u == nil || u.evmStatePoller == nil || u.evmStatePoller.IsObjectNull() {
+		return 0
+	}
+	finalizedBlock := u.evmStatePoller.FinalizedBlock()
+	if finalizedBlock <= 0 {
+		return 0
+	}
+
+	_, maxBound := u.resolveAvailabilityBounds()
+	if maxBound != math.MaxInt64 && maxBound < finalizedBlock {
+		return maxBound
+	}
+	return finalizedBlock
+}
+
+// EvmBlockAvailabilityBounds returns the resolved [min, max] block availability bounds
+// for this upstream based on its BlockAvailability configuration.
+// Returns (math.MinInt64, math.MaxInt64) when unbounded on either side.
+// This is used post-forward to determine if an upstream's MissingData response
+// is expected (block outside configured range) vs. a genuine wrong-empty misbehavior.
+func (u *Upstream) EvmBlockAvailabilityBounds() (int64, int64) {
+	return u.resolveAvailabilityBounds()
 }
 
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
@@ -952,8 +1195,9 @@ func (u *Upstream) recordRequestSuccess(method string) {
 	}
 }
 
-func (u *Upstream) recordRemoteRateLimit(method string, nrq *common.NormalizedRequest) {
+func (u *Upstream) recordRemoteRateLimit(ctx context.Context, method string, nrq *common.NormalizedRequest) {
 	u.metricsTracker.RecordUpstreamRemoteRateLimited(
+		ctx,
 		u,
 		method,
 		nrq,
@@ -1024,6 +1268,10 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		}
 		nid, err := u.EvmGetChainId(ctx)
 		if err != nil {
+			// RPC / network failure — potentially transient (provider outage,
+			// rate limit during startup, DNS blip). Leave the init error
+			// unwrapped so the Initializer's auto-retry loop can keep trying;
+			// the upstream will self-heal if the provider recovers.
 			return common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdDetectionFailed",
@@ -1034,29 +1282,32 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		}
 		realChainID, err := strconv.ParseInt(nid, 0, 64)
 		if err != nil {
-			return common.NewErrUpstreamClientInitialization(
+			// Upstream returned a non-numeric chainId — won't self-heal on
+			// retry. Wrap with NewTaskFatal so the Initializer stops retrying.
+			return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdDetectionFailed",
 					Cause: err,
 				},
 				u,
-			)
+			))
 		}
 		if cfg.Evm.ChainId > 0 && cfg.Evm.ChainId != realChainID {
-			return common.NewErrUpstreamClientInitialization(
+			// Misconfiguration (wrong upstream for this network) — permanent.
+			// Wrap with NewTaskFatal so the Initializer stops retrying.
+			return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdMismatch",
 					Cause: fmt.Errorf("chainId mismatch: configured %d, detected %d", cfg.Evm.ChainId, realChainID),
 				},
 				u,
-			)
+			))
 		}
 		cfg.Evm.ChainId = realChainID
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
+		u.chainIdValidated.Store(true)
 
-		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {
-			cfg.Evm.MaxAvailableRecentBlocks = 128
-		}
+		// @deprecated: NodeType-specific logic removed; availability is handled by blockAvailability bounds.
 
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
 		// TODO evm: detect max eth_getLogs max block range
@@ -1123,7 +1374,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	dirs := req.Directives()
-	if dirs.UseUpstream != "" {
+	if dirs != nil && dirs.UseUpstream != "" {
 		match, err := common.WildcardMatch(dirs.UseUpstream, u.config.Id)
 		if err != nil {
 			return err, true
@@ -1133,29 +1384,20 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	// if block can be determined from request and upstream is only full-node and block is historical skip
-	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
-		_, bn, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req)
-		if ebn != nil || bn <= 0 {
-			return nil, false
-		}
-
-		if lb := u.evmStatePoller.LatestBlock(); lb > 0 && bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
-			// Allow requests for block numbers greater than the latest known block
-			if bn > lb {
-				return nil, false
-			}
-			return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
-		}
-	}
-
-	// TODO if block number is extracted from request, check against evm poller's latest block number (force-refresh if stale) and skip if block is after upstream's latest block
-	// TODO then we can remove the similar "eth_getLogs upper-bound" check in eth_getLogs.go PreForward hook.
+	// Block availability bound enforcement (lower/upper) lives in a single place:
+	// Network.checkUpstreamBlockAvailability. It runs whenever the upstream has
+	// BlockAvailability bounds configured (or EnforceBlockAvailability resolves
+	// to true), classifies head-of-chain races within MaxRetryableBlockDistance
+	// as retryable, and routes through handleBlockSkip so the failsafe retry
+	// policy can apply blockUnavailableDelay. Centralising it there avoids the
+	// duplicate-error-class footgun where an early upstream-level check would
+	// short-circuit the retryable classification with a non-retryable
+	// ErrUpstreamRequestSkipped.
 
 	return nil, false
 }
 
-func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
+func (u *Upstream) getScoreMultipliers(networkId, method string, finalities []common.DataFinalityState) *common.ScoreMultiplierConfig {
 	if u.config.Routing != nil {
 		for _, mul := range u.config.Routing.ScoreMultipliers {
 			matchNet, err := common.WildcardMatch(mul.Network, networkId)
@@ -1166,7 +1408,10 @@ func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMu
 			if err != nil {
 				continue
 			}
-			if matchNet && matchMeth {
+
+			matchFin := common.MatchFinalities(mul.Finality, finalities)
+
+			if matchNet && matchMeth && matchFin {
 				return mul
 			}
 		}

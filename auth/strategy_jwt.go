@@ -45,7 +45,7 @@ func (s *JwtStrategy) Supports(ap *AuthPayload) bool {
 	return ap.Type == common.AuthTypeJwt
 }
 
-func (s *JwtStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*common.User, error) {
+func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	token, _, err := s.parser.ParseUnverified(ap.Jwt.Token, jwt.MapClaims{})
 	if err != nil {
 		return nil, common.NewErrAuthUnauthorized("jwt", "failed to parse JWT")
@@ -82,9 +82,19 @@ func (s *JwtStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*commo
 		return nil, common.NewErrAuthUnauthorized("jwt", "missing 'sub' claim to be used as user id")
 	}
 
-	return &common.User{
-		Id: id,
-	}, nil
+	user := &common.User{Id: id}
+	// Optional rate limit budget override via claim
+	claimName := s.cfg.RateLimitBudgetClaimName
+	if claimName == "" {
+		claimName = "rlm"
+	}
+	if v, exists := claims[claimName]; exists {
+		if s, ok := v.(string); ok && s != "" {
+			user.RateLimitBudget = s
+		}
+	}
+
+	return user, nil
 }
 
 func (s *JwtStrategy) findVerificationKey(token *jwt.Token) (jwt.Keyfunc, error) {

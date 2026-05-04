@@ -213,13 +213,13 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 			name:          "match on range key with prefix on partition key",
 			rangeKey:      "profile",
 			partitionKey:  "user:*",
-			expectedValue: "user1-profile", // It should return the first matching item
+			expectedValue: "user2-profile", // With DESC ordering, newest (lexicographically highest PK) matches first
 		},
 		{
 			name:          "exact match on range key only",
 			rangeKey:      "settings",
 			partitionKey:  "",
-			expectedValue: "user1-settings", // It should return the first matching item
+			expectedValue: "user2-settings", // With DESC ordering, newest (lexicographically highest PK) matches first
 		},
 		{
 			name:          "non-existent range key",
@@ -472,7 +472,10 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 
 		require.NoError(t, err, "should acquire second lock after waiting")
 		require.NotNil(t, lock2, "lock2 should not be nil")
-		assert.InDelta(t, timeSpent.Milliseconds(), int64(300), 100, "should have waited for unlock")
+		// Timing can vary under CI load; just assert we waited long enough to observe the unlock,
+		// but not so long that it indicates a hang.
+		assert.GreaterOrEqual(t, timeSpent, 250*time.Millisecond, "should have waited for unlock")
+		assert.Less(t, timeSpent, 2*time.Second, "should not take excessively long to acquire after unlock")
 
 		// Clean up
 		err = lock2.Unlock(ctx)

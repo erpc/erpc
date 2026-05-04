@@ -45,6 +45,25 @@ func ErrorSummary(err interface{}) string {
 	if be, ok := err.(StandardError); ok {
 		if errorLabelMode == ErrorLabelModeCompact {
 			s = string(be.Base().Code)
+			if cause := be.GetCause(); cause != nil {
+				// For certain errors their underlying cause has more useful information
+				if HasErrorCode(
+					be,
+					ErrCodeFailsafeRetryExceeded,
+					ErrCodeUpstreamRequest,
+					ErrCodeUpstreamRequestSkipped,
+				) {
+					if causeSE, ok := cause.(StandardError); ok {
+						cd := causeSE.Base().Code
+						// For json-rpc errors let's include their numeric code
+						if cd == ErrCodeJsonRpcExceptionInternal {
+							s += "/" + fmt.Sprintf("%d", causeSE.DeepSearch("normalizedCode"))
+						} else {
+							s += "/" + string(causeSE.Base().Code)
+						}
+					}
+				}
+			}
 		} else {
 			s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
 		}
@@ -177,7 +196,6 @@ type StandardError interface {
 	DeepestMessage() string
 	DeepSearch(key string) interface{}
 	GetCause() error
-	ErrorStatusCode() int
 	Base() *BaseError
 	MarshalZerologObject(v *zerolog.Event)
 	Error() string
@@ -358,22 +376,15 @@ func (e *BaseError) HasCode(codes ...ErrorCode) bool {
 		if cs, ok := e.Cause.(interface{ Unwrap() []error }); ok {
 			for _, err := range cs.Unwrap() {
 				if be, ok := err.(StandardError); ok {
-					return be.HasCode(codes...)
+					if be.HasCode(codes...) {
+						return true
+					}
 				}
 			}
 		}
 	}
 
 	return false
-}
-
-func (e *BaseError) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if be, ok := e.Cause.(StandardError); ok {
-			return be.ErrorStatusCode()
-		}
-	}
-	return http.StatusInternalServerError
 }
 
 func (e *BaseError) Base() *BaseError {
@@ -399,6 +410,30 @@ func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
 		v.Interface("details", e.Details)
 	}
 }
+
+//
+// Initializer / Task Control
+//
+
+// TaskFatalError marks a background initialization task as fatal (non-retryable).
+// It is intentionally not a StandardError because it's a control signal for the
+// initializer rather than a domain error returned to clients.
+type TaskFatalError struct {
+	Err error
+}
+
+func (e *TaskFatalError) Error() string {
+	if e == nil || e.Err == nil {
+		return "fatal task error"
+	}
+	return e.Err.Error()
+}
+
+func (e *TaskFatalError) Unwrap() error { return e.Err }
+
+func (e *TaskFatalError) IsTaskFatal() bool { return true }
+
+func NewTaskFatal(err error) error { return &TaskFatalError{Err: err} }
 
 //
 // Server
@@ -507,11 +542,33 @@ func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
 	return http.StatusUnauthorized
 }
 
+type ErrPaymentRequired struct {
+	BaseError
+	// PaymentRequirements holds the raw x402 PaymentRequirementsResponse to return to the client.
+	PaymentRequirements interface{} `json:"-"`
+}
+
+const ErrCodePaymentRequired ErrorCode = "ErrPaymentRequired"
+
+var NewErrPaymentRequired = func(paymentRequirements interface{}) error {
+	return &ErrPaymentRequired{
+		BaseError: BaseError{
+			Code:    ErrCodePaymentRequired,
+			Message: "payment required for this resource",
+		},
+		PaymentRequirements: paymentRequirements,
+	}
+}
+
+func (e *ErrPaymentRequired) ErrorStatusCode() int {
+	return http.StatusPaymentRequired
+}
+
 type ErrAuthRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeAuthRateLimitRuleExceeded ErrorCode = "ErrAuthRateLimitRuleExceeded"
 
-var NewErrAuthRateLimitRuleExceeded = func(projectId, strategy, budget, rule string) error {
+var NewErrAuthRateLimitRuleExceeded = func(projectId, strategy, budget, rule, userId, clientIp string) error {
 	return &ErrAuthRateLimitRuleExceeded{
 		BaseError{
 			Code:    ErrCodeAuthRateLimitRuleExceeded,
@@ -521,6 +578,8 @@ var NewErrAuthRateLimitRuleExceeded = func(projectId, strategy, budget, rule str
 				"strategy":  strategy,
 				"budget":    budget,
 				"rule":      rule,
+				"userId":    userId,
+				"clientIp":  clientIp,
 			},
 		},
 	}
@@ -569,12 +628,14 @@ var NewErrProjectAlreadyExists = func(projectId string) error {
 // Networks
 //
 
+const ErrCodeNetworkNotFound ErrorCode = "ErrNetworkNotFound"
+
 type ErrNetworkNotFound struct{ BaseError }
 
 var NewErrNetworkNotFound = func(networkId string) error {
 	return &ErrNetworkNotFound{
 		BaseError{
-			Code:    "ErrNetworkNotFound",
+			Code:    ErrCodeNetworkNotFound,
 			Message: "network not configured in the config",
 			Details: map[string]interface{}{
 				"networkId": networkId,
@@ -688,6 +749,14 @@ type ErrUpstreamClientInitialization struct {
 	UpstreamAwareError
 	BaseError
 }
+
+// Note: ErrUpstreamClientInitialization deliberately does not implement
+// IsTaskFatal — the same constructor is used for both permanent
+// (chainId-mismatch, parse-error, unsupported-type) and transient (RPC/network
+// failure during chainId detection) causes. Call sites that know the cause is
+// permanent wrap with common.NewTaskFatal() so the Initializer stops retrying.
+// Leaving this unimplemented keeps transient failures retryable — a provider
+// outage during startup should be recoverable once the provider returns.
 
 var NewErrUpstreamClientInitialization = func(cause error, upstream Upstream) error {
 	return &ErrUpstreamClientInitialization{
@@ -810,7 +879,14 @@ func (e *ErrUpstreamMalformedResponse) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
-type ErrUpstreamsExhausted struct{ BaseError }
+type ErrUpstreamsExhausted struct {
+	BaseError
+	req *NormalizedRequest
+}
+
+func (e *ErrUpstreamsExhausted) Request() *NormalizedRequest {
+	return e.req
+}
 
 const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
@@ -827,7 +903,7 @@ var NewErrUpstreamsExhausted = func(
 		return true
 	})
 	e := &ErrUpstreamsExhausted{
-		BaseError{
+		BaseError: BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all upstream attempts failed",
 			Cause:   errors.Join(ers...),
@@ -842,6 +918,7 @@ var NewErrUpstreamsExhausted = func(
 				"upstreams":  upstreams,
 			},
 		},
+		req: req,
 	}
 
 	sm := e.SummarizeCauses()
@@ -854,7 +931,7 @@ var NewErrUpstreamsExhausted = func(
 
 func NewErrUpstreamsExhaustedWithCause(cause error) error {
 	return &ErrUpstreamsExhausted{
-		BaseError{
+		BaseError: BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all upstream attempts failed",
 			Cause:   cause,
@@ -880,41 +957,6 @@ func (e *ErrUpstreamsExhausted) Upstreams() []Upstream {
 
 func (e *ErrUpstreamsExhausted) IsObjectNull() bool {
 	return e == nil || e.Code == ""
-}
-
-func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if be, ok := e.Cause.(StandardError); ok {
-			return be.ErrorStatusCode()
-		}
-		// TODO We shouldn't really need this code path, and instead
-		// we should try to find the "most significant" error when sending the result
-		// back to the client, as it's already done in http_server.go.
-		// Refactor to properly handle upstream exhaustion errors (and their nested versions),
-		// then remove ErrorStatusCode() on UpstreamsExhausted altogether as it shouldn't be ever called.
-		if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-			fsc := 503
-			for _, e := range joinedErr.Unwrap() {
-				if be, ok := e.(StandardError); ok {
-					sc := be.ErrorStatusCode()
-					if sc != 503 && sc != 500 {
-						fsc = sc
-					}
-				} else if nje, ok := e.(interface{ Unwrap() []error }); ok {
-					for _, e := range nje.Unwrap() {
-						if be, ok := e.(StandardError); ok {
-							sc := be.ErrorStatusCode()
-							if sc != 503 && sc != 500 {
-								fsc = sc
-							}
-						}
-					}
-				}
-			}
-			return fsc
-		}
-	}
-	return 503
 }
 
 func (e *ErrUpstreamsExhausted) CodeChain() string {
@@ -952,6 +994,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		excluded := 0
 		nodeTypeMismatch := 0
 		tooLarge := 0
+		validation := 0
 
 		for _, e := range joinedErr.Unwrap() {
 			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
@@ -985,7 +1028,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeEndpointTransportFailure) {
 				transport++
 				continue
-			} else if HasErrorCode(e, ErrCodeUpstreamSyncing) {
+			} else if HasErrorCode(e, ErrCodeUpstreamSyncing, ErrCodeUpstreamBlockUnavailable) {
 				unsynced++
 				continue
 			} else if HasErrorCode(e, ErrCodeUpstreamExcludedByPolicy) {
@@ -1005,6 +1048,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointUnauthorized) {
 				auth++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointContentValidation) {
+				validation++
 				continue
 			} else {
 				other++
@@ -1053,6 +1099,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if unsynced > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream not synced", unsynced))
+		}
+		if validation > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream validation mismatch", validation))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream unknown errors", other))
@@ -1165,10 +1214,12 @@ var NewErrNoUpstreamsLeftToSelect = func(r *NormalizedRequest, reason string) er
 	}
 	for _, u := range r.upstreamList {
 		state := "unknown"
-		if _, ok := r.ErrorsByUpstream.Load(u); ok {
-			state = "errored"
-		} else if _, ok := r.EmptyResponses.Load(u); ok {
-			state = "empty_response"
+		if errVal, ok := r.ErrorsByUpstream.Load(u); ok {
+			if err, isErr := errVal.(error); isErr && HasErrorCode(err, ErrCodeEndpointMissingData) {
+				state = "empty_response"
+			} else {
+				state = "errored"
+			}
 		} else if _, ok := r.ConsumedUpstreams.Load(u); ok {
 			state = "consumed"
 		} else {
@@ -1217,6 +1268,48 @@ var NewErrNoUpstreamsFound = func(project string, network string) error {
 }
 
 func (e *ErrNoUpstreamsFound) ErrorStatusCode() int { return http.StatusNotFound }
+
+// ErrNetworkInitializing indicates that the network is still initializing (e.g., providers
+// are being bootstrapped) and the client should retry shortly.
+type ErrNetworkInitializing struct{ BaseError }
+
+const ErrCodeNetworkInitializing ErrorCode = "ErrNetworkInitializing"
+
+var NewErrNetworkInitializing = func(project string, network string) error {
+	return &ErrNetworkInitializing{
+		BaseError{
+			Code:    ErrCodeNetworkInitializing,
+			Message: fmt.Sprintf("network '%s' for project '%s' is initializing; please retry shortly", network, project),
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkInitializing) ErrorStatusCode() int { return http.StatusServiceUnavailable }
+
+// ErrNetworkNotSupported indicates that providers do not support the requested network
+// and no static upstreams exist. It should be treated as fatal for initialization tasks.
+type ErrNetworkNotSupported struct{ BaseError }
+
+const ErrCodeNetworkNotSupported ErrorCode = "ErrNetworkNotSupported"
+
+var NewErrNetworkNotSupported = func(project string, network string) error {
+	return &ErrNetworkNotSupported{
+		BaseError{
+			Code:    ErrCodeNetworkNotSupported,
+			Message: fmt.Sprintf("network '%s' is not supported for project '%s'", network, project),
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkNotSupported) ErrorStatusCode() int { return http.StatusNotFound }
 
 type ErrUpstreamNetworkNotDetected struct {
 	UpstreamAwareError
@@ -1269,6 +1362,36 @@ var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string) error {
 			},
 		},
 	}
+}
+
+func (e *ErrUpstreamRequestSkipped) ErrorStatusCode() int {
+	return http.StatusNotAcceptable
+}
+
+// ErrUpstreamBlockUnavailable indicates the upstream doesn't have the requested block yet,
+// but may have it soon (unlike ErrUpstreamRequestSkipped which is permanent).
+// This error is retryable at the network level.
+type ErrUpstreamBlockUnavailable struct{ BaseError }
+
+const ErrCodeUpstreamBlockUnavailable ErrorCode = "ErrUpstreamBlockUnavailable"
+
+var NewErrUpstreamBlockUnavailable = func(upstreamId string, blockNumber int64, latestBlock int64, finalizedBlock int64) error {
+	return &ErrUpstreamBlockUnavailable{
+		BaseError{
+			Code:    ErrCodeUpstreamBlockUnavailable,
+			Message: "upstream does not have the requested block yet",
+			Details: map[string]interface{}{
+				"upstreamId":     upstreamId,
+				"blockNumber":    blockNumber,
+				"latestBlock":    latestBlock,
+				"finalizedBlock": finalizedBlock,
+			},
+		},
+	}
+}
+
+func (e *ErrUpstreamBlockUnavailable) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
 }
 
 type ErrUpstreamMethodIgnored struct{ BaseError }
@@ -1326,72 +1449,6 @@ var NewErrUpstreamShadowing = func(upstreamId string) error {
 			},
 		},
 	}
-}
-
-type ErrUpstreamGetLogsExceededMaxAllowedRange struct{ BaseError }
-
-const ErrCodeUpstreamGetLogsExceededMaxAllowedRange ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedRange"
-
-var NewErrUpstreamGetLogsExceededMaxAllowedRange = func(upstreamId string, requestRange int64, maxAllowedRange int64) error {
-	return &ErrUpstreamGetLogsExceededMaxAllowedRange{
-		BaseError{
-			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedRange,
-			Message: "upstream request range exceeded max allowed range",
-			Details: map[string]interface{}{
-				"upstreamId":      upstreamId,
-				"requestRange":    requestRange,
-				"maxAllowedRange": maxAllowedRange,
-			},
-		},
-	}
-}
-
-func (e *ErrUpstreamGetLogsExceededMaxAllowedRange) ErrorStatusCode() int {
-	return http.StatusRequestEntityTooLarge
-}
-
-type ErrUpstreamGetLogsExceededMaxAllowedAddresses struct{ BaseError }
-
-const ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedAddresses"
-
-var NewErrUpstreamGetLogsExceededMaxAllowedAddresses = func(upstreamId string, requestAddresses int64, maxAllowedAddresses int64) error {
-	return &ErrUpstreamGetLogsExceededMaxAllowedAddresses{
-		BaseError{
-			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses,
-			Message: "upstream request addresses exceeded max allowed addresses",
-			Details: map[string]interface{}{
-				"upstreamId":          upstreamId,
-				"requestAddresses":    requestAddresses,
-				"maxAllowedAddresses": maxAllowedAddresses,
-			},
-		},
-	}
-}
-
-func (e *ErrUpstreamGetLogsExceededMaxAllowedAddresses) ErrorStatusCode() int {
-	return http.StatusRequestEntityTooLarge
-}
-
-type ErrUpstreamGetLogsExceededMaxAllowedTopics struct{ BaseError }
-
-const ErrCodeUpstreamGetLogsExceededMaxAllowedTopics ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedTopics"
-
-var NewErrUpstreamGetLogsExceededMaxAllowedTopics = func(upstreamId string, requestTopics int64, maxAllowedTopics int64) error {
-	return &ErrUpstreamGetLogsExceededMaxAllowedTopics{
-		BaseError{
-			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedTopics,
-			Message: "upstream request topics exceeded max allowed topics",
-			Details: map[string]interface{}{
-				"upstreamId":       upstreamId,
-				"requestTopics":    requestTopics,
-				"maxAllowedTopics": maxAllowedTopics,
-			},
-		},
-	}
-}
-
-func (e *ErrUpstreamGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
-	return http.StatusRequestEntityTooLarge
 }
 
 type ErrUpstreamNotAllowed struct{ BaseError }
@@ -1614,15 +1671,6 @@ var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time
 			Details: dt,
 		},
 	}
-}
-
-func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if se, ok := e.Cause.(StandardError); ok {
-			return se.ErrorStatusCode()
-		}
-	}
-	return http.StatusServiceUnavailable
 }
 
 func (e *ErrFailsafeRetryExceeded) DeepestMessage() string {
@@ -1907,7 +1955,7 @@ const ErrCodeEndpointTransportFailure = "ErrEndpointTransportFailure"
 var NewErrEndpointTransportFailure = func(url *url.URL, cause error) error {
 	if cause != nil {
 		if _, ok := cause.(StandardError); !ok {
-			cause = fmt.Errorf(strings.ReplaceAll(cause.Error(), url.String(), ""))
+			cause = errors.New(strings.ReplaceAll(cause.Error(), url.String(), ""))
 		}
 	}
 	return &ErrEndpointTransportFailure{
@@ -1951,6 +1999,11 @@ func (e *ErrEndpointServerSideException) ErrorStatusCode() int {
 	}
 	return http.StatusInternalServerError
 }
+
+// ErrDynamicTimeoutExceeded is the sentinel set as context cause by the
+// timeout policy's context.WithTimeoutCause. It distinguishes policy-driven
+// timeouts from parent-context deadlines (e.g. HTTP server timeouts).
+var ErrDynamicTimeoutExceeded = errors.New("dynamic timeout exceeded")
 
 type ErrEndpointRequestTimeout struct{ BaseError }
 
@@ -2168,15 +2221,6 @@ var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonR
 	}
 }
 
-func (e *ErrJsonRpcExceptionInternal) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if er, ok := e.Cause.(StandardError); ok {
-			return er.ErrorStatusCode()
-		}
-	}
-	return http.StatusInternalServerError
-}
-
 func (e *ErrJsonRpcExceptionInternal) CodeChain() string {
 	return fmt.Sprintf("%d <- %s", e.NormalizedCode(), e.BaseError.CodeChain())
 }
@@ -2237,6 +2281,17 @@ func (e *ErrJsonRpcExceptionExternal) DeepestMessage() string {
 func (e *ErrJsonRpcExceptionExternal) GetCause() error {
 	// This specific type does not have "cause" as it's directly returned by upstreams
 	return nil
+}
+
+func (e *ErrJsonRpcExceptionExternal) MarshalZerologObject(ev *zerolog.Event) {
+	if e == nil {
+		return
+	}
+	ev.Int("code", e.Code)
+	ev.Str("message", e.Message)
+	if e.Data != nil {
+		ev.Interface("data", e.Data)
+	}
 }
 
 //
@@ -2325,31 +2380,80 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	return false
 }
 
+// IsRetryableTowardNetwork reports whether err should be retried at network
+// scope (i.e. against a different upstream). Returns true by default; returns
+// false only when:
+//
+//   - it's an ErrUpstreamsExhausted with no underlying cause (nothing tried,
+//     nothing to recover — terminal), OR
+//   - every child of a multi-error wrapper cause (ErrUpstreamsExhausted,
+//     ErrConsensusDispute, ErrConsensusLowParticipants, or any errors.Join
+//     bundle) is itself non-retryable, OR
+//   - any error along the linear Cause chain carries
+//     WithRetryableTowardNetwork(false).
+//
+// Multi-error wrappers are traversed by explicit iteration. The flag lookup
+// descends the single-cause chain (so an outer ErrUpstreamRequest wrapping an
+// inner ErrEndpointCapacityExceeded with the flag still short-circuits) but
+// never enters a multi-error wrapper — that fan-out is handled above and
+// descending into it would reintroduce the order-dependent bug that
+// DeepSearch had.
 func IsRetryableTowardNetwork(err error) bool {
-	// Check if this is an exhausted upstreams error with retryable underlying errors
-	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
-		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
-			errs := exher.Errors()
-			if len(errs) > 0 {
-				for _, e := range errs {
-					if IsRetryableTowardsUpstream(e) {
+	if err == nil {
+		return true
+	}
+
+	se, isStandard := err.(StandardError)
+	if !isStandard {
+		return true
+	}
+
+	cause := se.GetCause()
+
+	// Empty ErrUpstreamsExhausted (no cause) is terminal — no upstreams were
+	// ever tried, so retrying at the network scope cannot make progress.
+	if cause == nil && HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		return false
+	}
+
+	// Multi-error wrapper cause (errors.Join-style): retry if ANY child is
+	// retryable. Covers ErrUpstreamsExhausted, ErrConsensusDispute, and
+	// ErrConsensusLowParticipants uniformly — never descend via DeepSearch.
+	if cause != nil {
+		if ew, ok := cause.(interface{ Unwrap() []error }); ok {
+			if children := ew.Unwrap(); len(children) > 0 {
+				for _, child := range children {
+					if IsRetryableTowardNetwork(child) {
 						return true
 					}
 				}
+				return false
 			}
-			// If we get here, none of the underlying errors were retryable
-			return false
 		}
 	}
 
-	// If the error says it's explicitly retryable/not retryable towards network
-	if se, ok := err.(StandardError); ok {
-		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && !rt {
-			return false
+	// Walk the single-cause chain looking for an explicit opt-out. Wrappers
+	// like ErrUpstreamRequest typically carry the flag on a deeper cause
+	// (ErrEndpointCapacityExceeded, ErrEndpointClientSideException, etc.),
+	// so a top-level-only check would miss it. Stop before entering any
+	// multi-error wrapper — handled above.
+	for cur := error(err); cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			break
 		}
+		if base := cse.Base(); base != nil && base.Details != nil {
+			if rt, ok := base.Details["retryableTowardNetwork"].(bool); ok && !rt {
+				return false
+			}
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			break
+		}
+		cur = next
 	}
 
-	// Otherwise, consider it retryable
 	return true
 }
 
@@ -2373,9 +2477,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 	if HasErrorCode(
 		err,
 
-		// Missing data errors -> No Retry
-		ErrCodeEndpointMissingData,
-
 		// Circuit breaker is open -> No Retry
 		ErrCodeFailsafeCircuitBreakerOpen,
 
@@ -2398,6 +2499,13 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// Request too-large -> No Retry
 		ErrCodeEndpointUnauthorized,
 		ErrCodeEndpointRequestTooLarge,
+
+		// Validation failures should NOT be retried on the SAME upstream,
+		// but the error itself is retryable by the network (so we can try another upstream).
+		// However, IsRetryableTowardsUpstream checks if *this specific upstream* should be retried immediately?
+		// No, this function checks if the error indicates a transient issue.
+		// Validation errors (ContentMismatch) are NOT transient for the same response, so false.
+		ErrCodeEndpointContentValidation,
 	) {
 		return false
 	}
@@ -2575,7 +2683,7 @@ var NewErrGetLogsExceededMaxAllowedRange = func(requestRange int64, maxAllowedRa
 	return &ErrGetLogsExceededMaxAllowedRange{
 		BaseError{
 			Code:    ErrCodeGetLogsExceededMaxAllowedRange,
-			Message: "getLogs request range exceeded max allowed range",
+			Message: "getLogs request exceeded max allowed range",
 			Details: map[string]interface{}{
 				"requestRange":    requestRange,
 				"maxAllowedRange": maxAllowedRange,
@@ -2596,7 +2704,7 @@ var NewErrGetLogsExceededMaxAllowedAddresses = func(requestAddresses int64, maxA
 	return &ErrGetLogsExceededMaxAllowedAddresses{
 		BaseError{
 			Code:    ErrCodeGetLogsExceededMaxAllowedAddresses,
-			Message: "getLogs request addresses exceeded max allowed addresses",
+			Message: "getLogs request exceeded max allowed addresses",
 			Details: map[string]interface{}{
 				"requestAddresses":    requestAddresses,
 				"maxAllowedAddresses": maxAllowedAddresses,
@@ -2617,7 +2725,7 @@ var NewErrGetLogsExceededMaxAllowedTopics = func(requestTopics int64, maxAllowed
 	return &ErrGetLogsExceededMaxAllowedTopics{
 		BaseError{
 			Code:    ErrCodeGetLogsExceededMaxAllowedTopics,
-			Message: "getLogs request topics exceeded max allowed topics",
+			Message: "getLogs request exceeded max allowed topics",
 			Details: map[string]interface{}{
 				"requestTopics":    requestTopics,
 				"maxAllowedTopics": maxAllowedTopics,
@@ -2628,4 +2736,68 @@ var NewErrGetLogsExceededMaxAllowedTopics = func(requestTopics int64, maxAllowed
 
 func (e *ErrGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
 	return http.StatusRequestEntityTooLarge
+}
+
+// ErrEndpointContentValidation is returned when the upstream response data fails validation directives.
+// This is generally treated as a retryable error towards the *network* (try another upstream),
+// but not retryable towards the *same upstream* (it returned bad data).
+type ErrEndpointContentValidation struct {
+	UpstreamAwareError
+	BaseError
+}
+
+const ErrCodeEndpointContentValidation ErrorCode = "ErrEndpointContentValidation"
+
+var NewErrEndpointContentValidation = func(cause error, upstream Upstream) error {
+	details := map[string]interface{}{}
+	if upstream != nil {
+		details["upstreamId"] = upstream.Id()
+	}
+	return &ErrEndpointContentValidation{
+		UpstreamAwareError: UpstreamAwareError{upstream: upstream},
+		BaseError: BaseError{
+			Code:    ErrCodeEndpointContentValidation,
+			Message: "upstream response failed validation content check",
+			Cause:   cause,
+			Details: details,
+		},
+	}
+}
+
+func (e *ErrEndpointContentValidation) ErrorStatusCode() int {
+	return http.StatusBadGateway
+}
+
+// NonceExceptionReason indicates the specific reason for a duplicate nonce error
+type NonceExceptionReason string
+
+const (
+	// NonceExceptionReasonAlreadyKnown means the transaction is already in mempool or has been processed
+	NonceExceptionReasonAlreadyKnown NonceExceptionReason = "already_known"
+	// NonceExceptionReasonNonceTooLow means the nonce has already been used by another transaction
+	NonceExceptionReasonNonceTooLow NonceExceptionReason = "nonce_too_low"
+)
+
+// ErrEndpointNonceException indicates that a transaction with this nonce already exists
+// either in the mempool or on-chain. This error is used for idempotency handling in eth_sendRawTransaction.
+type ErrEndpointNonceException struct{ BaseError }
+
+const ErrCodeEndpointNonceException ErrorCode = "ErrEndpointNonceException"
+
+var NewErrEndpointNonceException = func(cause error, reason NonceExceptionReason) error {
+	return &ErrEndpointNonceException{
+		BaseError{
+			Code:    ErrCodeEndpointNonceException,
+			Message: "transaction with this nonce already exists",
+			Cause:   cause,
+			Details: map[string]interface{}{
+				"nonceExceptionReason":   string(reason),
+				"retryableTowardNetwork": false,
+			},
+		},
+	}
+}
+
+func (e *ErrEndpointNonceException) ErrorStatusCode() int {
+	return http.StatusOK
 }

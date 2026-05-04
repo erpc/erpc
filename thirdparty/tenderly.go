@@ -13,7 +13,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 type TenderlyVendor struct {
@@ -61,7 +60,7 @@ func (v *TenderlyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 		recheckInterval = DefaultTenderlyRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(ctx, recheckInterval); err != nil {
+	if err := v.ensureRemoteData(ctx, logger, recheckInterval); err != nil {
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
@@ -99,7 +98,7 @@ func (v *TenderlyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Lo
 			recheckInterval = DefaultTenderlyRecheckInterval
 		}
 
-		if err := v.ensureRemoteData(ctx, recheckInterval); err != nil {
+		if err := v.ensureRemoteData(ctx, logger, recheckInterval); err != nil {
 			return nil, fmt.Errorf("unable to load remote data: %w", err)
 		}
 
@@ -154,7 +153,7 @@ func (v *TenderlyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.Contains(ups.Endpoint, ".gateway.tenderly.co")
 }
 
-func (v *TenderlyVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration) error {
+func (v *TenderlyVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -165,7 +164,7 @@ func (v *TenderlyVendor) ensureRemoteData(ctx context.Context, recheckInterval t
 	newData, err := v.fetchTenderlyNetworks(ctx)
 	if err != nil {
 		if _, ok := v.remoteData[tenderlyApiUrl]; ok {
-			log.Warn().Err(err).Msg("could not refresh Tenderly API data; will use stale data")
+			logger.Warn().Err(err).Msg("could not refresh Tenderly API data; will use stale data")
 			return nil
 		}
 		return err

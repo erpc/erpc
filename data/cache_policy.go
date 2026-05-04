@@ -30,6 +30,13 @@ func (pm *PolicyWithMatcher) EmptyState() common.CacheEmptyBehavior {
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
+	// Ensure legacy fields (Network/Method/Finality/etc.) are converted to matchers
+	// before we use the config. SetDefaults is idempotent — it no-ops if matchers
+	// are already populated. This lets callers using either schema work uniformly.
+	if err := cfg.SetDefaults(); err != nil {
+		return nil, fmt.Errorf("failed to set defaults on cache policy config: %w", err)
+	}
+
 	var minSize, maxSize *int
 
 	if cfg.MinItemSize != nil {

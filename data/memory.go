@@ -157,10 +157,24 @@ func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duratio
 	value, _ := m.locks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
 
-	mutex.Lock()
-	return &memoryLock{
-		mutex: mutex,
-	}, nil
+	// Honor context deadline/cancellation for best-effort locking in tests
+	// Use TryLock when available; otherwise spin with backoff respecting ctx.
+	tryInterval := 2 * time.Millisecond
+	for {
+		// TryLock was added in recent Go versions; if unavailable at compile time, this line should be replaced
+		if mutex.TryLock() {
+			return &memoryLock{mutex: mutex}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(tryInterval):
+			// Back off and retry until ctx deadline
+			if tryInterval < 20*time.Millisecond {
+				tryInterval += 1 * time.Millisecond
+			}
+		}
+	}
 }
 
 var _ DistributedLock = &memoryLock{}
@@ -182,14 +196,14 @@ func (l *memoryLock) Unlock(ctx context.Context) error {
 // is unnecessary when all operations are in-memory within the same process.
 // Any updates to counters are immediately visible to all code accessing the
 // memory connector instance.
-func (m *MemoryConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	ch := make(chan int64)
+func (m *MemoryConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
+	ch := make(chan CounterInt64State)
 	return ch, func() {}, nil
 }
 
 // PublishCounterInt64 is a no-op for memory connector since distributed pub/sub
 // is unnecessary when all operations are in-memory within the same process.
-func (m *MemoryConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+func (m *MemoryConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	return nil
 }
 
@@ -245,7 +259,7 @@ func (m *MemoryConnector) collectAndEmitMetrics() {
 				Uint64("diff", diff).
 				Msg("Current cost exceeds int64 capacity, capping to MaxInt64")
 		} else {
-			currentCost = int64(diff) // #nosec G115
+			currentCost = int64(diff)
 		}
 	} else {
 		// This shouldn't happen in normal operation, but handle gracefully

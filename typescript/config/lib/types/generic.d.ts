@@ -43,7 +43,7 @@ export type ConnectorConfig = {
 /**
  * Supported upstream type
  */
-export type UpstreamType = "evm" | "evm+alchemy" | "evm+blastapi" | "evm+conduit" | "evm+drpc" | "evm+dwellir" | "evm+envio" | "evm+etherspot" | "evm+infura" | "evm+pimlico" | "evm+quicknode" | "evm+llama" | "evm+thirdweb" | "evm+repository" | "evm+superchain" | "evm+chainstack" | "evm+tenderly" | "evm+onfinality" | "evm+erpc" | "evm+blockpi" | "evm+ankr";
+export type UpstreamType = "evm" | "evm+alchemy" | "evm+blastapi" | "evm+conduit" | "evm+drpc" | "evm+dwellir" | "evm+envio" | "evm+etherspot" | "evm+infura" | "evm+pimlico" | "evm+quicknode" | "evm+llama" | "evm+thirdweb" | "evm+repository" | "evm+superchain" | "evm+chainstack" | "evm+tenderly" | "evm+onfinality" | "evm+erpc" | "evm+blockpi" | "evm+ankr" | "evm+routemesh";
 /**
  * Supported auth type
  */
@@ -68,4 +68,9 @@ export type AuthStrategyConfig = Omit<GenAuthStrategyConfig, "type" | "network" 
   * Network defaults override (chainId isn't needed for defaults config)
   */
 export type EvmNetworkConfigForDefaults = Omit<EvmNetworkConfig, "chainId">;
+/**
+ * Accepts both boolean (backward compat) and string (connector ID pattern) values.
+ * Examples: true, false, "redis*", "memory*|dynamo*"
+ */
+export type BoolOrString = boolean | string;
 //# sourceMappingURL=generic.d.ts.map

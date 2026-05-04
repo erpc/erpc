@@ -1,6 +1,8 @@
 package consensus
 
 import (
+	"math/big"
+
 	"github.com/erpc/erpc/common"
 
 	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
@@ -22,6 +24,138 @@ type shortCircuitRule struct {
 // consensusRules defines all consensus rules in priority order
 // Rules are evaluated from most specific/nuanced to most generic, and ideally those that error must come before those that return a result.
 var consensusRules = []consensusRule{
+	// eth_sendRawTransaction: return first valid tx hash immediately
+	// For transaction broadcasting, we don't need consensus - any single valid response is sufficient
+	// because the transaction will propagate through the network.
+	{
+		Description: "eth_sendRawTransaction: return first valid tx hash response",
+		Condition: func(a *consensusAnalysis) bool {
+			if a.method != "eth_sendRawTransaction" {
+				return false
+			}
+			// Check if we have any non-empty response (tx hash)
+			for _, g := range a.groups {
+				if g.ResponseType == ResponseTypeNonEmpty && g.Count >= 1 {
+					return true
+				}
+			}
+			return false
+		},
+		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			// Return the first valid non-empty response
+			for _, g := range a.groups {
+				if g.ResponseType == ResponseTypeNonEmpty && g.LargestResult != nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Result: g.LargestResult,
+					}
+				}
+			}
+			// Shouldn't reach here since condition already verified, but fallback to dispute
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: common.NewErrConsensusDispute(
+					"no valid tx hash response found",
+					a.participants(),
+					nil,
+				),
+			}
+		},
+	},
+	// PreferHighestValueFor: when configured for this method, return the response with highest field values
+	// that meets the agreementThreshold. This rule takes precedence over all other consensus rules.
+	{
+		Description: "prefer-highest-value-for: return highest value where at least agreementThreshold upstreams agree",
+		Condition: func(a *consensusAnalysis) bool {
+			// Check if this method has preferHighestValueFor configured
+			if a.config.preferHighestValueFor == nil || a.method == "" {
+				return false
+			}
+			fields, ok := a.config.preferHighestValueFor[a.method]
+			if !ok || len(fields) == 0 {
+				return false
+			}
+			// Only match if at least one valid group has extractable values
+			for _, group := range a.getValidGroups() {
+				if group.LargestResult != nil {
+					if extractFieldValues(group.LargestResult, fields) != nil {
+						return true
+					}
+				}
+			}
+			return false // No extractable values, fall through to other rules
+		},
+		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			fields := a.config.preferHighestValueFor[a.method]
+			threshold := a.config.agreementThreshold
+			if threshold < 1 {
+				threshold = 1
+			}
+
+			// Group responses by their numeric value (not by hash).
+			// This handles cases where same value has different JSON formatting.
+			type valueGroup struct {
+				values       []*big.Int
+				count        int
+				response     *common.NormalizedResponse
+				responseSize int
+			}
+			valueGroups := make(map[string]*valueGroup) // key is string representation of values
+
+			for _, group := range a.getValidGroups() {
+				for _, result := range group.Results {
+					if result == nil || result.Result == nil || result.Err != nil {
+						continue
+					}
+					values := extractFieldValues(result.Result, fields)
+					if values == nil {
+						continue
+					}
+					// Create a key from the values for grouping
+					key := valuesToKey(values)
+					if vg, exists := valueGroups[key]; exists {
+						vg.count++
+						// Keep the largest response in case of ties
+						if result.CachedResponseSize > vg.responseSize {
+							vg.response = result.Result
+							vg.responseSize = result.CachedResponseSize
+						}
+					} else {
+						valueGroups[key] = &valueGroup{
+							values:       values,
+							count:        1,
+							response:     result.Result,
+							responseSize: result.CachedResponseSize,
+						}
+					}
+				}
+			}
+
+			// Find the highest value that meets the threshold
+			var best *valueGroup
+			for _, vg := range valueGroups {
+				if vg.count < threshold {
+					continue // Doesn't meet minimum agreement
+				}
+				if best == nil || compareValueChains(vg.values, best.values) > 0 {
+					best = vg
+				}
+			}
+
+			if best != nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Result: best.response,
+				}
+			}
+
+			// No value met the threshold - return dispute error
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: common.NewErrConsensusDispute(
+					"no value met agreement threshold for highest-value comparison",
+					a.participants(),
+					nil,
+				),
+			}
+		},
+	},
 	// BlockHeadLeader: OnlyBlockHeadLeader behavior for disputes
 	{
 		Description: "only-block-head-leader on dispute: prefer leader; non-error if available else leader error",
@@ -709,6 +843,25 @@ var consensusRules = []consensusRule{
 
 var shortCircuitRules = []shortCircuitRule{
 	{
+		Description: "eth_sendRawTransaction: short-circuit on first valid tx hash response",
+		Reason:      "sendrawtx_first_success",
+		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
+			// Only applies to eth_sendRawTransaction
+			if a.method != "eth_sendRawTransaction" {
+				return false
+			}
+			// Short-circuit as soon as we have any valid non-empty response (tx hash)
+			// For eth_sendRawTransaction, once a tx is accepted by any node, it will
+			// propagate through the network, so we don't need to wait for consensus.
+			for _, g := range a.groups {
+				if g.ResponseType == ResponseTypeNonEmpty && g.Count >= 1 {
+					return true
+				}
+			}
+			return false
+		},
+	},
+	{
 		Description: "consensus-valid error meets agreement threshold -> short-circuit to error",
 		Reason:      "consensus_error_threshold",
 		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
@@ -721,6 +874,13 @@ var shortCircuitRules = []shortCircuitRule{
 			}
 			if best.Count < a.config.agreementThreshold {
 				return false
+			}
+			// Don't short-circuit when preferHighestValueFor is configured for this method;
+			// we need all responses to find the truly highest value.
+			if a.config.preferHighestValueFor != nil && a.method != "" {
+				if _, ok := a.config.preferHighestValueFor[a.method]; ok {
+					return false
+				}
 			}
 			// Don't short-circuit to an error under AcceptMostCommon when a preference
 			// could change the winner (PreferNonEmpty or PreferLargerResponses).
@@ -743,6 +903,13 @@ var shortCircuitRules = []shortCircuitRule{
 			// larger response can override a smaller above-threshold winner regardless of counts.
 			best := a.getBestByCount()
 			if a.hasRemaining() {
+				// Do not short-circuit when preferHighestValueFor is configured for this method;
+				// we need all responses to find the truly highest value.
+				if a.config.preferHighestValueFor != nil && a.method != "" {
+					if _, ok := a.config.preferHighestValueFor[a.method]; ok {
+						return false
+					}
+				}
 				// Do not short-circuit while PreferLargerResponses is enabled; a larger result
 				// arriving later may change the final decision even if the current leader is
 				// above threshold.

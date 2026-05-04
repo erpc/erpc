@@ -5,23 +5,110 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unicode"
 
 	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
 const (
-	CompositeTypeNone               = "none"
-	CompositeTypeLogsSplitOnError   = "logs-split-on-error"
-	CompositeTypeLogsSplitProactive = "logs-split-proactive"
+	CompositeTypeNone                      = "none"
+	CompositeTypeLogsSplitOnError          = "logs-split-on-error"
+	CompositeTypeLogsSplitProactive        = "logs-split-proactive"
+	CompositeTypeTraceFilterSplitOnError   = "trace-filter-split-on-error"
+	CompositeTypeTraceFilterSplitProactive = "trace-filter-split-proactive"
+	CompositeTypeQueryBlocksShim           = "query-blocks-shim"
+	CompositeTypeQueryTransactionsShim     = "query-transactions-shim"
+	CompositeTypeQueryLogsShim             = "query-logs-shim"
+	CompositeTypeQueryTracesShim           = "query-traces-shim"
+	CompositeTypeQueryTransfersShim        = "query-transfers-shim"
 )
 
 const RequestContextKey ContextKey = "rq"
 const UpstreamsContextKey ContextKey = "ups"
+
+type directiveKeyNames struct {
+	header string
+	query  string
+}
+
+const (
+	headerDirectiveRetryEmpty                 = "X-ERPC-Retry-Empty"
+	headerDirectiveRetryPending               = "X-ERPC-Retry-Pending"
+	headerDirectiveSkipCacheRead              = "X-ERPC-Skip-Cache-Read"
+	headerDirectiveUseUpstream                = "X-ERPC-Use-Upstream"
+	headerDirectiveSkipInterpolation          = "X-ERPC-Skip-Interpolation"
+	headerDirectiveEnforceHighestBlock        = "X-ERPC-Enforce-Highest-Block"
+	headerDirectiveEnforceGetLogsRange        = "X-ERPC-Enforce-GetLogs-Range"
+	headerDirectiveEnforceNonNullTaggedBlocks = "X-ERPC-Enforce-Non-Null-Tagged-Blocks"
+	headerDirectiveEnforceLogIndexStrict      = "X-ERPC-Enforce-Log-Index-Strict-Increments"
+	headerDirectiveValidateLogsBloomEmpty     = "X-ERPC-Validate-Logs-Bloom-Emptiness"
+	headerDirectiveValidateLogsBloomMatch     = "X-ERPC-Validate-Logs-Bloom-Match"
+	headerDirectiveValidateTxHashUniq         = "X-ERPC-Validate-Tx-Hash-Uniqueness"
+	headerDirectiveValidateTxIndex            = "X-ERPC-Validate-Transaction-Index"
+	headerDirectiveReceiptsCountExact         = "X-ERPC-Receipts-Count-Exact"
+	headerDirectiveReceiptsCountAtLeast       = "X-ERPC-Receipts-Count-At-Least"
+	headerDirectiveValidationBlockHash        = "X-ERPC-Validation-Expected-Block-Hash"
+	headerDirectiveValidationBlockNumber      = "X-ERPC-Validation-Expected-Block-Number"
+	headerDirectiveValidateTransactionsRoot   = "X-ERPC-Validate-Transactions-Root"
+	headerDirectiveValidateHeaderFieldLengths = "X-ERPC-Validate-Header-Field-Lengths"
+	headerDirectiveValidateTxFields           = "X-ERPC-Validate-Transaction-Fields"
+	headerDirectiveValidateTxBlockInfo        = "X-ERPC-Validate-Transaction-Block-Info"
+	headerDirectiveValidateLogFields          = "X-ERPC-Validate-Log-Fields"
+)
+
+const (
+	queryDirectiveRetryEmpty                 = "retry-empty"
+	queryDirectiveRetryPending               = "retry-pending"
+	queryDirectiveSkipCacheRead              = "skip-cache-read"
+	queryDirectiveUseUpstream                = "use-upstream"
+	queryDirectiveSkipInterpolation          = "skip-interpolation"
+	queryDirectiveEnforceHighestBlock        = "enforce-highest-block"
+	queryDirectiveEnforceGetLogsRange        = "enforce-getlogs-range"
+	queryDirectiveEnforceNonNullTaggedBlocks = "enforce-non-null-tagged-blocks"
+	queryDirectiveEnforceLogIndexStrict      = "enforce-log-index-strict-increments"
+	queryDirectiveValidateLogsBloomEmpty     = "validate-logs-bloom-emptiness"
+	queryDirectiveValidateLogsBloomMatch     = "validate-logs-bloom-match"
+	queryDirectiveValidateTxHashUniq         = "validate-tx-hash-uniqueness"
+	queryDirectiveValidateTxIndex            = "validate-transaction-index"
+	queryDirectiveReceiptsCountExact         = "receipts-count-exact"
+	queryDirectiveReceiptsCountAtLeast       = "receipts-count-at-least"
+	queryDirectiveValidationBlockHash        = "validation-expected-block-hash"
+	queryDirectiveValidationBlockNumber      = "validation-expected-block-number"
+	queryDirectiveValidateTransactionsRoot   = "validate-transactions-root"
+	queryDirectiveValidateHeaderFieldLengths = "validate-header-field-lengths"
+	queryDirectiveValidateTxFields           = "validate-transaction-fields"
+	queryDirectiveValidateTxBlockInfo        = "validate-transaction-block-info"
+	queryDirectiveValidateLogFields          = "validate-log-fields"
+)
+
+var directiveKeyRegistry = []directiveKeyNames{
+	{header: headerDirectiveRetryEmpty, query: queryDirectiveRetryEmpty},
+	{header: headerDirectiveRetryPending, query: queryDirectiveRetryPending},
+	{header: headerDirectiveSkipCacheRead, query: queryDirectiveSkipCacheRead},
+	{header: headerDirectiveUseUpstream, query: queryDirectiveUseUpstream},
+	{header: headerDirectiveSkipInterpolation, query: queryDirectiveSkipInterpolation},
+	{header: headerDirectiveEnforceHighestBlock, query: queryDirectiveEnforceHighestBlock},
+	{header: headerDirectiveEnforceGetLogsRange, query: queryDirectiveEnforceGetLogsRange},
+	{header: headerDirectiveEnforceNonNullTaggedBlocks, query: queryDirectiveEnforceNonNullTaggedBlocks},
+	{header: headerDirectiveEnforceLogIndexStrict, query: queryDirectiveEnforceLogIndexStrict},
+	{header: headerDirectiveValidateLogsBloomEmpty, query: queryDirectiveValidateLogsBloomEmpty},
+	{header: headerDirectiveValidateLogsBloomMatch, query: queryDirectiveValidateLogsBloomMatch},
+	{header: headerDirectiveValidateTxHashUniq, query: queryDirectiveValidateTxHashUniq},
+	{header: headerDirectiveValidateTxIndex, query: queryDirectiveValidateTxIndex},
+	{header: headerDirectiveReceiptsCountExact, query: queryDirectiveReceiptsCountExact},
+	{header: headerDirectiveReceiptsCountAtLeast, query: queryDirectiveReceiptsCountAtLeast},
+	{header: headerDirectiveValidationBlockHash, query: queryDirectiveValidationBlockHash},
+	{header: headerDirectiveValidationBlockNumber, query: queryDirectiveValidationBlockNumber},
+	{header: headerDirectiveValidateTransactionsRoot, query: queryDirectiveValidateTransactionsRoot},
+	{header: headerDirectiveValidateHeaderFieldLengths, query: queryDirectiveValidateHeaderFieldLengths},
+	{header: headerDirectiveValidateTxFields, query: queryDirectiveValidateTxFields},
+	{header: headerDirectiveValidateTxBlockInfo, query: queryDirectiveValidateTxBlockInfo},
+	{header: headerDirectiveValidateLogFields, query: queryDirectiveValidateLogFields},
+}
 
 type RequestDirectives struct {
 	// Instruct the proxy to retry if response from the upstream appears to be empty
@@ -39,7 +126,9 @@ type RequestDirectives struct {
 
 	// Instruct the proxy to skip cache reads for example to force freshness,
 	// or override some cache corruption.
-	SkipCacheRead bool `json:"skipCacheRead"`
+	// Accepts "true" to skip all, "false" or "" to skip none,
+	// or a connector ID pattern (e.g. "redis*", "memory*|dynamo*") to skip specific cache drivers.
+	SkipCacheRead string `json:"skipCacheRead"`
 
 	// Instruct the proxy to forward the request to a specific upstream(s) only.
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
@@ -48,24 +137,172 @@ type RequestDirectives struct {
 
 	// Instruct the proxy to bypass method exclusion checks.
 	ByPassMethodExclusion bool `json:"-"`
+
+	// Instruct the normalization layer to avoid mutating JSON-RPC params for block tag interpolation.
+	// When true, the system will still compute and cache block references (for finality/metrics),
+	// but will NOT replace tags like "latest"/"finalized" with hex numbers in outbound requests.
+	SkipInterpolation bool `json:"skipInterpolation"`
+
+	// Validation: Block Integrity
+	EnforceHighestBlock        bool `json:"enforceHighestBlock,omitempty"`
+	EnforceGetLogsBlockRange   bool `json:"enforceGetLogsBlockRange,omitempty"`
+	EnforceNonNullTaggedBlocks bool `json:"enforceNonNullTaggedBlocks,omitempty"`
+
+	// ValidateTransactionsRoot: when true (default), checks that the transactionsRoot is consistent
+	// with the transaction count. Disable for non-standard chains that use unusual trie roots.
+	ValidateTransactionsRoot bool `json:"validateTransactionsRoot,omitempty"`
+
+	// Validation: Header Field Lengths (only via config/library, not HTTP headers)
+	ValidateHeaderFieldLengths bool `json:"validateHeaderFieldLengths,omitempty"`
+
+	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
+	ValidateTransactionFields    bool `json:"validateTransactionFields,omitempty"`
+	ValidateTransactionBlockInfo bool `json:"validateTransactionBlockInfo,omitempty"`
+
+	// Validation: Receipts & Logs
+	EnforceLogIndexStrictIncrements bool `json:"enforceLogIndexStrictIncrements,omitempty"`
+	ValidateTxHashUniqueness        bool `json:"validateTxHashUniqueness,omitempty"`
+	ValidateTransactionIndex        bool `json:"validateTransactionIndex,omitempty"`
+	ValidateLogFields               bool `json:"validateLogFields,omitempty"`
+
+	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
+	ValidateLogsBloomEmptiness bool `json:"validateLogsBloomEmptiness,omitempty"`
+	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
+	// For methods without logs in response (e.g., eth_getBlockByNumber), use GroundTruthLogs
+	ValidateLogsBloomMatch bool `json:"validateLogsBloomMatch,omitempty"`
+
+	// Validation: Receipt-to-Transaction Cross-Validation
+	// When true, validates that receipt[i].transactionHash == tx[i].hash (requires GroundTruthTransactions)
+	ValidateReceiptTransactionMatch bool `json:"validateReceiptTransactionMatch,omitempty"`
+	// When true, validates contract creation consistency (no tx.to → receipt must have contractAddress)
+	ValidateContractCreation bool `json:"validateContractCreation,omitempty"`
+
+	// Validation: numeric checks (nil means unset/don't check)
+	ReceiptsCountExact   *int64 `json:"receiptsCountExact,omitempty"`
+	ReceiptsCountAtLeast *int64 `json:"receiptsCountAtLeast,omitempty"`
+
+	// Validation: Expected Ground Truths (nil means unset/don't check)
+	ValidationExpectedBlockHash   string `json:"validationExpectedBlockHash,omitempty"`
+	ValidationExpectedBlockNumber *int64 `json:"validationExpectedBlockNumber,omitempty"`
+
+	// Ground Truth Data (library-mode only, NOT settable via HTTP headers/query params)
+	// These fields allow library users to pass full objects for cross-entity validation.
+	//
+	// GroundTruthTransactions: expected transactions for receipt validation (uses manifesto evm.Transaction)
+	// When set with ValidateReceiptTransactionMatch, receipts are validated against these transactions
+	GroundTruthTransactions []*GroundTruthTransaction `json:"-"`
+	//
+	// GroundTruthLogs: expected logs for bloom validation when logs aren't in the response
+	// Used with ValidateLogsBloomMatch for methods like eth_getBlockByNumber that don't return logs
+	GroundTruthLogs []*GroundTruthLog `json:"-"`
+}
+
+// GroundTruthTransaction represents expected transaction data for cross-validation.
+// Uses manifesto-compatible structure for library-mode validation.
+type GroundTruthTransaction struct {
+	// Hash is the transaction hash (required for matching)
+	Hash []byte
+	// To is the recipient address (nil/empty for contract creation)
+	To []byte
+	// TransactionIndex is the expected position in the block
+	TransactionIndex *uint32
+}
+
+// GroundTruthLog represents expected log data for bloom validation.
+// Uses manifesto-compatible structure for library-mode validation.
+type GroundTruthLog struct {
+	// Address is the contract address that emitted the log
+	Address []byte
+	// Topics are the indexed event parameters
+	Topics [][]byte
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
-	return &RequestDirectives{
-		RetryEmpty:            d.RetryEmpty,
-		RetryPending:          d.RetryPending,
-		SkipCacheRead:         d.SkipCacheRead,
-		UseUpstream:           d.UseUpstream,
-		ByPassMethodExclusion: d.ByPassMethodExclusion,
+	if d == nil {
+		return &RequestDirectives{}
 	}
+	cloned := &RequestDirectives{
+		RetryEmpty:                      d.RetryEmpty,
+		RetryPending:                    d.RetryPending,
+		SkipCacheRead:                   d.SkipCacheRead,
+		UseUpstream:                     d.UseUpstream,
+		ByPassMethodExclusion:           d.ByPassMethodExclusion,
+		SkipInterpolation:               d.SkipInterpolation,
+		EnforceHighestBlock:             d.EnforceHighestBlock,
+		EnforceGetLogsBlockRange:        d.EnforceGetLogsBlockRange,
+		EnforceNonNullTaggedBlocks:      d.EnforceNonNullTaggedBlocks,
+		ValidateTransactionsRoot:        d.ValidateTransactionsRoot,
+		ValidateHeaderFieldLengths:      d.ValidateHeaderFieldLengths,
+		ValidateTransactionFields:       d.ValidateTransactionFields,
+		ValidateTransactionBlockInfo:    d.ValidateTransactionBlockInfo,
+		EnforceLogIndexStrictIncrements: d.EnforceLogIndexStrictIncrements,
+		ValidateTxHashUniqueness:        d.ValidateTxHashUniqueness,
+		ValidateTransactionIndex:        d.ValidateTransactionIndex,
+		ValidateLogFields:               d.ValidateLogFields,
+		ValidateLogsBloomEmptiness:      d.ValidateLogsBloomEmptiness,
+		ValidateLogsBloomMatch:          d.ValidateLogsBloomMatch,
+		ValidateReceiptTransactionMatch: d.ValidateReceiptTransactionMatch,
+		ValidateContractCreation:        d.ValidateContractCreation,
+		ValidationExpectedBlockHash:     d.ValidationExpectedBlockHash,
+	}
+	// Deep copy pointer fields
+	if d.ReceiptsCountExact != nil {
+		v := *d.ReceiptsCountExact
+		cloned.ReceiptsCountExact = &v
+	}
+	if d.ReceiptsCountAtLeast != nil {
+		v := *d.ReceiptsCountAtLeast
+		cloned.ReceiptsCountAtLeast = &v
+	}
+	if d.ValidationExpectedBlockNumber != nil {
+		v := *d.ValidationExpectedBlockNumber
+		cloned.ValidationExpectedBlockNumber = &v
+	}
+	// Deep copy GroundTruthTransactions slice (shallow copy of byte slices is fine - they're immutable)
+	if len(d.GroundTruthTransactions) > 0 {
+		cloned.GroundTruthTransactions = make([]*GroundTruthTransaction, len(d.GroundTruthTransactions))
+		for i, tx := range d.GroundTruthTransactions {
+			if tx == nil {
+				continue
+			}
+			clonedTx := &GroundTruthTransaction{
+				Hash: tx.Hash,
+				To:   tx.To,
+			}
+			if tx.TransactionIndex != nil {
+				v := *tx.TransactionIndex
+				clonedTx.TransactionIndex = &v
+			}
+			cloned.GroundTruthTransactions[i] = clonedTx
+		}
+	}
+	// Deep copy GroundTruthLogs slice
+	if len(d.GroundTruthLogs) > 0 {
+		cloned.GroundTruthLogs = make([]*GroundTruthLog, len(d.GroundTruthLogs))
+		for i, log := range d.GroundTruthLogs {
+			if log == nil {
+				continue
+			}
+			clonedLog := &GroundTruthLog{
+				Address: log.Address,
+			}
+			if len(log.Topics) > 0 {
+				clonedLog.Topics = make([][]byte, len(log.Topics))
+				copy(clonedLog.Topics, log.Topics)
+			}
+			cloned.GroundTruthLogs[i] = clonedLog
+		}
+	}
+	return cloned
 }
 
 type NormalizedRequest struct {
 	sync.RWMutex
 
-	network  Network
-	cacheDal CacheDAL
-	body     []byte
+	network        Network
+	cacheDal       CacheDAL
+	body           []byte
+	ForwardHeaders http.Header
 
 	method         string
 	directives     *RequestDirectives
@@ -75,7 +312,6 @@ type NormalizedRequest struct {
 	upstreamMutex    sync.Mutex
 	UpstreamIdx      uint32
 	ErrorsByUpstream sync.Map
-	EmptyResponses   sync.Map // TODO we can potentially remove this map entirely, only use is to report "wrong empty responses"
 
 	// Fields for centralized upstream management
 	upstreamList      []Upstream // Available upstreams for this request
@@ -94,16 +330,17 @@ type NormalizedRequest struct {
 	user atomic.Value
 
 	// Cached agent information to avoid recalculation
-	agentName    atomic.Value // Cached agent name from User-Agent
-	agentVersion atomic.Value // Cached agent version from User-Agent
+	agentName atomic.Value // Cached agent name from User-Agent
+
+	// Resolved client IP (set by HTTP ingress using trusted forwarders)
+	clientIP atomic.Value
+
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
 	nr := &NormalizedRequest{
-		body: body,
-		directives: &RequestDirectives{
-			RetryEmpty: false,
-		},
+		body:       body,
+		directives: nil,
 	}
 	nr.compositeType.Store(CompositeTypeNone)
 	return nr
@@ -111,9 +348,7 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 
 func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *NormalizedRequest {
 	nr := &NormalizedRequest{
-		directives: &RequestDirectives{
-			RetryEmpty: false,
-		},
+		directives: nil,
 	}
 	nr.jsonRpcRequest.Store(jsonRpcRequest)
 	nr.compositeType.Store(CompositeTypeNone)
@@ -155,6 +390,10 @@ func (r *NormalizedRequest) LastUpstream() Upstream {
 	return nil
 }
 
+// SetLastValidResponse stores a borrowed reference to the most recent valid response.
+// This is a non-owning pointer: the caller that produced the response (upstream Forward,
+// consensus executor, etc.) is responsible for its Release(). Overwriting a previous
+// LVR does NOT release the old one — the original producer still owns it.
 func (r *NormalizedRequest) SetLastValidResponse(ctx context.Context, nrs *NormalizedResponse) bool {
 	if r == nil || nrs == nil {
 		return false
@@ -182,7 +421,8 @@ func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
 	return r.lastValidResponse.Load()
 }
 
-// ClearLastValidResponse clears the stored last valid response pointer.
+// ClearLastValidResponse drops the borrowed reference without releasing the response.
+// The original producer is responsible for calling Release().
 func (r *NormalizedRequest) ClearLastValidResponse() {
 	if r == nil {
 		return
@@ -270,6 +510,12 @@ func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
 	r.directives = directives
 }
 
+// ApplyDirectiveDefaults applies the default directives from the network configuration.
+// It is a no-op if directives have already been populated (by a prior call to
+// ApplyDirectiveDefaults, SetDirectives, or EnrichFromHttp). This prevents the
+// defensive call in Network.Forward() from overwriting directives that were
+// explicitly set via HTTP headers/query params between the http_server's
+// ApplyDirectiveDefaults and Network.Forward.
 func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveDefaultsConfig) {
 	if directiveDefaults == nil {
 		return
@@ -277,9 +523,10 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	r.Lock()
 	defer r.Unlock()
 
-	if r.directives == nil {
-		r.directives = &RequestDirectives{}
+	if r.directives != nil {
+		return
 	}
+	r.directives = &RequestDirectives{}
 
 	if directiveDefaults.RetryEmpty != nil {
 		r.directives.RetryEmpty = *directiveDefaults.RetryEmpty
@@ -288,70 +535,328 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 		r.directives.RetryPending = *directiveDefaults.RetryPending
 	}
 	if directiveDefaults.SkipCacheRead != nil {
-		r.directives.SkipCacheRead = *directiveDefaults.SkipCacheRead
+		switch v := directiveDefaults.SkipCacheRead.(type) {
+		case string:
+			r.directives.SkipCacheRead = v
+		default:
+			r.directives.SkipCacheRead = fmt.Sprintf("%v", v)
+		}
 	}
 	if directiveDefaults.UseUpstream != nil {
 		r.directives.UseUpstream = *directiveDefaults.UseUpstream
 	}
+	if directiveDefaults.SkipInterpolation != nil {
+		r.directives.SkipInterpolation = *directiveDefaults.SkipInterpolation
+	}
+
+	// Validation: Block Integrity
+	if directiveDefaults.EnforceHighestBlock != nil {
+		r.directives.EnforceHighestBlock = *directiveDefaults.EnforceHighestBlock
+	}
+	if directiveDefaults.EnforceGetLogsBlockRange != nil {
+		r.directives.EnforceGetLogsBlockRange = *directiveDefaults.EnforceGetLogsBlockRange
+	}
+	if directiveDefaults.EnforceNonNullTaggedBlocks != nil {
+		r.directives.EnforceNonNullTaggedBlocks = *directiveDefaults.EnforceNonNullTaggedBlocks
+	}
+
+	// Validation: TransactionsRoot
+	if directiveDefaults.ValidateTransactionsRoot != nil {
+		r.directives.ValidateTransactionsRoot = *directiveDefaults.ValidateTransactionsRoot
+	}
+
+	// Validation: Header Field Lengths
+	if directiveDefaults.ValidateHeaderFieldLengths != nil {
+		r.directives.ValidateHeaderFieldLengths = *directiveDefaults.ValidateHeaderFieldLengths
+	}
+
+	// Validation: Transactions
+	if directiveDefaults.ValidateTransactionFields != nil {
+		r.directives.ValidateTransactionFields = *directiveDefaults.ValidateTransactionFields
+	}
+	if directiveDefaults.ValidateTransactionBlockInfo != nil {
+		r.directives.ValidateTransactionBlockInfo = *directiveDefaults.ValidateTransactionBlockInfo
+	}
+
+	// Validation: Receipts & Logs
+	if directiveDefaults.EnforceLogIndexStrictIncrements != nil {
+		r.directives.EnforceLogIndexStrictIncrements = *directiveDefaults.EnforceLogIndexStrictIncrements
+	}
+	if directiveDefaults.ValidateTxHashUniqueness != nil {
+		r.directives.ValidateTxHashUniqueness = *directiveDefaults.ValidateTxHashUniqueness
+	}
+	if directiveDefaults.ValidateTransactionIndex != nil {
+		r.directives.ValidateTransactionIndex = *directiveDefaults.ValidateTransactionIndex
+	}
+	if directiveDefaults.ValidateLogFields != nil {
+		r.directives.ValidateLogFields = *directiveDefaults.ValidateLogFields
+	}
+
+	// Validation: Bloom Filter
+	if directiveDefaults.ValidateLogsBloomEmptiness != nil {
+		r.directives.ValidateLogsBloomEmptiness = *directiveDefaults.ValidateLogsBloomEmptiness
+	}
+	if directiveDefaults.ValidateLogsBloomMatch != nil {
+		r.directives.ValidateLogsBloomMatch = *directiveDefaults.ValidateLogsBloomMatch
+	}
+
+	// Validation: Receipt-to-Transaction Cross-Validation
+	if directiveDefaults.ValidateReceiptTransactionMatch != nil {
+		r.directives.ValidateReceiptTransactionMatch = *directiveDefaults.ValidateReceiptTransactionMatch
+	}
+	if directiveDefaults.ValidateContractCreation != nil {
+		r.directives.ValidateContractCreation = *directiveDefaults.ValidateContractCreation
+	}
+
+	// Validation: numeric checks (copy pointer values)
+	if directiveDefaults.ReceiptsCountExact != nil {
+		v := *directiveDefaults.ReceiptsCountExact
+		r.directives.ReceiptsCountExact = &v
+	}
+	if directiveDefaults.ReceiptsCountAtLeast != nil {
+		v := *directiveDefaults.ReceiptsCountAtLeast
+		r.directives.ReceiptsCountAtLeast = &v
+	}
+
+	// Validation: Expected Ground Truths
+	if directiveDefaults.ValidationExpectedBlockHash != nil {
+		r.directives.ValidationExpectedBlockHash = *directiveDefaults.ValidationExpectedBlockHash
+	}
+	if directiveDefaults.ValidationExpectedBlockNumber != nil {
+		v := *directiveDefaults.ValidationExpectedBlockNumber
+		r.directives.ValidationExpectedBlockNumber = &v
+	}
 }
 
-func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values) {
+func hasDirectiveInHeaders(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	for _, keys := range directiveKeyRegistry {
+		if keys.header != "" && headers.Get(keys.header) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectiveInQueryParams(queryArgs url.Values) bool {
+	if queryArgs == nil {
+		return false
+	}
+	for _, keys := range directiveKeyRegistry {
+		if keys.query != "" && queryArgs.Get(keys.query) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
+
+	// Extract user agent (always needed)
+	userAgent := r.getUserAgent(headers, queryArgs)
+	if userAgent != "" {
+		if mode == UserAgentTrackingModeRaw {
+			r.agentName.Store(userAgent)
+		} else {
+			r.agentName.Store(r.simplifyAgentName(userAgent))
+		}
+	}
+
+	if !hasDirectives {
+		return
+	}
+
 	r.Lock()
 	defer r.Unlock()
 
+	// Copy-On-Write: If we have existing (likely shared) directives, clone them.
+	// If nil, create new.
 	if r.directives == nil {
 		r.directives = &RequestDirectives{}
+	} else {
+		r.directives = r.directives.Clone()
 	}
 
 	// Headers have precedence over directive defaults, but should only override when explicitly provided.
-	if hv := headers.Get("X-ERPC-Retry-Empty"); hv != "" {
+	if hv := headers.Get(headerDirectiveRetryEmpty); hv != "" {
 		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Retry-Pending"); hv != "" {
+	if hv := headers.Get(headerDirectiveRetryPending); hv != "" {
 		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Skip-Cache-Read"); hv != "" {
-		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	if hv := headers.Get(headerDirectiveSkipCacheRead); hv != "" {
+		r.directives.SkipCacheRead = strings.TrimSpace(hv)
 	}
-	if hv := headers.Get("X-ERPC-Use-Upstream"); hv != "" {
+	if hv := headers.Get(headerDirectiveUseUpstream); hv != "" {
 		r.directives.UseUpstream = hv
+	}
+	if hv := headers.Get(headerDirectiveSkipInterpolation); hv != "" {
+		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+
+	// Validation Headers
+	if hv := headers.Get(headerDirectiveEnforceHighestBlock); hv != "" {
+		r.directives.EnforceHighestBlock = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveEnforceGetLogsRange); hv != "" {
+		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveEnforceNonNullTaggedBlocks); hv != "" {
+		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveEnforceLogIndexStrict); hv != "" {
+		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateLogsBloomEmpty); hv != "" {
+		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateLogsBloomMatch); hv != "" {
+		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateTxHashUniq); hv != "" {
+		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateTxIndex); hv != "" {
+		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+
+	if hv := headers.Get(headerDirectiveReceiptsCountExact); hv != "" {
+		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
+			r.directives.ReceiptsCountExact = &v
+		}
+	}
+	if hv := headers.Get(headerDirectiveReceiptsCountAtLeast); hv != "" {
+		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
+			r.directives.ReceiptsCountAtLeast = &v
+		}
+	}
+	if hv := headers.Get(headerDirectiveValidationBlockHash); hv != "" {
+		r.directives.ValidationExpectedBlockHash = hv
+	}
+	if hv := headers.Get(headerDirectiveValidationBlockNumber); hv != "" {
+		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
+			r.directives.ValidationExpectedBlockNumber = &v
+		}
+	}
+	if hv := headers.Get(headerDirectiveValidateTransactionsRoot); hv != "" {
+		r.directives.ValidateTransactionsRoot = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateHeaderFieldLengths); hv != "" {
+		r.directives.ValidateHeaderFieldLengths = strings.ToLower(hv) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateTxFields); hv != "" {
+		r.directives.ValidateTransactionFields = strings.ToLower(hv) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateTxBlockInfo); hv != "" {
+		r.directives.ValidateTransactionBlockInfo = strings.ToLower(hv) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateLogFields); hv != "" {
+		r.directives.ValidateLogFields = strings.ToLower(hv) == "true"
 	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
-	if useUpstream := queryArgs.Get("use-upstream"); useUpstream != "" {
+	if useUpstream := queryArgs.Get(queryDirectiveUseUpstream); useUpstream != "" {
 		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
 	}
 
-	if retryEmpty := queryArgs.Get("retry-empty"); retryEmpty != "" {
+	if retryEmpty := queryArgs.Get(queryDirectiveRetryEmpty); retryEmpty != "" {
 		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) == "true"
 	}
 
-	if retryPending := queryArgs.Get("retry-pending"); retryPending != "" {
+	if retryPending := queryArgs.Get(queryDirectiveRetryPending); retryPending != "" {
 		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) == "true"
 	}
 
-	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
-		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
+	if skipCacheRead := queryArgs.Get(queryDirectiveSkipCacheRead); skipCacheRead != "" {
+		r.directives.SkipCacheRead = strings.TrimSpace(skipCacheRead)
 	}
 
-	// Extract and store user agent information for future use
-	if userAgent := r.getUserAgent(headers, queryArgs); userAgent != "" {
-		simplifiedAgentName := r.simplifyAgentName(userAgent)
-		simplifiedAgentVersion := r.simplifyAgentVersion(userAgent)
+	if skipInterpolation := queryArgs.Get(queryDirectiveSkipInterpolation); skipInterpolation != "" {
+		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(skipInterpolation)) == "true"
+	}
 
-		r.agentName.Store(simplifiedAgentName)
-		r.agentVersion.Store(simplifiedAgentVersion)
+	// Validation query parameters
+	if v := queryArgs.Get(queryDirectiveEnforceHighestBlock); v != "" {
+		r.directives.EnforceHighestBlock = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveEnforceGetLogsRange); v != "" {
+		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveEnforceNonNullTaggedBlocks); v != "" {
+		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveEnforceLogIndexStrict); v != "" {
+		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateLogsBloomEmpty); v != "" {
+		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateLogsBloomMatch); v != "" {
+		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTxHashUniq); v != "" {
+		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTxIndex); v != "" {
+		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveReceiptsCountExact); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.directives.ReceiptsCountExact = &n
+		}
+	}
+	if v := queryArgs.Get(queryDirectiveReceiptsCountAtLeast); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.directives.ReceiptsCountAtLeast = &n
+		}
+	}
+	if v := queryArgs.Get(queryDirectiveValidationBlockHash); v != "" {
+		r.directives.ValidationExpectedBlockHash = v
+	}
+	if v := queryArgs.Get(queryDirectiveValidationBlockNumber); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.directives.ValidationExpectedBlockNumber = &n
+		}
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTransactionsRoot); v != "" {
+		r.directives.ValidateTransactionsRoot = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateHeaderFieldLengths); v != "" {
+		r.directives.ValidateHeaderFieldLengths = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTxFields); v != "" {
+		r.directives.ValidateTransactionFields = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTxBlockInfo); v != "" {
+		r.directives.ValidateTransactionBlockInfo = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateLogFields); v != "" {
+		r.directives.ValidateLogFields = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
 }
 
-func (r *NormalizedRequest) SkipCacheRead() bool {
-	if r == nil {
+// ShouldSkipCacheRead reports whether a cache read should be skipped for this request.
+// The directive may be "true" (skip all connectors) or a pattern (e.g. "redis-*") to skip only matching connectors.
+// connectorId is the cache connector being considered; pass "" when not evaluating a specific connector (e.g. before consulting any cache).
+func (r *NormalizedRequest) ShouldSkipCacheRead(connectorId string) bool {
+	if r == nil || r.directives == nil {
 		return false
 	}
-	if r.directives == nil {
+	v := r.directives.SkipCacheRead
+	if v == "" || strings.EqualFold(v, "false") {
 		return false
 	}
-	return r.directives.SkipCacheRead
+	if strings.EqualFold(v, "true") {
+		return true
+	}
+	if connectorId == "" {
+		return false
+	}
+	matched, _ := WildcardMatch(v, connectorId)
+	return matched
 }
 
 func (r *NormalizedRequest) Directives() *RequestDirectives {
@@ -469,6 +974,36 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		}
 	}
 }
+
+// SetClientIP stores the resolved client IP address
+func (r *NormalizedRequest) SetClientIP(ip string) {
+	if r == nil {
+		return
+	}
+	r.clientIP.Store(ip)
+}
+
+// ClientIP returns the resolved client IP address or "n/a" if not available
+func (r *NormalizedRequest) ClientIP() string {
+	if r == nil {
+		return "n/a"
+	}
+	if v := r.clientIP.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return "n/a"
+}
+
+// SetAgentName stores the agent name directly without HTTP-specific parsing
+func (r *NormalizedRequest) SetAgentName(name string) {
+	if r == nil || name == "" {
+		return
+	}
+	r.agentName.Store(name)
+}
+
 
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm
 func (r *NormalizedRequest) EvmBlockRef() interface{} {
@@ -632,9 +1167,6 @@ func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
 	if agentName := source.agentName.Load(); agentName != nil {
 		r.agentName.Store(agentName)
 	}
-	if agentVersion := source.agentVersion.Load(); agentVersion != nil {
-		r.agentVersion.Store(agentVersion)
-	}
 
 	// Also copy the user if it exists
 	if user := source.User(); user != nil {
@@ -653,6 +1185,16 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 	if r.ConsumedUpstreams == nil {
 		r.ConsumedUpstreams = &sync.Map{}
 	}
+}
+
+// UpstreamsCount returns the number of available upstreams for this request
+func (r *NormalizedRequest) UpstreamsCount() int {
+	if r == nil {
+		return 0
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	return len(r.upstreamList)
 }
 
 // UserId returns the user ID from the user object, or "n/a" if not available
@@ -793,65 +1335,6 @@ func (r *NormalizedRequest) simplifyAgentName(userAgent string) string {
 	return "other"
 }
 
-// simplifyAgentVersion extracts and simplifies the agent version for low cardinality metrics
-func (r *NormalizedRequest) simplifyAgentVersion(userAgent string) string {
-	userAgent = strings.ToLower(strings.TrimSpace(userAgent))
-
-	// Look for version after slash (e.g., "curl/7.68.0")
-	if idx := strings.Index(userAgent, "/"); idx != -1 {
-		versionPart := userAgent[idx+1:]
-		// Extract version numbers
-		parts := strings.FieldsFunc(versionPart, func(r rune) bool {
-			return !unicode.IsDigit(r) && r != '.'
-		})
-		if len(parts) > 0 {
-			version := parts[0]
-			// Simplify version to major.minor only for lower cardinality
-			versionParts := strings.Split(version, ".")
-			if len(versionParts) >= 2 {
-				return versionParts[0] + "." + versionParts[1]
-			} else if len(versionParts) == 1 {
-				return versionParts[0]
-			}
-		}
-	}
-
-	// Look for version in parentheses (e.g., "Mozilla/5.0 (compatible)")
-	if idx := strings.Index(userAgent, "("); idx != -1 {
-		end := strings.Index(userAgent[idx:], ")")
-		if end != -1 {
-			versionPart := userAgent[idx+1 : idx+end]
-			parts := strings.Fields(versionPart)
-			for _, part := range parts {
-				if len(part) > 0 && unicode.IsDigit(rune(part[0])) {
-					// Simplify to major.minor
-					versionParts := strings.Split(part, ".")
-					if len(versionParts) >= 2 {
-						return versionParts[0] + "." + versionParts[1]
-					} else if len(versionParts) == 1 {
-						return versionParts[0]
-					}
-				}
-			}
-		}
-	}
-
-	// Look for version after space (e.g., "Python 3.9.0")
-	parts := strings.Fields(userAgent)
-	for _, part := range parts {
-		if len(part) > 0 && unicode.IsDigit(rune(part[0])) && strings.Contains(part, ".") {
-			versionParts := strings.Split(part, ".")
-			if len(versionParts) >= 2 {
-				return versionParts[0] + "." + versionParts[1]
-			} else if len(versionParts) == 1 {
-				return versionParts[0]
-			}
-		}
-	}
-
-	return "unknown"
-}
-
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	if r == nil {
 		return nil, fmt.Errorf("unexpected uninitialized request")
@@ -868,53 +1351,43 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		)
 	}
 
-	// Check if UseUpstream directive is set
+	// Capture any UseUpstream directive to be applied inside the generic selection loop
+	var useUpstreamPattern string
 	if r.directives != nil && r.directives.UseUpstream != "" {
-		// Handle UseUpstream directive - find matching upstream
-		for _, upstream := range r.upstreamList {
-			match, err := WildcardMatch(r.directives.UseUpstream, upstream.Id())
-			if err != nil {
-				continue
-			}
-			if match {
-				// Check if this upstream has already been consumed
-				if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
-					return upstream, nil
-				}
-			}
-		}
-		// If no matching upstream found or all consumed, return error
-		return nil, NewErrNoUpstreamsLeftToSelect(
-			r,
-			"no more non-consumed matching upstreams",
-		)
+		useUpstreamPattern = r.directives.UseUpstream
 	}
 
 	upstreamCount := len(r.upstreamList)
 
-	// Try all upstreams starting from current index with guaranteed sequential access
+	// Simple round-robin selection. The outer loop in networks.go is capped to prevent
+	// infinite loops. Retryable errors are removed from ConsumedUpstreams by
+	// MarkUpstreamCompleted, allowing re-selection on subsequent iterations.
 	for attempts := 0; attempts < upstreamCount; attempts++ {
-		// Get current index and increment - this is now atomic within the mutex
-		idx := r.UpstreamIdx % uint32(upstreamCount) // #nosec G115
-		r.UpstreamIdx++                              // Guaranteed increment for next caller
+		idx := r.UpstreamIdx % uint32(upstreamCount)
+		r.UpstreamIdx++ // Guaranteed increment for next caller
 
 		upstream := r.upstreamList[idx]
 
-		// Skip if already consumed (gave valid response or consensus-valid error)
-		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
-			continue
-		}
-
-		// Skip if already responded with non-retryable error
-		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
-			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
+		// If a UseUpstream directive is provided, only consider matching upstreams
+		if useUpstreamPattern != "" {
+			match, err := WildcardMatch(useUpstreamPattern, upstream.Id())
+			if err != nil || !match {
 				continue
 			}
 		}
 
-		// Skip if already responded empty
-		if _, isEmpty := r.EmptyResponses.Load(upstream); isEmpty {
+		// Skip if already consumed (in-flight or already completed this round)
+		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
 			continue
+		}
+
+		// Skip if already responded with a permanent error (method ignored,
+		// execution exception, etc.). Retryable errors (including MissingData)
+		// are allowed through so the upstream can be retried on subsequent rounds.
+		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
+			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
+				continue
+			}
 		}
 
 		// Try to reserve this upstream atomically
@@ -938,28 +1411,37 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 
 	hasResponse := resp != nil && !resp.IsObjectNull(ctx)
 
-	// Check if this is a cancelled hedge - if so, just release and return
+	// Cancelled hedge — upstream wasn't really tried, just free reservation.
 	if err != nil && HasErrorCode(err, ErrCodeEndpointRequestCanceled) {
 		r.ConsumedUpstreams.Delete(upstream)
-		// Don't store the error - this upstream wasn't really "tried"
 		return
 	}
 
-	// We can re-use the same upstream on next rotation if there's no response or the error is retryable towards the upstream
-	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
-
+	// Store errors/empty-results for reporting (error messages, metrics).
+	// Used by ErrUpstreamsExhausted, the "wrong empty" metric, and error
+	// state labels. Also used as a within-round gate in NextUpstream for
+	// permanent errors (method ignored, execution exception).
 	if err != nil {
 		r.ErrorsByUpstream.Store(upstream, err)
 	} else if resp != nil && resp.IsResultEmptyish(ctx) {
-		jr, err := resp.JsonRpcResponse(ctx)
+		jr, jrErr := resp.JsonRpcResponse(ctx)
 		if jr == nil {
-			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", err), upstream))
+			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", jrErr), upstream))
 		} else {
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.GetResultString()), upstream))
 		}
-		r.EmptyResponses.Store(upstream, true)
 	}
 
+	// Free from ConsumedUpstreams if the upstream can be retried on a
+	// subsequent failsafe round:
+	// - No response (pre-flight skip like block unavailable): retryable
+	// - Error that's retryable toward the upstream: transient failure
+	// - Empty result: data may appear after emptyResultDelay
+	// Permanent errors (method ignored, execution exception with response)
+	// stay consumed. The ErrorsByUpstream gate in NextUpstream provides
+	// additional within-round protection for those.
+	isEmptyResult := hasResponse && err == nil && resp != nil && resp.IsResultEmptyish(ctx)
+	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err)) || isEmptyResult
 	if canReUse {
 		r.ConsumedUpstreams.Delete(upstream)
 	}

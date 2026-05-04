@@ -16,6 +16,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const GrpcDriverName = "grpc"
@@ -38,6 +40,7 @@ type GrpcConnector struct {
 	// headers to apply to all clients
 	headers     map[string]string
 	initializer *util.Initializer
+	getTimeout  time.Duration
 }
 
 var _ Connector = (*GrpcConnector)(nil)
@@ -90,6 +93,7 @@ func NewGrpcConnector(
 		earliestByNetwork: make(map[string]uint64),
 		headers:           map[string]string{},
 		initializer:       util.NewInitializer(ctx, &lg, nil),
+		getTimeout:        cfg.GetTimeout.Duration(),
 	}
 	if cfg.Headers != nil {
 		for k, v := range cfg.Headers {
@@ -107,7 +111,7 @@ func NewGrpcConnector(
 				parsed, perr := url.Parse(serverURL)
 				if perr != nil {
 					gc.logger.Error().Err(perr).Str("server", serverURL).Msg("invalid gRPC server URL")
-					return perr
+					return common.NewTaskFatal(perr)
 				}
 				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed)
 				if cerr != nil {
@@ -145,7 +149,7 @@ func NewGrpcConnector(
 				}
 				// normalize to network id
 				uval, _ := evm.HexToUint64(chainHex)
-				val := int64(uval) // #nosec G115
+				val := int64(uval)
 				networkId := util.EvmNetworkId(val)
 				gc.mu.Lock()
 				defer gc.mu.Unlock()
@@ -174,19 +178,28 @@ func NewGrpcConnector(
 func (g *GrpcConnector) Id() string { return g.id }
 
 func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
+	span := trace.SpanFromContext(ctx)
+
 	// Expect metadata to be *common.NormalizedRequest
 	req, ok := metadata.(*common.NormalizedRequest)
 	if !ok || req == nil {
+		span.SetAttributes(attribute.String("grpc.skip_reason", "no_request_metadata"))
 		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 	}
 	method, _ := req.Method()
 	if method == "" {
+		span.SetAttributes(attribute.String("grpc.skip_reason", "empty_method"))
 		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 	}
 	if _, supported := supportedMethods[method]; !supported {
+		span.SetAttributes(
+			attribute.String("grpc.skip_reason", "unsupported_method"),
+			attribute.String("grpc.method", method),
+		)
 		return nil, nil // fast skip
 	}
 	if err := g.checkReady(); err != nil {
+		span.SetAttributes(attribute.String("grpc.skip_reason", "not_ready"))
 		return nil, err
 	}
 	networkId := req.NetworkId()
@@ -195,25 +208,55 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 	earliest := g.earliestByNetwork[networkId]
 	g.mu.RUnlock()
 	if cli == nil {
+		span.SetAttributes(
+			attribute.String("grpc.skip_reason", "no_client_for_network"),
+			attribute.String("grpc.network_id", networkId),
+		)
 		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 	}
 
 	// Fast reject if request block number is before earliest known
 	if bni := req.EvmBlockNumber(); bni != nil && earliest > 0 {
 		if bn, ok := bni.(uint64); ok && bn < earliest {
+			span.SetAttributes(
+				attribute.String("grpc.skip_reason", "block_before_earliest"),
+				attribute.Int64("grpc.block_number", int64(bn)),
+				attribute.Int64("grpc.earliest_block", int64(earliest)),
+			)
 			return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 		}
 	}
 
-	resp, err := cli.SendRequest(ctx, req)
+	// Apply per-request timeout if the existing deadline is longer or absent
+	callCtx := ctx
+	if g.getTimeout > 0 {
+		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > g.getTimeout {
+			var cancel context.CancelFunc
+			callCtx, cancel = context.WithTimeout(ctx, g.getTimeout)
+			defer cancel()
+		}
+	}
+
+	resp, err := cli.SendRequest(callCtx, req)
 	if err != nil || resp == nil {
+		if err != nil {
+			span.SetAttributes(attribute.String("grpc.send_error", common.ErrorSummary(err)))
+		} else {
+			span.SetAttributes(attribute.String("grpc.send_result", "nil_response"))
+		}
 		return nil, err
 	}
-	jrr, err := resp.JsonRpcResponse(ctx)
+	jrr, err := resp.JsonRpcResponse(callCtx)
 	if err != nil || jrr == nil {
+		span.SetAttributes(attribute.String("grpc.parse_result", "nil_or_error"))
 		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 	}
-	return jrr.GetResultBytes(), nil
+	resultBytes := jrr.GetResultBytes()
+	span.SetAttributes(
+		attribute.String("grpc.result", "success"),
+		attribute.Int("grpc.result_bytes", len(resultBytes)),
+	)
+	return resultBytes, nil
 }
 
 func (g *GrpcConnector) startEarliestPoller(ctx context.Context) {
@@ -327,12 +370,12 @@ func (g *GrpcConnector) Lock(ctx context.Context, key string, ttl time.Duration)
 	return nil, fmt.Errorf("grpc connector is read-only")
 }
 
-func (g *GrpcConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	ch := make(chan int64)
+func (g *GrpcConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
+	ch := make(chan CounterInt64State)
 	return ch, func() {}, fmt.Errorf("grpc connector does not support WatchCounterInt64")
 }
 
-func (g *GrpcConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+func (g *GrpcConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	return fmt.Errorf("grpc connector does not support PublishCounterInt64")
 }
 

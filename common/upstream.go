@@ -56,7 +56,7 @@ func UniqueUpstreamKey(up Upstream) string {
 	sha.Write([]byte(cfg.Id))
 	sha.Write([]byte(cfg.Endpoint))
 	sha.Write([]byte(up.NetworkId()))
-	if cfg.JsonRpc != nil {
+	if cfg.JsonRpc != nil && cfg.JsonRpc.Headers != nil {
 		for k, v := range cfg.JsonRpc.Headers {
 			sha.Write([]byte(k))
 			sha.Write([]byte(v))

@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,6 +90,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(500)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -377,6 +381,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -400,6 +405,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -423,6 +429,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -444,6 +451,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -465,6 +473,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -675,6 +684,64 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls: []int{1, 1, 0},
 			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "execution reverted"},
+		},
+		{
+			name:        "all_server_errors_infra_retry_exhausted",
+			description: "All participants return server error (-32603) which is infra error -> retry exhausted",
+			upstreams:   createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+			},
+			retryPolicy: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+			},
+			expectedCalls:        []int{-1, -1, -1},
+			expectedPendingMocks: -1,
+			expectedError:        &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "internal server error"},
+		},
+		{
+			name:        "one_success_rest_server_errors",
+			description: "1 success response + rest server errors (-32603 infra) -> success wins (infra errors don't count as valid participants)",
+			upstreams:   createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x1"`},
+		},
+		{
+			name:        "one_success_rest_consensus_errors_dispute",
+			description: "1 success response + 2 consensus errors (code 3) -> dispute (1 success vs 2 errors, neither reaches threshold=3)",
+			upstreams:   createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      3,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcError(3, "execution reverted")},
+				{status: 200, body: jsonRpcError(3, "execution reverted")},
+			},
+			expectedCalls: []int{1, 1, 1},
+			expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "not enough agreement"},
 		},
 		{
 			name:        "mixed_errors_returns_dispute",
@@ -1372,8 +1439,8 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0x33"`},
 		},
 		{
-			name:        "empty_vs_non_empty_tie_above_threshold_without_preference_results_in_fastest",
-			description: "Two groups empty and non-empty both meet threshold with equal counts; no preference -> choose fastest to return",
+			name:        "empty_vs_non_empty_tie_above_threshold_without_preference_results_in_dispute",
+			description: "Two groups empty and non-empty both meet threshold with equal counts; no preference -> dispute (spec: ties at/above threshold without preference → dispute)",
 			upstreams:   createTestUpstreams(6),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         6,
@@ -1385,16 +1452,18 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			retryPolicy: &common.RetryPolicyConfig{MaxAttempts: 1},
 			mockResponses: []mockResponse{
-				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 2
-				{status: 200, body: jsonRpcSuccess("0x44")},                                // non-empty 1
 				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 1
+				{status: 200, body: jsonRpcSuccess("0x44")},                                // non-empty 1
+				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 2
 				{status: 200, body: jsonRpcSuccess("0x44")},                                // non-empty 2
 				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 3 -> meets threshold
 				{status: 200, body: jsonRpcSuccess("0x44"), delay: 100 * time.Millisecond}, // non-empty 3 -> meets threshold
 			},
-			expectedCalls:        []int{1, 1, 1, 1, 1, -1},
-			expectedResult:       &expectedResult{jsonRpcResult: `[]`},
-			expectedPendingMocks: 1,
+			expectedCalls: []int{1, 1, 1, 1, 1, 1}, // all 6 called (no short-circuit for empty results)
+			expectedError: &expectedError{
+				code:     common.ErrCodeConsensusDispute,
+				contains: "not enough agreement",
+			},
 		},
 		{
 			name:        "dispute_on_all_different_responses",
@@ -1419,7 +1488,7 @@ func TestConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:        "retry_on_error_and_success_on_next_upstream",
-			description: "Retry enabled; second upstream errors; first and third succeed, reaching 2/3 consensus.",
+			description: "Retry enabled; second upstream errors; first and third succeed, reaching 2/3 consensus. Retry policy retries the erroring upstream once (MaxAttempts:2).",
 			upstreams:   createTestUpstreams(3),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         3,
@@ -1437,54 +1506,35 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32000, "cannot query unfinalized data")},
 				{status: 200, body: jsonRpcSuccess("0x7a")},
 			},
-			expectedCalls: []int{1, 1, 1},
+			expectedCalls: []int{1, 2, 1}, // upstream 2 is retried once due to MaxAttempts:2
 			expectedResult: &expectedResult{
 				jsonRpcResult: `"0x7a"`,
 			},
 		},
 		{
 			name:        "retried_failing_usptream_reach_consensus",
-			description: "retry once on intermittently bad upstream and reach consensus if correct result is returned on second attempt",
-			upstreams:   createTestUpstreams(2),
+			description: "retry with fresh upstreams reaches consensus after first attempt fails",
+			upstreams:   createTestUpstreams(3),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         2,
 				AgreementThreshold:      2,
 				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 			},
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
+			// Attempt 1: up1 succeeds, up2 fails with retryable error -> low participants (1 valid)
+			// Attempt 2: up1 and up2 stay consumed, up3 is used, one participant exhausts
+			// With AcceptMostCommonValidResult on low participants, we accept up1's result
 			mockResponses: []mockResponse{
-				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcSuccess("0x1")},                        // up1: success (Attempt 1)
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up2: error (Attempt 1)
+				{status: 200, body: jsonRpcSuccess("0x1")},                        // up3: success (Attempt 2)
 			},
-			expectedCalls: []int{1, 0},
+			expectedCalls: []int{1, 1, 1},
 			expectedResult: &expectedResult{
 				jsonRpcResult: `"0x1"`,
-			},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				// upstream2: first error (-32603), then success "0x1"
-				gock.New("http://rpc2.localhost").
-					Post("/").
-					Times(1).
-					Filter(func(request *http.Request) bool {
-						body := util.SafeReadBody(request)
-						return strings.Contains(string(body), "eth_randomMethod")
-					}).
-					Reply(200).
-					SetHeader("Content-Type", "application/json").
-					JSON(jsonRpcError(-32603, "unknown server error"))
-				gock.New("http://rpc2.localhost").
-					Post("/").
-					Times(1).
-					Filter(func(request *http.Request) bool {
-						body := util.SafeReadBody(request)
-						return strings.Contains(string(body), "eth_randomMethod")
-					}).
-					Reply(200).
-					SetHeader("Content-Type", "application/json").
-					JSON(jsonRpcSuccess("0x1"))
 			},
 			expectedPendingMocks: 0,
 		},
@@ -2095,8 +2145,8 @@ func TestConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:        "retried_failing_usptream_but_cannot_reach_consensus",
-			description: "retry once on fully broken upstream and cannot reach consensus",
-			upstreams:   createTestUpstreams(2),
+			description: "retry with fresh upstreams but all fail, exhausts retries",
+			upstreams:   createTestUpstreams(3),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         2,
 				AgreementThreshold:      2,
@@ -2106,34 +2156,374 @@ func TestConsensusPolicy(t *testing.T) {
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
+			// All upstreams return errors -> exhausts all retries
 			mockResponses: []mockResponse{
-				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up1: error
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up2: error
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up3: error
 			},
-			expectedCalls: []int{1, 0},
+			expectedCalls:        []int{-1, -1, -1},
+			expectedPendingMocks: -1,
 			expectedError: &expectedError{
-				code:     common.ErrCodeConsensusLowParticipants,
-				contains: "not enough participants",
+				code:     common.ErrCodeFailsafeRetryExceeded,
+				contains: "unknown server error",
 			},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				// upstream2: first error (-32603), then success "0x1"
-				gock.New("http://rpc2.localhost").
-					Post("/").
-					Times(2).
-					Filter(func(request *http.Request) bool {
-						body := util.SafeReadBody(request)
-						return strings.Contains(string(body), "eth_randomMethod")
-					}).
-					Reply(200).
-					SetHeader("Content-Type", "application/json").
-					JSON(jsonRpcError(-32603, "unknown server error"))
+		},
+
+		// ======== PreferHighestValueFor tests ========
+
+		// ======== PreferHighestValueFor tests with agreementThreshold ========
+
+		// Basic highest value tests (threshold=1: any single response qualifies)
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_returns_highest_nonce",
+			description:   "eth_getTransactionCount with preferHighestValueFor returns the highest nonce value when threshold=1",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // Any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
 			},
-			expectedPendingMocks: 0,
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")}, // nonce = 5
+				{status: 200, body: jsonRpcSuccess("0xa")}, // nonce = 10 (highest)
+				{status: 200, body: jsonRpcSuccess("0x3")}, // nonce = 3
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0xa"`},
+		},
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_all_same_nonce",
+			description:   "eth_getTransactionCount with all upstreams returning same nonce",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x7")},
+				{status: 200, body: jsonRpcSuccess("0x7")},
+				{status: 200, body: jsonRpcSuccess("0x7")},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x7"`},
+		},
+
+		// Threshold tests - agreed value beats single higher value
+		{
+			name:          "prefer_highest_value_threshold_agreed_value_beats_single_higher",
+			description:   "With threshold=2, two upstreams agreeing on lower nonce beats single upstream with higher nonce",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2, // Need at least 2 to agree
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},  // nonce = 5 (agreed)
+				{status: 200, body: jsonRpcSuccess("0x5")},  // nonce = 5 (agreed) - 2 upstreams agree
+				{status: 200, body: jsonRpcSuccess("0x10")}, // nonce = 16 (higher but only 1 agrees)
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x5"`}, // Lower value wins because it meets threshold
+		},
+		{
+			name:          "prefer_highest_value_threshold_no_value_meets_threshold_returns_error",
+			description:   "When no value meets the threshold, return dispute error",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2, // Need at least 2 to agree
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")}, // unique
+				{status: 200, body: jsonRpcSuccess("0xa")}, // unique
+				{status: 200, body: jsonRpcSuccess("0x3")}, // unique - no 2 upstreams agree
+			},
+			expectedCalls: []int{1, 1, 1},
+			expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "no value met agreement threshold"},
+		},
+		{
+			name:          "prefer_highest_value_threshold_highest_among_qualifying",
+			description:   "Among values that meet threshold, return the highest",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(5),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    5,
+				AgreementThreshold: 2, // Need at least 2 to agree
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")}, // nonce = 5 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0x5")}, // nonce = 5 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0x8")}, // nonce = 8 (agreed x2) - highest qualifying
+				{status: 200, body: jsonRpcSuccess("0x8")}, // nonce = 8 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0xf")}, // nonce = 15 (only 1 agrees - doesn't qualify)
+			},
+			expectedCalls:  []int{1, 1, 1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x8"`}, // Highest among qualifying values
+		},
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_with_errors_ignores_errors",
+			description:   "eth_getTransactionCount with preferHighestValueFor ignores error responses and returns highest from valid ones",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},                     // nonce = 5
+				{status: 200, body: jsonRpcError(-32000, "server overloaded")}, // error (ignored)
+				{status: 200, body: jsonRpcSuccess("0x8")},                     // nonce = 8 (highest valid)
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x8"`},
+		},
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_large_hex_values",
+			description:   "eth_getTransactionCount correctly compares large hex values",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0xffffff")}, // 16777215
+				{status: 200, body: jsonRpcSuccess("0x100000")}, // 1048576
+				{status: 200, body: jsonRpcSuccess("0xfffffe")}, // 16777214
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0xffffff"`},
+		},
+		{
+			name:          "prefer_highest_value_not_configured_for_method_uses_normal_consensus",
+			description:   "Method not in preferHighestValueFor falls back to normal hash-based consensus",
+			requestMethod: "eth_blockNumber",
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				DisputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"}, // Only configured for eth_getTransactionCount
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x100")}, // block 256
+				{status: 200, body: jsonRpcSuccess("0x100")}, // block 256 (same - meets consensus)
+				{status: 200, body: jsonRpcSuccess("0x200")}, // block 512 (different)
+			},
+			expectedCalls:  []int{1, 1, 0},                            // Short-circuits after 2 agree
+			expectedResult: &expectedResult{jsonRpcResult: `"0x100"`}, // Returns consensus value, not highest
+		},
+		{
+			name:          "prefer_highest_value_all_errors_falls_through_to_upstream_error",
+			description:   "When all responses are server errors (infra errors), falls through to normal consensus which returns the error",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+			},
+			expectedCalls: []int{1, 1, 1},
+			// When all are infra errors, preferHighestValueFor can't extract values, falls through to normal consensus
+			// Normal consensus sees all infra errors with same hash and returns the error
+			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "internal server error"},
+		},
+
+		// eth_getTransactionByHash with nested field tests
+		{
+			name:          "prefer_highest_value_nested_field_nonce",
+			description:   "eth_getTransactionByHash with nested nonce field returns tx with highest nonce",
+			requestMethod: "eth_getTransactionByHash",
+			requestParams: []interface{}{"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionByHash": {"nonce"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "hash": "0xaaa"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0xf", "hash": "0xbbb"})}, // highest
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x3", "hash": "0xccc"})},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{contains: `"nonce":"0xf"`},
+		},
+		{
+			name:          "prefer_highest_value_multiple_fields_tiebreaker",
+			description:   "Multiple fields act as tie-breakers: same nonce, different blockNumber",
+			requestMethod: "eth_getTransactionByHash",
+			requestParams: []interface{}{"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionByHash": {"nonce", "blockNumber"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x100", "hash": "0xaaa"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x200", "hash": "0xbbb"})}, // same nonce, higher block
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x50", "hash": "0xccc"})},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{contains: `"blockNumber":"0x200"`}, // Tie-broken by blockNumber
+		},
+		{
+			name:          "prefer_highest_value_first_field_wins_over_second",
+			description:   "First field has priority: higher nonce wins even if blockNumber is lower",
+			requestMethod: "eth_getTransactionByHash",
+			requestParams: []interface{}{"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionByHash": {"nonce", "blockNumber"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x1000", "hash": "0xaaa"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0xa", "blockNumber": "0x10", "hash": "0xbbb"})}, // higher nonce, lower block
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x3", "blockNumber": "0x2000", "hash": "0xccc"})},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{contains: `"nonce":"0xa"`}, // Higher nonce wins despite lower blockNumber
+		},
+		{
+			name:          "prefer_highest_value_empty_response_ignored",
+			description:   "Empty/null responses are ignored when comparing highest values",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},
+				{status: 200, body: jsonRpcSuccess(nil)},   // null result
+				{status: 200, body: jsonRpcSuccess("0x8")}, // highest valid
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x8"`},
+		},
+		{
+			name:          "prefer_highest_value_decimal_string_handling",
+			description:   "Decimal strings are also handled correctly",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x10")}, // 16 in hex
+				{status: 200, body: jsonRpcSuccess("0x14")}, // 20 in hex (highest)
+				{status: 200, body: jsonRpcSuccess("0xc")},  // 12 in hex
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x14"`},
+		},
+		{
+			name:          "prefer_highest_value_two_upstreams_returns_highest",
+			description:   "With only 2 upstreams, returns the highest value",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(2),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    2,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},
+				{status: 200, body: jsonRpcSuccess("0x9")}, // highest
+			},
+			expectedCalls:  []int{1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x9"`},
+		},
+		{
+			name:          "prefer_highest_value_mixed_valid_and_infra_errors",
+			description:   "Infrastructure errors (like timeouts) are ignored, only valid responses compared",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x3")},                         // valid
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+				{status: 200, body: jsonRpcSuccess("0x7")},                         // valid, highest
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x7"`},
 		},
 	}
 
 	for _, tc := range tests {
+		tc := tc
 		t.Run(util.SanitizeTestName(tc.name), func(t *testing.T) {
+			t.Parallel()
 			runConsensusTest(t, tc)
 		})
 	}
@@ -2288,48 +2678,193 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 
 // Helper functions for test setup
 
+// startConsensusMockServers creates one httptest.Server per upstream, replacing gock.
+// Each server handles EVM state-poller methods (eth_chainId, eth_getBlockByNumber,
+// eth_syncing) as well as the test-specific method.  Endpoints in tc.upstreams are
+// rewritten in-place to point at the local servers.
+func startConsensusMockServers(t *testing.T, tc consensusTestCase) {
+	t.Helper()
+	testMethod := tc.requestMethod
+	if testMethod == "" {
+		testMethod = "eth_randomMethod"
+	}
+
+	callCounts := make([]atomic.Int32, len(tc.upstreams))
+
+	for i, upstreamCfg := range tc.upstreams {
+		idx := i
+		expectedCount := 1
+		if tc.expectedCalls != nil && len(tc.expectedCalls) > idx {
+			expectedCount = tc.expectedCalls[idx]
+		}
+		optionalCall := consensusCallMayBeSkipped(tc, idx, expectedCount)
+
+		hasMockResp := idx < len(tc.mockResponses) && (expectedCount != 0 || optionalCall)
+
+		var mockResp mockResponse
+		if hasMockResp {
+			mockResp = tc.mockResponses[idx]
+			if optionalCall && expectedCount == 0 {
+				mockResp.delay = 0
+			}
+		}
+
+		blockTags := map[string]bool{"latest": true, "finalized": true, "safe": true, "pending": true, "earliest": true}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			defer r.Body.Close()
+
+			var req map[string]interface{}
+			json.Unmarshal(body, &req) //nolint:errcheck
+			method, _ := req["method"].(string)
+			params, _ := req["params"].([]interface{})
+
+			w.Header().Set("Content-Type", "application/json")
+
+			// Determine whether this is the test method call or a state-poller call.
+			// For methods that double as state-poller methods (e.g. eth_getBlockByNumber),
+			// distinguish by checking whether the first param is a block tag.
+			isTestCall := method == testMethod
+			if isTestCall && method == "eth_getBlockByNumber" {
+				var firstParam string
+				if len(params) > 0 {
+					firstParam, _ = params[0].(string)
+				}
+				if blockTags[firstParam] {
+					isTestCall = false // state-poller call, not the test method
+				}
+			}
+
+			if isTestCall {
+				if !hasMockResp {
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+						"jsonrpc": "2.0", "id": 1,
+						"error": map[string]interface{}{"code": -32603, "message": "no mock configured"},
+					})
+					return
+				}
+				callCounts[idx].Add(1)
+				if mockResp.delay > 0 {
+					time.Sleep(mockResp.delay)
+				}
+				w.WriteHeader(mockResp.status)
+				json.NewEncoder(w).Encode(mockResp.body) //nolint:errcheck
+				return
+			}
+
+			// State-poller and other system methods
+			switch method {
+			case "eth_chainId":
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+					"jsonrpc": "2.0", "id": 1, "result": "0x7b",
+				})
+			case "eth_getBlockByNumber":
+				w.WriteHeader(http.StatusOK)
+				if len(params) > 0 && params[0] == "finalized" {
+					json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+						"jsonrpc": "2.0", "id": 1,
+						"result": map[string]interface{}{"number": "0x1"},
+					})
+				} else {
+					json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+						"jsonrpc": "2.0", "id": 1,
+						"result": map[string]interface{}{"number": "0x1388"},
+					})
+				}
+			case "eth_syncing":
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+					"jsonrpc": "2.0", "id": 1, "result": false,
+				})
+			default:
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+					"jsonrpc": "2.0", "id": 1,
+					"error": map[string]interface{}{"code": -32603, "message": "unexpected method"},
+				})
+			}
+		}))
+
+		upstreamCfg.Endpoint = srv.URL
+
+		// Capture loop variables for t.Cleanup closure
+		capturedIdx := idx
+		capturedSrv := srv
+		capturedExpectedCount := expectedCount
+		capturedOptionalCall := optionalCall
+
+		t.Cleanup(func() {
+			capturedSrv.Close()
+			if capturedExpectedCount != -1 { // -1 means optional (was Persist in gock)
+				actual := int(callCounts[capturedIdx].Load())
+				if capturedOptionalCall {
+					assert.GreaterOrEqual(t, actual, 0)
+					assert.LessOrEqual(t, actual, 1,
+						"upstream %d should be called at most once before consensus cancellation races", capturedIdx+1)
+					return
+				}
+				assert.Equal(t, capturedExpectedCount, actual,
+					"upstream %d call count mismatch", capturedIdx+1)
+			}
+		})
+	}
+}
+
+func consensusCallMayBeSkipped(tc consensusTestCase, upstreamIdx int, expectedCount int) bool {
+	if tc.consensusConfig == nil || expectedCount < 0 || expectedCount > 1 {
+		return false
+	}
+	if upstreamIdx >= tc.consensusConfig.MaxParticipants {
+		return false
+	}
+	if tc.consensusConfig.AgreementThreshold >= tc.consensusConfig.MaxParticipants {
+		return false
+	}
+
+	// Consensus starts eligible participants eagerly and cancels laggards only after a
+	// winner is observed. If the threshold can still be met without this upstream,
+	// scheduler timing makes the first HTTP call optional even though the outcome is fixed.
+	threshold := tc.consensusConfig.AgreementThreshold
+	if threshold <= 1 {
+		return min(tc.consensusConfig.MaxParticipants, len(tc.mockResponses))-1 >= 1
+	}
+
+	eligibleParticipants := min(tc.consensusConfig.MaxParticipants, len(tc.mockResponses))
+	groupCounts := make(map[string]int, eligibleParticipants)
+	for idx := 0; idx < eligibleParticipants; idx++ {
+		if idx == upstreamIdx {
+			continue
+		}
+		key := consensusMockResponseKey(tc.mockResponses[idx])
+		groupCounts[key]++
+		if groupCounts[key] >= threshold {
+			return true
+		}
+	}
+
+	return false
+}
+
+func consensusMockResponseKey(resp mockResponse) string {
+	body, err := json.Marshal(resp.body)
+	if err != nil {
+		return fmt.Sprintf("%d|%#v", resp.status, resp.body)
+	}
+
+	return fmt.Sprintf("%d|%s", resp.status, body)
+}
+
 func runConsensusTest(t *testing.T, tc consensusTestCase) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, tc.expectedPendingMocks)
+	// Start per-test isolated HTTP mock servers (replaces global gock).
+	startConsensusMockServers(t, tc)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
 		cancel()
 		time.Sleep(50 * time.Millisecond) // allow goroutines to settle
 	}()
-
-	// Setup mocks BEFORE any network components initialize
-	for i, upstreamCfg := range tc.upstreams {
-		if i < len(tc.mockResponses) && (tc.expectedCalls == nil || (len(tc.expectedCalls) > i && tc.expectedCalls[i] != 0)) {
-			mock := tc.mockResponses[i]
-			m := gock.New(upstreamCfg.Endpoint).
-				Post("").
-				Filter(func(request *http.Request) bool {
-					body := util.SafeReadBody(request)
-					method := tc.requestMethod
-					if method == "" {
-						method = "eth_randomMethod"
-					}
-					return strings.Contains(string(body), method)
-				})
-
-			// Handle special case: -1 means Persist() (may or may not be called)
-			if tc.expectedCalls != nil && len(tc.expectedCalls) > i && tc.expectedCalls[i] == -1 {
-				m.Persist()
-			} else if tc.expectedCalls != nil && len(tc.expectedCalls) > i {
-				m.Times(tc.expectedCalls[i])
-			} else {
-				m.Times(1) // default to 1 if not specified
-			}
-
-			m.Reply(mock.status).
-				Delay(mock.delay).
-				SetHeader("Content-Type", "application/json").
-				JSON(mock.body)
-		}
-	}
 
 	// Setup Network AFTER mocks to avoid races during background initialization
 	ntw, upsReg := setupNetworkForConsensusTest(t, ctx, tc)
@@ -2418,7 +2953,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx, &log.Logger, "prjA", tc.upstreams,
-		ssr, nil, vr, pr, nil, mt, 1*time.Second, nil,
+		ssr, nil, vr, pr, nil, mt, 1*time.Second, nil, nil,
 	)
 
 	if err := tc.consensusConfig.SetDefaults(); err != nil {

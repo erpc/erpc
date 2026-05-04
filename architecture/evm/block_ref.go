@@ -103,7 +103,12 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 		r.SetEvmBlockNumber(blockNumber)
 	}
 	if blockRef != "" {
-		r.SetEvmBlockRef(blockRef)
+		// Only set request blockRef when it's not already set.
+		// Preserve original non-wildcard tag refs ("latest", "finalized", "safe", "pending", "earliest")
+		// and "*" (composite cases) that may already be present on the request.
+		if cur := r.EvmBlockRef(); cur == nil || cur == "" {
+			r.SetEvmBlockRef(blockRef)
+		}
 	}
 
 	return blockRef, blockNumber, nil
@@ -181,6 +186,56 @@ func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.Normalized
 	return blockRef, blockNumber, nil
 }
 
+// ExtractBlockTimestampFromResponse extracts the block timestamp from a response containing block data
+func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.NormalizedResponse) (int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Evm.ExtractBlockTimestampFromResponse")
+	defer span.End()
+
+	if r == nil {
+		return 0, nil
+	}
+
+	jrr, err := r.JsonRpcResponse()
+	if jrr == nil || err != nil {
+		common.SetTraceSpanError(span, err)
+		return 0, err
+	}
+
+	if jrr.IsResultEmptyish(ctx) {
+		return 0, nil
+	}
+
+	// Extract timestamp - can be hex string (0x...), decimal string, or integer
+	timestampStr, err := jrr.PeekStringByPath(ctx, "timestamp")
+	if err != nil || timestampStr == "" {
+		return 0, err
+	}
+
+	// Force-copy the small string to avoid any potential reference to backing buffers
+	timestampStr = string(append([]byte(nil), timestampStr...))
+
+	var blockTimestamp int64
+	// Handle both hex (0x...) and decimal formats
+	if strings.HasPrefix(timestampStr, "0x") {
+		blockTimestamp, err = common.HexToInt64(timestampStr)
+	} else {
+		blockTimestamp, err = strconv.ParseInt(timestampStr, 10, 64)
+	}
+
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return 0, err
+	}
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("block.timestamp", blockTimestamp),
+		)
+	}
+
+	return blockTimestamp, nil
+}
+
 func extractRefFromJsonRpcRequest(ctx context.Context, req *common.NormalizedRequest, r *common.JsonRpcRequest) (string, int64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Evm.extractRefFromJsonRpcRequest")
 	defer span.End()
@@ -190,7 +245,11 @@ func extractRefFromJsonRpcRequest(ctx context.Context, req *common.NormalizedReq
 		common.SetTraceSpanError(span, err)
 		return "", 0, err
 	}
-	methodConfig := getMethodConfig(r.Method, req)
+	var network common.Network
+	if req != nil {
+		network = req.Network()
+	}
+	methodConfig := getMethodConfig(r.Method, network)
 	if methodConfig == nil {
 		common.SetTraceSpanError(span, errors.New("method config not found for "+r.Method+" when extracting block reference from json-rpc request"))
 		// For unknown methods blockRef and/or blockNumber will be empty therefore such data will not be cached despite any caching policies.
@@ -266,7 +325,11 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 		return "", 0, err
 	}
 
-	methodConfig := getMethodConfig(rpcReq.Method, req)
+	var network common.Network
+	if req != nil {
+		network = req.Network()
+	}
+	methodConfig := getMethodConfig(rpcReq.Method, network)
 	if methodConfig == nil {
 		common.SetTraceSpanError(span, errors.New("method config not found for "+rpcReq.Method+" when extracting block reference from json-rpc response"))
 		return "", 0, nil
@@ -296,7 +359,8 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 			}
 		}
 
-		if blockNumber > 0 {
+		// Only use numeric ref if a specific ref has not been determined yet or was composite "*"
+		if blockNumber > 0 && (blockRef == "" || blockRef == "*") {
 			blockRef = strconv.FormatInt(blockNumber, 10)
 		}
 
@@ -306,10 +370,9 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 	return "", 0, nil
 }
 
-func getMethodConfig(method string, req *common.NormalizedRequest) (cfg *common.CacheMethodConfig) {
+func getMethodConfig(method string, network common.Network) (cfg *common.CacheMethodConfig) {
 	// Try to get method config from network if available
-	if req != nil && req.Network() != nil {
-		network := req.Network()
+	if network != nil {
 		networkCfg := network.Config()
 		if networkCfg != nil && networkCfg.Methods != nil && networkCfg.Methods.Definitions != nil {
 			if methodCfg, ok := networkCfg.Methods.Definitions[method]; ok {

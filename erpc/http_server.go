@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -24,10 +26,14 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
+
+// Only compress responses larger than 1KB to save CPU on small responses
+const compressionThreshold = 1024
 
 type HttpServer struct {
 	appCtx                  context.Context
@@ -36,11 +42,16 @@ type HttpServer struct {
 	adminCfg                *common.AdminConfig
 	serverV4                *http.Server
 	serverV6                *http.Server
+	sharedGrpcServer        *GrpcServer
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
 	draining                *atomic.Bool
 	gzipPool                *util.GzipReaderPool
+	trustedForwarderNets    []net.IPNet
+	trustedForwarderIPs     map[string]struct{}
+	trustedIPHeaders        []string
+	resolvedResponseHeaders map[string]string
 }
 
 func NewHttpServer(
@@ -68,7 +79,7 @@ func NewHttpServer(
 	go func() {
 		<-ctx.Done()
 		draining.Store(true)
-		log.Info().Msg("entering draining mode → healthcheck will fail")
+		logger.Info().Msg("entering draining mode → healthcheck will fail")
 	}()
 
 	gzipPool := util.NewGzipReaderPool()
@@ -84,18 +95,91 @@ func NewHttpServer(
 		gzipPool:       gzipPool,
 	}
 
+	if cfg != nil {
+		srv.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
+		var forwarders []string
+		forwarders = append(forwarders, cfg.TrustedIPForwarders...)
+		for _, entry := range forwarders {
+			val := strings.TrimSpace(entry)
+			if val == "" {
+				continue
+			}
+			if strings.Contains(val, "/") {
+				if _, ipnet, err := net.ParseCIDR(val); err == nil && ipnet != nil {
+					srv.trustedForwarderNets = append(srv.trustedForwarderNets, *ipnet)
+				} else {
+					logger.Warn().Str("trustedForwarder", val).Msg("invalid CIDR in trusted forwarders; ignoring")
+				}
+			} else {
+				if ip := net.ParseIP(val); ip != nil {
+					srv.trustedForwarderIPs[ip.String()] = struct{}{}
+				} else {
+					logger.Warn().Str("trustedForwarder", val).Msg("invalid IP in trusted forwarders; ignoring")
+				}
+			}
+		}
+	}
+
+	if cfg != nil {
+		var hdrs []string
+		hdrs = append(hdrs, cfg.TrustedIPHeaders...)
+		for _, h := range hdrs {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			srv.trustedIPHeaders = append(srv.trustedIPHeaders, h)
+		}
+	}
+
+	// Resolve custom response headers (expand env vars at startup)
+	if cfg != nil && len(cfg.ResponseHeaders) > 0 {
+		srv.resolvedResponseHeaders = make(map[string]string, len(cfg.ResponseHeaders))
+		for key, value := range cfg.ResponseHeaders {
+			// Expand env vars (handles both ${VAR} and $VAR syntax)
+			resolved := os.ExpandEnv(value)
+			if resolved != "" {
+				srv.resolvedResponseHeaders[key] = resolved
+				logger.Info().Str("header", key).Str("value", resolved).Msg("custom response header configured")
+			} else {
+				logger.Debug().Str("header", key).Msg("custom response header skipped (empty value after env expansion)")
+			}
+		}
+	}
+
 	h := srv.createRequestHandler()
+
 	if cfg.EnableGzip != nil && *cfg.EnableGzip {
 		h = gzipHandler(h)
 	}
 
 	// Create handler with timeout
-	handlerWithTimeout := TimeoutHandler(h, reqMaxTimeout)
+	httpHandler := TimeoutHandler(logger, h, reqMaxTimeout)
+	handlerV4 := httpHandler
+	handlerV6 := httpHandler
+
+	if grpcSharesHttpV4(cfg) {
+		sharedGrpcServer, err := NewGrpcServer(ctx, logger, cfg, erpc)
+		if err != nil {
+			return nil, err
+		}
+		srv.sharedGrpcServer = sharedGrpcServer
+		handlerV4 = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
+				sharedGrpcServer.server.ServeHTTP(w, r)
+				return
+			}
+			httpHandler.ServeHTTP(w, r)
+		})
+		if cfg.TLS == nil || !cfg.TLS.Enabled {
+			handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
+		}
+	}
 
 	// Create IPv4 server if configured
 	if cfg.ListenV4 != nil && *cfg.ListenV4 {
 		srv.serverV4 = &http.Server{
-			Handler:        handlerWithTimeout,
+			Handler:        handlerV4,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			IdleTimeout:    300 * time.Second,
@@ -106,9 +190,11 @@ func NewHttpServer(
 	// Create IPv6 server if configured
 	if cfg.ListenV6 != nil && *cfg.ListenV6 {
 		srv.serverV6 = &http.Server{
-			Handler:      handlerWithTimeout,
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
+			Handler:        handlerV6,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+			IdleTimeout:    300 * time.Second,
+			MaxHeaderBytes: 1 << 20, // 1MB
 		}
 	}
 
@@ -174,6 +260,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		w.Header().Set("X-ERPC-Version", common.ErpcVersion)
 		w.Header().Set("X-ERPC-Commit", common.ErpcCommitSha)
 
+		// Add custom response headers (resolved at startup with env var expansion)
+		for key, value := range s.resolvedResponseHeaders {
+			w.Header().Set(key, value)
+		}
+
 		projectId, architecture, chainId, isAdmin, isHealthCheck, err = s.parseUrlPath(r, projectId, architecture, chainId)
 		if err != nil {
 			handleErrorResponse(
@@ -188,6 +279,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				&common.TRUE,
 			)
 			return
+		}
+
+		// Set network in context for force-trace matching in child spans (uses existing parsed values)
+		if !isAdmin && !isHealthCheck && architecture != "" && chainId != "" {
+			httpCtx = common.SetForceTraceNetwork(httpCtx, architecture+":"+chainId)
 		}
 
 		if isHealthCheck {
@@ -271,7 +367,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		// Replace the existing body read with our potentially decompressed reader
 		_, readBodySpan := common.StartDetailSpan(httpCtx, "Http.ReadBody")
-		body, err := util.ReadAll(bodyReader, 2048)
+		body, cleanup, err := util.ReadAll(bodyReader, 2048)
+		// Clean up buffer after parsing the request
+		if cleanup != nil {
+			defer cleanup()
+		}
 		readBodySpan.End()
 		if err != nil {
 			common.SetTraceSpanError(readBodySpan, err)
@@ -352,9 +452,15 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}()
 
 				nq := common.NewNormalizedRequest(rawReq)
+				nq.ForwardHeaders = make(http.Header)
+
 				// Help GC: drop reference to the rawReq slice copy in the parent slice as soon as possible
 				rawReq = nil
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
+
+				// Resolve and set real client IP before any rate limiting/auth checks
+				clientIP := s.resolveRealClientIP(r)
+				nq.SetClientIP(clientIP)
 
 				// Validate the raw JSON-RPC payload early
 				if err := nq.Validate(); err != nil {
@@ -363,8 +469,78 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
+				if project != nil {
+					for _, matchKey := range project.Config.ForwardHeaders {
+						for key, values := range headers {
+							matches, err := common.WildcardMatch(matchKey, key)
+							if err != nil {
+								responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
+								common.EndRequestSpan(requestCtx, nil, responses[index])
+								return
+							}
+							if matches {
+								for _, value := range values {
+									nq.ForwardHeaders.Add(matchKey, value)
+								}
+							}
+						}
+					}
+				}
+
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
+
+				shouldHandleMethod := true
+
+				if project != nil && project.Config.IgnoreMethods != nil {
+					for _, m := range project.Config.IgnoreMethods {
+						match, err := common.WildcardMatch(m, method)
+						if err != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, err)
+							return
+						}
+						if match {
+							shouldHandleMethod = false
+							break
+						}
+					}
+				}
+
+				if project != nil && project.Config.AllowMethods != nil {
+					for _, m := range project.Config.AllowMethods {
+						match, err := common.WildcardMatch(m, method)
+						if err != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, err)
+							return
+						}
+						if match {
+							shouldHandleMethod = true
+							break
+						}
+					}
+				}
+
+				if !shouldHandleMethod {
+					jsonrpcVersion := "2.0"
+					var reqId interface{}
+					if jrr, err := nq.JsonRpcRequest(); err != nil {
+						jsonrpcVersion = jrr.JSONRPC
+						reqId = jrr.ID
+					}
+					responses[index] = &HttpJsonRpcErrorResponse{
+						Jsonrpc: jsonrpcVersion,
+						Id:      reqId,
+						Error: map[string]interface{}{
+							"code":    int(common.JsonRpcErrorUnsupportedException),
+							"message": fmt.Sprintf("method not supported: %s", method),
+						},
+						Cause: nil,
+					}
+					common.EndRequestSpan(requestCtx, nil, nil)
+					return
+				}
 
 				var ap *auth.AuthPayload
 				var err error
@@ -380,17 +556,41 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
+				// Set the full request URL for x402 402 response resource field.
+				// Only computed when an x402 payload is present.
+				if ap != nil && ap.Type == common.AuthTypeX402 && ap.X402 != nil {
+					scheme := "https"
+					if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+						scheme = proto
+					} else if r.TLS == nil {
+						scheme = "http"
+					}
+					ap.X402.RequestURL = scheme + "://" + r.Host + r.URL.String()
+				}
+
 				if isAdmin {
-					_, err := s.erpc.AdminAuthenticate(requestCtx, method, ap)
+					_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
 					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				} else {
-					user, err := project.AuthenticateConsumer(requestCtx, method, ap)
+					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+						var payErr *common.ErrPaymentRequired
+						if errors.As(err, &payErr) {
+							var reqId interface{}
+							if jrr, jrrErr := nq.JsonRpcRequest(); jrrErr == nil && jrr != nil {
+								reqId = jrr.ID
+							}
+							responses[index] = &HttpX402PaymentRequiredResponse{
+								PaymentRequirements: payErr.PaymentRequirements,
+								RequestId:           reqId,
+							}
+						} else {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+						}
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -430,18 +630,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				var networkId string
 
 				if architecture == "" || chainId == "" {
-					var req map[string]interface{}
-					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
-						common.EndRequestSpan(requestCtx, nil, err)
-						return
-					}
-					if networkIdFromBody, ok := req["networkId"].(string); ok {
-						networkId = networkIdFromBody
-						parts := strings.Split(networkId, ":")
-						if len(parts) == 2 {
-							architecture = parts[0]
-							chainId = parts[1]
+					if bodyBytes := nq.Body(); len(bodyBytes) > 0 {
+						var req map[string]interface{}
+						if err := common.SonicCfg.Unmarshal(bodyBytes, &req); err != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, err)
+							return
+						}
+						if networkIdFromBody, ok := req["networkId"].(string); ok {
+							networkId = networkIdFromBody
+							parts := strings.Split(networkId, ":")
+							if len(parts) == 2 {
+								architecture = parts[0]
+								chainId = parts[1]
+							}
 						}
 					}
 				} else {
@@ -465,7 +667,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				nq.SetNetwork(nw)
 
 				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
-				nq.EnrichFromHttp(headers, queryArgs)
+				// Configure how to store User-Agent (raw vs simplified) based on project config
+				uaMode := common.UserAgentTrackingModeSimplified
+				if project != nil && project.Config.UserAgentMode != "" {
+					uaMode = project.Config.UserAgentMode
+				}
+				nq.EnrichFromHttp(headers, queryArgs, uaMode)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
@@ -511,19 +718,24 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		if isBatch {
-			statusSet := false
-			for _, resp := range responses {
-				statusCode := determineResponseStatusCode(resp)
-				if statusCode != http.StatusOK {
-					if !statusSet {
-						w.WriteHeader(statusCode)
-						statusSet = true
+			// JSON-RPC batches always return HTTP 200; x402 payment-required responses
+			// cannot use their native 402 format here, so convert them to JSON-RPC errors.
+			for i, resp := range responses {
+				if x402Resp, ok := resp.(*HttpX402PaymentRequiredResponse); ok {
+					responses[i] = &HttpJsonRpcErrorResponse{
+						Jsonrpc: "2.0",
+						Id:      x402Resp.RequestId,
+						Error: map[string]interface{}{
+							"code":    -32000,
+							"message": "payment required for this resource (x402)",
+							"data":    x402Resp.PaymentRequirements,
+						},
+						Cause: common.NewErrPaymentRequired(nil),
 					}
 				}
 			}
-			if !statusSet {
-				w.WriteHeader(http.StatusOK)
-			}
+
+			w.WriteHeader(http.StatusOK)
 
 			bw := NewBatchResponseWriter(responses)
 			_, err = bw.WriteTo(w)
@@ -543,6 +755,25 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		} else {
 			res := responses[0]
 			setResponseHeaders(httpCtx, res, w)
+
+			// x402 Payment Required: set headers before WriteHeader, then write raw x402 JSON.
+			// Both body and PAYMENT-REQUIRED header carry the requirements for v1/v2 client compatibility.
+			if v, ok := res.(*HttpX402PaymentRequiredResponse); ok {
+				reqJSON, _ := common.SonicCfg.Marshal(v.PaymentRequirements)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("PAYMENT-REQUIRED", base64.StdEncoding.EncodeToString(reqJSON))
+				w.WriteHeader(http.StatusPaymentRequired)
+				_, err = w.Write(reqJSON)
+				if err != nil {
+					writeFatalError(httpCtx, http.StatusInternalServerError, err)
+					return
+				}
+				common.EnrichHTTPServerSpan(httpCtx, http.StatusPaymentRequired, nil)
+				return
+			}
+
+			// Determine HTTP status code - defaults to 200 for JSON-RPC responses,
+			// but transport-level errors (auth, rate limit, etc.) get appropriate status codes
 			statusCode := determineResponseStatusCode(res)
 			w.WriteHeader(statusCode)
 
@@ -586,6 +817,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							Msgf("unexpected server panic on final error writer")
 					}
 				}()
+				// Keep transport 200 for JSON-RPC POST requests per spec
+				if r.Method == http.MethodPost {
+					statusCode = http.StatusOK
+				}
 				w.WriteHeader(statusCode)
 
 				msg, err := common.SonicCfg.Marshal(err.Error())
@@ -777,6 +1012,12 @@ func (s *HttpServer) parseUrlPath(
 
 	case projectId == "" && architecture != "" && chainId == "":
 		switch len(segments) {
+		case 0:
+			// Allow global healthcheck when only architecture is aliased
+			// (e.g., host preselects architecture like "evm" and path is just /healthcheck or /)
+			if !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-only alias must provide /<project>", ps)
+			}
 		case 1:
 			projectId = segments[0]
 		case 2:
@@ -918,22 +1159,46 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 	}
 }
 
-func determineResponseStatusCode(respOrErr interface{}) int {
-	statusCode := http.StatusOK
-	if err, ok := respOrErr.(error); ok {
-		statusCode = decideErrorStatusCode(err)
-	} else if resp, ok := respOrErr.(map[string]interface{}); ok {
-		if cause, ok := resp["cause"].(error); ok {
-			statusCode = decideErrorStatusCode(cause)
-		}
-	} else if hjrsp, ok := respOrErr.(*HttpJsonRpcErrorResponse); ok {
-		statusCode = decideErrorStatusCode(hjrsp.Cause)
-	} else if resp, ok := respOrErr.(*common.NormalizedResponse); ok && resp.IsObjectNull() {
-		statusCode = http.StatusInternalServerError
-	} else if respOrErr == nil {
-		statusCode = http.StatusInternalServerError
+// determineResponseStatusCode extracts any error from a response and determines
+// the appropriate HTTP status code. Defaults to 200 for JSON-RPC responses,
+// but transport-level errors (auth, rate limit, not found) get appropriate status codes.
+func determineResponseStatusCode(res interface{}) int {
+	var err error
+	switch v := res.(type) {
+	case *HttpJsonRpcErrorResponse:
+		err = v.Cause
+	case error:
+		err = v
+	default:
+		return http.StatusOK
 	}
-	return statusCode
+
+	if err == nil {
+		return http.StatusOK
+	}
+
+	// Transport-level errors get appropriate HTTP status codes
+	switch {
+	// 400 Bad Request - malformed requests
+	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
+		return http.StatusBadRequest
+	// 401 Unauthorized - authentication failures
+	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
+		return http.StatusUnauthorized
+	// 404 Not Found - resource not found
+	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound, common.ErrCodeNetworkNotSupported):
+		return http.StatusNotFound
+	// 429 Too Many Requests - rate limiting
+	case common.HasErrorCode(err,
+		common.ErrCodeAuthRateLimitRuleExceeded,
+		common.ErrCodeProjectRateLimitRuleExceeded,
+		common.ErrCodeNetworkRateLimitRuleExceeded,
+		common.ErrCodeEndpointCapacityExceeded):
+		return http.StatusTooManyRequests
+	}
+
+	// All other errors (JSON-RPC application errors) return 200
+	return http.StatusOK
 }
 
 type HttpJsonRpcErrorResponse struct {
@@ -943,12 +1208,41 @@ type HttpJsonRpcErrorResponse struct {
 	Cause   error       `json:"-"`
 }
 
+// HttpX402PaymentRequiredResponse carries the raw x402 PaymentRequirementsResponse
+// to be written directly as HTTP 402 without JSON-RPC wrapping.
+type HttpX402PaymentRequiredResponse struct {
+	PaymentRequirements interface{}
+	RequestId           interface{}
+}
+
+func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
+	if r == nil {
+		return
+	}
+	e.Str("jsonrpc", r.Jsonrpc)
+	e.Interface("id", r.Id)
+	if r.Error != nil {
+		switch v := r.Error.(type) {
+		case *common.ErrJsonRpcExceptionExternal:
+			e.Object("error", v)
+		case map[string]interface{}:
+			e.Interface("error", v)
+		}
+	}
+}
+
 func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool) interface{} {
 	err := origErr
+
+	// Build the response first, then log with it
+	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails)
+
+	// Log the error with the response
 	if !common.IsNull(err) {
 		if nq != nil {
 			nq.RLock()
 		}
+		respMarshaler, _ := resp.(zerolog.LogObjectMarshaler)
 		if common.HasErrorCode(
 			err,
 			common.ErrCodeEndpointExecutionException,
@@ -956,19 +1250,20 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeInvalidUrlPath,
 			common.ErrCodeInvalidRequest,
 			common.ErrCodeAuthUnauthorized,
+			common.ErrCodeAuthRateLimitRuleExceeded,
 			common.ErrCodeJsonRpcRequestUnmarshal,
 			common.ErrCodeProjectNotFound,
 		) {
-			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
+			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with client-side exception")
 		} else if errors.Is(err, context.Canceled) {
-			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with context cancellation")
+			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with context cancellation")
 		} else if errors.Is(err, context.DeadlineExceeded) {
-			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with deadline exceeded")
+			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with deadline exceeded")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
-				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
+				logger.Warn().Err(err).Object("request", nq).Object("response", respMarshaler).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
+				logger.Warn().Err(err).Object("request", nq).Object("response", respMarshaler).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
 			}
 		}
 		if nq != nil {
@@ -976,6 +1271,11 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		}
 	}
 
+	return resp
+}
+
+// buildErrorResponseBody constructs the error response without logging
+func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, includeErrorDetails *bool) interface{} {
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
@@ -1041,90 +1341,6 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 }
 
-// statusCodeOrderPreference is a list of status code ranges that are preferred in the order of preference.
-// This is used when multiple upstreams return different status codes for various reasons.
-// We try to pick the "most likely relevant" one based on the status code ranges.
-var statusCodeOrderPreference = []struct {
-	min int
-	max int
-}{
-	{200, 299}, // Successful response from at least one upstream.
-	{429, 429}, // Too Many Requests (rate limiting).
-	{500, 599}, // Upstream/server errors.
-	{405, 428}, // Method/headers/pre-condition related client errors.
-	{430, 499}, // Remaining 4xx client errors.
-	{400, 400}, // Bad Request – generic validation failure.
-	{401, 404}, // Unauthorized / Payment Required / Not Found.
-	{300, 399}, // Redirection responses (should rarely occur).
-}
-
-// preferredStatusCode returns the code that should win between current and cand according to
-// statusCodeOrderPreference.  Lower preference index wins; if both codes fall in the same
-// preference bucket, the numerically smaller code wins (e.g. 200 beats 204, 400 beats 422, etc.).
-// The comparison is allocation-free and intended for hot-path usage.
-func preferredStatusCode(current, cand int) int {
-	if current == cand {
-		return current
-	}
-
-	prefIdx := func(code int) int {
-		for idx, rng := range statusCodeOrderPreference {
-			if code >= rng.min && code <= rng.max {
-				return idx
-			}
-		}
-		// If somehow outside all ranges, treat as lowest priority (after redirects).
-		return len(statusCodeOrderPreference)
-	}
-
-	idxCur := prefIdx(current)
-	idxNew := prefIdx(cand)
-
-	if idxNew < idxCur {
-		return cand
-	}
-	if idxNew > idxCur {
-		return current
-	}
-	// Same bucket – choose smaller numerical code.
-	if cand < current {
-		return cand
-	}
-	return current
-}
-
-func decideErrorStatusCode(err interface{}) int {
-	if se, ok := err.(common.StandardError); ok {
-		return se.ErrorStatusCode()
-	}
-
-	// TODO refactor the logic so we can eliminate this code path.
-	// this is needed because in some scenarios one or more UpstreamsExhausted errors are wrapped
-	// in another UpstreamsExhausted error (e.g. getLogs splits where 1 or more sub-requests fail).
-	// In such case "err" will be an UpstreamsExhausted which carries multiple status codes.
-	// Probably best place to resolve this is in TranslateToJsonRpcException so that
-	// nested UpstreamsExhausted errors are resolved to 1 "most significant" error.
-	if ue, ok := err.(interface{ Unwrap() []error }); ok {
-		bestCode := http.StatusServiceUnavailable // sensible default / fallback
-
-		for _, innerErr := range ue.Unwrap() {
-			se, ok := innerErr.(common.StandardError)
-			if !ok {
-				continue
-			}
-			bestCode = preferredStatusCode(bestCode, se.ErrorStatusCode())
-			// Early exit: cannot get better than 2xx in first bucket.
-			if bestCode >= 200 && bestCode <= 299 {
-				return bestCode
-			}
-		}
-
-		return bestCode
-	}
-
-	return http.StatusInternalServerError
-}
-
 func handleErrorResponse(
 	httpCtx context.Context,
 	logger *zerolog.Logger,
@@ -1136,8 +1352,43 @@ func handleErrorResponse(
 	writeFatalError func(ctx context.Context, statusCode int, body error),
 	includeErrorDetails *bool,
 ) {
+	// x402 Payment Required: write the raw x402 response directly, not JSON-RPC wrapped
+	var payErr *common.ErrPaymentRequired
+	if errors.As(err, &payErr) {
+		reqJSON, _ := common.SonicCfg.Marshal(payErr.PaymentRequirements)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("PAYMENT-REQUIRED", base64.StdEncoding.EncodeToString(reqJSON))
+		w.WriteHeader(http.StatusPaymentRequired)
+		if _, encErr := w.Write(reqJSON); encErr != nil {
+			logger.Error().Err(encErr).Msg("failed to write x402 payment requirements response")
+			writeFatalError(httpCtx, http.StatusInternalServerError, encErr)
+		}
+		return
+	}
+
 	resp := processErrorBody(logger, startedAt, nq, err, includeErrorDetails)
-	statusCode := determineResponseStatusCode(err)
+	// Transport defaults to 200 for JSON-RPC, with limited exceptions.
+	// Non-200 codes are reserved for transport/infrastructure level issues,
+	// not JSON-RPC application errors (which stay 200 with error in body).
+	statusCode := http.StatusOK
+	switch {
+	// 400 Bad Request - malformed requests (not valid JSON-RPC)
+	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
+		statusCode = http.StatusBadRequest
+	// 401 Unauthorized - authentication failures
+	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
+		statusCode = http.StatusUnauthorized
+	// 404 Not Found - resource not found at HTTP level
+	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound, common.ErrCodeNetworkNotSupported):
+		statusCode = http.StatusNotFound
+	// 429 Too Many Requests - rate limiting (critical for client retry logic)
+	case common.HasErrorCode(err,
+		common.ErrCodeAuthRateLimitRuleExceeded,
+		common.ErrCodeProjectRateLimitRuleExceeded,
+		common.ErrCodeNetworkRateLimitRuleExceeded,
+		common.ErrCodeEndpointCapacityExceeded):
+		statusCode = http.StatusTooManyRequests
+	}
 	w.WriteHeader(statusCode)
 	span := trace.SpanFromContext(httpCtx)
 	span.AddEvent("http.response_write_start")
@@ -1326,28 +1577,82 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	return lastErr
 }
 
-type gzipResponseWriter struct {
+// conditionalGzipWriter wraps ResponseWriter and decides whether to compress
+// based on the first write size. This avoids buffering while still allowing
+// us to skip compression for small responses.
+type conditionalGzipWriter struct {
 	http.ResponseWriter
-	gzipWriter *gzip.Writer
+	gzipWriter  *gzip.Writer
+	pool        *util.GzipWriterPool
+	decided     bool
+	compressing bool
 }
 
-func (w *gzipResponseWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		err := w.gzipWriter.Flush()
-		if err != nil {
-			log.Error().Err(err).Msg("failed to flush gzip writer")
+// Compile-time check that conditionalGzipWriter implements http.Flusher
+var _ http.Flusher = (*conditionalGzipWriter)(nil)
+
+func (w *conditionalGzipWriter) Write(b []byte) (int, error) {
+	// If we've already decided, just pass through
+	if w.decided {
+		if w.compressing {
+			return w.gzipWriter.Write(b)
 		}
-		flusher.Flush()
+		return w.ResponseWriter.Write(b)
 	}
-}
 
-func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	// First write - decide based on size
+	w.decided = true
+
+	// If the first chunk is small, assume the whole response is small
+	// This works well for RPC responses which are typically sent in one write
+	if len(b) < compressionThreshold {
+		// Skip compression for small responses
+		w.compressing = false
+		return w.ResponseWriter.Write(b)
+	}
+
+	// Large response, enable compression
+	w.compressing = true
+
+	// Set compression headers
+	w.ResponseWriter.Header().Del("Content-Length")
+	w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
+	w.ResponseWriter.Header().Set("Vary", "Accept-Encoding")
+	if ct := w.ResponseWriter.Header().Get("Content-Type"); ct == "" {
+		w.ResponseWriter.Header().Set("Content-Type", "application/json")
+	}
+
+	// Initialize gzip writer
+	w.gzipWriter = w.pool.Get(w.ResponseWriter)
+
+	// Write the data
 	return w.gzipWriter.Write(b)
 }
 
+// Flush implements http.Flusher interface to support streaming responses
+func (w *conditionalGzipWriter) Flush() {
+	if w.compressing && w.gzipWriter != nil {
+		_ = w.gzipWriter.Flush()
+	}
+	// Also flush underlying ResponseWriter if it supports it
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *conditionalGzipWriter) Close() error {
+	if w.compressing && w.gzipWriter != nil {
+		err := w.gzipWriter.Close()
+		w.pool.Put(w.gzipWriter)
+		return err
+	}
+	return nil
+}
+
 func gzipHandler(next http.Handler) http.Handler {
-	// Pool writers across responses
+	// Pool writers across responses for better performance
 	var gzPool = util.NewGzipWriterPool()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if client accepts gzip encoding
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -1355,31 +1660,141 @@ func gzipHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Initialize gzip writer from pool
-		gz := gzPool.Get(w)
-		defer func() {
-			_ = gz.Close()
-			gzPool.Put(gz)
-		}()
-
-		// Create gzip response writer
-		gzw := &gzipResponseWriter{
+		// Create conditional gzip response writer that decides on first write
+		gzw := &conditionalGzipWriter{
 			ResponseWriter: w,
-			gzipWriter:     gz,
+			pool:           gzPool,
 		}
 
-		// Remove Content-Length header as it will no longer be valid
-		w.Header().Del("Content-Length")
-
-		// Set required headers
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
-		// Ensure Content-Type is preserved
-		if ct := w.Header().Get("Content-Type"); ct == "" {
-			w.Header().Set("Content-Type", "application/json")
-		}
-
-		// Call the next handler with our gzip response writer
+		// Call the next handler with our conditional gzip response writer
 		next.ServeHTTP(gzw, r)
+
+		// Ensure proper cleanup
+		_ = gzw.Close()
 	})
+}
+
+// resolveRealClientIP determines the originating client IP, honoring standard forwarding headers
+// only when the immediate peer is a trusted forwarder. Falls back to remote address.
+func (s *HttpServer) resolveRealClientIP(r *http.Request) string {
+	remoteIP := parseRemoteIP(r.RemoteAddr)
+	if remoteIP == nil {
+		return "n/a"
+	}
+
+	if !s.isTrustedForwarder(remoteIP) {
+		return remoteIP.String()
+	}
+
+	// Iterate over configured trusted IP headers in order and parse as XFF-like list
+	for _, hdr := range s.trustedIPHeaders {
+		if hdr == "" {
+			continue
+		}
+		if v := strings.TrimSpace(r.Header.Get(hdr)); v != "" {
+			ips := parseXForwardedFor(v)
+			if ip := trimRightTrustedAndPick(ips, s.isTrustedForwarder); ip != nil {
+				return ip.String()
+			}
+		}
+	}
+
+	return remoteIP.String()
+}
+
+func (s *HttpServer) isTrustedForwarder(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if s.trustedForwarderIPs != nil {
+		if _, ok := s.trustedForwarderIPs[ip.String()]; ok {
+			return true
+		}
+	}
+	for i := range s.trustedForwarderNets {
+		if s.trustedForwarderNets[i].Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// no header allowlist; headers are explicitly configured in server.trustedIPHeaders
+
+func parseRemoteIP(remoteAddr string) net.IP {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	// Remove IPv6 brackets if any
+	host = stripAddrDecorations(host)
+	return net.ParseIP(host)
+}
+
+func parseXForwardedFor(xff string) []net.IP {
+	parts := strings.Split(xff, ",")
+	ips := make([]net.IP, 0, len(parts))
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		v = stripAddrDecorations(v)
+		// Some implementations might include host:port; strip port if present
+		if h, _, err := net.SplitHostPort(v); err == nil {
+			v = h
+		}
+		if ip := net.ParseIP(v); ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+// parseForwardedFor parses RFC 7239 Forwarded header and extracts the sequence of for= IPs
+func parseForwardedFor(fwd string) []net.IP {
+	// Split elements by comma, then params by ';', pick for= value
+	items := strings.Split(fwd, ",")
+	ips := make([]net.IP, 0, len(items))
+	for _, it := range items {
+		params := strings.Split(it, ";")
+		for _, p := range params {
+			p = strings.TrimSpace(p)
+			if len(p) >= 4 && strings.HasPrefix(strings.ToLower(p), "for=") {
+				v := strings.TrimSpace(p[4:])
+				// Remove optional quotes
+				v = strings.Trim(v, "\"")
+				v = stripAddrDecorations(v)
+				// Strip optional :port if present
+				if h, _, err := net.SplitHostPort(v); err == nil {
+					v = h
+				}
+				if ip := net.ParseIP(v); ip != nil {
+					ips = append(ips, ip)
+				}
+			}
+		}
+	}
+	return ips
+}
+
+// trimRightTrustedAndPick removes trailing trusted proxy IPs and returns the nearest untrusted IP (client)
+func trimRightTrustedAndPick(ips []net.IP, isTrusted func(net.IP) bool) net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+	end := len(ips) - 1
+	for end >= 0 && isTrusted(ips[end]) {
+		end--
+	}
+	if end >= 0 {
+		return ips[end]
+	}
+	return nil
+}
+
+// stripAddrDecorations removes brackets and spaces commonly seen around IPv6 or quoted values
+func stripAddrDecorations(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return s[1 : len(s)-1]
+	}
+	return s
 }

@@ -107,7 +107,8 @@ func BenchmarkMetricUpstreamRequestDuration_PerCall(b *testing.B) {
 	b.SetParallelism(runtime.GOMAXPROCS(0))
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		idx := rand.Intn(len(combos))
+		local := rand.New(rand.NewSource(time.Now().UnixNano()))
+		idx := local.Intn(len(combos))
 		for pb.Next() {
 			c := combos[idx]
 			telemetry.MetricUpstreamRequestDuration.
@@ -137,7 +138,8 @@ func BenchmarkMetricUpstreamRequestDuration_Cached(b *testing.B) {
 	b.SetParallelism(runtime.GOMAXPROCS(0))
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		idx := rand.Intn(len(combos))
+		local := rand.New(rand.NewSource(time.Now().UnixNano()))
+		idx := local.Intn(len(combos))
 		for pb.Next() {
 			c := combos[idx]
 			// isSuccess=false to avoid quantile updates and isolate the histogram path cost
@@ -150,78 +152,12 @@ func BenchmarkMetricUpstreamRequestDuration_Cached(b *testing.B) {
 	})
 }
 
-func prewarmPerCallSelfRateLimited(combos []labelCombo, project string) {
-	for _, c := range combos {
-		telemetry.MetricUpstreamSelfRateLimitedTotal.
-			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
-			Inc()
-	}
-}
-
 func prewarmPerCallRemoteRateLimited(combos []labelCombo, project string) {
 	for _, c := range combos {
-		telemetry.MetricUpstreamRemoteRateLimitedTotal.
-			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
+		telemetry.MetricRateLimitsTotal.
+			WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "<remote>", "remote", "", "upstream").
 			Inc()
 	}
-}
-
-func BenchmarkUpstreamSelfRateLimited_PerCall(b *testing.B) {
-	initBenchMetrics(b)
-	project := "bench"
-	upstreams := 200
-	methods := []string{"eth_getBalance", "eth_call", "eth_getLogs", "eth_getBlockByNumber", "eth_getTransactionReceipt"}
-	users := []string{"u1", "u2", "u3"}
-	combos, _ := buildCombos(project, upstreams, methods, users)
-	prewarmPerCallSelfRateLimited(combos, project)
-
-	b.ReportAllocs()
-	b.SetParallelism(runtime.GOMAXPROCS(0))
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		idx := rand.Intn(len(combos))
-		for pb.Next() {
-			c := combos[idx]
-			telemetry.MetricUpstreamSelfRateLimitedTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
-				Inc()
-			idx++
-			if idx >= len(combos) {
-				idx = 0
-			}
-		}
-	})
-}
-
-func BenchmarkUpstreamSelfRateLimited_Cached(b *testing.B) {
-	initBenchMetrics(b)
-	project := "bench"
-	upstreams := 200
-	methods := []string{"eth_getBalance", "eth_call", "eth_getLogs", "eth_getBlockByNumber", "eth_getTransactionReceipt"}
-	users := []string{"u1", "u2", "u3"}
-	combos, _ := buildCombos(project, upstreams, methods, users)
-
-	lg := zerolog.New(io.Discard)
-	tk := NewTracker(&lg, project, time.Minute)
-	// Prewarm cached handles
-	for _, c := range combos {
-		tk.getSelfRateLimitedCounter(c.up, c.method, "n/a", "unknown")
-	}
-
-	b.ReportAllocs()
-	b.SetParallelism(runtime.GOMAXPROCS(0))
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		idx := rand.Intn(len(combos))
-		for pb.Next() {
-			c := combos[idx]
-			tk.RecordUpstreamSelfRateLimited(c.up, c.method, nil)
-			idx++
-			if idx >= len(combos) {
-				idx = 0
-			}
-		}
-	})
 }
 
 func BenchmarkUpstreamRemoteRateLimited_PerCall(b *testing.B) {
@@ -237,11 +173,12 @@ func BenchmarkUpstreamRemoteRateLimited_PerCall(b *testing.B) {
 	b.SetParallelism(runtime.GOMAXPROCS(0))
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		idx := rand.Intn(len(combos))
+		local := rand.New(rand.NewSource(time.Now().UnixNano()))
+		idx := local.Intn(len(combos))
 		for pb.Next() {
 			c := combos[idx]
-			telemetry.MetricUpstreamRemoteRateLimitedTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
+			telemetry.MetricRateLimitsTotal.
+				WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "<remote>", "remote", "", "upstream").
 				Inc()
 			idx++
 			if idx >= len(combos) {
@@ -263,17 +200,19 @@ func BenchmarkUpstreamRemoteRateLimited_Cached(b *testing.B) {
 	tk := NewTracker(&lg, project, time.Minute)
 	// Prewarm cached handles
 	for _, c := range combos {
-		tk.getRemoteRateLimitedCounter(c.up, c.method, "n/a", "unknown")
+		tk.getRemoteRateLimitedCounter(c.up, c.method, "n/a", "unknown", "unknown")
 	}
 
 	b.ReportAllocs()
 	b.SetParallelism(runtime.GOMAXPROCS(0))
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		idx := rand.Intn(len(combos))
+		local := rand.New(rand.NewSource(time.Now().UnixNano()))
+		idx := local.Intn(len(combos))
+		ctx := context.Background()
 		for pb.Next() {
 			c := combos[idx]
-			tk.RecordUpstreamRemoteRateLimited(c.up, c.method, nil)
+			tk.RecordUpstreamRemoteRateLimited(ctx, c.up, c.method, nil)
 			idx++
 			if idx >= len(combos) {
 				idx = 0

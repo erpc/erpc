@@ -45,6 +45,24 @@ func stringToReaderCloser(s string) io.ReadCloser {
 	return io.NopCloser(strings.NewReader(s))
 }
 
+// waitUntilAtLeastNoT waits until getter() returns a value >= want or the timeout elapses.
+// It returns the last observed value.
+func waitUntilAtLeastNoT(getter func() int64, want int64, timeout time.Duration) int64 {
+	if want <= 0 {
+		return getter()
+	}
+	deadline := time.Now().Add(timeout)
+	val := getter()
+	for time.Now().Before(deadline) {
+		if val >= want {
+			return val
+		}
+		time.Sleep(5 * time.Millisecond)
+		val = getter()
+	}
+	return val
+}
+
 func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *evm.EvmJsonRpcCache) {
 	logger := log.Logger
 
@@ -81,7 +99,7 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 
 	for _, cfg := range upstreamConfigs {
 		mt := health.NewTracker(&logger, "prjA", 100*time.Second)
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &logger)
 		if err != nil {
 			panic(err)
 		}
@@ -104,8 +122,12 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 		}
 
 		poller := mockUpstream.EvmStatePoller()
+		time.Sleep(20 * time.Millisecond)
 		poller.SuggestFinalizedBlock(cfg.finBn)
 		poller.SuggestLatestBlock(cfg.lstBn)
+		// Wait until async suggestions are applied to counters to avoid races with test assertions
+		waitUntilAtLeastNoT(func() int64 { return poller.FinalizedBlock() }, cfg.finBn, 200*time.Millisecond)
+		waitUntilAtLeastNoT(func() int64 { return poller.LatestBlock() }, cfg.lstBn, 200*time.Millisecond)
 		poller.SetSyncingState(cfg.syncing)
 
 		upstreams = append(upstreams, mockUpstream)
@@ -472,7 +494,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
-			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+			// Note: Suggest* are async; use high values so async poller bootstrap won't downgrade counters
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 0x11117777, lstBn: 0x11118888},
 		})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
@@ -664,10 +687,11 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedCache: false, // Realtime tag → not cached
 			},
 			{
-				name:           "UnfinalizedBlock_Cache",
-				method:         "eth_getBlockByNumber",
-				params:         `["0x399",false]`,
-				result:         `"result":{"number":"0x399","hash":"0xdd"}`,
+				name:   "UnfinalizedBlock_Cache",
+				method: "eth_getBlockByNumber",
+				// Choose a block significantly above mocked latest (0x11118888) to ensure unfinalized
+				params:         `["0x11119999",false]`,
+				result:         `"result":{"number":"0x11119999","hash":"0xdd"}`,
 				expectedCache:  true, // Height above tip → Unfinalized rule
 				expectedPolicy: unfinalizedPolicy,
 			},
@@ -677,7 +701,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				params:         `["0x123"]`,
 				result:         `"result":{"hash":"0x123","blockNumber":null}`,
 				expectedCache:  true, // wildcard '*' → Unfinalized
-				expectedPolicy: unfinalizedPolicy,
+				expectedPolicy: unknownPolicy,
 			},
 			{
 				name:           "UnknownAccount_Cache",
@@ -722,13 +746,13 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				method:         "eth_getTransactionReceipt",
 				params:         `["0xdead"]`,
 				result:         `"result":{"hash":"0xdead","blockNumber":null}`,
-				expectedCache:  true, // Pending ⇒ wildcard '*' ⇒ Unfinalized
-				expectedPolicy: unfinalizedPolicy,
+				expectedCache:  true, // Pending ⇒ wildcard '*' ⇒ Unknown
+				expectedPolicy: unknownPolicy,
 			},
 			{
 				name:           "HighBlockBalance_Cache",
 				method:         "eth_getBalance",
-				params:         `["0x123","0x399"]`,
+				params:         `["0x123","0x11119999"]`,
 				result:         `"result":"0x222222"`,
 				expectedCache:  true, // Height above tip → Unfinalized
 				expectedPolicy: unfinalizedPolicy,
@@ -752,7 +776,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			{
 				name:           "LogsRange_Unfinalized_Cache",
 				method:         "eth_getLogs",
-				params:         `[{"fromBlock":"0x177777","toBlock":"0x277777"}]`,
+				params:         `[{"fromBlock":"0x11119999","toBlock":"0x1111aaaa"}]`,
 				result:         `"result":[{"address":"0xabc","data":"0x0"}]`,
 				expectedCache:  true,
 				expectedPolicy: unfinalizedPolicy,
@@ -798,7 +822,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				}
 
-				err := cache.Set(context.Background(), req, resp)
+				err := cache.Set(ctx, req, resp)
 
 				assert.NoError(t, err)
 				if tc.expectedCache {
@@ -2822,7 +2846,7 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 	require.NoError(t, err)
 
 	mt := health.NewTracker(&logger, "prjA", 100*time.Second)
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &logger)
 	require.NoError(t, err)
 
 	mockUpstream, err := upstream.NewUpstream(ctx, "test", &common.UpstreamConfig{
@@ -2840,8 +2864,12 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 	require.NoError(t, err)
 
 	poller := mockUpstream.EvmStatePoller()
+	time.Sleep(20 * time.Millisecond)
 	poller.SuggestFinalizedBlock(finalizedBlock)
 	poller.SuggestLatestBlock(latestBlock)
+	// Wait until async suggestions are applied to counters
+	waitUntilAtLeastNoT(func() int64 { return poller.FinalizedBlock() }, finalizedBlock, 200*time.Millisecond)
+	waitUntilAtLeastNoT(func() int64 { return poller.LatestBlock() }, latestBlock, 200*time.Millisecond)
 	poller.SetSyncingState(syncState)
 
 	return mockUpstream
@@ -2991,13 +3019,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		// Create random data that doesn't compress well
 		randomData := generateRandomString(100)
+		resultJSON := `"` + randomData + `"`
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
 
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(stringToReaderCloser(`{"result":"` + randomData + `"}`))
+			WithBody(stringToReaderCloser(`{"result":` + resultJSON + `}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -3022,12 +3051,12 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		err = cache.Set(ctx, req, resp)
 		require.NoError(t, err)
 
-		// If compression doesn't save space, it shouldn't be used
-		// This depends on the random data, but we can check the logic works
+		// The production code only uses compression when it actually saves space
+		// (compressed < original). Compare against the actual JSON result size
+		// (which includes quotes), not the raw random string length.
 		isCompressed := len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD
 		if isCompressed {
-			// If compressed, it should be smaller than original
-			assert.Less(t, len(storedValue), len(randomData))
+			assert.Less(t, len(storedValue), len(resultJSON))
 		}
 	})
 
@@ -3465,7 +3494,7 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 
 	for _, cfg := range upstreamConfigs {
 		mt := health.NewTracker(&logger, "prjA", 100*time.Second)
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &logger)
 		if err != nil {
 			panic(err)
 		}
@@ -3488,8 +3517,10 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 		}
 
 		poller := mockUpstream.EvmStatePoller()
+		time.Sleep(50 * time.Millisecond)
 		poller.SuggestFinalizedBlock(cfg.finBn)
 		poller.SuggestLatestBlock(cfg.lstBn)
+		time.Sleep(50 * time.Millisecond)
 		poller.SetSyncingState(cfg.syncing)
 
 		upstreams = append(upstreams, mockUpstream)

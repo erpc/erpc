@@ -124,7 +124,7 @@ func NewDynamoDBConnector(
 func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoDBConnectorConfig) error {
 	sess, err := createSession(cfg)
 	if err != nil {
-		return err
+		return common.NewTaskFatal(err)
 	}
 
 	d.writeClient = dynamodb.New(sess, &aws.Config{
@@ -142,7 +142,7 @@ func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoD
 	})
 
 	if cfg.Table == "" {
-		return fmt.Errorf("missing table name for dynamodb connector")
+		return common.NewTaskFatal(fmt.Errorf("missing table name for dynamodb connector"))
 	}
 
 	err = createTableIfNotExists(ctx, d.logger, d.writeClient, cfg)
@@ -457,19 +457,26 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			}
 		}
 
-		// We only need the first matching item and only its "value" attribute.
+		// Build a query that returns newest first, requesting value and ttl.
+		// We fetch up to 10 items and will pick the first non-expired one.
+		now := time.Now().Unix()
 		qi := &dynamodb.QueryInput{
 			TableName:                 aws.String(d.table),
 			IndexName:                 aws.String(d.reverseIndexName),
 			KeyConditionExpression:    aws.String(keyCondition),
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
-			Limit:                     aws.Int64(1),       // return at most one item
-			ProjectionExpression:      aws.String("#val"), // only return the value attribute
+			ScanIndexForward:          aws.Bool(false), // newest first
+			Limit:                     aws.Int64(10),   // examine a handful to avoid pagination
+			ProjectionExpression:      aws.String("#val, #ttl"),
 			Select:                    aws.String("SPECIFIC_ATTRIBUTES"),
+			FilterExpression:          aws.String("attribute_not_exists(#ttl) OR #ttl = :zero OR #ttl > :now"),
 		}
-		// Add alias for value attribute in ProjectionExpression
+		// Add aliases required by Projection/Filter
 		qi.ExpressionAttributeNames["#val"] = aws.String("value")
+		qi.ExpressionAttributeNames["#ttl"] = aws.String(d.ttlAttributeName)
+		qi.ExpressionAttributeValues[":now"] = &dynamodb.AttributeValue{N: aws.String(strconv.FormatInt(now, 10))}
+		qi.ExpressionAttributeValues[":zero"] = &dynamodb.AttributeValue{N: aws.String("0")}
 
 		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
 		defer cancel()
@@ -480,29 +487,32 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
-		if len(result.Items) == 0 {
+		// Find the first non-expired item from the page (FilterExpression already helps)
+		var chosen map[string]*dynamodb.AttributeValue
+		for _, it := range result.Items {
+			// Extra safeguard: client-side TTL validation
+			if ttl, exists := it[d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
+				expirationTime, perr := strconv.ParseInt(*ttl.N, 10, 64)
+				if perr == nil && now > expirationTime {
+					continue // skip expired
+				}
+			}
+			chosen = it
+			break
+		}
+
+		if chosen == nil {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
 
-		// Check if the item has expired
-		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
-			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
-			now := time.Now().Unix()
-			if err == nil && now > expirationTime {
-				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
-				common.SetTraceSpanError(span, err)
-				return nil, err
-			}
-		}
-
 		// Backward compatibility: check both B and S attributes
-		if result.Items[0]["value"].B != nil {
-			value = result.Items[0]["value"].B
-		} else if result.Items[0]["value"].S != nil {
+		if chosen["value"].B != nil {
+			value = chosen["value"].B
+		} else if chosen["value"].S != nil {
 			// Legacy string value - treat as final decompressed value
-			value = []byte(*result.Items[0]["value"].S)
+			value = []byte(*chosen["value"].S)
 		} else {
 			return nil, fmt.Errorf("value attribute is neither binary nor string")
 		}
@@ -700,12 +710,12 @@ func (l *dynamoLock) Unlock(ctx context.Context) error {
 	return err
 }
 
-func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
 	if d.readClient == nil {
 		return nil, nil, fmt.Errorf("DynamoDB client not initialized yet")
 	}
 
-	updates := make(chan int64, 1)
+	updates := make(chan CounterInt64State, 1)
 
 	// Start polling goroutine
 	ticker := time.NewTicker(d.statePollInterval)
@@ -713,7 +723,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 
 	go func() {
 		defer ticker.Stop()
-		var lastValue int64
+		var lastUpdatedAt int64
 		for {
 			select {
 			case <-ctx.Done():
@@ -721,15 +731,15 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 			case <-done:
 				return
 			case <-ticker.C:
-				value, err := d.getSimpleValue(ctx, key)
+				st, ok, err := d.getSimpleValue(ctx, key)
 				if err != nil {
 					d.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
 					continue
 				}
-				if value > lastValue {
-					lastValue = value
+				if ok && st.UpdatedAt > lastUpdatedAt {
+					lastUpdatedAt = st.UpdatedAt
 					select {
-					case updates <- value:
+					case updates <- st:
 					default:
 					}
 				}
@@ -738,8 +748,8 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	}()
 
 	// Get initial value
-	if val, err := d.getSimpleValue(ctx, key); err == nil {
-		updates <- val
+	if st, ok, err := d.getSimpleValue(ctx, key); err == nil && ok {
+		updates <- st
 	}
 
 	cleanup := func() {
@@ -750,7 +760,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	return updates, cleanup, nil
 }
 
-func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int64, error) {
+func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (CounterInt64State, bool, error) {
 	ctx, span := common.StartDetailSpan(ctx, "DynamoDBConnector.getSimpleValue",
 		trace.WithAttributes(
 			attribute.String("key", key),
@@ -768,72 +778,52 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int
 	})
 
 	if err != nil {
-		return 0, err
+		return CounterInt64State{}, false, err
 	}
 
 	if result.Item == nil {
-		return 0, nil
+		return CounterInt64State{}, false, nil
 	}
 
-	var value int64
-
-	if v, ok := result.Item["value"]; ok && v.S != nil {
-		value, _ = strconv.ParseInt(*v.S, 0, 64)
-	} else if v, ok := result.Item["value"]; ok && v.N != nil {
-		value, _ = strconv.ParseInt(*v.N, 0, 64)
-	} else {
-		return 0, fmt.Errorf("invalid value type for counter: %T", result.Item["value"])
+	// Check if value attribute exists
+	v, exists := result.Item["value"]
+	if !exists {
+		d.logger.Debug().Str("key", key).Msg("counter value attribute not found in DynamoDB item")
+		return CounterInt64State{}, false, nil
 	}
 
-	return value, nil
+	// Handle nil AttributeValue
+	if v == nil {
+		d.logger.Debug().Str("key", key).Msg("counter value attribute is nil")
+		return CounterInt64State{}, false, nil
+	}
+
+	// Extract raw bytes (we store JSON in Binary; other types are treated as best-effort strings)
+	var raw []byte
+	switch {
+	case v.B != nil:
+		raw = v.B
+	case v.S != nil:
+		raw = []byte(*v.S)
+	case v.N != nil:
+		raw = []byte(*v.N)
+	default:
+		return CounterInt64State{}, false, nil
+	}
+
+	var st CounterInt64State
+	if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
+		// No backward compatibility: treat parse errors as missing
+		return CounterInt64State{}, false, nil
+	}
+
+	return st, true, nil
 }
 
-func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
-	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.PublishCounterInt64",
-		trace.WithAttributes(
-			attribute.String("key", key),
-		),
-	)
-	defer span.End()
-
-	if common.IsTracingDetailed {
-		span.SetAttributes(
-			attribute.Int64("value", value),
-		)
-	}
-
-	if d.writeClient == nil {
-		return fmt.Errorf("DynamoDB client not initialized yet")
-	}
-
-	_, err := d.writeClient.UpdateItemWithContext(ctx, &dynamodb.UpdateItemInput{
-		TableName: aws.String(d.table),
-		Key: map[string]*dynamodb.AttributeValue{
-			d.partitionKeyName: {S: aws.String(key)},
-			d.rangeKeyName:     {S: aws.String("value")},
-		},
-		UpdateExpression: aws.String(
-			"SET #value = :value",
-		),
-		ConditionExpression: aws.String(
-			"attribute_not_exists(#value) OR #value < :value",
-		),
-		ExpressionAttributeNames: map[string]*string{
-			"#value": aws.String("value"),
-		},
-		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":value": {N: aws.String(fmt.Sprintf("%d", value))},
-		},
-	})
-
-	// Ignore condition check failures as they just mean the value wasn't higher
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
-			return nil
-		}
-		return err
-	}
-
+func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
+	// DynamoDB connector doesn't have a push-based pub/sub mechanism.
+	// Shared counters are propagated via polling WatchCounterInt64, and the authoritative state
+	// is stored via Set(). Publish is therefore a best-effort no-op.
 	return nil
 }
 

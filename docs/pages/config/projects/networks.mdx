@@ -37,6 +37,26 @@ projects:
           # Defining this fallback helps with increasing cache-hit rate and reducing redundant 'retry' attempts on empty responses, as we know which data is finalized.
           # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
           fallbackFinalityDepth: 1024
+          # (OPTIONAL) Fallback debounce interval for block polling when the dynamic block
+          # time estimate is not yet available (e.g. during the first few blocks after startup).
+          # Once enough blocks have been observed, the debounce is derived dynamically from
+          # the estimated block time × dynamicBlockTimeDebounceMultiplier.
+          # DEFAULT: 5s
+          fallbackStatePollerDebounce: 5s
+          # (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+          # the debounce interval for block polling. A value of 0.7 means the debounce is 30%
+          # shorter than the estimated block time, preferring fresher data over fewer RPC calls.
+          # DEFAULT: 0.7
+          dynamicBlockTimeDebounceMultiplier: 0.7
+          # (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+          # the retry delay when all upstreams return block-unavailable. Falls back to the
+          # static failsafe retry blockUnavailableDelay when block time is not yet available.
+          # DEFAULT: 0.8
+          blockUnavailableDelayMultiplier: 0.8
+          # (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
+          # When true (default), duplicate transaction errors are converted to success responses,
+          # allowing safe use of retry/hedge policies with transaction sending.
+          idempotentTransactionBroadcast: true
 
         # (OPTIONAL) A friendly alias for this network. This allows you to reference the network using the alias
         # instead of the architecture/chainId format. For example, instead of using /main/evm/1, you can use /main/ethereum.
@@ -164,6 +184,27 @@ export default createConfig({
             * DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
             */
             fallbackFinalityDepth: 1024,
+            /**
+            * (OPTIONAL) Fallback debounce interval for block polling when the dynamic block
+            * time estimate is not yet available. Default: "5s"
+            */
+            fallbackStatePollerDebounce: "5s",
+            /**
+            * (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+            * the debounce interval for block polling. Default: 0.7
+            */
+            dynamicBlockTimeDebounceMultiplier: 0.7,
+            /**
+            * (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+            * the retry delay when all upstreams return block-unavailable. Default: 0.8
+            */
+            blockUnavailableDelayMultiplier: 0.8,
+            /**
+            * (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
+            * When true (default), duplicate transaction errors are converted to success responses,
+            * allowing safe use of retry/hedge policies with transaction sending.
+            */
+            idempotentTransactionBroadcast: true,
           },
 
           /**
@@ -403,6 +444,66 @@ export default createConfig({
 
 This type of network are generic EVM-based chains that support JSON-RPC protocol.
 
+### Integrity Configuration
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          integrity:
+            # Track highest block across upstreams for "latest" and "finalized" tags
+            enforceHighestBlock: true  # default: true
+            
+            # Validate eth_getLogs block range availability on upstreams
+            enforceGetLogsBlockRange: true  # default: true
+            
+            # Convert null responses to errors for eth_getBlockByNumber tagged blocks ("pending", "latest", etc.)
+            # Numeric blocks (0x1234) always error when null regardless of this setting
+            # Set to false to allow null responses for eth_getBlockByNumber tagged blocks (e.g. for zkSync)
+            enforceNonNullTaggedBlocks: true  # default: true
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+    },
+    networks: [
+      {
+        architecture: "evm",
+        evm: {
+          chainId: 1,
+          integrity: {
+            // Track highest block across upstreams for "latest" and "finalized" tags
+            enforceNonNullTaggedBlocks: true, // default: true
+
+            // Validate eth_getLogs block range availability on upstreams
+            enforceHighestBlock: true, // default: true
+
+            // Convert null responses to errors for eth_getBlockByNumber tagged blocks ("pending", "latest", etc.)
+            // Numeric blocks (0x1234) always error when null regardless of this setting
+            // Set to false to allow null responses for eth_getBlockByNumber tagged blocks (e.g. for zkSync)
+            enforceGetLogsBlockRange: true, // default: true
+          },
+        },
+      },
+    ],
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 ### `eth_getLogs`
 
 Network-level controls manage validation, proactive splitting, and error-driven splitting for eth_getLogs. Requests may be split into smaller sub-requests and merged transparently.
@@ -505,6 +606,280 @@ export default createConfig({
 
 <Callout type='info'>
   Splitting preserves order and merges results server-side. Address count is the length of the <code>address</code> array (if present). Topic count considers only <code>topics[0]</code> when it is an OR-list.
+</Callout>
+
+### `trace_filter` and `arbtrace_filter`
+
+The same proactive / reactive splitting pattern is available for `trace_filter`
+(OpenEthereum/Erigon/Reth/Nethermind) and `arbtrace_filter` (Arbitrum Nova),
+which share block range semantics with `eth_getLogs` but return trace objects
+instead of logs. Useful when an upstream caps trace results per response
+(for example, returning "too many results" with a hint to paginate).
+
+- **Proactive splitting**: if the requested block range exceeds an effective
+  threshold, the network splits the request into contiguous ranges before
+  contacting any upstream. The effective threshold is the minimum positive
+  `upstream.evm.traceFilterAutoSplittingRangeThreshold` across selected
+  upstreams.
+- **Split on error**: if an upstream signals a range-too-large error, the
+  network retries by bisecting first the block range, then `fromAddress`,
+  then `toAddress` arrays, and merges results.
+- **Concurrency**: `traceFilterSplitConcurrency` limits parallel sub-requests
+  during splitting.
+
+Both the proactive threshold and the on-error split are opt-in and disabled by
+default.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+
+          # Retry by splitting when an upstream returns "too many results" /
+          # "try paginating" / similar range-too-large errors.
+          traceFilterSplitOnError: true
+
+          # Parallelism for split sub-requests (applies to proactive and error-driven splits).
+          traceFilterSplitConcurrency: 10
+
+    upstreams:
+      - id: my-upstream
+        endpoint: https://mainnet.example.com
+        evm:
+          # 0 or negative disables the proactive split hint for this upstream.
+          # Pick a value that stays comfortably below the upstream's per-response
+          # result cap for typical trace density on the target chain.
+          traceFilterAutoSplittingRangeThreshold: 100
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+
+            // Retry by splitting when an upstream returns "too many results" /
+            // "try paginating" / similar range-too-large errors.
+            traceFilterSplitOnError: true,
+
+            // Parallelism for split sub-requests (applies to proactive and error-driven splits).
+            traceFilterSplitConcurrency: 10,
+          },
+        },
+      ],
+
+      upstreams: [
+        {
+          id: "my-upstream",
+          endpoint: "https://mainnet.example.com",
+          evm: {
+            // 0 or negative disables the proactive split hint for this upstream.
+            // Pick a value that stays comfortably below the upstream's per-response
+            // result cap for typical trace density on the target chain.
+            traceFilterAutoSplittingRangeThreshold: 100,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  Sub-ranges and address-list halves are disjoint by construction, so no
+  deduplication is performed server-side. Order is preserved by sub-request
+  index.
+</Callout>
+
+### `eth_sendRawTransaction`
+
+eRPC provides **idempotent transaction broadcasting** for `eth_sendRawTransaction`, enabling safe use of retry and hedge policies with transaction sending.
+
+**How it works:**
+- When an upstream returns "already known" or similar duplicate transaction errors, eRPC converts it to a success response with the transaction hash
+- For "nonce too low" errors, eRPC verifies if the exact transaction exists on-chain before returning success
+- This allows failsafe policies (retry, hedge) to work safely—if a transaction is broadcast to multiple upstreams or retried, duplicate errors are handled gracefully
+
+**Enabled by default.** To disable:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # Disable idempotent transaction broadcast (default: true)
+          idempotentTransactionBroadcast: false
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+            // Disable idempotent transaction broadcast (default: true)
+            idempotentTransactionBroadcast: false,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  When enabled, `eth_sendRawTransaction` can safely use retry and hedge policies. The transaction hash is deterministically computed from the signed transaction, so duplicate detection works across any upstream.
+</Callout>
+
+### `eth_getTransactionCount`
+
+When querying nonce values across multiple upstreams (e.g., using consensus), you may want to return the **highest** nonce rather than the most common one. This prevents issues where stale nonces from lagging nodes cause transaction failures.
+
+Use `preferHighestValueFor` in the consensus policy to return the highest numeric value:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          - matchMethod: eth_getTransactionCount
+            consensus:
+              maxParticipants: 3   # Query 3 upstreams in parallel
+              agreementThreshold: 1 # Return highest nonce (typically the most recent)
+              preferHighestValueFor:
+                eth_getTransactionCount:
+                  - result  # Compare the direct result value (hex nonce)
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: { chainId: 1 },
+          failsafe: [
+            {
+              matchMethod: "eth_getTransactionCount",
+              consensus: {
+                maxParticipants: 3,   // Query 3 upstreams in parallel
+                agreementThreshold: 1, // Return highest nonce (typically the most recent)
+                preferHighestValueFor: {
+                  eth_getTransactionCount: ["result"],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+The `preferHighestValueFor` map supports:
+- **Direct result**: Use `"result"` for methods returning a simple value (like `eth_getTransactionCount` returning `"0x5"`)
+- **Nested fields**: Use field names for object results (e.g., `["nonce", "blockNumber"]` for `eth_getTransactionByHash`)
+- **Tie-breakers**: Multiple fields are compared in order—first field is primary, subsequent fields break ties
+
+<Callout type='warning'>
+  **How `maxParticipants` and `agreementThreshold` behave:**
+  
+  When `preferHighestValueFor` is configured for a method:
+  - **`maxParticipants`**: All configured upstreams are queried in parallel. Set this to the number of upstreams you want to compare (recommended: 2-3).
+  - **`agreementThreshold`**: Minimum number of upstreams that must agree on a value for it to qualify. Among qualifying values, the highest wins.
+  
+  **Recommendation:** Use `agreementThreshold: 1`. The highest nonce typically represents the most recently mined transaction, which is the correct value to use. Lagging nodes may return stale (lower) nonces, and requiring agreement would incorrectly prefer the stale value.
+  
+  Only use `agreementThreshold: 2` or higher if you have specific concerns about compromised upstreams returning artificially high nonces.
+</Callout>
+
+<Callout type='info'>
+  When `preferHighestValueFor` is configured for a method, it takes precedence over normal hash-based consensus. Error responses are ignored; only valid numeric responses are compared.
+</Callout>
+
+## Static responses
+
+Some chains deviate from common client assumptions in ways that make specific RPC requests unanswerable or produce inconsistent responses across upstreams. For example, a chain whose genesis block is at height `1` instead of `0` has no valid answer for `eth_getBlockByNumber("0x0", false)` — clients that probe block 0 will see errors or divergent results, and the upstream may be flagged as misbehaving.
+
+`staticResponses` lets you configure a canned JSON-RPC response for a specific `(method, params)` pair on a network. When an inbound request matches, the configured response is returned immediately and no upstream is contacted.
+
+```yaml
+networks:
+  - architecture: evm
+    evm:
+      chainId: 999
+    staticResponses:
+      # Return a synthetic block for eth_getBlockByNumber("0x0", false)
+      - method: eth_getBlockByNumber
+        params: ["0x0", false]
+        response:
+          result:
+            number: "0x0"
+            hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+            # ...remaining block fields
+
+      # Or return a JSON-RPC error
+      - method: some_unsupported_method
+        params: []
+        response:
+          error:
+            code: -32601
+            message: "Method not found"
+```
+
+Match semantics:
+
+* The `method` must match the request method exactly.
+* The `params` must match the request params via deep equality. Maps may have keys in any order. Integer and floating-point types of the same numeric value compare equal (for example, config written as `1` in YAML matches an incoming JSON `1.0`). Hex strings are compared literally — `"0x0"` and `"0x00"` are treated as distinct.
+* Entries are checked in declaration order; the first match wins.
+* Exactly one of `response.result` or `response.error` must be set.
+
+Matched requests skip cache, multiplexer, and upstream selection entirely, and the inbound request `id` is echoed in the response. Hits are counted by the `erpc_network_static_response_served_total` metric.
+
+<Callout type='info'>
+  Static responses apply only to user-facing requests on the network. eRPC's internal state pollers (for block number and finality) continue to query upstreams normally.
 </Callout>
 
 ## Name aliasing

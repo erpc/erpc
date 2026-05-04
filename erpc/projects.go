@@ -40,6 +40,19 @@ func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Ne
 	return p.networksRegistry.GetNetwork(ctx, networkId)
 }
 
+// FindNetworkConfig returns the existing config for the given network, or nil.
+// Safe for concurrent use.
+func (p *PreparedProject) FindNetworkConfig(networkId string) *common.NetworkConfig {
+	p.cfgMu.RLock()
+	defer p.cfgMu.RUnlock()
+	for _, cfg := range p.Config.Networks {
+		if cfg.NetworkId() == networkId {
+			return cfg
+		}
+	}
+	return nil
+}
+
 // ExposeNetworkConfig is used to add lazy-loaded network configs to the project
 // so that other components can use them, also is returned via erpc_project admin API.
 func (p *PreparedProject) ExposeNetworkConfig(nwCfg *common.NetworkConfig) {
@@ -76,9 +89,9 @@ func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
 	}, nil
 }
 
-func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
+func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, req *common.NormalizedRequest, method string, ap *auth.AuthPayload) (*common.User, error) {
 	if p.consumerAuthRegistry != nil {
-		return p.consumerAuthRegistry.Authenticate(ctx, method, ap)
+		return p.consumerAuthRegistry.Authenticate(ctx, req, method, ap)
 	}
 	return nil, nil
 }
@@ -93,7 +106,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
-	if err := p.acquireRateLimitPermit(nq); err != nil {
+	// Ensure project label is available for budget decision metrics by setting network on request early
+	nq.SetNetwork(network)
+	if err := p.AcquireRateLimitPermit(ctx, nq); err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
@@ -250,7 +265,7 @@ func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *c
 	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
 }
 
-func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) error {
+func (p *PreparedProject) AcquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {
 	if p.Config.RateLimitBudget == "" {
 		return nil
 	}
@@ -276,21 +291,16 @@ func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) 
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {
-		for _, rule := range rules {
-			permit := rule.Limiter.TryAcquirePermit()
-			if !permit {
-				telemetry.MetricProjectRequestSelfRateLimited.WithLabelValues(
-					p.Config.Id,
-					method,
-				).Inc()
-				return common.NewErrProjectRateLimitRuleExceeded(
-					p.Config.Id,
-					p.Config.RateLimitBudget,
-					fmt.Sprintf("%+v", rule.Config),
-				)
-			} else {
-				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("project-level rate limit passed")
-			}
+		allowed, err := rlb.TryAcquirePermit(ctx, p.Config.Id, req, method, "", "", "", "project")
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return common.NewErrProjectRateLimitRuleExceeded(
+				p.Config.Id,
+				p.Config.RateLimitBudget,
+				fmt.Sprintf("method:%s", method),
+			)
 		}
 	}
 

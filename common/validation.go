@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -174,6 +175,24 @@ func (s *ServerConfig) Validate() error {
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
 	}
+
+	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field
+	for _, entry := range s.TrustedIPForwarders {
+		val := strings.TrimSpace(entry)
+		if val == "" {
+			return fmt.Errorf("server.trustedForwarders contains empty entry")
+		}
+		if strings.Contains(val, "/") {
+			if _, _, err := net.ParseCIDR(val); err != nil {
+				return fmt.Errorf("server.trustedForwarders entry '%s' is not a valid CIDR: %v", val, err)
+			}
+		} else {
+			if ip := net.ParseIP(val); ip == nil {
+				return fmt.Errorf("server.trustedForwarders entry '%s' is not a valid IP address", val)
+			}
+		}
+	}
+	// No validation for trusted IP headers; treat as raw header names with XFF-like syntax
 	return nil
 }
 
@@ -227,6 +246,30 @@ func (m *MetricsConfig) Validate() error {
 }
 
 func (r *RateLimiterConfig) Validate() error {
+	// Validate store when present
+	if r.Store == nil {
+		return fmt.Errorf("rateLimiters.store is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Store.Driver)) {
+	case "redis":
+		if r.Store.Redis == nil {
+			return fmt.Errorf("rateLimiters.store.redis is required when store.type is 'redis'")
+		}
+		if r.Store.NearLimitRatio != 0 && (r.Store.NearLimitRatio <= 0 || r.Store.NearLimitRatio >= 1) {
+			return fmt.Errorf("rateLimiters.store.nearLimitRatio must be > 0 and < 1")
+		}
+		// Validate redis connector
+		if err := r.Store.Redis.Validate(); err != nil {
+			return fmt.Errorf("rateLimiters.store.redis is invalid: %w", err)
+		}
+	case "memory":
+		// No validation for memory store
+	case "":
+		fallthrough
+	default:
+		return fmt.Errorf("rateLimiters.store.type '%s' is invalid must be one of: redis, memory", r.Store.Driver)
+	}
+
 	if len(r.Budgets) > 0 {
 		for _, budget := range r.Budgets {
 			if err := budget.Validate(); err != nil {
@@ -253,8 +296,18 @@ func (r *RateLimitRuleConfig) Validate() error {
 	if r.Method == "" {
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.method is required")
 	}
-	if r.WaitTime == 0 {
-		return fmt.Errorf("rateLimiter.*.budget.rules.*.waitTime is required")
+	// waitTime is deprecated; warn and ignore if provided
+	if r.WaitTime != 0 {
+		log.Warn().Msg("rateLimiter.*.budget.rules.*.waitTime is deprecated and will be ignored")
+	}
+
+	// Period must be one of the supported enums (with legacy duration already mapped in unmarshal)
+	switch r.Period {
+	case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+		RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+		// ok
+	default:
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.period must be one of: second, minute, hour, day, week, month, year")
 	}
 	return nil
 }
@@ -313,22 +366,28 @@ func (s *SharedStateConfig) Validate() error {
 		return fmt.Errorf("sharedState.lockTtl should be at least 1s")
 	}
 
-	// Validate timeout relationships to prevent negative calculations in shared state flows
+	// Validate timeout relationships for the best-effort design
 	fallbackTimeout := s.FallbackTimeout.Duration()
 	lockTtl := s.LockTtl.Duration()
+	lockMaxWait := s.LockMaxWait.Duration()
+	updateMaxWait := s.UpdateMaxWait.Duration()
 
-	// TryUpdate uses operationBuffer = fallbackTimeout * 2
-	// Ensure lockTtl provides sufficient buffer for operations after lock acquisition
-	if fallbackTimeout*2 >= lockTtl {
-		return fmt.Errorf("sharedState.lockTtl (%v) must be greater than fallbackTimeout * 2 (%v) to prevent negative timeout calculations",
-			lockTtl, fallbackTimeout*2)
+	// LockTtl should be long enough to complete remote operations (get + set)
+	// It should be at least as long as FallbackTimeout to allow one remote operation
+	if lockTtl < fallbackTimeout {
+		return fmt.Errorf("sharedState.lockTtl (%v) should be at least as long as fallbackTimeout (%v) to complete remote operations",
+			lockTtl, fallbackTimeout)
 	}
 
-	// TryUpdateIfStale uses operationBuffer = fallbackTimeout * 4 (more conservative)
-	// This is the more restrictive constraint and covers both update methods
-	if fallbackTimeout*4 >= lockTtl {
-		return fmt.Errorf("sharedState.lockTtl (%v) must be greater than fallbackTimeout * 4 (%v) to prevent negative timeout calculations",
-			lockTtl, fallbackTimeout*4)
+	// LockMaxWait and UpdateMaxWait are foreground budgets and should be much smaller than network timeouts
+	if lockMaxWait >= fallbackTimeout {
+		return fmt.Errorf("sharedState.lockMaxWait (%v) should be less than fallbackTimeout (%v) as it's a foreground latency budget",
+			lockMaxWait, fallbackTimeout)
+	}
+
+	if updateMaxWait >= fallbackTimeout {
+		return fmt.Errorf("sharedState.updateMaxWait (%v) should be less than fallbackTimeout (%v) as it's a foreground latency budget",
+			updateMaxWait, fallbackTimeout)
 	}
 
 	return nil
@@ -500,6 +559,31 @@ func (c *ConnectorConfig) Validate() error {
 		}
 	}
 
+	for i, fsCfg := range c.FailsafeForGets {
+		if err := validateConnectorFailsafe(c.Id, "failsafeForGets", i, fsCfg); err != nil {
+			return err
+		}
+	}
+	for i, fsCfg := range c.FailsafeForSets {
+		if err := validateConnectorFailsafe(c.Id, "failsafeForSets", i, fsCfg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
+	if fsCfg == nil {
+		return nil
+	}
+	prefix := fmt.Sprintf("connector '%s'.%s[%d]", connectorId, field, index)
+	if fsCfg.Consensus != nil {
+		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
+	}
+	if fsCfg.Hedge != nil && fsCfg.Hedge.Quantile > 0 {
+		return fmt.Errorf("%s: hedge quantile is not supported for connector-level failsafe (no latency metric source)", prefix)
+	}
 	return nil
 }
 
@@ -585,6 +669,36 @@ func (p *MemoryConnectorConfig) Validate() error {
 func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
+	}
+	if p.RoutingStrategy != "" {
+		switch strings.ToLower(strings.TrimSpace(p.RoutingStrategy)) {
+		case "score-based", "round-robin":
+			// ok
+		default:
+			return fmt.Errorf("project.*.routingStrategy must be one of: score-based, round-robin")
+		}
+	}
+	if p.ScoreGranularity != "" {
+		switch strings.ToLower(strings.TrimSpace(p.ScoreGranularity)) {
+		case "upstream", "method":
+			// ok
+		default:
+			return fmt.Errorf("project.*.scoreGranularity must be one of: upstream, method")
+		}
+	}
+	if p.ScorePenaltyDecayRate > 1 {
+		return fmt.Errorf("project.*.scorePenaltyDecayRate must be <= 1 (use negative to disable EMA memory)")
+	}
+	if p.ScoreSwitchHysteresis > 1 {
+		return fmt.Errorf("project.*.scoreSwitchHysteresis must be <= 1 (use negative to disable stickiness)")
+	}
+	if p.ScoreMetricsMode != "" {
+		switch strings.ToLower(strings.TrimSpace(p.ScoreMetricsMode)) {
+		case "compact", "detailed", "none":
+			// ok
+		default:
+			return fmt.Errorf("project.*.scoreMetricsMode must be one of: compact, detailed, none")
+		}
 	}
 	if len(p.Providers) > 0 {
 		existingIds := make(map[string]bool)
@@ -720,6 +834,13 @@ func (s *AuthStrategyConfig) Validate() error {
 		if err := s.Database.Validate(); err != nil {
 			return err
 		}
+	case AuthTypeX402:
+		if s.X402 == nil {
+			return fmt.Errorf("auth.*.x402 is required for x402 strategy")
+		}
+		if err := s.X402.Validate(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("auth.*.type '%s' is invalid must be one of: %v", s.Type, []AuthType{
 			AuthTypeNetwork,
@@ -727,6 +848,7 @@ func (s *AuthStrategyConfig) Validate() error {
 			AuthTypeJwt,
 			AuthTypeSiwe,
 			AuthTypeDatabase,
+			AuthTypeX402,
 		})
 	}
 	return nil
@@ -770,6 +892,7 @@ func (j *JwtStrategyConfig) Validate() error {
 	if len(j.VerificationKeys) == 0 {
 		return fmt.Errorf("auth.*.jwt.verificationKeys is required, add at least one verification key")
 	}
+	// No validation required for RateLimitBudgetClaimName; empty is allowed and defaulted in SetDefaults
 	return nil
 }
 
@@ -877,6 +1000,7 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if e.StatePollerInterval == 0 {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
 	}
+	// NodeType deprecated; keep syntax validation for back-compat only
 	if e.NodeType != "" {
 		allowed := []EvmNodeType{
 			EvmNodeTypeUnknown,
@@ -886,6 +1010,114 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 		if !slices.Contains(allowed, e.NodeType) {
 			return fmt.Errorf("upstream.*.evm.nodeType '%s' is invalid must be one of: %v", e.NodeType, allowed)
 		}
+	}
+
+	// Validate block availability config when provided
+	if e.BlockAvailability != nil {
+		if err := e.BlockAvailability.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Validate block availability config
+func (c *EvmBlockAvailabilityConfig) Validate() error {
+	if c.Lower != nil {
+		if err := c.Lower.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.evm.blockAvailability.lower is invalid: %w", err)
+		}
+	}
+	if c.Upper != nil {
+		if err := c.Upper.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.evm.blockAvailability.upper is invalid: %w", err)
+		}
+	}
+
+	// If both exact blocks are provided, ensure lower <= upper
+	if c.Lower != nil && c.Upper != nil && c.Lower.ExactBlock != nil && c.Upper.ExactBlock != nil {
+		if *c.Lower.ExactBlock > *c.Upper.ExactBlock {
+			return fmt.Errorf("upstream.*.evm.blockAvailability.lower.exactBlock must be <= upper.exactBlock")
+		}
+	}
+
+	// If both are relative to latest, ensure (latest - lower) <= (latest - upper) ⇒ lower.latestBlockMinus >= upper.latestBlockMinus
+	if c.Lower != nil && c.Upper != nil && c.Lower.LatestBlockMinus != nil && c.Upper.LatestBlockMinus != nil {
+		if *c.Lower.LatestBlockMinus < *c.Upper.LatestBlockMinus {
+			return fmt.Errorf("upstream.*.evm.blockAvailability: when both bounds are latestBlockMinus, lower.latestBlockMinus must be >= upper.latestBlockMinus")
+		}
+	}
+
+	// If both are relative to earliest, ensure (earliest + lower) <= (earliest + upper) ⇒ lower.earliestBlockPlus <= upper.earliestBlockPlus
+	if c.Lower != nil && c.Upper != nil && c.Lower.EarliestBlockPlus != nil && c.Upper.EarliestBlockPlus != nil {
+		if *c.Lower.EarliestBlockPlus > *c.Upper.EarliestBlockPlus {
+			return fmt.Errorf("upstream.*.evm.blockAvailability: when both bounds are earliestBlockPlus, lower.earliestBlockPlus must be <= upper.earliestBlockPlus")
+		}
+	}
+
+	return nil
+}
+
+func (b *EvmAvailabilityBoundConfig) Validate() error {
+	setCount := 0
+	if b.ExactBlock != nil {
+		setCount++
+	}
+	if b.LatestBlockMinus != nil {
+		setCount++
+	}
+	if b.EarliestBlockPlus != nil {
+		setCount++
+	}
+	if setCount == 0 {
+		return fmt.Errorf("bound must set exactly one of: exactBlock, latestBlockMinus, earliestBlockPlus")
+	}
+	if setCount > 1 {
+		return fmt.Errorf("bound fields exactBlock, latestBlockMinus, earliestBlockPlus are mutually exclusive")
+	}
+
+	// exactBlock: probe must be empty and updateRate must be 0
+	if b.ExactBlock != nil {
+		if b.Probe != "" {
+			return fmt.Errorf("bound.probe must be empty when exactBlock is set")
+		}
+		if b.UpdateRate != 0 {
+			return fmt.Errorf("bound.updateRate must be 0 when exactBlock is set")
+		}
+		if *b.ExactBlock < 0 {
+			return fmt.Errorf("bound.exactBlock must be >= 0")
+		}
+		return nil
+	}
+
+	// Relative values must be non-negative
+	if b.LatestBlockMinus != nil && *b.LatestBlockMinus < 0 {
+		return fmt.Errorf("bound.latestBlockMinus must be >= 0")
+	}
+	if b.EarliestBlockPlus != nil && *b.EarliestBlockPlus < 0 {
+		return fmt.Errorf("bound.earliestBlockPlus must be >= 0")
+	}
+	if b.UpdateRate < 0 {
+		return fmt.Errorf("bound.updateRate must be >= 0")
+	}
+
+	// Probe validation: allow empty (defaults to blockHeader) or one of the supported values
+	if b.Probe != "" {
+		allowed := []EvmAvailabilityProbeType{
+			EvmProbeBlockHeader,
+			EvmProbeEventLogs,
+			EvmProbeCallState,
+			EvmProbeTraceData,
+		}
+		if !slices.Contains(allowed, b.Probe) {
+			return fmt.Errorf("bound.probe '%s' is invalid must be one of: %v", b.Probe, allowed)
+		}
+	}
+
+	// Warn: updateRate is ignored when latestBlockMinus is used
+	if b.LatestBlockMinus != nil && b.UpdateRate > 0 {
+		log.Warn().Msg("upstream.*.evm.blockAvailability.*.updateRate is ignored when latestBlockMinus is set; remove it or set to 0")
 	}
 
 	return nil
@@ -924,8 +1156,18 @@ func (f *FailsafeConfig) Validate() error {
 }
 
 func (t *TimeoutPolicyConfig) Validate() error {
-	if t.Duration == 0 {
+	if t.Quantile > 0 {
+		if t.Quantile > 1 {
+			return fmt.Errorf("upstream.*.failsafe.timeout.quantile must be between 0 and 1")
+		}
+		if t.Duration == 0 && t.MaxDuration == 0 {
+			return fmt.Errorf("upstream.*.failsafe.timeout.duration or maxDuration is required when quantile is set")
+		}
+	} else if t.Duration == 0 {
 		return fmt.Errorf("upstream.*.failsafe.timeout.duration is required")
+	}
+	if t.MinDuration > 0 && t.MaxDuration > 0 && t.MinDuration > t.MaxDuration {
+		return fmt.Errorf("upstream.*.failsafe.timeout.minDuration must be less than or equal to maxDuration")
 	}
 	return nil
 }
@@ -973,9 +1215,6 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 }
 
 func (c *ConsensusPolicyConfig) Validate() error {
-	if c.RequiredParticipants > 0 {
-		log.Warn().Msg("consensus.requiredParticipants is deprecated, use consensus.maxParticipants instead")
-	}
 	if c.MaxParticipants <= 0 {
 		return fmt.Errorf("consensus.maxParticipants must be greater than 0")
 	}
@@ -991,6 +1230,81 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	// Validate misbehavior export destination when provided
+	if c.MisbehaviorsDestination != nil {
+		if err := c.MisbehaviorsDestination.Validate(); err != nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination is invalid: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Validate validates the MisbehaviorsDestinationConfig
+func (c *MisbehaviorsDestinationConfig) Validate() error {
+	t := strings.ToLower(string(c.Type))
+	switch t {
+	case string(MisbehaviorsDestinationTypeFile), "":
+		// File destination requires absolute path
+		if strings.TrimSpace(c.Path) == "" {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path is required for file destination")
+		}
+		if !strings.HasPrefix(c.Path, "/") {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path must be an absolute path for file destination")
+		}
+	case string(MisbehaviorsDestinationTypeS3):
+		if strings.TrimSpace(c.Path) == "" {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path is required for s3 destination (e.g., s3://bucket/prefix)")
+		}
+		if !strings.HasPrefix(strings.ToLower(c.Path), "s3://") {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path must start with s3:// for s3 destination")
+		}
+		// Delegate to S3 config validation
+		if c.S3 == nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination.s3 is required when type is 's3'")
+		}
+		if err := c.S3.Validate(); err != nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination.s3 is invalid: %w", err)
+		}
+	default:
+		return fmt.Errorf("consensus.misbehaviorsDestination.type must be 'file' or 's3'")
+	}
+	return nil
+}
+
+// Validate validates S3 flush configuration
+func (c *S3FlushConfig) Validate() error {
+	if c.MaxRecords < 0 {
+		return fmt.Errorf("s3.maxRecords must be >= 0")
+	}
+	if c.MaxSize < 0 {
+		return fmt.Errorf("s3.maxSize must be >= 0")
+	}
+	if c.FlushInterval < 0 {
+		return fmt.Errorf("s3.flushInterval must be >= 0")
+	}
+	if c.Credentials != nil {
+		mode := strings.ToLower(strings.TrimSpace(c.Credentials.Mode))
+		switch mode {
+		case "env":
+			// ok
+		case "file":
+			if strings.TrimSpace(c.Credentials.CredentialsFile) == "" {
+				return fmt.Errorf("s3.credentials.credentialsFile is required when mode is 'file'")
+			}
+			if strings.TrimSpace(c.Credentials.Profile) == "" {
+				return fmt.Errorf("s3.credentials.profile is required when mode is 'file'")
+			}
+		case "secret":
+			if strings.TrimSpace(c.Credentials.AccessKeyID) == "" || strings.TrimSpace(c.Credentials.SecretAccessKey) == "" {
+				return fmt.Errorf("s3.credentials.accessKeyID and secretAccessKey are required when mode is 'secret'")
+			}
+		case "":
+			// default chain; ok
+		default:
+			return fmt.Errorf("s3.credentials.mode must be one of: env, file, secret")
+		}
+	}
 	return nil
 }
 
@@ -1107,6 +1421,35 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return fmt.Errorf("network.*.alias '%s' must contain only alphanumeric characters, dash, or underscore", n.Alias)
 		}
 	}
+	for i, sr := range n.StaticResponses {
+		if err := sr.Validate(); err != nil {
+			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (s *StaticResponseConfig) Validate() error {
+	if s == nil {
+		return fmt.Errorf("entry is nil")
+	}
+	if s.Method == "" {
+		return fmt.Errorf("method is required")
+	}
+	if s.Response == nil {
+		return fmt.Errorf("response is required")
+	}
+	hasResult := s.Response.Result != nil
+	hasError := s.Response.Error != nil
+	if hasResult && hasError {
+		return fmt.Errorf("response must set exactly one of result or error, got both")
+	}
+	if !hasResult && !hasError {
+		return fmt.Errorf("response must set exactly one of result or error, got neither")
+	}
+	if hasError && s.Response.Error.Message == "" {
+		return fmt.Errorf("response.error.message is required")
+	}
 	return nil
 }
 
@@ -1130,11 +1473,14 @@ func (c *SelectionPolicyConfig) Validate() error {
 	if c.EvalFunction == nil {
 		return fmt.Errorf("selectionPolicy.evalFunction is required")
 	}
-	if c.ResampleInterval <= 0 {
-		return fmt.Errorf("selectionPolicy.resampleInterval must be greater than 0")
-	}
-	if c.ResampleCount <= 0 {
-		return fmt.Errorf("selectionPolicy.resampleCount must be greater than 0")
+	// ResampleInterval and ResampleCount are only required when ResampleExcluded is true
+	if c.ResampleExcluded {
+		if c.ResampleInterval <= 0 {
+			return fmt.Errorf("selectionPolicy.resampleInterval must be greater than 0 when resampleExcluded is true")
+		}
+		if c.ResampleCount <= 0 {
+			return fmt.Errorf("selectionPolicy.resampleCount must be greater than 0 when resampleExcluded is true")
+		}
 	}
 	return nil
 }

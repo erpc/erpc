@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,17 @@ type batchRequest struct {
 
 // (gzip pooling implemented via util.GzipReaderPool)
 
+// effectiveCause returns context.Cause(ctx) if set, otherwise ctx.Err(). Use
+// whenever the code needs the reason a ctx was canceled or expired, so
+// policy-driven sentinels (e.g. common.ErrDynamicTimeoutExceeded) are
+// preferred over the generic context.DeadlineExceeded.
+func effectiveCause(ctx context.Context) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return ctx.Err()
+}
+
 func NewGenericHttpJsonRpcClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
@@ -102,7 +114,9 @@ func NewGenericHttpJsonRpcClient(
 	}
 
 	if util.IsTest() {
-		client.httpClient = &http.Client{}
+		client.httpClient = &http.Client{
+			Transport: http.DefaultTransport,
+		}
 	} else {
 		client.httpClient = &http.Client{
 			Timeout:   60 * time.Second,
@@ -176,10 +190,10 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	case err := <-errChan:
 		return nil, err
 	case <-ctx.Done():
-		err := ctx.Err()
+		err := effectiveCause(ctx)
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			err = common.NewErrEndpointRequestTimeout(time.Since(startedAt), err)
 		} else if errors.Is(err, context.Canceled) {
 			err = common.NewErrEndpointRequestCanceled(err)
@@ -222,8 +236,11 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	// If the request context is already canceled, fail it immediately and do not queue
 	if err := req.ctx.Err(); err != nil {
 		c.batchMu.Unlock()
-		// propagate a normalized error
-		if errors.Is(err, context.DeadlineExceeded) {
+		// Prefer context.Cause so policy-driven sentinels survive.
+		if cause := context.Cause(req.ctx); cause != nil {
+			err = cause
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			req.err <- common.NewErrEndpointRequestTimeout(0, err)
 		} else {
 			req.err <- common.NewErrEndpointRequestCanceled(err)
@@ -243,7 +260,7 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	c.batchRequests[id] = req
 	ctxd, ok := req.ctx.Deadline()
 	if ctxd.After(time.Now()) && ok {
-		// Use the earliest deadline among queued requests so the batch cancels promptly
+		// Use the earliest deadline among queued requests so the batch cancels promptly.
 		if c.batchDeadline == nil || ctxd.Before(*c.batchDeadline) {
 			duration := time.Until(ctxd)
 			c.logger.Trace().Dur("deadline", duration).Msgf("setting batch deadline to earliest request deadline")
@@ -328,7 +345,10 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	for id, br := range requests {
 		if err := br.ctx.Err(); err != nil {
 			delete(requests, id)
-			if errors.Is(err, context.DeadlineExceeded) {
+			if cause := context.Cause(br.ctx); cause != nil {
+				err = cause
+			}
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 				br.err <- common.NewErrEndpointRequestTimeout(0, err)
 			} else {
 				br.err <- common.NewErrEndpointRequestCanceled(err)
@@ -419,26 +439,26 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	// pick the client from the proxy pool registry (if configured) or fallback
 	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
-		cause := context.Cause(batchCtx)
-		if cause == nil {
-			cause = batchCtx.Err()
-		}
-		if cause != nil {
-			err = cause
+		if batchCause := effectiveCause(batchCtx); batchCause != nil {
+			err = batchCause
 		}
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
-		if errors.Is(err, context.DeadlineExceeded) {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
+		// Each request's own ctx carries the policy-driven cause (e.g.
+		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
+		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
+		// so the sentinel survives upstream-level error classification.
+		for _, req := range requests {
+			reqErr := err
+			if rc := context.Cause(req.ctx); rc != nil {
+				reqErr = rc
 			}
-		} else if errors.Is(err, context.Canceled) {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointRequestCanceled(err)
-			}
-		} else {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointTransportFailure(c.Url, err)
+			if errors.Is(reqErr, context.DeadlineExceeded) || errors.Is(reqErr, common.ErrDynamicTimeoutExceeded) {
+				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), reqErr)
+			} else if errors.Is(reqErr, context.Canceled) {
+				req.err <- common.NewErrEndpointRequestCanceled(reqErr)
+			} else {
+				req.err <- common.NewErrEndpointTransportFailure(c.Url, reqErr)
 			}
 		}
 		return
@@ -456,12 +476,15 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	bodyBytes, err := c.readResponseBody(resp, int(resp.ContentLength))
+	bodyBytes, cleanup, err := c.readResponseBody(resp, int(resp.ContentLength))
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
 		}
 		return
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	bodyStr := string(bodyBytes)
@@ -684,14 +707,19 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			},
 		}
 	}
+
+	// Add headers to forward
+	for key, values := range req.ForwardHeaders {
+		for _, value := range values {
+			httpReq.Header.Add(key, value)
+		}
+	}
+
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
 	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
-		cause := context.Cause(ctx)
-		if cause == nil {
-			cause = ctx.Err()
-		}
+		cause := effectiveCause(ctx)
 		c.logger.Debug().Err(err).Object("request", req).AnErr("contextError", cause).Msg("transport failure while sending single request")
 		if cause != nil {
 			err = cause
@@ -699,7 +727,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		common.SetTraceSpanError(span, err)
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
 		} else if errors.Is(err, context.Canceled) {
 			return nil, common.NewErrEndpointRequestCanceled(err)
@@ -797,7 +825,7 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	return httpReq, nil
 }
 
-func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
+func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, func(), error) {
 	var reader io.ReadCloser = resp.Body
 	defer resp.Body.Close()
 
@@ -805,7 +833,7 @@ func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expecte
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gr, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("error creating gzip reader: %w", err)
+			return nil, nil, fmt.Errorf("error creating gzip reader: %w", err)
 		}
 		defer c.gzipPool.Put(gr)
 		reader = gr
@@ -854,6 +882,25 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 			},
 		)
 		return e
+	}
+
+	// A context cancellation during response body parsing (or any other
+	// phase) can surface as a JSON-RPC error whose message contains the
+	// Go context sentinel strings. Reclassify before the error extractor
+	// turns it into a generic ServerSideException — the upstream didn't
+	// actually fail.
+	if jr != nil && jr.Error != nil {
+		msg := jr.Error.Message
+		if strings.Contains(msg, "context canceled") {
+			return common.NewErrEndpointRequestCanceled(
+				fmt.Errorf("response processing interrupted: %s", msg),
+			)
+		}
+		if strings.Contains(msg, "context deadline exceeded") {
+			return common.NewErrEndpointRequestTimeout(0,
+				fmt.Errorf("response processing timed out: %s", msg),
+			)
+		}
 	}
 
 	if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {

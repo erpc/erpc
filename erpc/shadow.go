@@ -1,9 +1,12 @@
+/* #nosec G404 */
 package erpc
 
 import (
 	"context"
 	"fmt"
 	"strconv"
+
+	"math/rand/v2"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -57,6 +60,20 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			p.Logger.Debug().Str("method", method).Str("upstreamId", ups.Id()).Msg("method not allowed for shadow upstream")
 			continue
 		}
+		// Apply sample rate: skip this shadow upstream based on configured probability
+		sampleRate := 1.0
+		if ups.Config().Shadow.SampleRate != nil {
+			sampleRate = *ups.Config().Shadow.SampleRate
+		}
+		if sampleRate < 1.0 && rand.Float64() >= sampleRate {
+			p.Logger.Debug().
+				Str("method", method).
+				Str("upstreamId", ups.Id()).
+				Float64("sampleRate", sampleRate).
+				Msg("shadow request skipped due to sampling")
+			continue
+		}
+
 		ups := ups // capture loop variable
 		go func() {
 			ctx, cancel := context.WithCancel(p.networksRegistry.appCtx)

@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-const maxBufCap = 16 << 10 // 16 KiB
+const maxBufCap = 64 << 10 // 64 KiB
 
 var byteBufPool = sync.Pool{
 	New: func() any { return bytes.NewBuffer(make([]byte, 0, maxBufCap)) },
@@ -18,10 +18,15 @@ func BorrowBuf() *bytes.Buffer {
 	return buf
 }
 
-// ReturnBuf puts buf back in the pool when its capacity is reasonable.
+// ReturnBuf puts buf back in the pool only if its capacity is reasonable.
+// Oversized buffers (e.g., from large responses) are discarded to avoid
+// bloating the pool with memory that won't be reused efficiently.
 func ReturnBuf(buf *bytes.Buffer) {
 	if buf == nil {
 		return
+	}
+	if buf.Cap() > 4*maxBufCap {
+		return // let GC reclaim oversized buffers
 	}
 	byteBufPool.Put(buf)
 }

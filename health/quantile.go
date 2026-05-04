@@ -1,23 +1,26 @@
 package health
 
 import (
+	"math"
 	"sync"
 	"time"
 
 	"github.com/DataDog/sketches-go/ddsketch"
 	"github.com/bytedance/sonic"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type QuantileTracker struct {
+	logger *zerolog.Logger
 	mu     sync.RWMutex
 	sketch *ddsketch.DDSketch
 }
 
-func NewQuantileTracker() *QuantileTracker {
+func NewQuantileTracker(logger *zerolog.Logger) *QuantileTracker {
 	// e.g. 1% relative accuracy
 	sketch, _ := ddsketch.NewDefaultDDSketch(0.01)
 	return &QuantileTracker{
+		logger: logger,
 		sketch: sketch,
 	}
 }
@@ -27,7 +30,7 @@ func (q *QuantileTracker) Add(value float64) {
 	defer q.mu.Unlock()
 	err := q.sketch.Add(value)
 	if err != nil {
-		log.Warn().Err(err).Float64("value", value).Msg("failed to add value to quantile tracker")
+		q.logger.Warn().Err(err).Float64("value", value).Msg("failed to add value to quantile tracker")
 	}
 }
 
@@ -60,6 +63,18 @@ func (q *QuantileTracker) GetQuantile(qtile float64) time.Duration {
 	seconds, err := q.sketch.GetValueAtQuantile(qtile)
 	if err != nil {
 		// If there's no data, return 0
+		return 0
+	}
+	// Guard against NaN/Inf values that could propagate through calculations.
+	// While DDSketch normally returns errors for invalid states, this serves as
+	// defense-in-depth against any unexpected floating-point edge cases.
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		q.logger.Warn().
+			Float64("qtile", qtile).
+			Float64("rawSeconds", seconds).
+			Bool("isNaN", math.IsNaN(seconds)).
+			Bool("isInf", math.IsInf(seconds, 0)).
+			Msg("quantile tracker returned invalid value, returning 0")
 		return 0
 	}
 	return time.Duration(seconds * float64(time.Second))

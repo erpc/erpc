@@ -12,7 +12,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 const DefaultConduitNetworksUrl = "https://api.conduit.xyz/public/network/all"
@@ -69,7 +68,7 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		recheckInterval = DefaultConduitRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, recheckInterval, networksUrl)
+	err = v.ensureRemoteData(ctx, logger, recheckInterval, networksUrl)
 	if err != nil {
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
@@ -122,7 +121,7 @@ func (v *ConduitVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 		recheckInterval = DefaultConduitRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(context.Background(), recheckInterval, networksUrl); err != nil {
+	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, networksUrl); err != nil {
 		return nil, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
@@ -143,7 +142,7 @@ func (v *ConduitVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 	upsCfg.Endpoint = endpointURL
 	upsCfg.VendorName = v.Name()
 
-	log.Debug().Int64("chainId", chainID).Interface("upstream", upsCfg).Interface("settings", map[string]interface{}{
+	logger.Debug().Int64("chainId", chainID).Interface("upstream", upsCfg).Interface("settings", map[string]interface{}{
 		"networksUrl":     networksUrl,
 		"recheckInterval": recheckInterval,
 	}).Msg("generated upstream from conduit provider")
@@ -214,7 +213,7 @@ func (v *ConduitVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return false
 }
 
-func (v *ConduitVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration, networksUrl string) error {
+func (v *ConduitVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, networksUrl string) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -222,10 +221,10 @@ func (v *ConduitVendor) ensureRemoteData(ctx context.Context, recheckInterval ti
 		return nil
 	}
 
-	newData, err := v.fetchConduitNetworks(ctx, networksUrl)
+	newData, err := v.fetchConduitNetworks(ctx, logger, networksUrl)
 	if err != nil {
 		if _, ok := v.remoteData[networksUrl]; ok {
-			log.Warn().Err(err).Msg("could not refresh Conduit API data; will use stale data")
+			logger.Warn().Err(err).Msg("could not refresh Conduit API data; will use stale data")
 			return nil
 		}
 		return err
@@ -236,7 +235,7 @@ func (v *ConduitVendor) ensureRemoteData(ctx context.Context, recheckInterval ti
 	return nil
 }
 
-func (v *ConduitVendor) fetchConduitNetworks(ctx context.Context, networksUrl string) (map[int64]*ConduitNetwork, error) {
+func (v *ConduitVendor) fetchConduitNetworks(ctx context.Context, logger *zerolog.Logger, networksUrl string) (map[int64]*ConduitNetwork, error) {
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, "GET", networksUrl, nil)
@@ -275,7 +274,7 @@ func (v *ConduitVendor) fetchConduitNetworks(ctx context.Context, networksUrl st
 	for _, network := range response.Endpoints {
 		chainID, err := strconv.ParseInt(network.ChainID, 10, 64)
 		if err != nil {
-			log.Debug().Str("chainId", network.ChainID).Msg("skipping network with invalid chainId")
+			logger.Debug().Str("chainId", network.ChainID).Msg("skipping network with invalid chainId")
 			continue
 		}
 		if chainID > 0 && network.HttpEndpoint != "" {

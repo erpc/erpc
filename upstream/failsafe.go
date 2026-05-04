@@ -1,25 +1,27 @@
 package upstream
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
-	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
-func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
+func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig, dynamicBlockUnavailableDelay func() time.Duration) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
 	var policies = map[string]failsafe.Policy[*common.NormalizedResponse]{}
 
@@ -29,24 +31,13 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 
 	lg := logger.With().Str("scope", string(scope)).Str("entity", entity).Logger()
 
-	if fsCfg.Timeout != nil {
-		plc, err := createTimeoutPolicy(logger, fsCfg.Timeout)
-		if err != nil {
-			return nil, common.NewErrFailsafeConfiguration(
-				err,
-				map[string]interface{}{
-					"scope":    scope,
-					"entity":   entity,
-					"policy":   "timeout",
-					"provider": fsCfg.Timeout,
-				},
-			)
-		}
-		policies["timeout"] = plc
-	}
+	// Timeout is applied via context.WithTimeoutCause at the request path
+	// (see Network.Forward and Upstream.Forward). We intentionally do not
+	// register a failsafe-go timeout.Policy — a single mechanism keeps error
+	// translation consistent for both fixed and quantile-based timeouts.
 
 	if fsCfg.Retry != nil {
-		p, err := createRetryPolicy(scope, fsCfg.Retry)
+		p, err := createRetryPolicy(scope, fsCfg.Retry, dynamicBlockUnavailableDelay)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +63,12 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
-		p, err := createHedgePolicy(&lg, fsCfg.Hedge)
+		consensusEnabled := fsCfg.Consensus != nil
+		emptyResultAccept := common.DefaultEmptyResultAccept()
+		if fsCfg.Retry != nil && fsCfg.Retry.EmptyResultAccept != nil {
+			emptyResultAccept = fsCfg.Retry.EmptyResultAccept
+		}
+		p, err := createHedgePolicy(&lg, fsCfg.Hedge, emptyResultAccept, consensusEnabled)
 		if err != nil {
 			return nil, err
 		}
@@ -185,6 +181,17 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 			return true
 		}
 
+		// Connection-level failures (connection refused, reset, timeout) -> open the circuit
+		// This ensures that if an upstream is completely unreachable, we fail over quickly
+		if common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure) {
+			span.SetAttributes(
+				attribute.Bool("should_open", true),
+				attribute.String("reason", "transport_failure"),
+				attribute.String("error_code", "ErrCodeEndpointTransportFailure"),
+			)
+			return true
+		}
+
 		// 401 / 403 / RPC-RPC vendor auth -> open the circuit
 		if common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized) {
 			span.SetAttributes(
@@ -242,8 +249,10 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, emptyResultAccept []string, consensusEnabled bool) (failsafe.Policy[*common.NormalizedResponse], error) {
 	var builder hedgepolicy.HedgePolicyBuilder[*common.NormalizedResponse]
+
+	// Observe hedge delay via histogram; no background publisher.
 
 	delay := cfg.Delay.Duration()
 	if cfg.Quantile > 0 {
@@ -273,6 +282,14 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 									if dr > maxDelay {
 										dr = maxDelay
 									}
+									finality := req.Finality(ctx)
+									telemetry.ObserverHandle(
+										telemetry.MetricNetworkHedgeDelaySeconds,
+										ntw.ProjectId(),
+										req.NetworkLabel(),
+										m,
+										finality.String(),
+									).Observe(dr.Seconds())
 									logger.Trace().Object("request", req).Dur("delay", dr).Msgf("calculated hedge delay")
 									return dr
 								}
@@ -315,7 +332,8 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 
 				method, _ = req.Method()
 				span.SetAttributes(attribute.String("method", method))
-				if method != "" && evm.IsWriteMethod(method) {
+				// Block non-retryable write methods from hedging
+				if method != "" && evm.IsNonRetryableWriteMethod(method) {
 					span.SetAttributes(
 						attribute.Bool("hedge", false),
 						attribute.String("reason", "write_method"),
@@ -338,20 +356,61 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		return true
 	})
 
+	// Cancel other hedges when this execution has a result worth taking.
+	//
+	// Error semantics:
+	//   - ErrUpstreamsExhausted: all upstreams in this execution were already tried.
+	//     Cancel other hedges — they will hit the same exhausted pool (no benefit waiting).
+	//   - Terminal/deterministic errors (execution reverted, client faults, method unsupported):
+	//     Cancel other hedges — all upstreams would return the same result.
+	//   - Transient errors (MissingData, ServerSideException, BlockUnavailable):
+	//     Do NOT cancel. In consensus mode each hedge execution only tries one upstream,
+	//     so a transient error from one execution doesn't preclude a different execution
+	//     (targeting a healthy upstream) from succeeding.
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
-		// Don't cancel on ErrUpstreamsExhausted
-		if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+		if err != nil {
+			// Exhausted = all upstreams already tried in this execution, cancel remaining hedges
+			if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+				return true
+			}
+			// Transient/retryable errors: don't cancel — other hedge executions may reach healthy upstreams
+			// Terminal/deterministic errors: cancel — all upstreams would agree on the same result
+			return !common.IsRetryableTowardNetwork(err)
+		}
+		if result == nil || result.IsObjectNull(exec.Context()) {
 			return false
 		}
-
-		return result != nil || err != nil
+		// Only cancel other hedges when this result would be "accepted" by the network
+		// loop (non-empty, or empty but in emptyResultAccept and not consensus). Otherwise
+		// we'd prematurely cancel
+		if emptyResultAccept == nil {
+			emptyResultAccept = common.DefaultEmptyResultAccept()
+		}
+		emptyish := result.IsResultEmptyish(exec.Context())
+		if !emptyish {
+			return true
+		}
+		if consensusEnabled {
+			return false
+		}
+		var method string
+		if r := exec.Context().Value(common.RequestContextKey); r != nil {
+			if req, ok := r.(*common.NormalizedRequest); ok && req != nil {
+				method, _ = req.Method()
+			}
+		}
+		return slices.Contains(emptyResultAccept, method)
 	})
 
 	return builder.Build(), nil
 }
 
-func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynamicBlockUnavailableDelay func() time.Duration) (failsafe.Policy[*common.NormalizedResponse], error) {
 	builder := retrypolicy.Builder[*common.NormalizedResponse]()
+
+	// Store configured values for tracing
+	configuredMaxAttempts := cfg.MaxAttempts
+	configuredDelay := cfg.Delay.Duration()
 
 	if cfg.MaxAttempts > 0 {
 		builder = builder.WithMaxAttempts(cfg.MaxAttempts)
@@ -373,15 +432,68 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
+	// Override retry delays for block-unavailable and empty-result scenarios.
+	// Returning -1 tells failsafe-go to fall back to the normal delay/backoff.
+	//
+	// The Forward() execution loop already tries all upstreams for retryable errors
+	// before returning to the retry policy, so these delays fire only after a
+	// full round of upstream attempts.
+	var emptyResultDelayDuration, fixedBlockUnavailableDelay time.Duration
+	if cfg.EmptyResultDelay > 0 {
+		emptyResultDelayDuration = cfg.EmptyResultDelay.Duration()
+	}
+	if cfg.BlockUnavailableDelay > 0 {
+		fixedBlockUnavailableDelay = cfg.BlockUnavailableDelay.Duration()
+	}
+	hasBlockUnavailableDelay := fixedBlockUnavailableDelay > 0 || dynamicBlockUnavailableDelay != nil
+	if emptyResultDelayDuration > 0 || hasBlockUnavailableDelay {
+		builder = builder.WithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
+			if hasBlockUnavailableDelay {
+				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+					return resolveBlockUnavailableDelay(dynamicBlockUnavailableDelay, fixedBlockUnavailableDelay)
+				}
+			}
+			// Empty/missing data: custom delay for empty responses or missing-data errors.
+			// The empty result case covers upstreams that returned valid-but-empty responses.
+			// The missing-data error case covers upstreams that returned JSON-RPC errors
+			// (e.g. "missing trie node") which the hooks converted to ErrEndpointMissingData.
+			if emptyResultDelayDuration > 0 {
+				if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
+					return emptyResultDelayDuration
+				}
+				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+					return emptyResultDelayDuration
+				}
+			}
+			return -1
+		})
+	}
+
+	// Add callback to trace when retries are scheduled
+	builder = builder.OnRetryScheduled(func(event failsafe.ExecutionScheduledEvent[*common.NormalizedResponse]) {
+		ctx := event.Context()
+		_, span := common.StartDetailSpan(ctx, "RetryPolicy.OnRetryScheduled",
+			trace.WithAttributes(
+				attribute.String("scope", string(scope)),
+				attribute.Int64("configured_delay_ms", configuredDelay.Milliseconds()),
+				attribute.Int64("scheduled_delay_ms", event.Delay.Milliseconds()),
+				attribute.Int("configured_max_attempts", configuredMaxAttempts),
+				attribute.Int("attempts", event.Attempts()),
+				attribute.Int("retries", event.Retries()),
+			),
+		)
+		defer span.End()
+	})
+
 	// Use default values if not set
 	emptyResultConfidence := cfg.EmptyResultConfidence
 	if emptyResultConfidence == 0 {
 		emptyResultConfidence = common.AvailbilityConfidenceFinalized
 	}
 
-	emptyResultIgnore := cfg.EmptyResultIgnore
-	if emptyResultIgnore == nil {
-		emptyResultIgnore = []string{"eth_getLogs", "eth_call"}
+	emptyResultAccept := cfg.EmptyResultAccept
+	if emptyResultAccept == nil {
+		emptyResultAccept = common.DefaultEmptyResultAccept()
 	}
 
 	builder = builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
@@ -389,11 +501,25 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		ctx, span := common.StartDetailSpan(ctx, "RetryPolicy.HandleIf",
 			trace.WithAttributes(
 				attribute.String("scope", string(scope)),
+				attribute.Int64("configured_delay_ms", configuredDelay.Milliseconds()),
+				attribute.Int("configured_max_attempts", configuredMaxAttempts),
 			))
 		defer span.End()
 
 		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
+		// Exception: for eth_sendRawTransaction, check retryableTowardNetwork flag
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			// Check if this error is marked as retryable toward network (e.g. eth_sendRawTransaction)
+			if se, ok := err.(common.StandardError); ok {
+				if retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && retryable {
+					span.SetAttributes(
+						attribute.Bool("retry", true),
+						attribute.String("reason", "execution_exception_retryable_to_network"),
+						attribute.String("error_code", "ErrCodeEndpointExecutionException"),
+					)
+					return true
+				}
+			}
 			span.SetAttributes(
 				attribute.Bool("retry", false),
 				attribute.String("reason", "execution_exception"),
@@ -410,10 +536,11 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			return false
 		}
 
-		// Must not retry any 'write' methods
+		// Must not retry any 'write' methods except eth_sendRawTransaction
+		// (idempotency for eth_sendRawTransaction is handled in post-forward hook)
 		if result != nil {
 			if req := result.Request(); req != nil {
-				if method, _ := req.Method(); method != "" && evm.IsWriteMethod(method) {
+				if method, _ := req.Method(); method != "" && evm.IsNonRetryableWriteMethod(method) {
 					span.SetAttributes(
 						attribute.Bool("retry", false),
 						attribute.String("reason", "write_method"),
@@ -424,7 +551,52 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			}
 		}
 
-		// We are only short-circuiting retry if the error is not retryable towards the upstream or network
+		// ErrEndpointMissingData in the error path means one or more upstreams
+		// returned a JSON-RPC error (e.g. "header not found", "missing trie node")
+		// that was classified as missing data. These are transient node errors,
+		// NOT genuinely empty responses — empty responses go through the
+		// response-path retry logic at the ScopeNetwork+result!=nil block below.
+		//
+		// The only suppression we apply here is RetryEmpty=false, which is an
+		// explicit user directive to skip retries on any missing-data scenario.
+		// We intentionally do NOT check emptyResultAccept here: that list governs
+		// which methods may return valid empty results, and has no bearing on
+		// whether transient upstream errors should be retried.
+		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			var req *common.NormalizedRequest
+			if result != nil {
+				req = result.Request()
+			}
+			if req == nil {
+				if exh, ok := err.(*common.ErrUpstreamsExhausted); ok {
+					req = exh.Request()
+				} else {
+					var exhErr *common.ErrUpstreamsExhausted
+					if errors.As(err, &exhErr) {
+						req = exhErr.Request()
+					}
+				}
+			}
+			if req == nil {
+				if or := ctx.Value(common.RequestContextKey); or != nil {
+					if r, ok := or.(*common.NormalizedRequest); ok {
+						req = r
+					}
+				}
+			}
+
+			if req != nil {
+				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+					span.SetAttributes(
+						attribute.Bool("retry", false),
+						attribute.String("reason", "missing_data_but_retry_empty_disabled"),
+					)
+					return false
+				}
+			}
+		}
+
+		// Short-circuit retry if the error is not retryable towards the upstream or network
 		if scope == common.ScopeUpstream && err != nil {
 			isRetryable := common.IsRetryableTowardsUpstream(err)
 			span.SetAttributes(
@@ -449,6 +621,11 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				)
 				return true
 			}
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "not_retryable_to_network"),
+			)
+			return false
 		}
 
 		if scope == common.ScopeNetwork && result != nil && !result.IsObjectNull() {
@@ -493,13 +670,13 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 					method, _ := req.Method()
 					span.SetAttributes(
 						attribute.String("method", method),
-						attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
+						attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
 					)
-					// Check if method is in ignore list - if so, do NOT retry
-					if slices.Contains(emptyResultIgnore, method) {
+					// Check if method is in accept list - if so, empty is valid, do NOT retry
+					if slices.Contains(emptyResultAccept, method) {
 						span.SetAttributes(
 							attribute.Bool("retry", false),
-							attribute.String("reason", "method_in_empty_ignore_list"),
+							attribute.String("reason", "method_in_empty_accept_list"),
 						)
 						return false
 					}
@@ -596,16 +773,78 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 	return builder.Build(), nil
 }
 
-func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
-	builder := timeout.Builder[*common.NormalizedResponse](cfg.Duration.Duration())
+func coldStartFallback(fixedDur, maxDur time.Duration) *time.Duration {
+	fallback := fixedDur
+	if fallback == 0 {
+		fallback = maxDur
+	}
+	if fallback > 0 {
+		return &fallback
+	}
+	return nil
+}
 
-	if logger.GetLevel() == zerolog.TraceLevel {
-		builder.OnTimeoutExceeded(func(event failsafe.ExecutionDoneEvent[*common.NormalizedResponse]) {
-			logger.Trace().Msgf("failsafe timeout policy: %v (start time: %v, elapsed: %v, attempts: %d, retries: %d, hedges: %d)", event.Error, event.StartTime().Format(time.RFC3339), event.ElapsedTime().String(), event.Attempts(), event.Retries(), event.Hedges())
-		})
+// NewTimeoutFunc builds a TimeoutFunc from config. The returned function is
+// applied at request time via context.WithTimeoutCause (see Network.Forward
+// and Upstream.Forward). When Quantile > 0 the timeout is computed per request
+// from method latency percentiles; otherwise it returns the fixed Duration.
+func NewTimeoutFunc(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) TimeoutFunc {
+	if cfg.Quantile > 0 {
+		fixedDur := cfg.Duration.Duration()
+		minDur := cfg.MinDuration.Duration()
+		maxDur := cfg.MaxDuration.Duration()
+		quantile := cfg.Quantile
+
+		return func(ctx context.Context, req *common.NormalizedRequest) *time.Duration {
+			ntw := req.Network()
+			if ntw == nil {
+				logger.Debug().Object("request", req).Msg("quantile timeout: no network on request, using fallback")
+				return coldStartFallback(fixedDur, maxDur)
+			}
+			m, _ := req.Method()
+			if m == "" {
+				logger.Debug().Object("request", req).Msg("quantile timeout: empty method, using fallback")
+				return coldStartFallback(fixedDur, maxDur)
+			}
+			mt := ntw.GetMethodMetrics(m)
+			if mt == nil {
+				logger.Debug().Object("request", req).Str("method", m).Msg("quantile timeout: no metrics tracker, using fallback")
+				return coldStartFallback(fixedDur, maxDur)
+			}
+			qt := mt.GetResponseQuantiles()
+			dr := qt.GetQuantile(quantile)
+			if dr <= 0 {
+				logger.Debug().Object("request", req).Str("method", m).Msg("quantile timeout: no latency data yet, using fallback")
+				return coldStartFallback(fixedDur, maxDur)
+			}
+
+			if minDur > 0 && dr < minDur {
+				dr = minDur
+			}
+			if maxDur > 0 && dr > maxDur {
+				dr = maxDur
+			}
+			finality := req.Finality(ctx)
+			telemetry.ObserverHandle(
+				telemetry.MetricNetworkTimeoutDurationSeconds,
+				ntw.ProjectId(),
+				req.NetworkLabel(),
+				m,
+				finality.String(),
+			).Observe(dr.Seconds())
+			logger.Trace().Object("request", req).Dur("timeout", dr).Msgf("calculated dynamic timeout")
+			return &dr
+		}
 	}
 
-	return builder.Build(), nil
+	// Fixed timeout: return the configured duration.
+	dur := cfg.Duration.Duration()
+	if dur == 0 {
+		return nil
+	}
+	return func(_ context.Context, _ *common.NormalizedRequest) *time.Duration {
+		return &dur
+	}
 }
 
 func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
@@ -622,6 +861,11 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	builder = builder.WithLowParticipantsBehavior(cfg.LowParticipantsBehavior)
 	builder = builder.WithLogger(logger)
 
+	// Configure misbehavior export if requested
+	if cfg.MisbehaviorsDestination != nil {
+		builder = builder.WithMisbehaviorsDestination(cfg.MisbehaviorsDestination)
+	}
+
 	// Set ignore fields if configured
 	if cfg.IgnoreFields != nil {
 		builder = builder.WithIgnoreFields(cfg.IgnoreFields)
@@ -634,6 +878,12 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	if cfg.PreferLargerResponses != nil {
 		builder = builder.WithPreferLargerResponses(*cfg.PreferLargerResponses)
 	}
+	if cfg.PreferHighestValueFor != nil {
+		builder = builder.WithPreferHighestValueFor(cfg.PreferHighestValueFor)
+	}
+
+	// Set fire-and-forget mode (for write operations like eth_sendRawTransaction)
+	builder = builder.WithFireAndForget(cfg.FireAndForget)
 
 	// Parse dispute log level if specified
 	if cfg.DisputeLogLevel != "" {
@@ -653,17 +903,21 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	return p, nil
 }
 
-func TranslateFailsafeError(scope common.Scope, upstreamId string, method string, execErr error, startTime *time.Time) error {
+// TranslateFailsafeError maps internal failsafe-go errors and context-cancellation
+// sentinels to erpc's public StandardError types.
+//
+// scopeOwnsTimeout must be true only when THIS scope actually configured a
+// timeout policy. A parent scope's ErrDynamicTimeoutExceeded sentinel leaks
+// into child contexts via inheritance, and without this guard the child scope
+// would re-classify it as if its own policy had fired.
+func TranslateFailsafeError(scope common.Scope, upstreamId string, method string, execErr error, startTime *time.Time, scopeOwnsTimeout bool) error {
 	var err error
 	var retryExceededErr retrypolicy.ExceededError
 
-	// Our own standard error is returned when failsafe execution is returned and for example retry policy
-	// logic above decided it does not need to retry (e.g. reverted transaction error).
-	// Another case is an UpstreamExhausted error which is not going to be retried due to all errors being unretryable.
-	// In those cases we return the standard error object as is.
-	if serr, ok := execErr.(common.StandardError); ok {
-		err = serr
-	} else if errors.As(execErr, &retryExceededErr) {
+	// Retry-exceeded must be checked before the sentinel so that exhausted
+	// retries whose last attempt timed out are classified as retry-exceeded
+	// (with the timeout as the translated cause) rather than as a bare timeout.
+	if errors.As(execErr, &retryExceededErr) {
 		// When retry policy is exceeded (i.e. we wanted to retry based on the policy but it ultimately failed)
 		// we want to fetch the "last error" from the retry policy and wrap in our own standard error type of FailsafeRetryExceeded.
 		// This allows consistent error handling on http server level.
@@ -675,19 +929,33 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 		}
 		var translatedCause error
 		if ler != nil {
-			translatedCause = TranslateFailsafeError(scope, "", "", ler, startTime)
+			translatedCause = TranslateFailsafeError(scope, "", "", ler, startTime, scopeOwnsTimeout)
 		}
 		if exr, ok := translatedCause.(*common.ErrUpstreamsExhausted); ok {
 			// In this case we already have a grouping of all errors encountered via upstreams,
 			// also this means errors are not due to other reasons (like self-imposed rate limiting).
 			err = exr
 		} else {
-			err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
+			// Special case for eth_sendRawTransaction: if all upstreams returned execution exception
+			// (e.g. execution reverted), return that exception as the final response instead of
+			// wrapping in ErrFailsafeRetryExceeded. This ensures clients see the actual revert error.
+			if strings.EqualFold(method, "eth_sendRawTransaction") && common.HasErrorCode(translatedCause, common.ErrCodeEndpointExecutionException) {
+				err = translatedCause
+			} else {
+				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
+			}
 		}
-	} else if errors.Is(execErr, timeout.ErrExceeded) {
-		// Simply translate the failsafe library timeout error type to our own standard error type.
-		// And keep the original error as "cause" so it can be logged.
+	} else if scopeOwnsTimeout && errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+		// Timeout-policy sentinel takes precedence over StandardError so that a
+		// timeout wrapped as ErrEndpointTransportFailure is still classified as a
+		// timeout. The sentinel is only set by our own context.WithTimeoutCause,
+		// so it never picks up parent-context deadlines. The scopeOwnsTimeout
+		// guard ensures a parent scope's sentinel, inherited via ctx propagation,
+		// is NOT re-classified here as a child-scope timeout — it must flow up
+		// to the scope whose policy actually fired.
 		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
+	} else if serr, ok := execErr.(common.StandardError); ok {
+		err = serr
 	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
 		// Simply translate the failsafe library circuit breaker error type to our own standard error type.
 		// And keep the original error as "cause" so it can be logged.
@@ -728,4 +996,18 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 	// For unknown errors we return as is so we're not wrongly wrapping with an inappropriate error type.
 	// An example can be deadline exceeded error which must be handled properly on http server level (e.g. wrap with http timeout error).
 	return execErr
+}
+
+// resolveBlockUnavailableDelay returns the delay to use for a block-unavailable retry.
+// Priority: dynamic block-time-derived delay > static config > normal backoff (-1).
+func resolveBlockUnavailableDelay(dynamicDelay func() time.Duration, fixedDelay time.Duration) time.Duration {
+	if dynamicDelay != nil {
+		if d := dynamicDelay(); d > 0 {
+			return d
+		}
+	}
+	if fixedDelay > 0 {
+		return fixedDelay
+	}
+	return -1
 }

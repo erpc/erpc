@@ -6,15 +6,22 @@ import type { Checksums, SupportedPlatform } from "../types";
  * Get the filename from a given platform
  */
 function getPlatformFromFilename(filename: string): SupportedPlatform {
-  // Remove .exe if present
-  const baseName = filename.replace(".exe", "");
-  // Remove 'erpc_' prefix
-  const platform = baseName.replace("erpc_", "") as SupportedPlatform;
+  const baseName = path.basename(filename);
+  // Extract "<os>_<arch>" from names like:
+  // erpc_<version>_<os>_<arch>.tar.gz
+  // erpc_<version>-SNAPSHOT-<sha>_<os>_<arch>.sbom.json
+  const match = baseName.match(/_(darwin|linux|windows)_(arm64|x86_64|amd64)(?:[._]|$)/);
+  if (!match) {
+    throw new Error(`Unsupported platform in filename: ${filename}`);
+  }
+  const os = match[1];
+  const archRaw = match[2];
+  const arch = archRaw === "amd64" ? "x86_64" : archRaw;
+  const platform = `${os}_${arch}`;
 
   if (!isSupportedPlatform(platform)) {
     throw new Error(`Unsupported platform in filename: ${filename}`);
   }
-
   return platform;
 }
 

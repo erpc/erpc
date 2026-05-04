@@ -28,18 +28,6 @@ var (
 		Help:      "Total number of errors for actual requests towards upstreams.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "error", "severity", "composite", "finality", "user", "agent_name"})
 
-	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed rate limited requests before sending to upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "user", "agent_name"})
-
-	MetricUpstreamRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_remote_rate_limited_total",
-		Help:      "Total number of remote rate limited requests by upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "user", "agent_name"})
-
 	MetricUpstreamSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_skipped_total",
@@ -73,7 +61,13 @@ var (
 	MetricUpstreamScoreOverall = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_score_overall",
-		Help:      "Overall score of upstreams used for ordering during routing.",
+		Help:      "Overall score of upstreams used for ordering during routing. Higher is better: 1/(1+penalty). Controlled by scoreMetricsMode (compact/detailed/none).",
+	}, []string{"project", "vendor", "network", "upstream", "category"})
+
+	MetricUpstreamRoutingPriority = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_routing_priority",
+		Help:      "Sort position of upstream in routing order (1 = primary). Summary with category='*' always emitted; per-method detail added in detailed scoreMetricsMode.",
 	}, []string{"project", "vendor", "network", "upstream", "category"})
 
 	MetricUpstreamLatestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -87,6 +81,18 @@ var (
 		Name:      "upstream_finalized_block_number",
 		Help:      "Finalized block number of upstreams.",
 	}, []string{"project", "vendor", "network", "upstream"})
+
+	MetricNetworkLatestBlockTimestampDistance = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_latest_block_timestamp_distance_seconds",
+		Help:      "Distance in seconds between the latest block timestamp and current time for a network.",
+	}, []string{"project", "network", "origin"})
+
+	MetricNetworkDynamicBlockTime = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_dynamic_block_time_milliseconds",
+		Help:      "Dynamically computed block time per network in milliseconds.",
+	}, []string{"project", "network"})
 
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -136,6 +142,24 @@ var (
 		Help:      "Total number of eth_getLogs request splits by dimension (block_range, addresses, topics), network-scoped.",
 	}, []string{"project", "network", "dimension", "user", "agent_name"})
 
+	MetricNetworkEvmTraceFilterSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_split_success_total",
+		Help:      "Total number of successful split trace_filter/arbtrace_filter sub-requests (network-scoped).",
+	}, []string{"project", "network", "method", "user", "agent_name"})
+
+	MetricNetworkEvmTraceFilterSplitFailure = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_split_failure_total",
+		Help:      "Total number of failed split trace_filter/arbtrace_filter sub-requests (network-scoped).",
+	}, []string{"project", "network", "method", "user", "agent_name"})
+
+	MetricNetworkEvmTraceFilterForcedSplits = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_forced_splits_total",
+		Help:      "Total number of trace_filter/arbtrace_filter request splits by dimension (block_range, from_address, to_address), network-scoped.",
+	}, []string{"project", "network", "method", "dimension", "user", "agent_name"})
+
 	MetricUpstreamLatestBlockPolled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_latest_block_polled_total",
@@ -160,12 +184,6 @@ var (
 		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
 
-	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "network_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed (locally) rate limited requests towards the network.",
-	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
-
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_received_total",
@@ -177,6 +195,12 @@ var (
 		Name:      "network_multiplexed_request_total",
 		Help:      "Total number of multiplexed requests for a network.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
+
+	MetricNetworkStaticResponseServedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_static_response_served_total",
+		Help:      "Total number of requests served from a configured static response without contacting any upstream.",
+	}, []string{"project", "network", "category"})
 
 	MetricNetworkHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -190,6 +214,12 @@ var (
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
 	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user", "agent_name"})
 
+	MetricNetworkTimeoutFiredTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_timeout_fired_total",
+		Help:      "Total number of requests that were killed by the timeout policy (fixed or quantile-based).",
+	}, []string{"project", "network", "category", "finality", "scope"})
+
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
@@ -202,23 +232,29 @@ var (
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user", "agent_name"})
 
-	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricRateLimitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "project_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed (locally) rate limited requests towards the project.",
-	}, []string{"project", "category"})
+		Name:      "rate_limits_total",
+		Help:      "Unified rate limiting events (remote limits and budget decisions).",
+	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user", "agent_name", "budget", "scope", "auth", "origin"})
 
 	MetricRateLimiterBudgetMaxCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "rate_limiter_budget_max_count",
 		Help:      "Maximum number of requests allowed per second for a rate limiter budget (including auto-tuner).",
-	}, []string{"budget", "method"})
+	}, []string{"budget", "method", "scope"})
 
-	MetricAuthRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricRateLimiterBudgetDecisionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "auth_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed (locally) rate limited requests due to auth config for a project.",
-	}, []string{"project", "strategy", "category"})
+		Name:      "rate_limiter_budget_decision_total",
+		Help:      "[DEPRECATED] Replaced by rate_limits_total. Total number of local rate-limit decisions by budget.",
+	}, []string{"project", "network", "category", "finality", "user", "agent_name", "budget", "method", "scope", "decision"})
+
+	MetricRateLimiterFailopenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_failopen_total",
+		Help:      "Total number of rate limiter fail-open events (requests allowed due to errors/timeouts).",
+	}, []string{"project", "network", "user", "agent_name", "budget", "category", "reason"})
 
 	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -261,6 +297,12 @@ var (
 		Name:      "cache_get_skipped_total",
 		Help:      "Total number of cache get skips (i.e. no matching policy found).",
 	}, []string{"project", "network", "category"})
+
+	MetricCacheGetAgeGuardRejectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_age_guard_reject_total",
+		Help:      "Total number of cached items rejected due to block timestamp age exceeding policy TTL",
+	}, []string{"project", "network", "method", "connector", "policy", "ttl"})
 
 	MetricCacheSetOriginalBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -322,25 +364,18 @@ var (
 		Help:      "Total number of shadow upstream requests that resulted in error.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "error"})
 
+	// Authentication metrics
+	MetricAuthFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "auth_failed_total",
+		Help:      "Total number of failed authentication attempts.",
+	}, []string{"project", "network", "strategy", "reason", "agent_name"})
+
 	MetricConsensusTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_total",
 		Help:      "Total number of consensus operations attempted.",
 	}, []string{"project", "network", "category", "outcome", "finality"})
-
-	MetricConsensusResponsesCollected = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "consensus_responses_collected",
-		Help:      "Number of responses collected before consensus decision.",
-		Buckets:   prometheus.LinearBuckets(1, 1, 10),
-	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality"})
-
-	MetricConsensusAgreementCount = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "consensus_agreement_count",
-		Help:      "Number of upstreams agreeing on the most common result.",
-		Buckets:   prometheus.LinearBuckets(1, 1, 10),
-	}, []string{"project", "network", "category", "finality"})
 
 	MetricConsensusMisbehaviorDetected = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -390,12 +425,17 @@ var (
 		Help:      "Total requests observed by block-number buckets for heatmap.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
 
-	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricX402FacilitatorRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "network_evm_get_logs_range_requested",
-		Help:      "eth_getLogs requested block-range sizes.",
-		Buckets:   EvmGetLogsRangeHistogramBuckets,
-	}, []string{"project", "network", "category", "user", "finality"})
+		Name:      "x402_facilitator_request_total",
+		Help:      "Total number of requests to x402 facilitator endpoints.",
+	}, []string{"project", "network", "facilitator", "operation", "status"})
+
+	MetricX402PaymentTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "x402_payment_total",
+		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
+	}, []string{"project", "network", "facilitator", "outcome"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -412,93 +452,237 @@ var EvmBlockRangeBucketSize int64 = 100000
 // Histogram buckets for eth_getLogs requested block-range sizes
 var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 10000, 30000}
 
+// Histograms are populated by SetHistogramBuckets so the label filter applies.
 var (
-	MetricUpstreamRequestDuration,
-	MetricNetworkRequestDuration,
-	MetricCacheSetSuccessDuration,
-	MetricCacheSetErrorDuration,
-	MetricCacheGetSuccessHitDuration,
-	MetricCacheGetSuccessMissDuration,
-	MetricCacheGetErrorDuration,
-	MetricConsensusDuration *prometheus.HistogramVec
+	MetricUpstreamRequestDuration             *LabeledHistogram
+	MetricNetworkRequestDuration              *LabeledHistogram
+	MetricNetworkEvmGetLogsRangeRequested     *LabeledHistogram
+	MetricNetworkEvmTraceFilterRangeRequested *LabeledHistogram
+	MetricNetworkHedgeDelaySeconds            *LabeledHistogram
+	MetricNetworkTimeoutDurationSeconds       *LabeledHistogram
+	MetricConsensusResponsesCollected         *LabeledHistogram
+	MetricConsensusAgreementCount             *LabeledHistogram
+	MetricX402FacilitatorRequestDuration      *LabeledHistogram
+	MetricConsensusDuration                   *LabeledHistogram
+	MetricCacheSetSuccessDuration             *LabeledHistogram
+	MetricCacheSetErrorDuration               *LabeledHistogram
+	MetricCacheGetSuccessHitDuration          *LabeledHistogram
+	MetricCacheGetSuccessMissDuration         *LabeledHistogram
+	MetricCacheGetErrorDuration               *LabeledHistogram
 )
 
-func SetHistogramBuckets(bucketsStr string) error {
-	buckets, err := ParseHistogramBuckets(bucketsStr)
-	if err != nil {
-		return err
+// ScoreMetricsMode controls how score metrics are emitted.
+//
+//	"compact" (default):
+//	  score_overall       — emitted with upstream="n/a", category="n/a" (low cardinality)
+//	  routing_priority    — not emitted (requires upstream identity)
+//	"detailed":
+//	  score_overall       — emitted per upstream + per method
+//	  routing_priority    — emitted per upstream + per method, plus an averaged summary
+//	"none":
+//	  all score metrics suppressed
+type ScoreMetricsMode string
+
+const (
+	ScoreModeCompact  ScoreMetricsMode = "compact"
+	ScoreModeDetailed ScoreMetricsMode = "detailed"
+	ScoreModeNone     ScoreMetricsMode = "none"
+)
+
+var currentScoreMetricsMode = ScoreModeCompact
+
+func SetScoreMetricsMode(v string) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "detailed":
+		currentScoreMetricsMode = ScoreModeDetailed
+	case "none":
+		currentScoreMetricsMode = ScoreModeNone
+	default:
+		currentScoreMetricsMode = ScoreModeCompact
+	}
+}
+
+func GetScoreMetricsMode() ScoreMetricsMode {
+	return currentScoreMetricsMode
+}
+
+// buildFilterAwareHistograms creates every LabeledHistogram using the current
+// filter. It does NOT register them — SetHistogramBuckets does that. init()
+// calls this without registering so metric globals are non-nil for any code
+// that observes before erpc.Init runs (tests, early startup paths).
+func buildFilterAwareHistograms(bucketsStr string) error {
+	buckets, parseErr := ParseHistogramBuckets(bucketsStr)
+	if parseErr != nil {
+		buckets = DefaultHistogramBuckets
 	}
 
-	if MetricUpstreamRequestDuration != nil {
-		prometheus.DefaultRegisterer.Unregister(MetricUpstreamRequestDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricNetworkRequestDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheSetSuccessDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheSetErrorDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessHitDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessMissDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheGetErrorDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricConsensusDuration)
-	}
-	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricUpstreamRequestDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
 		Buckets:   buckets,
 	}, []string{"project", "vendor", "network", "upstream", "category", "composite", "finality", "user"})
 
-	MetricNetworkRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkRequestDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
 
-	MetricCacheSetSuccessDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkEvmGetLogsRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_set_success_duration_seconds",
-		Help:      "Duration of cache set operations.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+		Name:      "network_evm_get_logs_range_requested",
+		Help:      "eth_getLogs requested block-range sizes.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "category", "user", "finality"})
 
-	MetricCacheSetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkEvmTraceFilterRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_set_error_duration_seconds",
-		Help:      "Duration of cache set errors.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+		Name:      "network_evm_trace_filter_range_requested",
+		Help:      "trace_filter/arbtrace_filter requested block-range sizes.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "method", "user", "finality"})
 
-	MetricCacheGetSuccessHitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkHedgeDelaySeconds = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_get_success_hit_duration_seconds",
-		Help:      "Duration of cache get hits.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+		Name:      "network_hedge_delay_seconds",
+		Help:      "Hedge delay used for requests (seconds).",
+		Buckets:   []float64{0.01, 0.03, 0.05, 0.2, 0.3, 0.5, 0.7, 1, 3},
+	}, []string{"project", "network", "category", "finality"})
 
-	MetricCacheGetSuccessMissDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkTimeoutDurationSeconds = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_get_success_miss_duration_seconds",
-		Help:      "Duration of cache get misses.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+		Name:      "network_timeout_duration_seconds",
+		Help:      "Dynamic timeout duration computed for requests (seconds).",
+		Buckets:   []float64{0.05, 0.1, 0.3, 0.5, 1, 3, 5, 10, 30},
+	}, []string{"project", "network", "category", "finality"})
 
-	MetricCacheGetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricConsensusResponsesCollected = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_get_error_duration_seconds",
-		Help:      "Duration of cache get errors.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+		Name:      "consensus_responses_collected",
+		Help:      "Number of responses collected before consensus decision.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10),
+	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality"})
 
-	MetricConsensusDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricConsensusAgreementCount = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "consensus_agreement_count",
+		Help:      "Number of upstreams agreeing on the most common result.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10),
+	}, []string{"project", "network", "category", "finality"})
+
+	MetricX402FacilitatorRequestDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "x402_facilitator_request_duration_seconds",
+		Help:      "Duration of HTTP requests to x402 facilitator endpoints (verify, settle, supported).",
+		Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+	}, []string{"project", "network", "facilitator", "operation", "status"})
+
+	MetricConsensusDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "consensus_duration_seconds",
 		Help:      "Duration of consensus operations.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "category", "outcome", "finality"})
 
+	MetricCacheSetSuccessDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_success_duration_seconds",
+		Help:      "Duration of cache set operations.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheSetErrorDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_error_duration_seconds",
+		Help:      "Duration of cache set errors.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
+	MetricCacheGetSuccessHitDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_success_hit_duration_seconds",
+		Help:      "Duration of cache get hits.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheGetSuccessMissDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_success_miss_duration_seconds",
+		Help:      "Duration of cache get misses.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheGetErrorDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_error_duration_seconds",
+		Help:      "Duration of cache get errors.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
+	return parseErr
+}
+
+// init bootstraps non-nil LabeledHistogram pointers with the empty filter
+// (unregistered). This lets observations from tests or early-startup code
+// complete without NPE. erpc.Init later calls SetHistogramBuckets which
+// replaces these with filter-applied wrappers and registers them.
+func init() {
+	_ = buildFilterAwareHistograms("")
+}
+
+// SetHistogramBuckets builds every filter-aware histogram under the current
+// filter and registers them with prometheus.DefaultRegisterer. After this
+// call, metric globals point at the registered wrapper.
+//
+// Idempotent in the same-labels case (re-calls on the same registry with an
+// unchanged filter reuse the existing registration). Calling again with a
+// changed filter panics — Prometheus does not allow a metric's label set to
+// change once registered. Tests that need a clean slate should swap in a
+// fresh prometheus.DefaultRegisterer first.
+func SetHistogramBuckets(bucketsStr string) error {
+	parseErr := buildFilterAwareHistograms(bucketsStr)
+
+	MetricUpstreamRequestDuration = registerOrReuse(MetricUpstreamRequestDuration)
+	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
+	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
+	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
+	MetricNetworkHedgeDelaySeconds = registerOrReuse(MetricNetworkHedgeDelaySeconds)
+	MetricNetworkTimeoutDurationSeconds = registerOrReuse(MetricNetworkTimeoutDurationSeconds)
+	MetricConsensusResponsesCollected = registerOrReuse(MetricConsensusResponsesCollected)
+	MetricConsensusAgreementCount = registerOrReuse(MetricConsensusAgreementCount)
+	MetricX402FacilitatorRequestDuration = registerOrReuse(MetricX402FacilitatorRequestDuration)
+	MetricConsensusDuration = registerOrReuse(MetricConsensusDuration)
+	MetricCacheSetSuccessDuration = registerOrReuse(MetricCacheSetSuccessDuration)
+	MetricCacheSetErrorDuration = registerOrReuse(MetricCacheSetErrorDuration)
+	MetricCacheGetSuccessHitDuration = registerOrReuse(MetricCacheGetSuccessHitDuration)
+	MetricCacheGetSuccessMissDuration = registerOrReuse(MetricCacheGetSuccessMissDuration)
+	MetricCacheGetErrorDuration = registerOrReuse(MetricCacheGetErrorDuration)
+
 	// Clear cached handles since the Vecs were re-created.
 	ResetHandleCache()
 
-	return nil
+	return parseErr
+}
+
+// registerOrReuse registers lh with prometheus.DefaultRegisterer. If a
+// collector with the same name and identical label set is already registered
+// (typical for repeat calls), it returns the existing collector so callers
+// keep using the one prometheus actually knows about. Panics on any other
+// registration error (including label-set mismatch, which means the filter
+// changed after the first registration — not supported by Prometheus).
+func registerOrReuse(lh *LabeledHistogram) *LabeledHistogram {
+	err := prometheus.Register(lh)
+	if err == nil {
+		return lh
+	}
+	if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+		if existing, ok := are.ExistingCollector.(*LabeledHistogram); ok {
+			return existing
+		}
+	}
+	panic(err)
 }
 
 func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {

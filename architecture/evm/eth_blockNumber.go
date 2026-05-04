@@ -57,10 +57,15 @@ func projectPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	// Step 3: collect the highest block from all EVM upstream pollers for this network
 	highestBlock := network.EvmHighestLatestBlockNumber(ctx)
 	if common.IsTracingDetailed {
+		blockNumberLag := highestBlock - blockNumber
+		if blockNumberLag < 0 {
+			blockNumberLag = 0
+		}
 		span.SetAttributes(
 			attribute.Int64("block.number", blockNumber),
 			attribute.String("block.ref", blockRef),
 			attribute.Int64("highest_block", highestBlock),
+			attribute.Int64("block.number_lag", blockNumberLag),
 		)
 	}
 

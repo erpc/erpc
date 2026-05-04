@@ -35,15 +35,18 @@ database:
         # Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
         uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
     
-    # Maximum time to wait for shared state operations before falling back to local state
-    # Default: 10s
-    # Lower values improve resilience but may cause more divergence between instances
-    fallbackTimeout: 10s
+    # Network I/O timeout for backing store operations (get/set/publish)
+    # Recommended: 3s
+    fallbackTimeout: 3s
     
-    # Time-to-live for distributed locks (used to release idle locks)
-    # Default: 30s
-    # Should be longer than typical operation time but not so long it blocks operations if an instance fails
-    lockTtl: 30s
+    # TTL for distributed locks in the backing store.
+    # Recommended: 2s (keep short; foreground path is best‑effort)
+    lockTtl: 2s
+
+    # Foreground latency budgets (best‑effort)
+    # Recommended: lockMaxWait=100ms, updateMaxWait=50ms
+    lockMaxWait: 100ms   # max time to try acquiring the lock before proceeding locally
+    updateMaxWait: 50ms  # max time to run refresh function before returning current value
 ```
 </Tab>
 <Tab>
@@ -70,15 +73,18 @@ export default createConfig({
         }
       },
       
-      // Maximum time to wait for shared state operations before falling back to local state
-      // Default: 10s
-      // Lower values improve resilience but may cause more divergence between instances
-      fallbackTimeout: "10s",
+      // Network I/O timeout for backing store operations (get/set/publish)
+      // Recommended: 3s
+      fallbackTimeout: "3s",
       
-      // Time-to-live for distributed locks
-      // Default: 30s
-      // Should be longer than typical operation time but not so long it blocks operations if an instance fails
-      lockTtl: "30s"
+      // TTL for distributed locks in the backing store.
+      // Recommended: 2s (keep short; foreground path is best‑effort)
+      lockTtl: "2s",
+
+      // Foreground latency budgets (best‑effort)
+      // Recommended: lockMaxWait=100ms, updateMaxWait=50ms
+      lockMaxWait: "100ms",
+      updateMaxWait: "50ms",
     }
   }
 });

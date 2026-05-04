@@ -1,0 +1,102 @@
+version: 2
+
+multi-ecosystem-groups:
+  all-updates:
+    schedule:
+      interval: "weekly"
+    reviewers:
+      - "kasrakhosravi"
+      - "aramalipoor"
+    labels:
+      - "dependencies"
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "docker"
+    directory: "/docs"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "docker"
+    directory: "/monitoring"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "npm"
+    directory: "/docs"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "npm"
+    directory: "/test/util"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "npm"
+    directory: "/typescript/cli"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"
+
+  - package-ecosystem: "npm"
+    directory: "/typescript/config"
+    patterns:
+      - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    multi-ecosystem-group: "all-updates"

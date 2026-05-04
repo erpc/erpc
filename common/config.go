@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
@@ -73,13 +74,11 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 		}
 	}
 
-	err = cfg.SetDefaults(opts)
-	if err != nil {
+	if err := cfg.SetDefaults(opts); err != nil {
 		return nil, err
 	}
 
-	err = cfg.Validate()
-	if err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -87,22 +86,32 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 }
 
 type ServerConfig struct {
-	ListenV4            *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
-	HttpHostV4          *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
-	ListenV6            *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
-	HttpHostV6          *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort            *int            `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
-	HttpPortV4          *int            `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
-	HttpPortV6          *int            `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
-	MaxTimeout          *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
-	ReadTimeout         *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
-	WriteTimeout        *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
-	EnableGzip          *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	TLS                 *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
-	Aliasing            *AliasingConfig `yaml:"aliasing" json:"aliasing"`
-	WaitBeforeShutdown  *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
-	WaitAfterShutdown   *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
-	IncludeErrorDetails *bool           `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	ListenV4            *bool             `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4          *string           `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6            *bool             `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6          *string           `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort            *int              `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
+	HttpPortV4          *int              `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
+	HttpPortV6          *int              `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
+	GrpcEnabled         *bool             `yaml:"grpcEnabled,omitempty" json:"grpcEnabled"`
+	GrpcHostV4          *string           `yaml:"grpcHostV4,omitempty" json:"grpcHostV4"`
+	GrpcPortV4          *int              `yaml:"grpcPortV4,omitempty" json:"grpcPortV4"`
+	GrpcHostV6          *string           `yaml:"grpcHostV6,omitempty" json:"grpcHostV6"`
+	GrpcPortV6          *int              `yaml:"grpcPortV6,omitempty" json:"grpcPortV6"`
+	GrpcMaxRecvMsgSize  *int              `yaml:"grpcMaxRecvMsgSize,omitempty" json:"grpcMaxRecvMsgSize"`
+	GrpcMaxSendMsgSize  *int              `yaml:"grpcMaxSendMsgSize,omitempty" json:"grpcMaxSendMsgSize"`
+	MaxTimeout          *Duration         `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
+	ReadTimeout         *Duration         `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
+	WriteTimeout        *Duration         `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
+	EnableGzip          *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS                 *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
+	Aliasing            *AliasingConfig   `yaml:"aliasing" json:"aliasing"`
+	WaitBeforeShutdown  *Duration         `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
+	WaitAfterShutdown   *Duration         `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
+	IncludeErrorDetails *bool             `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
+	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
+	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
 }
 
 type HealthCheckConfig struct {
@@ -114,8 +123,9 @@ type HealthCheckConfig struct {
 type HealthCheckMode string
 
 const (
-	HealthCheckModeSimple  HealthCheckMode = "simple"
-	HealthCheckModeVerbose HealthCheckMode = "verbose"
+	HealthCheckModeSimple   HealthCheckMode = "simple"
+	HealthCheckModeNetworks HealthCheckMode = "networks"
+	HealthCheckModeVerbose  HealthCheckMode = "verbose"
 )
 
 const (
@@ -137,12 +147,33 @@ const (
 )
 
 type TracingConfig struct {
-	Enabled    bool            `yaml:"enabled,omitempty" json:"enabled"`
-	Endpoint   string          `yaml:"endpoint,omitempty" json:"endpoint"`
-	Protocol   TracingProtocol `yaml:"protocol,omitempty" json:"protocol"`
-	SampleRate float64         `yaml:"sampleRate,omitempty" json:"sampleRate"`
-	Detailed   bool            `yaml:"detailed,omitempty" json:"detailed"`
-	TLS        *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
+	Enabled            bool              `yaml:"enabled,omitempty" json:"enabled"`
+	Endpoint           string            `yaml:"endpoint,omitempty" json:"endpoint"`
+	Protocol           TracingProtocol   `yaml:"protocol,omitempty" json:"protocol"`
+	SampleRate         float64           `yaml:"sampleRate,omitempty" json:"sampleRate"`
+	Detailed           bool              `yaml:"detailed,omitempty" json:"detailed"`
+	ServiceName        string            `yaml:"serviceName,omitempty" json:"serviceName"`
+	Headers            map[string]string `yaml:"headers,omitempty" json:"headers"`
+	TLS                *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
+	ResourceAttributes map[string]string `yaml:"resourceAttributes,omitempty" json:"resourceAttributes"`
+
+	// ForceTraceMatchers defines conditions for force-tracing requests.
+	// Each matcher can specify network and/or method patterns.
+	// Multiple patterns can be separated by "|" (OR within field).
+	// Both network and method must match if both are specified (AND between fields).
+	// If only one field is specified, only that field is checked.
+	ForceTraceMatchers []*ForceTraceMatcher `yaml:"forceTraceMatchers,omitempty" json:"forceTraceMatchers"`
+}
+
+// ForceTraceMatcher defines a condition for force-tracing requests.
+type ForceTraceMatcher struct {
+	// Network patterns to match (e.g., "evm:1", "evm:1|evm:42161", "evm:*")
+	// Multiple patterns separated by "|" act as OR conditions.
+	Network string `yaml:"network,omitempty" json:"network"`
+
+	// Method patterns to match (e.g., "eth_call", "debug_*|trace_*")
+	// Multiple patterns separated by "|" act as OR conditions.
+	Method string `yaml:"method,omitempty" json:"method"`
 }
 
 type AdminConfig struct {
@@ -167,10 +198,22 @@ type DatabaseConfig struct {
 }
 
 type SharedStateConfig struct {
-	ClusterKey      string           `yaml:"clusterKey,omitempty" json:"clusterKey"`
-	Connector       *ConnectorConfig `yaml:"connector,omitempty" json:"connector"`
-	FallbackTimeout Duration         `yaml:"fallbackTimeout,omitempty" json:"fallbackTimeout" tstype:"Duration"`
-	LockTtl         Duration         `yaml:"lockTtl,omitempty" json:"lockTtl" tstype:"Duration"`
+	// ClusterKey identifies the logical group for shared counters across replicas (multi-tenant friendly)
+	ClusterKey string `yaml:"clusterKey,omitempty" json:"clusterKey"`
+	// Connector contains the storage driver configuration (redis, postgresql, dynamodb, memory)
+	Connector *ConnectorConfig `yaml:"connector,omitempty" json:"connector"`
+	// FallbackTimeout is the timeout for remote storage operations (get/set/publish).
+	// It is a seconds-scale network timeout and NOT a foreground latency budget.
+	FallbackTimeout Duration `yaml:"fallbackTimeout,omitempty" json:"fallbackTimeout" tstype:"Duration"`
+	// LockTtl is the expiration for the distributed lock key in the backing store.
+	// Should comfortably exceed the expected duration of remote writes.
+	LockTtl Duration `yaml:"lockTtl,omitempty" json:"lockTtl" tstype:"Duration"`
+	// LockMaxWait caps how long the foreground path will wait to acquire the lock
+	// before proceeding locally and deferring the remote write to background.
+	LockMaxWait Duration `yaml:"lockMaxWait,omitempty" json:"lockMaxWait" tstype:"Duration"`
+	// UpdateMaxWait caps how long the foreground path will spend computing a new value
+	// (e.g., polling latest block) before returning the current local value.
+	UpdateMaxWait Duration `yaml:"updateMaxWait,omitempty" json:"updateMaxWait" tstype:"Duration"`
 }
 
 type CacheConfig struct {
@@ -192,6 +235,15 @@ type CacheMethodConfig struct {
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
 	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
+	// TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateLatestTag *bool `yaml:"translateLatestTag,omitempty" json:"translateLatestTag,omitempty"`
+	// TranslateFinalizedTag controls whether the method-level tag translation should convert "finalized" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateFinalizedTag *bool `yaml:"translateFinalizedTag,omitempty" json:"translateFinalizedTag,omitempty"`
+	// EnforceBlockAvailability controls whether per-upstream block availability bounds (upper/lower)
+	// are enforced for this method at the network level. When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 type CachePolicyConfig struct {
@@ -221,20 +273,23 @@ const (
 )
 
 type ConnectorConfig struct {
-	Id         string                     `yaml:"id,omitempty" json:"id"`
-	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
-	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
-	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
-	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
-	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
-	Grpc       *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
-	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
+	Id              string                     `yaml:"id,omitempty" json:"id"`
+	Driver          ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
+	Memory          *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
+	Redis           *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
+	DynamoDB        *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
+	PostgreSQL      *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
+	Grpc            *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
+	FailsafeForGets []*FailsafeConfig          `yaml:"failsafeForGets,omitempty" json:"failsafeForGets"`
+	FailsafeForSets []*FailsafeConfig          `yaml:"failsafeForSets,omitempty" json:"failsafeForSets"`
+	Mock            *MockConnectorConfig       `yaml:"-" json:"-"`
 }
 
 type GrpcConnectorConfig struct {
-	Bootstrap string            `yaml:"bootstrap,omitempty" json:"bootstrap"`
-	Servers   []string          `yaml:"servers,omitempty" json:"servers"`
-	Headers   map[string]string `yaml:"headers,omitempty" json:"headers"`
+	Bootstrap  string            `yaml:"bootstrap,omitempty" json:"bootstrap"`
+	Servers    []string          `yaml:"servers,omitempty" json:"servers"`
+	Headers    map[string]string `yaml:"headers,omitempty" json:"headers"`
+	GetTimeout Duration          `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 }
 
 type MemoryConnectorConfig struct {
@@ -288,6 +343,22 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (r *RedisConnectorConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"addr":              r.Addr,
+		"username":          r.Username,
+		"password":          "REDACTED",
+		"db":                r.DB,
+		"connPoolSize":      r.ConnPoolSize,
+		"uri":               util.RedactEndpoint(r.URI),
+		"tls":               r.TLS,
+		"initTimeout":       r.InitTimeout.String(),
+		"getTimeout":        r.GetTimeout.String(),
+		"setTimeout":        r.SetTimeout.String(),
+		"lockRetryInterval": r.LockRetryInterval.String(),
+	}, nil
+}
+
 type DynamoDBConnectorConfig struct {
 	Table             string         `yaml:"table,omitempty" json:"table"`
 	Region            string         `yaml:"region,omitempty" json:"region"`
@@ -327,6 +398,18 @@ func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (p *PostgreSQLConnectorConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
+		"table":         p.Table,
+		"minConns":      p.MinConns,
+		"maxConns":      p.MaxConns,
+		"initTimeout":   p.InitTimeout.String(),
+		"getTimeout":    p.GetTimeout.String(),
+		"setTimeout":    p.SetTimeout.String(),
+	}, nil
+}
+
 type AwsAuthConfig struct {
 	Mode            string `yaml:"mode" json:"mode" tstype:"'file' | 'env' | 'secret'"` // "file", "env", "secret"
 	CredentialsFile string `yaml:"credentialsFile" json:"credentialsFile"`
@@ -345,20 +428,70 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
-type ProjectConfig struct {
-	Id                     string                              `yaml:"id" json:"id"`
-	Auth                   *AuthConfig                         `yaml:"auth,omitempty" json:"auth"`
-	CORS                   *CORSConfig                         `yaml:"cors,omitempty" json:"cors"`
-	Providers              []*ProviderConfig                   `yaml:"providers,omitempty" json:"providers"`
-	UpstreamDefaults       *UpstreamConfig                     `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
-	Upstreams              []*UpstreamConfig                   `yaml:"upstreams,omitempty" json:"upstreams"`
-	NetworkDefaults        *NetworkDefaults                    `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
-	Networks               []*NetworkConfig                    `yaml:"networks,omitempty" json:"networks"`
-	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
-	ScoreRefreshInterval   Duration                            `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
-	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+func (a *AwsAuthConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"mode":            a.Mode,
+		"credentialsFile": a.CredentialsFile,
+		"profile":         a.Profile,
+		"accessKeyID":     a.AccessKeyID,
+		"secretAccessKey": "REDACTED",
+	}, nil
 }
+
+type ProjectConfig struct {
+	Id                     string            `yaml:"id" json:"id"`
+	Auth                   *AuthConfig       `yaml:"auth,omitempty" json:"auth"`
+	CORS                   *CORSConfig       `yaml:"cors,omitempty" json:"cors"`
+	Providers              []*ProviderConfig `yaml:"providers,omitempty" json:"providers"`
+	UpstreamDefaults       *UpstreamConfig   `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
+	Upstreams              []*UpstreamConfig `yaml:"upstreams,omitempty" json:"upstreams"`
+	NetworkDefaults        *NetworkDefaults  `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks               []*NetworkConfig  `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget        string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	ScoreMetricsWindowSize Duration          `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
+	ScoreRefreshInterval   Duration          `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
+	// RoutingStrategy selects the upstream ordering algorithm.
+	// "score-based" (default): penalty-based sticky routing.
+	// "round-robin": time-rotating equal distribution across upstreams.
+	RoutingStrategy string `yaml:"routingStrategy,omitempty" json:"routingStrategy"`
+	// ScoreGranularity controls whether penalties are computed per-upstream or per-method.
+	// "upstream" (default): one penalty across all methods using aggregate metrics.
+	// "method": separate penalty per (upstream, method) pair.
+	ScoreGranularity string `yaml:"scoreGranularity,omitempty" json:"scoreGranularity"`
+	// ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
+	// Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+	// Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
+	ScorePenaltyDecayRate float64 `yaml:"scorePenaltyDecayRate,omitempty" json:"scorePenaltyDecayRate"`
+	// ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
+	// must be at least this fraction lower than the current primary's penalty to
+	// trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
+	ScoreSwitchHysteresis float64 `yaml:"scoreSwitchHysteresis,omitempty" json:"scoreSwitchHysteresis"`
+	// ScoreMinSwitchInterval is the cooldown between primary upstream switches.
+	ScoreMinSwitchInterval Duration `yaml:"scoreMinSwitchInterval,omitempty" json:"scoreMinSwitchInterval" tstype:"Duration"`
+	// ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
+	// Allowed values:
+	// - "compact": emit compact series by setting upstream and category labels to 'n/a'
+	// - "detailed": emit full project/vendor/network/upstream/category series
+	ScoreMetricsMode      string                              `yaml:"scoreMetricsMode,omitempty" json:"scoreMetricsMode"`
+	DeprecatedHealthCheck *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	// Configure user agent tracking at the project level
+	UserAgentMode  UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
+	ForwardHeaders []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
+	IgnoreMethods  []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
+	AllowMethods   []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
+}
+
+// UserAgentTrackingMode controls how user agents are recorded for metrics/labels
+type UserAgentTrackingMode string
+
+const (
+	// UserAgentTrackingModeSimplified lowers cardinality by bucketing common user agents
+	UserAgentTrackingModeSimplified UserAgentTrackingMode = "simplified"
+	// UserAgentTrackingModeRaw records the user agent string as-is (high cardinality)
+	UserAgentTrackingModeRaw UserAgentTrackingMode = "raw"
+)
+
+// Removed legacy nested UserAgentConfig; use ProjectConfig.UserAgentMode
 
 type NetworkDefaults struct {
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
@@ -366,6 +499,7 @@ type NetworkDefaults struct {
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -454,6 +588,18 @@ func (p *ProviderConfig) MarshalJSON() ([]byte, error) {
 		"upstreamIdTemplate": p.UpstreamIdTemplate,
 		"overrides":          p.Overrides,
 	})
+}
+
+func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"id":                 p.Id,
+		"vendor":             p.Vendor,
+		"settings":           "REDACTED",
+		"onlyNetworks":       p.OnlyNetworks,
+		"ignoreNetworks":     p.IgnoreNetworks,
+		"upstreamIdTemplate": p.UpstreamIdTemplate,
+		"overrides":          p.Overrides,
+	}, nil
 }
 
 type UpstreamConfig struct {
@@ -592,6 +738,7 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 
 type ShadowUpstreamConfig struct {
 	Enabled      bool                `yaml:"enabled" json:"enabled"`
+	SampleRate   *float64            `yaml:"sampleRate,omitempty" json:"sampleRate,omitempty"`
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
@@ -663,16 +810,17 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 }
 
 type ScoreMultiplierConfig struct {
-	Network         string   `yaml:"network" json:"network"`
-	Method          string   `yaml:"method" json:"method"`
-	Overall         *float64 `yaml:"overall" json:"overall"`
-	ErrorRate       *float64 `yaml:"errorRate" json:"errorRate"`
-	RespLatency     *float64 `yaml:"respLatency" json:"respLatency"`
-	TotalRequests   *float64 `yaml:"totalRequests" json:"totalRequests"`
-	ThrottledRate   *float64 `yaml:"throttledRate" json:"throttledRate"`
-	BlockHeadLag    *float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
-	FinalizationLag *float64 `yaml:"finalizationLag" json:"finalizationLag"`
-	Misbehaviors    *float64 `yaml:"misbehaviors" json:"misbehaviors"`
+	Network         string              `yaml:"network,omitempty" json:"network,omitempty"`
+	Method          string              `yaml:"method,omitempty" json:"method,omitempty"`
+	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
+	Overall         *float64            `yaml:"overall" json:"overall"`
+	ErrorRate       *float64            `yaml:"errorRate" json:"errorRate"`
+	RespLatency     *float64            `yaml:"respLatency" json:"respLatency"`
+	TotalRequests   *float64            `yaml:"totalRequests" json:"totalRequests"`
+	ThrottledRate   *float64            `yaml:"throttledRate" json:"throttledRate"`
+	BlockHeadLag    *float64            `yaml:"blockHeadLag" json:"blockHeadLag"`
+	FinalizationLag *float64            `yaml:"finalizationLag" json:"finalizationLag"`
+	Misbehaviors    *float64            `yaml:"misbehaviors" json:"misbehaviors"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
@@ -681,18 +829,30 @@ func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
 	}
 	copied := &ScoreMultiplierConfig{}
 	*copied = *c
+	// Deep copy the Finality array
+	if c.Finality != nil {
+		copied.Finality = make([]DataFinalityState, len(c.Finality))
+		copy(copied.Finality, c.Finality)
+	}
 	return copied
 }
 
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
-	type Alias UpstreamConfig
+	type UJAlias UpstreamConfig
 	return sonic.Marshal(&struct {
 		Endpoint string `json:"endpoint"`
-		*Alias
+		*UJAlias
 	}{
 		Endpoint: util.RedactEndpoint(u.Endpoint),
-		Alias:    (*Alias)(u),
+		UJAlias:  (*UJAlias)(u),
 	})
+}
+
+func (u *UpstreamConfig) MarshalYAML() (interface{}, error) {
+	type UYAlias UpstreamConfig
+	cp := *u
+	cp.Endpoint = util.RedactEndpoint(u.Endpoint)
+	return (*UYAlias)(&cp), nil
 }
 
 type RateLimitAutoTuneConfig struct {
@@ -741,21 +901,132 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                            int64                    `yaml:"chainId" json:"chainId"`
-	NodeType                           EvmNodeType              `yaml:"nodeType,omitempty" json:"nodeType"`
-	StatePollerInterval                Duration                 `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
-	StatePollerDebounce                Duration                 `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
-	MaxAvailableRecentBlocks           int64                    `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
-	GetLogsAutoSplittingRangeThreshold int64                    `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
-	SkipWhenSyncing                    *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	Integrity                          *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	ChainId             int64    `yaml:"chainId" json:"chainId"`
+	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	// StatePollerDebounce overrides the debounce interval for the state poller.
+	// When 0 (default), the interval is dynamically inferred from the chain's
+	// observed block time, falling back to the network-level
+	// FallbackStatePollerDebounce, then to a 1s floor.
+	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
+	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
+	// TraceFilterAutoSplittingRangeThreshold proactively splits trace_filter and
+	// arbtrace_filter requests whose block range exceeds this value into contiguous
+	// sub-requests executed concurrently and merged before returning. Zero disables
+	// the feature.
+	TraceFilterAutoSplittingRangeThreshold int64                    `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
+	SkipWhenSyncing                        *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	Integrity                              *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
+	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
+	NodeType EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
 	// @deprecated: should be removed in a future release
-	DeprecatedGetLogsMaxAllowedRange     int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"-"`
+	MaxAvailableRecentBlocks int64 `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxAllowedRange int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
 	DeprecatedGetLogsMaxAllowedAddresses int64 `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"-"`
-	DeprecatedGetLogsMaxAllowedTopics    int64 `yaml:"getLogsMaxAllowedTopics,omitempty" json:"-"`
-	DeprecatedGetLogsSplitOnError        *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
-	DeprecatedGetLogsMaxBlockRange       int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxAllowedTopics int64 `yaml:"getLogsMaxAllowedTopics,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsSplitOnError *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+
+	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+}
+
+type EvmQueryShimConfig struct {
+	Enabled        *bool    `yaml:"enabled,omitempty" json:"enabled"`
+	AllowedMethods []string `yaml:"allowedMethods,omitempty" json:"allowedMethods"`
+	Concurrency    int      `yaml:"concurrency,omitempty" json:"concurrency"`
+	MaxBlockRange  int64    `yaml:"maxBlockRange,omitempty" json:"maxBlockRange"`
+	MaxLimit       int      `yaml:"maxLimit,omitempty" json:"maxLimit"`
+	DefaultLimit   int      `yaml:"defaultLimit,omitempty" json:"defaultLimit"`
+}
+
+func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &EvmQueryShimConfig{
+		Concurrency:   c.Concurrency,
+		MaxBlockRange: c.MaxBlockRange,
+		MaxLimit:      c.MaxLimit,
+		DefaultLimit:  c.DefaultLimit,
+	}
+	if c.Enabled != nil {
+		v := *c.Enabled
+		copied.Enabled = &v
+	}
+	if c.AllowedMethods != nil {
+		copied.AllowedMethods = make([]string, len(c.AllowedMethods))
+		copy(copied.AllowedMethods, c.AllowedMethods)
+	}
+	return copied
+}
+
+// EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
+// Presence of lower/upper implies the feature is active. When both are nil, it's effectively off
+type EvmBlockAvailabilityConfig struct {
+	Lower *EvmAvailabilityBoundConfig `yaml:"lower,omitempty" json:"lower,omitempty"`
+	Upper *EvmAvailabilityBoundConfig `yaml:"upper,omitempty" json:"upper,omitempty"`
+}
+
+func (c *EvmBlockAvailabilityConfig) Copy() *EvmBlockAvailabilityConfig {
+	if c == nil {
+		return nil
+	}
+	out := &EvmBlockAvailabilityConfig{}
+	if c.Lower != nil {
+		out.Lower = c.Lower.Copy()
+	}
+	if c.Upper != nil {
+		out.Upper = c.Upper.Copy()
+	}
+	return out
+}
+
+// EvmBound represents a single bound definition.
+// Exactly one of ExactBlock, LatestMinus, EarliestPlus should be set.
+// UpdateRate only applies to earliestBlockPlus bounds: 0 means freeze at first evaluation; >0 means recompute on that cadence.
+// For latestBlockMinus, updateRate is ignored: bounds are computed on-demand using the continuously-updated latest block from evmStatePoller.
+type EvmAvailabilityProbeType string
+
+const (
+	EvmProbeBlockHeader EvmAvailabilityProbeType = "blockHeader"
+	EvmProbeEventLogs   EvmAvailabilityProbeType = "eventLogs"
+	EvmProbeCallState   EvmAvailabilityProbeType = "callState"
+	EvmProbeTraceData   EvmAvailabilityProbeType = "traceData"
+)
+
+type EvmAvailabilityBoundConfig struct {
+	ExactBlock        *int64                   `yaml:"exactBlock,omitempty" json:"exactBlock,omitempty"`
+	LatestBlockMinus  *int64                   `yaml:"latestBlockMinus,omitempty" json:"latestBlockMinus,omitempty"`
+	EarliestBlockPlus *int64                   `yaml:"earliestBlockPlus,omitempty" json:"earliestBlockPlus,omitempty"`
+	Probe             EvmAvailabilityProbeType `yaml:"probe,omitempty" json:"probe,omitempty"`
+	UpdateRate        Duration                 `yaml:"updateRate,omitempty" json:"updateRate,omitempty" tstype:"Duration"`
+}
+
+func (c *EvmAvailabilityBoundConfig) Copy() *EvmAvailabilityBoundConfig {
+	if c == nil {
+		return nil
+	}
+	out := &EvmAvailabilityBoundConfig{UpdateRate: c.UpdateRate}
+	if c.ExactBlock != nil {
+		v := *c.ExactBlock
+		out.ExactBlock = &v
+	}
+	if c.LatestBlockMinus != nil {
+		v := *c.LatestBlockMinus
+		out.LatestBlockMinus = &v
+	}
+	if c.EarliestBlockPlus != nil {
+		v := *c.EarliestBlockPlus
+		out.EarliestBlockPlus = &v
+	}
+	out.Probe = c.Probe
+	return out
 }
 
 func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
@@ -767,6 +1038,9 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	*copied = *c
 
 	// Deep copy pointer fields to avoid shared state
+	if c.BlockAvailability != nil {
+		copied.BlockAvailability = c.BlockAvailability.Copy()
+	}
 	if c.SkipWhenSyncing != nil {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v
@@ -777,6 +1051,9 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.DeprecatedGetLogsSplitOnError != nil {
 		v := *c.DeprecatedGetLogsSplitOnError
 		copied.DeprecatedGetLogsSplitOnError = &v
+	}
+	if c.QueryShim != nil {
+		copied.QueryShim = c.QueryShim.Copy()
 	}
 
 	return copied
@@ -882,9 +1159,20 @@ type RetryPolicyConfig struct {
 	BackoffFactor         float32               `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
 	Jitter                Duration              `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence"`
-	EmptyResultIgnore     []string              `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
+	// EmptyResultAccept lists methods for which an empty/null result is considered valid
+	// and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
+	EmptyResultAccept []string `yaml:"emptyResultAccept,omitempty" json:"emptyResultAccept"`
+	// @deprecated: use EmptyResultAccept instead.
+	EmptyResultIgnore []string `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
 	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
 	EmptyResultMaxAttempts int `yaml:"emptyResultMaxAttempts,omitempty" json:"emptyResultMaxAttempts"`
+	// EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
+	// When set, empty result retries wait this long instead of using the normal error delay/backoff.
+	EmptyResultDelay Duration `yaml:"emptyResultDelay,omitempty" json:"emptyResultDelay" tstype:"Duration"`
+	// BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
+	// requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
+	// time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
+	BlockUnavailableDelay Duration `yaml:"blockUnavailableDelay,omitempty" json:"blockUnavailableDelay" tstype:"Duration"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
@@ -914,7 +1202,10 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 }
 
 type TimeoutPolicyConfig struct {
-	Duration Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
+	Duration    Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
+	Quantile    float64  `yaml:"quantile,omitempty" json:"quantile"`
+	MinDuration Duration `yaml:"minDuration,omitempty" json:"minDuration" tstype:"Duration"`
+	MaxDuration Duration `yaml:"maxDuration,omitempty" json:"maxDuration" tstype:"Duration"`
 }
 
 func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {
@@ -962,9 +1253,7 @@ const (
 )
 
 type ConsensusPolicyConfig struct {
-	MaxParticipants int `yaml:"maxParticipants" json:"maxParticipants"`
-	// @deprecated: use MaxParticipants instead
-	RequiredParticipants    int                              `yaml:"requiredParticipants" json:"-"`
+	MaxParticipants         int                              `yaml:"maxParticipants" json:"maxParticipants"`
 	AgreementThreshold      int                              `yaml:"agreementThreshold,omitempty" json:"agreementThreshold"`
 	DisputeBehavior         ConsensusDisputeBehavior         `yaml:"disputeBehavior,omitempty" json:"disputeBehavior"`
 	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`
@@ -973,6 +1262,19 @@ type ConsensusPolicyConfig struct {
 	IgnoreFields            map[string][]string              `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 	PreferNonEmpty          *bool                            `yaml:"preferNonEmpty,omitempty" json:"preferNonEmpty"`
 	PreferLargerResponses   *bool                            `yaml:"preferLargerResponses,omitempty" json:"preferLargerResponses"`
+	MisbehaviorsDestination *MisbehaviorsDestinationConfig   `yaml:"misbehaviorsDestination,omitempty" json:"misbehaviorsDestination"`
+	// PreferHighestValueFor specifies methods that should use highest-value comparison
+	// instead of hash-based consensus. Map key is method name, value is array of field paths.
+	// Field paths: "result" for direct result value (e.g., eth_getTransactionCount returns hex),
+	// or field name for nested result objects (e.g., "nonce" for result.nonce).
+	// When multiple fields are specified, they act as tie-breakers in order.
+	PreferHighestValueFor map[string][]string `yaml:"preferHighestValueFor,omitempty" json:"preferHighestValueFor"`
+	// FireAndForget when true, allows consensus to return a response to the client immediately
+	// upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
+	// This is useful for write operations like eth_sendRawTransaction where you want to
+	// broadcast the transaction to as many nodes as possible while still returning quickly.
+	// Default is false (normal behavior - cancel remaining requests on short-circuit).
+	FireAndForget bool `yaml:"fireAndForget,omitempty" json:"fireAndForget"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -986,6 +1288,10 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		copied.PunishMisbehavior = c.PunishMisbehavior.Copy()
 	}
 
+	if c.MisbehaviorsDestination != nil {
+		copied.MisbehaviorsDestination = c.MisbehaviorsDestination.Copy()
+	}
+
 	if c.IgnoreFields != nil {
 		copied.IgnoreFields = make(map[string][]string, len(c.IgnoreFields))
 		for method, fields := range c.IgnoreFields {
@@ -994,6 +1300,90 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		}
 	}
 
+	if c.PreferHighestValueFor != nil {
+		copied.PreferHighestValueFor = make(map[string][]string, len(c.PreferHighestValueFor))
+		for method, fields := range c.PreferHighestValueFor {
+			copied.PreferHighestValueFor[method] = make([]string, len(fields))
+			copy(copied.PreferHighestValueFor[method], fields)
+		}
+	}
+
+	return copied
+}
+
+type MisbehaviorsDestinationType string
+
+const (
+	MisbehaviorsDestinationTypeFile MisbehaviorsDestinationType = "file"
+	MisbehaviorsDestinationTypeS3   MisbehaviorsDestinationType = "s3"
+)
+
+type MisbehaviorsDestinationConfig struct {
+	// Type of destination: "file" or "s3"
+	Type MisbehaviorsDestinationType `yaml:"type" json:"type" tstype:"'file' | 's3'"`
+
+	// Path for file destination, or S3 URI (s3://bucket/prefix/) for S3 destination
+	Path string `yaml:"path" json:"path"`
+
+	// Pattern for generating file names. Supports placeholders:
+	// {dateByHour} - formatted as 2006-01-02-15
+	// {dateByDay} - formatted as 2006-01-02
+	// {method} - the RPC method name
+	// {networkId} - the network ID with : replaced by _
+	// {instanceId} - unique instance identifier
+	FilePattern string `yaml:"filePattern,omitempty" json:"filePattern"`
+
+	// S3-specific settings for bulk flushing
+	S3 *S3FlushConfig `yaml:"s3,omitempty" json:"s3,omitempty"`
+}
+
+type S3FlushConfig struct {
+	// Maximum number of records to buffer before flushing (default: 100)
+	MaxRecords int `yaml:"maxRecords,omitempty" json:"maxRecords"`
+
+	// Maximum size in bytes to buffer before flushing (default: 1MB)
+	MaxSize int64 `yaml:"maxSize,omitempty" json:"maxSize"`
+
+	// Maximum time to wait before flushing buffered records (default: 60s)
+	FlushInterval Duration `yaml:"flushInterval,omitempty" json:"flushInterval" tstype:"Duration"`
+
+	// AWS region for S3 bucket (defaults to AWS_REGION env var)
+	Region string `yaml:"region,omitempty" json:"region"`
+
+	// AWS credentials config (optional). If not specified, uses standard AWS credential chain:
+	// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+	// 2. IAM role (for EC2/ECS/EKS)
+	// 3. Shared credentials file (~/.aws/credentials)
+	// Supported modes: "env", "file", "secret"
+	Credentials *AwsAuthConfig `yaml:"credentials,omitempty" json:"credentials,omitempty"`
+
+	// Content type for uploaded files (default: "application/jsonl")
+	ContentType string `yaml:"contentType,omitempty" json:"contentType"`
+}
+
+func (c *MisbehaviorsDestinationConfig) Copy() *MisbehaviorsDestinationConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &MisbehaviorsDestinationConfig{
+		Type:        c.Type,
+		Path:        c.Path,
+		FilePattern: c.FilePattern,
+	}
+	if c.S3 != nil {
+		copied.S3 = &S3FlushConfig{
+			MaxRecords:    c.S3.MaxRecords,
+			MaxSize:       c.S3.MaxSize,
+			FlushInterval: c.S3.FlushInterval,
+			Region:        c.S3.Region,
+			ContentType:   c.S3.ContentType,
+		}
+		if c.S3.Credentials != nil {
+			// AwsAuthConfig already exists in the codebase
+			creds := *c.S3.Credentials
+			copied.S3.Credentials = &creds
+		}
+	}
 	return copied
 }
 
@@ -1013,6 +1403,7 @@ func (c *PunishMisbehaviorConfig) Copy() *PunishMisbehaviorConfig {
 }
 
 type RateLimiterConfig struct {
+	Store   *RateLimitStoreConfig    `yaml:"store,omitempty" json:"store"`
 	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets" tstype:"RateLimitBudgetConfig[]"`
 }
 
@@ -1022,10 +1413,166 @@ type RateLimitBudgetConfig struct {
 }
 
 type RateLimitRuleConfig struct {
-	Method   string   `yaml:"method" json:"method"`
-	MaxCount uint     `yaml:"maxCount" json:"maxCount"`
-	Period   Duration `yaml:"period" json:"period" tstype:"Duration"`
-	WaitTime Duration `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
+	Method   string `yaml:"method" json:"method"`
+	MaxCount uint32 `yaml:"maxCount" json:"maxCount"`
+	// Period is the canonical period selector. Supported: second, minute, hour, day, week, month, year
+	Period     RateLimitPeriod `yaml:"period" json:"period" tstype:"RateLimitPeriod"`
+	WaitTime   Duration        `yaml:"waitTime,omitempty" json:"waitTime,omitempty" tstype:"Duration"`
+	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
+	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
+	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
+}
+
+// ScopeString returns a comma-separated list of enabled scopes in deterministic order.
+// Possible values: "user", "network", "ip". Empty string if no scope-specific flags are enabled.
+func (c *RateLimitRuleConfig) ScopeString() string {
+	scopes := make([]string, 0, 3)
+	if c.PerUser {
+		scopes = append(scopes, "user")
+	}
+	if c.PerNetwork {
+		scopes = append(scopes, "network")
+	}
+	if c.PerIP {
+		scopes = append(scopes, "ip")
+	}
+	return strings.Join(scopes, ",")
+}
+
+// RateLimitPeriod enumerates supported periods for rate limiting.
+// It is an int enum to enable strong typing in TypeScript generation, while
+// marshaling to JSON/YAML as human-readable strings like "second", "minute", etc.
+type RateLimitPeriod int
+
+const (
+	RateLimitPeriodSecond RateLimitPeriod = iota
+	RateLimitPeriodMinute
+	RateLimitPeriodHour
+	RateLimitPeriodDay
+	RateLimitPeriodWeek
+	RateLimitPeriodMonth
+	RateLimitPeriodYear
+)
+
+func (p RateLimitPeriod) String() string {
+	switch p {
+	case RateLimitPeriodSecond:
+		return "second"
+	case RateLimitPeriodMinute:
+		return "minute"
+	case RateLimitPeriodHour:
+		return "hour"
+	case RateLimitPeriodDay:
+		return "day"
+	case RateLimitPeriodWeek:
+		return "week"
+	case RateLimitPeriodMonth:
+		return "month"
+	case RateLimitPeriodYear:
+		return "year"
+	default:
+		return "unknown"
+	}
+}
+
+func (p RateLimitPeriod) MarshalYAML() (interface{}, error) {
+	return p.String(), nil
+}
+
+func (p RateLimitPeriod) MarshalJSON() ([]byte, error) {
+	return SonicCfg.Marshal(p.String())
+}
+
+// Backward-compat: accept Go duration strings (e.g., 1s, 1m, 1h, 24h, 7d, 30d, 365d) and map to enum.
+func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try as integer enum first (YAML integer values like period: 1)
+	var i int
+	if err := unmarshal(&i); err == nil {
+		switch RateLimitPeriod(i) {
+		case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+			RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+			*p = RateLimitPeriod(i)
+			return nil
+		default:
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %d)", i)
+		}
+	}
+
+	// Try as string (enum name or duration expression)
+	var s string
+	if err := unmarshal(&s); err == nil {
+		ls := strings.ToLower(strings.TrimSpace(s))
+		switch ls {
+		case "second", "1s":
+			*p = RateLimitPeriodSecond
+			return nil
+		case "minute", "1m", "60s":
+			*p = RateLimitPeriodMinute
+			return nil
+		case "hour", "1h", "3600s":
+			*p = RateLimitPeriodHour
+			return nil
+		case "day", "24h", "1d", "86400s":
+			*p = RateLimitPeriodDay
+			return nil
+		case "week", "7d", "168h", "604800s":
+			*p = RateLimitPeriodWeek
+			return nil
+		case "month", "30d", "720h", "2592000s":
+			*p = RateLimitPeriodMonth
+			return nil
+		case "year", "365d", "8760h", "31536000s":
+			*p = RateLimitPeriodYear
+			return nil
+		default:
+			// Try as duration expression (e.g., 1s)
+			if d, err := time.ParseDuration(s); err == nil {
+				switch d {
+				case time.Second:
+					*p = RateLimitPeriodSecond
+				case time.Minute:
+					*p = RateLimitPeriodMinute
+				case time.Hour:
+					*p = RateLimitPeriodHour
+				case 24 * time.Hour:
+					*p = RateLimitPeriodDay
+				case 7 * 24 * time.Hour:
+					*p = RateLimitPeriodWeek
+				case 30 * 24 * time.Hour:
+					*p = RateLimitPeriodMonth
+				case 365 * 24 * time.Hour:
+					*p = RateLimitPeriodYear
+				default:
+					return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
+				}
+				return nil
+			}
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
+		}
+	}
+	// Neither integer nor string matched
+	return fmt.Errorf("invalid period type; expected string enum, integer enum, or duration like '1s'")
+}
+
+func (p RateLimitPeriod) Unit() pb.RateLimitResponse_RateLimit_Unit {
+	switch p {
+	case RateLimitPeriodSecond:
+		return pb.RateLimitResponse_RateLimit_SECOND
+	case RateLimitPeriodMinute:
+		return pb.RateLimitResponse_RateLimit_MINUTE
+	case RateLimitPeriodHour:
+		return pb.RateLimitResponse_RateLimit_HOUR
+	case RateLimitPeriodDay:
+		return pb.RateLimitResponse_RateLimit_DAY
+	case RateLimitPeriodWeek:
+		return pb.RateLimitResponse_RateLimit_WEEK
+	case RateLimitPeriodMonth:
+		return pb.RateLimitResponse_RateLimit_MONTH
+	case RateLimitPeriodYear:
+		return pb.RateLimitResponse_RateLimit_YEAR
+	default:
+		return pb.RateLimitResponse_RateLimit_UNKNOWN
+	}
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
@@ -1063,6 +1610,41 @@ type NetworkConfig struct {
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
+	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+}
+
+// StaticResponseConfig declares a canned JSON-RPC response for a specific
+// (method, params) pair on a network. When an inbound request matches, the
+// configured response is returned immediately and no upstream is contacted.
+// Useful for chains that deviate from client assumptions (for example, chains
+// whose genesis block is not 0) where probing upstreams would yield errors
+// or inconsistent data.
+type StaticResponseConfig struct {
+	Method   string                    `yaml:"method" json:"method"`
+	Params   []interface{}             `yaml:"params,omitempty" json:"params,omitempty"`
+	Response *StaticResponseBodyConfig `yaml:"response" json:"response"`
+}
+
+// StaticResponseBodyConfig holds the JSON-RPC payload to serve. Exactly one
+// of Result or Error must be set.
+type StaticResponseBodyConfig struct {
+	Result interface{}                `yaml:"result,omitempty" json:"result"`
+	Error  *StaticResponseErrorConfig `yaml:"error,omitempty" json:"error"`
+}
+
+// StaticResponseErrorConfig mirrors a JSON-RPC error object.
+type StaticResponseErrorConfig struct {
+	Code    int         `yaml:"code" json:"code"`
+	Message string      `yaml:"message" json:"message"`
+	Data    interface{} `yaml:"data,omitempty" json:"data"`
+}
+
+func (n *NetworkConfig) MultiplexingEnabled() bool {
+	if n == nil || n.Multiplexing == nil {
+		return true
+	}
+	return *n.Multiplexing
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -1098,6 +1680,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Alias             string                   `yaml:"alias,omitempty"`
 		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
+		StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
 	}
 
 	var old oldNetworkConfig
@@ -1115,6 +1698,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Alias = old.Alias
 	n.Methods = old.Methods
+	n.StaticResponses = old.StaticResponses
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -1128,10 +1712,74 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type DirectiveDefaultsConfig struct {
-	RetryEmpty    *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
-	RetryPending  *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
-	SkipCacheRead *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
-	UseUpstream   *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	RetryEmpty        *bool       `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending      *bool       `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead     interface{} `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	UseUpstream       *string     `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	SkipInterpolation *bool       `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+
+	// Validation: Block Integrity
+	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
+
+	// ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
+	// Defaults to true. Disable for non-standard chains that use unusual trie roots.
+	ValidateTransactionsRoot *bool `yaml:"validateTransactionsRoot,omitempty" json:"validateTransactionsRoot"`
+
+	// Validation: Header Field Lengths
+	ValidateHeaderFieldLengths *bool `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
+
+	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
+	ValidateTransactionFields    *bool `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`
+	ValidateTransactionBlockInfo *bool `yaml:"validateTransactionBlockInfo,omitempty" json:"validateTransactionBlockInfo"`
+
+	// Validation: Receipts & Logs
+	EnforceLogIndexStrictIncrements *bool `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
+	ValidateTxHashUniqueness        *bool `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
+	ValidateTransactionIndex        *bool `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
+	ValidateLogFields               *bool `yaml:"validateLogFields,omitempty" json:"validateLogFields"`
+
+	// Validation: Bloom Filter (simplified to 2 checks)
+	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
+	ValidateLogsBloomEmptiness *bool `yaml:"validateLogsBloomEmptiness,omitempty" json:"validateLogsBloomEmptiness"`
+	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
+	ValidateLogsBloomMatch *bool `yaml:"validateLogsBloomMatch,omitempty" json:"validateLogsBloomMatch"`
+
+	// Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
+	ValidateReceiptTransactionMatch *bool `yaml:"validateReceiptTransactionMatch,omitempty" json:"validateReceiptTransactionMatch"`
+	ValidateContractCreation        *bool `yaml:"validateContractCreation,omitempty" json:"validateContractCreation"`
+
+	// Validation: numeric checks
+	ReceiptsCountExact   *int64 `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`
+	ReceiptsCountAtLeast *int64 `yaml:"receiptsCountAtLeast,omitempty" json:"receiptsCountAtLeast"`
+
+	// Validation: Expected Ground Truths
+	ValidationExpectedBlockHash   *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
+	ValidationExpectedBlockNumber *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
+}
+
+func (d *DirectiveDefaultsConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type raw DirectiveDefaultsConfig
+	if err := unmarshal((*raw)(d)); err != nil {
+		return err
+	}
+	// Normalize SkipCacheRead: accept both bool and string from YAML, store as string.
+	if d.SkipCacheRead != nil {
+		d.SkipCacheRead = fmt.Sprintf("%v", d.SkipCacheRead)
+	}
+	return nil
+}
+
+func (d *DirectiveDefaultsConfig) UnmarshalJSON(data []byte) error {
+	type raw DirectiveDefaultsConfig
+	if err := sonic.Unmarshal(data, (*raw)(d)); err != nil {
+		return err
+	}
+	if d.SkipCacheRead != nil {
+		d.SkipCacheRead = fmt.Sprintf("%v", d.SkipCacheRead)
+	}
+	return nil
 }
 
 type EvmNetworkConfig struct {
@@ -1144,11 +1792,62 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
+	// arbtrace_filter requests when the upstream returns a range-too-large error.
+	// Nil disables the feature.
+	TraceFilterSplitOnError *bool `yaml:"traceFilterSplitOnError,omitempty" json:"traceFilterSplitOnError"`
+	// TraceFilterSplitConcurrency caps in-flight sub-requests when a trace_filter
+	// or arbtrace_filter request is split. Zero falls back to 10.
+	TraceFilterSplitConcurrency int `yaml:"traceFilterSplitConcurrency,omitempty" json:"traceFilterSplitConcurrency"`
+	// EnforceBlockAvailability controls whether the network should enforce per-upstream
+	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
+	// When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
+
+	// MaxRetryableBlockDistance controls the maximum block distance for which an upstream
+	// block unavailability error is considered retryable. If the requested block is within
+	// this distance from the upstream's latest block, the error is retryable (upstream may catch up).
+	// If the distance is larger, the error is not retryable (upstream is too far behind).
+	// Default: 128 blocks.
+	MaxRetryableBlockDistance *int64 `yaml:"maxRetryableBlockDistance,omitempty" json:"maxRetryableBlockDistance,omitempty"`
+
+	// MarkEmptyAsErrorMethods lists methods for which an empty/null result from an upstream
+	// should be treated as a "missing data" error, triggering retry on other upstreams.
+	// This is useful for point-lookups (blocks, transactions, receipts, traces) where an
+	// empty result likely means the upstream hasn't indexed that data yet.
+	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
+	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
+
+	// DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
+	// the debounce interval for block polling. A value of 0.7 means debounce = 70% of
+	// the estimated block time, preferring fresher data at the cost of slightly more
+	// polling. Lower values reduce staleness risk; higher values reduce RPC calls.
+	// Default: 0.7 (30% under the estimated block time).
+	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
+
+	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive
+	// the retry delay when all upstreams return ErrUpstreamBlockUnavailable. When the
+	// dynamic block time is known, the delay is blockTime * this multiplier.
+	// Falls back to the static RetryPolicyConfig.BlockUnavailableDelay when block time
+	// is not yet available. Default: 0.8.
+	BlockUnavailableDelayMultiplier *float64 `yaml:"blockUnavailableDelayMultiplier,omitempty" json:"blockUnavailableDelayMultiplier,omitempty"`
+
+	// IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
+	// When enabled (default), "already known" and verified "nonce too low" errors are converted
+	// to success responses with the transaction hash. This allows failsafe policies (retry/hedge)
+	// to work safely with transaction broadcasting.
+	// Set to false to disable this behavior and return raw upstream errors.
+	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
 }
 
+// EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
 type EvmIntegrityConfig struct {
-	EnforceHighestBlock      *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	// @deprecated: use DirectiveDefaults.EnforceHighestBlock
+	EnforceHighestBlock *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	// @deprecated: use DirectiveDefaults.EnforceGetLogsBlockRange
 	EnforceGetLogsBlockRange *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	// @deprecated: use DirectiveDefaults.EnforceNonNullTaggedBlocks
+	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 }
 
 type SelectionPolicyConfig struct {
@@ -1197,12 +1896,35 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 	return nil
 }
 
+func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
+	evf := ""
+	if c.evalFunctionOriginal != "" {
+		evf = c.evalFunctionOriginal
+	} else if c.EvalFunction != nil {
+		evf = "<function>"
+	}
+	m := map[string]interface{}{
+		"evalPerMethod":    c.EvalPerMethod,
+		"resampleExcluded": c.ResampleExcluded,
+		"resampleCount":    c.ResampleCount,
+	}
+	if c.EvalInterval != 0 {
+		m["evalInterval"] = c.EvalInterval
+	}
+	if c.ResampleInterval != 0 {
+		m["resampleInterval"] = c.ResampleInterval
+	}
+	if evf != "" {
+		m["evalFunction"] = evf
+	}
+	return m, nil
+}
+
 func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 	evf := "<undefined>"
 	if c.evalFunctionOriginal != "" {
 		evf = c.evalFunctionOriginal
-	}
-	if c.EvalFunction != nil {
+	} else if c.EvalFunction != nil {
 		evf = "<function>"
 	}
 	return sonic.Marshal(map[string]interface{}{
@@ -1223,6 +1945,7 @@ const (
 	AuthTypeJwt      AuthType = "jwt"
 	AuthTypeSiwe     AuthType = "siwe"
 	AuthTypeNetwork  AuthType = "network"
+	AuthTypeX402     AuthType = "x402"
 )
 
 type AuthConfig struct {
@@ -1240,11 +1963,14 @@ type AuthStrategyConfig struct {
 	Database *DatabaseStrategyConfig `yaml:"database,omitempty" json:"database,omitempty"`
 	Jwt      *JwtStrategyConfig      `yaml:"jwt,omitempty" json:"jwt,omitempty"`
 	Siwe     *SiweStrategyConfig     `yaml:"siwe,omitempty" json:"siwe,omitempty"`
+	X402     *X402StrategyConfig     `yaml:"x402,omitempty" json:"x402,omitempty"`
 }
 
 type SecretStrategyConfig struct {
 	Id    string `yaml:"id" json:"id"`
 	Value string `yaml:"value" json:"value"`
+	// RateLimitBudget, if set, is applied to the authenticated user from this strategy
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 // custom json marshaller to redact the secret value
@@ -1254,9 +1980,20 @@ func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (s *SecretStrategyConfig) MarshalYAML() (interface{}, error) {
+	return map[string]string{
+		"id":              s.Id,
+		"value":           "REDACTED",
+		"rateLimitBudget": s.RateLimitBudget,
+	}, nil
+}
+
 type DatabaseStrategyConfig struct {
 	Connector *ConnectorConfig             `yaml:"connector" json:"connector"`
 	Cache     *DatabaseStrategyCacheConfig `yaml:"cache,omitempty" json:"cache,omitempty"`
+	Retry     *DatabaseRetryConfig         `yaml:"retry,omitempty" json:"retry,omitempty"`
+	FailOpen  *DatabaseFailOpenConfig      `yaml:"failOpen,omitempty" json:"failOpen,omitempty"`
+	MaxWait   Duration                     `yaml:"maxWait,omitempty" json:"maxWait" tstype:"Duration"`
 }
 
 type DatabaseStrategyCacheConfig struct {
@@ -1266,16 +2003,33 @@ type DatabaseStrategyCacheConfig struct {
 	NumCounters *int64         `yaml:"numCounters,omitempty" json:"numCounters,omitempty"`
 }
 
+type DatabaseRetryConfig struct {
+	MaxAttempts int      `yaml:"maxAttempts,omitempty" json:"maxAttempts"`
+	BaseBackoff Duration `yaml:"baseBackoff,omitempty" json:"baseBackoff" tstype:"Duration"`
+}
+
+type DatabaseFailOpenConfig struct {
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	UserId          string `yaml:"userId,omitempty" json:"userId"`
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+}
+
 type JwtStrategyConfig struct {
 	AllowedIssuers    []string          `yaml:"allowedIssuers" json:"allowedIssuers"`
 	AllowedAudiences  []string          `yaml:"allowedAudiences" json:"allowedAudiences"`
 	AllowedAlgorithms []string          `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
 	RequiredClaims    []string          `yaml:"requiredClaims" json:"requiredClaims"`
 	VerificationKeys  map[string]string `yaml:"verificationKeys" json:"verificationKeys"`
+	// RateLimitBudgetClaimName is the JWT claim name that, if present,
+	// will be used to set the per-user RateLimitBudget override.
+	// Defaults to "rlm".
+	RateLimitBudgetClaimName string `yaml:"rateLimitBudgetClaimName,omitempty" json:"rateLimitBudgetClaimName,omitempty"`
 }
 
 type SiweStrategyConfig struct {
 	AllowedDomains []string `yaml:"allowedDomains" json:"allowedDomains"`
+	// RateLimitBudget, if set, is applied to the authenticated user
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 type NetworkStrategyConfig struct {
@@ -1283,6 +2037,54 @@ type NetworkStrategyConfig struct {
 	AllowedCIDRs   []string `yaml:"allowedCIDRs" json:"allowedCIDRs"`
 	AllowLocalhost bool     `yaml:"allowLocalhost" json:"allowLocalhost"`
 	TrustedProxies []string `yaml:"trustedProxies" json:"trustedProxies"`
+	// RateLimitBudget, if set, is applied to the authenticated user (client IP)
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	IPAsUser        bool   `yaml:"ipAsUser,omitempty" json:"ipAsUser,omitempty"`
+}
+
+// X402StrategyConfig enables x402 payment authentication (HTTP 402 Payment Required).
+// Clients without an API key can pay per-request via the x402 protocol. The payer's
+// wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
+type X402StrategyConfig struct {
+	// FacilitatorURL is the x402 facilitator endpoint for verify/settle operations.
+	FacilitatorURL string `yaml:"facilitatorUrl" json:"facilitatorUrl"`
+	// SellerAddress is the wallet address that receives payments (e.g. USDC on Base).
+	SellerAddress string `yaml:"sellerAddress" json:"sellerAddress"`
+	// PricePerRequest is the cost per request in atomic units (e.g. "5" for $0.000005 USDC).
+	PricePerRequest string `yaml:"pricePerRequest" json:"pricePerRequest"`
+	// Network is the x402 network name for payment (e.g. "base", "base-sepolia").
+	Network string `yaml:"network" json:"network"`
+	// Asset is the token contract address used for payment.
+	Asset string `yaml:"asset,omitempty" json:"asset,omitempty"`
+	// Scheme is the x402 payment scheme (defaults to "exact").
+	Scheme string `yaml:"scheme,omitempty" json:"scheme,omitempty"`
+	// Description is a human-readable description included in 402 responses.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// MaxTimeoutSeconds is the payment authorization validity period (default: 300).
+	MaxTimeoutSeconds int `yaml:"maxTimeoutSeconds,omitempty" json:"maxTimeoutSeconds,omitempty"`
+	// RateLimitBudget, if set, is applied to the authenticated payer.
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	// VerifyOnly when true skips settlement (useful for testing).
+	VerifyOnly bool `yaml:"verifyOnly,omitempty" json:"verifyOnly,omitempty"`
+	// Extra contains additional fields merged into the payment requirement's extra object.
+	// Useful for providing EIP-712 domain params when the facilitator doesn't supply them.
+	Extra map[string]interface{} `yaml:"extra,omitempty" json:"extra,omitempty"`
+}
+
+func (c *X402StrategyConfig) Validate() error {
+	if c.FacilitatorURL == "" {
+		return fmt.Errorf("auth.*.x402.facilitatorUrl is required")
+	}
+	if c.SellerAddress == "" {
+		return fmt.Errorf("auth.*.x402.sellerAddress is required")
+	}
+	if c.PricePerRequest == "" {
+		return fmt.Errorf("auth.*.x402.pricePerRequest is required")
+	}
+	if c.Network == "" {
+		return fmt.Errorf("auth.*.x402.network is required")
+	}
+	return nil
 }
 
 type LabelMode string
@@ -1301,6 +2103,18 @@ type MetricsConfig struct {
 	Port             *int      `yaml:"port" json:"port"`
 	ErrorLabelMode   LabelMode `yaml:"errorLabelMode,omitempty" json:"errorLabelMode"`
 	HistogramBuckets string    `yaml:"histogramBuckets,omitempty" json:"histogramBuckets"`
+
+	// HistogramDropLabels removes these labels from every histogram. Counters
+	// and gauges are unaffected. Useful to cap per-instance /metrics response
+	// size when high-cardinality labels (e.g. "user") push a scrape past the
+	// managed scraper's sample/body limits.
+	HistogramDropLabels []string `yaml:"histogramDropLabels,omitempty" json:"histogramDropLabels,omitempty"`
+
+	// HistogramLabelOverrides re-adds labels for specific histograms even if
+	// they appear in HistogramDropLabels. Key is the metric Name (without the
+	// "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
+	// Value is the list of label names to keep for that metric.
+	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
@@ -1316,9 +2130,17 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 
 func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("method", c.Method).
-		Uint("maxCount", c.MaxCount).
-		Str("periodMs", fmt.Sprintf("%d", c.Period)).
+		Uint("maxCount", uint(c.MaxCount)).
+		Str("period", c.Period.String()).
 		Str("waitTimeMs", fmt.Sprintf("%d", c.WaitTime))
+}
+
+// RateLimitStoreConfig defines where rate limit counters are stored
+type RateLimitStoreConfig struct {
+	Driver         string                `yaml:"driver" json:"driver"` // "redis" | "memory"
+	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
+	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
+	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
 }
 
 func (c *NetworkConfig) NetworkId() string {

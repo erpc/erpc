@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,10 +13,41 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// resolveBlockTagForGetLogs attempts to resolve a block tag (like "latest", "finalized")
+// to a hex block number string and its int64 value. If the value is already a hex number,
+// it parses and returns it. If the tag cannot be resolved (e.g., "safe", "pending", or
+// network state not available), it returns empty string and 0.
+// This allows eth_getLogs hooks to validate block ranges even when tags are used.
+func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, blockValue string) (hexStr string, blockNum int64) {
+	if blockValue == "" {
+		return "", 0
+	}
+
+	// If already a hex number, parse and return it
+	if strings.HasPrefix(blockValue, "0x") {
+		bn, err := strconv.ParseInt(blockValue, 0, 64)
+		if err != nil {
+			return "", 0
+		}
+		return blockValue, bn
+	}
+
+	// Try to resolve block tags using the network's state poller
+	if resolved, ok := resolveBlockTagToHex(ctx, network, blockValue); ok {
+		bn, err := common.HexToInt64(resolved)
+		if err != nil {
+			return "", 0
+		}
+		return resolved, bn
+	}
+
+	// Tag could not be resolved (e.g., "safe", "pending", "earliest", or no state available)
+	return "", 0
+}
 
 func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
 	fb, err := common.NormalizeHex(fromBlock)
@@ -71,19 +103,14 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 		jrq.RUnlock()
 		return false, nil, nil
 	}
-	// Extract numeric range if hex numbers
-	var fromBlock, toBlock int64
-	if v, ok := filter["fromBlock"].(string); ok && strings.HasPrefix(v, "0x") {
-		if bn, e := strconv.ParseInt(v, 0, 64); e == nil {
-			fromBlock = bn
-		}
-	}
-	if v, ok := filter["toBlock"].(string); ok && strings.HasPrefix(v, "0x") {
-		if bn, e := strconv.ParseInt(v, 0, 64); e == nil {
-			toBlock = bn
-		}
-	}
+	// Extract block values (may be hex or tags like "latest")
+	fbStr, _ := filter["fromBlock"].(string)
+	tbStr, _ := filter["toBlock"].(string)
 	jrq.RUnlock()
+
+	// Resolve block tags to numbers for metrics (hex or tags like "latest", "finalized")
+	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
+	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
 
 	if fromBlock > 0 && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
@@ -137,26 +164,8 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return false, nil, nil
 	}
 
-	fbStr, ok := filter["fromBlock"].(string)
-	if !ok || !strings.HasPrefix(fbStr, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	tbStr, ok := filter["toBlock"].(string)
-	if !ok || !strings.HasPrefix(tbStr, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	fromBlock, err := strconv.ParseInt(fbStr, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
-	toBlock, err := strconv.ParseInt(tbStr, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
+	fbStr, _ := filter["fromBlock"].(string)
+	tbStr, _ := filter["toBlock"].(string)
 
 	// Capture address/topics counts while under read lock
 	var addrCount, topicCount int64
@@ -173,8 +182,21 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	}
 	jrq.RUnlock()
 
+	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
+	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
+	// pass through to upstream without block range validation.
+	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
+	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+
+	// If either block couldn't be resolved to a number, skip validation and pass to upstream
+	if fromBlock == 0 || toBlock == 0 {
+		return false, nil, nil
+	}
+
 	if fromBlock > toBlock {
-		return true, nil, errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")")
+		return true, nil, common.NewErrInvalidRequest(
+			errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
+		)
 	}
 
 	ncfg := n.Config()
@@ -195,7 +217,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	}
 
 	// Compute effective auto-splitting threshold (min across upstreams)
-	effectiveThreshold := int64(5000)
+	effectiveThreshold := int64(0)
 	foundPositive := false
 	for _, cu := range ups {
 		if cu == nil || cu.Config() == nil || cu.Config().Evm == nil {
@@ -231,12 +253,16 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 
 		nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-		mergedResponse, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, nrq.Directives().SkipCacheRead)
+		skipCache := ""
+		if dirs := nrq.Directives(); dirs != nil {
+			skipCache = dirs.SkipCacheRead
+		}
+		mergedResponse, fromCache, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache)
 		if err != nil {
 			return true, nil, err
 		}
 
-		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse).SetFromCache(fromCache)
 		nrq.SetLastValidResponse(ctx, nrs)
 		return true, nrs, nil
 	}
@@ -247,7 +273,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	up, ok := u.(common.EvmUpstream)
 	if !ok {
-		log.Warn().Interface("upstream", u).Object("request", nrq).Msg("passed upstream is not a common.EvmUpstream")
+		n.Logger().Warn().Interface("upstream", u).Object("request", nrq).Msg("passed upstream is not a common.EvmUpstream")
 		return false, nil, nil
 	}
 
@@ -291,66 +317,29 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	fb, ok := filter["fromBlock"].(string)
-	if !ok || !strings.HasPrefix(fb, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	fromBlock, err := strconv.ParseInt(fb, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
-	tb, ok := filter["toBlock"].(string)
-	if !ok || !strings.HasPrefix(tb, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	toBlock, err := strconv.ParseInt(tb, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
+	fb, _ := filter["fromBlock"].(string)
+	tb, _ := filter["toBlock"].(string)
 	jrq.RUnlock()
 
+	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
+	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
+	// pass through to upstream without block range validation.
+	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fb)
+	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tb)
+
+	// If either block couldn't be resolved to a number, skip validation and pass to upstream
+	if fromBlock == 0 || toBlock == 0 {
+		return false, nil, nil
+	}
+
 	if fromBlock > toBlock {
-		return true, nil, errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")")
-	}
-
-	statePoller := up.EvmStatePoller()
-	if statePoller == nil || statePoller.IsObjectNull() {
-		return true, nil, common.NewErrUpstreamInitialization(
-			fmt.Errorf("upstream evm state poller is not available"),
-			up.Id(),
+		return true, nil, common.NewErrInvalidRequest(
+			errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
 		)
 	}
 
-	// Check if the upstream can handle the requested block range
-	available, err := up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, toBlock)
-	if err != nil {
+	if err := CheckBlockRangeAvailability(ctx, up, "eth_getLogs", fromBlock, toBlock); err != nil {
 		return true, nil, err
-	}
-	if !available {
-		latestBlock := statePoller.LatestBlock()
-		finalizedBlock := statePoller.FinalizedBlock()
-
-		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found for eth_getLogs, requested toBlock %d is not available on the upstream node (latestBlock: %d, finalizedBlock: %d)", toBlock, latestBlock, finalizedBlock),
-			up,
-		)
-	}
-	available, err = up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, fromBlock)
-	if err != nil {
-		return true, nil, err
-	}
-	if !available {
-		latestBlock := statePoller.LatestBlock()
-		finalizedBlock := statePoller.FinalizedBlock()
-
-		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found for eth_getLogs, fromBlock %d is not available on the upstream node (latestBlock: %d, finalizedBlock: %d)", fromBlock, latestBlock, finalizedBlock),
-			up,
-		)
 	}
 
 	// Continue with the original forward flow
@@ -366,23 +355,7 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 	defer span.End()
 
 	if re == nil && rs != nil && rs.IsResultEmptyish(ctx) {
-		// This is to normalize empty logs responses (e.g. instead of returning "null")
-		jrr, err := common.NewJsonRpcResponse(rq.ID(), []interface{}{}, nil)
-		if err != nil {
-			return nil, err
-		}
-		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
-		nnr.SetFromCache(rs.FromCache())
-		nnr.SetEvmBlockRef(rs.EvmBlockRef())
-		nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
-		nnr.SetAttempts(rs.Attempts())
-		nnr.SetRetries(rs.Retries())
-		nnr.SetHedges(rs.Hedges())
-		nnr.SetUpstream(u)
-		rq.SetLastValidResponse(ctx, nnr)
-		// We replaced the original response with a normalized one; release the old instance
-		rs.Release()
-		return nnr, nil
+		return normalizeEmptyArrayResponse(ctx, u, rq, rs)
 	}
 
 	return rs, re
@@ -424,14 +397,18 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	}
 
 	rq.SetCompositeType(common.CompositeTypeLogsSplitOnError)
-	merged, err := executeGetLogsSubRequests(ctx, n, rq, subs, rq.Directives().SkipCacheRead)
+	skipCacheRead := ""
+	if dirs := rq.Directives(); dirs != nil {
+		skipCacheRead = dirs.SkipCacheRead
+	}
+	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
 	if err != nil {
 		return rs, re
 	}
 	if rs != nil {
 		rs.Release()
 	}
-	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged), nil
+	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
 }
 
 type GetLogsMultiResponseWriter struct {
@@ -670,12 +647,13 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
-func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead string) (*common.JsonRpcResponse, bool, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
 	// Preserve sub-request order for deterministic merged output
 	responses := make([]*common.JsonRpcResponse, len(subRequests))
+	fromCacheSr := make([]bool, len(subRequests))
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
@@ -793,9 +771,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			if err != nil {
 				errs = append(errs, err)
 				mu.Unlock()
+				rs.Release()
 				return
 			}
 			responses[i] = jrrc
+			fromCacheSr[i] = rs.FromCache()
 			mu.Unlock()
 			rs.Release()
 		}(sr, idx)
@@ -803,17 +783,17 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 	wg.Wait()
 
 	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		return nil, false, errors.Join(errs...)
 	}
 
 	mergedResponse := mergeEthGetLogsResults(responses)
 	jrq, _ := r.JsonRpcRequest()
 	err := mergedResponse.SetID(jrq.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	return mergedResponse, nil
+	return mergedResponse, !slices.Contains(fromCacheSr, false), nil
 }
 
 func mergeEthGetLogsResults(responses []*common.JsonRpcResponse) *common.JsonRpcResponse {

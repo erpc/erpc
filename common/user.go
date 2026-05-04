@@ -1,6 +1,6 @@
 package common
 
 type User struct {
-	Id                 string
-	PerSecondRateLimit int64
+	Id              string
+	RateLimitBudget string
 }

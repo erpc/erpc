@@ -47,6 +47,10 @@ func (d Duration) String() string {
 	return time.Duration(d).String()
 }
 
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return time.Duration(d).String(), nil
+}
+
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return SonicCfg.Marshal(time.Duration(d).String())
 }

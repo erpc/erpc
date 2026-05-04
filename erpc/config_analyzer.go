@@ -20,6 +20,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -277,7 +278,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 
 	report.Resources = ValidationResources{Totals: totals, Tree: tree}
 
-	// Upstream runtime checks (chain id). Use a silent logger and short timeout per upstream
+	// Upstream runtime checks (chain id + block hash comparisons). Use a silent logger and short timeout per upstream
 	silent := zerolog.New(io.Discard)
 
 	// Histogram buckets (validate config value)
@@ -285,7 +286,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 		report.Errors = append(report.Errors, fmt.Sprintf("invalid metrics histogramBuckets: %v", err))
 	}
 
-	// Parallel upstream checks with semaphore
+	// Concurrency controls
 	sem := make(chan struct{}, 50)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -293,6 +294,27 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 	appendErr := func(s string) { mu.Lock(); report.Errors = append(report.Errors, s); mu.Unlock() }
 	appendWarn := func(s string) { mu.Lock(); report.Warnings = append(report.Warnings, s); mu.Unlock() }
 	appendNote := func(s string) { mu.Lock(); report.Notices = append(report.Notices, s); mu.Unlock() }
+
+	// Per-project, per-chain grouping for comparisons
+	type checkItem struct {
+		projectId      string
+		upstreamId     string
+		cfg            *common.UpstreamConfig
+		ups            *upstream.Upstream
+		chainKey       string // resolved chain ID string, or "unknown" if chain ID fetch failed
+		configChainId  int64  // chain ID from config (0 if not set)
+		genesisHash    string
+		genesisTried   bool
+		genesisErr     error
+		genesisSkipped bool
+		latestNum      int64
+		latestOk       bool
+		finalizedNum   int64
+		finalizedOk    bool
+	}
+
+	groups := map[string][]*checkItem{}
+	var gmu sync.Mutex
 
 	for _, project := range cfg.Projects {
 		var prxPool *clients.ProxyPoolRegistry
@@ -304,14 +326,9 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 				continue
 			}
 		}
-		clReg := clients.NewClientRegistry(
-			&silent,
-			project.Id,
-			prxPool,
-			evm.NewJsonRpcErrorExtractor(),
-		)
+		clReg := clients.NewClientRegistry(&silent, project.Id, prxPool, evm.NewJsonRpcErrorExtractor())
 		vndReg := thirdparty.NewVendorsRegistry()
-		rlr, err := upstream.NewRateLimitersRegistry(cfg.RateLimiters, &silent)
+		rlr, err := upstream.NewRateLimitersRegistry(ctx, cfg.RateLimiters, &silent)
 		if err != nil {
 			appendErr(fmt.Sprintf("project=%s failed to create rate limiters registry: %v", project.Id, err))
 			continue
@@ -328,45 +345,385 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 					appendErr(fmt.Sprintf("In project '%s', upstream '%s' has an empty endpoint URL. Please set a valid endpoint.", prj, uc.Id))
 					return
 				}
-				if uc.Evm == nil || uc.Evm.ChainId == 0 {
-					appendNote(fmt.Sprintf("In project '%s', upstream '%s' has no configured EVM chain ID. Define 'evm.chainId' to enable validation and safety checks.", prj, uc.Id))
-					return
-				}
 
+				// Create upstream
 				ups, err := upstream.NewUpstream(ctx, prj, uc, clReg, rlr, vndReg, &silent, mt, nil)
 				if err != nil {
 					appendErr(fmt.Sprintf("project=%s upstream=%s failed to create upstream: %v", prj, uc.Id, err))
 					return
 				}
 
-				cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				chainStr, err := ups.EvmGetChainId(cctx)
-				cancel()
-				if err != nil {
-					appendWarn(fmt.Sprintf("In project '%s', upstream '%s' could not fetch chain ID via eth_chainId: %s.", prj, uc.Id, common.ErrorFingerprint(err)))
-					return
+				configChainId := int64(0)
+				if uc.Evm != nil {
+					configChainId = uc.Evm.ChainId
 				}
-				if chainStr == "" {
-					appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned an empty chain ID from eth_chainId.", prj, uc.Id))
-					return
+
+				// Fetch chain id with retry (do not abort on error)
+				chainKey := "unknown"
+				{
+					var chainStr string
+					var cerr error
+					for attempt := 0; attempt < 3; attempt++ {
+						cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+						chainStr, cerr = ups.EvmGetChainId(cctx)
+						cancel()
+						if cerr == nil && chainStr != "" {
+							break
+						}
+						if attempt < 2 {
+							time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+						}
+					}
+					if cerr != nil {
+						appendWarn(fmt.Sprintf("In project '%s', upstream '%s' could not fetch chain ID via eth_chainId: %s.", prj, uc.Id, common.ErrorFingerprint(cerr)))
+					} else if chainStr == "" {
+						appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned an empty chain ID from eth_chainId.", prj, uc.Id))
+					} else {
+						cval, perr := strconv.ParseInt(chainStr, 0, 0)
+						if perr != nil {
+							appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned an invalid chain ID '%s' (parse error: %s).", prj, uc.Id, chainStr, common.ErrorFingerprint(perr)))
+						} else {
+							if cval == 0 {
+								appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned chain ID 0 from eth_chainId, which is invalid.", prj, uc.Id))
+							}
+							chainKey = fmt.Sprintf("%d", cval)
+							if uc.Evm != nil && uc.Evm.ChainId != 0 && cval != uc.Evm.ChainId {
+								appendErr(fmt.Sprintf("In project '%s', upstream '%s' reported chain ID %d but the configuration expects %d.", prj, uc.Id, cval, uc.Evm.ChainId))
+							}
+						}
+					}
 				}
-				chain, err := strconv.ParseInt(chainStr, 0, 0)
-				if err != nil {
-					appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned an invalid chain ID '%s' (parse error: %s).", prj, uc.Id, chainStr, common.ErrorFingerprint(err)))
-					return
+
+				it := &checkItem{projectId: prj, upstreamId: uc.Id, cfg: uc, ups: ups, chainKey: chainKey, configChainId: configChainId}
+
+				// Genesis: skip for full nodes or when maxAvailableRecentBlocks is set
+				if uc.Evm != nil && (uc.Evm.NodeType == common.EvmNodeTypeFull || uc.Evm.MaxAvailableRecentBlocks > 0) {
+					it.genesisSkipped = true
+					appendNote(fmt.Sprintf("project=%s upstream=%s skipped genesis hash check (full node or maxAvailableRecentBlocks configured)", prj, uc.Id))
+				} else {
+					it.genesisTried = true
+					// Retry genesis hash fetch up to 3 times
+					var h string
+					var herr error
+					for attempt := 0; attempt < 3; attempt++ {
+						cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+						h, herr = fetchBlockHashByNumber(cctx, ups, "0x0")
+						cancel()
+						if herr == nil && h != "" {
+							break
+						}
+						if attempt < 2 {
+							time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+						}
+					}
+					if herr == nil && h != "" {
+						it.genesisHash = h
+					}
+					it.genesisErr = herr
 				}
-				if chain == 0 {
-					appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned chain ID 0 from eth_chainId, which is invalid.", prj, uc.Id))
-					return
+
+				// Latest number
+				{
+					cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					ln, lerr := fetchLatestNumber(cctx, ups)
+					cancel()
+					if lerr == nil && ln >= 0 {
+						it.latestNum = ln
+						it.latestOk = true
+					}
 				}
-				if chain != uc.Evm.ChainId {
-					appendErr(fmt.Sprintf("In project '%s', upstream '%s' reported chain ID %d but the configuration expects %d.", prj, uc.Id, chain, uc.Evm.ChainId))
+
+				// Finalized block number (for stable block hash comparison)
+				{
+					cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					fn, ferr := fetchBlockNumber(cctx, ups, "finalized")
+					cancel()
+					if ferr == nil && fn >= 0 {
+						it.finalizedNum = fn
+						it.finalizedOk = true
+					}
 				}
+
+				// Store item into group — use config chain ID as fallback for grouping
+				// to avoid cross-comparing upstreams from different chains under "unknown"
+				groupKey := it.chainKey
+				if groupKey == "unknown" && configChainId != 0 {
+					groupKey = fmt.Sprintf("cfg:%d", configChainId)
+				}
+
+				gmu.Lock()
+				gk := prj + "::" + groupKey
+				groups[gk] = append(groups[gk], it)
+				gmu.Unlock()
 			}(project.Id)
 		}
 	}
 
 	wg.Wait()
+
+	// Compare genesis per group using majority consensus
+	for gk, items := range groups {
+		parts := strings.SplitN(gk, "::", 2)
+		prj := parts[0]
+		chainLabel := "unknown"
+		if len(parts) == 2 && parts[1] != "" {
+			chainLabel = parts[1]
+		}
+
+		// Skip cross-comparison for groups where chain ID is unknown
+		// (we can't be sure these upstreams are even on the same chain)
+		allUnknownChain := true
+		for _, it := range items {
+			if it.chainKey != "unknown" {
+				allUnknownChain = false
+				break
+			}
+		}
+		if allUnknownChain && len(items) > 1 {
+			for _, it := range items {
+				if it.genesisTried && it.genesisErr != nil {
+					appendWarn(fmt.Sprintf("project=%s upstream=%s chain=%s could not fetch genesis block (chain ID also unknown, skipping comparison): %s", prj, it.upstreamId, chainLabel, common.ErrorFingerprint(it.genesisErr)))
+				}
+			}
+			continue
+		}
+
+		// Count genesis hashes to find majority
+		hashCounts := map[string]int{}
+		anyAttempted := false
+		for _, it := range items {
+			if it.genesisSkipped {
+				continue
+			}
+			if it.genesisTried {
+				anyAttempted = true
+			}
+			if it.genesisHash != "" {
+				lh := strings.ToLower(it.genesisHash)
+				hashCounts[lh]++
+			}
+		}
+
+		if len(hashCounts) == 0 {
+			if anyAttempted {
+				appendWarn(fmt.Sprintf("chain=%s project=%s no upstream returned genesis block", chainLabel, prj))
+			}
+			continue
+		}
+
+		// Find the majority hash (hash with the most votes)
+		majorityHash := ""
+		majorityCount := 0
+		totalWithHash := 0
+		for h, c := range hashCounts {
+			totalWithHash += c
+			if c > majorityCount {
+				majorityCount = c
+				majorityHash = h
+			}
+		}
+
+		// Report items that failed to fetch genesis
+		for _, it := range items {
+			if it.genesisSkipped || it.genesisHash != "" {
+				continue
+			}
+			if it.genesisTried && it.genesisErr != nil {
+				appendWarn(fmt.Sprintf("project=%s upstream=%s chain=%s could not fetch genesis block: %s", prj, it.upstreamId, chainLabel, common.ErrorFingerprint(it.genesisErr)))
+			}
+		}
+
+		// Only one unique hash seen — no disagreement possible
+		if len(hashCounts) == 1 {
+			continue
+		}
+
+		// Multiple different hashes seen — determine severity
+		for _, it := range items {
+			if it.genesisSkipped || it.genesisHash == "" {
+				continue
+			}
+			lh := strings.ToLower(it.genesisHash)
+			if !strings.EqualFold(lh, majorityHash) {
+				if majorityCount >= 2 && totalWithHash >= 3 {
+					// Strong majority: at least 2 upstreams agree and there are 3+ total
+					// This is DEFINITELY wrong — ERROR
+					appendErr(fmt.Sprintf("project=%s upstream=%s chain=%s genesis hash mismatch (majority %d/%d agree on %s) got=%s", prj, it.upstreamId, chainLabel, majorityCount, totalWithHash, majorityHash, it.genesisHash))
+				} else {
+					// Weak signal: only 2 upstreams disagree, or not enough data points
+					// Could be transient — WARN
+					appendWarn(fmt.Sprintf("project=%s upstream=%s chain=%s genesis hash differs from other upstream(s) expected=%s got=%s (insufficient data for definitive error — only %d upstreams compared)", prj, it.upstreamId, chainLabel, majorityHash, it.genesisHash, totalWithHash))
+				}
+			}
+		}
+	}
+
+	// Historical comparison per group using finalized block (much more stable than latest-128)
+	for gk, items := range groups {
+		parts := strings.SplitN(gk, "::", 2)
+		prj := parts[0]
+		chainLabel := "unknown"
+		if len(parts) == 2 && parts[1] != "" {
+			chainLabel = parts[1]
+		}
+
+		// Skip cross-comparison for groups where all chain IDs are unknown
+		allUnknownChain := true
+		for _, it := range items {
+			if it.chainKey != "unknown" {
+				allUnknownChain = false
+				break
+			}
+		}
+		if allUnknownChain && len(items) > 1 {
+			appendWarn(fmt.Sprintf("chain=%s project=%s skipping block hash comparison (chain ID unknown for all upstreams)", chainLabel, prj))
+			continue
+		}
+
+		// Need at least 2 upstreams to compare
+		if len(items) < 2 {
+			continue
+		}
+
+		// Determine the target block for comparison:
+		// 1. Prefer finalized block (guaranteed stable across all nodes)
+		// 2. Fall back to min(latest) - 1024 (very deep, avoids reorg territory)
+		// 3. Use the MINIMUM finalized/latest across all upstreams for safety
+		targetBlock := int64(-1)
+		usedFinalized := false
+
+		// Try finalized first
+		for _, it := range items {
+			if it.finalizedOk {
+				if targetBlock == -1 || it.finalizedNum < targetBlock {
+					targetBlock = it.finalizedNum
+				}
+				usedFinalized = true
+			}
+		}
+
+		// If no upstream supports finalized, fall back to latest - 1024
+		if targetBlock < 0 {
+			minLatest := int64(-1)
+			for _, it := range items {
+				if it.latestOk {
+					if minLatest == -1 || it.latestNum < minLatest {
+						minLatest = it.latestNum
+					}
+				}
+			}
+			if minLatest < 0 {
+				appendWarn(fmt.Sprintf("chain=%s project=%s could not resolve latest or finalized block from any upstream", chainLabel, prj))
+				continue
+			}
+			targetBlock = minLatest - 1024
+		}
+
+		if targetBlock < 1 {
+			// Chain is too young or something is off — skip
+			continue
+		}
+
+		// If using finalized, go back an additional 64 blocks for extra safety
+		if usedFinalized {
+			targetBlock = targetBlock - 64
+			if targetBlock < 1 {
+				continue
+			}
+		}
+
+		// Fetch hashes for target concurrently with retries
+		type hres struct {
+			it   *checkItem
+			hash string
+			err  error
+		}
+		var hwg sync.WaitGroup
+		semh := make(chan struct{}, 50)
+		results := make([]hres, 0, len(items))
+		var rmu sync.Mutex
+		for _, it := range items {
+			local := it
+			hwg.Add(1)
+			semh <- struct{}{}
+			go func() {
+				defer func() { <-semh; hwg.Done() }()
+				tag := fmt.Sprintf("0x%x", targetBlock)
+				var h string
+				var herr error
+				for attempt := 0; attempt < 3; attempt++ {
+					cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					h, herr = fetchBlockHashByNumber(cctx, local.ups, tag)
+					cancel()
+					if herr == nil && h != "" {
+						break
+					}
+					if attempt < 2 {
+						time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					}
+				}
+				rmu.Lock()
+				results = append(results, hres{it: local, hash: h, err: herr})
+				rmu.Unlock()
+			}()
+		}
+		hwg.Wait()
+
+		// Count hashes to find majority
+		hashCounts := map[string]int{}
+		for _, r := range results {
+			if r.err == nil && r.hash != "" {
+				lh := strings.ToLower(r.hash)
+				hashCounts[lh]++
+			}
+		}
+
+		if len(hashCounts) == 0 {
+			appendWarn(fmt.Sprintf("chain=%s project=%s could not fetch block %d from any upstream", chainLabel, prj, targetBlock))
+			continue
+		}
+
+		// Find majority hash
+		majorityHash := ""
+		majorityCount := 0
+		totalWithHash := 0
+		for h, c := range hashCounts {
+			totalWithHash += c
+			if c > majorityCount {
+				majorityCount = c
+				majorityHash = h
+			}
+		}
+
+		// Report upstreams that couldn't fetch the block
+		for _, r := range results {
+			if r.err != nil || r.hash == "" {
+				appendWarn(fmt.Sprintf("project=%s upstream=%s chain=%s could not fetch block %d: %s", prj, r.it.upstreamId, chainLabel, targetBlock, common.ErrorFingerprint(r.err)))
+			}
+		}
+
+		// Only one unique hash — no disagreement
+		if len(hashCounts) == 1 {
+			continue
+		}
+
+		// Multiple different hashes — determine severity
+		for _, r := range results {
+			if r.err != nil || r.hash == "" {
+				continue
+			}
+			lh := strings.ToLower(r.hash)
+			if !strings.EqualFold(lh, majorityHash) {
+				if majorityCount >= 2 && totalWithHash >= 3 {
+					// Strong majority agrees — this upstream is DEFINITELY wrong
+					appendErr(fmt.Sprintf("project=%s upstream=%s chain=%s block=%d hash mismatch (majority %d/%d agree on %s) got=%s", prj, r.it.upstreamId, chainLabel, targetBlock, majorityCount, totalWithHash, majorityHash, r.hash))
+				} else {
+					// Weak signal — WARN only
+					appendWarn(fmt.Sprintf("project=%s upstream=%s chain=%s block=%d hash differs from other upstream(s) expected=%s got=%s (insufficient data for definitive error — only %d upstreams compared)", prj, r.it.upstreamId, chainLabel, targetBlock, majorityHash, r.hash, totalWithHash))
+				}
+			}
+		}
+	}
 
 	return report
 }
@@ -397,24 +754,26 @@ func RenderValidationReportMarkdown(r *ValidationReport) string {
 		}
 	}
 	if len(r.Warnings) > 0 {
-		sb.WriteString("\n### Warnings\n")
-		sb.WriteString("\n```\n")
+		sb.WriteString("\n<details><summary>Warnings (" + strconv.Itoa(len(r.Warnings)) + ")</summary>\n\n")
+		sb.WriteString("```\n")
 		for _, w := range r.Warnings {
 			sb.WriteString("- ⚠️ ")
 			sb.WriteString(w)
 			sb.WriteString("\n")
 		}
-		sb.WriteString("\n```\n")
+		sb.WriteString("```\n")
+		sb.WriteString("\n</details>\n")
 	}
 	if len(r.Notices) > 0 {
-		sb.WriteString("\n### Notices\n")
-		sb.WriteString("\n```\n")
+		sb.WriteString("\n<details><summary>Notices (" + strconv.Itoa(len(r.Notices)) + ")</summary>\n\n")
+		sb.WriteString("```\n")
 		for _, n := range r.Notices {
 			sb.WriteString("- 💡 ")
 			sb.WriteString(n)
 			sb.WriteString("\n")
 		}
-		sb.WriteString("\n```\n")
+		sb.WriteString("```\n")
+		sb.WriteString("\n</details>\n")
 	}
 	sb.WriteString("\n### Resources\n")
 	sb.WriteString(fmt.Sprintf("- projectsTotal: %d\n", r.Resources.Totals.ProjectsTotal))
@@ -639,6 +998,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 		)
 		vndReg := thirdparty.NewVendorsRegistry()
 		rlr, err := upstream.NewRateLimitersRegistry(
+			ctx,
 			cfg.RateLimiters,
 			&logger,
 		)
@@ -708,4 +1068,135 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 	}
 
 	return nil
+}
+
+// fetchBlockHashByNumber calls eth_getBlockByNumber with the given tag/hex number (e.g., "0x0", "latest")
+// and returns the block hash as a string (e.g., "0xabc...").
+func fetchBlockHashByNumber(ctx context.Context, ups *upstream.Upstream, blockTag string) (string, error) {
+	if ups == nil {
+		return "", fmt.Errorf("upstream is nil")
+	}
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
+	))
+	resp, err := ups.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		return "", err
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return "", err
+	}
+	if jrr == nil {
+		return "", fmt.Errorf("nil json-rpc response")
+	}
+	if jrr.Error != nil {
+		return "", jrr.Error
+	}
+	if jrr.IsResultEmptyish(ctx) {
+		return "", fmt.Errorf("empty result")
+	}
+	hashStr, err := jrr.PeekStringByPath(ctx, "hash")
+	if err != nil {
+		return "", err
+	}
+	return hashStr, nil
+}
+
+// fetchBlockNumber resolves a block number via eth_getBlockByNumber with the given tag (e.g., "finalized", "safe").
+func fetchBlockNumber(ctx context.Context, ups *upstream.Upstream, blockTag string) (int64, error) {
+	if ups == nil {
+		return 0, fmt.Errorf("upstream is nil")
+	}
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
+	))
+	resp, err := ups.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		return 0, err
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return 0, err
+	}
+	if jrr == nil {
+		return 0, fmt.Errorf("nil json-rpc response")
+	}
+	if jrr.Error != nil {
+		return 0, jrr.Error
+	}
+	if jrr.IsResultEmptyish(ctx) {
+		return 0, fmt.Errorf("empty result for block tag %s", blockTag)
+	}
+	numberStr, err := jrr.PeekStringByPath(ctx, "number")
+	if err != nil {
+		return 0, &common.BaseError{
+			Code:    "ErrConfigAnalyzer",
+			Message: "cannot get block number from block data",
+			Details: map[string]interface{}{
+				"blockTag": blockTag,
+				"result":   jrr.GetResultString(),
+			},
+		}
+	}
+	numberStr = string(append([]byte(nil), numberStr...))
+	blockNum, err := common.HexToInt64(numberStr)
+	if err != nil {
+		return 0, err
+	}
+	return blockNum, nil
+}
+
+// fetchLatestNumber resolves the latest block number via eth_getBlockByNumber("latest", false).
+func fetchLatestNumber(ctx context.Context, ups *upstream.Upstream) (int64, error) {
+	if ups == nil {
+		return 0, fmt.Errorf("upstream is nil")
+	}
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["latest",false]}`, util.RandomID()),
+	))
+	resp, err := ups.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		return 0, err
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return 0, err
+	}
+	if jrr == nil {
+		return 0, fmt.Errorf("nil json-rpc response")
+	}
+	if jrr.Error != nil {
+		return 0, jrr.Error
+	}
+	if jrr.IsResultEmptyish(ctx) {
+		return 0, fmt.Errorf("empty result")
+	}
+	numberStr, err := jrr.PeekStringByPath(ctx, "number")
+	if err != nil {
+		return 0, &common.BaseError{
+			Code:    "ErrConfigAnalyzer",
+			Message: "cannot get block number from block data",
+			Details: map[string]interface{}{
+				"blockTag": "latest",
+				"result":   jrr.GetResultString(),
+			},
+		}
+	}
+	// Ensure string copy to detach from underlying buffers
+	numberStr = string(append([]byte(nil), numberStr...))
+	blockNum, err := common.HexToInt64(numberStr)
+	if err != nil {
+		return 0, err
+	}
+	return blockNum, nil
 }

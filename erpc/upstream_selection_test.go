@@ -752,20 +752,17 @@ func TestFourAttemptScenario(t *testing.T) {
 	// We should have attempted at least 3 upstreams (rpc1, rpc3, rpc4)
 	assert.GreaterOrEqual(t, len(attemptedUpstreams), 3, "Should have attempted at least 3 upstreams")
 
-	// Based on the response metadata, we should see the expected number of attempts
-	assert.Equal(t, 4, resp.Attempts(), "Should have made 4 attempts total")
-	assert.Equal(t, 1, resp.Retries(), "Should have made 1 retry")
-	assert.Equal(t, 2, resp.Hedges(), "Should have made 2 hedges")
+	// With try-all-upstreams-per-execution, the primary execution tries rpc1
+	// (fails immediately) then rpc2 (slow, blocks). Hedge fires after hedge
+	// delay, tries rpc3 (fails) → rpc4 (succeeds).
+	assert.Equal(t, 2, resp.Attempts(), "Should have made 2 attempts (primary + hedge)")
+	assert.Equal(t, 0, resp.Retries(), "No retries needed — hedge won")
+	assert.Equal(t, 1, resp.Hedges(), "Should have made 1 hedge")
 
 	// Timing should show hedge worked and we finished before rpc2
 	assert.Greater(t, totalDuration, hedgeDelay, "Should take at least as long as hedge delay")
 	assert.Less(t, totalDuration, upstream2ResponseTime, "Should complete before rpc2 finishes (300ms)")
 
-	// The expected flow with new hedge behavior:
-	// 1. Primary: rpc1 fails immediately -> retry (no hedge running, return immediately)
-	// 2. Retry: rpc2 starts (slow) -> hedge after 50ms
-	// 3. Hedge #1: rpc3 fails immediately -> continue hedging (rpc2 still running)
-	// 4. Hedge #2: rpc4 succeeds immediately -> wins
 	t.Logf("Expected flow executed correctly with rpc4 winning")
 }
 
@@ -845,7 +842,7 @@ func setupTestNetworkWithFourUpstreams(t *testing.T, ctx context.Context, failsa
 func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfigs []*common.UpstreamConfig, failsafeConfig *common.FailsafeConfig) *Network {
 	t.Helper()
 
-	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
@@ -877,6 +874,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		nil,
 		metricsTracker,
 		1*time.Second,
+		nil,
 		nil,
 	)
 
@@ -915,6 +913,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		require.NoError(t, err)
 		ups.EvmStatePoller().SuggestLatestBlock(1000)
 		ups.EvmStatePoller().SuggestFinalizedBlock(900)
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// Force score refresh to ensure upstreams are properly sorted

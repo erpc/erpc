@@ -188,22 +188,27 @@ func MustNewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byt
 	return jr
 }
 
+// parseID populates the typed r.id from r.idBytes WITHOUT modifying
+// r.idBytes. The wire output uses idBytes verbatim, so leaving it untouched
+// preserves byte-level fidelity for ids outside the int53 safe range and
+// for non-canonical numeric formats (e.g. "1.0"). Acquires r.idMu.
 func (r *JsonRpcResponse) parseID() error {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
+	return r.parseIDLocked()
+}
 
+// parseIDLocked is the lock-free variant for callers that already hold
+// r.idMu (e.g. SetIDBytes).
+func (r *JsonRpcResponse) parseIDLocked() error {
 	var rawID interface{}
-	err := SonicCfg.Unmarshal(r.idBytes, &rawID)
-	if err != nil {
+	if err := SonicCfg.Unmarshal(r.idBytes, &rawID); err != nil {
 		return err
 	}
-
 	switch v := rawID.(type) {
 	case float64:
 		r.id = int64(v)
-		// Update idBytes with the parsed int64 value
-		r.idBytes, err = SonicCfg.Marshal(r.id)
-		return err
+		return nil
 	case string:
 		r.id = v
 		return nil
@@ -252,12 +257,18 @@ func (r *JsonRpcResponse) ID() interface{} {
 	return r.id
 }
 
+// SetIDBytes stores the response id from raw JSON bytes verbatim. The wire
+// output (WriteTo) uses idBytes directly, so this preserves byte-for-byte
+// fidelity for large integers (>2^53), fractional ids, and any exotic
+// numeric format the upstream/client used. The parsed r.id is populated as
+// a best-effort typed view for callers that read it; precision loss there
+// is acceptable because the wire output never round-trips through r.id.
 func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) error {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
 
 	r.idBytes = idBytes
-	return r.parseID()
+	return r.parseIDLocked()
 }
 
 func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reader, expectedSize int) error {
@@ -266,7 +277,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		defer span.End()
 	}
 
-	data, err := util.ReadAll(reader, expectedSize)
+	data, returnBuf, err := util.ReadAll(reader, expectedSize)
 	if err != nil {
 		return err
 	}
@@ -278,25 +289,36 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		Error  json.RawMessage `json:"error"`
 	}
 
+	// Return buffer after we're done parsing and copying what we need
+	if returnBuf != nil {
+		defer returnBuf()
+	}
+
 	// Use Sonic's Unmarshal which works directly with bytes
 	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
-		// Store the raw data even if parsing fails, so vendor-specific error detection can access it
+		// Must copy data before storing since we're returning the buffer
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
 		r.resultMu.Lock()
-		r.result = data
+		r.result = dataCopy
 		r.resultMu.Unlock()
 		return err
 	}
 
-	// Store the raw bytes directly
+	// Copy parsed bytes since we're returning the buffer
 	if len(temp.ID) > 0 {
+		idCopy := make([]byte, len(temp.ID))
+		copy(idCopy, temp.ID)
 		r.idMu.Lock()
-		r.idBytes = temp.ID
+		r.idBytes = idCopy
 		r.idMu.Unlock()
 	}
 
 	if len(temp.Result) > 0 {
+		resultCopy := make([]byte, len(temp.Result))
+		copy(resultCopy, temp.Result)
 		r.resultMu.Lock()
-		r.result = temp.Result
+		r.result = resultCopy
 		r.resultMu.Unlock()
 	}
 
@@ -659,6 +681,10 @@ func (r *JsonRpcResponse) WriteResultTo(w io.Writer, trimSides bool) (n int64, e
 		return int64(nn), err
 	}
 
+	if r.resultWriter == nil {
+		return 0, nil
+	}
+
 	return r.resultWriter.WriteTo(w, trimSides)
 }
 
@@ -713,11 +739,6 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 	// Copy the canonical hash if it exists
 	if cached, ok := r.canonicalHashWithIgnored.Load(defaultCanonicalHashPlaceholder); ok {
 		clone.canonicalHashWithIgnored.Store(defaultCanonicalHashPlaceholder, cached)
-	}
-
-	// Only copy resultWriter if we didn't materialize the result above
-	if clone.result == nil && r.resultWriter != nil {
-		clone.resultWriter = r.resultWriter
 	}
 
 	return clone, nil
@@ -1137,6 +1158,13 @@ type JsonRpcRequest struct {
 	Method  string        `json:"method"`
 	Params  []interface{} `json:"params"`
 
+	// idRaw stores the verbatim bytes of the id as received from the client.
+	// This is used to round-trip the id back without precision loss for ids
+	// outside the int53 safe range (e.g. nanosecond timestamps) or fractional
+	// ids that would otherwise be truncated by the float64→int64 cast in
+	// UnmarshalJSON. Empty when the request was constructed programmatically.
+	idRaw []byte
+
 	cacheHash atomic.Value
 }
 
@@ -1173,12 +1201,21 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 		}
 	}
 
-	return &JsonRpcRequest{
+	clone := &JsonRpcRequest{
 		JSONRPC: r.JSONRPC,
 		ID:      r.ID,
 		Method:  r.Method,
 		Params:  clonedParams,
 	}
+	// Carry idRaw forward so the cloned request still round-trips its id
+	// byte-for-byte through normalizeResponse. Without this, the clone falls
+	// back to the lossy typed-id path and re-introduces the precision loss
+	// for ids outside the int53 safe range.
+	if len(r.idRaw) > 0 {
+		clone.idRaw = make([]byte, len(r.idRaw))
+		copy(clone.idRaw, r.idRaw)
+	}
+	return clone
 }
 
 // deepCopyValue creates a deep copy of a value to avoid concurrent access issues
@@ -1213,7 +1250,26 @@ func (r *JsonRpcRequest) SetID(id interface{}) error {
 	defer r.Unlock()
 
 	r.ID = id
+	// Drop any captured wire bytes — the typed id is now authoritative and
+	// must win over a stale idRaw on the response path.
+	r.idRaw = nil
 	return nil
+}
+
+// IDRawBytes returns a copy of the verbatim id bytes as received over the
+// wire, or nil if the request was constructed programmatically (e.g. via
+// NewJsonRpcRequest) or the request id was the literal `null`. Used by the
+// response path to round-trip the id back to the client without precision
+// loss for large integers or fractional ids.
+func (r *JsonRpcRequest) IDRawBytes() []byte {
+	r.RLock()
+	defer r.RUnlock()
+	if len(r.idRaw) == 0 {
+		return nil
+	}
+	out := make([]byte, len(r.idRaw))
+	copy(out, r.idRaw)
+	return out
 }
 
 func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
@@ -1234,6 +1290,13 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 		var id interface{}
 		if err := SonicCfg.Unmarshal(aux.ID, &id); err != nil {
 			return err
+		}
+		// Preserve verbatim id bytes for non-null ids so the response can
+		// echo them back without precision loss. Skip the literal `null`
+		// case so the existing random-id fallback below still applies.
+		if id != nil {
+			r.idRaw = make([]byte, len(aux.ID))
+			copy(r.idRaw, aux.ID)
 		}
 		switch v := id.(type) {
 		case float64:
@@ -1460,10 +1523,16 @@ func TranslateToJsonRpcException(err error) error {
 		)
 	}
 	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
+		var reason string
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		} else {
+			reason = err.Error()
+		}
 		return NewErrJsonRpcExceptionInternal(
 			0,
 			JsonRpcErrorUnsupportedException,
-			"method ignored by upstream",
+			"method ignored by upstream: "+reason,
 			err,
 			nil,
 		)
@@ -1480,8 +1549,8 @@ func TranslateToJsonRpcException(err error) error {
 	if HasErrorCode(err, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
-			JsonRpcErrorClientSideException,
-			"bad request url and/or body",
+			JsonRpcErrorInvalidArgument,
+			"invalid request url and/or body",
 			err,
 			nil,
 		)
@@ -1490,7 +1559,7 @@ func TranslateToJsonRpcException(err error) error {
 		return NewErrJsonRpcExceptionInternal(
 			0,
 			JsonRpcErrorEvmLargeRange,
-			"allowed block range threshold exceeded for eth_getLogs",
+			"getLogs request exceeded max allowed range",
 			err,
 			nil,
 		)

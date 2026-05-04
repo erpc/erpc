@@ -15,7 +15,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -139,9 +138,9 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		}
 
 		filterParams := v.extractFilterParams(settings)
-		err := v.ensureRefreshNodes(ctx, &log.Logger, apiKey, filterParams, recheckInterval)
+		err := v.ensureRefreshNodes(ctx, logger, apiKey, filterParams, recheckInterval)
 		if err != nil {
-			log.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static endpoint generation")
+			logger.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static endpoint generation")
 			return nil, err
 		}
 
@@ -235,7 +234,7 @@ func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerol
 	}
 
 	// Fetch nodes from API
-	nodes, err := v.fetchNodes(ctx, apiKey, filterParams)
+	nodes, err := v.fetchNodes(ctx, logger, apiKey, filterParams)
 	if err != nil {
 		// Keep stale data if fetch fails
 		if _, hasData := v.nodesData[cacheKey]; hasData {
@@ -246,9 +245,9 @@ func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerol
 	}
 
 	// Fetch chain IDs in parallel with semaphore
-	err = v.fetchChainIDs(ctx, nodes)
+	err = v.fetchChainIDs(ctx, logger, nodes)
 	if err != nil {
-		log.Warn().Err(err).Msg("some chain ID fetches failed, but continuing with available data")
+		logger.Warn().Err(err).Msg("some chain ID fetches failed, but continuing with available data")
 	}
 
 	// Update cache
@@ -258,7 +257,7 @@ func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerol
 	return nil
 }
 
-func (v *ChainstackVendor) fetchNodes(ctx context.Context, apiKey string, filterParams *ChainstackFilterParams) ([]*ChainstackNode, error) {
+func (v *ChainstackVendor) fetchNodes(ctx context.Context, logger *zerolog.Logger, apiKey string, filterParams *ChainstackFilterParams) ([]*ChainstackNode, error) {
 	var allNodes []*ChainstackNode
 
 	// Build initial URL with query parameters
@@ -320,7 +319,7 @@ func (v *ChainstackVendor) fetchNodes(ctx context.Context, apiKey string, filter
 			var node ChainstackNode
 			if err := json.Unmarshal(rawNode, &node); err != nil {
 				// Log and skip nodes that fail to decode
-				log.Debug().Err(err).Msg("failed to decode individual node, skipping")
+				logger.Debug().Err(err).Str("nodeId", node.ID).Msg("failed to decode individual node, skipping")
 				continue
 			}
 
@@ -340,7 +339,7 @@ func (v *ChainstackVendor) fetchNodes(ctx context.Context, apiKey string, filter
 	return allNodes, nil
 }
 
-func (v *ChainstackVendor) fetchChainIDs(ctx context.Context, nodes []*ChainstackNode) error {
+func (v *ChainstackVendor) fetchChainIDs(ctx context.Context, logger *zerolog.Logger, nodes []*ChainstackNode) error {
 	// Use semaphore to limit concurrent requests
 	sem := semaphore.NewWeighted(10)
 	var wg sync.WaitGroup
@@ -428,7 +427,7 @@ func (v *ChainstackVendor) fetchChainIDs(ctx context.Context, nodes []*Chainstac
 	wg.Wait()
 
 	if len(errors) > 0 {
-		log.Warn().Errs("errors", errors).Msg("failed to fetch chain IDs for some Chainstack nodes")
+		logger.Warn().Errs("errors", errors).Msg("failed to fetch chain IDs for some Chainstack nodes")
 	}
 
 	return nil

@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
-
 	"time"
 
 	_ "github.com/blockchain-data-standards/manifesto/common"
@@ -17,6 +19,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -26,6 +29,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	// Import gzip to register the compressor - enables automatic gzip compression
 	// when clients send "grpc-accept-encoding: gzip" header
@@ -36,13 +40,15 @@ type GrpcBdsClient interface {
 	GetType() ClientType
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 	SetHeaders(h map[string]string)
+	QueryClient() evm.QueryServiceClient
 }
 
 type GenericGrpcBdsClient struct {
-	Url       *url.URL
-	headers   map[string]string
-	conn      *grpc.ClientConn
-	rpcClient evm.RPCQueryServiceClient
+	Url         *url.URL
+	headers     map[string]string
+	conn        *grpc.ClientConn
+	rpcClient   evm.RPCQueryServiceClient
+	queryClient evm.QueryServiceClient
 
 	projectId       string
 	upstream        common.Upstream
@@ -75,12 +81,14 @@ func NewGrpcBdsClient(
 	}
 
 	// Extract host and port from URL
-	// For grpc:// or grpc+bds:// schemes, use the host:port directly
 	target := parsedUrl.Host
 	if parsedUrl.Port() == "" {
-		// Default gRPC port if not specified
 		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
 	}
+
+	// Use dns:/// prefix so gRPC resolves all A records (e.g. Kubernetes headless services)
+	// and round_robin distributes RPCs across them. For single-target hosts this is a no-op.
+	target = fmt.Sprintf("dns:///%s", target)
 
 	// Determine whether to use TLS based on port or URL scheme
 	var transportCredentials credentials.TransportCredentials
@@ -111,25 +119,49 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
-	// Create gRPC connection
+	// gRPC service config: round_robin distributes RPCs across all resolved addresses
+	// (no-op for single-target hosts). Transparent retries handle transient failures
+	// (UNAVAILABLE from connection resets, TCP retransmits) without surfacing errors
+	// to callers. WaitForReady queues RPCs during brief reconnects instead of failing
+	// immediately with UNAVAILABLE.
+	serviceConfig := `{
+		"loadBalancingConfig": [{"round_robin":{}}],
+		"methodConfig": [{
+			"name": [{"service": ""}],
+			"waitForReady": true,
+			"retryPolicy": {
+				"maxAttempts": 2,
+				"initialBackoff": "1s",
+				"maxBackoff": "5s",
+				"backoffMultiplier": 2,
+				"retryableStatusCodes": ["UNAVAILABLE"]
+			}
+		}]
+	}`
+
+	// Create gRPC connection with aggressive timeouts suitable for cache services
+	// These should fail fast to allow failover to other upstreams
 	conn, err := grpc.NewClient(target,
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithTransportCredentials(transportCredentials),
+		grpc.WithChainUnaryInterceptor(grpcResponseMetadataInterceptor()),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(100*1024*1024),
 			grpc.MaxCallSendMsgSize(100*1024*1024),
 		),
+		grpc.WithDefaultServiceConfig(serviceConfig),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                2 * time.Minute,
-			Timeout:             20 * time.Second,
-			PermitWithoutStream: false,
+			Time:                30 * time.Second, // Detect dead connections faster (was 2min)
+			Timeout:             5 * time.Second,  // Fail fast on dead connections
+			PermitWithoutStream: true,             // Keep connection warm even during idle periods
 		}),
 		grpc.WithConnectParams(grpc.ConnectParams{
-			MinConnectTimeout: 5 * time.Second,
+			MinConnectTimeout: 3 * time.Second, // Cross-region TLS through Fly Anycast can take 400-600ms; 500ms caused mid-handshake aborts
 			Backoff: backoff.Config{
-				BaseDelay:  1 * time.Second,
-				Multiplier: 1.6,
+				BaseDelay:  100 * time.Millisecond, // Give proxy breathing room between reconnect attempts
+				Multiplier: 1.5,
 				Jitter:     0.2,
-				MaxDelay:   30 * time.Second,
+				MaxDelay:   1 * time.Second, // Allow longer backoff to reduce connection churn
 			},
 		}),
 	)
@@ -139,6 +171,7 @@ func NewGrpcBdsClient(
 
 	client.conn = conn
 	client.rpcClient = evm.NewRPCQueryServiceClient(conn)
+	client.queryClient = evm.NewQueryServiceClient(conn)
 
 	// Setup graceful shutdown
 	go func() {
@@ -149,6 +182,42 @@ func NewGrpcBdsClient(
 	logger.Debug().Str("target", target).Msg("created gRPC BDS client")
 
 	return client, nil
+}
+
+// grpcResponseMetadataInterceptor captures all response metadata (headers)
+// from gRPC calls and records them as span attributes on detailed traces.
+func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
+	return func(
+		ctx context.Context,
+		method string,
+		req, reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		if !common.IsTracingDetailed {
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}
+		span := trace.SpanFromContext(ctx)
+		if !span.IsRecording() {
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}
+
+		var respMD metadata.MD
+		opts = append(opts, grpc.Header(&respMD))
+
+		err := invoker(ctx, method, req, reply, cc, opts...)
+
+		for key, vals := range respMD {
+			if len(vals) == 1 {
+				span.SetAttributes(attribute.String("grpc.response.metadata."+key, vals[0]))
+			} else if len(vals) > 1 {
+				span.SetAttributes(attribute.StringSlice("grpc.response.metadata."+key, vals))
+			}
+		}
+
+		return err
+	}
 }
 
 func (c *GenericGrpcBdsClient) GetType() ClientType {
@@ -163,6 +232,15 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		),
 	)
 	defer span.End()
+
+	// Fail fast if context is already canceled or expired
+	if err := ctx.Err(); err != nil {
+		common.SetTraceSpanError(span, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, common.NewErrEndpointRequestTimeout(0, err)
+		}
+		return nil, common.NewErrEndpointRequestCanceled(err)
+	}
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
@@ -207,6 +285,16 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleGetBlockReceipts(ctx, req, jrReq)
 	case "eth_chainId":
 		resp, err = c.handleChainId(ctx, req, jrReq)
+	case "eth_queryBlocks":
+		resp, err = c.handleQueryBlocks(ctx, req, jrReq)
+	case "eth_queryTransactions":
+		resp, err = c.handleQueryTransactions(ctx, req, jrReq)
+	case "eth_queryLogs":
+		resp, err = c.handleQueryLogs(ctx, req, jrReq)
+	case "eth_queryTraces":
+		resp, err = c.handleQueryTraces(ctx, req, jrReq)
+	case "eth_queryTransfers":
+		resp, err = c.handleQueryTransfers(ctx, req, jrReq)
 	default:
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
@@ -258,16 +346,28 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 			IncludeTransactions: includeTransactions,
 		}
 
+		hashHex := hex.EncodeToString(blockHash)
 		c.logger.Debug().
-			Str("blockHash", hex.EncodeToString(blockHash)).
+			Str("blockHash", hashHex).
 			Interface("originalParam", params[0]).
 			Bool("includeTransactions", includeTransactions).
 			Msg("calling gRPC GetBlockByHash (from eth_getBlockByNumber with blockHash)")
 
+		ctx, grpcHashSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetBlockByHash",
+			trace.WithAttributes(
+				attribute.String("block_hash", hashHex),
+				attribute.String("original_param", fmt.Sprintf("%v", params[0])),
+			),
+		)
 		grpcResp, err := c.rpcClient.GetBlockByHash(ctx, grpcReq)
 		if err != nil {
+			grpcHashSpan.SetAttributes(attribute.String("grpc_error", err.Error()))
+			common.SetTraceSpanError(grpcHashSpan, err)
+			grpcHashSpan.End()
 			return nil, fmt.Errorf("gRPC call failed: %w", err)
 		}
+		grpcHashSpan.SetAttributes(attribute.Bool("response_has_block", grpcResp.Block != nil))
+		grpcHashSpan.End()
 
 		var result interface{}
 		if grpcResp.Block != nil {
@@ -307,13 +407,33 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		Bool("includeTransactions", includeTransactions).
 		Msg("calling gRPC GetBlockByNumber")
 
+	isTag := blockNumber == "latest" || blockNumber == "earliest" || blockNumber == "finalized" || blockNumber == "safe" || blockNumber == "pending"
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetBlockByNumber",
+		trace.WithAttributes(
+			attribute.String("block_number", blockNumber),
+			attribute.Bool("is_block_tag", isTag),
+			attribute.String("original_param", fmt.Sprintf("%v", params[0])),
+		),
+	)
 	grpcResp, err := c.rpcClient.GetBlockByNumber(ctx, grpcReq)
 	if err != nil {
+		grpcSpan.SetAttributes(attribute.String("grpc_error", err.Error()))
+		common.SetTraceSpanError(grpcSpan, err)
+		grpcSpan.End()
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
+	hasBlock := grpcResp.Block != nil
+	grpcSpan.SetAttributes(attribute.Bool("response_has_block", hasBlock))
+	if hasBlock {
+		grpcSpan.SetAttributes(
+			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)),
+			attribute.String("response_block_hash", fmt.Sprintf("%x", grpcResp.Block.Hash)),
+		)
+	}
+	grpcSpan.End()
 
 	var result interface{}
-	if grpcResp.Block != nil {
+	if hasBlock {
 		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
 	}
 
@@ -359,7 +479,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		return nil, fmt.Errorf("invalid block hash parameter")
 	}
 
-	blockHash, err := parseHexBytes(blockHashStr)
+	blockHash, err := util.ParseBlockHashHexToBytes(blockHashStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse block hash: %w", err)
 	}
@@ -522,7 +642,14 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		Int("topicCount", len(topics)).
 		Msg("calling gRPC GetLogs")
 
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs",
+		trace.WithAttributes(
+			attribute.Int64("from_block", int64(*fromBlock)),
+			attribute.Int64("to_block", int64(*toBlock)),
+		),
+	)
 	grpcResp, err := c.rpcClient.GetLogs(ctx, grpcReq)
+	grpcSpan.End()
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
@@ -792,15 +919,18 @@ func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 		return nil
 	}
 
-	// First check if this is a gRPC status error
-	st, ok := status.FromError(err)
-	if !ok {
-		// Not a gRPC error, return as transport failure
-		return common.NewErrEndpointTransportFailure(c.Url, err)
+	// status.FromError only checks the top-level error for GRPCStatus().
+	// Handler methods wrap gRPC errors with fmt.Errorf, so we walk the
+	// Unwrap chain to find the original gRPC status.
+	current := err
+	for current != nil {
+		if st, ok := status.FromError(current); ok {
+			return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
+		}
+		current = errors.Unwrap(current)
 	}
 
-	// Pass to the EVM error normalizer
-	return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
+	return common.NewErrEndpointTransportFailure(c.Url, err)
 }
 
 func (c *GenericGrpcBdsClient) shutdown() {
@@ -821,8 +951,276 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 	}
 }
 
+func (c *GenericGrpcBdsClient) QueryClient() evm.QueryServiceClient {
+	if c == nil {
+		return nil
+	}
+	return c.queryClient
+}
+
 // Helper functions for conversion
 
 func parseHexBytes(hexStr string) ([]byte, error) {
 	return evm.HexToBytes(hexStr)
+}
+
+// ensureQueryClient returns an error if the gRPC QueryService client has not
+// been wired (e.g. when constructing the client without a live connection).
+func (c *GenericGrpcBdsClient) ensureQueryClient(method string) error {
+	if c == nil || c.queryClient == nil {
+		return fmt.Errorf("%s: gRPC QueryService client not initialized", method)
+	}
+	return nil
+}
+
+// jsonRpcParamsFor extracts params[0] from a JSON-RPC request as a raw JSON
+// object, suitable for passing to manifesto's Query*RequestFromJsonRpc helpers.
+func jsonRpcParamsFor(jrReq *common.JsonRpcRequest) (json.RawMessage, error) {
+	jrReq.RLock()
+	defer jrReq.RUnlock()
+	if len(jrReq.Params) == 0 {
+		return json.RawMessage("{}"), nil
+	}
+	raw, err := sonic.Marshal(jrReq.Params[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query params: %w", err)
+	}
+	return raw, nil
+}
+
+// buildQueryJsonRpcResponse finalizes a NormalizedResponse from a marshaled
+// JSON-RPC result payload for query methods.
+func (c *GenericGrpcBdsClient) buildQueryJsonRpcResponse(req *common.NormalizedRequest, jrReq *common.JsonRpcRequest, payload interface{}) (*common.NormalizedResponse, error) {
+	resultBytes, err := sonic.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query result: %w", err)
+	}
+	jsonRpcResp := &common.JsonRpcResponse{}
+	jrReq.RLock()
+	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
+		jrReq.RUnlock()
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+	jrReq.RUnlock()
+	jsonRpcResp.SetResult(resultBytes)
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+// recvQueryStream drains an upstream query stream and invokes onPage for each
+// received response. It returns once the stream is closed (EOF) or on error.
+func recvQueryStream[T proto.Message](recv func() (T, error), onPage func(T)) error {
+	for {
+		page, err := recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		onPage(page)
+	}
+}
+
+func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryBlocks"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryBlocksRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryBlocks params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryBlocks")
+	defer span.End()
+	stream, err := c.queryClient.QueryBlocks(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryBlocksResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryBlocksResponse) {
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryBlocksResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryTransactions"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryTransactionsRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryTransactions params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransactions")
+	defer span.End()
+	stream, err := c.queryClient.QueryTransactions(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryTransactionsResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransactionsResponse) {
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransactionsResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryLogs"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryLogsRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryLogs params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryLogs")
+	defer span.End()
+	stream, err := c.queryClient.QueryLogs(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryLogsResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryLogsResponse) {
+		aggregated.Logs = append(aggregated.Logs, page.GetLogs()...)
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryLogsResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryTraces"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryTracesRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryTraces params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTraces")
+	defer span.End()
+	stream, err := c.queryClient.QueryTraces(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryTracesResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryTracesResponse) {
+		aggregated.Traces = append(aggregated.Traces, page.GetTraces()...)
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTracesResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryTransfers"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryTransfersRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryTransfers params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransfers")
+	defer span.End()
+	stream, err := c.queryClient.QueryTransfers(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryTransfersResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransfersResponse) {
+		aggregated.Transfers = append(aggregated.Transfers, page.GetTransfers()...)
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated))
 }

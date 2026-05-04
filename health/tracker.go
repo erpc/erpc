@@ -46,7 +46,22 @@ type metadataKey struct {
 
 type NetworkMetadata struct {
 	evmLatestBlockNumber    atomic.Int64
+	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
+
+	// Dynamic block time via EMA on on-chain block timestamps.
+	// Uses block.timestamp (integer seconds) normalized by block count gap.
+	// For fast chains where consecutive blocks share the same timestamp,
+	// samples are skipped until the timestamp advances, then blockGap
+	// normalization recovers sub-second precision.
+	// Callers should use GetNetworkBlockTime which returns 0 until enough
+	// samples have been collected.
+	evmBlockTime              atomic.Int64 // computed result in nanoseconds (read by consumers)
+	evmBlockTimeMu            sync.Mutex   // protects EMA state below
+	evmBlockTimePrevBlock     int64        // last block number fed to EMA
+	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
+	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
+	evmBlockTimeSamples       int          // number of EMA samples collected
 }
 
 type Timer struct {
@@ -71,7 +86,6 @@ func (t *Timer) ObserveDuration(isSuccess bool) {
 type TrackedMetrics struct {
 	ResponseQuantiles      *QuantileTracker `json:"responseQuantiles"`
 	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
-	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
 	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
 	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
 	MisbehaviorsTotal      atomic.Int64     `json:"misbehaviorsTotal"`
@@ -98,7 +112,7 @@ func (m *TrackedMetrics) ThrottledRate() float64 {
 	if reqs == 0 {
 		return 0
 	}
-	throttled := float64(m.RemoteRateLimitedTotal.Load()) + float64(m.SelfRateLimitedTotal.Load())
+	throttled := float64(m.RemoteRateLimitedTotal.Load())
 	return throttled / float64(reqs)
 }
 
@@ -114,7 +128,6 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 	return common.SonicCfg.Marshal(map[string]interface{}{
 		"responseQuantiles":      m.ResponseQuantiles,
 		"errorsTotal":            m.ErrorsTotal.Load(),
-		"selfRateLimitedTotal":   m.SelfRateLimitedTotal.Load(),
 		"remoteRateLimitedTotal": m.RemoteRateLimitedTotal.Load(),
 		"requestsTotal":          m.RequestsTotal.Load(),
 		"misbehaviorsTotal":      m.MisbehaviorsTotal.Load(),
@@ -134,7 +147,6 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 func (m *TrackedMetrics) Reset() {
 	m.ErrorsTotal.Store(0)
 	m.RequestsTotal.Store(0)
-	m.SelfRateLimitedTotal.Store(0)
 	m.RemoteRateLimitedTotal.Store(0)
 	m.MisbehaviorsTotal.Store(0)
 	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
@@ -167,7 +179,6 @@ type Tracker struct {
 	urdObsCache sync.Map // map[urdoKey]prometheus.Observer
 
 	// Caches for other hot-path metrics
-	selfRateLimitedCounterCache   sync.Map // map[srltKey]prometheus.Counter
 	remoteRateLimitedCounterCache sync.Map // map[rrltKey]prometheus.Counter
 	latestBlockGaugeCache         sync.Map // map[ubKey]prometheus.Gauge
 	finalizedBlockGaugeCache      sync.Map // map[ubKey]prometheus.Gauge
@@ -210,7 +221,8 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 	return actual.(prometheus.Observer)
 }
 
-type srltKey struct {
+// Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
+type rrltKey struct {
 	project   string
 	vendor    string
 	network   string
@@ -218,29 +230,27 @@ type srltKey struct {
 	category  string
 	user      string
 	agentName string
+	finality  string
 }
 
-func (t *Tracker) getSelfRateLimitedCounter(up common.Upstream, method, userId, agentName string) prometheus.Counter {
-	key := srltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName}
-	if v, ok := t.selfRateLimitedCounterCache.Load(key); ok {
-		return v.(prometheus.Counter)
-	}
-	c := telemetry.MetricUpstreamSelfRateLimitedTotal.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.user, key.agentName,
-	)
-	actual, _ := t.selfRateLimitedCounterCache.LoadOrStore(key, c)
-	return actual.(prometheus.Counter)
-}
-
-type rrltKey = srltKey
-
-func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName string) prometheus.Counter {
-	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName}
+func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName, finality string) prometheus.Counter {
+	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName, finality}
 	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
 		return v.(prometheus.Counter)
 	}
-	c := telemetry.MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.user, key.agentName,
+	c := telemetry.MetricRateLimitsTotal.WithLabelValues(
+		key.project,   // project
+		key.network,   // network
+		key.vendor,    // vendor
+		key.upstream,  // upstream
+		key.category,  // category
+		key.finality,  // finality
+		key.user,      // user
+		key.agentName, // agent_name
+		"<remote>",    // budget
+		"remote",      // scope (remote upstream)
+		"",            // auth
+		"upstream",    // origin
 	)
 	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, c)
 	return actual.(prometheus.Counter)
@@ -399,7 +409,7 @@ func (t *Tracker) getUpsMetrics(k upstreamKey) *TrackedMetrics {
 	if v, ok := t.upsMetrics.Load(k); ok {
 		return v.(*TrackedMetrics)
 	}
-	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker()}
+	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker(t.logger)}
 	actual, _ := t.upsMetrics.LoadOrStore(k, tm)
 	// Track this upstreamKey under its network for efficient global updates
 	if k.ups != nil {
@@ -426,7 +436,7 @@ func (t *Tracker) getNtwMetrics(k networkKey) *TrackedMetrics {
 	if v, ok := t.ntwMetrics.Load(k); ok {
 		return v.(*TrackedMetrics)
 	}
-	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker()}
+	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker(t.logger)}
 	actual, _ := t.ntwMetrics.LoadOrStore(k, tm)
 	return actual.(*TrackedMetrics)
 }
@@ -524,13 +534,24 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 }
 
 func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
-	// We want to ignore errors that should not affect the scores:
+	// Ignore errors that do not reflect upstream quality:
+	// - ExecutionException: valid blockchain state (e.g. revert)
+	// - ExcludedByPolicy / RequestSkipped / Shadowing: internal routing decisions
+	// - Unsupported: capability, not quality
+	// - CapacityExceeded: remote 429, already penalized via ThrottledRate
+	// - ClientSideException: user sent a bad request, not upstream's fault
+	// - RequestCanceled / HedgeCancelled: hedge lost the race, not an upstream fault
 	if common.HasErrorCode(
 		err,
 		common.ErrCodeEndpointExecutionException,
 		common.ErrCodeUpstreamExcludedByPolicy,
 		common.ErrCodeUpstreamRequestSkipped,
 		common.ErrCodeUpstreamShadowing,
+		common.ErrCodeEndpointUnsupported,
+		common.ErrCodeEndpointCapacityExceeded,
+		common.ErrCodeEndpointClientSideException,
+		common.ErrCodeEndpointRequestCanceled,
+		common.ErrCodeUpstreamHedgeCancelled,
 	) {
 		return
 	}
@@ -552,27 +573,7 @@ func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
-	for _, k := range t.getUpsKeys(up, method) {
-		t.getUpsMetrics(k).SelfRateLimitedTotal.Add(1)
-	}
-	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).SelfRateLimitedTotal.Add(1)
-	}
-
-	var userId, agentName string
-	if req != nil {
-		userId = req.UserId()
-		agentName = req.AgentName()
-	} else {
-		userId = "n/a"
-		agentName = "unknown"
-	}
-
-	t.getSelfRateLimitedCounter(up, method, userId, agentName).Inc()
-}
-
-func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
+func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common.Upstream, method string, req *common.NormalizedRequest) {
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).RemoteRateLimitedTotal.Add(1)
 	}
@@ -580,16 +581,17 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method str
 		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
 	}
 
-	var userId, agentName string
+	var userId, agentName, finality string
 	if req != nil {
 		userId = req.UserId()
 		agentName = req.AgentName()
+		finality = req.Finality(ctx).String()
 	} else {
 		userId = "n/a"
 		agentName = "unknown"
 	}
 
-	t.getRemoteRateLimitedCounter(up, method, userId, agentName).Inc()
+	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finality).Inc()
 }
 
 // --------------------------------------------
@@ -620,7 +622,112 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 // Block Number & Lag Tracking
 // --------------------------------------------
 
-func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
+// updateNetworkLagMetrics updates lag metrics for all upstreams in a network
+// This is a DRY helper to avoid code duplication between SetLatestBlockNumber and SetFinalizedBlockNumber
+func (t *Tracker) updateNetworkLagMetrics(
+	net string,
+	networkValue int64,
+	getUpstreamValue func(*NetworkMetadata) int64,
+	setLag func(*TrackedMetrics, int64),
+	getGauge func(string, string, string, string) prometheus.Gauge,
+	lg *zerolog.Logger,
+) {
+	// Use the pre-built index to avoid ranging over ALL upstreams
+	t.mu.RLock()
+	relevantKeys := t.upstreamsByNetwork[net]
+	t.mu.RUnlock()
+
+	if len(relevantKeys) == 0 {
+		// Fallback only if index not ready - this should be rare
+		t.upsMetrics.Range(func(key, value any) bool {
+			k, ok := key.(upstreamKey)
+			if !ok || k.ups == nil {
+				return true
+			}
+			if k.ups.NetworkId() != net {
+				return true
+			}
+			tm := value.(*TrackedMetrics)
+			upsMeta := t.getMetadata(metadataKey{k.ups, net})
+			upsValue := getUpstreamValue(upsMeta)
+			if upsValue <= 0 {
+				lg.Debug().
+					Str("upstreamId", k.ups.Id()).
+					Int64("value", upsValue).
+					Msg("ignoring lag tracking for non-positive value")
+				return true
+			}
+			lag := networkValue - upsValue
+			setLag(tm, lag)
+			gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
+			gauge.Set(float64(lag))
+			return true
+		})
+	} else {
+		// Optimized path: iterate only relevant keys for this network
+		for _, k := range relevantKeys {
+			if k.ups == nil {
+				continue
+			}
+			if v, ok := t.upsMetrics.Load(k); ok {
+				tm := v.(*TrackedMetrics)
+				upsMeta := t.getMetadata(metadataKey{k.ups, net})
+				upsValue := getUpstreamValue(upsMeta)
+				if upsValue <= 0 {
+					lg.Debug().
+						Str("upstreamId", k.ups.Id()).
+						Int64("value", upsValue).
+						Msg("ignoring lag tracking for non-positive value")
+					continue
+				}
+				lag := networkValue - upsValue
+				setLag(tm, lag)
+				gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
+				gauge.Set(float64(lag))
+			}
+		}
+	}
+}
+
+// updateSingleUpstreamLag updates lag metrics for a single upstream
+func (t *Tracker) updateSingleUpstreamLag(
+	id string,
+	net string,
+	lag int64,
+	setLag func(*TrackedMetrics, int64),
+) {
+	// Use the pre-built index when available
+	t.mu.RLock()
+	relevantKeys := t.upstreamsByNetwork[net]
+	t.mu.RUnlock()
+
+	if len(relevantKeys) == 0 {
+		// Fallback for safety if index not yet populated
+		t.upsMetrics.Range(func(key, value any) bool {
+			k, ok := key.(upstreamKey)
+			if !ok || k.ups == nil {
+				return true
+			}
+			if k.ups.Id() == id && k.ups.NetworkId() == net {
+				tm := value.(*TrackedMetrics)
+				setLag(tm, lag)
+			}
+			return true
+		})
+	} else {
+		// Optimized path: check only relevant keys
+		for _, k := range relevantKeys {
+			if k.ups != nil && k.ups.Id() == id {
+				if v, ok := t.upsMetrics.Load(k); ok {
+					tm := v.(*TrackedMetrics)
+					setLag(tm, lag)
+				}
+			}
+		}
+	}
+}
+
+func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
 	netLabel := upstream.NetworkLabel()
@@ -645,6 +752,29 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g := t.getLatestBlockGauge(t.projectId, "*", netLabel, "*")
 		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
+
+		// Feed block.timestamp into EMA for dynamic block time estimation.
+		// Uses on-chain timestamps (not local clock) so the EMA tracks actual
+		// chain production rate, not our polling cadence. For fast chains where
+		// consecutive blocks share the same integer-second timestamp, samples
+		// are skipped until the timestamp advances; blockGap normalization
+		// recovers sub-second precision.
+		if blockTimestamp > 0 {
+			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
+		}
+
+		// Atomically update timestamp when network-level block number is updated
+		if blockTimestamp > 0 {
+			ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
+
+			detectedAtMs := time.Now().UnixMilli()
+			distanceMs := detectedAtMs - blockTimestamp*1000
+			telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
+				t.projectId,
+				netLabel,
+				"evm_state_poller",
+			).Set(float64(distanceMs) / 1000.0)
+		}
 	}
 
 	// 2) Update this upstream's latest block
@@ -670,98 +800,121 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
 	if needsGlobalUpdate {
 		// Recompute for every upstream in the network
-		t.mu.RLock()
-		relevantKeys := t.upstreamsByNetwork[net]
-		t.mu.RUnlock()
-
-		if len(relevantKeys) == 0 {
-			// Fallback: if we have not yet registered upstream keys for this network,
-			// iterate over all known metrics to ensure correctness.
-			t.upsMetrics.Range(func(key, value any) bool {
-				k, ok := key.(upstreamKey)
-				if !ok {
-					return true
-				}
-				otherUps := k.ups
-				if otherUps == nil {
-					return true
-				}
-				if otherUps.NetworkId() != net {
-					return true
-				}
-				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-				otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
-				if otherVal <= 0 {
-					lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
-					return true
-				}
-				otherLag := ntwBn - otherVal
-				tm := value.(*TrackedMetrics)
-				tm.BlockHeadLag.Store(otherLag)
-				gOtherLag := t.getHeadLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
-				gOtherLag.Set(float64(otherLag))
-				return true
-			})
-		} else {
-			for _, k := range relevantKeys {
-				if v, ok := t.upsMetrics.Load(k); ok {
-					tm := v.(*TrackedMetrics)
-					otherUps := k.ups
-					if otherUps == nil {
-						continue
-					}
-					otherNet := otherUps.NetworkId()
-					if otherNet == net {
-						otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-						otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
-						if otherVal <= 0 {
-							lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
-							continue
-						}
-						otherLag := ntwBn - otherVal
-						tm.BlockHeadLag.Store(otherLag)
-						gOtherLag := t.getHeadLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
-						gOtherLag.Set(float64(otherLag))
-					}
-				}
-			}
-		}
+		t.updateNetworkLagMetrics(
+			net,
+			ntwBn,
+			func(meta *NetworkMetadata) int64 { return meta.evmLatestBlockNumber.Load() },
+			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
+			t.getHeadLagGauge,
+			&lg,
+		)
 	} else {
-		// Only update items for this single upstream in this network.
-		// Prefer the pre-built per-network index to avoid ranging the entire map.
-		t.mu.RLock()
-		relevantKeys := t.upstreamsByNetwork[net]
-		t.mu.RUnlock()
-		if len(relevantKeys) == 0 {
-			// Fallback for safety if index not yet populated.
-			t.upsMetrics.Range(func(key, value any) bool {
-				k, ok := key.(upstreamKey)
-				if !ok || k.ups == nil {
-					return true
-				}
-				if k.ups.Id() == id && k.ups.NetworkId() == net {
-					tm := value.(*TrackedMetrics)
-					tm.BlockHeadLag.Store(upsLag)
-				}
-				return true
-			})
-		} else {
-			for _, k := range relevantKeys {
-				if k.ups == nil || k.ups.Id() != id {
-					continue
-				}
-				if v, ok := t.upsMetrics.Load(k); ok {
-					tm := v.(*TrackedMetrics)
-					tm.BlockHeadLag.Store(upsLag)
-				}
-			}
-		}
+		// Only update items for this single upstream
+		t.updateSingleUpstreamLag(
+			id,
+			net,
+			upsLag,
+			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
+		)
 	}
 }
 
 func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int64) {
 	ntwMeta := t.getMetadata(metadataKey{nil, network})
 	ntwMeta.evmLatestBlockNumber.Store(blockNumber)
+}
+
+// ------------------------------------
+// Dynamic Block Time (EMA)
+// ------------------------------------
+
+const (
+	blockTimeEmaAlpha   = 0.1 // smoothing factor; effective window ~19 samples
+	blockTimeMinSamples = 3   // minimum EMA samples before emitting (requires 4 observations total)
+)
+
+// updateBlockTimeSample feeds a new block into the EMA using on-chain
+// block.timestamp (integer seconds). For fast chains where consecutive blocks
+// share the same timestamp, we skip the sample and do NOT advance prev — the
+// block gap accumulates until the timestamp ticks, then normalization recovers
+// sub-second precision (e.g. 1s / 4 blocks = 250ms for Arbitrum).
+func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64) {
+	ntwMeta.evmBlockTimeMu.Lock()
+	defer ntwMeta.evmBlockTimeMu.Unlock()
+
+	prevBlock := ntwMeta.evmBlockTimePrevBlock
+	prevTimestamp := ntwMeta.evmBlockTimePrevTimestamp
+
+	// First observation: store as previous and return.
+	if prevBlock == 0 {
+		ntwMeta.evmBlockTimePrevBlock = blockNumber
+		ntwMeta.evmBlockTimePrevTimestamp = blockTimestamp
+		return
+	}
+
+	// Reject out-of-order or duplicate blocks.
+	blockGap := blockNumber - prevBlock
+	if blockGap <= 0 {
+		return
+	}
+
+	// Skip if timestamp hasn't advanced (fast chains where blocks share the same second).
+	// Do NOT advance prev — let blockGap accumulate until the timestamp ticks.
+	timestampDeltaSec := blockTimestamp - prevTimestamp
+	if timestampDeltaSec <= 0 {
+		return
+	}
+
+	// Per-block sample in nanoseconds (seconds → ms → ns, divided by block count).
+	sampleNs := float64(timestampDeltaSec) * 1e9 / float64(blockGap)
+
+	// Update EMA.
+	if ntwMeta.evmBlockTimeSamples == 0 {
+		ntwMeta.evmBlockTimeEmaNs = sampleNs
+	} else {
+		ntwMeta.evmBlockTimeEmaNs = blockTimeEmaAlpha*sampleNs + (1-blockTimeEmaAlpha)*ntwMeta.evmBlockTimeEmaNs
+	}
+	ntwMeta.evmBlockTimeSamples++
+
+	// Store current as previous.
+	ntwMeta.evmBlockTimePrevBlock = blockNumber
+	ntwMeta.evmBlockTimePrevTimestamp = blockTimestamp
+
+	// Don't emit until we have enough samples.
+	if ntwMeta.evmBlockTimeSamples < blockTimeMinSamples {
+		return
+	}
+
+	blockTimeNs := int64(ntwMeta.evmBlockTimeEmaNs)
+
+	// Sanity bounds: reject absurd values.
+	// Reset the internal EMA to the last published value so that recovery from a
+	// prolonged halt doesn't create a delayed spike when the EMA first crosses
+	// back below the threshold (e.g. jumping from 2s to ~119s).
+	if blockTimeNs < int64(10*time.Millisecond) || blockTimeNs > int64(120*time.Second) {
+		if lastGood := ntwMeta.evmBlockTime.Load(); lastGood > 0 {
+			ntwMeta.evmBlockTimeEmaNs = float64(lastGood)
+		}
+		return
+	}
+
+	ntwMeta.evmBlockTime.Store(blockTimeNs)
+
+	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
+		t.projectId, netLabel,
+	).Set(float64(time.Duration(blockTimeNs).Milliseconds()))
+}
+
+// GetNetworkBlockTime returns the EMA-estimated block time for a network.
+// Returns 0 until at least blockTimeMinSamples have been collected.
+func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
+	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
+
+	if v := ntwMeta.evmBlockTime.Load(); v > 0 {
+		return time.Duration(v)
+	}
+
+	return 0
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
@@ -819,61 +972,23 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 
 	// Update the finalization lag across the network if needed
 	if needsGlobalUpdate {
-		t.upsMetrics.Range(func(key, value any) bool {
-			k, ok := key.(upstreamKey)
-			if !ok {
-				return true
-			}
-			otherUps := k.ups
-			if otherUps == nil {
-				return true
-			}
-			otherNet := otherUps.NetworkId()
-			if otherNet == net {
-				tm := value.(*TrackedMetrics)
-				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-				otherVal := otherUpsMeta.evmFinalizedBlockNumber.Load()
-				if otherVal <= 0 {
-					lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
-					return true
-				}
-				otherLag := ntwVal - otherVal
-				tm.FinalizationLag.Store(otherLag)
-				gOtherLag := t.getFinalizationLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
-				gOtherLag.Set(float64(otherLag))
-			}
-			return true
-		})
+		// Recompute for every upstream in the network
+		t.updateNetworkLagMetrics(
+			net,
+			ntwVal,
+			func(meta *NetworkMetadata) int64 { return meta.evmFinalizedBlockNumber.Load() },
+			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
+			t.getFinalizationLagGauge,
+			&lg,
+		)
 	} else {
-		// Only update finalization lag for this single upstream.
-		// Prefer the pre-built per-network index to avoid ranging the entire map.
-		t.mu.RLock()
-		relevantKeys := t.upstreamsByNetwork[net]
-		t.mu.RUnlock()
-		if len(relevantKeys) == 0 {
-			// Fallback for safety if index not yet populated.
-			t.upsMetrics.Range(func(key, value any) bool {
-				k, ok := key.(upstreamKey)
-				if !ok || k.ups == nil {
-					return true
-				}
-				if k.ups.Id() == id && k.ups.NetworkId() == net {
-					tm := value.(*TrackedMetrics)
-					tm.FinalizationLag.Store(upsLag)
-				}
-				return true
-			})
-		} else {
-			for _, k := range relevantKeys {
-				if k.ups == nil || k.ups.Id() != id {
-					continue
-				}
-				if v, ok := t.upsMetrics.Load(k); ok {
-					tm := v.(*TrackedMetrics)
-					tm.FinalizationLag.Store(upsLag)
-				}
-			}
-		}
+		// Only update finalization lag for this single upstream
+		t.updateSingleUpstreamLag(
+			id,
+			net,
+			upsLag,
+			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
+		)
 	}
 }
 

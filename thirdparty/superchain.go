@@ -12,7 +12,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 const DefaultSuperchainRegistryURL = "https://raw.githubusercontent.com/ethereum-optimism/superchain-registry/main/chainList.json"
@@ -138,7 +137,7 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultSuperchainRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, recheckInterval, finalRegistryURL)
+	err = v.ensureRemoteData(ctx, logger, recheckInterval, finalRegistryURL)
 	if err != nil {
 		return false, fmt.Errorf("unable to load remote data using URL '%s': %w", finalRegistryURL, err)
 	}
@@ -199,7 +198,7 @@ func (v *SuperchainVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultSuperchainRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(context.Background(), recheckInterval, finalRegistryURL); err != nil {
+	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, finalRegistryURL); err != nil {
 		return nil, fmt.Errorf("unable to load remote data using URL '%s': %w", finalRegistryURL, err)
 	}
 
@@ -231,7 +230,7 @@ func (v *SuperchainVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		upsList = append(upsList, upsCfg)
 	}
 
-	log.Debug().
+	logger.Debug().
 		Int64("chainId", chainID).
 		Int("rpcCount", len(rpcs)).
 		Interface("upstreams", upsList).
@@ -259,7 +258,7 @@ func (v *SuperchainVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return false
 }
 
-func (v *SuperchainVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration, registryURL string) error {
+func (v *SuperchainVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, registryURL string) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -270,7 +269,7 @@ func (v *SuperchainVendor) ensureRemoteData(ctx context.Context, recheckInterval
 	newData, err := v.fetchSuperchainNetworks(ctx, registryURL)
 	if err != nil {
 		if _, ok := v.remoteData[registryURL]; ok {
-			log.Warn().Err(err).Msg("could not refresh Superchain registry data; will use stale data")
+			logger.Warn().Err(err).Msg("could not refresh Superchain registry data; will use stale data")
 			return nil
 		}
 		return err

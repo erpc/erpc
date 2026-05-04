@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/urfave/cli/v3"
 	"google.golang.org/grpc/grpclog"
+	yaml "gopkg.in/yaml.v3"
 )
 
 func init() {
@@ -128,6 +130,55 @@ func main() {
 		},
 	}
 
+	// Define the dump command
+	dumpCmd := &cli.Command{
+		Name:  "dump",
+		Usage: "Parse a config file (TS, JS, or YAML) and dump the fully resolved configuration with all defaults applied",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "format",
+				Usage: "Output format: yaml|json",
+				Value: "yaml",
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			zerolog.SetGlobalLevel(zerolog.Disabled)
+
+			cfg, err := getConfig(logger, cmd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: failed to load config: %v\n", err)
+				util.OsExit(1)
+				return nil
+			}
+
+			format := cmd.String("format")
+			switch format {
+			case "json":
+				out, err := json.MarshalIndent(cfg, "", "  ")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: failed to marshal config to JSON: %v\n", err)
+					util.OsExit(1)
+					return nil
+				}
+				fmt.Println(string(out))
+			case "yaml", "yml":
+				out, err := yaml.Marshal(cfg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: failed to marshal config to YAML: %v\n", err)
+					util.OsExit(1)
+					return nil
+				}
+				fmt.Print(string(out))
+			default:
+				fmt.Fprintf(os.Stderr, "error: unsupported format %q (use yaml or json)\n", format)
+				util.OsExit(1)
+				return nil
+			}
+
+			return nil
+		},
+	}
+
 	// Define the start command
 	startCmd := &cli.Command{
 		Name:  "start",
@@ -166,10 +217,11 @@ func main() {
 				logger,
 			)
 		}),
-		// sub command for start / validation
+		// sub command for start / validation / dump
 		Commands: []*cli.Command{
 			startCmd,
 			validateCmd,
+			dumpCmd,
 		},
 	}
 	if err := cmd.Run(ctx, os.Args); err != nil {

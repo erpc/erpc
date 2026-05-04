@@ -3,8 +3,6 @@ package data
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,17 +27,76 @@ type CounterInt64SharedVariable interface {
 }
 
 type baseSharedVariable struct {
-	lastProcessed   time.Time
-	lastProcessedMu sync.RWMutex
+	// updatedAtUnixMs tracks the last-known update timestamp for this shared variable.
+	// It is used for staleness checks (TryUpdateIfStale debouncing).
+	//
+	// Semantics: unix milliseconds, monotonic increasing within a process.
+	updatedAtUnixMs atomic.Int64
 }
 
 func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
-	v.lastProcessedMu.RLock()
-	defer v.lastProcessedMu.RUnlock()
-	if v.lastProcessed.IsZero() {
+	updatedAt := v.updatedAtUnixMs.Load()
+	if updatedAt <= 0 {
 		return true
 	}
-	return time.Since(v.lastProcessed) > staleness
+	return time.Since(time.UnixMilli(updatedAt)) > staleness
+}
+
+func (v *baseSharedVariable) updatedAtMs() int64 {
+	return v.updatedAtUnixMs.Load()
+}
+
+// allocateUpdatedAtMs allocates a strictly-increasing UpdatedAt timestamp (unix ms) for a local update.
+// It also stores the allocated value into updatedAtUnixMs, ensuring uniqueness even under concurrency.
+func (v *baseSharedVariable) allocateUpdatedAtMs() int64 {
+	for {
+		current := v.updatedAtUnixMs.Load()
+		next := time.Now().UnixMilli()
+		if next <= current {
+			next = current + 1
+		}
+		if v.updatedAtUnixMs.CompareAndSwap(current, next) {
+			return next
+		}
+	}
+}
+
+// updateUpdatedAtMs atomically advances updatedAtUnixMs if newUpdatedAt is newer.
+// Returns true if updatedAtUnixMs was advanced.
+func (v *baseSharedVariable) updateUpdatedAtMs(newUpdatedAt int64) bool {
+	for {
+		current := v.updatedAtUnixMs.Load()
+		if newUpdatedAt <= current {
+			return false
+		}
+		if v.updatedAtUnixMs.CompareAndSwap(current, newUpdatedAt) {
+			return true
+		}
+	}
+}
+
+// advanceTimestampPast advances updatedAtUnixMs to be strictly greater than remoteTs.
+// Uses current wall clock if it's newer, otherwise uses remoteTs + 1.
+// This is used when rejecting a remote value (e.g., small rollback) but wanting to
+// ensure our local state will "win" the next reconciliation and get pushed to remote.
+func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
+	for {
+		current := v.updatedAtUnixMs.Load()
+		// Explicit check: if already past remoteTs, no action needed
+		if current > remoteTs {
+			return
+		}
+		// current <= remoteTs, need to advance past remoteTs
+		next := time.Now().UnixMilli()
+		if next <= remoteTs {
+			next = remoteTs + 1
+		}
+		// At this point: next > remoteTs (guaranteed)
+		if v.updatedAtUnixMs.CompareAndSwap(current, next) {
+			return
+		}
+		// CAS failed, another goroutine modified timestamp - retry
+	}
 }
 
 type counterInt64 struct {
@@ -52,47 +109,243 @@ type counterInt64 struct {
 	ignoreRollbackOf       int64
 	largeRollbackCallbacks []func(localVal, newVal int64)
 	callbackMu             sync.RWMutex
+	// bgPushInProgress dedupes best-effort remote reconciliation/push operations.
+	// It MUST NOT be held while waiting on updateMu; remote sync should never block request flow.
+	bgPushInProgress sync.Mutex
+	// bgPushRequested indicates a newer value should be pushed after the current push attempt.
+	// This avoids dropping updates when scheduleBackgroundPushCurrent() is called while a push is in progress.
+	bgPushRequested atomic.Bool
 }
 
 func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
 }
 
-func (c *counterInt64) processNewValue(source string, newVal int64) bool {
-	// This function is designed to be called from within c.updateMu.Lock().
-	// It returns true if the local value was actually updated.
+func (c *counterInt64) processNewState(source string, st CounterInt64State) bool {
+	// processNewState handles updates from remote sources (WatchCounterInt64, reconciliation).
+	// It applies the SAME rollback handling as processNewValue for consistency:
+	// - ignoreRollbackOf = 0: Accept all changes (for earliest block)
+	// - ignoreRollbackOf > 0: Ignore small rollbacks (for latest/finalized - avoids noise)
+	//
+	// This ensures consistent "only-increasing" semantics for latest/finalized across
+	// all instances, preventing noise from propagating via shared state.
+
+	// Track if this is a remote update (with external timestamp) vs local update.
+	// For remote updates, we only CHECK timestamp ordering here - we DON'T update our local
+	// timestamp until we know we're going to accept the value change (forward progress or large rollback).
+	//
+	// SPECIAL CASE - Small rollback rejection: When we reject a small rollback from a remote update
+	// with a newer timestamp, we advance our local timestamp past the remote's timestamp. This ensures
+	// our higher local value will "win" reconciliation in scheduleBackgroundPushCurrent and get pushed
+	// to remote, since local.UpdatedAt will be > remote.UpdatedAt.
+	isRemoteUpdate := st.UpdatedAt > 0
+
+	if !isRemoteUpdate {
+		// For local updates, allow UpdatedAt=0 and allocate a unique timestamp.
+		st.UpdatedAt = c.allocateUpdatedAtMs()
+	} else {
+		// For remote updates, just check timestamp ordering - don't update local timestamp yet.
+		currentTs := c.updatedAtMs()
+		if st.UpdatedAt <= currentTs {
+			// Reject stale/out-of-order states by UpdatedAt ordering.
+			// This provides idempotency and prevents stale remote values from overriding fresh local detections.
+			return false
+		}
+	}
+
 	currentValue := c.value.Load()
-	updated := false
+	newVal := st.Value
+
+	if newVal == currentValue {
+		// Values appear equal - no value change needed.
+		// For remote updates, we want to update timestamp since remote is fresher.
+		// However, we must verify the value hasn't changed concurrently to avoid a TOCTOU race:
+		// a concurrent TryUpdate could change the value between our Load() and this check,
+		// causing us to incorrectly set the remote's stale timestamp for a different local value.
+		if isRemoteUpdate {
+			if c.updateUpdatedAtMs(st.UpdatedAt) {
+				// Timestamp was updated. Verify value is still what we expect.
+				// If a concurrent update changed the value after our initial Load(),
+				// we need to ensure our timestamp reflects that change, not the remote's stale state.
+				if c.value.Load() != newVal {
+					// Value changed concurrently - allocate fresh timestamp to ensure
+					// local state wins in reconciliation. This maintains the invariant that
+					// timestamps accurately reflect when values were last updated locally.
+					c.allocateUpdatedAtMs()
+				}
+			}
+		}
+		return false
+	}
+
 	if newVal > currentValue {
-		c.value.Store(newVal)
-		updated = true
-		c.registry.logger.Debug().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
-		c.triggerValueCallback(newVal)
-	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {
-		c.value.Store(newVal)
-		updated = true
-		c.registry.logger.Warn().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Int64("rollback", currentValue-newVal).Msg("counter value rolled back")
-		c.triggerValueCallback(newVal)
-		c.callbackMu.RLock()
-		callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
-		copy(callbacks, c.largeRollbackCallbacks)
-		c.callbackMu.RUnlock()
-		for _, cb := range callbacks {
-			if cb != nil {
-				cb(currentValue, newVal)
+		// Forward progress: always accept
+		for {
+			if c.value.CompareAndSwap(currentValue, newVal) {
+				// Update timestamp AFTER accepting the value (for remote updates)
+				if isRemoteUpdate {
+					c.updateUpdatedAtMs(st.UpdatedAt)
+				}
+				c.registry.logger.Trace().
+					Str("source", source).
+					Str("key", c.key).
+					Int64("from", currentValue).
+					Int64("to", newVal).
+					Int64("updatedAt", st.UpdatedAt).
+					Msg("counter value increased (remote)")
+				c.triggerValueCallback(newVal)
+				return true
+			}
+			currentValue = c.value.Load()
+			if newVal <= currentValue {
+				return false
 			}
 		}
 	}
 
-	// We have just consulted a fresh source; refresh the timestamp
-	// so the value is considered fresh for the debounce window even
-	// when it did not change.
-	c.lastProcessedMu.Lock()
-	c.lastProcessed = time.Now()
-	c.lastProcessedMu.Unlock()
+	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
+	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
+	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
+	gap := currentValue - newVal
 
-	c.registry.logger.Trace().Str("source", source).Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("currentValue", currentValue).Int64("newVal", newVal).Bool("updated", updated).Msg("processed new value")
-	return updated
+	if gap <= c.ignoreRollbackOf {
+		// Small rollback within threshold - ignore as noise.
+		// For remote updates with newer timestamps: advance our local timestamp past theirs.
+		// This ensures our higher local value will "win" reconciliation and get pushed to remote,
+		// since local.UpdatedAt will now be > remote.UpdatedAt.
+		if isRemoteUpdate {
+			c.advanceTimestampPast(st.UpdatedAt)
+		}
+		c.registry.logger.Trace().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Int64("gap", gap).
+			Int64("ignoreRollbackOf", c.ignoreRollbackOf).
+			Msg("small rollback ignored (remote)")
+		return false
+	}
+
+	// Large rollback exceeds threshold - apply it and trigger callback
+	for {
+		if c.value.CompareAndSwap(currentValue, newVal) {
+			// Update timestamp AFTER accepting the value (for remote updates)
+			if isRemoteUpdate {
+				c.updateUpdatedAtMs(st.UpdatedAt)
+			}
+			c.registry.logger.Trace().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("from", currentValue).
+				Int64("to", newVal).
+				Int64("gap", gap).
+				Int64("updatedAt", st.UpdatedAt).
+				Msg("large rollback applied (remote)")
+			c.triggerValueCallback(newVal)
+
+			// Trigger callback for observability
+			c.callbackMu.RLock()
+			callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
+			copy(callbacks, c.largeRollbackCallbacks)
+			c.callbackMu.RUnlock()
+			for _, cb := range callbacks {
+				if cb != nil {
+					cb(currentValue, newVal)
+				}
+			}
+			return true
+		}
+		currentValue = c.value.Load()
+		if newVal >= currentValue {
+			return false
+		}
+	}
+}
+
+// processNewValue handles local updates (TryUpdate, applyRefreshResult) where we don't have
+// an external timestamp. The ignoreRollbackOf parameter controls rollback behavior:
+// - ignoreRollbackOf = 0: Accept all changes (used for earliest block - can decrease due to pruning)
+// - ignoreRollbackOf > 0: Ignore small rollbacks (noise from lagging RPCs), trigger callback for large ones
+//
+// This is different from processNewState which uses timestamp ordering for remote reconciliation.
+func (c *counterInt64) processNewValue(source string, newVal int64) bool {
+	currentValue := c.value.Load()
+	if newVal == currentValue {
+		// Value is the same, but mark as fresh to prevent repeated refresh attempts
+		c.allocateUpdatedAtMs()
+		return false
+	}
+
+	if newVal > currentValue {
+		// Forward progress: always accept
+		for {
+			if c.value.CompareAndSwap(currentValue, newVal) {
+				c.allocateUpdatedAtMs() // Mark as fresh
+				c.registry.logger.Trace().
+					Str("source", source).
+					Str("key", c.key).
+					Int64("from", currentValue).
+					Int64("to", newVal).
+					Msg("counter value increased (local)")
+				c.triggerValueCallback(newVal)
+				return true
+			}
+			currentValue = c.value.Load()
+			if newVal <= currentValue {
+				return false
+			}
+		}
+	}
+
+	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
+	// - ignoreRollbackOf=0 (earliest): gap > 0 is always true, so ALL rollbacks accepted
+	// - ignoreRollbackOf=1024 (latest/finalized): only accept large rollbacks (real reorgs)
+	gap := currentValue - newVal
+
+	if gap <= c.ignoreRollbackOf {
+		// Small rollback within threshold - ignore as noise
+		c.registry.logger.Trace().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Int64("gap", gap).
+			Int64("ignoreRollbackOf", c.ignoreRollbackOf).
+			Msg("small rollback ignored (local)")
+		return false
+	}
+
+	// Large rollback exceeds threshold - apply it and trigger callback
+	for {
+		if c.value.CompareAndSwap(currentValue, newVal) {
+			c.allocateUpdatedAtMs() // Mark as fresh
+			c.registry.logger.Trace().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("from", currentValue).
+				Int64("to", newVal).
+				Int64("gap", gap).
+				Msg("large rollback applied (local)")
+			c.triggerValueCallback(newVal)
+
+			// Trigger callback for observability
+			c.callbackMu.RLock()
+			callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
+			copy(callbacks, c.largeRollbackCallbacks)
+			c.callbackMu.RUnlock()
+			for _, cb := range callbacks {
+				if cb != nil {
+					cb(currentValue, newVal)
+				}
+			}
+			return true
+		}
+		currentValue = c.value.Load()
+		if newVal >= currentValue {
+			return false
+		}
+	}
 }
 
 func (c *counterInt64) triggerValueCallback(val int64) {
@@ -120,77 +373,17 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			attribute.Int64("new_value", newValue),
 		)
 	}
+	// IMPORTANT: TryUpdate must never wait on updateMu.
+	// updateMu exists to coordinate expensive refresh execution in TryUpdateIfStale (thundering herd control),
+	// but local counter advancement must remain fast even if a refresh is in-flight.
+	updated := c.processNewValue(UpdateSourceTryUpdate, newValue)
 
-	c.updateMu.Lock()
-	defer c.updateMu.Unlock()
-
-	// Try remote lock - wait for healthy contention, fallback only on Redis issues
-	var lockTimeout time.Duration
-	// Reserve time for operations AFTER acquiring the lock to avoid expiry during operations
-	operationBuffer := c.registry.fallbackTimeout * 2 // Buffer for Redis ops after lock
-	maxLockWaitTime := c.registry.lockTtl - operationBuffer
-
-	// Ensure we never have negative or zero timeout
-	if maxLockWaitTime <= 0 {
-		maxLockWaitTime = 2 * time.Second
+	// Schedule background push when value was actually updated (increase OR decrease).
+	// With unified semantics, all value changes are propagated to remote.
+	// Note: Value can be 0 for valid cases like earliest block = genesis.
+	if updated {
+		c.scheduleBackgroundPushCurrent()
 	}
-
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining > operationBuffer {
-			lockTimeout = remaining - operationBuffer
-		} else {
-			// Not enough time for remote operations
-			lockTimeout = remaining / 4
-			// Ensure minimum viable timeout
-			if lockTimeout < time.Second {
-				lockTimeout = time.Second
-			}
-		}
-		// Cap at time that leaves buffer for operations after lock acquisition
-		if lockTimeout > maxLockWaitTime {
-			lockTimeout = maxLockWaitTime
-		}
-	} else {
-		// No deadline - use lockTtl minus operation buffer to avoid expiry
-		lockTimeout = maxLockWaitTime
-	}
-
-	// Final safety check - ensure minimum timeout
-	if lockTimeout <= 0 {
-		lockTimeout = time.Second
-	}
-
-	lockCtx, lockCancel := context.WithTimeout(ctx, lockTimeout)
-	defer lockCancel()
-	unlock := c.tryAcquireLock(lockCtx)
-	if unlock != nil {
-		// If remote lock was acquired, we need to unlock it after the whole operation is complete
-		defer unlock()
-
-		// Get current remote value if it exists
-		// Use fresh context for Redis operations to avoid parent context deadline inheritance
-		getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		defer getCancel()
-		remoteVal := c.tryGetRemoteValue(getCtx)
-		if remoteVal > 0 {
-			// Use highest value local vs remote if applicable
-			c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
-		}
-	}
-
-	// Compare local vs new value
-	if c.processNewValue(UpdateSourceTryUpdate, newValue) && unlock != nil {
-		// Only update remote if local value was updated AND remote lock was acquired.
-		// Use fresh context for Redis operations to avoid parent context deadline inheritance
-		pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		defer cancel()
-		// The reason we don't run this within a "goroutine" is because we want to do this while "lock" is held.
-		// The reason we don't care about errors (such as deadline exceeded) is because remote updates are best-effort,
-		// as we don't want to block the usual flow of the program.
-		c.updateRemoteUpdate(pctx, newValue)
-	}
-
 	return c.value.Load()
 }
 
@@ -203,105 +396,76 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	)
 	defer span.End()
 
-	// Quick check if value is not stale using atomic read
 	if !c.IsStale(staleness) {
+		span.SetAttributes(attribute.Bool("skipped_not_stale", true))
 		return c.value.Load(), nil
 	}
 
+	// Track time waiting for mutex
+	_, mutexSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.AcquireMutex")
 	c.updateMu.Lock()
+	mutexSpan.End()
 	defer c.updateMu.Unlock()
 
-	// Double-check staleness under lock
+	// Double-check staleness after acquiring mutex
 	if !c.IsStale(staleness) {
+		span.SetAttributes(attribute.Bool("skipped_not_stale_after_mutex", true))
 		return c.value.Load(), nil
 	}
 
-	// Lock remotely if possible - wait for healthy contention, preserve time for user function
-	var lockTimeout time.Duration
-	// Reserve time for user function execution and Redis operations AFTER acquiring the lock
-	operationBuffer := c.registry.fallbackTimeout * 4 // Conservative buffer for user function + Redis ops
-	maxLockWaitTime := c.registry.lockTtl - operationBuffer
+	initialVal := c.value.Load()
+	span.SetAttributes(attribute.Int64("initial_value", initialVal))
+	// IMPORTANT: Foreground path MUST be local-only and bounded by updateMaxWait.
+	// Do NOT acquire distributed locks or do any remote I/O here, otherwise degraded shared state
+	// (e.g. Redis lock acquisition) can block normal request flow.
+	span.SetAttributes(attribute.Bool("foreground_remote_io_disabled", true))
 
-	// Ensure we never have negative or zero timeout
-	if maxLockWaitTime <= 0 {
-		maxLockWaitTime = 2 * time.Second
-	}
+	// Execute the refresh function (e.g., RPC call to get latest block) in background
+	resultCh := make(chan refreshResult, 1)
+	go func() {
+		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+		defer fnCancel()
 
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining > operationBuffer {
-			lockTimeout = remaining - operationBuffer
+		// Create a span for the actual RPC/refresh call - this is usually what takes time
+		_, fnSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.ExecuteRefresh",
+			trace.WithAttributes(
+				attribute.String("key", c.key),
+				attribute.Int64("timeout_ms", c.registry.fallbackTimeout.Milliseconds()),
+			),
+		)
+		value, err := executeNewValueFn(fnCtx)
+		if err != nil {
+			fnSpan.SetAttributes(attribute.String("error", err.Error()))
 		} else {
-			// Not enough time for remote operations
-			lockTimeout = remaining / 4
-			// Ensure minimum viable timeout
-			if lockTimeout < time.Second {
-				lockTimeout = time.Second
-			}
+			fnSpan.SetAttributes(attribute.Int64("result_value", value))
 		}
-		// Cap at time that leaves buffer for operations after lock acquisition
-		if lockTimeout > maxLockWaitTime {
-			lockTimeout = maxLockWaitTime
-		}
-	} else {
-		// No deadline - use lockTtl minus operation buffer to avoid expiry during operations
-		lockTimeout = maxLockWaitTime
+		fnSpan.End()
+
+		resultCh <- refreshResult{val: value, err: err}
+	}()
+
+	timer := time.NewTimer(c.registry.updateMaxWait)
+	defer timer.Stop()
+	span.SetAttributes(attribute.String("role", "local"))
+
+	select {
+	case r := <-resultCh:
+		span.SetAttributes(
+			attribute.String("result_path", "got_result"),
+			attribute.Bool("async_refresh", false),
+		)
+		// Always behave like "follower" in the synchronous path: local update only,
+		// remote reconciliation/push happens asynchronously via scheduleBackgroundPushCurrent().
+		return c.applyRefreshResult(initialVal, r)
+	case <-timer.C:
+		span.SetAttributes(
+			attribute.String("result_path", "timeout"),
+			attribute.Bool("async_refresh", true),
+		)
+		c.markFreshAttempt()
+		c.continueAsyncRefresh(resultCh)
+		return initialVal, nil
 	}
-
-	// Final safety check - ensure minimum timeout
-	if lockTimeout <= 0 {
-		lockTimeout = time.Second
-	}
-
-	lockCtx, lockCancel := context.WithTimeout(ctx, lockTimeout)
-	defer lockCancel()
-	unlock := c.tryAcquireLock(lockCtx)
-	if unlock != nil {
-		// If remote lock was acquired, we need to unlock it after the whole operation is complete
-		defer unlock()
-
-		// Get existing remote value in case it is already updated by another instance
-		// Use fresh context for Redis operations to avoid parent context deadline inheritance
-		getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		defer getCancel()
-		if val := c.tryGetRemoteValue(getCtx); val > 0 {
-			if c.processNewValue(UpdateSourceRemoteCheck, val) {
-				return c.value.Load(), nil
-			}
-		}
-	}
-
-	// Refresh the new value via user-defined func because local value is stale AND remote value is not up-to-date
-	c.registry.logger.Trace().
-		Str("key", c.key).
-		Str("ptr", fmt.Sprintf("%p", c)).
-		Int64("c.value", c.value.Load()).
-		Bool("unlockable", unlock != nil).
-		Msg("refreshing new value via user-defined func because local value is stale AND remote value is not up-to-date")
-	newValue, err := executeNewValueFn(ctx)
-	if err != nil {
-		// Avoid thundering herd in case of errors (wait equal to debounce window)
-		c.lastProcessedMu.Lock()
-		c.lastProcessed = time.Now()
-		c.lastProcessedMu.Unlock()
-		return c.value.Load(), err
-	}
-	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Bool("unlockable", unlock != nil).Int64("newValue", newValue).Msg("received new value from user-defined func")
-
-	// Process the new value locally
-	if c.processNewValue(UpdateSourceTryUpdateIfStale, newValue) && unlock != nil {
-		// Only update remote if local value was updated AND remote lock was acquired.
-		// Use fresh context for Redis operations to avoid parent context deadline inheritance
-		pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		defer cancel()
-		// The reason we don't run this within a "goroutine" is because we want to do this while "lock" is held.
-		// The reason we don't care about errors (such as deadline exceeded) is because remote updates are best-effort,
-		// as we don't want to block the usual flow of the program.
-		c.updateRemoteUpdate(pctx, newValue)
-	}
-
-	// Return the final value from local storage, no matter how it was updated.
-	return c.value.Load(), nil
 }
 
 func (c *counterInt64) OnValue(cb func(int64)) {
@@ -314,6 +478,54 @@ func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
 	c.callbackMu.Lock()
 	defer c.callbackMu.Unlock()
 	c.largeRollbackCallbacks = append(c.largeRollbackCallbacks, cb)
+}
+
+func (c *counterInt64) markFreshAttempt() {
+	c.allocateUpdatedAtMs()
+}
+
+type refreshResult struct {
+	val int64
+	err error
+}
+
+func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (int64, error) {
+	if r.err != nil {
+		c.markFreshAttempt()
+		return initialVal, r.err
+	}
+	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
+	if updated {
+		c.scheduleBackgroundPushCurrent()
+	}
+	return c.value.Load(), nil
+}
+
+func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult) {
+	go func() {
+		// Bound the helper's lifetime. The paired refresh worker is capped by
+		// fnCtx (fallbackTimeout), but if a downstream call ignores its context
+		// the worker may never send and this goroutine would leak permanently.
+		// Cap at fallbackTimeout + a small buffer; drop the eventual value in
+		// the pathological case — the next TryUpdateIfStale will refresh again.
+		timer := time.NewTimer(c.registry.fallbackTimeout + time.Second)
+		defer timer.Stop()
+
+		select {
+		case r, ok := <-resultCh:
+			if !ok {
+				return
+			}
+			// Apply result locally; remote push is scheduled async and MUST NOT block request flow.
+			c.updateMu.Lock()
+			_, _ = c.applyRefreshResult(c.value.Load(), r)
+			c.updateMu.Unlock()
+		case <-timer.C:
+			return
+		case <-c.registry.appCtx.Done():
+			return
+		}
+	}()
 }
 
 func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
@@ -348,7 +560,15 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 	return nil
 }
 
-func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
+func (c *counterInt64) localState() CounterInt64State {
+	return CounterInt64State{
+		Value:     c.value.Load(),
+		UpdatedAt: c.updatedAtMs(),
+		UpdatedBy: c.registry.instanceId,
+	}
+}
+
+func (c *counterInt64) tryGetRemoteState(ctx context.Context) (CounterInt64State, bool) {
 	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value", nil)
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
@@ -356,28 +576,132 @@ func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
 		} else {
 			c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to get remote counter value")
 		}
-	} else {
-		remoteValueInt, err := strconv.ParseInt(string(remoteVal), 0, 0)
-		if err != nil {
-			c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to parse remote counter value")
-		} else {
-			return remoteValueInt
-		}
+		return CounterInt64State{}, false
 	}
-	return 0
+	var st CounterInt64State
+	if err := common.SonicCfg.Unmarshal(remoteVal, &st); err != nil {
+		// No backward compatibility: treat parse errors as missing
+		c.registry.logger.Debug().Err(err).Str("key", c.key).Msg("failed to parse remote counter state (treating as missing)")
+		return CounterInt64State{}, false
+	}
+	if st.UpdatedAt <= 0 {
+		return CounterInt64State{}, false
+	}
+	return st, true
 }
 
-func (c *counterInt64) updateRemoteUpdate(ctx context.Context, newValue int64) {
-	err := c.registry.connector.Set(ctx, c.key, "value", []byte(fmt.Sprintf("%d", newValue)), nil)
+func (c *counterInt64) updateRemoteState(ctx context.Context, st CounterInt64State) {
+	if st.UpdatedBy == "" {
+		st.UpdatedBy = c.registry.instanceId
+	}
+	payload, err := common.SonicCfg.Marshal(st)
+	if err != nil {
+		c.registry.logger.Debug().Err(err).
+			Str("key", c.key).
+			Int64("value", st.Value).
+			Msg("failed to marshal counter state for remote update")
+		return
+	}
+
+	err = c.registry.connector.Set(ctx, c.key, "value", payload, nil)
 	if err == nil {
-		err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
+		err = c.registry.connector.PublishCounterInt64(ctx, c.key, st)
 	}
 	if err != nil {
 		c.registry.logger.Debug().Err(err).
 			Str("key", c.key).
-			Int64("value", newValue).
+			Int64("value", st.Value).
 			Msg("failed to update remote counter value")
 	} else {
-		c.registry.logger.Debug().Str("key", c.key).Int64("value", newValue).Msg("published counter value to remote")
+		c.registry.logger.Debug().
+			Str("key", c.key).
+			Int64("value", st.Value).
+			Int64("updatedAt", st.UpdatedAt).
+			Str("updatedBy", st.UpdatedBy).
+			Msg("published counter value to remote")
 	}
+}
+
+// scheduleBackgroundPushCurrent dedupes and pushes the current local value to the
+// remote store under a lock, without blocking the caller.
+func (c *counterInt64) scheduleBackgroundPushCurrent() {
+	// Always mark that a push is needed.
+	c.bgPushRequested.Store(true)
+
+	// Only one goroutine at a time runs the push loop.
+	if !c.bgPushInProgress.TryLock() {
+		return
+	}
+
+	go func() {
+		defer func() {
+			c.bgPushInProgress.Unlock()
+			// Close the race window: if someone set bgPushRequested between our Swap(false)
+			// returning false and their TryLock failing, respawn a worker.
+			if c.bgPushRequested.Load() {
+				c.scheduleBackgroundPushCurrent()
+			}
+		}()
+
+		for {
+			// Coalesce: if no push is requested at loop start, we're done.
+			if !c.bgPushRequested.Swap(false) {
+				return
+			}
+
+			// Snapshot local state (atomic reads; never block request flow here)
+			local := c.localState()
+			// Skip only if UpdatedAt indicates uninitialized; Value can be 0 (e.g., earliest = genesis)
+			if local.UpdatedAt <= 0 {
+				continue
+			}
+
+			// Best-effort fast propagation (no distributed lock): publish the latest state so
+			// other instances can update their local counters quickly via WatchCounterInt64.
+			pubCtx, pubCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockMaxWait)
+			_ = c.registry.connector.PublishCounterInt64(pubCtx, c.key, local)
+			pubCancel()
+
+			// Acquire distributed lock with a bounded wait budget.
+			// NOTE: This is a background operation and MUST NOT block request flow.
+			lockCtx, lockCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockMaxWait)
+			unlock := c.tryAcquireLock(lockCtx)
+			lockCancel()
+			if unlock == nil {
+				// Could not acquire lock quickly; rely on publish-only propagation for now.
+				// If newer updates arrive, scheduleBackgroundPushCurrent() will set bgPushRequested
+				// and this loop will run again.
+				continue
+			}
+
+			func() {
+				defer unlock()
+
+				// Reconcile with remote under the distributed lock.
+				getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+				remote, remoteOk := c.tryGetRemoteState(getCtx)
+				getCancel()
+
+				// Adopt the newer state by UpdatedAt ordering.
+				if remoteOk && remote.UpdatedAt > local.UpdatedAt {
+					c.updateMu.Lock()
+					_ = c.processNewState(UpdateSourceRemoteCheck, remote)
+					c.updateMu.Unlock()
+					local = c.localState()
+				}
+
+				// If our local state is newer (or remote missing), push it to remote.
+				// Skip only if UpdatedAt indicates uninitialized; Value can be 0 (e.g., earliest = genesis)
+				if local.UpdatedAt <= 0 {
+					return
+				}
+
+				if !remoteOk || local.UpdatedAt > remote.UpdatedAt {
+					pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+					c.updateRemoteState(pctx, local)
+					cancel()
+				}
+			}()
+		}
+	}()
 }

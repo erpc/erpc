@@ -52,6 +52,14 @@ export {
   ConsensusDisputeBehaviorAcceptMostCommonValidResult,
   ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorOnlyBlockHeadLeader,
+  // Rate limiter periods
+  RateLimitPeriodSecond,
+  RateLimitPeriodMinute,
+  RateLimitPeriodHour,
+  RateLimitPeriodDay,
+  RateLimitPeriodWeek,
+  RateLimitPeriodMonth,
+  RateLimitPeriodYear,
 } from "./generated";
 export type {
   Config,
@@ -63,6 +71,7 @@ export type {
   // Upstream related
   UpstreamConfig,
   EvmUpstreamConfig,
+  EvmQueryShimConfig,
   UpstreamIntegrityConfig,
   UpstreamIntegrityEthGetBlockReceiptsConfig,
   RoutingConfig,

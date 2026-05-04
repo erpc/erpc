@@ -25,7 +25,11 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 			Image:        "postgres:15-alpine",
 			Env:          map[string]string{"POSTGRES_PASSWORD": "password"},
 			ExposedPorts: []string{"5432/tcp"},
-			WaitingFor:   wait.ForListeningPort("5432/tcp"),
+			// Wait for the second occurrence of this log message. Postgres outputs this message twice:
+			// once during initialization and once when fully ready to accept connections.
+			WaitingFor: wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(2 * time.Minute),
 		}
 		postgresC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: req,

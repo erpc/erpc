@@ -49,6 +49,7 @@ type consensusAnalysis struct {
 	validParticipants int
 	originalRequest   *common.NormalizedRequest
 	leaderUpstream    common.Upstream
+	method            string // The RPC method being called (e.g., "eth_getTransactionCount")
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -69,6 +70,9 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 	// Try to extract original request and compute leader upstream once
 	if req, ok := exec.Context().Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req != nil {
 		analysis.originalRequest = req
+		if method, err := req.Method(); err == nil {
+			analysis.method = method
+		}
 		if net := req.Network(); net != nil && net.Architecture() == common.ArchitectureEvm {
 			// Use the executor context; leader selection is read-only and fast
 			analysis.leaderUpstream = net.EvmLeaderUpstream(exec.Context())
@@ -133,6 +137,18 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 			g.IsTie = countsByType[g.ResponseType][g.Count] > 1
 		}
 	}
+
+	// Pre-populate all cached accessors so the struct is effectively
+	// immutable after construction. This is critical: after the analyzer
+	// goroutine sends the outcome to the caller via outcomeCh (see
+	// executor.go runAnalyzer), both goroutines may read the analysis
+	// concurrently. Lazy-init under concurrent reads would be a data race.
+	analysis.getValidGroups()
+	analysis.getBestNonEmpty()
+	analysis.getBestEmpty()
+	analysis.getBestError()
+	analysis.getBestByCount()
+	analysis.getBestBySize()
 
 	return analysis
 }
@@ -356,6 +372,18 @@ func resultToJsonRpcResponse(result *common.NormalizedResponse, exec failsafe.Ex
 // classifyAndHashResponse computes and caches the response type, hash, and size for a result.
 func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.NormalizedResponse], config *config) {
 	if r.Err != nil {
+		// ErrUpstreamsExhausted means no upstream was reachable — always infrastructure.
+		// Its Cause wraps the shared ErrorsByUpstream map which may contain errors from
+		// other consensus participants (e.g. execution reverts). Without this guard,
+		// HasErrorCode traversal would find those foreign errors and misclassify this
+		// as a consensus-valid response, creating phantom voting groups.
+		if common.HasErrorCode(r.Err, common.ErrCodeUpstreamsExhausted) {
+			r.CachedResponseType = ResponseTypeInfrastructureError
+			r.CachedHash = "error:exhausted"
+			r.CachedResponseSize = 0
+			return
+		}
+
 		// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
 		// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
 		if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {

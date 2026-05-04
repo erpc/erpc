@@ -36,7 +36,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)
 	if err != nil {
@@ -81,6 +81,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 		nil,
 	)
 
@@ -141,7 +142,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)
 	if err != nil {
@@ -186,6 +187,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 		nil,
 	)
 
@@ -258,7 +260,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 			MaxAttempts: 3,
 		},
 	}
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)
 	if err != nil {
@@ -304,6 +306,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 		nil,
 	)
 	upsReg.Bootstrap(ctx)
@@ -374,7 +377,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)
 	if err != nil {
@@ -421,6 +424,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		mt,
 		10*time.Second,
 		nil,
+		nil,
 	)
 	upsReg.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -463,8 +467,9 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 	b.SetParallelism(500)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
+		local := rand.New(rand.NewSource(time.Now().UnixNano()))
 		for pb.Next() {
-			fromBlock := 0x11118001 + uint64(rand.Intn(1000000))
+			fromBlock := 0x11118001 + uint64(local.Intn(1000000))
 			toBlock := fromBlock + 0x50
 			requestBytes := []byte(`{
 				"jsonrpc": "2.0",

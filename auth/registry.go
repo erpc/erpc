@@ -30,9 +30,9 @@ func NewAuthRegistry(appCtx context.Context, logger *zerolog.Logger, projectId s
 		rateLimitersRegistry: rateLimitersRegistry,
 	}
 
-	for _, strategy := range cfg.Strategies {
-		lg := logger.With().Str("strategy", string(strategy.Type)).Logger()
-		az, err := NewAuthorizer(appCtx, &lg, projectId, strategy, rateLimitersRegistry)
+	for idx, strategy := range cfg.Strategies {
+		lg := logger.With().Str("strategy", string(strategy.Type)).Int("index", idx).Logger()
+		az, err := NewAuthorizer(appCtx, &lg, projectId, strategy, rateLimitersRegistry, idx)
 		if err != nil {
 			return nil, common.NewErrInvalidConfig(fmt.Sprintf("failed to create authorizer for project %s with strategy %s: %v", projectId, strategy.Type, err))
 		}
@@ -43,7 +43,7 @@ func NewAuthRegistry(appCtx context.Context, logger *zerolog.Logger, projectId s
 }
 
 // Authenticate checks the authentication payload against all registered strategies
-func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *AuthPayload) (*common.User, error) {
+func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedRequest, method string, ap *AuthPayload) (*common.User, error) {
 	if ap == nil {
 		return nil, common.NewErrAuthUnauthorized("n/a", "auth payload is nil")
 	}
@@ -64,14 +64,18 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *Auth
 			continue
 		}
 
-		user, err := az.strategy.Authenticate(ctx, ap)
+		user, err := az.strategy.Authenticate(ctx, req, ap)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
 
+		// Attach user to the request early so downstream labels (user/agent) can be populated
+		if user != nil && req != nil {
+			req.SetUser(user)
+		}
 		// If authentication is passed then apply and consume the rate limit
-		if err := az.acquireRateLimitPermit(user, method); err != nil {
+		if err := az.acquireRateLimitPermit(ctx, req, method); err != nil {
 			return user, err
 		}
 
@@ -87,8 +91,52 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *Auth
 		return nil, common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
+	// If multiple strategies returned ErrPaymentRequired (e.g. several x402
+	// strategies advertising different chains/assets), merge their Accepts
+	// arrays into a single 402 response so the challenge advertises every
+	// accepted option. Otherwise SDK clients only ever see the first chain
+	// in the response and signed payments for other chains never get tried.
+	var payErrs []*common.ErrPaymentRequired
+	for _, e := range errs {
+		var payErr *common.ErrPaymentRequired
+		if errors.As(e, &payErr) {
+			payErrs = append(payErrs, payErr)
+		}
+	}
+	if len(payErrs) > 0 {
+		return nil, mergePaymentRequired(payErrs)
+	}
+
 	// If no strategy matched or succeeded, consider the request unauthorized
 	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+}
+
+// mergePaymentRequired combines multiple ErrPaymentRequired errors into a
+// single error whose Accepts list is the concatenation of all inputs. The
+// X402Version, Error, and Resource fields are taken from the first error
+// since they don't vary across x402 strategies for a given request.
+//
+// If any payErr wraps a payload that isn't an X402PaymentRequirementsResponse
+// (some future scheme), we fall back to the first error verbatim rather than
+// dropping foreign entries silently.
+func mergePaymentRequired(errs []*common.ErrPaymentRequired) error {
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	base, ok := errs[0].PaymentRequirements.(X402PaymentRequirementsResponse)
+	if !ok {
+		return errs[0]
+	}
+	merged := append([]X402PaymentRequirement{}, base.Accepts...)
+	for _, e := range errs[1:] {
+		next, ok := e.PaymentRequirements.(X402PaymentRequirementsResponse)
+		if !ok {
+			return errs[0]
+		}
+		merged = append(merged, next.Accepts...)
+	}
+	base.Accepts = merged
+	return common.NewErrPaymentRequired(base)
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

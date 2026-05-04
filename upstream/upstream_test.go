@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -298,6 +299,23 @@ func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePoller) IsObjectNull() bool                         { return m.isNull }
+
+func (m *mockEvmStatePoller) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
+	return 0
+}
+
+func (m *mockEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockEvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.latestBlock,
+		FinalizedBlock: m.finalizedBlock,
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
+}
 
 func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 	t.Run("NilUpstream", func(t *testing.T) {
@@ -600,6 +618,22 @@ func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64) 
 func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                         { return false }
+
+func (m *mockEvmStatePollerWithUpdate) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
+	return 0
+}
+
+func (m *mockEvmStatePollerWithUpdate) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.LatestBlock(),
+		FinalizedBlock: m.FinalizedBlock(),
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
+}
+func (m *mockEvmStatePollerWithUpdate) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
+	return 0, nil
+}
 
 func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 	t.Run("MetricsIncrementedForUpperBound", func(t *testing.T) {

@@ -89,32 +89,57 @@ func NewNetwork(
 
 	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
 
+	// Build a provider that resolves the dynamic block-unavailable retry delay
+	// from the network's EMA-estimated block time. Returns 0 before warmup so
+	// the static fallback kicks in.
+	var dynamicBlockUnavailableDelay func() time.Duration
+	if metricsTracker != nil {
+		networkId := nwCfg.NetworkId()
+		mult := common.DefaultBlockUnavailableDelayMultiplier
+		if nwCfg.Evm != nil && nwCfg.Evm.BlockUnavailableDelayMultiplier != nil && *nwCfg.Evm.BlockUnavailableDelayMultiplier > 0 {
+			mult = *nwCfg.Evm.BlockUnavailableDelayMultiplier
+		}
+		dynamicBlockUnavailableDelay = func() time.Duration {
+			if bt := metricsTracker.GetNetworkBlockTime(networkId); bt > 0 {
+				return time.Duration(float64(bt) * mult)
+			}
+			return 0
+		}
+	}
+
 	// Create failsafe executors from configs
 	var failsafeExecutors []*FailsafeExecutor
 	if len(nwCfg.Failsafe) > 0 {
 		for _, fsCfg := range nwCfg.Failsafe {
-			pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, fsCfg)
+			pls, err := upstream.CreateFailSafePolicies(appCtx, &lg, common.ScopeNetwork, key, fsCfg, dynamicBlockUnavailableDelay)
 			if err != nil {
 				return nil, err
 			}
-			policyArray := upstream.ToPolicyArray(pls, "timeout", "consensus", "retry", "hedge")
+			policyArray := upstream.ToPolicyArray(pls, "consensus", "retry", "hedge")
 
-			var timeoutDuration *time.Duration
+			var timeoutFn upstream.TimeoutFunc
 			if fsCfg.Timeout != nil {
-				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+				timeoutFn = upstream.NewTimeoutFunc(&lg, fsCfg.Timeout)
 			}
 
 			method := fsCfg.MatchMethod
 			if method == "" {
 				method = "*"
 			}
+
+			emptyAccept := common.DefaultEmptyResultAccept()
+			if fsCfg.Retry != nil && fsCfg.Retry.EmptyResultAccept != nil {
+				emptyAccept = fsCfg.Retry.EmptyResultAccept
+			}
+
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
 				config:                 fsCfg,
 				method:                 method,
 				finalities:             fsCfg.MatchFinality,
 				executor:               failsafe.NewExecutor(policyArray...),
-				timeout:                timeoutDuration,
+				timeout:                timeoutFn,
 				consensusPolicyEnabled: fsCfg.Consensus != nil,
+				emptyResultAccept:      emptyAccept,
 			})
 		}
 	}
@@ -127,6 +152,7 @@ func NewNetwork(
 		executor:               failsafe.NewExecutor[*common.NormalizedResponse](),
 		timeout:                nil,
 		consensusPolicyEnabled: false,
+		emptyResultAccept:      common.DefaultEmptyResultAccept(),
 	})
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))
@@ -233,10 +259,19 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 			nr.logger.Debug().Str("networkId", networkId).Msg("attempt to bootstrap network")
 			nwCfg, err := nr.resolveNetworkConfig(networkId)
 			if err != nil {
-				return err
+				// Network config resolution failed definitively (e.g., invalid format)
+				return common.NewTaskFatal(err)
 			}
 			// passing task ctx here will cancel the task if the request is finished or the initializer is cancelled/times out
 			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
+			ups := nr.upstreamsRegistry.GetNetworkUpstreams(nr.appCtx, networkId)
+			if len(ups) == 0 {
+				nr.logger.Error().
+					Str("projectId", nr.project.Config.Id).
+					Str("networkId", networkId).
+					Err(err).
+					Msg("network initialization ended with zero upstreams")
+			}
 			if err != nil {
 				return err
 			}
@@ -312,14 +347,7 @@ func (nr *NetworksRegistry) registerAlias(alias, arch, chain string) {
 func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.NetworkConfig, error) {
 	prj := nr.project
 
-	// Try to find config
-	var nwCfg *common.NetworkConfig
-	for _, cfg := range prj.Config.Networks {
-		if cfg.NetworkId() == networkId {
-			nwCfg = cfg
-			break
-		}
-	}
+	nwCfg := prj.FindNetworkConfig(networkId)
 	if nwCfg == nil {
 		// Create a new config if none was found
 		nwCfg = &common.NetworkConfig{}

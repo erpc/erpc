@@ -55,6 +55,10 @@ func ReorderUpstreams(reg *UpstreamsRegistry, preferredOrder ...string) {
 	for networkId, upsSlice := range reg.networkUpstreams {
 		newSlice := reorderSliceOfUpstreams(upsSlice, preferredOrder)
 		reg.networkUpstreams[networkId] = newSlice
+		// Refresh atomic snapshot for fast-path reads
+		cp := make([]*Upstream, len(newSlice))
+		copy(cp, newSlice)
+		reg.networkUpstreamsAtomic.Store(networkId, cp)
 	}
 }
 

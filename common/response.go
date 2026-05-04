@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 type NormalizedResponse struct {
@@ -43,6 +42,9 @@ type NormalizedResponse struct {
 	bodyOnce sync.Once
 	// bodyMu coordinates concurrent parsing and releasing of the body
 	bodyMu sync.RWMutex
+
+	// releaseOnce ensures Release() is idempotent — safe to call multiple times
+	releaseOnce sync.Once
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -141,6 +143,16 @@ func (r *NormalizedResponse) Finality(ctx context.Context) DataFinalityState {
 	// Check if we have a cached value
 	if f := r.finality.Load(); f != nil {
 		return f.(DataFinalityState)
+	}
+
+	// Prefer request's finality if it's already known as realtime.
+	// This preserves metrics semantics when original requests used block tags like "latest"/"finalized"
+	// that may have been translated to concrete numbers later in the pipeline.
+	if r.request != nil {
+		if rf := r.request.Finality(ctx); rf == DataFinalityStateRealtime {
+			r.finality.Store(rf)
+			return rf
+		}
 	}
 
 	// Calculate and cache the finality
@@ -446,25 +458,27 @@ func (r *NormalizedResponse) Release() {
 		return
 	}
 
-	// Wait for all pending background operations (e.g., cache set) to complete
-	// before freeing heavy buffers.
-	r.pendingOps.Wait()
+	r.releaseOnce.Do(func() {
+		// Wait for all pending background operations (e.g., cache set) to complete
+		// before freeing heavy buffers.
+		r.pendingOps.Wait()
 
-	// Clear these synchronously (fast, no I/O)
-	r.Lock()
-	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
-		jrr.Free()
-	}
-	r.jsonRpcResponse.Store(nil)
-	if r.request != nil {
-		r.request = nil // Break cycle immediately
-	}
-	r.Unlock()
+		// Clear these synchronously (fast, no I/O)
+		r.Lock()
+		if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+			jrr.Free()
+		}
+		r.jsonRpcResponse.Store(nil)
+		if r.request != nil {
+			r.request = nil
+		}
+		r.Unlock()
 
-	// Close the body exactly once and only after parsing completes
-	r.bodyMu.Lock()
-	r.closeBodyOnce()
-	r.bodyMu.Unlock()
+		// Close the body exactly once and only after parsing completes
+		r.bodyMu.Lock()
+		r.closeBodyOnce()
+		r.bodyMu.Unlock()
+	})
 }
 
 // closeBodyOnce closes and detaches the response body exactly once.
@@ -480,10 +494,13 @@ func (r *NormalizedResponse) closeBodyOnce() {
 		r.Unlock()
 		if body != nil {
 			if err := body.Close(); err != nil {
-				if IsClientDisconnect(err) {
-					log.Debug().Err(err).Msg("response body close on canceled request")
-				} else {
-					log.Error().Err(err).Msg("failed to close response body")
+				if r.request != nil && r.request.network != nil {
+					lg := r.request.network.Logger()
+					if IsClientDisconnect(err) {
+						lg.Debug().Err(err).Msg("response body close on canceled request")
+					} else {
+						lg.Warn().Err(err).Msg("failed to close response body")
+					}
 				}
 			}
 		}

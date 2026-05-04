@@ -46,10 +46,13 @@ projects:
           # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
           # DEFAULT: 30s.
           statePollerInterval: 30s
-          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-          statePollerDebounce: 5s
+          # (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+          # When omitted, the interval is dynamically inferred from the chain's observed block
+          # time. This skips redundant RPC calls when
+          # request traffic already keeps the block number fresh via response enrichment.
+          # Only set this if you need to override the automatic behavior.
+          # DEFAULT: dynamic (inferred from observed block time)
+          # statePollerDebounce: 2s
           # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
           # DEFAULT: archive
           nodeType: full
@@ -175,10 +178,10 @@ export default createConfig({
             // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
             // DEFAULT: 30s.
             statePollerInterval: "30s",
-            // (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-            // This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-            // DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-            statePollerDebounce: "5s",
+            // (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+            // When omitted, dynamically inferred from observed block time.
+            // DEFAULT: dynamic (inferred from observed block time)
+            // statePollerDebounce: "2s",
             // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
             // DEFAULT: archive
             nodeType: "full",
@@ -353,28 +356,67 @@ Default values are only applied if the upstream doesn't have those values explic
   e.g. if an upstream.failsafe only has "timeout" policy, it will **NOT** get retry/circuitBreaker from upstreamDefaults (those will be disabled).
 </Callout>
 
-## Priority & selection mechanism
+## Priority & routing
 
-eRPC evaluates each upstream's performance using key metrics to decide the most suitable upstream for each request. These metrics include:
+eRPC automatically picks the best upstream for each request based on real-time performance. It tracks error rate, latency, throttling, and block lag for every upstream, computes a **score** (higher = better), and keeps the highest-scoring one as the "primary" while the others stay on standby.
 
-- **Total request failures**: Prioritizes upstreams with lower failure rates.
-- **Rate-limited requests**: Gives preference to upstreams with fewer rate-limited requests.
-- **P90 request latency**: Prioritizes upstreams with lower latency.
-- **Total requests served**: Favors upstreams that have served fewer requests to balance load.
-- **Block head lag**: Prefers upstreams with lower lag compared to the best-performing upstream.
-- **Finalization lag**: Prioritizes upstreams with lower finalization lag.
+### How it works
 
-Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window (`scoreMetricsWindowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
+1. Every few seconds eRPC computes a **score** for each upstream based on its recent performance (error rate, latency, throttling, block lag).
+2. Upstreams are sorted by score — the highest-scoring upstream becomes the **primary**.
+3. The primary is **sticky**: it stays primary until another upstream scores significantly higher (hysteresis) and a cooldown period has passed. This prevents constant flip-flopping.
+4. If the primary fails or is too slow for a particular request, the next upstream is tried automatically.
+
+### Config
+
+All routing settings live under the project level. The defaults work well for most setups — you only need to change them if you want to fine-tune switching behavior.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
-  # ...
   - id: main
-    # ...
-    scoreMetricsWindowSize: 1h
-    # ...
+    # Routing algorithm: "score-based" (default) or "round-robin".
+    # score-based: best upstream is used first (recommended).
+    # round-robin: rotate evenly across upstreams.
+    routingStrategy: score-based
+
+    # Whether to compute one score per upstream ("upstream", default) or
+    # a separate score for each RPC method ("method").
+    # "upstream" is simpler and recommended for most setups.
+    scoreGranularity: upstream
+
+    # How often to recalculate upstream scores.
+    # DEFAULT: 30s
+    scoreRefreshInterval: 30s
+
+    # Time window for collecting performance metrics (error rate, latency, etc.)
+    # DEFAULT: 10m
+    scoreMetricsWindowSize: 10m
+
+    # How much of the previous score is carried over each refresh tick (0..1).
+    # Higher = smoother/more stable scores, lower = faster reaction to changes.
+    # Use a negative value (e.g. -1) to disable smoothing (only latest metrics matter).
+    # DEFAULT: 0.95
+    scorePenaltyDecayRate: 0.95
+
+    # A challenger must score this fraction higher than the current primary
+    # to trigger a switch (0..1). e.g. 0.10 = must be 10% better.
+    # Use a negative value (e.g. -1) to disable stickiness (always pick the highest score).
+    # DEFAULT: 0.10
+    scoreSwitchHysteresis: 0.10
+
+    # Minimum time between primary switches.
+    # Use a negative value (e.g. -1) to disable the cooldown.
+    # DEFAULT: 2m
+    scoreMinSwitchInterval: 2m
+
+    # Controls prometheus metrics cardinality: "compact" (default), "detailed", or "none".
+    scoreMetricsMode: compact
+
+    upstreams:
+      - endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+        # ...
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -382,12 +424,24 @@ projects:
 import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  // ...
   projects: [
     {
       id: "main",
-      // ...
-      scoreMetricsWindowSize: "1h",
+      routingStrategy: "score-based",
+      scoreGranularity: "upstream",
+      scoreRefreshInterval: "30s",
+      scoreMetricsWindowSize: "10m",
+      scorePenaltyDecayRate: 0.95,
+      scoreSwitchHysteresis: 0.10,
+      scoreMinSwitchInterval: "2m",
+      scoreMetricsMode: "compact",
+
+      upstreams: [
+        {
+          endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+          // ...
+        },
+      ],
     },
   ],
 });
@@ -399,42 +453,60 @@ export default createConfig({
   The scoring mechanism only affects the order in which upstreams are tried. To fully disable an unreliable upstream, use the [Circuit Breaker](/config/failsafe#circuitbreaker-policy) failsafe policy at the upstream level.
 </Callout>
 
-### Customizing scores & priorities
+### Tuning tips
 
-Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
+- **Stable production setup** (default): leave everything as-is. The 10% hysteresis and 2-minute cooldown prevent unnecessary switches.
+- **Fast failover**: set `scoreSwitchHysteresis: -1` and `scoreMinSwitchInterval: -1` to always use the current best upstream immediately.
+- **Gradual adaptation**: increase `scorePenaltyDecayRate` (e.g. `0.98`) for smoother scores — performance changes take longer to take effect.
+- **Reactive adaptation**: decrease `scorePenaltyDecayRate` (e.g. `0.80`) to react faster to upstream degradation.
 
-<Callout type='info'>
-  For every value the higher the value, the more important it is. For example respLatency: 8 means you care about this more than errorRate: 4
-</Callout>
+### Customizing scores per upstream
+
+You can boost or reduce the score of specific upstreams using score multipliers.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
-upstreams:
-  # ...
-  - id: my-alchemy
-    # ...
-    routing:
-      # (OPTIONAL) The quantile to use for latency scoring. e.g. "70%" means to ignore 30% of the slowest requests.
-      # DEFAULT: 0.70
-      scoreLatencyQuantile: 0.70
+projects:
+  - id: main
+    upstreams:
+      - id: my-alchemy
+        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+        routing:
+          # Ignore the slowest 30% of requests when measuring latency.
+          # DEFAULT: 0.70
+          scoreLatencyQuantile: 0.70
 
-      # (OPTIONAL) The score multipliers to give upstreams different priority.
-      scoreMultipliers:
-        - method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
-          # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
+          scoreMultipliers:
+            - network: '*'        # Apply to all networks (or e.g. "evm:1" for Ethereum only)
+              method: '*'         # Apply to all methods (or e.g. "eth_getLogs|eth_call")
 
-          # (OPTIONAL) Adjusts the overall score scale.
-          # DEFAULT: 1.0
-          overall: 1.0
-          
-          # (OPTIONAL) Default multiplier values:
-          respLatency: 8.0     # Penalize higher latency by increasing this value (according to scoreLatencyQuantile).
-          errorRate: 4.0       # Penalize higher error rates by increasing this value.
-          throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
-          blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.
-          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
-          finalizationLag: 1.0 # Penalize nodes lagging in finalization by increasing this value.
+              # "overall" boosts the score. Higher = higher score = more preferred.
+              # e.g. overall: 10 makes this upstream 10x more likely to stay primary.
+              # DEFAULT: 1.0
+              overall: 1.0
+
+              # Metric weights control how much each metric affects the score.
+              # Higher weight = that metric matters more = bigger score drop when it's bad.
+              errorRate: 4.0       # Penalize higher error rates by increasing this value.
+              respLatency: 8.0     # Penalize higher latency by increasing this value.
+              throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
+              blockHeadLag: 2.0    # Penalize block head lag by increasing this value.
+              finalizationLag: 1.0 # Penalize finalization lag by increasing this value.
+
+      # Prefer this cheaper upstream: overall: 10 boosts its score 10x
+      - id: my-cheap-node
+        endpoint: https://cheap-rpc.example.com
+        routing:
+          scoreMultipliers:
+            - overall: 10
+
+      # Fallback only: overall: 1 keeps the default score (no boost)
+      - id: my-expensive-node
+        endpoint: https://premium-rpc.example.com
+        routing:
+          scoreMultipliers:
+            - overall: 1
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -442,97 +514,50 @@ upstreams:
 import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  upstreams: [
-    // ...
+  projects: [
     {
-      id: "my-alchemy",
-      // ...
-      routing: {
-        scoreMultipliers: [
-          {
-            network: "*", // Relevant when upstream supports multiple networks (default: all networks)
-            method: "*", // Method(s) where you want to apply these multipliers (default: all methods)
-            // method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
-
-            // (OPTIONAL) Adjusts the overall score scale.
-            // DEFAULT: 1.0
-            overall: 1.0,
-
-            // (OPTIONAL) Default multiplier values:
-            errorRate: 8.0,       // Penalize higher error rates by increasing this value.
-            respLatency: 4.0,      // Penalize higher latency by increasing this value.
-            totalRequests: 1.0,   // Give more weight to upstreams with fewer requests.
-            throttledRate: 3.0,   // Penalize higher throttled requests by increasing this value.
-            blockHeadLag: 2.0,    // Penalize nodes lagging in block head updates by increasing this value.
-            finalizationLag: 1.0, // Penalize nodes lagging in finalization by increasing this value.
+      id: "main",
+      upstreams: [
+        {
+          id: "my-alchemy",
+          endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+          routing: {
+            scoreLatencyQuantile: 0.70,
+            scoreMultipliers: [
+              {
+                network: "*",
+                method: "*",
+                overall: 1.0,       // Boosts score (higher = more preferred)
+                errorRate: 4.0,      // Penalize higher error rates by increasing this value.
+                respLatency: 8.0,
+                throttledRate: 3.0,
+                blockHeadLag: 2.0,
+                finalizationLag: 1.0,
+              },
+            ],
           },
-        ],
-      },
+        },
+        {
+          id: "my-cheap-node",
+          endpoint: "https://cheap-rpc.example.com",
+          routing: { scoreMultipliers: [{ overall: 10 }] },
+        },
+        {
+          id: "my-expensive-node",
+          endpoint: "https://premium-rpc.example.com",
+          routing: { scoreMultipliers: [{ overall: 1 }] },
+        },
+      ],
     },
   ],
 });
-
-```
-</Tabs.Tab>
-</Tabs>
-
-Example: To prioritize a less expensive (but slower) upstream, adjust the `overall` score multiplier as follows:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-upstreams:
-  # ...
-  - id: my-cheap-node
-    # ...
-    routing:
-      scoreMultipliers:
-        - overall: 10
-  - id: my-expensive-node
-    # ...
-    routing:
-      scoreMultipliers:
-        - overall: 1
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  upstreams: [
-    // ...
-    {
-      id: "my-cheap-node",
-      // ...
-      routing: {
-        scoreMultipliers: [
-          {
-            overall: 10,
-          },
-        ],
-      },
-    },
-    {
-      id: "my-expensive-node",
-      // ...
-      routing: {
-        scoreMultipliers: [
-          {
-            overall: 1,
-          },
-        ],
-      },
-    },
-  ],
-});
-
 ```
 </Tabs.Tab>
 </Tabs>
 
 <Callout type='info'>
-  A higher score means the upstream is tried first. If errors occur, other upstreams are attempted.
+  **`overall`** boosts the score — higher value = higher score = upstream is preferred.<br />
+  **Metric weights** (`errorRate`, `respLatency`, etc.) penalize bad performance — increase the value to penalize that metric more.
 </Callout>
 
 ## Upstream types
@@ -564,10 +589,11 @@ projects:
           # The consequence of this is all data will be considered "unfinalized" or "unknown" despite their block numbers (and where if theye're actually finalized or not).
           # DEFAULT: 30s.
           statePollerInterval: 30s
-          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-          statePollerDebounce: 5s
+          # (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+          # When omitted, the interval is dynamically inferred from the chain's observed block
+          # time.
+          # DEFAULT: dynamic (inferred from observed block time)
+          # statePollerDebounce: 2s
           # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
           # DEFAULT: archive
           nodeType: full
@@ -606,10 +632,10 @@ export default createConfig({
             // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
             // DEFAULT: 30s.
             statePollerInterval: "30s",
-            // (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-            // This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-            // DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-            statePollerDebounce: "5s",
+            // (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+            // When omitted, dynamically inferred from observed block time.
+            // DEFAULT: dynamic (inferred from observed block time)
+            // statePollerDebounce: "2s",
             // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
             // DEFAULT: archive
             nodeType: "full",
@@ -635,6 +661,143 @@ export default createConfig({
 
 <Callout type='info'>
   getLogs limits, splitting on error, and enforcement are now configured at the <strong>network</strong> level. See <a href="/config/projects/networks#evm-networks">EVM Networks</a> → <em>eth_getLogs</em>.
+  <br /><br />
+  A parallel <code>traceFilterAutoSplittingRangeThreshold</code> upstream hint enables the same splitting behavior for <code>trace_filter</code> and <code>arbtrace_filter</code>. Network-level knobs (<code>traceFilterSplitOnError</code>, <code>traceFilterSplitConcurrency</code>) live in the same page — see <a href="/config/projects/networks#evm-networks">EVM Networks</a> → <em>trace_filter and arbtrace_filter</em>.
+</Callout>
+
+## Block availability
+
+Define the block window each EVM upstream can serve. You can bound by the chain's earliest or latest block and use different probes to detect real availability on that upstream.
+
+<Callout type='info'>
+  This feature is optional and primarily helps reduce redundant calls and latency. eRPC already maintains
+  correctness by automatically failing over to other healthy upstreams when one node lacks the data. Block
+  availability simply helps skip over such nodes faster without trying them first.
+  <br /><br /> For many setups, method filters are a cheaper and simpler way to control upstream data availability; consider
+  using <code>ignoreMethods</code>/<code>allowMethods</code> first. See <a href="/config/projects/upstreams#config">Config → method filters</a>.
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="BlockAvailabilityTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - id: my-evm
+        endpoint: https://mainnet.example
+        evm:
+          # Limit the highest block this upstream serves to latest-64 (helps avoid reorgs)
+          blockAvailability:
+            upper:
+              latestBlockMinus: 64         # latest - 64 is the upper bound
+              probe: blockHeader           # default probe; can be omitted
+              # updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
+
+            # Auto-detect the earliest block where logs exist on this upstream,
+            # and start serving from there (refresh hourly to follow pruning).
+            lower:
+              earliestBlockPlus: 0         # earliestDetected(eventLogs) + 0
+              probe: eventLogs             # require >=1 log in the block
+              updateRate: 1h               # re-evaluate earliest periodically
+
+        # Example 2: fixed window (serve blocks 17,000,000..latest-128)
+      - id: fixed-window
+        endpoint: https://another
+        evm:
+          blockAvailability:
+            lower:
+              exactBlock: 17000000         # hard lower bound
+              probe: blockHeader
+              updateRate: 0s
+            upper:
+              latestBlockMinus: 128        # rolling upper bound (always uses current latest)
+              probe: blockHeader
+              # updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
+
+        # Example 3: traces-aware lower bound (only serve blocks that have traces)
+      - id: traces
+        endpoint: https://traces.example
+        evm:
+          blockAvailability:
+            lower:
+              earliestBlockPlus: 0         # earliestDetected(traceData)
+              probe: traceData             # tries multiple trace/debug methods
+              updateRate: 24h              # re-check daily in case of pruning
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          id: "my-evm",
+          endpoint: "https://mainnet.example",
+          evm: {
+            blockAvailability: {
+              upper: {
+                latestBlockMinus: 64,     // latest - 64 upper bound
+                probe: "blockHeader",     // default; can be omitted
+                // updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
+              },
+              lower: {
+                earliestBlockPlus: 0,     // earliestDetected(eventLogs)
+                probe: "eventLogs",       // require >=1 log
+                updateRate: "1h",         // hourly refresh
+              },
+            },
+          },
+        },
+        {
+          id: "fixed-window",
+          endpoint: "https://another",
+          evm: {
+            blockAvailability: {
+              lower: { exactBlock: 17_000_000, probe: "blockHeader", updateRate: "0s" },
+              upper: { latestBlockMinus: 128, probe: "blockHeader" }, // updateRate ignored for latestBlockMinus
+            },
+          },
+        },
+        {
+          id: "traces",
+          endpoint: "https://traces.example",
+          evm: {
+            blockAvailability: {
+              lower: { earliestBlockPlus: 0, probe: "traceData", updateRate: "24h" },
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+- probe values: `blockHeader` (default), `eventLogs`, `callState`, `traceData`
+- lower/upper bounds: choose one of `exactBlock`, `earliestBlockPlus`, `latestBlockMinus`
+- updateRate: only applies to `earliestBlockPlus` bounds. 0 freezes the computed bound; >0 periodically re-evaluates it. For `latestBlockMinus`, updateRate is ignored since bounds are computed on-demand using the evmStatePoller's latest block
+
+Notes on probes:
+- eventLogs: considered available only if querying the block by `blockHash` returns at least 1 log.
+- callState: checks historical state via `eth_getBalance`; any non-null result counts as available.
+- traceData: tries multiple engines in order: `trace_block`, `debug_traceBlockByHash`, `trace_replayBlockTransactions`; available if any returns a non-empty result.
+
+### When block availability is enforced?
+
+Block availability bounds are only enforced when eRPC can extract a block number from the request. If the block number cannot be determined (e.g., certain method calls without explicit block parameters), the request will be forwarded to the upstream regardless of the configured bounds. This ensures availability checks don't block requests where block context is unavailable.
+
+<Callout type='info'>
+  When a probe is unsupported on an upstream (e.g. method ignored/unsupported), eRPC skips that probe for availability decisions. Prefer `blockHeader` or choose a probe the upstream supports.
+</Callout>
+
+<Callout type='info'>
+  <strong>About updateRate:</strong> The `updateRate` field only applies to `earliestBlockPlus` bounds. For `latestBlockMinus`, it is ignored because bounds are computed on-demand using the continuously-updated latest block value maintained by eRPC's state poller. This ensures `latestBlockMinus` bounds always reflect the current latest block without needing a separate update schedule.
 </Callout>
 
 ## Compression

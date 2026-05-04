@@ -89,6 +89,24 @@ func (m *mockNetwork) Logger() *zerolog.Logger {
 	return &log.Logger
 }
 
+func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil
+	}
+	return args.Get(0).(common.EvmStatePoller)
+}
+
+func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+	args := m.Called(ctx)
+	return args.Get(0).(int64)
+}
+
+func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+	args := m.Called(ctx)
+	return args.Get(0).(int64)
+}
+
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
 type mockEvmUpstream struct {
@@ -160,8 +178,24 @@ func (m *mockStatePoller) LatestBlock() int64 {
 	return lb
 }
 
+func (m *mockStatePoller) FinalizedBlock() int64 {
+	args := m.Called()
+	fb, ok := args.Get(0).(int64)
+	if !ok {
+		panic("FinalizedBlock() returned non-int64 value")
+	}
+	return fb
+}
+
 func (m *mockStatePoller) IsObjectNull() bool {
 	return false
+}
+
+func (m *mockStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:      true,
+		SyncingState: common.EvmSyncingStateNotSyncing.String(),
+	}
 }
 
 func TestSplitEthGetLogsRequest(t *testing.T) {
@@ -305,6 +339,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 		subRequests []ethGetLogsSubRequest
 		mockSetup   func(*mockNetwork, *mockEvmUpstream)
 		expectError bool
+		expectCache bool
 	}{
 		{
 			name: "successful execution",
@@ -332,6 +367,34 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test").Maybe()
 			},
+		},
+		{
+			name: "successful execution with cache",
+			subRequests: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 2},
+				{fromBlock: 3, toBlock: 4},
+			},
+			mockSetup: func(n *mockNetwork, u *mockEvmUpstream) {
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 200}}).Maybe()
+				n.On("ProjectId").Return("test")
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
+					).SetFromCache(true),
+					nil,
+				).Once()
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
+					).SetFromCache(true),
+					nil,
+				).Once()
+				u.On("Id").Return("rpc1").Maybe()
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
+				u.On("VendorName").Return("test").Maybe()
+			},
+			expectCache: true,
 		},
 		{
 			name: "partial failure",
@@ -374,7 +437,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 			ctx := context.Background()
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","address":"0x123","topics":["0xabc"]}],"id":1}`))
 
-			result, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, false)
+			result, fromCache, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, "")
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -383,6 +446,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
+			assert.Equal(t, tt.expectCache, fromCache)
 
 			mockNetwork.AssertExpectations(t)
 			mockUpstream.AssertExpectations(t)
@@ -972,7 +1036,7 @@ func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
 		{fromBlock: 0x2, toBlock: 0x2},
 		{fromBlock: 0x3, toBlock: 0x3},
 	}
-	jrr, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, false)
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, "")
 	assert.NoError(t, err)
 	var buf bytes.Buffer
 	_, _ = jrr.WriteTo(&buf)
@@ -1033,18 +1097,18 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 			var subJrr *common.JsonRpcResponse
 			switch {
 			case fromBlock == "0x1" && toBlock == "0x4":
-				subJrr, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
+				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x1, toBlock: 0x2, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x3, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, false)
+				}, "")
 				if err != nil {
 					return nil, err
 				}
 			case fromBlock == "0x5" && toBlock == "0x8":
-				subJrr, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
+				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x5, toBlock: 0x6, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x7, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, false)
+				}, "")
 				if err != nil {
 					return nil, err
 				}
@@ -1066,10 +1130,10 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	).Times(6)
 
 	// Execute the request
-	jrr, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
 		{fromBlock: 0x1, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 		{fromBlock: 0x5, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-	}, false)
+	}, "")
 
 	// Verify results
 	assert.NoError(t, err)
@@ -1251,6 +1315,115 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		n.AssertExpectations(t)
 		u.AssertExpectations(t)
 	})
+
+	// Tests for block tag resolution before validation (fixes bypass when using "latest", "finalized", etc.)
+	t.Run("latest_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
+		})
+
+		// Request from block 1 to "latest" (1000) - range of 1000 blocks exceeds limit of 10
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "latest",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("finalized_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000)).Maybe()
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990))
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
+		})
+
+		// Request from block 1 to "finalized" (990) - range of 990 blocks exceeds limit of 10
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "finalized",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("latest_toBlock_passes_when_within_range", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(10))
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(5)).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100}, // max 100 blocks
+		})
+
+		// Request from block 1 to "latest" (10) - range of 10 blocks within limit
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "latest",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.False(t, handled) // Not handled means validation passed, continue to upstream
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("safe_and_pending_tags_skip_validation_gracefully", func(t *testing.T) {
+		n := new(mockNetwork)
+		// "safe" and "pending" cannot be resolved to a block number
+		// Config() may or may not be called depending on code path
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		}).Maybe()
+
+		// Request with "pending" - cannot resolve, so validation is skipped
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "pending",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		// Should not error - validation is skipped when tags cannot be resolved
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("latest_fromBlock_and_latest_toBlock_resolved_correctly", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100},
+		})
+
+		// Both fromBlock and toBlock are "latest" - range is 1 block (same block)
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "latest",
+			"toBlock":   "latest",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.False(t, handled) // Validation passed
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
 }
 
 func createTestRequest(filter interface{}) *common.NormalizedRequest {
@@ -1258,3 +1431,85 @@ func createTestRequest(filter interface{}) *common.NormalizedRequest {
 	jrq := common.NewJsonRpcRequest("eth_getLogs", params)
 	return common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 }
+
+func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
+	ctx := context.Background()
+	i64ptr := func(v int64) *int64 { return &v }
+
+	makeNetwork := func(maxRetryable *int64) *mockNetwork {
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				Integrity: &common.EvmIntegrityConfig{
+					EnforceGetLogsBlockRange: util.BoolPtr(true),
+				},
+				MaxRetryableBlockDistance: maxRetryable,
+			},
+		}).Maybe()
+		return n
+	}
+
+	t.Run("hard_fails_when_toBlock_ahead_by_1", func(t *testing.T) {
+		n := makeNetwork(i64ptr(128))
+		u := new(mockEvmUpstream)
+		poller := &fixedPoller{latest: 100, finalized: 100}
+
+		u.On("Id").Return("u1").Maybe()
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
+		u.On("EvmStatePoller").Return(poller).Maybe()
+		// toBlock=101, upstream says not available
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(101)).
+			Return(false, nil).
+			Once()
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x65", // 101
+			"toBlock":   "0x65",
+		})
+
+		handled, resp, err := upstreamPreForward_eth_getLogs(ctx, n, u, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
+	})
+
+	t.Run("still_hard_fails_when_toBlock_ahead_beyond_maxRetryableDistance", func(t *testing.T) {
+		n := makeNetwork(i64ptr(128))
+		u := new(mockEvmUpstream)
+		poller := &fixedPoller{latest: 100, finalized: 100}
+
+		u.On("Id").Return("u1").Maybe()
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
+		u.On("EvmStatePoller").Return(poller).Maybe()
+		// toBlock=301 (0x12d), upstream says not available
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(301)).
+			Return(false, nil).
+			Once()
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x12d",
+			"toBlock":   "0x12d",
+		})
+
+		handled, resp, err := upstreamPreForward_eth_getLogs(ctx, n, u, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
+	})
+}
+
+type fixedPoller struct {
+	common.EvmStatePoller
+	latest    int64
+	finalized int64
+}
+
+func (p *fixedPoller) LatestBlock() int64 { return p.latest }
+
+func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
+
+func (p *fixedPoller) IsObjectNull() bool { return false }

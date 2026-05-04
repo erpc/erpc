@@ -25,8 +25,11 @@ func TestProject_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{
+				Store: &common.RateLimitStoreConfig{
+					Driver: "memory",
+				},
 				Budgets: []*common.RateLimitBudgetConfig{
 					{
 						Id: "MyLimiterBudget_Test1",
@@ -34,8 +37,7 @@ func TestProject_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 3,
-								Period:   common.Duration(60 * time.Second),
-								WaitTime: common.Duration(0),
+								Period:   common.RateLimitPeriodMinute,
 							},
 						},
 					},
@@ -105,6 +107,10 @@ func TestProject_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// Align to the start of the next minute to avoid rate limit window rollover flakiness
+		now := time.Now()
+		time.Sleep(time.Until(now.Truncate(time.Minute).Add(time.Minute)))
+
 		var lastErr error
 		var lastResp *common.NormalizedResponse
 
@@ -130,7 +136,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 
 		// Create a rate limiters registry (not specifically needed for this test,
 		// but it's part of the usual setup.)
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{},
 			&log.Logger,
 		)
@@ -240,11 +246,8 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 
 		if lastErr == nil {
 			t.Error("Expected an upstream timeout error, got nil")
-		} else {
-			summary := common.ErrorSummary(lastErr)
-			if !strings.Contains(summary, "exceeded on upstream-level") {
-				t.Errorf("Expected upstream timeout error, got: %v", lastErr)
-			}
+		} else if !common.HasErrorCode(lastErr, common.ErrCodeFailsafeTimeoutExceeded) {
+			t.Errorf("Expected upstream timeout error, got: %v", lastErr)
 		}
 	})
 
@@ -254,7 +257,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{},
 			&log.Logger,
 		)
@@ -434,7 +437,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 		}
 
 		// Build ProjectsRegistry with no existing EvmJsonRpcCache or RateLimiter
-		rateLimiters, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimiters, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
@@ -530,7 +533,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 			panic(err)
 		}
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{},
 			&log.Logger,
 		)

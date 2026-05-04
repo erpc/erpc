@@ -1,0 +1,203 @@
+---
+description: Minimal eRPC config example for DVN operators — multi-provider consensus on the RPC methods cross-chain message verification depends on
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+# DVN (LayerZero)
+
+A minimal, self-hosted eRPC config for **DVN (Decentralized Verifier Network) operators** and any other off-chain service that verifies on-chain state and cannot afford a single-RPC trust assumption.
+
+## What this example does
+
+| Setting | Effect |
+|---|---|
+| ≥3 upstreams from independent providers | A single compromised provider cannot dictate the response. |
+| `consensus` on `eth_getLogs`, `eth_getBlockByNumber`, `eth_getTransactionReceipt` | The methods DVNs read for source-chain verification. Mismatches are caught, not served. |
+| `disputeBehavior: returnError` | If providers disagree, return an error to the verifier. Never accept a disputed read. |
+| `preferNonEmpty: true` | Reject `[]` for `eth_getLogs` if any other provider returned real logs. **This is the exact KelpDAO attack signature.** |
+| `preferLargerResponses: true` | Reject a truncated log set if a larger valid one exists. |
+| `punishMisbehavior` | Upstreams that repeatedly disagree are cordoned automatically. |
+| `misbehaviorsDestination` | Every dispute is exported as JSONL for audit + alerting. |
+
+## Minimal config
+
+Replace the `endpoint` values with your own provider credentials. Use **at least three independent providers** for any chain you verify on; mixing self-hosted nodes with managed RPC providers gives the strongest guarantees.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+logLevel: warn
+
+projects:
+  - id: dvn
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1 # Ethereum mainnet — repeat the network block per chain you verify
+        failsafe:
+          # 1. Strict consensus on the methods DVN verification depends on.
+          - matchMethod: "eth_getLogs|eth_getBlockByNumber|eth_getTransactionReceipt|eth_getBlockReceipts"
+            timeout:
+              duration: 10s
+            retry:
+              maxAttempts: 3
+            consensus:
+              maxParticipants: 3
+              agreementThreshold: 3        # Unanimous — security over availability.
+              disputeBehavior: returnError # Never accept a disputed read.
+              lowParticipantsBehavior: returnError
+              preferNonEmpty: true         # Reject `[]` if any peer returned real data.
+              preferLargerResponses: true  # Reject truncated logs if a larger valid set exists.
+              ignoreFields:
+                eth_getLogs:
+                  - "*.blockTimestamp"
+                eth_getTransactionReceipt:
+                  - "blockTimestamp"
+                  - "logs.*.blockTimestamp"
+                  - "l1Fee"
+                  - "l1GasPrice"
+                  - "l1GasUsed"
+                eth_getBlockByNumber:
+                  - "transactions.*.gasPrice"
+                  - "transactions.*.l1Fee"
+                  - "transactions.*.yParity"
+              punishMisbehavior:
+                disputeThreshold: 3
+                disputeWindow: 10m
+                sitOutPenalty: 30m
+              misbehaviorsDestination:
+                type: file
+                path: /var/log/erpc/dvn-misbehaviors
+                filePattern: "{dateByDay}-{networkId}-{method}.jsonl"
+
+          # 2. Default policy for everything else: standard hedged reads with retries.
+          - matchMethod: "*"
+            timeout:
+              duration: 10s
+            retry:
+              maxAttempts: 3
+            hedge:
+              delay: 500ms
+              maxCount: 1
+
+    upstreams:
+      # Three independent providers minimum. Add more for stronger guarantees.
+      - id: provider-a
+        endpoint: ${PROVIDER_A_ENDPOINT}
+      - id: provider-b
+        endpoint: ${PROVIDER_B_ENDPOINT}
+      - id: provider-c
+        endpoint: ${PROVIDER_C_ENDPOINT}
+      # - id: self-hosted
+      #   endpoint: http://your-eth-node:8545
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  logLevel: "warn",
+  projects: [{
+    id: "dvn",
+    networks: [
+      {
+        architecture: "evm",
+        evm: { chainId: 1 }, // Ethereum mainnet — repeat per chain you verify
+        failsafe: [
+          {
+            // 1. Strict consensus on the methods DVN verification depends on.
+            matchMethod: "eth_getLogs|eth_getBlockByNumber|eth_getTransactionReceipt|eth_getBlockReceipts",
+            timeout: { duration: "10s" },
+            retry: { maxAttempts: 3 },
+            consensus: {
+              maxParticipants: 3,
+              agreementThreshold: 3,            // Unanimous — security over availability.
+              disputeBehavior: "returnError",    // Never accept a disputed read.
+              lowParticipantsBehavior: "returnError",
+              preferNonEmpty: true,              // Reject `[]` if any peer returned real data.
+              preferLargerResponses: true,       // Reject truncated logs.
+              ignoreFields: {
+                eth_getLogs: ["*.blockTimestamp"],
+                eth_getTransactionReceipt: [
+                  "blockTimestamp",
+                  "logs.*.blockTimestamp",
+                  "l1Fee",
+                  "l1GasPrice",
+                  "l1GasUsed",
+                ],
+                eth_getBlockByNumber: [
+                  "transactions.*.gasPrice",
+                  "transactions.*.l1Fee",
+                  "transactions.*.yParity",
+                ],
+              },
+              punishMisbehavior: {
+                disputeThreshold: 3,
+                disputeWindow: "10m",
+                sitOutPenalty: "30m",
+              },
+              misbehaviorsDestination: {
+                type: "file",
+                path: "/var/log/erpc/dvn-misbehaviors",
+                filePattern: "{dateByDay}-{networkId}-{method}.jsonl",
+              },
+            },
+          },
+          {
+            // 2. Default policy for everything else.
+            matchMethod: "*",
+            timeout: { duration: "10s" },
+            retry: { maxAttempts: 3 },
+            hedge: { delay: "500ms", maxCount: 1 },
+          },
+        ],
+      },
+    ],
+    upstreams: [
+      // Three independent providers minimum.
+      { id: "provider-a", endpoint: process.env.PROVIDER_A_ENDPOINT! },
+      { id: "provider-b", endpoint: process.env.PROVIDER_B_ENDPOINT! },
+      { id: "provider-c", endpoint: process.env.PROVIDER_C_ENDPOINT! },
+      // { id: "self-hosted", endpoint: "http://your-eth-node:8545" },
+    ],
+  }],
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+## Why these specific methods
+
+DVNs verify cross-chain messages by reading source-chain state. The methods that carry verification weight are:
+
+- **`eth_getLogs`** — retrieves the `PacketSent` (or equivalent) events that prove a message was emitted. The KelpDAO attack forged this exact response. **This is the kill shot — get consensus right here above all.**
+- **`eth_getBlockByNumber`** — confirms block finality and confirmation depth before accepting a message.
+- **`eth_getTransactionReceipt`** — confirms the originating transaction was actually included.
+- **`eth_getBlockReceipts`** — used for batch verification of message inclusion.
+
+State-read methods like `eth_call` and `eth_getBalance` are **not** part of typical DVN verification and are intentionally left under the default policy to keep latency reasonable.
+
+## Per-chain considerations
+
+For L2s and rollups, additional fields drift between providers (L1 fee components, deposit receipts, etc.) and should be added to `ignoreFields`. The [Consensus reference](/config/failsafe/consensus#a-real-world-example-of-ignorefields) lists the standard set we run in production across Arbitrum, Base, Optimism, Mantle, Blast, and others.
+
+For each LayerZero-supported chain you verify, add a separate `networks[]` entry with the same `failsafe` block and `chainId` swapped.
+
+## Observability
+
+Every consensus dispute increments `erpc_consensus_misbehavior_detected_total{network,category}` and is appended as a full JSONL record (request, every participant response, the analysis, and the policy snapshot) to the configured destination. Wire that to your alerting stack and you have an end-to-end audit trail of "the moment a provider tried to lie."
+
+See [Monitoring](/operation/monitoring) for the full Prometheus metric set, and the [Consensus reference](/config/failsafe/consensus#misbehavior-tracking) for `misbehaviorsDestination` options including S3.
+
+<Callout type="warning">
+  **`agreementThreshold: 3` is intentional.** A 2-of-3 quorum can still be poisoned if two providers share infrastructure or are both compromised. For DVN-grade security, prefer unanimity and accept the availability tradeoff — `disputeBehavior: returnError` will surface real disagreements rather than silently picking a winner.
+</Callout>
+
+## Next steps
+
+- [Consensus reference](/config/failsafe/consensus) — full option matrix and behavior semantics.
+- [Failsafe integrity](/config/failsafe/integrity) — empty/missing data handling.
+- [Monitoring](/operation/monitoring) — Prometheus metrics for live dispute observability.
+- [Auth](/config/auth) — restrict who can hit your eRPC instance once it's deployed.

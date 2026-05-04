@@ -4,9 +4,10 @@ import (
 	"strings"
 )
 
-func IsWriteMethod(method string) bool {
-	return method == "eth_sendRawTransaction" ||
-		method == "eth_sendTransaction" ||
+// IsNonRetryableWriteMethod returns true for write methods that should NOT be retried/hedged.
+// Note: eth_sendRawTransaction is intentionally excluded because it supports idempotency handling.
+func IsNonRetryableWriteMethod(method string) bool {
+	return method == "eth_sendTransaction" ||
 		method == "eth_createAccessList" ||
 		method == "eth_submitTransaction" ||
 		method == "eth_submitWork" ||
@@ -40,6 +41,7 @@ func IsMissingDataError(err error) bool {
 		strings.Contains(txt, "cannot find transaction") ||
 		strings.Contains(txt, "after last accepted block") ||
 		strings.Contains(txt, "No state available") ||
+		(strings.Contains(txt, "historical state") && (strings.Contains(txt, "is not available") || strings.Contains(txt, "unavailable"))) ||
 		strings.Contains(txt, "trie does not") ||
 		strings.Contains(txt, "greater than latest") ||
 		strings.Contains(txt, "not currently canonical") ||

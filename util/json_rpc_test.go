@@ -115,3 +115,40 @@ func TestParseBlockParameter(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeBlockHashHexString_LeadingZeroVariants(t *testing.T) {
+	canonical := "0x095e8f52e77f0add52fc6cf2f3f04ceb72462dbf54bab11544e7227415aeabd5"
+	variants := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"with_leading_zero_nibble", canonical, canonical},
+		{"without_leading_zero_nibble", "0x95e8f52e77f0add52fc6cf2f3f04ceb72462dbf54bab11544e7227415aeabd5", canonical},
+		{"no_prefix_uppercase", "095E8F52E77F0ADD52FC6CF2F3F04CEB72462DBF54BAB11544E7227415AEABD5", canonical},
+		{"with_spaces", "  " + canonical + "  ", canonical},
+	}
+
+	for _, tc := range variants {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NormalizeBlockHashHexString(tc.input)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expect, got)
+		})
+	}
+}
+
+func TestParseBlockHashHexToBytes_LeadingZeroEquivalence(t *testing.T) {
+	withLeading := "0x095e8f52e77f0add52fc6cf2f3f04ceb72462dbf54bab11544e7227415aeabd5"
+	withoutLeading := "0x95e8f52e77f0add52fc6cf2f3f04ceb72462dbf54bab11544e7227415aeabd5"
+
+	b1, err := ParseBlockHashHexToBytes(withLeading)
+	require.NoError(t, err)
+	assert.Len(t, b1, 32)
+
+	b2, err := ParseBlockHashHexToBytes(withoutLeading)
+	require.NoError(t, err)
+	assert.Len(t, b2, 32)
+
+	assert.Equal(t, b1, b2, "leading-zero and non-leading-zero forms must decode to identical bytes")
+}

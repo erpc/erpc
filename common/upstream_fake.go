@@ -2,7 +2,9 @@ package common
 
 import (
 	"context"
+	"math"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -137,6 +139,35 @@ func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod
 	return true, nil
 }
 
+func (u *FakeUpstream) EvmEffectiveLatestBlock() int64 {
+	if u.evmStatePoller == nil {
+		return 0
+	}
+	return u.evmStatePoller.LatestBlock()
+}
+
+func (u *FakeUpstream) EvmEffectiveFinalizedBlock() int64 {
+	if u.evmStatePoller == nil {
+		return 0
+	}
+	return u.evmStatePoller.FinalizedBlock()
+}
+
+func (u *FakeUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
+	cfg := u.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil {
+		return math.MinInt64, math.MaxInt64
+	}
+	minVal, maxVal := int64(math.MinInt64), int64(math.MaxInt64)
+	if cfg.Evm.BlockAvailability.Lower != nil && cfg.Evm.BlockAvailability.Lower.ExactBlock != nil {
+		minVal = *cfg.Evm.BlockAvailability.Lower.ExactBlock
+	}
+	if cfg.Evm.BlockAvailability.Upper != nil && cfg.Evm.BlockAvailability.Upper.ExactBlock != nil {
+		maxVal = *cfg.Evm.BlockAvailability.Upper.ExactBlock
+	}
+	return minVal, maxVal
+}
+
 type FakeEvmStatePoller struct {
 	latestBlockNumber    int64
 	finalizedBlockNumber int64
@@ -159,6 +190,14 @@ func (p *FakeEvmStatePoller) Bootstrap(ctx context.Context) error {
 
 func (p *FakeEvmStatePoller) FinalizedBlock() int64 {
 	return p.finalizedBlockNumber
+}
+
+func (p *FakeEvmStatePoller) EarliestBlock(probe EvmAvailabilityProbeType) int64 {
+	return 0
+}
+
+func (p *FakeEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
+	return 0, nil
 }
 
 func (p *FakeEvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
@@ -203,6 +242,15 @@ func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
+}
+
+func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
+	return &EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    p.latestBlockNumber,
+		FinalizedBlock: p.finalizedBlockNumber,
+		SyncingState:   EvmSyncingStateUnknown.String(),
+	}
 }
 
 // FakeHealthTracker is a no-op implementation of HealthTracker for testing

@@ -168,7 +168,7 @@ func BenchmarkTrackerSetLatestBlockNumber(b *testing.B) {
 		for pb.Next() {
 			upstream := upstreams[i%len(upstreams)]
 			blockNumber := int64(1000000 + i)
-			tracker.SetLatestBlockNumber(upstream, blockNumber)
+			tracker.SetLatestBlockNumber(upstream, blockNumber, 0)
 			i++
 		}
 	})
@@ -210,13 +210,13 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 			case 3: // 20% are failures
 				tracker.RecordUpstreamRequest(upstream, method)
 				tracker.RecordUpstreamFailure(upstream, method, testErr)
-			case 4: // 20% are rate limited
-				tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
+			case 4: // 20% are remote rate limited
+				tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 			}
 
 			// Occasionally update block numbers
 			if i%100 == 0 {
-				tracker.SetLatestBlockNumber(upstream, int64(1000000+i))
+				tracker.SetLatestBlockNumber(upstream, int64(1000000+i), 0)
 			}
 
 			i++

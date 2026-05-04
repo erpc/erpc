@@ -14,9 +14,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// matchFinalities checks if two finality arrays match.
+// MatchFinalities checks if two finality arrays match.
 // Empty arrays (nil or len=0) match any finality.
-func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
+func MatchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	// If either is empty, they match any finality
 	if len(finalities1) == 0 || len(finalities2) == 0 {
 		return true
@@ -114,8 +114,9 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 				NetworkDefaults: &NetworkDefaults{
 					Evm: &EvmNetworkConfig{
 						Integrity: &EvmIntegrityConfig{
-							EnforceHighestBlock:      util.BoolPtr(true),
-							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:        util.BoolPtr(true),
+							EnforceGetLogsBlockRange:   util.BoolPtr(true),
+							EnforceNonNullTaggedBlocks: util.BoolPtr(true),
 						},
 						GetLogsMaxAllowedRange: 30_000,
 						GetLogsSplitOnError:    util.BoolPtr(true),
@@ -262,6 +263,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 			{0, "toBlock"},
 			{0, "blockHash"},
 		},
+		// evm/eth_getLogs.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"eth_getBlockByHash": {
 		ReqRefs:  FirstParam,
@@ -270,6 +273,17 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
+		// The post-forward hook in evm/eth_getBlockByNumber.go only enforces "latest"/"finalized"
+		// tag handling; it does not gate numeric block requests against per-upstream bounds.
+		// Numeric blocks beyond an upstream's known head will be forwarded and may return
+		// missing-data, which the failsafe retry policy can space out via emptyResultDelay.
+		EnforceBlockAvailability: util.BoolPtr(false),
+		// Don't interpolate "latest"/"finalized" tags for this method - it should fetch actual
+		// current state from upstream. This method is the source of truth for block tags,
+		// not a consumer of interpolated values. Other methods (eth_getLogs, eth_call, etc.)
+		// will still interpolate tags using the state poller's highest known block.
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getTransactionByBlockHashAndIndex": {
 		ReqRefs:  FirstParam,
@@ -314,6 +328,21 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_call": {
 		ReqRefs: SecondParam,
 	},
+	"eth_estimateGas": {
+		ReqRefs: SecondParam,
+	},
+	"trace_call": {
+		// Support both param orderings used in the wild:
+		// - second param as block tag/number (e.g., ["latest"])
+		// - third param as block tag/number when second param is trace types/config
+		ReqRefs: [][]interface{}{
+			{1}, // second param
+			{2}, // third param
+		},
+	},
+	"debug_traceCall": {
+		ReqRefs: SecondParam,
+	},
 	"eth_getProof": {
 		ReqRefs: ThirdParam,
 	},
@@ -324,12 +353,6 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"eth_getAccount": {
-		ReqRefs: SecondParam,
-	},
-	"eth_estimateGas": {
-		ReqRefs: SecondParam,
-	},
-	"debug_traceCall": {
 		ReqRefs: SecondParam,
 	},
 	"eth_simulateV1": {
@@ -354,6 +377,22 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	},
 	"trace_block": {
 		ReqRefs: FirstParam,
+	},
+	"trace_filter": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+		// architecture/evm/trace_filter.go hook enforces lower/upper-bound against per-upstream latest/finality.
+		EnforceBlockAvailability: util.BoolPtr(false),
+	},
+	"arbtrace_filter": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+		// architecture/evm/trace_filter.go hook enforces lower/upper-bound against per-upstream latest/finality.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"debug_traceBlockByNumber": {
 		ReqRefs: FirstParam,
@@ -640,6 +679,9 @@ func (c *TracingConfig) SetDefaults() error {
 	if c.SampleRate == 0 {
 		c.SampleRate = 1.0
 	}
+	if c.ServiceName == "" {
+		c.ServiceName = "erpc"
+	}
 
 	return nil
 }
@@ -674,6 +716,31 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.HttpPortV6 == nil {
 		s.HttpPortV6 = util.IntPtr(5000) // Default: avoid 4001 (metrics)
 	}
+	if s.GrpcEnabled == nil {
+		s.GrpcEnabled = util.BoolPtr(false)
+	}
+	if s.GrpcHostV4 == nil && s.HttpHostV4 != nil {
+		v := *s.HttpHostV4
+		s.GrpcHostV4 = &v
+	}
+	if s.GrpcPortV4 == nil && s.HttpPortV4 != nil {
+		v := *s.HttpPortV4
+		s.GrpcPortV4 = &v
+	}
+	if s.GrpcHostV6 == nil && s.HttpHostV6 != nil {
+		v := *s.HttpHostV6
+		s.GrpcHostV6 = &v
+	}
+	if s.GrpcPortV6 == nil && s.HttpPortV6 != nil {
+		v := *s.HttpPortV6
+		s.GrpcPortV6 = &v
+	}
+	if s.GrpcMaxRecvMsgSize == nil {
+		s.GrpcMaxRecvMsgSize = util.IntPtr(100 * 1024 * 1024)
+	}
+	if s.GrpcMaxSendMsgSize == nil {
+		s.GrpcMaxSendMsgSize = util.IntPtr(100 * 1024 * 1024)
+	}
 	if s.MaxTimeout == nil {
 		d := Duration(150 * time.Second)
 		s.MaxTimeout = &d
@@ -701,12 +768,22 @@ func (s *ServerConfig) SetDefaults() error {
 		s.IncludeErrorDetails = util.BoolPtr(true)
 	}
 
+	// Safe defaults for client IP resolution
+	if len(s.TrustedIPForwarders) == 0 {
+		// Only loopback by default; do not trust private subnets unless explicitly configured
+		s.TrustedIPForwarders = []string{"127.0.0.1/8", "::1/128"}
+	}
+	if s.TrustedIPHeaders == nil {
+		// Empty by default to avoid trusting headers unless explicitly configured
+		s.TrustedIPHeaders = []string{}
+	}
+
 	return nil
 }
 
 func (h *HealthCheckConfig) SetDefaults() error {
 	if h.Mode == "" {
-		h.Mode = HealthCheckModeVerbose
+		h.Mode = HealthCheckModeNetworks
 	}
 	if h.DefaultEval == "" {
 		h.DefaultEval = EvalAnyInitializedUpstreams
@@ -781,7 +858,18 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 		c.FallbackTimeout = Duration(3 * time.Second)
 	}
 	if c.LockTtl == 0 {
-		c.LockTtl = Duration(30 * time.Second)
+		// Lock TTL should be long enough to complete remote operations
+		// Provides 1s buffer beyond FallbackTimeout for get+set operations
+		c.LockTtl = Duration(4 * time.Second)
+	}
+	// Foreground best-effort budgets
+	if c.LockMaxWait == 0 {
+		// How long the foreground waits to acquire the lock before proceeding locally
+		c.LockMaxWait = Duration(100 * time.Millisecond)
+	}
+	if c.UpdateMaxWait == 0 {
+		// How long the foreground waits for the update function before returning stale
+		c.UpdateMaxWait = Duration(50 * time.Millisecond)
 	}
 	return nil
 }
@@ -804,6 +892,32 @@ func (d *DatabaseConfig) SetDefaults(defClusterKey string) error {
 func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 	if c.Id == "" {
 		c.Id = string(scope) + "-" + string(c.Driver)
+	}
+	if c.FailsafeForGets != nil {
+		for idx, f := range c.FailsafeForGets {
+			if f == nil {
+				continue
+			}
+			if f.MatchMethod == "" {
+				f.MatchMethod = "*"
+			}
+			if err := f.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for policy #%d in failsafeForGets: %w", idx, err)
+			}
+		}
+	}
+	if c.FailsafeForSets != nil {
+		for idx, f := range c.FailsafeForSets {
+			if f == nil {
+				continue
+			}
+			if f.MatchMethod == "" {
+				f.MatchMethod = "*"
+			}
+			if err := f.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for policy #%d in failsafeForSets: %w", idx, err)
+			}
+		}
 	}
 	if c.Memory != nil {
 		c.Driver = DriverMemory
@@ -847,6 +961,17 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 		}
 		if err := c.DynamoDB.SetDefaults(scope); err != nil {
 			return fmt.Errorf("failed to set defaults for dynamo db connector: %w", err)
+		}
+	}
+	if c.Grpc != nil {
+		c.Driver = DriverGrpc
+	}
+	if c.Driver == DriverGrpc {
+		if c.Grpc == nil {
+			c.Grpc = &GrpcConnectorConfig{}
+		}
+		if c.Grpc.GetTimeout == 0 {
+			c.Grpc.GetTimeout = Duration(100 * time.Millisecond)
 		}
 	}
 
@@ -1110,11 +1235,29 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 	}
 	if p.ScoreMetricsWindowSize == 0 {
 		if p.DeprecatedHealthCheck != nil && p.DeprecatedHealthCheck.ScoreMetricsWindowSize != 0 {
-			log.Warn().Msg("projects.*.healthCheck.scoreMetricsWindowSize is deprecated; use projects.*.scoreMetricsWindowSize instead")
 			p.ScoreMetricsWindowSize = p.DeprecatedHealthCheck.ScoreMetricsWindowSize
 		} else {
 			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
+	}
+	p.RoutingStrategy = strings.ToLower(strings.TrimSpace(p.RoutingStrategy))
+	if p.RoutingStrategy == "" {
+		p.RoutingStrategy = "score-based"
+	}
+	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
+	if p.ScoreGranularity == "" {
+		p.ScoreGranularity = "upstream"
+	}
+	// Numeric scoring defaults are intentionally NOT set here.
+	// ScoringConfig.withDefaults() is the single source of truth so that
+	// explicit zero values from the user (e.g. scoreSwitchHysteresis: 0)
+	// are not silently overridden. Use negative values to disable:
+	//   scorePenaltyDecayRate: -1   → no EMA memory (instant penalty only)
+	//   scoreSwitchHysteresis: -1   → no stickiness
+	//   scoreMinSwitchInterval: -1  → no cooldown
+	// Default score metrics mode to compact when not provided
+	if strings.TrimSpace(p.ScoreMetricsMode) == "" {
+		p.ScoreMetricsMode = "compact"
 	}
 
 	return nil
@@ -1229,9 +1372,56 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 			"apiKey": endpoint.Host,
 		}, nil
 	case "quicknode", "evm+quicknode":
-		return VendorSettings{
+		settings := VendorSettings{
 			"apiKey": endpoint.Host,
-		}, nil
+		}
+
+		// Parse query parameters for tag filters
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse quicknode query parameters: %w", err)
+			}
+
+			// Parse tagIds - can be comma-separated or multiple values
+			if tagIds := params.Get("tagIds"); tagIds != "" {
+				// Split comma-separated values
+				ids := strings.Split(tagIds, ",")
+				if len(ids) == 1 {
+					// Single value - try to parse as int
+					if id, err := strconv.Atoi(strings.TrimSpace(ids[0])); err == nil {
+						settings["tagIds"] = id
+					}
+				} else {
+					// Multiple values - parse as int array
+					intIds := make([]int, 0, len(ids))
+					for _, idStr := range ids {
+						if id, err := strconv.Atoi(strings.TrimSpace(idStr)); err == nil {
+							intIds = append(intIds, id)
+						}
+					}
+					if len(intIds) > 0 {
+						settings["tagIds"] = intIds
+					}
+				}
+			}
+
+			// Parse tagLabels - can be comma-separated or multiple values
+			if tagLabels := params.Get("tagLabels"); tagLabels != "" {
+				// Split comma-separated values
+				labels := strings.Split(tagLabels, ",")
+				for i := range labels {
+					labels[i] = strings.TrimSpace(labels[i])
+				}
+				if len(labels) == 1 {
+					settings["tagLabels"] = labels[0]
+				} else {
+					settings["tagLabels"] = labels
+				}
+			}
+		}
+
+		return settings, nil
 	case "chainstack", "evm+chainstack":
 		settings := VendorSettings{
 			"apiKey": endpoint.Host,
@@ -1285,6 +1475,19 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"repositoryUrl": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/") + "?" + endpoint.RawQuery,
 		}, nil
+	case "routemesh", "evm+routemesh":
+		settings := VendorSettings{
+			"baseURL": endpoint.Host,
+		}
+		// Extract apiKey from path: /rpc/<chainId>/<apiKey>
+		// Path segments: ["", "rpc", "<chainId>", "<apiKey>"]
+		pathParts := strings.Split(strings.TrimPrefix(endpoint.Path, "/"), "/")
+		if len(pathParts) >= 3 && pathParts[0] == "rpc" {
+			settings["apiKey"] = pathParts[2] // apiKey is the 3rd segment (index 2)
+		} else {
+			return nil, fmt.Errorf("routemesh endpoint path must be in format /rpc/<chainId>/<apiKey>, got: %s", endpoint.Path)
+		}
+		return settings, nil
 	}
 
 	return nil, fmt.Errorf("unsupported vendor name in vendor.settings: %s", vendorName)
@@ -1318,6 +1521,21 @@ func (n *NetworkDefaults) SetDefaults() error {
 }
 
 func (d *DirectiveDefaultsConfig) SetDefaults() error {
+	if d == nil {
+		return nil
+	}
+	if d.EnforceHighestBlock == nil {
+		d.EnforceHighestBlock = util.BoolPtr(true)
+	}
+	if d.EnforceGetLogsBlockRange == nil {
+		d.EnforceGetLogsBlockRange = util.BoolPtr(true)
+	}
+	if d.EnforceNonNullTaggedBlocks == nil {
+		d.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
+	}
+	if d.ValidateTransactionsRoot == nil {
+		d.ValidateTransactionsRoot = util.BoolPtr(true)
+	}
 	return nil
 }
 
@@ -1391,6 +1609,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
 			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
 		}
+		if u.Evm.TraceFilterAutoSplittingRangeThreshold == 0 && defaults.Evm.TraceFilterAutoSplittingRangeThreshold != 0 {
+			u.Evm.TraceFilterAutoSplittingRangeThreshold = defaults.Evm.TraceFilterAutoSplittingRangeThreshold
+		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -1451,7 +1672,9 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 
 	// only apply defaults if user has NO failsafe policies
 	if len(u.Failsafe) > 0 {
-		// User has defined failsafe policies - keep them as-is, normalize and fill required fields
+		// User has defined failsafe policies - keep them as-is, normalize and fill required fields.
+		// Note: matchers PR (#388) deliberately replaced per-method/finality merging with
+		// "user policies override defaults entirely". See review comments #11/#12 for context.
 		for i, fs := range u.Failsafe {
 			if err := fs.SetDefaults(nil); err != nil {
 				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
@@ -1527,12 +1750,8 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 			e.StatePollerInterval = Duration(30 * time.Second)
 		}
 	}
-	if e.StatePollerDebounce == 0 {
-		if defaults != nil && defaults.StatePollerDebounce != 0 {
-			e.StatePollerDebounce = defaults.StatePollerDebounce
-		} else {
-			e.StatePollerDebounce = Duration(5 * time.Second)
-		}
+	if e.StatePollerDebounce == 0 && defaults != nil && defaults.StatePollerDebounce != 0 {
+		e.StatePollerDebounce = defaults.StatePollerDebounce
 	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {
@@ -1546,10 +1765,29 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		if defaults != nil && defaults.MaxAvailableRecentBlocks != 0 {
 			e.MaxAvailableRecentBlocks = defaults.MaxAvailableRecentBlocks
 		} else {
+			// @deprecated: NodeType-based defaults moved under blockAvailability bounds
+			// Kept for back-compat in config only; runtime logic does not use NodeType.
 			switch e.NodeType {
 			case EvmNodeTypeFull:
 				e.MaxAvailableRecentBlocks = 128
 			}
+		}
+	}
+
+	// Back-compat mapping: if blockAvailability not provided but legacy MaxAvailableRecentBlocks is set,
+	// map it to lower.latestBlockMinus with updateRate=0 (freeze).
+	if e.BlockAvailability == nil && e.MaxAvailableRecentBlocks > 0 {
+		v := e.MaxAvailableRecentBlocks
+		e.BlockAvailability = &EvmBlockAvailabilityConfig{
+			Lower: &EvmAvailabilityBoundConfig{LatestBlockMinus: &v},
+		}
+	}
+
+	// If NodeType==full and no lower bound specified anywhere, set a default window of 128 blocks.
+	if e.BlockAvailability == nil && e.MaxAvailableRecentBlocks == 0 && e.NodeType == EvmNodeTypeFull {
+		v := int64(128)
+		e.BlockAvailability = &EvmBlockAvailabilityConfig{
+			Lower: &EvmAvailabilityBoundConfig{LatestBlockMinus: &v},
 		}
 	}
 
@@ -1593,6 +1831,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
+		// Note: failsafe handling for NetworkConfig is done at the top of this function
+		// (matchers PR #388 deliberately consolidates network failsafe defaulting there
+		// rather than re-running per-method/finality matching here).
 		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
 			n.SelectionPolicy = &SelectionPolicyConfig{}
 			*n.SelectionPolicy = *defaults.SelectionPolicy
@@ -1601,6 +1842,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			n.DirectiveDefaults = &DirectiveDefaultsConfig{}
 			*n.DirectiveDefaults = *defaults.DirectiveDefaults
 		}
+		if n.Multiplexing == nil && defaults.Multiplexing != nil {
+			v := *defaults.Multiplexing
+			n.Multiplexing = &v
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}
@@ -1608,6 +1853,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.FallbackStatePollerDebounce == 0 && defaults.Evm.FallbackStatePollerDebounce != 0 {
 				n.Evm.FallbackStatePollerDebounce = defaults.Evm.FallbackStatePollerDebounce
+			}
+			if n.Evm.DynamicBlockTimeDebounceMultiplier == nil && defaults.Evm.DynamicBlockTimeDebounceMultiplier != nil {
+				n.Evm.DynamicBlockTimeDebounceMultiplier = defaults.Evm.DynamicBlockTimeDebounceMultiplier
+			}
+			if n.Evm.BlockUnavailableDelayMultiplier == nil && defaults.Evm.BlockUnavailableDelayMultiplier != nil {
+				n.Evm.BlockUnavailableDelayMultiplier = defaults.Evm.BlockUnavailableDelayMultiplier
 			}
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
 				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
@@ -1626,6 +1877,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
+			}
+			if n.Evm.TraceFilterSplitOnError == nil && defaults.Evm.TraceFilterSplitOnError != nil {
+				n.Evm.TraceFilterSplitOnError = defaults.Evm.TraceFilterSplitOnError
+			}
+			if n.Evm.TraceFilterSplitConcurrency == 0 && defaults.Evm.TraceFilterSplitConcurrency != 0 {
+				n.Evm.TraceFilterSplitConcurrency = defaults.Evm.TraceFilterSplitConcurrency
 			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
@@ -1677,10 +1934,29 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		}
 	}
 
-	if n.DirectiveDefaults != nil {
-		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
-			return err
+	// Always ensure DirectiveDefaults exists and has proper defaults
+	if n.DirectiveDefaults == nil {
+		n.DirectiveDefaults = &DirectiveDefaultsConfig{}
+	}
+
+	// Backward compatibility: migrate old EvmIntegrityConfig to DirectiveDefaultsConfig
+	// User's explicit old config values take precedence over defaults
+	if n.Evm != nil && n.Evm.Integrity != nil {
+		integrity := n.Evm.Integrity
+		// Only migrate if the user hasn't explicitly set the new directive
+		if n.DirectiveDefaults.EnforceHighestBlock == nil && integrity.EnforceHighestBlock != nil {
+			n.DirectiveDefaults.EnforceHighestBlock = integrity.EnforceHighestBlock
 		}
+		if n.DirectiveDefaults.EnforceGetLogsBlockRange == nil && integrity.EnforceGetLogsBlockRange != nil {
+			n.DirectiveDefaults.EnforceGetLogsBlockRange = integrity.EnforceGetLogsBlockRange
+		}
+		if n.DirectiveDefaults.EnforceNonNullTaggedBlocks == nil && integrity.EnforceNonNullTaggedBlocks != nil {
+			n.DirectiveDefaults.EnforceNonNullTaggedBlocks = integrity.EnforceNonNullTaggedBlocks
+		}
+	}
+
+	if err := n.DirectiveDefaults.SetDefaults(); err != nil {
+		return err
 	}
 
 	return nil
@@ -1688,6 +1964,41 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
+const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
+const DefaultBlockUnavailableDelayMultiplier = 0.8
+
+// DefaultEmptyResultAccept returns a fresh copy of the methods for which an
+// empty/null result is considered valid (e.g. eth_getLogs, eth_call). A new
+// slice is returned on every call so callers cannot mutate the shared default.
+func DefaultEmptyResultAccept() []string {
+	return []string{"eth_getLogs", "eth_call"}
+}
+
+// DefaultMarkEmptyAsErrorMethods returns a fresh copy of the methods for which
+// empty/null results should be treated as "missing data" errors, triggering retry
+// on other upstreams. A new slice is returned on every call so callers cannot
+// mutate the shared default.
+//
+// Note: eth_getBlockByHash is intentionally excluded because subgraph-based
+// upstreams commonly return empty for this method, which is expected behavior.
+// Note: eth_getTransactionReceipt is excluded as a quick remedy. Ideally we'd
+// only allow null for pending txs.
+func DefaultMarkEmptyAsErrorMethods() []string {
+	return []string{
+		"eth_blockNumber",
+		"eth_getBlockByNumber",
+		"eth_getBlockReceipts",
+		"eth_getTransactionByHash",
+		"eth_getTransactionByBlockHashAndIndex",
+		"eth_getTransactionByBlockNumberAndIndex",
+		"eth_getUncleByBlockHashAndIndex",
+		"eth_getUncleByBlockNumberAndIndex",
+		"debug_traceTransaction",
+		"trace_transaction",
+		"trace_block",
+		"trace_get",
+	}
+}
 
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
@@ -1695,6 +2006,14 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.FallbackStatePollerDebounce == 0 {
 		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
+	}
+	if e.DynamicBlockTimeDebounceMultiplier == nil {
+		d := DefaultDynamicBlockTimeDebounceMultiplier
+		e.DynamicBlockTimeDebounceMultiplier = &d
+	}
+	if e.BlockUnavailableDelayMultiplier == nil {
+		d := DefaultBlockUnavailableDelayMultiplier
+		e.BlockUnavailableDelayMultiplier = &d
 	}
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}
@@ -1714,6 +2033,18 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		e.GetLogsSplitConcurrency = 10
 	}
 
+	// Defaults for network-level trace_filter controls.
+	// TraceFilterSplitOnError intentionally defaults to nil (off) — this is a
+	// new feature and preserving existing behavior requires operator opt-in.
+	if e.TraceFilterSplitConcurrency == 0 {
+		e.TraceFilterSplitConcurrency = 10
+	}
+
+	// Default methods for marking empty results as errors
+	if e.MarkEmptyAsErrorMethods == nil {
+		e.MarkEmptyAsErrorMethods = DefaultMarkEmptyAsErrorMethods()
+	}
+
 	return nil
 }
 
@@ -1723,6 +2054,9 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 	}
 	if i.EnforceGetLogsBlockRange == nil {
 		i.EnforceGetLogsBlockRange = util.BoolPtr(true)
+	}
+	if i.EnforceNonNullTaggedBlocks == nil {
+		i.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
 	}
 	return nil
 }
@@ -1904,9 +2238,20 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	if r.EmptyResultConfidence == 0 && defaults != nil && defaults.EmptyResultConfidence != 0 {
 		r.EmptyResultConfidence = defaults.EmptyResultConfidence
 	}
-	// Only set EmptyResultIgnore if provided through defaults
-	if r.EmptyResultIgnore == nil && defaults != nil && defaults.EmptyResultIgnore != nil {
-		r.EmptyResultIgnore = defaults.EmptyResultIgnore
+	// Backward compat: migrate deprecated EmptyResultIgnore → EmptyResultAccept
+	if r.EmptyResultAccept == nil && r.EmptyResultIgnore != nil {
+		r.EmptyResultAccept = r.EmptyResultIgnore
+	}
+	// Inherit from defaults
+	if r.EmptyResultAccept == nil && defaults != nil {
+		if defaults.EmptyResultAccept != nil {
+			r.EmptyResultAccept = defaults.EmptyResultAccept
+		} else if defaults.EmptyResultIgnore != nil {
+			r.EmptyResultAccept = defaults.EmptyResultIgnore
+		}
+	}
+	if r.EmptyResultAccept == nil {
+		r.EmptyResultAccept = DefaultEmptyResultAccept()
 	}
 
 	// Default EmptyResultMaxAttempts to MaxAttempts if not set
@@ -1914,6 +2259,18 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		if defaults != nil && defaults.EmptyResultMaxAttempts != 0 {
 			r.EmptyResultMaxAttempts = defaults.EmptyResultMaxAttempts
 		}
+	}
+
+	// EmptyResultDelay inherits from defaults if provided, no hardcoded fallback.
+	// When not set, the regular delay settings are used for empty result retries.
+	if r.EmptyResultDelay == 0 && defaults != nil && defaults.EmptyResultDelay != 0 {
+		r.EmptyResultDelay = defaults.EmptyResultDelay
+	}
+
+	// BlockUnavailableDelay inherits from defaults if provided, no hardcoded fallback.
+	// When not set, block-unavailable retries use the normal delay/backoff.
+	if r.BlockUnavailableDelay == 0 && defaults != nil && defaults.BlockUnavailableDelay != 0 {
+		r.BlockUnavailableDelay = defaults.BlockUnavailableDelay
 	}
 
 	return nil
@@ -2006,10 +2363,6 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 }
 
 func (c *ConsensusPolicyConfig) SetDefaults() error {
-	if c.RequiredParticipants > 0 {
-		// @deprecated: use MaxParticipants instead
-		c.MaxParticipants = c.RequiredParticipants
-	}
 	if c.MaxParticipants == 0 {
 		c.MaxParticipants = 5
 	}
@@ -2047,6 +2400,45 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		c.PreferLargerResponses = util.BoolPtr(true)
 	}
 
+	// Destination defaults
+	if c.MisbehaviorsDestination != nil {
+		if err := c.MisbehaviorsDestination.SetDefaults(); err != nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination defaults: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// SetDefaults applies defaults for misbehavior export destination
+func (c *MisbehaviorsDestinationConfig) SetDefaults() error {
+	// Default type: file
+	if c.Type == "" {
+		c.Type = MisbehaviorsDestinationTypeFile
+	}
+	// Default file pattern handled in resolver at use-site; keep here for explicitness
+	if c.FilePattern == "" {
+		c.FilePattern = "{timestampMs}-{method}-{networkId}"
+	}
+	// S3 defaults
+	if c.Type == MisbehaviorsDestinationTypeS3 {
+		if c.S3 == nil {
+			c.S3 = &S3FlushConfig{}
+		}
+		if c.S3.MaxRecords == 0 {
+			c.S3.MaxRecords = 100
+		}
+		if c.S3.MaxSize == 0 {
+			c.S3.MaxSize = 1 * 1024 * 1024 // 1MB
+		}
+		if c.S3.FlushInterval == 0 {
+			c.S3.FlushInterval = Duration(60 * time.Second)
+		}
+		if c.S3.ContentType == "" {
+			c.S3.ContentType = "application/jsonl"
+		}
+		// Region left empty → picked from env/IMDS by SDK; keep as-is
+	}
 	return nil
 }
 
@@ -2074,7 +2466,43 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 }
 
 func (r *RoutingConfig) SetDefaults() error {
-	if r.ScoreMultipliers != nil {
+	if len(r.ScoreMultipliers) == 0 {
+		r.ScoreMultipliers = []*ScoreMultiplierConfig{
+			// For realtime/unfinalized: prioritize block lag (need fresh data)
+			{
+				Network:  "*",
+				Method:   "*",
+				Finality: []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized},
+
+				ErrorRate:       util.Float64Ptr(4.0),
+				RespLatency:     util.Float64Ptr(6.0),
+				TotalRequests:   util.Float64Ptr(1.0),
+				ThrottledRate:   util.Float64Ptr(3.0),
+				BlockHeadLag:    util.Float64Ptr(8.0),
+				FinalizationLag: util.Float64Ptr(2.0),
+				Misbehaviors:    util.Float64Ptr(5.0),
+				Overall:         util.Float64Ptr(1.0),
+			},
+			// For finalized/unknown: prioritize latency (block lag doesn't matter)
+			// Even though "unknown" might include requests for tx hashes or block hashes
+			// of tip-of-chain range, they'll be retried due to retryEmpty logic if
+			//  an upstream doesn't have the data. This is not ideal for numeric getBlockByNumber calls.
+			{
+				Network:  "*",
+				Method:   "*",
+				Finality: []DataFinalityState{DataFinalityStateFinalized, DataFinalityStateUnknown},
+
+				ErrorRate:       util.Float64Ptr(4.0),
+				RespLatency:     util.Float64Ptr(8.0),
+				TotalRequests:   util.Float64Ptr(1.0),
+				ThrottledRate:   util.Float64Ptr(3.0),
+				BlockHeadLag:    util.Float64Ptr(2.0),
+				FinalizationLag: util.Float64Ptr(1.0),
+				Misbehaviors:    util.Float64Ptr(5.0),
+				Overall:         util.Float64Ptr(1.0),
+			},
+		}
+	} else {
 		for _, multiplier := range r.ScoreMultipliers {
 			if err := multiplier.SetDefaults(); err != nil {
 				return fmt.Errorf("failed to set defaults for score multiplier: %w", err)
@@ -2091,6 +2519,7 @@ func (r *RoutingConfig) SetDefaults() error {
 var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	Network: "*",
 	Method:  "*",
+	// Finality: nil means match all finality states
 
 	ErrorRate:       util.Float64Ptr(4.0),
 	RespLatency:     util.Float64Ptr(8.0),
@@ -2142,15 +2571,15 @@ const DefaultPolicyFunction = `
 	(upstreams, method) => {
 		const defaults = upstreams.filter(u => u.config.group !== 'fallback')
 		const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-		
+
 		const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
 		const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
 		const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
-		
+
 		const healthyOnes = defaults.filter(
 			u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
 		)
-		
+
 		if (healthyOnes.length >= minHealthyThreshold) {
 			return healthyOnes
 		}
@@ -2159,7 +2588,7 @@ const DefaultPolicyFunction = `
 			let healthyFallbacks = fallbacks.filter(
 				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
 			)
-			
+
 			if (healthyFallbacks.length > 0) {
 				return healthyFallbacks
 			}
@@ -2268,6 +2697,13 @@ func (s *DatabaseStrategyConfig) SetDefaults() error {
 		s.Cache = &DatabaseStrategyCacheConfig{}
 	}
 
+	if s.Retry == nil {
+		s.Retry = &DatabaseRetryConfig{}
+	}
+	if s.FailOpen == nil {
+		s.FailOpen = &DatabaseFailOpenConfig{}
+	}
+
 	if s.Cache.TTL == nil {
 		defaultTTL := time.Hour
 		s.Cache.TTL = &defaultTTL
@@ -2288,7 +2724,37 @@ func (s *DatabaseStrategyConfig) SetDefaults() error {
 		s.Cache.NumCounters = &defaultNumCounters
 	}
 
+	if err := s.Retry.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for database retry: %w", err)
+	}
+	if err := s.FailOpen.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for database failOpen: %w", err)
+	}
+
+	if s.MaxWait == 0 {
+		s.MaxWait = Duration(1 * time.Second)
+	}
+
 	return s.Connector.SetDefaults(connectorScopeAuth)
+}
+
+func (r *DatabaseRetryConfig) SetDefaults() error {
+	if r.MaxAttempts <= 0 {
+		r.MaxAttempts = 3
+	}
+	if r.BaseBackoff.Duration() == 0 {
+		r.BaseBackoff = Duration(100 * time.Millisecond)
+	}
+	return nil
+}
+
+func (f *DatabaseFailOpenConfig) SetDefaults() error {
+	// Disabled by default
+	// Only set userId default; keep Enabled as-is
+	if f.UserId == "" {
+		f.UserId = "emergency-failopen"
+	}
+	return nil
 }
 
 func (s *SecretStrategyConfig) SetDefaults() error {
@@ -2296,6 +2762,9 @@ func (s *SecretStrategyConfig) SetDefaults() error {
 }
 
 func (j *JwtStrategyConfig) SetDefaults() error {
+	if j.RateLimitBudgetClaimName == "" {
+		j.RateLimitBudgetClaimName = "rlm"
+	}
 	return nil
 }
 
@@ -2308,6 +2777,12 @@ func (n *NetworkStrategyConfig) SetDefaults() error {
 }
 
 func (r *RateLimiterConfig) SetDefaults() error {
+	if r.Store == nil {
+		r.Store = &RateLimitStoreConfig{}
+	}
+	if err := r.Store.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for rate limit store: %w", err)
+	}
 	if len(r.Budgets) > 0 {
 		for _, budget := range r.Budgets {
 			if err := budget.SetDefaults(); err != nil {
@@ -2316,6 +2791,21 @@ func (r *RateLimiterConfig) SetDefaults() error {
 		}
 	}
 
+	return nil
+}
+
+func (r *RateLimitStoreConfig) SetDefaults() error {
+	if r.Driver == "" {
+		r.Driver = "memory"
+	}
+	if r.Driver == "redis" {
+		if r.Redis == nil {
+			r.Redis = &RedisConnectorConfig{}
+		}
+		if err := r.Redis.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for redis connector: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -2332,11 +2822,13 @@ func (b *RateLimitBudgetConfig) SetDefaults() error {
 }
 
 func (r *RateLimitRuleConfig) SetDefaults() error {
-	if r.WaitTime == 0 {
-		r.WaitTime = Duration(1 * time.Second)
-	}
-	if r.Period == 0 {
-		r.Period = Duration(1 * time.Second)
+	// Default to 'second' when period is unset or invalid
+	switch r.Period {
+	case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+		RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+		// ok
+	default:
+		r.Period = RateLimitPeriodSecond
 	}
 	if r.Method == "" {
 		r.Method = "*"

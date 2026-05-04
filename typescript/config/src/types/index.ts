@@ -9,6 +9,7 @@ export type {
     AuthType,
     AuthStrategyConfig,
     EvmNetworkConfigForDefaults,
+    BoolOrString,
   } from "./generic";
   export type {
     PolicyEvalUpstreamMetrics,
