@@ -9,6 +9,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/matchers"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -781,52 +782,111 @@ func TestRetryPolicy_TypeAssertion(t *testing.T) {
 	}
 }
 
-func TestFailsafeMatcherFinality(t *testing.T) {
-	// Test single finality matcher
-	t.Run("SingleFinalityMatcher", func(t *testing.T) {
-		cfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method:   "eth_getBlockByNumber",
-					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
-					Action:   common.MatcherInclude,
-				},
-			},
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
-			},
+// TestFailsafeMatcher_Behavior covers the matcher selection logic that
+// getFailsafeExecutor (and the cache layer) rely on. The previous version of
+// this test was vacuous — it constructed FailsafeConfig literals and asserted
+// the field values back, never invoking the matcher engine. This rewrite
+// exercises matchers.MatchConfig directly with realistic configs.
+//
+// Replacement for PR #388 review item T-1. See also matchers/matcher_bench_test.go
+// for the hot-path performance benchmarks that satisfy review item T-7.
+func TestFailsafeMatcher_Behavior(t *testing.T) {
+	t.Run("SingleFinality_MatchesOnlyFinalized", func(t *testing.T) {
+		cfg := &common.MatcherConfig{
+			Method:   "eth_getBlockByNumber",
+			Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+			Action:   common.MatcherInclude,
 		}
-
-		// Test that the configuration is properly set up
-		assert.Len(t, cfg.Matchers, 1)
-		assert.Equal(t, "eth_getBlockByNumber", cfg.Matchers[0].Method)
-		assert.Len(t, cfg.Matchers[0].Finality, 1)
-		assert.Equal(t, common.DataFinalityStateFinalized, cfg.Matchers[0].Finality[0])
-		assert.Equal(t, 3, cfg.Retry.MaxAttempts)
+		// Same method + finalized → match
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_getBlockByNumber", nil, common.DataFinalityStateFinalized, false))
+		// Same method + realtime → reject (finality constraint)
+		assert.False(t, matchers.MatchConfig(cfg, "evm:1", "eth_getBlockByNumber", nil, common.DataFinalityStateRealtime, false))
+		// Different method → reject
+		assert.False(t, matchers.MatchConfig(cfg, "evm:1", "eth_call", nil, common.DataFinalityStateFinalized, false))
 	})
 
-	// Test array finality matcher
-	t.Run("ArrayFinalityMatcher", func(t *testing.T) {
-		cfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method:   "eth_*",
-					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized, common.DataFinalityStateUnfinalized},
-					Action:   common.MatcherInclude,
-				},
+	t.Run("ArrayFinality_MatchesAnyOf", func(t *testing.T) {
+		cfg := &common.MatcherConfig{
+			Method: "eth_*",
+			Finality: []common.DataFinalityState{
+				common.DataFinalityStateFinalized,
+				common.DataFinalityStateUnfinalized,
 			},
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 5,
-			},
+			Action: common.MatcherInclude,
 		}
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_call", nil, common.DataFinalityStateFinalized, false))
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_call", nil, common.DataFinalityStateUnfinalized, false))
+		assert.False(t, matchers.MatchConfig(cfg, "evm:1", "eth_call", nil, common.DataFinalityStateRealtime, false),
+			"realtime not in finality slice → reject")
+	})
 
-		// Test that the configuration is properly set up
-		assert.Len(t, cfg.Matchers, 1)
-		assert.Equal(t, "eth_*", cfg.Matchers[0].Method)
-		assert.Len(t, cfg.Matchers[0].Finality, 2)
-		assert.Contains(t, []common.DataFinalityState(cfg.Matchers[0].Finality), common.DataFinalityStateFinalized)
-		assert.Contains(t, []common.DataFinalityState(cfg.Matchers[0].Finality), common.DataFinalityStateUnfinalized)
-		assert.Equal(t, 5, cfg.Retry.MaxAttempts)
+	t.Run("WildcardMethod_AllVariants", func(t *testing.T) {
+		// Lock in WildcardMatch's behavior at the matcher boundary. Pipe-OR
+		// patterns are common in production (goldsky's upstreamDefaults uses
+		// `eth_getLogs|eth_getBlockReceipts|eth_getTransactionReceipt` shape).
+		t.Run("StarMatchesEverything", func(t *testing.T) {
+			cfg := &common.MatcherConfig{Method: "*", Action: common.MatcherInclude}
+			assert.True(t, matchers.MatchConfig(cfg, "evm:1", "anything_at_all", nil, common.DataFinalityStateFinalized, false))
+		})
+		t.Run("PrefixGlob", func(t *testing.T) {
+			cfg := &common.MatcherConfig{Method: "eth_*", Action: common.MatcherInclude}
+			assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_call", nil, common.DataFinalityStateFinalized, false))
+			assert.False(t, matchers.MatchConfig(cfg, "evm:1", "trace_call", nil, common.DataFinalityStateFinalized, false))
+		})
+		t.Run("PipeOr", func(t *testing.T) {
+			cfg := &common.MatcherConfig{
+				Method: "eth_getLogs|eth_getBlockReceipts|eth_getTransactionReceipt",
+				Action: common.MatcherInclude,
+			}
+			assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_getLogs", nil, common.DataFinalityStateFinalized, false))
+			assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_getBlockReceipts", nil, common.DataFinalityStateFinalized, false))
+			assert.False(t, matchers.MatchConfig(cfg, "evm:1", "eth_call", nil, common.DataFinalityStateFinalized, false))
+		})
+	})
+
+	t.Run("NetworkScope_FiltersByChain", func(t *testing.T) {
+		// PR #388 review item T-10: Network field on MatcherConfig is the
+		// headline new capability per the PR title. Verify the matcher engine
+		// honors the network scope.
+		cfg := &common.MatcherConfig{
+			Network: "evm:1",
+			Method:  "eth_*",
+			Action:  common.MatcherInclude,
+		}
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_call", nil, common.DataFinalityStateFinalized, false))
+		assert.False(t, matchers.MatchConfig(cfg, "evm:137", "eth_call", nil, common.DataFinalityStateFinalized, false),
+			"network constraint should reject other chains")
+	})
+
+	t.Run("EmptyConstraint_NilMeansNoFilter", func(t *testing.T) {
+		// PR #388 pointer-types fix (Bugbot #7): a matcher with no explicit
+		// `empty:` field used to default to CacheEmptyBehaviorIgnore (zero
+		// value), which silently filtered out empty responses. With the
+		// pointer-types refactor, nil now means "no constraint".
+		cfg := &common.MatcherConfig{Method: "*", Action: common.MatcherInclude}
+		// Both empty and non-empty responses match when no constraint set.
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_getLogs", nil, common.DataFinalityStateFinalized, true),
+			"empty response should match when matcher.Empty is nil")
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_getLogs", nil, common.DataFinalityStateFinalized, false),
+			"non-empty response should match when matcher.Empty is nil")
+	})
+
+	t.Run("EmptyConstraint_OnlyMatchesEmpty", func(t *testing.T) {
+		only := common.CacheEmptyBehaviorOnly
+		cfg := &common.MatcherConfig{Method: "*", Empty: &only, Action: common.MatcherInclude}
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_getLogs", nil, common.DataFinalityStateFinalized, true),
+			"empty:only matcher should match empty responses")
+		assert.False(t, matchers.MatchConfig(cfg, "evm:1", "eth_getLogs", nil, common.DataFinalityStateFinalized, false),
+			"empty:only matcher should reject non-empty responses")
+	})
+
+	t.Run("EmptyConstraint_IgnoreExcludesEmpty", func(t *testing.T) {
+		ignore := common.CacheEmptyBehaviorIgnore
+		cfg := &common.MatcherConfig{Method: "*", Empty: &ignore, Action: common.MatcherInclude}
+		assert.False(t, matchers.MatchConfig(cfg, "evm:1", "eth_getLogs", nil, common.DataFinalityStateFinalized, true),
+			"empty:ignore matcher should reject empty responses")
+		assert.True(t, matchers.MatchConfig(cfg, "evm:1", "eth_getLogs", nil, common.DataFinalityStateFinalized, false),
+			"empty:ignore matcher should match non-empty responses")
 	})
 }
 
