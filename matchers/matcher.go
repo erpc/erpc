@@ -48,12 +48,18 @@ func MatchConfig(config *common.MatcherConfig, networkId, method string, params 
 		}
 	}
 
-	// Check empty behavior if specified (only matters when we have a response)
-	if isEmptyish && config.Empty == common.CacheEmptyBehaviorIgnore {
-		return false
-	}
-	if !isEmptyish && config.Empty == common.CacheEmptyBehaviorOnly {
-		return false
+	// Check empty behavior only when explicitly specified. A nil Empty pointer
+	// means "no constraint" — don't filter on emptyish-ness either way.
+	// (Pre-PR #388 fix: this used the zero-value of CacheEmptyBehavior which
+	// is Ignore, silently filtering empty responses for any matcher that
+	// didn't set the field. See Bugbot #7.)
+	if config.Empty != nil {
+		if isEmptyish && *config.Empty == common.CacheEmptyBehaviorIgnore {
+			return false
+		}
+		if !isEmptyish && *config.Empty == common.CacheEmptyBehaviorOnly {
+			return false
+		}
 	}
 
 	return true

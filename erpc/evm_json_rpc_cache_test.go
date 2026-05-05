@@ -470,7 +470,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 					Network:  "evm:123",
 					Method:   "eth_getBalance",
 					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
-					Empty:    common.CacheEmptyBehaviorAllow,
+					Empty:    common.EmptyBehaviorPtr(common.CacheEmptyBehaviorAllow),
 					Action:   common.MatcherInclude,
 				},
 			},
@@ -1258,7 +1258,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 					Network:  "evm:123",
 					Method:   "eth_getBalance",
 					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
-					Empty:    common.CacheEmptyBehaviorIgnore,
+					Empty:    common.EmptyBehaviorPtr(common.CacheEmptyBehaviorIgnore),
 					Action:   common.MatcherInclude,
 				},
 			},
@@ -1296,7 +1296,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 					Network:  "evm:123",
 					Method:   "eth_getBalance",
 					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
-					Empty:    common.CacheEmptyBehaviorAllow,
+					Empty:    common.EmptyBehaviorPtr(common.CacheEmptyBehaviorAllow),
 					Action:   common.MatcherInclude,
 				},
 			},
@@ -1616,7 +1616,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 				{
 					Network: "evm:123",
 					Method:  "eth_getBalance",
-					Empty:   common.CacheEmptyBehaviorAllow,
+					Empty:   common.EmptyBehaviorPtr(common.CacheEmptyBehaviorAllow),
 					Action:  common.MatcherInclude,
 				},
 			},
@@ -1673,7 +1673,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 			config: &common.CachePolicyConfig{
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x1", true},
@@ -1685,7 +1685,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"0x1", "true"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x1", true},
@@ -1699,7 +1699,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">0x100", "*"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x200", false},
@@ -1711,7 +1711,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"<0x100", "*"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x50", false},
@@ -1723,7 +1723,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">=0x100|<=0x200", "*"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x150", false},
@@ -1739,7 +1739,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Params: []interface{}{
 					map[string]interface{}{"fromBlock": ">0x100", "toBlock": "<=0x200"},
 				},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method: "eth_getLogs",
 			params: []interface{}{
@@ -1758,7 +1758,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Params: []interface{}{
 					map[string]interface{}{"topics": []interface{}{"0x*"}},
 				},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method: "eth_getLogs",
 			params: []interface{}{
@@ -1776,7 +1776,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getTransactionByHash",
 				Params:   []interface{}{"*", "<empty>"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getTransactionByHash",
 			params:  []interface{}{"0x123", nil},
@@ -1788,7 +1788,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">=0x100|latest", "*"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"latest", false},
@@ -1802,7 +1802,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"0x1", "true", "extra"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x1", true},
@@ -1814,7 +1814,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"0x1", "true", "*"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x1", true},
@@ -1826,7 +1826,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">0x100", "*"},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method:  "eth_getBlockByNumber",
 			params:  []interface{}{"0x50", false},
@@ -1840,7 +1840,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 				Params: []interface{}{
 					map[string]interface{}{"fromBlock": ">0x100", "toBlock": "<=0x200"},
 				},
-				Finality: common.DataFinalityStateFinalized,
+				Finality: common.FinalityPtr(common.DataFinalityStateFinalized),
 			},
 			method: "eth_getLogs",
 			params: []interface{}{
@@ -1964,8 +1964,8 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 				cfg := &common.CachePolicyConfig{
 					Network:   "evm:123",
 					Method:    "eth_getBalance",
-					Empty:     tc.emptyBehavior,
-					Finality:  common.DataFinalityStateFinalized,
+					Empty:     common.EmptyBehaviorPtr(tc.emptyBehavior),
+					Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 					Connector: "mock1",
 				}
 				cfg.SetDefaults()
@@ -2079,7 +2079,7 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 				Method:      "eth_getBalance",
 				MinItemSize: tc.minSize,
 				MaxItemSize: tc.maxSize,
-				Finality:    common.DataFinalityStateFinalized,
+				Finality:    common.FinalityPtr(common.DataFinalityStateFinalized),
 				Connector:   "mock1",
 			}
 			cfg.SetDefaults()
@@ -2919,7 +2919,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		cfg := &common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateFinalized,
+			Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 			Connector: "mock1",
 		}
 		cfg.SetDefaults()
@@ -2982,7 +2982,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		cfg := &common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateFinalized,
+			Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 			Connector: "mock1",
 		}
 		cfg.SetDefaults()
@@ -3033,7 +3033,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		cfg := &common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateFinalized,
+			Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 			Connector: "mock1",
 		}
 		cfg.SetDefaults()
@@ -3079,7 +3079,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		cfg := &common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateFinalized,
+			Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 			Connector: "mock1",
 		}
 		cfg.SetDefaults()
@@ -3192,7 +3192,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 				cfg := &common.CachePolicyConfig{
 					Network:   "evm:123",
 					Method:    "eth_call",
-					Finality:  common.DataFinalityStateFinalized,
+					Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 					Connector: "mock1",
 				}
 				cfg.SetDefaults()
@@ -3238,7 +3238,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		cfg := &common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateFinalized,
+			Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 			Connector: "mock1",
 		}
 		cfg.SetDefaults()
@@ -3296,7 +3296,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		cfg := &common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateFinalized,
+			Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 			Connector: "mock1",
 		}
 		cfg.SetDefaults()
@@ -3355,7 +3355,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		cfg := &common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateFinalized,
+			Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 			Connector: "mock1",
 		}
 		cfg.SetDefaults()
@@ -3423,7 +3423,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 				cfg := &common.CachePolicyConfig{
 					Network:   "evm:123",
 					Method:    "eth_getBlockByNumber",
-					Finality:  common.DataFinalityStateFinalized,
+					Finality:  common.FinalityPtr(common.DataFinalityStateFinalized),
 					Connector: "mock1",
 				}
 				cfg.SetDefaults()

@@ -1385,8 +1385,8 @@ func TestCachePolicySetDefaults(t *testing.T) {
 			Network:  "1",
 			Method:   "eth_call",
 			Params:   []interface{}{"0x123"},
-			Finality: DataFinalityStateFinalized,
-			Empty:    CacheEmptyBehaviorIgnore,
+			Finality: FinalityPtr(DataFinalityStateFinalized),
+			Empty:    EmptyBehaviorPtr(CacheEmptyBehaviorIgnore),
 		}
 
 		err := policy.SetDefaults()
@@ -1397,7 +1397,8 @@ func TestCachePolicySetDefaults(t *testing.T) {
 		assert.Equal(t, "eth_call", policy.Matchers[0].Method)
 		assert.Equal(t, []interface{}{"0x123"}, policy.Matchers[0].Params)
 		assert.Equal(t, []DataFinalityState{DataFinalityStateFinalized}, policy.Matchers[0].Finality)
-		assert.Equal(t, CacheEmptyBehaviorIgnore, policy.Matchers[0].Empty)
+		assert.NotNil(t, policy.Matchers[0].Empty)
+		assert.Equal(t, CacheEmptyBehaviorIgnore, *policy.Matchers[0].Empty)
 		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
 	})
 
@@ -1413,12 +1414,13 @@ func TestCachePolicySetDefaults(t *testing.T) {
 	})
 
 	t.Run("finality-only legacy field preserves finality constraint", func(t *testing.T) {
-		// Regression for cursor-bot HIGH at common/defaults.go:622: a config
-		// with only `finality: realtime` (no method/network/params) used to
-		// silently fall through to a catch-all matcher, dropping the finality
-		// constraint entirely.
+		// Regression for cursor-bot HIGH at common/defaults.go: a config with
+		// only `finality: realtime` (no method/network/params) used to silently
+		// fall through to a catch-all matcher, dropping the finality constraint
+		// entirely. PR #388 pointer-types refactor distinguishes nil (unset)
+		// from explicit zero-value, so this case now preserves correctly.
 		policy := &CachePolicyConfig{
-			Finality: DataFinalityStateRealtime,
+			Finality: FinalityPtr(DataFinalityStateRealtime),
 		}
 
 		err := policy.SetDefaults()
@@ -1430,21 +1432,58 @@ func TestCachePolicySetDefaults(t *testing.T) {
 		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
 	})
 
-	t.Run("empty-only legacy field preserves empty behavior", func(t *testing.T) {
-		// Regression for cursor-bot HIGH at common/defaults.go:622: a config
-		// with only `empty: only` (no method/network/params) used to silently
-		// flip to the OPPOSITE Empty:Ignore catch-all.
+	t.Run("finalized-only legacy field is now distinguishable from unset (pointer fix)", func(t *testing.T) {
+		// PR #388 pointer-types fix: previously, `finality: finalized` was
+		// indistinguishable from "user didn't set finality" because Finalized
+		// is the zero value. Now with *DataFinalityState, nil = unset,
+		// &Finalized = explicit. This test pins the new semantic.
 		policy := &CachePolicyConfig{
-			Empty: CacheEmptyBehaviorOnly,
+			Finality: FinalityPtr(DataFinalityStateFinalized),
 		}
 
 		err := policy.SetDefaults()
 		assert.NoError(t, err)
 
 		assert.Len(t, policy.Matchers, 1)
-		assert.Equal(t, CacheEmptyBehaviorOnly, policy.Matchers[0].Empty,
+		assert.Equal(t, []DataFinalityState{DataFinalityStateFinalized}, policy.Matchers[0].Finality,
+			"explicit finality:finalized must be preserved through legacy conversion")
+	})
+
+	t.Run("empty-only legacy field preserves empty behavior", func(t *testing.T) {
+		// Regression for cursor-bot HIGH at common/defaults.go: a config with
+		// only `empty: only` (no method/network/params) used to silently flip
+		// to the OPPOSITE Empty:Ignore catch-all.
+		policy := &CachePolicyConfig{
+			Empty: EmptyBehaviorPtr(CacheEmptyBehaviorOnly),
+		}
+
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.NotNil(t, policy.Matchers[0].Empty, "empty constraint must be preserved through legacy conversion")
+		assert.Equal(t, CacheEmptyBehaviorOnly, *policy.Matchers[0].Empty,
 			"empty behavior must be preserved through legacy conversion")
 		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
+	})
+
+	t.Run("matcher without explicit Empty does not silently filter empty responses", func(t *testing.T) {
+		// PR #388 pointer-types fix for Bugbot #7: previously a matcher with
+		// no `empty:` field defaulted to CacheEmptyBehaviorIgnore (zero value),
+		// which the matcher engine interpreted as "exclude empty responses".
+		// That silently dropped empty responses for any matcher that didn't
+		// explicitly opt in via empty: allow. Now nil means no constraint.
+		policy := &CachePolicyConfig{
+			Network: "1",
+			Method:  "eth_call",
+			// Empty NOT set
+		}
+
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.Nil(t, policy.Matchers[0].Empty, "matcher.Empty must be nil when CachePolicyConfig.Empty is unset")
 	})
 
 	t.Run("existing matchers are not modified", func(t *testing.T) {
@@ -1471,7 +1510,8 @@ func TestCachePolicySetDefaults(t *testing.T) {
 		policy := &CachePolicyConfig{
 			Network: "1",
 			Method:  "eth_*",
-			// Finality and Empty are zero values
+			// Finality and Empty are nil (unset) — under the pointer-types
+			// refactor, these stay nil through conversion (no constraint).
 		}
 
 		err := policy.SetDefaults()
@@ -1480,8 +1520,8 @@ func TestCachePolicySetDefaults(t *testing.T) {
 		assert.Len(t, policy.Matchers, 1)
 		assert.Equal(t, "1", policy.Matchers[0].Network)
 		assert.Equal(t, "eth_*", policy.Matchers[0].Method)
-		assert.Equal(t, []DataFinalityState{DataFinalityStateFinalized}, policy.Matchers[0].Finality) // Zero value (finalized) is included
-		assert.Equal(t, CacheEmptyBehavior(0), policy.Matchers[0].Empty)                              // Zero value passed through
+		assert.Empty(t, policy.Matchers[0].Finality, "no finality constraint when CachePolicyConfig.Finality is nil")
+		assert.Nil(t, policy.Matchers[0].Empty, "no empty constraint when CachePolicyConfig.Empty is nil")
 		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
 	})
 

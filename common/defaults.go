@@ -619,55 +619,44 @@ func (c *CachePolicyConfig) convertLegacyMatchers() {
 	}
 
 	// Convert legacy fields to new matcher format if any are present.
-	//
-	// Finality and Empty present a detection limitation:
-	//   * `DataFinalityStateFinalized` is the zero value (intentional default per
-	//     common/data.go) — we cannot distinguish "user set finality: finalized"
-	//     from "user didn't set finality at all".
-	//   * `CacheEmptyBehaviorIgnore` is the zero value — same problem.
-	// We therefore detect *non-default* values (Unfinalized/Realtime/Unknown for
-	// finality; Allow/Only for empty). Configs whose ONLY legacy field is the
-	// zero-value of one of these enums fall through to the catch-all matcher
-	// below, which matches all finalities/empty behaviors. For users who
-	// explicitly want `finality: finalized` or `empty: ignore` constraints, they
-	// must use the new `matchers:` schema directly. (Future fix: convert these
-	// fields to pointer types so unset/explicit can be distinguished.)
+	// Finality and Empty are pointer types (PR #388, Bugbot HIGH/#7) so we can
+	// distinguish "user explicitly set the field" (non-nil) from "user didn't
+	// set it" (nil) — the underlying enums have zero values that would
+	// otherwise be ambiguous with unset (DataFinalityStateFinalized = 0,
+	// CacheEmptyBehaviorIgnore = 0).
 	hasLegacyFields := c.Network != "" ||
 		c.Method != "" ||
 		len(c.Params) > 0 ||
-		c.Finality != DataFinalityStateFinalized ||
-		c.Empty != CacheEmptyBehaviorIgnore
+		c.Finality != nil ||
+		c.Empty != nil
 
 	if hasLegacyFields {
 		matcher := &MatcherConfig{
 			Action: MatcherInclude, // Default action for cache policies
 		}
 
-		// Convert Network
 		if c.Network != "" {
 			matcher.Network = c.Network
 		}
-
-		// Convert Method
 		if c.Method != "" {
 			matcher.Method = c.Method
 		}
-
-		// Convert Params
 		if len(c.Params) > 0 {
 			matcher.Params = make([]interface{}, len(c.Params))
 			copy(matcher.Params, c.Params)
 		}
+		// Convert Finality only if explicitly set (otherwise leave matcher's
+		// Finality empty = no finality constraint, matches everything).
+		if c.Finality != nil {
+			matcher.Finality = []DataFinalityState{*c.Finality}
+		}
+		// Convert Empty only if explicitly set. If unset, leave matcher.Empty
+		// nil so MatchConfig won't filter empties.
+		if c.Empty != nil {
+			ev := *c.Empty
+			matcher.Empty = &ev
+		}
 
-		// Convert Finality - single state to array
-		// Always include finality when converting legacy fields
-		matcher.Finality = []DataFinalityState{c.Finality}
-
-		// Convert Empty behavior
-		// Always include empty behavior when converting legacy fields
-		matcher.Empty = c.Empty
-
-		// Add the matcher
 		c.Matchers = append(c.Matchers, matcher)
 	}
 

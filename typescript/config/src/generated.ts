@@ -278,7 +278,12 @@ export interface CachePolicyConfig {
   maxItemSize?: ByteSize;
   ttl?: Duration;
   /**
-   * Deprecated: Use Matchers instead
+   * Deprecated: Use Matchers instead.
+   * Note: Finality and Empty are pointer types so unset/explicit can be
+   * distinguished — DataFinalityStateFinalized and CacheEmptyBehaviorIgnore
+   * are the zero values of their respective enums, so non-pointer fields
+   * would leak "user wrote finality: finalized" into "user wrote nothing".
+   * See PR #388 review (Bugbot HIGH) for context.
    */
   network?: string;
   method?: string;
@@ -602,6 +607,11 @@ export interface MatcherConfig {
   method?: string;
   params?: any[];
   finality?: DataFinalityState[];
+  /**
+   * Empty is a pointer so callers can distinguish "no constraint" (nil)
+   * from explicitly setting CacheEmptyBehaviorIgnore (= zero value).
+   * See PR #388 review (Bugbot #7) for context.
+   */
   empty?: CacheEmptyBehavior;
   action?: MatcherAction;
 }

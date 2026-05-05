@@ -25,13 +25,15 @@ type PolicyWithMatcher struct {
 }
 
 // EmptyState returns the empty state behavior from the matched matcher.
-// Falls back to CacheEmptyBehaviorIgnore when the matcher is nil (defensive —
-// callers should always populate Matcher, but a nil shouldn't NPE in the cache hot path).
+// Returns CacheEmptyBehaviorIgnore when the matcher (or its Empty field) is
+// nil — callers want a concrete behavior; nil pointer means "no constraint
+// expressed", which behaves the same as Ignore for downstream filtering
+// decisions that only care about Allow/Only.
 func (pm *PolicyWithMatcher) EmptyState() common.CacheEmptyBehavior {
-	if pm == nil || pm.Matcher == nil {
+	if pm == nil || pm.Matcher == nil || pm.Matcher.Empty == nil {
 		return common.CacheEmptyBehaviorIgnore
 	}
-	return pm.Matcher.Empty
+	return *pm.Matcher.Empty
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {

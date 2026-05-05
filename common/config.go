@@ -246,6 +246,18 @@ type CacheMethodConfig struct {
 	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
+// FinalityPtr returns a pointer to the given DataFinalityState. Use this when
+// constructing CachePolicyConfig literals to express explicit user intent —
+// e.g. CachePolicyConfig{Finality: FinalityPtr(DataFinalityStateRealtime)}.
+func FinalityPtr(f DataFinalityState) *DataFinalityState {
+	return &f
+}
+
+// EmptyBehaviorPtr returns a pointer to the given CacheEmptyBehavior.
+func EmptyBehaviorPtr(e CacheEmptyBehavior) *CacheEmptyBehavior {
+	return &e
+}
+
 type CachePolicyConfig struct {
 	Matchers    []*MatcherConfig     `yaml:"matchers,omitempty" json:"matchers"`
 	Connector   string               `yaml:"connector" json:"connector"`
@@ -254,12 +266,17 @@ type CachePolicyConfig struct {
 	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
 	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
 
-	// Deprecated: Use Matchers instead
-	Network  string             `yaml:"network,omitempty" json:"network"`
-	Method   string             `yaml:"method,omitempty" json:"method"`
-	Params   []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty    CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	// Deprecated: Use Matchers instead.
+	// Note: Finality and Empty are pointer types so unset/explicit can be
+	// distinguished — DataFinalityStateFinalized and CacheEmptyBehaviorIgnore
+	// are the zero values of their respective enums, so non-pointer fields
+	// would leak "user wrote finality: finalized" into "user wrote nothing".
+	// See PR #388 review (Bugbot HIGH) for context.
+	Network  string              `yaml:"network,omitempty" json:"network"`
+	Method   string              `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}       `yaml:"params,omitempty" json:"params"`
+	Finality *DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty    *CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
 }
 
 type ConnectorDriverType string
@@ -1064,8 +1081,11 @@ type MatcherConfig struct {
 	Method   string              `yaml:"method,omitempty" json:"method"`
 	Params   []interface{}       `yaml:"params,omitempty" json:"params"`
 	Finality []DataFinalityState `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState[]"`
-	Empty    CacheEmptyBehavior  `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
-	Action   MatcherAction       `yaml:"action,omitempty" json:"action"`
+	// Empty is a pointer so callers can distinguish "no constraint" (nil)
+	// from explicitly setting CacheEmptyBehaviorIgnore (= zero value).
+	// See PR #388 review (Bugbot #7) for context.
+	Empty  *CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	Action MatcherAction       `yaml:"action,omitempty" json:"action"`
 }
 
 type MatcherAction string

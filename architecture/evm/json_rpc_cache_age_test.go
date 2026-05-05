@@ -60,7 +60,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			TTL:       common.Duration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateUnknown,
+			Finality:  common.FinalityPtr(common.DataFinalityStateUnknown),
 		}, mockConnector)
 		require.NoError(t, err)
 
@@ -115,7 +115,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			TTL:       common.Duration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateUnknown,
+			Finality:  common.FinalityPtr(common.DataFinalityStateUnknown),
 		}, mockConnector)
 		require.NoError(t, err)
 
@@ -165,7 +165,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			TTL:       common.Duration(ttl),
 			Network:   "*",
 			Method:    "eth_chainId",
-			Finality:  common.DataFinalityStateUnknown,
+			Finality:  common.FinalityPtr(common.DataFinalityStateUnknown),
 		}, mockConnector)
 		require.NoError(t, err)
 
@@ -216,7 +216,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			Connector: "mock-connector",
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateUnknown,
+			Finality:  common.FinalityPtr(common.DataFinalityStateUnknown),
 			// TTL is intentionally not set
 		}, mockConnector)
 		require.NoError(t, err)
@@ -292,7 +292,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			TTL:       common.Duration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateUnknown,
+			Finality:  common.FinalityPtr(common.DataFinalityStateUnknown),
 		}, mockConnector1)
 		require.NoError(t, err)
 
@@ -301,7 +301,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			TTL:       common.Duration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
-			Finality:  common.DataFinalityStateUnknown,
+			Finality:  common.FinalityPtr(common.DataFinalityStateUnknown),
 		}, mockConnector2)
 		require.NoError(t, err)
 
