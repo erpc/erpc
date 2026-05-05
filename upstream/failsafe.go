@@ -964,21 +964,16 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 
 	if err != nil {
 		if ser, ok := execErr.(common.StandardError); ok {
-			be := ser.Base()
-			if be != nil {
-				var dts map[string]interface{}
-				if be.Details != nil {
-					dts = be.Details
-				} else {
-					dts = make(map[string]interface{})
-				}
+			if be := ser.Base(); be != nil {
+				// Use SetDetail so these late writes coordinate with any
+				// concurrent reader (e.g. consensus.runAnalyzer formatting
+				// the same error via fmt.Sprintf("%v", err)).
 				if method != "" {
-					dts["method"] = method
+					be.SetDetail("method", method)
 				}
 				if upstreamId != "" {
-					dts["upstreamId"] = upstreamId
+					be.SetDetail("upstreamId", upstreamId)
 				}
-				be.Details = dts
 			}
 		}
 		return err

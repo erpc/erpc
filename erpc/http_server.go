@@ -1310,8 +1310,8 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 			"message": message,
 		}
 		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
-		if jre.Details["data"] != nil {
-			errObj["data"] = jre.Details["data"]
+		if data, ok := jre.GetDetail("data"); ok && data != nil {
+			errObj["data"] = data
 		} else if includeErrorDetails != nil && *includeErrorDetails {
 			if method != "eth_call" {
 				// For eth_calls clients expect "data" to be string for revert reason.

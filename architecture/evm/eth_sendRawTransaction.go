@@ -59,8 +59,8 @@ func upstreamPostForward_eth_sendRawTransaction(
 	}
 
 	reason := common.NonceExceptionReason("")
-	if nonceErr.Details != nil {
-		if r, ok := nonceErr.Details["nonceExceptionReason"].(string); ok {
+	if v, ok := nonceErr.GetDetail("nonceExceptionReason"); ok {
+		if r, ok := v.(string); ok {
 			reason = common.NonceExceptionReason(r)
 		}
 	}
