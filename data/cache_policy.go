@@ -132,7 +132,24 @@ func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface
 	return matched, nil
 }
 
-// MatchesForGetWithMatcher returns both the match result and the specific matcher that matched
+// MatchesForGetWithMatcher returns both the match result and the specific
+// matcher that matched, intentionally diverging from MatchesForSetWithMatcher
+// in two ways:
+//
+//  1. Finality is broadened on read — a finalized request may match an
+//     unfinalized policy because data cached as unfinalized is still valid
+//     once it finalizes. SET requires an exact match.
+//  2. The matcher's `empty:` constraint is NOT evaluated here. At policy-
+//     selection time we don't yet have the cached value, so we can't know if
+//     it's "emptyish". Empty-filtering happens post-fetch in the cache layer
+//     (see EvmJsonRpcCache.Get / shouldAcceptCachedResult — it consults
+//     PolicyWithMatcher.EmptyState() once the value is in hand). Tests that
+//     pin this end-to-end behavior live in evm_json_rpc_cache_test.go around
+//     the "empty behavior set to ignore/allow/only" subtests.
+//
+// Cursor-bot flagged the asymmetry with MatchesForSetWithMatcher (which uses
+// matchers.MatchConfig with isEmptyish) as a MED bug; the asymmetry is
+// architectural intent, not a defect — see PR #388 review thread.
 func (p *CachePolicy) MatchesForGetWithMatcher(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, *common.MatcherConfig) {
 	// Respect appliesTo directive for get
 	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToGet {

@@ -1139,6 +1139,15 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 					matcherCopy.Finality = make([]DataFinalityState, len(matcher.Finality))
 					copy(matcherCopy.Finality, matcher.Finality)
 				}
+				// Deep copy the Empty pointer. The shallow struct copy above leaves both
+				// matchers sharing the same *CacheEmptyBehavior pointee — any future code
+				// path that mutates *Empty (none today, but contract is "Copy() returns an
+				// independent clone") would corrupt the original. Resolves PR #388
+				// cursor-bot LOW at this line — introduced by the pointer-types refactor.
+				if matcher.Empty != nil {
+					emptyCopy := *matcher.Empty
+					matcherCopy.Empty = &emptyCopy
+				}
 				copied.Matchers[i] = matcherCopy
 			}
 		}

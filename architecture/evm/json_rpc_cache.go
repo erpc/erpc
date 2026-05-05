@@ -278,9 +278,19 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			}
 		}
 	}
-	// Use matchedPolicyWithMatcher if we found data, otherwise use the last policyWithMatcher for metrics
+	// Use matchedPolicyWithMatcher if we found data, otherwise use the last policyWithMatcher for metrics.
 	if matchedPolicyWithMatcher != nil {
 		policyWithMatcher = matchedPolicyWithMatcher
+	}
+	// Invariant: by this point policyWithMatcher must be non-nil. The early-return at the
+	// `len(policies) == 0` branch above ensures the loop runs at least once, and the loop's
+	// `range` assigns policyWithMatcher each iteration. findGetPolicies never appends nil
+	// entries (see its construction of &data.PolicyWithMatcher{...}). The defensive check
+	// below guards against future refactors that might break either invariant — cheaper than
+	// chasing a panic in production. Resolves PR #388 cursor-bot HIGH at this line.
+	if policyWithMatcher == nil {
+		return nil, fmt.Errorf("internal: policyWithMatcher is nil after policy loop (network=%s method=%s)",
+			req.NetworkId(), rpcReq.Method)
 	}
 	policy := policyWithMatcher.Policy
 
