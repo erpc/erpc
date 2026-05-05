@@ -8,8 +8,18 @@
 #     - ts-prod -> Install prod dependencies only
 #     - final -> Final stage where we copy the Go binary and the TS files
 
-# Build stage for Go
-FROM golang:1.26-alpine@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5 AS go-builder
+# Build stage for Go.
+#
+# `--platform=$BUILDPLATFORM` pins the builder image to the *host* arch so the
+# Go toolchain itself runs natively (no qemu emulation of the compiler — the
+# compiler segfaults under qemu-amd64 on arm64 hosts, see
+# https://github.com/golang/go/issues/55903).
+#
+# `TARGETOS` / `TARGETARCH` are auto-populated by buildx when running
+# `--platform linux/amd64,linux/arm64`; Go's native cross-compiler emits the
+# right binary per target. Output binary lands in /build/erpc-server and is
+# copied into the final per-target image stage as before.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5 AS go-builder
 
 WORKDIR /build
 
@@ -20,13 +30,18 @@ RUN go mod download
 # Copy the source code
 COPY . .
 
-# Set build arguments
+# Set build arguments. TARGETOS/TARGETARCH come from buildx (always set when
+# using docker buildx with --platform); fall back to host values for plain
+# `docker build`.
 ARG VERSION
 ARG COMMIT_SHA
+ARG TARGETOS
+ARG TARGETARCH
 
 # Set environment variables for Go build
 ENV CGO_ENABLED=0 \
-    GOOS=linux \
+    GOOS=${TARGETOS:-linux} \
+    GOARCH=${TARGETARCH} \
     LDFLAGS="-w -s -X github.com/erpc/erpc/common.ErpcVersion=${VERSION} -X github.com/erpc/erpc/common.ErpcCommitSha=${COMMIT_SHA}"
 
 # Build the Go binary
