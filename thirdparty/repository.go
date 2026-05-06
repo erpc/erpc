@@ -62,8 +62,10 @@ func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultRecheckInterval
 	}
 
+	fallbackURL, _ := settings["fallbackRepositoryUrl"].(string)
+
 	// ensure we fetch and parse remote repository data (cached for 1h)
-	err = v.ensureRemoteData(ctx, logger, recheckInterval, urlStr)
+	err = v.ensureRemoteData(ctx, logger, recheckInterval, urlStr, fallbackURL)
 	if err != nil {
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
@@ -103,7 +105,8 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 	if !ok {
 		recheckInterval = DefaultRecheckInterval
 	}
-	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, urlStr); err != nil {
+	fallbackURL, _ := settings["fallbackRepositoryUrl"].(string)
+	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, urlStr, fallbackURL); err != nil {
 		return nil, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
@@ -182,7 +185,7 @@ func (v *RepositoryVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return false
 }
 
-func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, remoteURL string) error {
+func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, remoteURL string, fallbackURL string) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -195,6 +198,19 @@ func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, logger *zerolog
 	if err != nil {
 		// if fetch fails, keep stale data
 		logger.Warn().Err(err).Msg("could not refresh remote repository data; will use stale data")
+		// on cold start (no cached data) try the fallback URL to pre-warm the cache
+		if fallbackURL != "" {
+			if _, hasCached := v.remoteData[remoteURL]; !hasCached {
+				logger.Warn().Str("fallbackUrl", fallbackURL).Msg("no cached data; attempting fallback repository URL")
+				if fbData, fbErr := fetchRemoteData(ctx, fallbackURL); fbErr == nil {
+					// store under the primary key so primary data naturally replaces it on recovery;
+					// lastFetchedAt intentionally not updated so primary is retried next interval
+					v.remoteData[remoteURL] = fbData
+				} else {
+					logger.Warn().Err(fbErr).Msg("fallback repository fetch also failed")
+				}
+			}
+		}
 		return nil
 	}
 
