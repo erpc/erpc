@@ -1995,11 +1995,17 @@ func DefaultEmptyResultAccept() []string {
 // upstreams commonly return empty for this method, which is expected behavior.
 // Note: eth_getTransactionReceipt is excluded as a quick remedy. Ideally we'd
 // only allow null for pending txs.
+// Note: eth_getBlockReceipts is excluded for the same reason as
+// eth_getTransactionReceipt — an empty array is the legitimate response for
+// blocks with zero transactions and should not be retried as missing data.
+// Including it here forces the post-forward hook to convert correct empty
+// responses into ErrEndpointMissingData, which bypasses emptyResultAccept and
+// drives retry-with-emptyResultDelay loops that can outrun the network outer
+// timeout (see incident note in the PR description).
 func DefaultMarkEmptyAsErrorMethods() []string {
 	return []string{
 		"eth_blockNumber",
 		"eth_getBlockByNumber",
-		"eth_getBlockReceipts",
 		"eth_getTransactionByHash",
 		"eth_getTransactionByBlockHashAndIndex",
 		"eth_getTransactionByBlockNumberAndIndex",
