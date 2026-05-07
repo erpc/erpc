@@ -468,6 +468,22 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				if jrr != nil && jrr.Error == nil {
 					nrq.SetLastValidResponse(ctx, nrs)
 					isSuccess = true
+					// Track decoded result-body size to surface networks/methods
+					// that drive transient heap spikes via the JSON parse pipeline
+					// (each response peaks at ~3-4× its size in transient allocs:
+					// io.Copy → bytes.Buffer.grow → sonic.Unmarshal → []byte copy).
+					if size := jrr.ResultLength(); size > 0 {
+						telemetry.ObserverHandle(
+							telemetry.MetricUpstreamResponseSizeBytes,
+							u.ProjectId,
+							u.VendorName(),
+							u.NetworkLabel(),
+							cfg.Id,
+							method,
+							finality.String(),
+							nrq.UserId(),
+						).Observe(float64(size))
+					}
 				} else {
 					isSuccess = false
 				}

@@ -493,6 +493,7 @@ var (
 	MetricCacheGetSuccessMissDuration         *LabeledHistogram
 	MetricCacheGetErrorDuration               *LabeledHistogram
 	MetricRateLimiterRemoteDuration           *LabeledHistogram
+	MetricUpstreamResponseSizeBytes           *LabeledHistogram
 )
 
 // ScoreMetricsMode controls how score metrics are emitted.
@@ -655,6 +656,21 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
 	}, []string{"budget", "result"})
 
+	// Upstream response result-body size in bytes (decoded, post-gzip). Use
+	// for finding networks/methods that produce huge responses — the
+	// dominant driver of transient heap spikes (each response goes through
+	// io.Copy → bytes.Buffer.grow → sonic.Unmarshal → []byte copy, peaking
+	// at ~3-4× the response size in transient allocations).
+	//
+	// Buckets cover ~1 KB to ~100 MB, since the worst case is a fat
+	// eth_getLogs / debug_traceBlockByNumber response.
+	MetricUpstreamResponseSizeBytes = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "upstream_response_size_bytes",
+		Help:      "Size of the result body of upstream JSON-RPC responses in bytes (decoded post-gzip), per network/method/upstream.",
+		Buckets:   []float64{256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456},
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user"})
+
 	return parseErr
 }
 
@@ -694,6 +710,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	MetricCacheGetSuccessMissDuration = registerOrReuse(MetricCacheGetSuccessMissDuration)
 	MetricCacheGetErrorDuration = registerOrReuse(MetricCacheGetErrorDuration)
 	MetricRateLimiterRemoteDuration = registerOrReuse(MetricRateLimiterRemoteDuration)
+	MetricUpstreamResponseSizeBytes = registerOrReuse(MetricUpstreamResponseSizeBytes)
 
 	// Clear cached handles since the Vecs were re-created.
 	ResetHandleCache()
