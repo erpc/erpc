@@ -472,16 +472,17 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					// that drive transient heap spikes via the JSON parse pipeline
 					// (each response peaks at ~3-4× its size in transient allocs:
 					// io.Copy → bytes.Buffer.grow → sonic.Unmarshal → []byte copy).
+					// Labels intentionally exclude vendor/upstream/user — those
+					// are correlatable via upstream_request_total and adding them
+					// here multiplies cardinality without changing the diagnostic
+					// answer (which net+method emits fat responses?).
 					if size := jrr.ResultLength(); size > 0 {
 						telemetry.ObserverHandle(
 							telemetry.MetricUpstreamResponseSizeBytes,
 							u.ProjectId,
-							u.VendorName(),
 							u.NetworkLabel(),
-							cfg.Id,
 							method,
 							finality.String(),
-							nrq.UserId(),
 						).Observe(float64(size))
 					}
 				} else {

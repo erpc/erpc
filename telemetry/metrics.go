@@ -662,14 +662,20 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 	// io.Copy → bytes.Buffer.grow → sonic.Unmarshal → []byte copy, peaking
 	// at ~3-4× the response size in transient allocations).
 	//
-	// Buckets cover ~1 KB to ~100 MB, since the worst case is a fat
-	// eth_getLogs / debug_traceBlockByNumber response.
+	// Cardinality is intentionally tight: only network/category/finality
+	// dimensions, since identifying which net+method produces fat
+	// responses is the actionable question (vendor/upstream/user are
+	// derivable via traffic correlation in upstream_request_total).
+	//
+	// Buckets are coarse on purpose — we just need order-of-magnitude
+	// signal: <4 KB (header-y), 64 KB (single block), 1 MB (small logs),
+	// 16 MB (heavy logs), 100 MB+ (pathological).
 	MetricUpstreamResponseSizeBytes = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_response_size_bytes",
-		Help:      "Size of the result body of upstream JSON-RPC responses in bytes (decoded post-gzip), per network/method/upstream.",
-		Buckets:   []float64{256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456},
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user"})
+		Help:      "Size of the result body of upstream JSON-RPC responses in bytes (decoded post-gzip), per network/method/finality.",
+		Buckets:   []float64{4096, 65536, 1048576, 16777216, 104857600},
+	}, []string{"project", "network", "category", "finality"})
 
 	return parseErr
 }
