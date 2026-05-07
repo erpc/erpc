@@ -28,6 +28,7 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`ankr`](#ankr) Accepts ankr.com api key and automatically adds all their EVM chains.
 - [`quicknode`](#quicknode) Accepts quicknode.com api key and automatically adds all their EVM chains.
 - [`routemesh`](#routemesh) Accepts routemesh.io api key and automatically adds all their EVM chains.
+- [`blockdaemon`](#blockdaemon) Accepts blockdaemon.com api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -788,6 +789,48 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `blockdaemon`
+
+Built for [Blockdaemon](https://www.blockdaemon.com/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Callout type='info'>
+  You can create an API key from your [Blockdaemon dashboard](https://app.blockdaemon.com/). A single key grants access to every EVM chain Blockdaemon's RPC service supports.
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: blockdaemon://YOUR_BLOCKDAEMON_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "blockdaemon://YOUR_BLOCKDAEMON_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 #### `quicknode`
 
 Built for [QuickNode](https://www.quicknode.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
@@ -1061,4 +1104,7 @@ providers:
     settings:
       baseURL: lb.routemes.sh # (optional) Defaults to lb.routemes.sh
       apiKey: xxxxx # Your Routemesh API key
+  - vendor: blockdaemon
+    settings:
+      apiKey: xxxxx # Your Blockdaemon API key
 ```
