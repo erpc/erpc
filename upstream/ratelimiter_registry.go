@@ -157,8 +157,10 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 		lg := r.logger.With().Str("budget", budgetCfg.Id).Logger()
 		lg.Debug().Msgf("initializing rate limiter budget")
 		maxTimeout := time.Duration(0)
+		var admissionCap int
 		if r.cfg.Store != nil && r.cfg.Store.Redis != nil {
 			maxTimeout = r.cfg.Store.Redis.GetTimeout.Duration()
+			admissionCap = remoteAdmissionCap(r.cfg.Store.Redis.ConnPoolSize)
 		}
 		budget := &RateLimiterBudget{
 			Id:         budgetCfg.Id,
@@ -166,6 +168,17 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			registry:   r,
 			logger:     &lg,
 			maxTimeout: maxTimeout,
+		}
+		if admissionCap > 0 {
+			budget.admission = make(chan struct{}, admissionCap)
+		}
+		// Pre-resolve metric handles for the hot path.
+		budget.inflightGauge = telemetry.MetricRateLimiterRemoteInflight.WithLabelValues(budgetCfg.Id)
+		budget.admissionShedded = telemetry.MetricRateLimiterRemoteAdmissionSheddedTotal.WithLabelValues(budgetCfg.Id)
+		if telemetry.MetricRateLimiterRemoteDuration != nil {
+			budget.durationOK = telemetry.MetricRateLimiterRemoteDuration.WithLabelValues(budgetCfg.Id, "ok")
+			budget.durationOverlimit = telemetry.MetricRateLimiterRemoteDuration.WithLabelValues(budgetCfg.Id, "over_limit")
+			budget.durationFailopen = telemetry.MetricRateLimiterRemoteDuration.WithLabelValues(budgetCfg.Id, "fail_open")
 		}
 
 		for _, rule := range budgetCfg.Rules {
@@ -246,4 +259,33 @@ func defaultCacheKeyPrefix(val string) string {
 		return val
 	}
 	return "erpc_rl_"
+}
+
+// remoteAdmissionCap derives the per-budget concurrent in-flight cap from the
+// Redis connection pool size.
+//
+// Sizing rationale (envoyproxy/ratelimit + radix.v3):
+//   - Each rate-limit check sends a small pipeline (typically INCRBY+EXPIRE).
+//   - radix collects these via implicit pipelining (window=5ms, limit=32) so a
+//     single pool connection can have up to 32 commands "in flight" at once,
+//     i.e. effectively connPoolSize × 16 concurrent rate-limit checks per
+//     budget when Redis is healthy.
+//   - We multiply pool size by 32 to leave generous headroom in healthy state.
+//     Beyond that we'd rather load-shed (fail-open) than queue more goroutines:
+//     queueing here was the root cause of the 2026-05-07 cronos receipts
+//     death-spiral.
+//   - Per-budget cap (not global) so a single hot budget can't starve others.
+//
+// A floor of 256 ensures a small/misconfigured pool doesn't accidentally pin
+// every request into the load-shed path on bursty traffic.
+func remoteAdmissionCap(connPoolSize int) int {
+	const minCap = 256
+	if connPoolSize <= 0 {
+		return minCap
+	}
+	cap := connPoolSize * 32
+	if cap < minCap {
+		return minCap
+	}
+	return cap
 }
