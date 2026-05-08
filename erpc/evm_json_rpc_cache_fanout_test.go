@@ -1,0 +1,284 @@
+package erpc
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+// fanOutPolicies wires both mock connectors as cache policies for the same
+// network+method so the cache layer fans out across them.
+func fanOutPolicies(t *testing.T, conns []*data.MockConnector) []*data.CachePolicy {
+	t.Helper()
+	policies := make([]*data.CachePolicy, 0, len(conns))
+	for _, c := range conns {
+		p, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Connector: c.Id(),
+		}, c)
+		require.NoError(t, err)
+		policies = append(policies, p)
+	}
+	return policies
+}
+
+func newGetBlockByNumberRequest(t *testing.T, network *Network, cache common.CacheDAL) *common.NormalizedRequest {
+	t.Helper()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
+	req.SetNetwork(network)
+	req.SetCacheDal(cache)
+	return req
+}
+
+func TestEvmJsonRpcCache_FanOut_FirstHitWins(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	expected := `{"number":"0x1","hash":"0xfromA"}`
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(expected), nil)
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(`{"number":"0x1","hash":"0xfromB"}`), nil).Maybe()
+
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	// We don't assert which connector wins — only that we got one of the hits.
+	got := jrr.GetResultString()
+	require.Truef(t,
+		got == expected || got == `{"number":"0x1","hash":"0xfromB"}`,
+		"unexpected response: %s", got,
+	)
+	require.True(t, resp.FromCache())
+}
+
+func TestEvmJsonRpcCache_FanOut_AllMissReturnsNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	notFound := common.NewErrRecordNotFound("evm:123:1", "k", "mock")
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return(nil, notFound)
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return(nil, notFound)
+
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+
+	require.NoError(t, err)
+	require.Nil(t, resp, "all-miss should fall through to upstream layer")
+	conns[0].AssertCalled(t, "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
+	conns[1].AssertCalled(t, "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
+}
+
+func TestEvmJsonRpcCache_FanOut_OneMissOneHit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	notFound := common.NewErrRecordNotFound("evm:123:1", "k", "mock1")
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return(nil, notFound)
+
+	cached := `{"number":"0x1","hash":"0xabc"}`
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(cached), nil)
+
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, cached, jrr.GetResultString())
+}
+
+func TestEvmJsonRpcCache_FanOut_OneErrorOneHit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return(nil, errors.New("connection refused"))
+
+	cached := `{"number":"0x1","hash":"0xabc"}`
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(cached), nil)
+
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp, "errors on one connector must not block hits from peers")
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, cached, jrr.GetResultString())
+}
+
+func TestEvmJsonRpcCache_FanOut_AllErrorsFallThrough(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return(nil, errors.New("connection refused"))
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return(nil, errors.New("i/o timeout"))
+
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+
+	require.NoError(t, err, "Get must not surface connector errors — caller falls through to upstream")
+	require.Nil(t, resp)
+}
+
+func TestEvmJsonRpcCache_FanOut_RunsConcurrently(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	// Both connectors take 100ms; if run sequentially the call would take ≥200ms.
+	// Parallel fan-out keeps it under ~150ms.
+	const delay = 100 * time.Millisecond
+	for _, c := range conns {
+		c.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+			After(delay).
+			Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", c.Id()))
+	}
+
+	t0 := time.Now()
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+	elapsed := time.Since(t0)
+
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	assert.Less(t, elapsed, 180*time.Millisecond,
+		"fan-out should run connectors concurrently (took %v)", elapsed)
+}
+
+// FirstHitCancelsPeer verifies that once one connector returns a hit, peer
+// connectors observe context cancellation. The slow connector here would take
+// 1s if not cancelled — the assertion is that the call returns much earlier.
+func TestEvmJsonRpcCache_FanOut_FirstHitCancelsPeer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	cached := `{"number":"0x1","hash":"0xfast"}`
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(cached), nil) // immediate hit
+
+	var slowSawCancel atomic.Bool
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			callCtx := args.Get(0).(context.Context)
+			select {
+			case <-callCtx.Done():
+				slowSawCancel.Store(true)
+			case <-time.After(time.Second):
+			}
+		}).
+		Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", "mock2")).Maybe()
+
+	t0 := time.Now()
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+	elapsed := time.Since(t0)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, cached, jrr.GetResultString())
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"slow peer should be cancelled once fast peer wins (took %v)", elapsed)
+	// Allow up to 200ms for the slow goroutine to observe cancellation.
+	assert.Eventually(t, slowSawCancel.Load, 200*time.Millisecond, 5*time.Millisecond,
+		"slow peer goroutine should observe context cancellation after first hit wins")
+}
+
+func TestEvmJsonRpcCache_FanOut_ParentContextCancellationStopsAll(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	for _, c := range conns {
+		c.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				callCtx := args.Get(0).(context.Context)
+				<-callCtx.Done()
+			}).
+			Return(nil, context.Canceled).Maybe()
+	}
+
+	getCtx, cancelGet := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancelGet()
+	}()
+	t0 := time.Now()
+	_, _ = cache.Get(getCtx, newGetBlockByNumberRequest(t, network, cache))
+	elapsed := time.Since(t0)
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"caller-cancelled context should unwind all goroutines promptly (took %v)", elapsed)
+}
+
+func TestEvmJsonRpcCache_FanOut_RespectsSkipCacheReadDirective(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	cached := `{"number":"0x1","hash":"0xfromB"}`
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(cached), nil)
+
+	req := newGetBlockByNumberRequest(t, network, cache)
+	req.SetDirectives(&common.RequestDirectives{SkipCacheRead: conns[0].Id()})
+
+	resp, err := cache.Get(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, cached, jrr.GetResultString())
+	conns[0].AssertNotCalled(t, "Get",
+		mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
+}

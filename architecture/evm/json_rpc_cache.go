@@ -198,114 +198,178 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	policySpan.End()
 
-	var jrr *common.JsonRpcResponse
-	var connector data.Connector
-	var policy *data.CachePolicy
-	// Track context for correct miss attribution
-	var lastMissConnectorId, lastMissPolicyStr, lastMissTTL string
-	var lastRejectConnectorId, lastRejectPolicyStr, lastRejectTTL string
-	for _, policy = range policies {
-		connector = policy.GetConnector()
-		if req.ShouldSkipCacheRead(connector.Id()) {
-			c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Msg("skipping cache connector due to skip-cache-read directive pattern")
+	// Fan out cache reads in parallel across matching connectors. findGetPolicies
+	// already deduped by connector, so each policy here represents a unique
+	// connector. First accepted hit cancels peers; if every connector confirms
+	// a miss (or errors/rejects), the request falls through to the upstream layer.
+	type fanResult struct {
+		jrr        *common.JsonRpcResponse
+		policy     *data.CachePolicy
+		connector  data.Connector
+		err        error
+		missReason string
+	}
+
+	fanCtx, cancelFan := context.WithCancel(ctx)
+	defer cancelFan()
+
+	results := make(chan fanResult, len(policies))
+	var wg sync.WaitGroup
+
+	for _, p := range policies {
+		conn := p.GetConnector()
+		if req.ShouldSkipCacheRead(conn.Id()) {
+			c.logger.Debug().Str("connector", conn.Id()).Interface("id", req.ID()).Msg("skipping cache connector due to skip-cache-read directive pattern")
 			continue
 		}
-		policyCtx, policySpan := common.StartDetailSpan(ctx, "Cache.GetForPolicy", trace.WithAttributes(
-			attribute.String("cache.policy_summary", policy.String()),
-			attribute.String("cache.connector_id", connector.Id()),
-			attribute.String("cache.method", rpcReq.Method),
-		))
-		jrr, err = c.doGet(policyCtx, connector, req, rpcReq)
-		if err != nil {
-			common.SetTraceSpanError(policySpan, err)
-			policySpan.SetAttributes(
-				attribute.String("cache.get_outcome", "error"),
-				attribute.String("cache.error", common.ErrorSummary(err)),
-			)
-			telemetry.MetricCacheGetErrorTotal.WithLabelValues(
-				c.projectId,
-				req.NetworkLabel(),
-				rpcReq.Method,
-				connector.Id(),
-				policy.String(),
-				policy.GetTTL().String(),
-				common.ErrorSummary(err),
-			).Inc()
-			telemetry.MetricCacheGetErrorDuration.WithLabelValues(
-				c.projectId,
-				req.NetworkLabel(),
-				rpcReq.Method,
-				connector.Id(),
-				policy.String(),
-				policy.GetTTL().String(),
-				common.ErrorSummary(err),
-			).Observe(time.Since(start).Seconds())
-		} else if jrr == nil {
-			policySpan.SetAttributes(attribute.String("cache.get_outcome", "miss"))
-		} else {
-			policySpan.SetAttributes(attribute.String("cache.get_outcome", "found"))
-		}
-		if c.logger.GetLevel() == zerolog.TraceLevel {
-			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
-		} else {
-			c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
-		}
+		wg.Add(1)
+		go func(policy *data.CachePolicy, connector data.Connector) {
+			defer wg.Done()
+			policyCtx, policySpan := common.StartDetailSpan(fanCtx, "Cache.GetForPolicy", trace.WithAttributes(
+				attribute.String("cache.policy_summary", policy.String()),
+				attribute.String("cache.connector_id", connector.Id()),
+				attribute.String("cache.method", rpcReq.Method),
+			))
+			defer policySpan.End()
 
-		// Record a miss attribution for this attempt if it returned nil without error
-		if err == nil && jrr == nil && policy != nil {
-			lastMissConnectorId = connector.Id()
-			lastMissPolicyStr = policy.String()
-			lastMissTTL = policy.GetTTL().String()
-		}
-
-		policySpan.End()
-		if jrr != nil {
-			// Validate the cached result's age against the policy's TTL
-			if c.shouldAcceptCachedResult(ctx, req, jrr, policy) {
-				// Result is acceptable, use it
-				break
-			} else {
-				// Result is too old, reject it and try the next policy
-				c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Msg("cached result rejected due to age exceeding TTL")
-				// Record last rejection context to attribute miss correctly
-				lastRejectConnectorId = connector.Id()
-				lastRejectPolicyStr = policy.String()
-				lastRejectTTL = policy.GetTTL().String()
-				jrr = nil
-				continue
+			jrr, err := c.doGet(policyCtx, connector, req, rpcReq)
+			if err != nil {
+				// Errors caused by peer-cancellation aren't real failures —
+				// they happen because another connector already won.
+				if errors.Is(err, context.Canceled) && fanCtx.Err() != nil {
+					policySpan.SetAttributes(attribute.String("cache.get_outcome", "cancelled"))
+					return
+				}
+				common.SetTraceSpanError(policySpan, err)
+				policySpan.SetAttributes(
+					attribute.String("cache.get_outcome", "error"),
+					attribute.String("cache.error", common.ErrorSummary(err)),
+				)
+				telemetry.MetricCacheGetErrorTotal.WithLabelValues(
+					c.projectId,
+					req.NetworkLabel(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					policy.GetTTL().String(),
+					common.ErrorSummary(err),
+				).Inc()
+				telemetry.MetricCacheGetErrorDuration.WithLabelValues(
+					c.projectId,
+					req.NetworkLabel(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					policy.GetTTL().String(),
+					common.ErrorSummary(err),
+				).Observe(time.Since(start).Seconds())
+				if c.logger.GetLevel() <= zerolog.DebugLevel {
+					c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("cache connector errored during GET")
+				}
+				select {
+				case results <- fanResult{policy: policy, connector: connector, err: err, missReason: "connector_error"}:
+				case <-fanCtx.Done():
+				}
+				return
 			}
+			if jrr == nil {
+				policySpan.SetAttributes(attribute.String("cache.get_outcome", "miss"))
+				select {
+				case results <- fanResult{policy: policy, connector: connector, missReason: "empty_result"}:
+				case <-fanCtx.Done():
+				}
+				return
+			}
+			if !c.shouldAcceptCachedResult(ctx, req, jrr, policy) {
+				c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Msg("cached result rejected due to age exceeding TTL")
+				policySpan.SetAttributes(attribute.String("cache.get_outcome", "ttl_rejected"))
+				select {
+				case results <- fanResult{policy: policy, connector: connector, missReason: "ttl_rejected"}:
+				case <-fanCtx.Done():
+				}
+				return
+			}
+			policySpan.SetAttributes(attribute.String("cache.get_outcome", "found"))
+			select {
+			case results <- fanResult{jrr: jrr, policy: policy, connector: connector}:
+				cancelFan()
+			case <-fanCtx.Done():
+			}
+		}(p, conn)
+	}
+
+	go func() { wg.Wait(); close(results) }()
+
+	var (
+		jrr        *common.JsonRpcResponse
+		policy     *data.CachePolicy
+		connector  data.Connector
+		lastMiss   *fanResult
+		lastReject *fanResult
+		lastError  *fanResult
+	)
+	for r := range results {
+		if r.jrr != nil && jrr == nil {
+			rr := r
+			jrr = rr.jrr
+			policy = rr.policy
+			connector = rr.connector
+			continue
+		}
+		switch r.missReason {
+		case "ttl_rejected":
+			rr := r
+			lastReject = &rr
+		case "empty_result":
+			rr := r
+			lastMiss = &rr
+		case "connector_error":
+			rr := r
+			lastError = &rr
 		}
 	}
 
 	if jrr == nil {
-		// Prefer attributing miss to age-guard rejection if any, otherwise the last miss
-		labelConnectorId := connector.Id()
-		labelPolicyStr := policy.String()
-		labelTTL := policy.GetTTL().String()
+		// All connectors confirmed miss / errored / age-rejected. Attribute the
+		// fall-through metric to the most informative outcome we observed,
+		// preferring rejections over plain misses over errors.
+		var labelConnector data.Connector
+		var labelPolicy *data.CachePolicy
 		missReason := "empty_result"
-		if lastRejectConnectorId != "" {
-			labelConnectorId = lastRejectConnectorId
-			labelPolicyStr = lastRejectPolicyStr
-			labelTTL = lastRejectTTL
+		switch {
+		case lastReject != nil:
+			labelConnector = lastReject.connector
+			labelPolicy = lastReject.policy
 			missReason = "ttl_rejected"
-		} else if lastMissConnectorId != "" {
-			labelConnectorId = lastMissConnectorId
-			labelPolicyStr = lastMissPolicyStr
-			labelTTL = lastMissTTL
+		case lastMiss != nil:
+			labelConnector = lastMiss.connector
+			labelPolicy = lastMiss.policy
 			missReason = "connector_miss"
-		}
-		if err != nil {
+		case lastError != nil:
+			labelConnector = lastError.connector
+			labelPolicy = lastError.policy
 			missReason = "connector_error"
-			labelConnectorId = connector.Id()
-			labelPolicyStr = policy.String()
-			labelTTL = policy.GetTTL().String()
+		default:
+			if len(policies) > 0 {
+				labelPolicy = policies[0]
+				labelConnector = labelPolicy.GetConnector()
+			}
 		}
+
+		if labelConnector == nil || labelPolicy == nil {
+			span.SetAttributes(attribute.Bool("cache.hit", false))
+			return nil, nil
+		}
+
+		labelConnectorId := labelConnector.Id()
+		labelPolicyStr := labelPolicy.String()
+		labelTTL := labelPolicy.GetTTL().String()
+
 		span.SetAttributes(
 			attribute.String("cache.miss_reason", missReason),
 			attribute.String("cache.miss_connector_id", labelConnectorId),
 			attribute.String("cache.miss_policy", labelPolicyStr),
 		)
-
 		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
