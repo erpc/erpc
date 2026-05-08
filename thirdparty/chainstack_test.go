@@ -16,8 +16,14 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
-	// Test with API key (will use dynamic node discovery)
-	t.Run("with API key - authentication failure", func(t *testing.T) {
+	// Test with API key on cold cache.
+	//
+	// Per the request-path safety rule (see remote_cache.go): the hot path
+	// no longer blocks on the network call. With no snapshot populated yet,
+	// GenerateConfigs returns ErrRemoteCacheCold and kicks off an async
+	// refresh. The bootstrap initializer's auto-retry loop is responsible
+	// for trying again later.
+	t.Run("with API key - cold cache returns retryable error", func(t *testing.T) {
 		settings := common.VendorSettings{
 			"apiKey":          "test-api-key",
 			"recheckInterval": 2 * time.Hour,
@@ -25,17 +31,15 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 
 		upstream := &common.UpstreamConfig{
 			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123, // Ethereum mainnet
+				ChainId: 123,
 			},
 		}
 
-		// This will attempt to fetch nodes from the API
-		// With a test API key, it should fail with authentication error
 		configs, err := vendor.GenerateConfigs(ctx, &logger, upstream, settings)
 
-		// Should return an error due to authentication failure
+		// Cold cache: returns retryable error, no upstream configs.
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "authentication_failed")
+		assert.Contains(t, err.Error(), "cache not yet populated")
 		assert.Nil(t, configs)
 	})
 
@@ -74,15 +78,23 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 		assert.Equal(t, upstream.Endpoint, configs[0].Endpoint)
 	})
 
-	// Test SupportsNetwork with API key
-	t.Run("supports network with API key - authentication failure", func(t *testing.T) {
+	// Test SupportsNetwork with API key on cold cache.
+	//
+	// Same contract as GenerateConfigs above: cold cache returns a
+	// retryable error so the bootstrap auto-retry loop reschedules; the
+	// async refresh kicked off by this call will populate the snapshot
+	// for the next attempt.
+	t.Run("supports network with API key - cold cache returns retryable error", func(t *testing.T) {
+		// Use a fresh vendor so this sub-test is not coupled to whatever
+		// state the previous "with API key" sub-test left behind.
+		freshVendor := CreateChainstackVendor()
 		settings := common.VendorSettings{
 			"apiKey": "test-api-key",
 		}
 
-		// Should return false due to authentication failure
-		supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:123")
+		supported, err := freshVendor.SupportsNetwork(ctx, &logger, settings, "evm:123")
 		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cache not yet populated")
 		assert.False(t, supported)
 	})
 

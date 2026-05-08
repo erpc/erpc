@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -18,36 +17,13 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+// QuicknodeVendor uses RemoteDataCache for lock-free, async-refresh access
+// to the per-apiKey endpoint list. See remote_cache.go for the
+// request-path safety rule.
 type QuicknodeVendor struct {
 	common.Vendor
-
-	// snapshot is the immutable read-only view of vendor state. Hot-path
-	// callers (SupportsNetwork, GenerateConfigs) do an atomic.Load and
-	// never wait for a mutex or HTTP call. Refreshes build a new snapshot
-	// off-thread and CAS it in place.
-	snapshot atomic.Pointer[quicknodeSnapshot]
-
-	// refreshMu serializes the inflight tracker only. It is NEVER held
-	// during an HTTP call. Holding it for any reason longer than a few
-	// nanoseconds violates the request-path safety rule documented above.
-	refreshMu sync.Mutex
-	inflight  map[string]struct{} // key: apiKey + filter hash; presence = refresh running
+	cache *RemoteDataCache[[]*QuicknodeEndpoint]
 }
-
-// quicknodeSnapshot is immutable once published. Building a refreshed
-// snapshot is copy-on-write — refresh goroutines clone the maps, mutate
-// the copy, then CAS the new pointer into place.
-type quicknodeSnapshot struct {
-	endpoints map[string][]*QuicknodeEndpoint
-	fetchedAt map[string]time.Time
-}
-
-// errQuicknodeCacheCold is returned by SupportsNetwork when no snapshot
-// has been populated yet for the requested apiKey. The bootstrap initializer
-// classifies this as retryable (not fatal), so the auto-retry loop will
-// call SupportsNetwork again later — by which point the async refresh
-// kicked off in this same call should have populated the cache.
-var errQuicknodeCacheCold = fmt.Errorf("quicknode endpoint cache not yet populated; retry shortly")
 
 type QuicknodeEndpoint struct {
 	ID      string `json:"id"`
@@ -69,7 +45,7 @@ const DefaultQuicknodeRecheckInterval = 1 * time.Hour
 
 func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{
-		inflight: make(map[string]struct{}),
+		cache: NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
 	}
 }
 
@@ -115,19 +91,11 @@ func (v *QuicknodeVendor) extractFilterParams(settings common.VendorSettings) *Q
 	return params
 }
 
-// SupportsNetwork answers the routing-time question "does this vendor handle
-// this network?" — and is on the request hot path. It MUST NOT block on a
-// mutex or an HTTP call. See the request-path safety rule at the top of this
-// file.
-//
-// Behaviour:
-//   - Lock-free atomic snapshot read.
-//   - Triggers an async refresh (fire-and-forget) when the snapshot is stale
-//     or missing. The refresh runs in its own goroutine and never holds any
-//     mutex during the HTTP call.
-//   - Cold-start (no snapshot yet) returns errQuicknodeCacheCold so the
-//     bootstrap auto-retry loop schedules another attempt; by then the
-//     async refresh kicked off here will have populated the snapshot.
+// SupportsNetwork answers the routing-time question "does this vendor
+// handle this network?" — on the request hot path. It MUST NOT block on a
+// mutex or an HTTP call. Reads are lock-free via RemoteDataCache; staleness
+// triggers an async refresh; cold start returns ErrRemoteCacheCold so the
+// bootstrap auto-retry loop reschedules.
 func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
@@ -147,18 +115,10 @@ func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 	if interval, ok := settings["recheckInterval"].(time.Duration); ok {
 		recheckInterval = interval
 	}
-	filterParams := v.extractFilterParams(settings)
 
-	endpoints, fresh := v.lookupSnapshot(apiKey, recheckInterval)
-	if !fresh {
-		// Off-thread refresh; this call returns immediately.
-		v.triggerAsyncRefresh(logger, apiKey, filterParams)
-	}
-	if endpoints == nil {
-		// Cold start: no data yet. Surface a retryable error so the
-		// bootstrap auto-retry loop tries again after the async refresh
-		// populates the snapshot.
-		return false, errQuicknodeCacheCold
+	endpoints, ok := v.resolveEndpoints(logger, apiKey, recheckInterval, settings)
+	if !ok {
+		return false, ErrRemoteCacheCold
 	}
 	for _, endpoint := range endpoints {
 		if endpoint.ChainID == chainID && endpoint.HttpUrl != "" {
@@ -168,12 +128,9 @@ func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 	return false, nil
 }
 
-// GenerateConfigs builds upstream configurations for this vendor for a given
-// network. When the upstream has a static Endpoint, this is purely
-// in-memory. When using dynamic endpoint discovery, it relies on the same
-// lock-free snapshot as SupportsNetwork — and triggers an async refresh on
-// staleness rather than blocking. Cold start returns an error so the
-// bootstrap auto-retry loop reschedules.
+// GenerateConfigs builds upstream configurations for the given network.
+// Static Endpoint is in-memory only; dynamic discovery uses the same
+// lock-free snapshot as SupportsNetwork.
 func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
@@ -196,14 +153,10 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 		if interval, ok := settings["recheckInterval"].(time.Duration); ok {
 			recheckInterval = interval
 		}
-		filterParams := v.extractFilterParams(settings)
 
-		endpoints, fresh := v.lookupSnapshot(apiKey, recheckInterval)
-		if !fresh {
-			v.triggerAsyncRefresh(logger, apiKey, filterParams)
-		}
-		if endpoints == nil {
-			return nil, errQuicknodeCacheCold
+		endpoints, ok := v.resolveEndpoints(logger, apiKey, recheckInterval, settings)
+		if !ok {
+			return nil, ErrRemoteCacheCold
 		}
 
 		var upstreams []*common.UpstreamConfig
@@ -225,89 +178,30 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-// lookupSnapshot returns (endpoints-for-key, fresh) for the current snapshot.
-// Reading the snapshot is lock-free; this is the hot path called from
-// SupportsNetwork on every routing decision.
-//
-//   - endpoints == nil means the cache has never been populated for this key.
-//   - fresh == true means the cached fetchedAt is within recheckInterval.
-//
-// A return of (non-nil, false) means stale data — caller should still use
-// the data and trigger an async refresh in the background.
-func (v *QuicknodeVendor) lookupSnapshot(apiKey string, recheckInterval time.Duration) ([]*QuicknodeEndpoint, bool) {
-	snap := v.snapshot.Load()
-	if snap == nil {
+// resolveEndpoints does a lock-free Lookup, kicks off an async refresh on
+// staleness, and returns (endpoints, true) on hit or (nil, false) on cold
+// start. See remote_cache.go for the request-path safety rule.
+func (v *QuicknodeVendor) resolveEndpoints(logger *zerolog.Logger, apiKey string, recheckInterval time.Duration, settings common.VendorSettings) ([]*QuicknodeEndpoint, bool) {
+	endpoints, fresh := v.cache.Lookup(apiKey, recheckInterval)
+	if !fresh {
+		filterParams := v.extractFilterParams(settings)
+		v.cache.TriggerAsyncRefresh(logger, apiKey, func(ctx context.Context) ([]*QuicknodeEndpoint, error) {
+			fetched, err := v.fetchEndpoints(ctx, apiKey, filterParams)
+			if err != nil {
+				return nil, err
+			}
+			if err := v.fetchChainIDs(ctx, logger, fetched); err != nil {
+				// Partial success: chain ID fetches may individually fail
+				// without invalidating the rest of the data.
+				logger.Warn().Err(err).Msg("some quicknode chain ID fetches failed; continuing with available data")
+			}
+			return fetched, nil
+		})
+	}
+	if endpoints == nil {
 		return nil, false
 	}
-	endpoints, ok := snap.endpoints[apiKey]
-	if !ok {
-		return nil, false
-	}
-	fetchedAt := snap.fetchedAt[apiKey]
-	return endpoints, time.Since(fetchedAt) < recheckInterval
-}
-
-// triggerAsyncRefresh starts a background refresh for the given key if and
-// only if no other refresh is currently in flight for the same key. NEVER
-// holds a mutex while calling out to the QuickNode API. Single-flight: if a
-// refresh is already running, this call is a no-op.
-//
-// The HTTP work is done with a budgeted background context so it cannot leak
-// past the calling process's lifetime. The refresh either succeeds and CAS-es
-// a new snapshot in place, or fails silently — readers continue to use
-// whatever snapshot was previously published. There is no return path that
-// can block a request goroutine.
-func (v *QuicknodeVendor) triggerAsyncRefresh(logger *zerolog.Logger, apiKey string, filterParams *QuicknodeFilterParams) {
-	v.refreshMu.Lock()
-	if _, busy := v.inflight[apiKey]; busy {
-		v.refreshMu.Unlock()
-		return
-	}
-	v.inflight[apiKey] = struct{}{}
-	v.refreshMu.Unlock()
-
-	go func() {
-		defer func() {
-			v.refreshMu.Lock()
-			delete(v.inflight, apiKey)
-			v.refreshMu.Unlock()
-			if rec := recover(); rec != nil {
-				logger.Error().Interface("panic", rec).Msg("panic recovered during QuickNode async refresh")
-			}
-		}()
-
-		// Self-contained context: the original request that triggered this
-		// refresh may have already returned; we should not be cancelled by it.
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-
-		endpoints, err := v.fetchEndpoints(ctx, apiKey, filterParams)
-		if err != nil {
-			logger.Warn().Err(err).Msg("QuickNode endpoint refresh failed; keeping previous snapshot")
-			return
-		}
-		if err := v.fetchChainIDs(ctx, logger, endpoints); err != nil {
-			logger.Warn().Err(err).Msg("some QuickNode chain ID fetches failed; continuing with available data")
-		}
-
-		// Copy-on-write snapshot publish.
-		old := v.snapshot.Load()
-		newSnap := &quicknodeSnapshot{
-			endpoints: make(map[string][]*QuicknodeEndpoint),
-			fetchedAt: make(map[string]time.Time),
-		}
-		if old != nil {
-			for k, v := range old.endpoints {
-				newSnap.endpoints[k] = v
-			}
-			for k, v := range old.fetchedAt {
-				newSnap.fetchedAt[k] = v
-			}
-		}
-		newSnap.endpoints[apiKey] = endpoints
-		newSnap.fetchedAt[apiKey] = time.Now()
-		v.snapshot.Store(newSnap)
-	}()
+	return endpoints, true
 }
 
 func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string, filterParams *QuicknodeFilterParams) ([]*QuicknodeEndpoint, error) {
