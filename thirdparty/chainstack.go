@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -18,14 +19,33 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+// See the request-path safety rule documented at the top of quicknode.go —
+// chainstack uses the same pattern: lock-free atomic snapshot reads on the
+// hot path, async refresh that NEVER holds a mutex during HTTP, cold-start
+// returns a retryable error so the bootstrap auto-retry loop schedules
+// another attempt.
 type ChainstackVendor struct {
 	common.Vendor
 
-	// local cache of nodes data
-	nodesDataLock          sync.RWMutex
-	nodesData              map[string][]*ChainstackNode // key is apiKey + filter params hash
-	nodesDataLastFetchedAt map[string]time.Time
+	// snapshot is the immutable view of vendor state read by SupportsNetwork
+	// and GenerateConfigs on the request hot path. atomic.Pointer means
+	// readers never wait on a mutex or HTTP call.
+	snapshot atomic.Pointer[chainstackSnapshot]
+
+	// refreshMu serializes the inflight tracker only — NEVER held during
+	// the HTTP fetch.
+	refreshMu sync.Mutex
+	inflight  map[string]struct{} // key: cacheKey; presence = refresh running
 }
+
+type chainstackSnapshot struct {
+	nodes     map[string][]*ChainstackNode // key: cacheKey
+	fetchedAt map[string]time.Time
+}
+
+// errChainstackCacheCold mirrors errQuicknodeCacheCold; see the comment
+// there for the cold-start contract with the bootstrap auto-retry loop.
+var errChainstackCacheCold = fmt.Errorf("chainstack node cache not yet populated; retry shortly")
 
 type ChainstackNode struct {
 	ID            string                `json:"id"`
@@ -61,8 +81,7 @@ const DefaultChainstackRecheckInterval = 1 * time.Hour
 
 func CreateChainstackVendor() common.Vendor {
 	return &ChainstackVendor{
-		nodesData:              make(map[string][]*ChainstackNode),
-		nodesDataLastFetchedAt: make(map[string]time.Time),
+		inflight: make(map[string]struct{}),
 	}
 }
 
@@ -70,6 +89,8 @@ func (v *ChainstackVendor) Name() string {
 	return "chainstack"
 }
 
+// SupportsNetwork follows the request-path safety rule: lock-free read,
+// async refresh on staleness, retryable error on cold-start. 
 func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
@@ -85,30 +106,25 @@ func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		return ok, nil
 	}
 
-	// If we have an API key, check if we have nodes for this chain ID
 	recheckInterval := DefaultChainstackRecheckInterval
 	if interval, ok := settings["recheckInterval"].(time.Duration); ok {
 		recheckInterval = interval
 	}
-
 	filterParams := v.extractFilterParams(settings)
-	err = v.ensureRefreshNodes(ctx, logger, apiKey, filterParams, recheckInterval)
-	if err != nil {
-		logger.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static network names")
-		return false, err
-	}
-
 	cacheKey := v.getCacheKey(apiKey, filterParams)
-	v.nodesDataLock.RLock()
-	nodes := v.nodesData[cacheKey]
-	v.nodesDataLock.RUnlock()
 
+	nodes, fresh := v.lookupSnapshot(cacheKey, recheckInterval)
+	if !fresh {
+		v.triggerAsyncRefresh(logger, apiKey, filterParams, cacheKey)
+	}
+	if nodes == nil {
+		return false, errChainstackCacheCold
+	}
 	for _, node := range nodes {
 		if node.ChainID == chainID && node.Status == "running" {
 			return true, nil
 		}
 	}
-
 	return false, nil
 }
 
@@ -138,16 +154,15 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		}
 
 		filterParams := v.extractFilterParams(settings)
-		err := v.ensureRefreshNodes(ctx, logger, apiKey, filterParams, recheckInterval)
-		if err != nil {
-			logger.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static endpoint generation")
-			return nil, err
-		}
-
 		cacheKey := v.getCacheKey(apiKey, filterParams)
-		v.nodesDataLock.RLock()
-		nodes := v.nodesData[cacheKey]
-		v.nodesDataLock.RUnlock()
+
+		nodes, fresh := v.lookupSnapshot(cacheKey, recheckInterval)
+		if !fresh {
+			v.triggerAsyncRefresh(logger, apiKey, filterParams, cacheKey)
+		}
+		if nodes == nil {
+			return nil, errChainstackCacheCold
+		}
 
 		var upstreams []*common.UpstreamConfig
 		for _, node := range nodes {
@@ -222,39 +237,72 @@ func (v *ChainstackVendor) getCacheKey(apiKey string, params *ChainstackFilterPa
 	return key
 }
 
-func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerolog.Logger, apiKey string, filterParams *ChainstackFilterParams, recheckInterval time.Duration) error {
-	cacheKey := v.getCacheKey(apiKey, filterParams)
-
-	v.nodesDataLock.Lock()
-	defer v.nodesDataLock.Unlock()
-
-	// Check if we've fetched recently
-	if lastFetch, ok := v.nodesDataLastFetchedAt[cacheKey]; ok && time.Since(lastFetch) < recheckInterval {
-		return nil
+// lookupSnapshot mirrors quicknode.QuicknodeVendor.lookupSnapshot — lock-free
+// hot-path read used by SupportsNetwork and GenerateConfigs.
+func (v *ChainstackVendor) lookupSnapshot(cacheKey string, recheckInterval time.Duration) ([]*ChainstackNode, bool) {
+	snap := v.snapshot.Load()
+	if snap == nil {
+		return nil, false
 	}
+	nodes, ok := snap.nodes[cacheKey]
+	if !ok {
+		return nil, false
+	}
+	fetchedAt := snap.fetchedAt[cacheKey]
+	return nodes, time.Since(fetchedAt) < recheckInterval
+}
 
-	// Fetch nodes from API
-	nodes, err := v.fetchNodes(ctx, logger, apiKey, filterParams)
-	if err != nil {
-		// Keep stale data if fetch fails
-		if _, hasData := v.nodesData[cacheKey]; hasData {
-			logger.Warn().Err(err).Msg("could not refresh Chainstack nodes data; will use stale data")
-			return nil
+// triggerAsyncRefresh starts a single-flight background refresh for a cache
+// key. NEVER holds a mutex while doing the HTTP call. See quicknode.go for
+// the full rationale and pattern documentation.
+func (v *ChainstackVendor) triggerAsyncRefresh(logger *zerolog.Logger, apiKey string, filterParams *ChainstackFilterParams, cacheKey string) {
+	v.refreshMu.Lock()
+	if _, busy := v.inflight[cacheKey]; busy {
+		v.refreshMu.Unlock()
+		return
+	}
+	v.inflight[cacheKey] = struct{}{}
+	v.refreshMu.Unlock()
+
+	go func() {
+		defer func() {
+			v.refreshMu.Lock()
+			delete(v.inflight, cacheKey)
+			v.refreshMu.Unlock()
+			if rec := recover(); rec != nil {
+				logger.Error().Interface("panic", rec).Msg("panic recovered during Chainstack async refresh")
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		nodes, err := v.fetchNodes(ctx, logger, apiKey, filterParams)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Chainstack node refresh failed; keeping previous snapshot")
+			return
 		}
-		return err
-	}
+		if err := v.fetchChainIDs(ctx, logger, nodes); err != nil {
+			logger.Warn().Err(err).Msg("some Chainstack chain ID fetches failed; continuing with available data")
+		}
 
-	// Fetch chain IDs in parallel with semaphore
-	err = v.fetchChainIDs(ctx, logger, nodes)
-	if err != nil {
-		logger.Warn().Err(err).Msg("some chain ID fetches failed, but continuing with available data")
-	}
-
-	// Update cache
-	v.nodesData[cacheKey] = nodes
-	v.nodesDataLastFetchedAt[cacheKey] = time.Now()
-
-	return nil
+		old := v.snapshot.Load()
+		newSnap := &chainstackSnapshot{
+			nodes:     make(map[string][]*ChainstackNode),
+			fetchedAt: make(map[string]time.Time),
+		}
+		if old != nil {
+			for k, v := range old.nodes {
+				newSnap.nodes[k] = v
+			}
+			for k, v := range old.fetchedAt {
+				newSnap.fetchedAt[k] = v
+			}
+		}
+		newSnap.nodes[cacheKey] = nodes
+		newSnap.fetchedAt[cacheKey] = time.Now()
+		v.snapshot.Store(newSnap)
+	}()
 }
 
 func (v *ChainstackVendor) fetchNodes(ctx context.Context, logger *zerolog.Logger, apiKey string, filterParams *ChainstackFilterParams) ([]*ChainstackNode, error) {
