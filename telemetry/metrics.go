@@ -256,6 +256,29 @@ var (
 		Help:      "Total number of rate limiter fail-open events (requests allowed due to errors/timeouts).",
 	}, []string{"project", "network", "user", "agent_name", "budget", "category", "reason"})
 
+	// MetricRateLimiterRemoteInflight is a per-budget gauge of concurrent in-flight
+	// remote (e.g. Redis) DoLimit calls. When a remote rate limiter is overwhelmed
+	// this gauge climbs without bound — the admission semaphore in
+	// doLimitWithTimeout uses MetricRateLimiterAdmissionSheddedTotal to indicate
+	// when the cap is reached, but this gauge is the canary that something is
+	// queueing on the remote.
+	MetricRateLimiterRemoteInflight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_remote_inflight",
+		Help:      "Current number of in-flight remote rate-limit checks per budget.",
+	}, []string{"budget"})
+
+	// MetricRateLimiterRemoteAdmissionSheddedTotal is a counter of fail-open events
+	// caused by the per-budget admission semaphore being full. This is intentionally
+	// distinct from "limit_timeout" in MetricRateLimiterFailopenTotal because it
+	// indicates load shedding (we never even attempted the remote call) vs the
+	// remote being slow.
+	MetricRateLimiterRemoteAdmissionSheddedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_remote_admission_shedded_total",
+		Help:      "Total number of remote rate-limit checks fail-opened because the admission semaphore was full.",
+	}, []string{"budget"})
+
 	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_success_total",
@@ -469,6 +492,8 @@ var (
 	MetricCacheGetSuccessHitDuration          *LabeledHistogram
 	MetricCacheGetSuccessMissDuration         *LabeledHistogram
 	MetricCacheGetErrorDuration               *LabeledHistogram
+	MetricRateLimiterRemoteDuration           *LabeledHistogram
+	MetricUpstreamResponseSizeBytes           *LabeledHistogram
 )
 
 // ScoreMetricsMode controls how score metrics are emitted.
@@ -621,6 +646,37 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Buckets:   buckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
 
+	// Rate limiter remote-call duration uses fine-grained sub-second buckets
+	// because the whole request budget is typically <500ms — the default 0.05/0.5/5/30
+	// buckets give zero useful resolution here.
+	MetricRateLimiterRemoteDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_remote_duration_seconds",
+		Help:      "Duration of remote rate-limit checks (e.g. Redis DoLimit).",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	}, []string{"budget", "result"})
+
+	// Upstream response result-body size in bytes (decoded, post-gzip). Use
+	// for finding networks/methods that produce huge responses — the
+	// dominant driver of transient heap spikes (each response goes through
+	// io.Copy → bytes.Buffer.grow → sonic.Unmarshal → []byte copy, peaking
+	// at ~3-4× the response size in transient allocations).
+	//
+	// Cardinality is intentionally tight: only network/category/finality
+	// dimensions, since identifying which net+method produces fat
+	// responses is the actionable question (vendor/upstream/user are
+	// derivable via traffic correlation in upstream_request_total).
+	//
+	// Buckets are coarse on purpose — we just need order-of-magnitude
+	// signal: <4 KB (header-y), 64 KB (single block), 1 MB (small logs),
+	// 16 MB (heavy logs), 100 MB+ (pathological).
+	MetricUpstreamResponseSizeBytes = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "upstream_response_size_bytes",
+		Help:      "Size of the result body of upstream JSON-RPC responses in bytes (decoded post-gzip), per network/method/finality.",
+		Buckets:   []float64{4096, 65536, 1048576, 16777216, 104857600},
+	}, []string{"project", "network", "category", "finality"})
+
 	return parseErr
 }
 
@@ -659,6 +715,8 @@ func SetHistogramBuckets(bucketsStr string) error {
 	MetricCacheGetSuccessHitDuration = registerOrReuse(MetricCacheGetSuccessHitDuration)
 	MetricCacheGetSuccessMissDuration = registerOrReuse(MetricCacheGetSuccessMissDuration)
 	MetricCacheGetErrorDuration = registerOrReuse(MetricCacheGetErrorDuration)
+	MetricRateLimiterRemoteDuration = registerOrReuse(MetricRateLimiterRemoteDuration)
+	MetricUpstreamResponseSizeBytes = registerOrReuse(MetricUpstreamResponseSizeBytes)
 
 	// Clear cached handles since the Vecs were re-created.
 	ResetHandleCache()

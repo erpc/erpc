@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -271,6 +272,17 @@ func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) error {
 	return r.parseIDLocked()
 }
 
+// largeResultZeroCopyThreshold mirrors util.ReturnBuf's pool-discard cutoff
+// (4 * util.maxBufCap = 256 KiB). Above this threshold the read buffer is
+// going to be discarded by ReturnBuf anyway, so keeping a zero-copy slice into
+// it doesn't change pool behaviour — it just shifts WHEN the underlying byte
+// array is GC'd (after the JsonRpcResponse becomes unreachable).
+//
+// Below this threshold we copy the result bytes out and return the buffer to
+// the pool immediately; reuse of small buffers is the throughput win that
+// sync.Pool exists for.
+const largeResultZeroCopyThreshold = 4 * 64 * 1024
+
 func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reader, expectedSize int) error {
 	if len(ctx) > 0 {
 		_, span := StartDetailSpan(ctx[0], "JsonRpcResponse.ParseFromStream")
@@ -282,21 +294,38 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		return err
 	}
 
-	// Parse into a temporary struct to extract fields without string conversion
+	// Use sonic.NoCopyRawMessage instead of std json.RawMessage so the
+	// unmarshaler skips the std-lib `*m = append((*m)[0:0], data...)` copy
+	// and just stores a slice into `data` (= buf.Bytes()). We then choose
+	// per-field whether to copy out so the buffer can be released, or hold
+	// the slice and keep the buffer alive (large-result fast path).
+	//
+	// ID and Error stay copy-on-parse because they're small (typically
+	// <100 bytes) — the copy is essentially free, and stashing them as
+	// slices into the buffer would prevent the pool reuse for every
+	// response, large or small.
 	var temp struct {
-		ID     json.RawMessage `json:"id"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
+		ID     json.RawMessage        `json:"id"`
+		Result sonic.NoCopyRawMessage `json:"result"`
+		Error  json.RawMessage        `json:"error"`
 	}
 
-	// Return buffer after we're done parsing and copying what we need
-	if returnBuf != nil {
-		defer returnBuf()
-	}
+	// Whether to release the buffer back to sync.Pool when this function
+	// returns. We default to true and flip it off only when we keep a
+	// zero-copy slice into the buffer for the result. The buffer struct
+	// itself is small; the underlying byte array stays alive via r.result
+	// until the response is GC'd / Free()'d.
+	keepBuffer := false
+	defer func() {
+		if returnBuf != nil && !keepBuffer {
+			returnBuf()
+		}
+	}()
 
 	// Use Sonic's Unmarshal which works directly with bytes
 	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
-		// Must copy data before storing since we're returning the buffer
+		// Parse error: copy data before stashing it for diagnostics so the
+		// buffer can return to the pool. Exceptional path, not hot.
 		dataCopy := make([]byte, len(data))
 		copy(dataCopy, data)
 		r.resultMu.Lock()
@@ -305,7 +334,6 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		return err
 	}
 
-	// Copy parsed bytes since we're returning the buffer
 	if len(temp.ID) > 0 {
 		idCopy := make([]byte, len(temp.ID))
 		copy(idCopy, temp.ID)
@@ -315,11 +343,32 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 	}
 
 	if len(temp.Result) > 0 {
-		resultCopy := make([]byte, len(temp.Result))
-		copy(resultCopy, temp.Result)
-		r.resultMu.Lock()
-		r.result = resultCopy
-		r.resultMu.Unlock()
+		if len(temp.Result) > largeResultZeroCopyThreshold {
+			// Large result: zero-copy. r.result becomes a slice into the
+			// buffer's backing array. We MUST NOT return the buffer to the
+			// pool because a future BorrowBuf caller would Reset() and
+			// overwrite our bytes — silent data corruption (the lifetime
+			// mismatch the original 2× copy was guarding against).
+			//
+			// Above the threshold ReturnBuf() would have discarded the
+			// buffer anyway (cap > 256 KiB), so this is purely deferring
+			// when the underlying byte array gets GC'd.
+			r.resultMu.Lock()
+			r.result = []byte(temp.Result)
+			r.resultMu.Unlock()
+			keepBuffer = true
+		} else {
+			// Small result: copy so the buffer can return to the pool now.
+			// Single fresh allocation — vs the previous code's two copies
+			// (one inside std-lib RawMessage.UnmarshalJSON, one explicit
+			// resultCopy). NoCopyRawMessage on `temp.Result` skipped the
+			// first; the explicit copy here is the only one that runs.
+			resultCopy := make([]byte, len(temp.Result))
+			copy(resultCopy, temp.Result)
+			r.resultMu.Lock()
+			r.result = resultCopy
+			r.resultMu.Unlock()
+		}
 	}
 
 	if len(temp.Error) > 0 {

@@ -14,6 +14,7 @@ import (
 	"github.com/envoyproxy/ratelimit/src/limiter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -26,6 +27,33 @@ type RateLimiterBudget struct {
 	registry   *RateLimitersRegistry
 	rulesMu    sync.RWMutex
 	maxTimeout time.Duration
+
+	// admission is a buffered semaphore that bounds the number of concurrent
+	// in-flight remote (Redis) DoLimit calls per budget. It exists because the
+	// underlying envoyproxy/ratelimit + radix client does not honor context
+	// cancellation: a goroutine spawned in doLimitWithTimeout that has timed
+	// out will continue to live until Redis finally answers (which can be
+	// seconds when the connection pool is contended).
+	//
+	// Without this cap we observed 25k+ leaked goroutines per machine during
+	// a Redis-rate-limiter contention spike (root-caused 2026-05-07 cronos
+	// receipts incident), which then drove CPU/GC into a death spiral.
+	//
+	// When admission is full, doLimitWithTimeout fail-opens immediately
+	// without spawning a goroutine — increments
+	// MetricRateLimiterRemoteAdmissionSheddedTotal so we can alert on it.
+	//
+	// Nil when no remote cache is in use (e.g. memory cache); only allocated
+	// when maxTimeout > 0.
+	admission chan struct{}
+
+	// inflight gauge, kept here for fast hot-path access without a labels
+	// lookup on every call. Refreshed at registration time.
+	inflightGauge      prometheus.Gauge
+	admissionShedded   prometheus.Counter
+	durationFailopen   prometheus.Observer
+	durationOK         prometheus.Observer
+	durationOverlimit  prometheus.Observer
 }
 
 type RateLimitRule struct {
@@ -259,14 +287,18 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 
 	var statuses []*pb.RateLimitResponse_DescriptorStatus
 	var timedOut bool
+	var failOpenReason string
 	if b.maxTimeout > 0 {
-		statuses, timedOut = b.doLimitWithTimeout(ctx, cache, rlReq, limits, method, userLabel, networkLabel)
+		statuses, timedOut, failOpenReason = b.doLimitWithTimeout(ctx, cache, rlReq, limits, method, userLabel, networkLabel)
 	} else {
 		statuses = cache.DoLimit(ctx, rlReq, limits)
 	}
 
 	if timedOut {
-		doSpan.SetAttributes(attribute.String("result", "timeout_fail_open"))
+		doSpan.SetAttributes(
+			attribute.String("result", "fail_open"),
+			attribute.String("reason", failOpenReason),
+		)
 		doSpan.End()
 		return true // fail-open
 	}
@@ -297,17 +329,86 @@ func (r *RateLimitRule) statsKeySuffix() string {
 	return suffix
 }
 
-// doLimitWithTimeout executes DoLimit with a timeout.
-// Returns (statuses, timedOut). On timeout, returns (nil, true) and records fail-open metric.
+// doLimitWithTimeout executes DoLimit with a timeout AND a per-budget admission cap.
+//
+// Returns (statuses, failOpen, reason).
+//
+// The admission semaphore is the critical resilience primitive: the underlying
+// envoyproxy/ratelimit cache + radix client do not honor context cancellation
+// for the actual Redis I/O. Without a cap, every timed-out call leaks a
+// goroutine that lives until Redis answers — which under contention spirals
+// into runaway goroutine/FD growth and CPU saturation. With the cap in place,
+// the in-flight count is bounded and the worst case is a brief load-shed
+// burst.
+//
+// We DO continue to spawn a goroutine for the actual DoLimit (so the response
+// can still complete and update Redis state correctly even after we've
+// fail-opened), but only when we have an admission slot available — and we
+// release the slot from inside that goroutine, so a slow Redis holds the slot
+// for as long as the call truly takes, not just the local timeout.
 func (b *RateLimiterBudget) doLimitWithTimeout(
 	ctx context.Context,
 	cache limiter.RateLimitCache,
 	rlReq *pb.RateLimitRequest,
 	limits []*config.RateLimit,
 	method, userLabel, networkLabel string,
-) ([]*pb.RateLimitResponse_DescriptorStatus, bool) {
+) ([]*pb.RateLimitResponse_DescriptorStatus, bool, string) {
+	if b.admission != nil {
+		select {
+		case b.admission <- struct{}{}:
+			// Got a slot — proceed.
+		default:
+			// Admission semaphore is full: too many in-flight Redis calls.
+			// Fail-open immediately without spawning a goroutine. This is
+			// the load-shedding path that prevents goroutine accumulation.
+			if b.admissionShedded != nil {
+				b.admissionShedded.Inc()
+			}
+			telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+				"", networkLabel, userLabel, "",
+				b.Id, method, "admission_full",
+			).Inc()
+			return nil, true, "admission_full"
+		}
+	}
+
+	if b.inflightGauge != nil {
+		b.inflightGauge.Inc()
+	}
+
+	start := time.Now()
 	resultCh := make(chan []*pb.RateLimitResponse_DescriptorStatus, 1)
 	go func() {
+		// Always release the admission slot and decrement the in-flight gauge,
+		// even if cache.DoLimit panics — checkError() in envoy/ratelimit panics
+		// on Redis errors, so this is a real concern.
+		defer func() {
+			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"ratelimiter-redis-dolimit",
+					"budget:"+b.Id,
+					common.ErrorFingerprint(rec),
+				).Inc()
+				b.logger.Error().
+					Interface("panic", rec).
+					Str("method", method).
+					Msg("panic recovered during Redis DoLimit (rate limiting fails open for this request)")
+				// Closed-but-non-nil channel: signal that we got nothing back.
+				select {
+				case resultCh <- nil:
+				default:
+				}
+			}
+			if b.inflightGauge != nil {
+				b.inflightGauge.Dec()
+			}
+			if b.admission != nil {
+				select {
+				case <-b.admission:
+				default:
+				}
+			}
+		}()
 		resultCh <- cache.DoLimit(ctx, rlReq, limits)
 	}()
 
@@ -320,25 +421,41 @@ func (b *RateLimiterBudget) doLimitWithTimeout(
 			default:
 			}
 		}
-		return statuses, false
+		// Observe duration only for non-timeout cases — timeouts are tracked
+		// by the timeout branch below to keep buckets clean.
+		dur := time.Since(start).Seconds()
+		if statuses != nil {
+			isOverLimit := len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT
+			if isOverLimit && b.durationOverlimit != nil {
+				b.durationOverlimit.Observe(dur)
+			} else if !isOverLimit && b.durationOK != nil {
+				b.durationOK.Observe(dur)
+			}
+		} else if b.durationFailopen != nil {
+			// Panic path — recovered above, count as fail-open.
+			b.durationFailopen.Observe(dur)
+		}
+		return statuses, false, ""
 
 	case <-timer.C:
-		b.logger.Warn().
-			Str("budget", b.Id).
-			Str("method", method).
-			Dur("timeout", b.maxTimeout).
-			Msg("rate limiter timeout exceeded, failing open")
+		if b.durationFailopen != nil {
+			b.durationFailopen.Observe(time.Since(start).Seconds())
+		}
+		// Sample the warn log; under sustained pressure this fires hundreds of
+		// times per second and dwarfs the rest of the log volume.
+		if b.logger.GetLevel() <= zerolog.DebugLevel {
+			b.logger.Debug().
+				Str("budget", b.Id).
+				Str("method", method).
+				Dur("timeout", b.maxTimeout).
+				Msg("rate limiter timeout exceeded, failing open")
+		}
 
 		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
-			"", // projectId not available here
-			networkLabel,
-			userLabel,
-			"", // agentName not available here
-			b.Id,
-			method,
-			"limit_timeout",
+			"", networkLabel, userLabel, "",
+			b.Id, method, "limit_timeout",
 		).Inc()
 
-		return nil, true
+		return nil, true, "limit_timeout"
 	}
 }
