@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -64,6 +65,14 @@ type Network struct {
 	// failure. May be nil in tests or when shared state is unavailable.
 	latestBlockShared    data.CounterInt64SharedVariable
 	finalizedBlockShared data.CounterInt64SharedVariable
+
+	// Last value this Network has ever returned from evmHighestBlockNumber
+	// for each of the monotonic tags. If a subsequent call computes a lower
+	// value we WARN with the local/shared inputs so we can see whether the
+	// regression originated in the per-upstream poller max, the cross-cluster
+	// shared counter, or a race between them.
+	lastReturnedLatestBlock    atomic.Int64
+	lastReturnedFinalizedBlock atomic.Int64
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -127,6 +136,8 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 		"eth_blockNumber",
 		(*upstream.Upstream).EvmEffectiveLatestBlock,
 		n.latestBlockShared,
+		&n.lastReturnedLatestBlock,
+		"latest",
 	)
 	span.SetAttributes(attribute.Int64("highest_latest_block", result))
 	return result
@@ -143,6 +154,8 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 		"eth_getBlockByNumber",
 		(*upstream.Upstream).EvmEffectiveFinalizedBlock,
 		n.finalizedBlockShared,
+		&n.lastReturnedFinalizedBlock,
+		"finalized",
 	)
 	span.SetAttributes(attribute.Int64("highest_finalized_block", result))
 	return result
@@ -168,6 +181,8 @@ func (n *Network) evmHighestBlockNumber(
 	selectionMethod string,
 	blockOf func(*upstream.Upstream) int64,
 	shared data.CounterInt64SharedVariable,
+	lastReturned *atomic.Int64,
+	tag string,
 ) int64 {
 	var primaryMax, fallbackMax int64
 	anyPrimaryUp := false
@@ -206,14 +221,86 @@ func (n *Network) evmHighestBlockNumber(
 		localMax = fallbackMax
 	}
 
+	var result int64
+	var sharedVal int64
 	if shared == nil {
-		return localMax
+		result = localMax
+	} else {
+		sharedVal = shared.GetValue()
+		if localMax > sharedVal {
+			result = shared.TryUpdate(ctx, localMax)
+		} else {
+			result = sharedVal
+		}
 	}
-	sharedVal := shared.GetValue()
-	if localMax > sharedVal {
-		return shared.TryUpdate(ctx, localMax)
+
+	return n.applyMonotonicityGuard(result, lastReturned, tag, monoGuardInputs{
+		localMax:     localMax,
+		primaryMax:   primaryMax,
+		fallbackMax:  fallbackMax,
+		anyPrimaryUp: anyPrimaryUp,
+		sharedVal:    sharedVal,
+		sharedNil:    shared == nil,
+	})
+}
+
+// monoGuardInputs carries the diagnostic inputs the monotonicity guard logs
+// when it has to clamp. They're never used to compute the clamp itself —
+// it's purely "here's the aggregator state at the moment of the regression"
+// so future investigations can tell whether the regression came from the
+// per-upstream poller max, the shared counter, or a race between them.
+type monoGuardInputs struct {
+	localMax     int64
+	primaryMax   int64
+	fallbackMax  int64
+	anyPrimaryUp bool
+	sharedVal    int64
+	sharedNil    bool
+}
+
+// applyMonotonicityGuard clamps result to the per-tag high-water mark held
+// in lastReturned. On forward progress it CAS-bumps the high-water mark; on
+// regression it logs the inputs and returns the previously-returned value.
+// Clamping is safe because we never invent a number — the floor is always
+// something this Network has already returned upstream.
+//
+// Strict downstream consumers treat any backwards step in
+// `latest`/`finalized` as a data-integrity violation, so the guard exists to
+// keep returns monotonic across transient mid-rollout effects (e.g. mixed
+// versions reading different shared-state slots) and aggregator races.
+func (n *Network) applyMonotonicityGuard(result int64, lastReturned *atomic.Int64, tag string, in monoGuardInputs) int64 {
+	if lastReturned == nil {
+		return result
 	}
-	return sharedVal
+	prev := lastReturned.Load()
+	if result < prev {
+		n.logger.Warn().
+			Str("networkId", n.networkId).
+			Str("tag", tag).
+			Int64("previouslyReturned", prev).
+			Int64("nowReturning", result).
+			Int64("delta", result-prev).
+			Int64("localMax", in.localMax).
+			Int64("primaryMax", in.primaryMax).
+			Int64("fallbackMax", in.fallbackMax).
+			Bool("anyPrimaryUp", in.anyPrimaryUp).
+			Int64("sharedVal", in.sharedVal).
+			Bool("sharedNil", in.sharedNil).
+			Msg("evmHighestBlockNumber would have regressed; clamping to previously returned value")
+		return prev
+	}
+	if result > prev {
+		for {
+			cur := lastReturned.Load()
+			if result <= cur {
+				break
+			}
+			if lastReturned.CompareAndSwap(cur, result) {
+				break
+			}
+		}
+	}
+	return result
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
@@ -410,6 +497,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			mlx.Close(ctx, nil, err)
 		}
 		return nil, err
+	}
+
+	// Block-availability-aware routing: when the request targets a specific
+	// block, prefer upstreams whose state poller has already observed it.
+	// Without this, requests for a block we just delivered to a client via
+	// WS would still get routed to an HTTP-only sibling whose own polling
+	// loop hasn't caught up — checkUpstreamBlockAvailability rejects with
+	// ErrUpstreamBlockUnavailable, retries cascade through the rest of the
+	// lagging siblings, and the request can fail entirely despite the WS
+	// upstream demonstrably having the block. partitionUpstreamsByLatestBlock
+	// is stable so it composes with the tier and score orderings layered
+	// on top.
+	if n.Architecture() == common.ArchitectureEvm {
+		if bn := requestBlockNumber(ctx, req); bn > 0 {
+			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
+		}
 	}
 
 	// Failover tiering: when enabled, order default-group upstreams ahead of
@@ -1383,8 +1486,38 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
 }
 
+// methodSkipMultiplexing reports whether a JSON-RPC method should bypass
+// in-flight dedup. Multiplexing is correct for idempotent reads where N
+// concurrent identical requests can share one result. It is wrong for
+// transaction-broadcast methods: a client retrying a signed payload
+// expects each retry to actually re-submit, not to silently block on a
+// prior in-flight attempt. Worse, if a retrying client cancels at its
+// own context deadline before the leader returns, eRPC's failsafe
+// leader continues executing on its CopyForCancellable child for the
+// remainder of the network-level budget — and every retry the client
+// issues in that window stacks up as a follower of the doomed leader,
+// all timing out together when their parent contexts fire.
+//
+// Tx broadcasts already handle duplicate submissions via the idempotent-
+// broadcast post-forward hook (nonce-already-known → synthetic success
+// keyed by tx hash). Skipping multiplexing here costs nothing in
+// correctness: duplicate work resolves at the upstream layer with the
+// same guarantees, and retries are no longer serialised behind a slow
+// leader.
+func methodSkipMultiplexing(method string) bool {
+	switch method {
+	case "eth_sendRawTransaction", "eth_sendTransaction":
+		return true
+	}
+	return false
+}
+
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
 	if !n.cfg.MultiplexingEnabled() {
+		return nil, nil, nil
+	}
+
+	if method, _ := req.Method(); methodSkipMultiplexing(method) {
 		return nil, nil, nil
 	}
 
@@ -1734,4 +1867,87 @@ func tierUpstreamsByGroup(ups []common.Upstream) []common.Upstream {
 		}
 	}
 	return tiered
+}
+
+// partitionUpstreamsByLatestBlock stable-partitions ups so that upstreams
+// whose EvmStatePoller has observed a block number ≥ bn come first, in
+// their input order. Upstreams whose poller is behind bn (or has no
+// poller / isn't EVM) keep their input order and come after.
+//
+// This makes per-request routing consistent with what the indexer already
+// knows: when a WS upstream delivers newHead block N, its state poller's
+// LatestBlock advances to N immediately. If a subsequent eth_call from a
+// client references block N, this partition routes the call to that
+// upstream first instead of to an HTTP-only sibling whose own polling
+// hasn't caught up — which would fail checkUpstreamBlockAvailability and
+// burn retries. The partition is stable, so callers can layer it under
+// other orderings (tier, score) without disturbing them within each
+// partition.
+func partitionUpstreamsByLatestBlock(ups []common.Upstream, bn int64) []common.Upstream {
+	if bn <= 0 || len(ups) < 2 {
+		return ups
+	}
+	// Cheap fast-path: if all upstreams already have ≥ bn, or all are
+	// behind, the partition is the identity and we can avoid the
+	// allocation. We still walk once to compute LatestBlock either way,
+	// so the gain is just the slice copy.
+	haveCount := 0
+	for _, u := range ups {
+		eu, ok := u.(common.EvmUpstream)
+		if !ok {
+			continue
+		}
+		sp := eu.EvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if sp.LatestBlock() >= bn {
+			haveCount++
+		}
+	}
+	if haveCount == 0 || haveCount == len(ups) {
+		return ups
+	}
+	out := make([]common.Upstream, 0, len(ups))
+	for _, u := range ups {
+		eu, ok := u.(common.EvmUpstream)
+		if !ok {
+			continue
+		}
+		sp := eu.EvmStatePoller()
+		if sp != nil && !sp.IsObjectNull() && sp.LatestBlock() >= bn {
+			out = append(out, u)
+		}
+	}
+	for _, u := range ups {
+		eu, ok := u.(common.EvmUpstream)
+		if !ok {
+			out = append(out, u)
+			continue
+		}
+		sp := eu.EvmStatePoller()
+		if sp == nil || sp.IsObjectNull() || sp.LatestBlock() < bn {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// requestBlockNumber resolves the specific block number a request targets,
+// or 0 when the request has no block reference. Mirrors the extraction
+// path in checkUpstreamBlockAvailability so routing and gating see the
+// same value.
+func requestBlockNumber(ctx context.Context, req *common.NormalizedRequest) int64 {
+	if req == nil {
+		return 0
+	}
+	if v := req.EvmBlockNumber(); v != nil {
+		if n64, ok := v.(int64); ok && n64 > 0 {
+			return n64
+		}
+	}
+	if _, x, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req); ebn == nil && x > 0 {
+		return x
+	}
+	return 0
 }
