@@ -234,9 +234,12 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 			jrr, err := c.doGet(policyCtx, connector, req, rpcReq)
 			if err != nil {
-				// Errors caused by peer-cancellation aren't real failures —
-				// they happen because another connector already won.
-				if errors.Is(err, context.Canceled) && fanCtx.Err() != nil {
+				// Errors caused by external cancellation aren't real failures.
+				// fanCtx is done either because a peer connector already won
+				// (cancelFan), or because the caller's context was cancelled,
+				// or because the caller's deadline expired — the latter
+				// surfaces as context.DeadlineExceeded, not context.Canceled.
+				if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && fanCtx.Err() != nil {
 					policySpan.SetAttributes(attribute.String("cache.get_outcome", "cancelled"))
 					return
 				}

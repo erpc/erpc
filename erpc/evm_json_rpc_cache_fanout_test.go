@@ -9,6 +9,8 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -255,6 +257,46 @@ func TestEvmJsonRpcCache_FanOut_ParentContextCancellationStopsAll(t *testing.T) 
 	elapsed := time.Since(t0)
 	assert.Less(t, elapsed, 500*time.Millisecond,
 		"caller-cancelled context should unwind all goroutines promptly (took %v)", elapsed)
+}
+
+// ParentContextDeadlineStopsAll covers the deadline path: the parent context
+// expires (rather than being explicitly cancelled), which propagates to peer
+// connectors as context.DeadlineExceeded — distinct from context.Canceled.
+// The cancellation guard must treat both alike, otherwise spurious connector
+// error metrics get emitted and the goroutine takes the noisy error path.
+func TestEvmJsonRpcCache_FanOut_ParentContextDeadlineStopsAll(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	for _, c := range conns {
+		c.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				callCtx := args.Get(0).(context.Context)
+				<-callCtx.Done()
+			}).
+			Return(nil, context.DeadlineExceeded).Maybe()
+	}
+
+	beforeErr := promUtil.CollectAndCount(telemetry.MetricCacheGetErrorTotal)
+
+	getCtx, cancelGet := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelGet()
+	t0 := time.Now()
+	_, _ = cache.Get(getCtx, newGetBlockByNumberRequest(t, network, cache))
+	elapsed := time.Since(t0)
+
+	// Allow goroutines a brief moment to drain any (incorrect) metric emission.
+	time.Sleep(50 * time.Millisecond)
+	afterErr := promUtil.CollectAndCount(telemetry.MetricCacheGetErrorTotal)
+
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"deadline-expired parent context should unwind all goroutines promptly (took %v)", elapsed)
+	assert.Equal(t, beforeErr, afterErr,
+		"deadline-cancelled connector calls must not emit cache_get_error_total — they are external cancellations, not connector failures")
 }
 
 func TestEvmJsonRpcCache_FanOut_RespectsSkipCacheReadDirective(t *testing.T) {
