@@ -37,6 +37,14 @@ type CounterInt64State struct {
 	UpdatedBy string `json:"b,omitempty"`
 }
 
+// CacheInvalidationEvent represents a cache invalidation notification
+type CacheInvalidationEvent struct {
+	// Key is the cache key to invalidate (e.g., the API key)
+	Key string `json:"k"`
+	// Timestamp is when the event was published (unix milliseconds)
+	Timestamp int64 `json:"t"`
+}
+
 type Connector interface {
 	Id() string
 	Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error)
@@ -48,6 +56,11 @@ type Connector interface {
 	Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error)
 	WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error)
 	PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error
+	// WatchCacheInvalidation subscribes to cache invalidation events for a given channel.
+	// Returns a channel that receives invalidation events, a cleanup function, and an error.
+	WatchCacheInvalidation(ctx context.Context, channel string) (<-chan CacheInvalidationEvent, func(), error)
+	// PublishCacheInvalidation publishes a cache invalidation event to a channel.
+	PublishCacheInvalidation(ctx context.Context, channel string, event CacheInvalidationEvent) error
 }
 
 func NewConnector(

@@ -79,6 +79,22 @@ func (m *MockConnector) PublishCounterInt64(ctx context.Context, key string, val
 	return args.Error(0)
 }
 
+// WatchCacheInvalidation mocks the WatchCacheInvalidation method of the Connector interface
+func (m *MockConnector) WatchCacheInvalidation(ctx context.Context, channel string) (<-chan CacheInvalidationEvent, func(), error) {
+	args := m.Called(ctx, channel)
+	var a0 <-chan CacheInvalidationEvent = nil
+	a0, _ = args.Get(0).(chan CacheInvalidationEvent)
+	a1, _ := args.Get(1).(func())
+	a2 := args.Error(2)
+	return a0, a1, a2
+}
+
+// PublishCacheInvalidation mocks the PublishCacheInvalidation method of the Connector interface
+func (m *MockConnector) PublishCacheInvalidation(ctx context.Context, channel string, event CacheInvalidationEvent) error {
+	args := m.Called(ctx, channel, event)
+	return args.Error(0)
+}
+
 // NewMockConnector creates a new instance of MockConnector
 func NewMockConnector(id string) *MockConnector {
 	return &MockConnector{id: id}
