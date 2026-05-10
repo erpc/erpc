@@ -24,3 +24,5 @@ temp/**
 erpc-bin
 erpc.yml
 .claude/**
+.context/
+

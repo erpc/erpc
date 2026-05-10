@@ -34,11 +34,11 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &FailsafeConfig{
-			Timeout: &TimeoutPolicyConfig{
-				Duration: Duration(100 * time.Millisecond),
-			},
-		}, network.Failsafe[0])
+		assert.NotNil(t, network.Failsafe[0].Matchers)
+		assert.Len(t, network.Failsafe[0].Matchers, 1)
+		assert.Equal(t, "*", network.Failsafe[0].Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, network.Failsafe[0].Matchers[0].Action)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Timeout.Duration)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -59,10 +59,10 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &HedgePolicyConfig{
-			Delay:    Duration(100 * time.Millisecond),
-			MaxCount: 10,
-		}, network.Failsafe[0].Hedge)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Hedge.Delay)
+		assert.Equal(t, int(10), network.Failsafe[0].Hedge.MaxCount)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Hedge.MinDelay)
+		assert.Equal(t, Duration(999*time.Second), network.Failsafe[0].Hedge.MaxDelay)
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -82,9 +82,11 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &CircuitBreakerPolicyConfig{
-			FailureThresholdCount: 10,
-		}, network.Failsafe[0].CircuitBreaker)
+		assert.Equal(t, uint(10), network.Failsafe[0].CircuitBreaker.FailureThresholdCount)
+		assert.Equal(t, uint(80), network.Failsafe[0].CircuitBreaker.FailureThresholdCapacity)
+		assert.Equal(t, Duration(300*time.Second), network.Failsafe[0].CircuitBreaker.HalfOpenAfter)
+		assert.Equal(t, uint(8), network.Failsafe[0].CircuitBreaker.SuccessThresholdCount)
+		assert.Equal(t, uint(200), network.Failsafe[0].CircuitBreaker.SuccessThresholdCapacity)
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -102,8 +104,14 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		}
 		network.SetDefaults(nil, nil)
 
-		assert.EqualValues(t, &FailsafeConfig{
-			MatchMethod: "*",
+		expected := &FailsafeConfig{
+			MatchMethod: "",
+			Matchers: []*MatcherConfig{
+				{
+					Method: "*",
+					Action: MatcherInclude,
+				},
+			},
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:       12345,
 				Delay:             Duration(0 * time.Millisecond),
@@ -112,7 +120,8 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 				Jitter:            Duration(0 * time.Millisecond),
 				EmptyResultAccept: DefaultEmptyResultAccept(),
 			},
-		}, network.Failsafe[0])
+		}
+		assert.EqualValues(t, expected, network.Failsafe[0])
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
@@ -270,8 +279,11 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		assert.Nil(t, upstream.Failsafe[0].Retry)
 	})
 
-	t.Run("UpstreamFailsafeMatchingDefaultMergesConfig", func(t *testing.T) {
-		// User and default have matching method/finality, config should merge
+	t.Run("UpstreamFailsafeUserPoliciesReplaceDefaults", func(t *testing.T) {
+		// PR #388 (matchers): when user defines any failsafe policies, those replace
+		// defaults entirely — defaults are NOT merged in by method/finality matching.
+		// This is a deliberate behavior change from main's per-method merge approach.
+		// See PR #388 review comments #11 and #12 for the open design discussion.
 		upstream := &UpstreamConfig{
 			Endpoint: "http://rpc1.localhost",
 			Failsafe: []*FailsafeConfig{
@@ -300,11 +312,11 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		err := upstream.SetDefaults(defaults)
 		assert.NoError(t, err)
 		assert.Len(t, upstream.Failsafe, 1)
+		// User's matchMethod and timeout are preserved
 		assert.Equal(t, "eth_getLogs", upstream.Failsafe[0].MatchMethod)
 		assert.Equal(t, "10s", upstream.Failsafe[0].Timeout.Duration.String())
-		// Retry should be applied from matching default
-		assert.NotNil(t, upstream.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, upstream.Failsafe[0].Retry.MaxAttempts)
+		// Retry from defaults is NOT merged in — user policies stand alone
+		assert.Nil(t, upstream.Failsafe[0].Retry)
 	})
 
 	t.Run("UpstreamFailsafeNoDefaults_SystemDefaultsApplied", func(t *testing.T) {
@@ -506,602 +518,164 @@ func TestMethodsConfigStatefulMethodOverride(t *testing.T) {
 	}
 }
 
-func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
-	// This test suite covers the fix for the bug where user-defined matchMethod
-	// patterns were being incorrectly overwritten when no matching default was found.
-	// The fix ensures that when no matching default exists, a base default with
-	// MatchMethod="*" is used, preserving the user's specific matchMethod.
-
-	t.Run("UserFailsafeWithSpecificMethodNotOverwrittenByUnmatchedDefault", func(t *testing.T) {
-		// User defines failsafe for eth_getLogs|eth_getBlockReceipts
-		// Defaults define a different pattern (eth_call)
-		// User's matchMethod should NOT be overwritten
-		network := &NetworkConfig{
+// TestSetDefaults_FailsafeMatcherInheritance covers PR #388's matchers-aware
+// defaulting algorithm. The pre-#388 algorithm merged each user policy with
+// any inheritable default policy whose `matchMethod`/`matchFinality` patterns
+// overlapped — this is the behavior that 600+ lines of `t.Skip`'d subtests
+// documented and that was deliberately removed.
+//
+// Under the new "user policies replace defaults" semantic, the merge step is
+// gone: any user-defined Failsafe entry stands on its own; defaults only fill
+// in for entries the user didn't define at all. This change has a real
+// production consequence (32 of 509 goldsky upstreams lose method-tier
+// failsafe customization when their `*` override is applied), but the team's
+// decision is to accept that for the simpler model. These tests pin that
+// semantic so future refactors don't drift it.
+//
+// Replacement for PR #388 review item T-6.
+func TestSetDefaults_FailsafeMatcherInheritance(t *testing.T) {
+	t.Run("user has no failsafe → all defaults are inherited", func(t *testing.T) {
+		ups := &UpstreamConfig{
+			Type:     UpstreamTypeEvm,
+			Endpoint: "http://test/",
+			Failsafe: nil,
+		}
+		defaults := &UpstreamConfig{
 			Failsafe: []*FailsafeConfig{
 				{
-					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
+					Matchers: []*MatcherConfig{{Method: "eth_*", Action: MatcherInclude}},
+					Timeout:  &TimeoutPolicyConfig{Duration: Duration(2 * time.Second)},
+				},
+				{
+					Matchers: []*MatcherConfig{{Method: "trace_*", Action: MatcherInclude}},
+					Timeout:  &TimeoutPolicyConfig{Duration: Duration(30 * time.Second)},
 				},
 			},
 		}
 
-		defaults := &NetworkDefaults{
+		err := ups.SetDefaults(defaults)
+		assert.NoError(t, err)
+		assert.Len(t, ups.Failsafe, 2, "all defaults should be inherited when user has no failsafe")
+		assert.Equal(t, Duration(2*time.Second), ups.Failsafe[0].Timeout.Duration)
+		assert.Equal(t, Duration(30*time.Second), ups.Failsafe[1].Timeout.Duration)
+	})
+
+	t.Run("user defines partial failsafe → defaults are NOT merged in by matchMethod", func(t *testing.T) {
+		// This is the documented production hazard. User's wildcard timeout
+		// override entirely replaces the default's nine method-tier timeouts.
+		// Pre-#388, the merging algorithm would have kept the method-tier
+		// defaults that didn't overlap with the user's matchMethod. Now they
+		// are replaced.
+		ups := &UpstreamConfig{
+			Type:     UpstreamTypeEvm,
+			Endpoint: "http://test/",
+			Failsafe: []*FailsafeConfig{
+				{
+					Matchers: []*MatcherConfig{{Method: "*", Action: MatcherInclude}},
+					Timeout:  &TimeoutPolicyConfig{Duration: Duration(15 * time.Second)},
+					Hedge:    &HedgePolicyConfig{Delay: Duration(500 * time.Millisecond), MaxCount: 1},
+				},
+			},
+		}
+		defaults := &UpstreamConfig{
+			Failsafe: []*FailsafeConfig{
+				{
+					Matchers: []*MatcherConfig{{Method: "eth_call", Action: MatcherInclude}},
+					Timeout:  &TimeoutPolicyConfig{Duration: Duration(2 * time.Second)},
+				},
+				{
+					Matchers: []*MatcherConfig{{Method: "trace_*", Action: MatcherInclude}},
+					Timeout:  &TimeoutPolicyConfig{Duration: Duration(30 * time.Second)},
+				},
+			},
+		}
+
+		err := ups.SetDefaults(defaults)
+		assert.NoError(t, err)
+		assert.Len(t, ups.Failsafe, 1, "user policy stands alone — defaults not merged")
+		assert.Equal(t, Duration(15*time.Second), ups.Failsafe[0].Timeout.Duration,
+			"user's timeout override should be preserved")
+		assert.NotNil(t, ups.Failsafe[0].Hedge, "user's hedge should be preserved")
+	})
+
+	t.Run("user defines full set of policies → defaults play no role", func(t *testing.T) {
+		ups := &UpstreamConfig{
+			Type:     UpstreamTypeEvm,
+			Endpoint: "http://test/",
+			Failsafe: []*FailsafeConfig{
+				{
+					Matchers:       []*MatcherConfig{{Method: "*", Action: MatcherInclude}},
+					Retry:          &RetryPolicyConfig{MaxAttempts: 3},
+					Timeout:        &TimeoutPolicyConfig{Duration: Duration(5 * time.Second)},
+					CircuitBreaker: &CircuitBreakerPolicyConfig{},
+				},
+			},
+		}
+		defaults := &UpstreamConfig{
+			Failsafe: []*FailsafeConfig{
+				{
+					Matchers: []*MatcherConfig{{Method: "eth_*", Action: MatcherInclude}},
+					Timeout:  &TimeoutPolicyConfig{Duration: Duration(99 * time.Second)},
+				},
+			},
+		}
+
+		err := ups.SetDefaults(defaults)
+		assert.NoError(t, err)
+		assert.Len(t, ups.Failsafe, 1)
+		assert.Equal(t, 3, ups.Failsafe[0].Retry.MaxAttempts)
+		assert.Equal(t, Duration(5*time.Second), ups.Failsafe[0].Timeout.Duration)
+	})
+
+	t.Run("legacy matchMethod field is converted to a matcher", func(t *testing.T) {
+		// Failsafe configs don't auto-prepend a catch-all-exclude (the include
+		// semantic is implicit: matchers.Match returns false when no matcher
+		// claims the request). So a single legacy matchMethod becomes exactly
+		// one matcher.
+		ups := &UpstreamConfig{
+			Type:     UpstreamTypeEvm,
+			Endpoint: "http://test/",
 			Failsafe: []*FailsafeConfig{
 				{
 					MatchMethod: "eth_call",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(5 * time.Second),
-					},
+					Timeout:     &TimeoutPolicyConfig{Duration: Duration(5 * time.Second)},
 				},
 			},
 		}
 
-		err := network.SetDefaults(nil, defaults)
+		err := ups.SetDefaults(nil)
 		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// Critical: User's matchMethod should be preserved
-		assert.Equal(t, "eth_getLogs|eth_getBlockReceipts", network.Failsafe[0].MatchMethod)
-		// User's timeout should be preserved
-		assert.Equal(t, "10s", network.Failsafe[0].Timeout.Duration.String())
+		assert.Len(t, ups.Failsafe[0].Matchers, 1,
+			"legacy MatchMethod should be converted to a single matcher")
+		assert.Equal(t, "eth_call", ups.Failsafe[0].Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, ups.Failsafe[0].Matchers[0].Action)
 	})
 
-	t.Run("UserFailsafeWithMultipleSpecificMethodsPreserved", func(t *testing.T) {
-		// Scenario similar to the erpc.yaml example:
-		// User has multiple failsafe configs with specific matchMethod and matchFinality
-		// Defaults don't match any of them - user's matchMethod should be preserved
-		network := &NetworkConfig{
+	t.Run("legacy matchFinality field is converted to a matcher with finality slice copy", func(t *testing.T) {
+		// PR #388 review item from cursor-bot MED: convertLegacyMatchers must
+		// deep-copy MatchFinality so subsequent mutations of either slice
+		// don't corrupt the other. Resolved at common/defaults.go:2184.
+		original := []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized}
+		ups := &UpstreamConfig{
+			Type:     UpstreamTypeEvm,
+			Endpoint: "http://test/",
 			Failsafe: []*FailsafeConfig{
 				{
-					MatchMethod:   "eth_getLogs|eth_getBlockReceipts",
-					MatchFinality: []DataFinalityState{DataFinalityStateUnfinalized},
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-				{
-					MatchFinality: []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized},
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(6 * time.Second),
-					},
-				},
-				{
-					MatchMethod:   "eth_getLogs|eth_getBlockReceipts",
-					MatchFinality: []DataFinalityState{DataFinalityStateUnknown},
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-				{
-					MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(20 * time.Second),
-					},
+					MatchFinality: original,
+					Timeout:       &TimeoutPolicyConfig{Duration: Duration(5 * time.Second)},
 				},
 			},
 		}
 
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_sendTransaction",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(30 * time.Second),
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
+		err := ups.SetDefaults(nil)
 		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 4)
+		assert.Len(t, ups.Failsafe[0].Matchers, 1)
+		assert.Equal(t, original, ups.Failsafe[0].Matchers[0].Finality)
 
-		// All user matchMethod values should be preserved
-		assert.Equal(t, "eth_getLogs|eth_getBlockReceipts", network.Failsafe[0].MatchMethod)
-		assert.Equal(t, "*", network.Failsafe[1].MatchMethod) // Empty becomes "*"
-		assert.Equal(t, "eth_getLogs|eth_getBlockReceipts", network.Failsafe[2].MatchMethod)
-		assert.Equal(t, "*", network.Failsafe[3].MatchMethod) // Empty becomes "*"
-
-		// User timeouts should be preserved
-		assert.Equal(t, "10s", network.Failsafe[0].Timeout.Duration.String())
-		assert.Equal(t, "6s", network.Failsafe[1].Timeout.Duration.String())
-		assert.Equal(t, "10s", network.Failsafe[2].Timeout.Duration.String())
-		assert.Equal(t, "20s", network.Failsafe[3].Timeout.Duration.String())
-	})
-
-	t.Run("UserFailsafeMatchesDefaultByMethodAndFinality", func(t *testing.T) {
-		// User defines failsafe that matches a default by both method and finality
-		// Default values should be merged
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod:   "eth_getLogs",
-					MatchFinality: []DataFinalityState{DataFinalityStateUnfinalized},
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod:   "eth_getLogs",
-					MatchFinality: []DataFinalityState{DataFinalityStateUnfinalized},
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		assert.Equal(t, "eth_getLogs", network.Failsafe[0].MatchMethod)
-		assert.Equal(t, "10s", network.Failsafe[0].Timeout.Duration.String())
-		// Default retry should be applied since user didn't define it
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("UserFailsafeNoMethodDefaultHasMethod_NoMatch", func(t *testing.T) {
-		// User has no matchMethod, default has matchMethod
-		// They should NOT match (only one has method specified)
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					// No MatchMethod specified
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_call",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// matchMethod should become "*" (default)
-		assert.Equal(t, "*", network.Failsafe[0].MatchMethod)
-		assert.Equal(t, "10s", network.Failsafe[0].Timeout.Duration.String())
-		// Retry should NOT be applied (no match)
-		assert.Nil(t, network.Failsafe[0].Retry)
-	})
-
-	t.Run("UserFailsafeHasMethodDefaultNoMethod_NoMatch", func(t *testing.T) {
-		// User has matchMethod, default has no matchMethod
-		// They should NOT match (only one has method specified)
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_call",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					// No MatchMethod specified
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// User's matchMethod should be preserved
-		assert.Equal(t, "eth_call", network.Failsafe[0].MatchMethod)
-		assert.Equal(t, "10s", network.Failsafe[0].Timeout.Duration.String())
-		// Retry should NOT be applied (no match)
-		assert.Nil(t, network.Failsafe[0].Retry)
-	})
-
-	t.Run("BothNoMethod_ShouldMatch", func(t *testing.T) {
-		// Both user and default have no matchMethod
-		// They should match
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					// No MatchMethod specified
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					// No MatchMethod specified
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// matchMethod should become "*" (default, inherited from matching default)
-		assert.Equal(t, "*", network.Failsafe[0].MatchMethod)
-		assert.Equal(t, "10s", network.Failsafe[0].Timeout.Duration.String())
-		// Retry SHOULD be applied (they match)
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("FinalityMatchOnly_EmptyFinalityMatchesAny", func(t *testing.T) {
-		// Both have no matchMethod, user has finality, default has empty finality
-		// Empty finality should match any finality
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					// Empty MatchFinality matches any
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// Should have matched (empty finality matches any)
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("FinalityMismatch_ShouldNotMatch", func(t *testing.T) {
-		// Both have no matchMethod, but finalities don't overlap
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchFinality: []DataFinalityState{DataFinalityStateRealtime},
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// Should NOT have matched (finalities don't overlap)
-		assert.Nil(t, network.Failsafe[0].Retry)
-	})
-
-	t.Run("WildcardMethodMatch", func(t *testing.T) {
-		// Default has wildcard pattern that matches user's method
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_get*",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// User's specific matchMethod should be preserved
-		assert.Equal(t, "eth_getLogs", network.Failsafe[0].MatchMethod)
-		// Retry SHOULD be applied (wildcard matches)
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("PipePatternDoesNotMatchLiteralPipeValue", func(t *testing.T) {
-		// User has pipe pattern "eth_getLogs|eth_getBlockReceipts" as value
-		// Default has same pipe pattern "eth_getLogs|eth_getBlockReceipts" as pattern
-		// WildcardMatch treats | as OR, so the value "eth_getLogs|eth_getBlockReceipts"
-		// doesn't match either "eth_getLogs" or "eth_getBlockReceipts" (the OR branches)
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		assert.Equal(t, "eth_getLogs|eth_getBlockReceipts", network.Failsafe[0].MatchMethod)
-		// Retry should NOT be applied - WildcardMatch parses | as OR,
-		// so literal "eth_getLogs|eth_getBlockReceipts" doesn't match the OR branches
-		assert.Nil(t, network.Failsafe[0].Retry)
-	})
-
-	t.Run("WildcardStarMatchesPipeValue", func(t *testing.T) {
-		// Default has wildcard "*" pattern which should match any value including pipe patterns
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "*",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// User's matchMethod should be preserved
-		assert.Equal(t, "eth_getLogs|eth_getBlockReceipts", network.Failsafe[0].MatchMethod)
-		// Retry SHOULD be applied (* matches anything)
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("MultipleDefaultsFirstMatchWins", func(t *testing.T) {
-		// Multiple defaults, first matching one should be used
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 3,
-					},
-				},
-				{
-					MatchMethod: "eth_get*",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 10,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// First match (exact) should be used, not the wildcard
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 3, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("NoUserFailsafe_DefaultsCopied", func(t *testing.T) {
-		// No user failsafe defined, defaults should be copied entirely
-		network := &NetworkConfig{}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(5 * time.Second),
-					},
-				},
-				{
-					MatchMethod: "eth_call",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 2)
-		assert.Equal(t, "eth_getLogs", network.Failsafe[0].MatchMethod)
-		assert.Equal(t, "eth_call", network.Failsafe[1].MatchMethod)
-	})
-
-	t.Run("EmptyDefaultsFailsafe_UserConfigPreserved", func(t *testing.T) {
-		// Defaults have empty Failsafe array, user config should get system defaults
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		assert.Equal(t, "eth_getLogs", network.Failsafe[0].MatchMethod)
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		// System defaults for retry should be applied
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-		assert.NotZero(t, network.Failsafe[0].Retry.BackoffFactor) // System default
-	})
-
-	t.Run("NoDefaults_UserConfigPreserved", func(t *testing.T) {
-		// No defaults provided, user config should get system defaults
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, nil)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		assert.Equal(t, "eth_getLogs", network.Failsafe[0].MatchMethod)
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("PipePatternInDefaultMatchesSingleMethodValue", func(t *testing.T) {
-		// User has "eth_getLogs", default has "eth_getLogs|eth_getBlockReceipts"
-		// WildcardMatch parses | as OR, so "eth_getLogs" DOES match "eth_getLogs|eth_getBlockReceipts"
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// User's matchMethod should be preserved
-		assert.Equal(t, "eth_getLogs", network.Failsafe[0].MatchMethod)
-		// Retry SHOULD be applied (eth_getLogs matches the OR pattern)
-		assert.NotNil(t, network.Failsafe[0].Retry)
-		assert.EqualValues(t, 5, network.Failsafe[0].Retry.MaxAttempts)
-	})
-
-	t.Run("UnrelatedMethodDoesNotMatch", func(t *testing.T) {
-		// User has "eth_call", default has "eth_getLogs|eth_getBlockReceipts"
-		// These should NOT match
-		network := &NetworkConfig{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_call",
-					Timeout: &TimeoutPolicyConfig{
-						Duration: Duration(10 * time.Second),
-					},
-				},
-			},
-		}
-
-		defaults := &NetworkDefaults{
-			Failsafe: []*FailsafeConfig{
-				{
-					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
-					Retry: &RetryPolicyConfig{
-						MaxAttempts: 5,
-					},
-				},
-			},
-		}
-
-		err := network.SetDefaults(nil, defaults)
-		assert.NoError(t, err)
-		assert.Len(t, network.Failsafe, 1)
-		// User's matchMethod should be preserved
-		assert.Equal(t, "eth_call", network.Failsafe[0].MatchMethod)
-		// Retry should NOT be applied (eth_call doesn't match eth_getLogs|eth_getBlockReceipts)
-		assert.Nil(t, network.Failsafe[0].Retry)
+		// Mutate the source slice — converted slice must NOT be affected.
+		original[0] = DataFinalityStateFinalized
+		assert.Equal(t, DataFinalityStateRealtime, ups.Failsafe[0].Matchers[0].Finality[0],
+			"converted finality slice must be a deep copy")
 	})
 }
 

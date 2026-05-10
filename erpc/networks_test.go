@@ -10273,7 +10273,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 					Method:    "*",
 					TTL:       common.Duration(5 * time.Minute),
 					Connector: "mock",
-					Finality:  common.DataFinalityStateUnfinalized,
+					Finality:  common.FinalityPtr(common.DataFinalityStateUnfinalized),
 				},
 			},
 		}

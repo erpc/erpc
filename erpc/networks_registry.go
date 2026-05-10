@@ -133,6 +133,7 @@ func NewNetwork(
 			}
 
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+				config:                 fsCfg,
 				method:                 method,
 				finalities:             fsCfg.MatchFinality,
 				executor:               failsafe.NewExecutor(policyArray...),
@@ -145,8 +146,9 @@ func NewNetwork(
 
 	// Create a default executor if no failsafe config is provided or matched
 	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-		method:                 "*",
-		finalities:             nil,
+		config:                 nil, // Default executor has no config
+		method:                 "*", // "*" means match any method
+		finalities:             nil, // nil means match any finality
 		executor:               failsafe.NewExecutor[*common.NormalizedResponse](),
 		timeout:                nil,
 		consensusPolicyEnabled: false,

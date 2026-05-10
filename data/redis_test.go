@@ -105,8 +105,11 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		defer cancel()
 
 		cfg := &common.RedisConnectorConfig{
-			Addr:        "localhost:6379",
-			InitTimeout: common.Duration(1 * time.Second),
+			Addr:         "localhost:6379",
+			ConnPoolSize: 8,
+			InitTimeout:  common.Duration(1 * time.Second),
+			GetTimeout:   common.Duration(1 * time.Second),
+			SetTimeout:   common.Duration(3 * time.Second),
 			TLS: &common.TLSConfig{
 				Enabled:            true,
 				InsecureSkipVerify: false,
@@ -115,9 +118,6 @@ func TestRedisConnectorInitialization(t *testing.T) {
 				CAFile:             "",
 			},
 		}
-
-		err := cfg.SetDefaults()
-		require.NoError(t, err, "failed to set defaults for redis config")
 
 		connector, err := NewRedisConnector(ctx, &logger, "test-bad-tls", cfg)
 		// We expect that the connector tries to create a TLS config and fails.
@@ -407,6 +407,7 @@ func TestRedisDistributedLocking(t *testing.T) {
 
 		cfg := &common.RedisConnectorConfig{
 			Addr:              s.Addr(),
+			ConnPoolSize:      8,
 			InitTimeout:       common.Duration(2 * time.Second),
 			GetTimeout:        common.Duration(2 * time.Second),
 			SetTimeout:        common.Duration(2 * time.Second),
@@ -681,10 +682,11 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &common.RedisConnectorConfig{
-		Addr:        m.Addr(),
-		InitTimeout: common.Duration(2 * time.Second),
-		GetTimeout:  common.Duration(2 * time.Second),
-		SetTimeout:  common.Duration(2 * time.Second),
+		Addr:         m.Addr(),
+		ConnPoolSize: 8,
+		InitTimeout:  common.Duration(2 * time.Second),
+		GetTimeout:   common.Duration(2 * time.Second),
+		SetTimeout:   common.Duration(2 * time.Second),
 	}
 	err = cfg.SetDefaults()
 	require.NoError(t, err)

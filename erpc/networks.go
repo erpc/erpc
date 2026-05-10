@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -26,6 +27,7 @@ import (
 )
 
 type FailsafeExecutor struct {
+	config                 *common.FailsafeConfig
 	method                 string
 	finalities             []common.DataFinalityState
 	executor               failsafe.Executor[*common.NormalizedResponse]
@@ -252,15 +254,28 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 	finality := req.Finality(ctx)
 
 	// Iterate through executors in config order and return the first match.
-	// This respects the user-defined priority order in the config file.
-	for _, fe := range n.failsafeExecutors {
-		// Check if method matches (wildcard "*" matches any method)
+	// Prefer matcher-based selection when the executor has matchers configured;
+	// otherwise fall back to legacy method/finality matching for backward compatibility.
+	for i, fe := range n.failsafeExecutors {
+		if fe.config != nil && len(fe.config.Matchers) > 0 {
+			// New matcher-based selection (matchers PR #388)
+			if matchers.Match(ctx, fe.config.Matchers, req, nil) {
+				n.logger.Debug().
+					Str("method", method).
+					Str("finality", finality.String()).
+					Int("failsafeIndex", i).
+					Interface("matchers", fe.config.Matchers).
+					Msg("matched failsafe executor")
+				return fe
+			}
+			continue
+		}
+
+		// Legacy matching: wildcard method + finality slice membership.
 		methodMatches := fe.method == "*"
 		if !methodMatches {
 			methodMatches, _ = common.WildcardMatch(fe.method, method)
 		}
-
-		// Check if finality matches (empty finalities = any finality)
 		finalityMatches := len(fe.finalities) == 0 || slices.Contains(fe.finalities, finality)
 
 		if methodMatches && finalityMatches {
@@ -268,6 +283,11 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		}
 	}
 
+	// No fallback: the synthetic default executor (appended last in
+	// networks_registry.go with method="*", finalities=nil, config=nil)
+	// is guaranteed to match any request via the legacy branch above.
+	// If we ever reach here, the registry invariant has broken — return nil
+	// so callers can detect it (both call sites already nil-check).
 	return nil
 }
 

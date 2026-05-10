@@ -246,17 +246,37 @@ type CacheMethodConfig struct {
 	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
+// FinalityPtr returns a pointer to the given DataFinalityState. Use this when
+// constructing CachePolicyConfig literals to express explicit user intent —
+// e.g. CachePolicyConfig{Finality: FinalityPtr(DataFinalityStateRealtime)}.
+func FinalityPtr(f DataFinalityState) *DataFinalityState {
+	return &f
+}
+
+// EmptyBehaviorPtr returns a pointer to the given CacheEmptyBehavior.
+func EmptyBehaviorPtr(e CacheEmptyBehavior) *CacheEmptyBehavior {
+	return &e
+}
+
 type CachePolicyConfig struct {
+	Matchers    []*MatcherConfig     `yaml:"matchers,omitempty" json:"matchers"`
 	Connector   string               `yaml:"connector" json:"connector"`
-	Network     string               `yaml:"network,omitempty" json:"network"`
-	Method      string               `yaml:"method,omitempty" json:"method"`
-	Params      []interface{}        `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState    `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty       CacheEmptyBehavior   `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
 	AppliesTo   CachePolicyAppliesTo `yaml:"appliesTo,omitempty" json:"appliesTo" tstype:"'get' | 'set' | 'both'"`
 	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
 	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
 	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+
+	// Deprecated: Use Matchers instead.
+	// Note: Finality and Empty are pointer types so unset/explicit can be
+	// distinguished — DataFinalityStateFinalized and CacheEmptyBehaviorIgnore
+	// are the zero values of their respective enums, so non-pointer fields
+	// would leak "user wrote finality: finalized" into "user wrote nothing".
+	// See PR #388 review (Bugbot HIGH) for context.
+	Network  string              `yaml:"network,omitempty" json:"network"`
+	Method   string              `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}       `yaml:"params,omitempty" json:"params"`
+	Finality *DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty    *CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
 }
 
 type ConnectorDriverType string
@@ -1056,14 +1076,36 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	return copied
 }
 
+type MatcherConfig struct {
+	Network  string              `yaml:"network,omitempty" json:"network"`
+	Method   string              `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}       `yaml:"params,omitempty" json:"params"`
+	Finality []DataFinalityState `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState[]"`
+	// Empty is a pointer so callers can distinguish "no constraint" (nil)
+	// from explicitly setting CacheEmptyBehaviorIgnore (= zero value).
+	// See PR #388 review (Bugbot #7) for context.
+	Empty  *CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	Action MatcherAction       `yaml:"action,omitempty" json:"action"`
+}
+
+type MatcherAction string
+
+const (
+	MatcherInclude MatcherAction = "include"
+	MatcherExclude MatcherAction = "exclude"
+)
+
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
 	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
 	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+
+	// Deprecated: Use Matchers instead
+	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
 }
 
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
@@ -1078,6 +1120,37 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	if c.MatchFinality != nil {
 		copied.MatchFinality = make([]DataFinalityState, len(c.MatchFinality))
 		copy(copied.MatchFinality, c.MatchFinality)
+	}
+
+	// Deep copy the Matchers array
+	if c.Matchers != nil {
+		copied.Matchers = make([]*MatcherConfig, len(c.Matchers))
+		for i, matcher := range c.Matchers {
+			if matcher != nil {
+				matcherCopy := &MatcherConfig{}
+				*matcherCopy = *matcher
+				// Deep copy the Params slice
+				if matcher.Params != nil {
+					matcherCopy.Params = make([]interface{}, len(matcher.Params))
+					copy(matcherCopy.Params, matcher.Params)
+				}
+				// Deep copy the Finality slice
+				if matcher.Finality != nil {
+					matcherCopy.Finality = make([]DataFinalityState, len(matcher.Finality))
+					copy(matcherCopy.Finality, matcher.Finality)
+				}
+				// Deep copy the Empty pointer. The shallow struct copy above leaves both
+				// matchers sharing the same *CacheEmptyBehavior pointee — any future code
+				// path that mutates *Empty (none today, but contract is "Copy() returns an
+				// independent clone") would corrupt the original. Resolves PR #388
+				// cursor-bot LOW at this line — introduced by the pointer-types refactor.
+				if matcher.Empty != nil {
+					emptyCopy := *matcher.Empty
+					matcherCopy.Empty = &emptyCopy
+				}
+				copied.Matchers[i] = matcherCopy
+			}
+		}
 	}
 
 	if c.Retry != nil {

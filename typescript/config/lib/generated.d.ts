@@ -248,16 +248,25 @@ export interface CacheMethodConfig {
     enforceBlockAvailability?: boolean;
 }
 export interface CachePolicyConfig {
+    matchers?: (MatcherConfig | undefined)[];
     connector: string;
+    appliesTo?: 'get' | 'set' | 'both';
+    minItemSize?: ByteSize;
+    maxItemSize?: ByteSize;
+    ttl?: Duration;
+    /**
+     * Deprecated: Use Matchers instead.
+     * Note: Finality and Empty are pointer types so unset/explicit can be
+     * distinguished — DataFinalityStateFinalized and CacheEmptyBehaviorIgnore
+     * are the zero values of their respective enums, so non-pointer fields
+     * would leak "user wrote finality: finalized" into "user wrote nothing".
+     * See PR #388 review (Bugbot HIGH) for context.
+     */
     network?: string;
     method?: string;
     params?: any[];
     finality?: DataFinalityState;
     empty?: CacheEmptyBehavior;
-    appliesTo?: 'get' | 'set' | 'both';
-    minItemSize?: ByteSize;
-    maxItemSize?: ByteSize;
-    ttl?: Duration;
 }
 export type ConnectorDriverType = string;
 export declare const DriverMemory: ConnectorDriverType;
@@ -580,14 +589,34 @@ export interface EvmAvailabilityBoundConfig {
     probe?: EvmAvailabilityProbeType;
     updateRate?: Duration;
 }
+export interface MatcherConfig {
+    network?: string;
+    method?: string;
+    params?: any[];
+    finality?: DataFinalityState[];
+    /**
+     * Empty is a pointer so callers can distinguish "no constraint" (nil)
+     * from explicitly setting CacheEmptyBehaviorIgnore (= zero value).
+     * See PR #388 review (Bugbot #7) for context.
+     */
+    empty?: CacheEmptyBehavior;
+    action?: MatcherAction;
+}
+export type MatcherAction = string;
+export declare const MatcherInclude: MatcherAction;
+export declare const MatcherExclude: MatcherAction;
 export interface FailsafeConfig {
-    matchMethod?: string;
-    matchFinality?: DataFinalityState[];
+    matchers?: (MatcherConfig | undefined)[];
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
     hedge?: HedgePolicyConfig;
     consensus?: ConsensusPolicyConfig;
+    /**
+     * Deprecated: Use Matchers instead
+     */
+    matchMethod?: string;
+    matchFinality?: DataFinalityState[];
 }
 export interface RetryPolicyConfig {
     maxAttempts: number;

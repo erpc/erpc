@@ -602,17 +602,71 @@ func (c *CompressionConfig) SetDefaults() error {
 }
 
 func (c *CachePolicyConfig) SetDefaults() error {
-	if c.Method == "" {
-		c.Method = "*"
-	}
-	if c.Network == "" {
-		c.Network = "*"
-	}
-	if c.AppliesTo == "" {
-		c.AppliesTo = CachePolicyAppliesToBoth
-	}
+	c.convertLegacyMatchers()
 
 	return nil
+}
+
+// convertLegacyMatchers converts legacy cache policy fields to new matcher format
+func (c *CachePolicyConfig) convertLegacyMatchers() {
+	if c == nil {
+		return
+	}
+
+	// If we already have matchers, don't convert legacy fields
+	if len(c.Matchers) > 0 {
+		return
+	}
+
+	// Convert legacy fields to new matcher format if any are present.
+	// Finality and Empty are pointer types (PR #388, Bugbot HIGH/#7) so we can
+	// distinguish "user explicitly set the field" (non-nil) from "user didn't
+	// set it" (nil) — the underlying enums have zero values that would
+	// otherwise be ambiguous with unset (DataFinalityStateFinalized = 0,
+	// CacheEmptyBehaviorIgnore = 0).
+	hasLegacyFields := c.Network != "" ||
+		c.Method != "" ||
+		len(c.Params) > 0 ||
+		c.Finality != nil ||
+		c.Empty != nil
+
+	if hasLegacyFields {
+		matcher := &MatcherConfig{
+			Action: MatcherInclude, // Default action for cache policies
+		}
+
+		if c.Network != "" {
+			matcher.Network = c.Network
+		}
+		if c.Method != "" {
+			matcher.Method = c.Method
+		}
+		if len(c.Params) > 0 {
+			matcher.Params = make([]interface{}, len(c.Params))
+			copy(matcher.Params, c.Params)
+		}
+		// Convert Finality only if explicitly set (otherwise leave matcher's
+		// Finality empty = no finality constraint, matches everything).
+		if c.Finality != nil {
+			matcher.Finality = []DataFinalityState{*c.Finality}
+		}
+		// Convert Empty only if explicitly set. If unset, leave matcher.Empty
+		// nil so MatchConfig won't filter empties.
+		if c.Empty != nil {
+			ev := *c.Empty
+			matcher.Empty = &ev
+		}
+
+		c.Matchers = append(c.Matchers, matcher)
+	}
+
+	// If no matchers exist at all, create a default catch-all matcher
+	if len(c.Matchers) == 0 {
+		c.Matchers = append(c.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
+	}
 }
 
 func (c *TracingConfig) SetDefaults() error {
@@ -1624,49 +1678,18 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		u.Type = UpstreamTypeEvm
 	}
 
+	// only apply defaults if user has NO failsafe policies
 	if len(u.Failsafe) > 0 {
-		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
-			// Apply defaults to each failsafe config
-			for i, fs := range u.Failsafe {
-				// Find matching default by method/finality
-				var defaultFs *FailsafeConfig
-				for _, dfs := range defaults.Failsafe {
-					// Match method using wildcard (if both are specified)
-					methodMatch := true
-					if dfs.MatchMethod != "" && fs.MatchMethod != "" {
-						methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
-					} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
-						// If only one has a method specified, they don't match
-						methodMatch = false
-					}
-
-					// Match finality (empty array means any finality)
-					finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
-
-					if methodMatch && finalityMatch {
-						defaultFs = dfs
-						break
-					}
-				}
-				if defaultFs != nil {
-					if err := fs.SetDefaults(defaultFs); err != nil {
-						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-					}
-				} else {
-					if err := fs.SetDefaults(nil); err != nil {
-						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-					}
-				}
-			}
-		} else {
-			// Apply nil defaults to each failsafe config
-			for i, fs := range u.Failsafe {
-				if err := fs.SetDefaults(nil); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-				}
+		// User has defined failsafe policies - keep them as-is, normalize and fill required fields.
+		// Note: matchers PR (#388) deliberately replaced per-method/finality merging with
+		// "user policies override defaults entirely". See review comments #11/#12 for context.
+		for i, fs := range u.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
 			}
 		}
 	} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+		// User has no failsafe policies - use all defaults
 		u.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
 		for i, dfs := range defaults.Failsafe {
 			u.Failsafe[i] = &FailsafeConfig{}
@@ -1792,57 +1815,33 @@ func (j *JsonRpcUpstreamConfig) SetDefaults() error {
 }
 
 func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) error {
+	// Handle failsafe policies first (must run even when defaults is nil)
+	if len(n.Failsafe) > 0 {
+		// User has defined failsafe policies - keep them as-is, normalize and fill required fields
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
+		}
+	} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+		// User has no failsafe policies - use all defaults
+		n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+		for i, dfs := range defaults.Failsafe {
+			n.Failsafe[i] = &FailsafeConfig{}
+			*n.Failsafe[i] = *dfs
+			if err := n.Failsafe[i].SetDefaults(dfs); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
+		}
+	}
+
 	if defaults != nil {
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
-		if len(defaults.Failsafe) > 0 {
-			if len(n.Failsafe) == 0 {
-				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
-				for i, fs := range defaults.Failsafe {
-					n.Failsafe[i] = &FailsafeConfig{}
-					*n.Failsafe[i] = *fs
-				}
-			} else {
-				// Apply defaults to each failsafe config
-				for i, fs := range n.Failsafe {
-					// Find matching default by method/finality
-					defaultFs := &FailsafeConfig{
-						MatchMethod: "*",
-					}
-					for _, dfs := range defaults.Failsafe {
-						// Match method using wildcard (if both are specified)
-						methodMatch := true
-						if dfs.MatchMethod != "" && fs.MatchMethod != "" {
-							methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
-						} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
-							// If only one has a method specified, they don't match
-							methodMatch = false
-						}
-
-						// Match finality (empty array means any finality)
-						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
-
-						if methodMatch && finalityMatch {
-							defaultFs = dfs
-							break
-						}
-					}
-					if defaultFs != nil {
-						if err := fs.SetDefaults(defaultFs); err != nil {
-							return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-						}
-					}
-				}
-			}
-		} else if len(n.Failsafe) > 0 {
-			// Apply system default to each failsafe config
-			for i, fs := range n.Failsafe {
-				if err := fs.SetDefaults(nil); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-				}
-			}
-		}
+		// Note: failsafe handling for NetworkConfig is done at the top of this function
+		// (matchers PR #388 deliberately consolidates network failsafe defaulting there
+		// rather than re-running per-method/finality matching here).
 		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
 			n.SelectionPolicy = &SelectionPolicyConfig{}
 			*n.SelectionPolicy = *defaults.SelectionPolicy
@@ -1900,13 +1899,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.Evm != nil {
 			if err := n.Evm.SetDefaults(); err != nil {
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
-			}
-		}
-	} else if len(n.Failsafe) > 0 {
-		// Apply system default to each failsafe config
-		for i, fs := range n.Failsafe {
-			if err := fs.SetDefaults(nil); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
 			}
 		}
 	}
@@ -2083,15 +2075,19 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 	return nil
 }
 
-func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
-	// Set default for MatchMethod if empty
-	if f.MatchMethod == "" {
-		if defaults != nil && defaults.MatchMethod != "" {
-			f.MatchMethod = defaults.MatchMethod
-		} else {
-			f.MatchMethod = "*" // Default to match any method
-		}
+func (f *FailsafeConfig) Normalize() {
+	f.convertLegacyMatchers()
+
+	if len(f.Matchers) == 0 {
+		f.Matchers = append(f.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
 	}
+}
+
+func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
+	f.Normalize()
 
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
@@ -2164,6 +2160,43 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 	}
 
 	return nil
+}
+
+// convertLegacyMatchers converts legacy failsafe fields to new matcher format
+func (f *FailsafeConfig) convertLegacyMatchers() {
+	if f == nil {
+		return
+	}
+
+	// If we already have matchers, don't convert legacy fields
+	if len(f.Matchers) > 0 {
+		return
+	}
+
+	// Convert legacy fields to new matcher format if any are present
+	// Note: Empty MatchMethod now means "match all methods" (consistent with new matcher system)
+	if f.MatchMethod != "" || len(f.MatchFinality) > 0 {
+		matcher := &MatcherConfig{
+			Action: MatcherInclude, // Default action for legacy configs
+		}
+
+		// Convert MatchMethod - empty MatchMethod means match all methods
+		if f.MatchMethod != "" {
+			matcher.Method = f.MatchMethod
+		}
+		// If MatchMethod is empty, leave Method empty (which means match all)
+
+		// Convert MatchFinality - include all finality states in a single matcher.
+		// Copy the slice (don't share the backing array) so subsequent mutations
+		// to f.MatchFinality or matcher.Finality don't corrupt the other —
+		// matches the resolution from PR review comments #14/#15.
+		if len(f.MatchFinality) > 0 {
+			matcher.Finality = append([]DataFinalityState(nil), f.MatchFinality...)
+		}
+
+		// Add the matcher (with or without finality states)
+		f.Matchers = append(f.Matchers, matcher)
+	}
 }
 
 func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {

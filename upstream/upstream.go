@@ -20,6 +20,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
@@ -35,8 +36,9 @@ type TimeoutFunc func(ctx context.Context, req *common.NormalizedRequest) *time.
 
 // FailsafeExecutor wraps a failsafe executor with method and finality filters
 type FailsafeExecutor struct {
-	method     string
-	finalities []common.DataFinalityState
+	config     *common.FailsafeConfig     // Store the original config for matching
+	method     string                     // Legacy field for backward compatibility
+	finalities []common.DataFinalityState // Legacy field for backward compatibility
 	executor   failsafe.Executor[*common.NormalizedResponse]
 	timeout    TimeoutFunc
 }
@@ -97,6 +99,7 @@ func NewUpstream(
 				method = "*"
 			}
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+				config:     fsCfg,
 				method:     method,
 				finalities: fsCfg.MatchFinality,
 				executor:   failsafe.NewExecutor(policiesArray...),
@@ -106,6 +109,7 @@ func NewUpstream(
 	}
 
 	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+		config:     nil, // Default executor has no config
 		method:     "*", // "*" means match any method
 		finalities: nil, // nil means match any finality
 		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
@@ -268,7 +272,7 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 		return
 	}
 	if cfg.Evm != nil && u.evmStatePoller != nil {
-		// propagate alias to evm config so the poller can use it without a direct network reference
+		// propagate alias and evm config so the poller can use it without a direct network reference
 		u.evmStatePoller.SetNetworkConfig(cfg)
 	}
 	// Always set networkId from the provided config
@@ -287,46 +291,38 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
-func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+func (u *Upstream) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
 	method, _ := req.Method()
-	finality := req.Finality(context.Background())
-
-	// First, try to find a specific match for both method and finality
+	// Iterate through executors in config order and return the first match.
+	// Prefer matcher-based selection when configured; otherwise fall back to
+	// legacy method/finality matching (which also handles the synthetic
+	// default executor with config=nil, method="*", finalities=nil that
+	// upstream_registry appends last).
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) > 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && slices.Contains(fe.finalities, finality) {
+		if fe.config != nil && len(fe.config.Matchers) > 0 {
+			if matchers.Match(ctx, fe.config.Matchers, req, nil) {
 				return fe
 			}
+			continue
 		}
-	}
 
-	// Then, try to find a match for method only (empty finalities means any finality)
-	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && (len(fe.finalities) == 0) {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched {
-				return fe
-			}
+		// Legacy matching: wildcard method + finality slice membership.
+		methodMatches := fe.method == "*"
+		if !methodMatches {
+			methodMatches, _ = common.WildcardMatch(fe.method, method)
 		}
-	}
+		finalityMatches := len(fe.finalities) == 0 || slices.Contains(fe.finalities, req.Finality(ctx))
 
-	// Then, try to find a match for finality only
-	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) > 0 {
-			if slices.Contains(fe.finalities, finality) {
-				return fe
-			}
-		}
-	}
-
-	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
-	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (len(fe.finalities) == 0) {
+		if methodMatches && finalityMatches {
 			return fe
 		}
 	}
 
+	// No fallback: the synthetic default executor (appended last in
+	// upstream_registry with method="*", finalities=nil, config=nil) is
+	// guaranteed to match any request via the legacy branch above. If we
+	// reach here, the registry invariant has broken — return nil so callers
+	// can detect it (the call site already nil-checks).
 	return nil
 }
 
@@ -617,7 +613,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nrs, nil
 		}
 
-		failsafeExecutor := u.getFailsafeExecutor(nrq)
+		failsafeExecutor := u.getFailsafeExecutor(ctx, nrq)
 		if failsafeExecutor == nil {
 			return nil, fmt.Errorf("no failsafe executor found for request")
 		}

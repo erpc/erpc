@@ -954,6 +954,12 @@ func setupTestNetworkWithHedgePolicy(t *testing.T, ctx context.Context, hedgeCon
 			ChainId: 123,
 		},
 		Failsafe: []*common.FailsafeConfig{{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Hedge: hedgeConfig,
 		}},
 	}
@@ -983,6 +989,12 @@ func setupTestNetworkWithMultipleUpstreams(t *testing.T, ctx context.Context, nu
 			ChainId: 123,
 		},
 		Failsafe: []*common.FailsafeConfig{{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Hedge: hedgeConfig,
 		}},
 	}

@@ -200,11 +200,13 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	var jrr *common.JsonRpcResponse
 	var connector data.Connector
-	var policy *data.CachePolicy
+	var policyWithMatcher *data.PolicyWithMatcher
+	var matchedPolicyWithMatcher *data.PolicyWithMatcher
 	// Track context for correct miss attribution
 	var lastMissConnectorId, lastMissPolicyStr, lastMissTTL string
 	var lastRejectConnectorId, lastRejectPolicyStr, lastRejectTTL string
-	for _, policy = range policies {
+	for _, policyWithMatcher = range policies {
+		policy := policyWithMatcher.Policy
 		connector = policy.GetConnector()
 		if req.ShouldSkipCacheRead(connector.Id()) {
 			c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Msg("skipping cache connector due to skip-cache-read directive pattern")
@@ -260,9 +262,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 		policySpan.End()
 		if jrr != nil {
-			// Validate the cached result's age against the policy's TTL
+			// Validate the cached result's age against the policy's TTL.
 			if c.shouldAcceptCachedResult(ctx, req, jrr, policy) {
-				// Result is acceptable, use it
+				matchedPolicyWithMatcher = policyWithMatcher // Remember which policy actually returned data
 				break
 			} else {
 				// Result is too old, reject it and try the next policy
@@ -276,6 +278,21 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			}
 		}
 	}
+	// Use matchedPolicyWithMatcher if we found data, otherwise use the last policyWithMatcher for metrics.
+	if matchedPolicyWithMatcher != nil {
+		policyWithMatcher = matchedPolicyWithMatcher
+	}
+	// Invariant: by this point policyWithMatcher must be non-nil. The early-return at the
+	// `len(policies) == 0` branch above ensures the loop runs at least once, and the loop's
+	// `range` assigns policyWithMatcher each iteration. findGetPolicies never appends nil
+	// entries (see its construction of &data.PolicyWithMatcher{...}). The defensive check
+	// below guards against future refactors that might break either invariant — cheaper than
+	// chasing a panic in production. Resolves PR #388 cursor-bot HIGH at this line.
+	if policyWithMatcher == nil {
+		return nil, fmt.Errorf("internal: policyWithMatcher is nil after policy loop (network=%s method=%s)",
+			req.NetworkId(), rpcReq.Method)
+	}
+	policy := policyWithMatcher.Policy
 
 	if jrr == nil {
 		// Prefer attributing miss to age-guard rejection if any, otherwise the last miss
@@ -327,7 +344,8 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	if jrr.IsResultEmptyish() {
-		switch policy.EmptyState() {
+		// Use the empty state from the specific matcher that matched the request
+		switch policyWithMatcher.EmptyState() {
 		case common.CacheEmptyBehaviorIgnore:
 			// Treat as cache miss - return nil to indicate no cached data
 			telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
@@ -513,14 +531,15 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	wg := sync.WaitGroup{}
 	errs := []error{}
 	errsMu := sync.Mutex{}
-	for _, policy := range policies {
+	for _, policyWithMatcher := range policies {
 		wg.Add(1)
-		go func(policy *data.CachePolicy) {
+		go func(policyWithMatcher *data.PolicyWithMatcher) {
 			defer wg.Done()
+			policy := policyWithMatcher.Policy
 			connector := policy.GetConnector()
 			ttl := policy.GetTTL()
 
-			shouldCache, err := shouldCacheResponse(lg, resp, rpcResp, policy)
+			shouldCache, err := shouldCacheResponse(lg, resp, rpcResp, policyWithMatcher)
 			if !shouldCache {
 				if err != nil {
 					telemetry.MetricCacheSetErrorTotal.WithLabelValues(
@@ -634,7 +653,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					ttl.String(),
 				).Observe(time.Since(start).Seconds())
 			}
-		}(policy)
+		}(policyWithMatcher)
 	}
 	wg.Wait()
 
@@ -737,8 +756,8 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	return true
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
-	var policies []*data.CachePolicy
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.PolicyWithMatcher, error) {
+	var policies []*data.PolicyWithMatcher
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
 		if c.logger.GetLevel() <= zerolog.TraceLevel {
@@ -751,19 +770,19 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 				Msg("checking policy match for set")
 		}
 
-		match, err := policy.MatchesForSet(networkId, method, params, finality, isEmptyish)
-		if err != nil {
-			return nil, err
-		}
+		match, matcher := policy.MatchesForSetWithMatcher(networkId, method, params, finality, isEmptyish)
 		if match {
-			policies = append(policies, policy)
+			policies = append(policies, &data.PolicyWithMatcher{
+				Policy:  policy,
+				Matcher: matcher,
+			})
 		}
 	}
 	return policies, nil
 }
 
-func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
-	var policies []*data.CachePolicy
+func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.PolicyWithMatcher, error) {
+	var policies []*data.PolicyWithMatcher
 	visitedConnectorsMap := make(map[data.Connector]bool)
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -777,13 +796,13 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 				Msg("checking policy match for get")
 		}
 
-		match, err := policy.MatchesForGet(networkId, method, params, finality)
-		if err != nil {
-			return nil, err
-		}
+		match, matcher := policy.MatchesForGetWithMatcher(networkId, method, params, finality)
 		if match {
 			if c := policy.GetConnector(); !visitedConnectorsMap[c] {
-				policies = append(policies, policy)
+				policies = append(policies, &data.PolicyWithMatcher{
+					Policy:  policy,
+					Matcher: matcher,
+				})
 				visitedConnectorsMap[c] = true
 			}
 		}
@@ -869,7 +888,7 @@ func shouldCacheResponse(
 	lg zerolog.Logger,
 	resp *common.NormalizedResponse,
 	rpcResp *common.JsonRpcResponse,
-	policy *data.CachePolicy,
+	policyWithMatcher *data.PolicyWithMatcher,
 ) (bool, error) {
 	// Never cache responses with errors
 	if rpcResp != nil && rpcResp.Error != nil {
@@ -877,6 +896,7 @@ func shouldCacheResponse(
 		return false, nil
 	}
 
+	policy := policyWithMatcher.Policy
 	size := rpcResp.ResultLength()
 	// Check if the response size is within the limits
 	if !policy.MatchesSizeLimits(size) {
@@ -886,7 +906,8 @@ func shouldCacheResponse(
 	result := rpcResp.GetResultBytes()
 	// Check if we should cache empty results
 	isEmpty := resp == nil || rpcResp == nil || result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
-	switch policy.EmptyState() {
+	// Use the empty state from the specific matcher that matched the request
+	switch policyWithMatcher.EmptyState() {
 	case common.CacheEmptyBehaviorIgnore:
 		return !isEmpty, nil
 	case common.CacheEmptyBehaviorAllow:
@@ -894,7 +915,7 @@ func shouldCacheResponse(
 	case common.CacheEmptyBehaviorOnly:
 		return isEmpty, nil
 	default:
-		return false, fmt.Errorf("unknown cache empty behavior: %s", policy.EmptyState())
+		return false, fmt.Errorf("unknown cache empty behavior: %s", policyWithMatcher.EmptyState())
 	}
 }
 

@@ -2,10 +2,11 @@ package data
 
 import (
 	"fmt"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/util"
 )
 
@@ -17,7 +18,32 @@ type CachePolicy struct {
 	maxSize   *int
 }
 
+// PolicyWithMatcher holds a policy along with the specific matcher that matched
+type PolicyWithMatcher struct {
+	Policy  *CachePolicy
+	Matcher *common.MatcherConfig
+}
+
+// EmptyState returns the empty state behavior from the matched matcher.
+// Returns CacheEmptyBehaviorIgnore when the matcher (or its Empty field) is
+// nil — callers want a concrete behavior; nil pointer means "no constraint
+// expressed", which behaves the same as Ignore for downstream filtering
+// decisions that only care about Allow/Only.
+func (pm *PolicyWithMatcher) EmptyState() common.CacheEmptyBehavior {
+	if pm == nil || pm.Matcher == nil || pm.Matcher.Empty == nil {
+		return common.CacheEmptyBehaviorIgnore
+	}
+	return *pm.Matcher.Empty
+}
+
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
+	// Ensure legacy fields (Network/Method/Finality/etc.) are converted to matchers
+	// before we use the config. SetDefaults is idempotent — it no-ops if matchers
+	// are already populated. This lets callers using either schema work uniformly.
+	if err := cfg.SetDefaults(); err != nil {
+		return nil, fmt.Errorf("failed to set defaults on cache policy config: %w", err)
+	}
+
 	var minSize, maxSize *int
 
 	if cfg.MinItemSize != nil {
@@ -36,12 +62,30 @@ func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CacheP
 		maxSize = &parsed
 	}
 
-	str := fmt.Sprintf("network=%s method=%s finality=%s", cfg.Network, cfg.Method, cfg.Finality.String())
+	// Build matcher details string
+	var matcherStrs []string
+	for _, matcher := range cfg.Matchers {
+		matcherStr := fmt.Sprintf("method=%s", matcher.Method)
+		if matcher.Network != "" {
+			matcherStr += fmt.Sprintf(" network=%s", matcher.Network)
+		}
+		if len(matcher.Finality) > 0 {
+			finalityStrs := make([]string, len(matcher.Finality))
+			for i, f := range matcher.Finality {
+				finalityStrs[i] = f.String()
+			}
+			matcherStr += fmt.Sprintf(" finality=[%s]", strings.Join(finalityStrs, ","))
+		}
+		if matcher.Params != nil && len(matcher.Params) > 0 {
+			matcherStr += fmt.Sprintf(" params=%d", len(matcher.Params))
+		}
+		matcherStr += fmt.Sprintf(" action=%s", matcher.Action)
+		matcherStrs = append(matcherStrs, fmt.Sprintf("{%s}", matcherStr))
+	}
+	str := fmt.Sprintf("matchers=[%s]", strings.Join(matcherStrs, " "))
+
 	if minSize != nil || maxSize != nil {
 		str = fmt.Sprintf("%s minSize=%d maxSize=%d", str, minSize, maxSize)
-	}
-	if cfg.Params != nil {
-		str = fmt.Sprintf("%s params=%v", str, cfg.Params != nil)
 	}
 
 	str = fmt.Sprintf("policy(%s)", str)
@@ -60,93 +104,127 @@ func (p *CachePolicy) MarshalJSON() ([]byte, error) {
 }
 
 func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) (bool, error) {
+	matched, _ := p.MatchesForSetWithMatcher(networkId, method, params, finality, isEmptyish)
+	return matched, nil
+}
+
+// MatchesForSetWithMatcher returns both the match result and the specific matcher that matched
+func (p *CachePolicy) MatchesForSetWithMatcher(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) (bool, *common.MatcherConfig) {
 	// Respect appliesTo directive for set
 	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToSet {
 		return false, nil
 	}
-	match, err := common.WildcardMatch(p.config.Network, networkId)
-	if err != nil {
-		return false, err
-	}
-	if !match {
-		return false, nil
-	}
 
-	match, err = common.WildcardMatch(p.config.Method, method)
-	if err != nil {
-		return false, err
+	// Check each matcher from last to first (last takes precedence)
+	for i := len(p.config.Matchers) - 1; i >= 0; i-- {
+		matcher := p.config.Matchers[i]
+		if matchers.MatchConfig(matcher, networkId, method, params, finality, isEmptyish) {
+			// For cache policies, we only cache if action is include
+			return matcher.Action == common.MatcherInclude, matcher
+		}
 	}
-	if !match {
-		return false, nil
-	}
-
-	match, err = p.matchParams(params)
-	if err != nil {
-		return false, err
-	}
-	if !match {
-		return false, nil
-	}
-
-	if isEmptyish && p.config.Empty == common.CacheEmptyBehaviorIgnore {
-		return false, nil
-	}
-
-	if !isEmptyish && p.config.Empty == common.CacheEmptyBehaviorOnly {
-		return false, nil
-	}
-
-	// TODO do we need to make unknown superset of finalized/unfinalized?
-	// TODO do we need to differentiate between 'unknown' (eth_trace*) and 'missing' (chain does not support finalized)?
-	return p.config.Finality == finality, nil
+	// No matcher matched
+	return false, nil
 }
 
 func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, error) {
+	matched, _ := p.MatchesForGetWithMatcher(networkId, method, params, finality)
+	return matched, nil
+}
+
+// MatchesForGetWithMatcher returns both the match result and the specific
+// matcher that matched, intentionally diverging from MatchesForSetWithMatcher
+// in two ways:
+//
+//  1. Finality is broadened on read — a finalized request may match an
+//     unfinalized policy because data cached as unfinalized is still valid
+//     once it finalizes. SET requires an exact match.
+//  2. The matcher's `empty:` constraint is NOT evaluated here. At policy-
+//     selection time we don't yet have the cached value, so we can't know if
+//     it's "emptyish". Empty-filtering happens post-fetch in the cache layer
+//     (see EvmJsonRpcCache.Get / shouldAcceptCachedResult — it consults
+//     PolicyWithMatcher.EmptyState() once the value is in hand). Tests that
+//     pin this end-to-end behavior live in evm_json_rpc_cache_test.go around
+//     the "empty behavior set to ignore/allow/only" subtests.
+//
+// Cursor-bot flagged the asymmetry with MatchesForSetWithMatcher (which uses
+// matchers.MatchConfig with isEmptyish) as a MED bug; the asymmetry is
+// architectural intent, not a defect — see PR #388 review thread.
+func (p *CachePolicy) MatchesForGetWithMatcher(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, *common.MatcherConfig) {
 	// Respect appliesTo directive for get
 	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToGet {
 		return false, nil
 	}
-	match, err := common.WildcardMatch(p.config.Network, networkId)
-	if err != nil {
-		return false, err
-	}
-	if !match {
-		return false, nil
-	}
 
-	match, err = common.WildcardMatch(p.config.Method, method)
-	if err != nil {
-		return false, err
-	}
-	if !match {
-		return false, nil
-	}
+	// For GET operations, we need special handling of finality
+	// to be more flexible in finding cached data
 
-	match, err = p.matchParams(params)
-	if err != nil {
-		return false, err
-	}
-	if !match {
-		return false, nil
-	}
+	// Check each matcher from last to first (last takes precedence)
+	for i := len(p.config.Matchers) - 1; i >= 0; i-- {
+		matcher := p.config.Matchers[i]
 
-	// When finality is already known based on request params (e.g. eth_getBlockNumber(latest))
-	// we can only match policies that have the same finality.
-	if finality == common.DataFinalityStateFinalized {
-		return p.config.Finality == common.DataFinalityStateFinalized ||
-			// If request implies that data is finalized, it could be that originally written response was still unfinalized,
-			// therefore we should still match unfinalized policies as well.
-			p.config.Finality == common.DataFinalityStateUnfinalized, nil
-	} else if finality == common.DataFinalityStateUnfinalized {
-		return p.config.Finality == common.DataFinalityStateUnfinalized, nil
-	} else if finality == common.DataFinalityStateRealtime {
-		return p.config.Finality == common.DataFinalityStateRealtime, nil
-	}
+		// Check network match
+		if matcher.Network != "" {
+			match, err := common.WildcardMatch(matcher.Network, networkId)
+			if err != nil || !match {
+				continue
+			}
+		}
 
-	// When fetching data for unknown finality we need to iterate over all policies as we don't know finality of the response when originally written.
-	// We will iterate from first to last policy (matched on network/method) to see which one has the data.
-	// Therefore it is recommended to put the fastest storage and most up-to-date policy first.
-	return true, nil
+		// Check method match
+		if matcher.Method != "" {
+			match, err := common.WildcardMatch(matcher.Method, method)
+			if err != nil || !match {
+				continue
+			}
+		}
+
+		// Check params match
+		if len(matcher.Params) > 0 {
+			match, err := matchers.MatchParams(matcher.Params, params)
+			if err != nil || !match {
+				continue
+			}
+		}
+
+		// At this point, network/method/params match. Now handle finality with special GET semantics.
+		finalityMatches := false
+
+		if len(matcher.Finality) == 0 {
+			// No finality constraint means it matches any finality
+			finalityMatches = true
+		} else if finality == common.DataFinalityStateUnknown {
+			// Unknown finality matches any policy (we don't know what finality the cached data has)
+			finalityMatches = true
+		} else if finality == common.DataFinalityStateFinalized {
+			// Finalized requests can match both finalized and unfinalized policies
+			// (data might have been cached as unfinalized but is now finalized)
+			for _, f := range matcher.Finality {
+				if f == common.DataFinalityStateFinalized || f == common.DataFinalityStateUnfinalized {
+					finalityMatches = true
+					break
+				}
+			}
+		} else {
+			// For unfinalized or realtime, require exact match
+			for _, f := range matcher.Finality {
+				if f == finality {
+					finalityMatches = true
+					break
+				}
+			}
+		}
+
+		if finalityMatches {
+			// This matcher fully matches, return based on action
+			if matcher.Action == common.MatcherInclude {
+				return true, matcher
+			}
+			return false, nil
+		}
+	}
+	// No matcher matched
+	return false, nil
 }
 
 func (p *CachePolicy) MatchesSizeLimits(size int) bool {
@@ -157,95 +235,6 @@ func (p *CachePolicy) MatchesSizeLimits(size int) bool {
 		return false
 	}
 	return true
-}
-
-func (p *CachePolicy) EmptyState() common.CacheEmptyBehavior {
-	return p.config.Empty
-}
-
-func (p *CachePolicy) matchParams(params []interface{}) (bool, error) {
-	if len(p.config.Params) == 0 {
-		return true, nil
-	}
-
-	for i, pattern := range p.config.Params {
-		var v interface{}
-		if i < len(params) {
-			v = params[i]
-		}
-		match, err := matchParam(pattern, v)
-		if err != nil {
-			return false, err
-		}
-		if !match {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-func matchParam(pattern interface{}, param interface{}) (bool, error) {
-	switch p := pattern.(type) {
-	case map[string]interface{}:
-		// For objects, recursively match each field
-		paramMap, ok := param.(map[string]interface{})
-		if !ok {
-			return false, nil
-		}
-		for k, v := range p {
-			paramValue, exists := paramMap[k]
-			match, err := matchParam(v, paramValue)
-			if err != nil {
-				return false, err
-			}
-			if !exists || !match {
-				return false, nil
-			}
-		}
-		return true, nil
-	case []interface{}:
-		// For arrays, match each element
-		paramArray, ok := param.([]interface{})
-		if !ok || len(p) != len(paramArray) {
-			return false, nil
-		}
-		for i, v := range p {
-			match, err := matchParam(v, paramArray[i])
-			if err != nil {
-				return false, err
-			}
-			if !match {
-				return false, nil
-			}
-		}
-		return true, nil
-	case string:
-		match, err := common.WildcardMatch(p, paramToString(param))
-		if err != nil {
-			return false, err
-		}
-		return match, nil
-	default:
-		// For other types, convert both to strings and compare
-		return paramToString(pattern) == paramToString(param), nil
-	}
-}
-
-func paramToString(param interface{}) string {
-	if param == nil {
-		return ""
-	}
-
-	switch v := param.(type) {
-	case string:
-		return v
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
-	case bool:
-		return strconv.FormatBool(v)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
 }
 
 func (p *CachePolicy) GetConnector() Connector {
