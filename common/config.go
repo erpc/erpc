@@ -1868,14 +1868,24 @@ type EvmIntegrityConfig struct {
 }
 
 type SelectionPolicyConfig struct {
-	EvalInterval     Duration       `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
+	EvalInterval  Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
+	EvalPerMethod bool     `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	// EvalFunctionSource is the JS source of the eval function. It is the
+	// preferred input for the selection-policy evaluator: each PolicyEvaluator
+	// compiles this source into its own sobek.Runtime so per-network ticks
+	// do not race on a shared runtime. Populated automatically by
+	// UnmarshalYAML and SetDefaults; tests may set it directly.
+	EvalFunctionSource string `yaml:"-" json:"-"`
+	// EvalFunction is the legacy precompiled callable. It is retained so
+	// callers that constructed SelectionPolicyConfig programmatically before
+	// EvalFunctionSource existed keep working. New code should populate
+	// EvalFunctionSource instead — a Callable returned by CompileFunction is
+	// bound to its own Runtime, and sharing one Callable across multiple
+	// PolicyEvaluators corrupts that Runtime under concurrent calls.
 	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
-	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
 	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
 	ResampleInterval Duration       `yaml:"resampleInterval,omitempty" json:"resampleInterval" tstype:"Duration"`
 	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount"`
-
-	evalFunctionOriginal string `yaml:"-" json:"-"`
 }
 
 func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -1902,12 +1912,14 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 	}
 
 	if raw.EvalFunction != "" {
-		evalFunction, err := CompileFunction(raw.EvalFunction)
-		c.EvalFunction = evalFunction
-		c.evalFunctionOriginal = raw.EvalFunction
-		if err != nil {
+		// Validate the source compiles. The returned Callable is bound to a
+		// throwaway Runtime created inside CompileFunction and must not be
+		// invoked — each PolicyEvaluator compiles its own copy from
+		// EvalFunctionSource into its own Runtime.
+		if _, err := CompileFunction(raw.EvalFunction); err != nil {
 			return fmt.Errorf("failed to compile selectionPolicy.evalFunction: %v", err)
 		}
+		c.EvalFunctionSource = raw.EvalFunction
 	}
 
 	return nil
@@ -1915,8 +1927,8 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 
 func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
 	evf := ""
-	if c.evalFunctionOriginal != "" {
-		evf = c.evalFunctionOriginal
+	if c.EvalFunctionSource != "" {
+		evf = c.EvalFunctionSource
 	} else if c.EvalFunction != nil {
 		evf = "<function>"
 	}
@@ -1939,8 +1951,8 @@ func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
 
 func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 	evf := "<undefined>"
-	if c.evalFunctionOriginal != "" {
-		evf = c.evalFunctionOriginal
+	if c.EvalFunctionSource != "" {
+		evf = c.EvalFunctionSource
 	} else if c.EvalFunction != nil {
 		evf = "<function>"
 	}

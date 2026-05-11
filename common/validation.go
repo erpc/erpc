@@ -1395,7 +1395,7 @@ func (c *SelectionPolicyConfig) Validate() error {
 	if c.EvalInterval <= 0 {
 		return fmt.Errorf("selectionPolicy.evalInterval must be greater than 0")
 	}
-	if c.EvalFunction == nil {
+	if c.EvalFunctionSource == "" && c.EvalFunction == nil {
 		return fmt.Errorf("selectionPolicy.evalFunction is required")
 	}
 	// ResampleInterval and ResampleCount are only required when ResampleExcluded is true

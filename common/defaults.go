@@ -2613,13 +2613,11 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
 		c.EvalInterval = Duration(1 * time.Minute)
 	}
-	if c.EvalFunction == nil {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
+	if c.EvalFunctionSource == "" && c.EvalFunction == nil {
+		if _, err := CompileFunction(DefaultPolicyFunction); err != nil {
 			return fmt.Errorf("failed to compile default selection policy function: %w", err)
 		}
-		c.EvalFunction = evalFunction
+		c.EvalFunctionSource = DefaultPolicyFunction
 	}
 	if c.ResampleExcluded {
 		if c.ResampleInterval == 0 {
@@ -2876,23 +2874,19 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 	})
 	n := &NetworkConfig{}
 	if hasAnyFallbackUpstream {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
+		// Validate the default function compiles; each PolicyEvaluator
+		// compiles its own copy from EvalFunctionSource.
+		if _, err := CompileFunction(DefaultPolicyFunction); err != nil {
 			panic(fmt.Sprintf("failed to compile default selection policy function: %v", err))
 		}
 
-		selectionPolicy := &SelectionPolicyConfig{
-			EvalInterval:     Duration(1 * time.Minute),
-			EvalFunction:     evalFunction,
-			EvalPerMethod:    false,
-			ResampleInterval: Duration(5 * time.Minute),
-			ResampleCount:    10,
-
-			evalFunctionOriginal: DefaultPolicyFunction,
+		n.SelectionPolicy = &SelectionPolicyConfig{
+			EvalInterval:       Duration(1 * time.Minute),
+			EvalFunctionSource: DefaultPolicyFunction,
+			EvalPerMethod:      false,
+			ResampleInterval:   Duration(5 * time.Minute),
+			ResampleCount:      10,
 		}
-
-		n.SelectionPolicy = selectionPolicy
 	}
 	return n
 }
