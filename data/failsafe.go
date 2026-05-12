@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"slices"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -16,7 +20,80 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// isTransportError reports whether err originates from the network/transport
+// layer. Retries are reserved for these — application-level errors (server-side
+// failures, malformed responses, validation issues) are not retriable, since
+// retrying them just burns budget without changing the outcome.
+func isTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+
+	if s, ok := status.FromError(err); ok {
+		switch s.Code() {
+		case codes.Unavailable, codes.DeadlineExceeded, codes.Aborted:
+			return true
+		}
+	}
+
+	// Fallback: opaque errors whose string clearly indicates transport-layer
+	// failure or a known-transient server condition that retry can resolve.
+	// Covers connectors that surface bare errors.New(...) and well-known
+	// server-transient signals (redis cluster recovery, http/2 GOAWAY,
+	// closed-conn reuse) that the typed checks miss.
+	msg := strings.ToLower(err.Error())
+	switch {
+	// Connection-level transport faults
+	case strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "connection reset"),
+		strings.Contains(msg, "broken pipe"),
+		strings.Contains(msg, "no such host"),
+		strings.Contains(msg, "network is unreachable"),
+		strings.Contains(msg, "tls handshake"),
+		strings.Contains(msg, "i/o timeout"),
+		strings.Contains(msg, "operation timed out"),
+		// Connection-pool / reused-conn state (Go runtime + common clients)
+		strings.Contains(msg, "use of closed network connection"),
+		strings.Contains(msg, "client is closed"),
+		strings.Contains(msg, "unexpectedly closed"),
+		// HTTP/2 transport-level retryable signal
+		strings.Contains(msg, "goaway"),
+		// Redis cluster transients (recoverable on retry):
+		//   "LOADING Redis is loading the dataset in memory"
+		//   "CLUSTERDOWN The cluster is down"
+		//   "MASTERDOWN Link with MASTER is down"
+		//   "TRYAGAIN Multiple keys request during rehashing"
+		strings.Contains(msg, "clusterdown"),
+		strings.Contains(msg, "masterdown"),
+		strings.Contains(msg, "tryagain"),
+		strings.Contains(msg, "redis is loading"):
+		return true
+	}
+
+	return false
+}
 
 var scopeConnector = common.Scope("connector")
 
@@ -530,10 +607,21 @@ func createCacheRetryPolicy(logger *zerolog.Logger, connectorId string, cfg *com
 			return false
 		}
 
-		// Retry all other errors (connection failures, server errors, etc.)
+		// Retry only on transport-layer errors. Application-level failures
+		// (server errors, malformed responses, etc.) burn retry budget without
+		// changing the outcome, so they fall through to the caller.
+		if !isTransportError(err) {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "non_retriable_application_error"),
+				attribute.String("error.summary", common.ErrorSummary(err)),
+			)
+			return false
+		}
+
 		span.SetAttributes(
 			attribute.Bool("retry", true),
-			attribute.String("reason", "retriable_error"),
+			attribute.String("reason", "transport_error"),
 			attribute.String("error.summary", common.ErrorSummary(err)),
 		)
 		return true
