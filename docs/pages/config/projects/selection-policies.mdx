@@ -22,7 +22,7 @@ The primary purpose of a selection policy is to define acceptable performance me
 By default a built-in selection policy is activated if **at least one upstream** is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
 
 * `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
-* `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag.
+* `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag, expressed as a number of blocks behind the network's highest known block (not seconds). Tolerances differ per chain — e.g. `10` is ≈120s on Ethereum but ≈2.5s on Arbitrum.
 * `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` (Default: "1"): Minimum number of healthy upstreams that must be included in default group.
 
 These environment variables allow you to adjust the default logic without rewriting the policy function.
@@ -249,10 +249,13 @@ export type UpstreamMetrics = {
     // p99 response time in seconds for this upstream.
     p99ResponseSeconds: number;
 
-    // Block head lag in seconds for this upstream.
+    // Number of blocks this upstream is behind the network's highest known block head.
+    // Note: this is a block-number delta, not seconds. Tolerances differ per chain
+    // (e.g. 10 blocks ≈ 120s on Ethereum, ≈ 2.5s on Arbitrum).
     blockHeadLag: number;
 
-    // Finalization lag in seconds for this upstream.
+    // Number of finalized blocks this upstream is behind the network's highest known
+    // finalized block. Block-number delta, not seconds.
     finalizationLag: number;
 };
 
