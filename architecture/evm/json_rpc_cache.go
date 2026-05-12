@@ -368,10 +368,47 @@ drain:
 				rr := r
 				lastError = &rr
 			}
-		case <-ctx.Done():
-			// Caller gave up — stop waiting for in-flight peers. cancelFan
-			// (deferred) propagates the cancel to any still-running
-			// goroutines; the buffered channel and their refs GC together.
+		case <-fanCtx.Done():
+			// fanCtx fires from any of: (a) caller cancelled the parent
+			// ctx, (b) the 30s defensive backstop fired, (c) a winner
+			// called cancelFan() AFTER sending its hit into the buffer.
+			// Listening on fanCtx (not ctx) is required: if we only
+			// watched ctx, the backstop timeout in case (b) would cancel
+			// goroutines (so they return without sending) while leaving
+			// this loop blocked forever on a parent that never deadlines.
+			//
+			// Before bailing, drain any results already in the buffer.
+			// In case (c) the winner's send happened-before its cancelFan,
+			// so the hit IS in the channel — Go's select just happened to
+			// pick the Done branch over the receive branch. Picking up
+			// that hit here avoids a phantom miss under the race.
+		drainBuffer:
+			for {
+				select {
+				case r := <-results:
+					received++
+					if r.jrr != nil && jrr == nil {
+						rr := r
+						jrr = rr.jrr
+						policy = rr.policy
+						connector = rr.connector
+					} else {
+						switch r.missReason {
+						case "ttl_rejected":
+							rr := r
+							lastReject = &rr
+						case "empty_result":
+							rr := r
+							lastMiss = &rr
+						case "connector_error":
+							rr := r
+							lastError = &rr
+						}
+					}
+				default:
+					break drainBuffer
+				}
+			}
 			break drain
 		}
 	}
