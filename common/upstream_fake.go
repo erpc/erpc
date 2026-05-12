@@ -275,6 +275,10 @@ func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, er
 	// No-op for testing
 }
 
+func (t *FakeHealthTracker) RecordUpstreamHedgeCancelled(up Upstream, method string) {
+	// No-op for testing
+}
+
 func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, reason string) {
 	// No-op for testing
 }

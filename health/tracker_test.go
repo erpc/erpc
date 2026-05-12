@@ -734,6 +734,44 @@ func TestRecordUpstreamFailure_IgnoresHedgeCancellationErrors(t *testing.T) {
 	})
 }
 
+func TestRecordUpstreamHedgeCancelled_ExcludedFromRateDenominator(t *testing.T) {
+	projectID := "test-hedge"
+	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups := common.NewFakeUpstream("hedge-upstream")
+	method := "eth_call"
+
+	// 10 total attempts: 5 real attempts + 5 that lost the hedge race
+	for i := 0; i < 10; i++ {
+		tracker.RecordUpstreamRequest(ups, method)
+	}
+	// 3 real failures on the 5 real attempts
+	for i := 0; i < 3; i++ {
+		tracker.RecordUpstreamFailure(ups, method, fmt.Errorf("connection refused"))
+	}
+	// 5 hedge-cancelled attempts
+	for i := 0; i < 5; i++ {
+		tracker.RecordUpstreamHedgeCancelled(ups, method)
+	}
+
+	mt := tracker.GetUpstreamMethodMetrics(ups, method)
+	require.NotNil(t, mt)
+	assert.Equal(t, int64(10), mt.RequestsTotal.Load(), "all attempts recorded")
+	assert.Equal(t, int64(5), mt.HedgeCancelledTotal.Load(), "hedge cancellations tracked")
+	assert.Equal(t, int64(3), mt.ErrorsTotal.Load(), "only real errors counted")
+	// denominator is 10-5=5, not 10
+	assert.InDelta(t, 0.6, mt.ErrorRate(), 0.001, "error rate uses effective requests as denominator")
+
+	t.Run("reset_clears_hedge_cancelled", func(t *testing.T) {
+		mt.Reset()
+		assert.Equal(t, int64(0), mt.HedgeCancelledTotal.Load())
+		assert.Equal(t, int64(0), mt.RequestsTotal.Load())
+	})
+}
+
 func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
 	projectID := "test-latency"
 	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)

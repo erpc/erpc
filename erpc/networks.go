@@ -1226,6 +1226,7 @@ func (n *Network) recordHedgeDiscard(
 	hedges int,
 ) {
 	ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
+	u.Tracker().RecordUpstreamHedgeCancelled(u, method)
 	finality := req.Finality(ctx)
 	telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardsTotal,
 		n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", attempts),

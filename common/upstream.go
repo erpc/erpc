@@ -27,6 +27,7 @@ type HealthTracker interface {
 	RecordUpstreamMisbehavior(up Upstream, method string)
 	RecordUpstreamRequest(up Upstream, method string)
 	RecordUpstreamFailure(up Upstream, method string, err error)
+	RecordUpstreamHedgeCancelled(up Upstream, method string)
 	Cordon(upstream Upstream, method string, reason string)
 	Uncordon(upstream Upstream, method string, reason string)
 }

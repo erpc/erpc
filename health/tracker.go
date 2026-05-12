@@ -88,6 +88,7 @@ type TrackedMetrics struct {
 	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
 	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
 	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
+	HedgeCancelledTotal    atomic.Int64     `json:"hedgeCancelledTotal"`
 	MisbehaviorsTotal      atomic.Int64     `json:"misbehaviorsTotal"`
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
@@ -95,8 +96,19 @@ type TrackedMetrics struct {
 	LastCordonedReason     atomic.Value     `json:"lastCordonedReason"`
 }
 
+// effectiveRequests returns the denominator for rate calculations.
+// Hedge-cancelled attempts are excluded: they were neither successes nor
+// upstream faults, so including them suppresses error/throttle/misbehavior rates.
+func (m *TrackedMetrics) effectiveRequests() int64 {
+	reqs := m.RequestsTotal.Load() - m.HedgeCancelledTotal.Load()
+	if reqs < 0 {
+		return 0
+	}
+	return reqs
+}
+
 func (m *TrackedMetrics) ErrorRate() float64 {
-	reqs := m.RequestsTotal.Load()
+	reqs := m.effectiveRequests()
 	if reqs == 0 {
 		return 0
 	}
@@ -108,16 +120,15 @@ func (m *TrackedMetrics) GetResponseQuantiles() common.QuantileTracker {
 }
 
 func (m *TrackedMetrics) ThrottledRate() float64 {
-	reqs := m.RequestsTotal.Load()
+	reqs := m.effectiveRequests()
 	if reqs == 0 {
 		return 0
 	}
-	throttled := float64(m.RemoteRateLimitedTotal.Load())
-	return throttled / float64(reqs)
+	return float64(m.RemoteRateLimitedTotal.Load()) / float64(reqs)
 }
 
 func (m *TrackedMetrics) MisbehaviorRate() float64 {
-	reqs := m.RequestsTotal.Load()
+	reqs := m.effectiveRequests()
 	if reqs == 0 {
 		return 0
 	}
@@ -130,6 +141,7 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 		"errorsTotal":            m.ErrorsTotal.Load(),
 		"remoteRateLimitedTotal": m.RemoteRateLimitedTotal.Load(),
 		"requestsTotal":          m.RequestsTotal.Load(),
+		"hedgeCancelledTotal":    m.HedgeCancelledTotal.Load(),
 		"misbehaviorsTotal":      m.MisbehaviorsTotal.Load(),
 		"blockHeadLag":           m.BlockHeadLag.Load(),
 		"finalizationLag":        m.FinalizationLag.Load(),
@@ -147,6 +159,7 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 func (m *TrackedMetrics) Reset() {
 	m.ErrorsTotal.Store(0)
 	m.RequestsTotal.Store(0)
+	m.HedgeCancelledTotal.Store(0)
 	m.RemoteRateLimitedTotal.Store(0)
 	m.MisbehaviorsTotal.Store(0)
 	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
@@ -495,6 +508,15 @@ func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
 		t.getNtwMetrics(nk).RequestsTotal.Add(1)
+	}
+}
+
+func (t *Tracker) RecordUpstreamHedgeCancelled(up common.Upstream, method string) {
+	for _, k := range t.getUpsKeys(up, method) {
+		t.getUpsMetrics(k).HedgeCancelledTotal.Add(1)
+	}
+	for _, nk := range t.getNtwKeys(up, method) {
+		t.getNtwMetrics(nk).HedgeCancelledTotal.Add(1)
 	}
 }
 
