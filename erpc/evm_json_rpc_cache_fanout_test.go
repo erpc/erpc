@@ -325,6 +325,38 @@ func TestEvmJsonRpcCache_FanOut_RespectsSkipCacheReadDirective(t *testing.T) {
 		mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
 }
 
+// MissAsErrorIsNotEmittedAsConnectorError is the regression for the
+// shadow-deployment finding: cache connectors return ErrRecordNotFound /
+// ErrEndpointMissingData to signal "this connector doesn't have the key" —
+// semantic misses, not transport failures. Before the fix the fan-out
+// goroutine classified them as connector_error and incremented
+// MetricCacheGetErrorTotal on every cache miss, polluting dashboards
+// (shadow logged 36k+ "errors" per 15min that were just normal misses).
+func TestEvmJsonRpcCache_FanOut_MissAsErrorIsClassifiedAsMiss(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	for _, c := range conns {
+		c.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+			Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", c.Id()))
+	}
+
+	beforeErr := promUtil.CollectAndCount(telemetry.MetricCacheGetErrorTotal)
+
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+
+	require.NoError(t, err)
+	require.Nil(t, resp, "all connectors returning ErrRecordNotFound is a miss, not an error")
+
+	afterErr := promUtil.CollectAndCount(telemetry.MetricCacheGetErrorTotal)
+	assert.Equal(t, beforeErr, afterErr,
+		"ErrRecordNotFound from connectors is a semantic miss — must not increment cache_get_error_total")
+}
+
 // WrappedCancellationDoesNotInflateErrorMetric is the regression for the
 // inner-failsafe wrapping issue: when a losing peer's `doGet` returns
 // through an inner failsafe stack, the underlying context error can be

@@ -260,6 +260,25 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 					policySpan.SetAttributes(attribute.String("cache.get_outcome", "cancelled"))
 					return
 				}
+				// Semantic-miss errors: the connector is signalling
+				// "no key" / "expired" / "data not available here", not a
+				// real failure. Classify as miss so we don't inflate
+				// connector_error metrics with normal cache misses.
+				//   ErrRecordNotFound  — generic data connector miss
+				//   ErrRecordExpired   — connector miss past TTL
+				//   ErrEndpointMissingData — gRPC connector (e.g. prism)
+				//     translation of "range outside available" / cold
+				//     storage range, see common/grpc_errors.go
+				if common.HasErrorCode(err, common.ErrCodeRecordNotFound) ||
+					common.HasErrorCode(err, common.ErrCodeRecordExpired) ||
+					common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+					policySpan.SetAttributes(attribute.String("cache.get_outcome", "miss"))
+					select {
+					case results <- fanResult{policy: policy, connector: connector, missReason: "empty_result"}:
+					case <-fanCtx.Done():
+					}
+					return
+				}
 				common.SetTraceSpanError(policySpan, err)
 				policySpan.SetAttributes(
 					attribute.String("cache.get_outcome", "error"),
