@@ -213,8 +213,22 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	fanCtx, cancelFan := context.WithCancel(ctx)
 	defer cancelFan()
 
+	// Defensive backstop: if the caller's context has no deadline and a
+	// connector lacks a failsafe timeout, a hung connector could pin the
+	// fan-out goroutine indefinitely — over time, FDs/connection-pool slots
+	// leak per request. Cap the fan-out at 30s. Properly configured
+	// connectors exit far earlier via their own failsafe timeout.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var bsCancel context.CancelFunc
+		fanCtx, bsCancel = context.WithTimeout(fanCtx, 30*time.Second)
+		defer bsCancel()
+	}
+
+	// Buffer sized to the worst-case spawn count so late peers (after we've
+	// already taken a winner) can post their result without blocking — we
+	// don't drain stragglers; we let them GC with the channel.
 	results := make(chan fanResult, len(policies))
-	var wg sync.WaitGroup
+	spawned := 0
 
 	for _, p := range policies {
 		conn := p.GetConnector()
@@ -222,9 +236,8 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			c.logger.Debug().Str("connector", conn.Id()).Interface("id", req.ID()).Msg("skipping cache connector due to skip-cache-read directive pattern")
 			continue
 		}
-		wg.Add(1)
+		spawned++
 		go func(policy *data.CachePolicy, connector data.Connector) {
-			defer wg.Done()
 			policyCtx, policySpan := common.StartDetailSpan(fanCtx, "Cache.GetForPolicy", trace.WithAttributes(
 				attribute.String("cache.policy_summary", policy.String()),
 				attribute.String("cache.connector_id", connector.Id()),
@@ -237,9 +250,13 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				// Errors caused by external cancellation aren't real failures.
 				// fanCtx is done either because a peer connector already won
 				// (cancelFan), or because the caller's context was cancelled,
-				// or because the caller's deadline expired — the latter
-				// surfaces as context.DeadlineExceeded, not context.Canceled.
-				if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && fanCtx.Err() != nil {
+				// or because the caller's deadline expired. The connector's
+				// inner failsafe stack may wrap the context error in a typed
+				// error that errors.Is can't unwind to context.Canceled —
+				// trust fanCtx.Err() as the authoritative signal so wrapped
+				// cancellation doesn't inflate connector_error metrics for
+				// every losing race peer.
+				if fanCtx.Err() != nil {
 					policySpan.SetAttributes(attribute.String("cache.get_outcome", "cancelled"))
 					return
 				}
@@ -292,6 +309,20 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				}
 				return
 			}
+			// An emptyish result under EmptyState=Ignore is a miss for THIS
+			// policy — report as miss and let peer connectors keep racing.
+			// Without this, the first emptyish result would win the fan-out,
+			// cancel peers, and only THEN get reclassified as a miss by the
+			// post-fan-out emptyish handling — losing the chance for a peer
+			// with non-empty data or Allow policy to serve a real hit.
+			if jrr.IsResultEmptyish() && policy.EmptyState() == common.CacheEmptyBehaviorIgnore {
+				policySpan.SetAttributes(attribute.String("cache.get_outcome", "empty_ignored"))
+				select {
+				case results <- fanResult{policy: policy, connector: connector, missReason: "empty_result"}:
+				case <-fanCtx.Done():
+				}
+				return
+			}
 			policySpan.SetAttributes(attribute.String("cache.get_outcome", "found"))
 			select {
 			case results <- fanResult{jrr: jrr, policy: policy, connector: connector}:
@@ -301,8 +332,11 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		}(p, conn)
 	}
 
-	go func() { wg.Wait(); close(results) }()
-
+	// Drain results until we get the first acceptable hit OR every spawned
+	// goroutine has reported back OR the caller's context is cancelled. We
+	// never wait for stragglers after a hit lands — they post into the
+	// buffered channel and exit on their own. Slow peers no longer pin the
+	// user-visible latency of a fast winner.
 	var (
 		jrr        *common.JsonRpcResponse
 		policy     *data.CachePolicy
@@ -311,24 +345,34 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		lastReject *fanResult
 		lastError  *fanResult
 	)
-	for r := range results {
-		if r.jrr != nil && jrr == nil {
-			rr := r
-			jrr = rr.jrr
-			policy = rr.policy
-			connector = rr.connector
-			continue
-		}
-		switch r.missReason {
-		case "ttl_rejected":
-			rr := r
-			lastReject = &rr
-		case "empty_result":
-			rr := r
-			lastMiss = &rr
-		case "connector_error":
-			rr := r
-			lastError = &rr
+drain:
+	for received := 0; received < spawned && jrr == nil; {
+		select {
+		case r := <-results:
+			received++
+			if r.jrr != nil {
+				rr := r
+				jrr = rr.jrr
+				policy = rr.policy
+				connector = rr.connector
+				continue
+			}
+			switch r.missReason {
+			case "ttl_rejected":
+				rr := r
+				lastReject = &rr
+			case "empty_result":
+				rr := r
+				lastMiss = &rr
+			case "connector_error":
+				rr := r
+				lastError = &rr
+			}
+		case <-ctx.Done():
+			// Caller gave up — stop waiting for in-flight peers. cancelFan
+			// (deferred) propagates the cancel to any still-running
+			// goroutines; the buffered channel and their refs GC together.
+			break drain
 		}
 	}
 

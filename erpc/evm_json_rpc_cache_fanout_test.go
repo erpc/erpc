@@ -324,3 +324,94 @@ func TestEvmJsonRpcCache_FanOut_RespectsSkipCacheReadDirective(t *testing.T) {
 	conns[0].AssertNotCalled(t, "Get",
 		mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
 }
+
+// WrappedCancellationDoesNotInflateErrorMetric is the regression for the
+// inner-failsafe wrapping issue: when a losing peer's `doGet` returns
+// through an inner failsafe stack, the underlying context error can be
+// wrapped in a typed error that `errors.Is(err, context.Canceled)` fails
+// to unwind. The cancellation guard must trust `fanCtx.Err() != nil` as
+// the authoritative signal, not the error type, so wrapped cancellation
+// from a losing peer does not increment cache_get_error_total.
+func TestEvmJsonRpcCache_FanOut_WrappedCancellationDoesNotInflateError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	cached := `{"number":"0x1","hash":"0xfast"}`
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(cached), nil) // immediate hit
+
+	// Loser observes cancellation but surfaces a typed, opaque error that
+	// does NOT unwrap to context.Canceled — simulates an inner failsafe
+	// wrapper. Pre-fix guard (errors.Is on context.Canceled) would miss
+	// this and increment connector_error metric for every fan-out loser.
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			callCtx := args.Get(0).(context.Context)
+			<-callCtx.Done()
+		}).
+		Return(nil, errors.New("opaque-inner-failsafe-wrap")).Maybe()
+
+	beforeErr := promUtil.CollectAndCount(telemetry.MetricCacheGetErrorTotal)
+
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, cached, jrr.GetResultString())
+
+	// Allow the cancelled peer goroutine a moment to drain.
+	time.Sleep(50 * time.Millisecond)
+	afterErr := promUtil.CollectAndCount(telemetry.MetricCacheGetErrorTotal)
+	assert.Equal(t, beforeErr, afterErr,
+		"wrapped cancellation from a losing peer must not increment cache_get_error_total")
+}
+
+// SlowPeerDoesNotBlockFastWinner is the regression for the consumer-drain
+// bug: previously `for r := range results` waited for the channel to close,
+// which only happened after wg.Wait — so any peer slow to observe
+// cancellation (buffered TCP write, inner failsafe state, misbehaving
+// stack) pinned the user-visible latency to MAX(connector latency). The
+// fix breaks out of the drain loop on first acceptable hit; stragglers
+// drain into the buffered channel on their own.
+func TestEvmJsonRpcCache_FanOut_SlowPeerDoesNotBlockFastWinner(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	cached := `{"number":"0x1","hash":"0xfast"}`
+	conns[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Return([]byte(cached), nil) // immediate hit
+
+	// Peer that intentionally ignores ctx.Done — simulates a connector with
+	// buffered work or a stack that doesn't honor cancellation promptly. If
+	// the consumer waited for this peer, Get() would block for the full
+	// slowDelay before returning.
+	const slowDelay = 800 * time.Millisecond
+	conns[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			time.Sleep(slowDelay)
+		}).
+		Return(nil, common.NewErrRecordNotFound("evm:123:1", "k", "slow")).Maybe()
+
+	t0 := time.Now()
+	resp, err := cache.Get(context.Background(), newGetBlockByNumberRequest(t, network, cache))
+	elapsed := time.Since(t0)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, cached, jrr.GetResultString())
+	assert.Less(t, elapsed, 200*time.Millisecond,
+		"fast hit should not wait for unresponsive peer (took %v); slow peer would have taken %v",
+		elapsed, slowDelay)
+}

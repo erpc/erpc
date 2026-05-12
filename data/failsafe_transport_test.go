@@ -54,6 +54,21 @@ func TestIsTransportError(t *testing.T) {
 		{"common transport failure", common.NewErrEndpointTransportFailure(u, errors.New("dial fail")), true},
 		{"wrapped grpc unavailable", fmt.Errorf("rpc: %w", status.Error(codes.Unavailable, "x")), true},
 		{"wrapped io.EOF", fmt.Errorf("read: %w", io.EOF), true},
+		// Connection-pool / reused-conn state
+		{"use of closed network connection", errors.New("write tcp 1.2.3.4:443->5.6.7.8:443: use of closed network connection"), true},
+		{"go-redis client is closed", errors.New("redis: client is closed"), true},
+		{"unexpectedly closed", errors.New("EOF: stream unexpectedly closed"), true},
+		// HTTP/2 GOAWAY
+		{"http2 goaway", errors.New("http2: server sent GOAWAY and closed the connection"), true},
+		// Redis cluster transients
+		{"redis CLUSTERDOWN", errors.New("CLUSTERDOWN The cluster is down"), true},
+		{"redis MASTERDOWN", errors.New("MASTERDOWN Link with MASTER is down and slave-serve-stale-data is set to 'no'."), true},
+		{"redis TRYAGAIN", errors.New("TRYAGAIN Multiple keys request during rehashing of slot"), true},
+		{"redis LOADING", errors.New("LOADING Redis is loading the dataset in memory"), true},
+		// "operation timed out" variant
+		{"operation timed out", errors.New("dial: operation timed out"), true},
+		// Negative case: application errors that look textually close but aren't transient
+		{"redis nil reply not retriable", errors.New("redis: nil"), false},
 	}
 
 	for _, tc := range cases {
