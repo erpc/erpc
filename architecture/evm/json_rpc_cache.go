@@ -246,20 +246,27 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			defer policySpan.End()
 
 			jrr, err := c.doGet(policyCtx, connector, req, rpcReq)
+			// Unconditional cancellation guard — runs regardless of whether
+			// doGet returned an error. fanCtx is done either because a peer
+			// connector already won (cancelFan), the caller's context was
+			// cancelled, or the 30s defensive backstop expired. We treat any
+			// outcome that arrives once fanCtx is done as "cancelled":
+			//   - (err != nil): the inner failsafe may wrap the context error
+			//     in a typed error that errors.Is can't unwind to
+			//     context.Canceled — fanCtx.Err() is the authoritative signal
+			//     so wrapped cancellation doesn't inflate connector_error.
+			//   - (nil, nil): a buggy connector that swallows ctx cancellation
+			//     internally and returns a silent miss — we shouldn't credit
+			//     it as a genuine miss against this connector's policy.
+			//   - (jrr, nil): a late-arriving hit after the winner already
+			//     sent. The consumer will discard it anyway (jrr already set);
+			//     marking cancelled avoids running shouldAcceptCachedResult /
+			//     emptyish checks for a result that won't be used.
+			if fanCtx.Err() != nil {
+				policySpan.SetAttributes(attribute.String("cache.get_outcome", "cancelled"))
+				return
+			}
 			if err != nil {
-				// Errors caused by external cancellation aren't real failures.
-				// fanCtx is done either because a peer connector already won
-				// (cancelFan), or because the caller's context was cancelled,
-				// or because the caller's deadline expired. The connector's
-				// inner failsafe stack may wrap the context error in a typed
-				// error that errors.Is can't unwind to context.Canceled —
-				// trust fanCtx.Err() as the authoritative signal so wrapped
-				// cancellation doesn't inflate connector_error metrics for
-				// every losing race peer.
-				if fanCtx.Err() != nil {
-					policySpan.SetAttributes(attribute.String("cache.get_outcome", "cancelled"))
-					return
-				}
 				// Semantic-miss errors: the connector is signalling
 				// "no key" / "expired" / "data not available here", not a
 				// real failure. Classify as miss so we don't inflate
