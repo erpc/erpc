@@ -188,7 +188,7 @@ func verifyAndHandleNonceTooLow(
 	lg.Debug().Str("txHash", txHash).Str("upstream", u.Id()).Msg("sending eth_getTransactionByHash to verify tx exists")
 
 	// Forward the request to the same upstream
-	resp, err := u.Forward(ctx, getTxReq, true)
+	resp, err := u.Forward(ctx, getTxReq, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}

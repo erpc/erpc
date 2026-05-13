@@ -111,7 +111,7 @@ func (u *FakeUpstream) EvmStatePoller() EvmStatePoller {
 	return u.evmStatePoller
 }
 
-func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error) {
+func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck, isHedgeAttempt bool) (*NormalizedResponse, error) {
 	return nil, nil
 }
 

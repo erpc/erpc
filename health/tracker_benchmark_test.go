@@ -32,7 +32,7 @@ func (u *upstreamStub) Config() *common.UpstreamConfig { return nil }
 func (u *upstreamStub) Logger() *zerolog.Logger        { return u.logger }
 func (u *upstreamStub) Vendor() common.Vendor          { return nil }
 func (u *upstreamStub) Tracker() common.HealthTracker  { return nil }
-func (u *upstreamStub) Forward(_ context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+func (u *upstreamStub) Forward(_ context.Context, _ *common.NormalizedRequest, _ bool, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
 func (u *upstreamStub) Cordon(string, string)   {}

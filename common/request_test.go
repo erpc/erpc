@@ -23,7 +23,7 @@ func (m *mockUpstreamForSelection) Config() *UpstreamConfig { return &UpstreamCo
 func (m *mockUpstreamForSelection) Logger() *zerolog.Logger { return nil }
 func (m *mockUpstreamForSelection) Vendor() Vendor          { return nil }
 func (m *mockUpstreamForSelection) Tracker() HealthTracker  { return nil }
-func (m *mockUpstreamForSelection) Forward(ctx context.Context, nq *NormalizedRequest, byPass bool) (*NormalizedResponse, error) {
+func (m *mockUpstreamForSelection) Forward(ctx context.Context, nq *NormalizedRequest, byPass, isHedgeAttempt bool) (*NormalizedResponse, error) {
 	return nil, nil
 }
 func (m *mockUpstreamForSelection) Cordon(method string, reason string)   {}

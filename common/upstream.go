@@ -40,7 +40,11 @@ type Upstream interface {
 	Logger() *zerolog.Logger
 	Vendor() Vendor
 	Tracker() HealthTracker
-	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion bool) (*NormalizedResponse, error)
+	// Forward executes one attempt against this upstream. isHedgeAttempt
+	// flags whether this call is a hedged speculative attempt (set by the
+	// network layer where the hedge policy lives) — used to gate per-upstream
+	// rate counters so hedges don't inflate them.
+	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*NormalizedResponse, error)
 	Cordon(method string, reason string)
 	Uncordon(method string, reason string)
 	IgnoreMethod(method string)

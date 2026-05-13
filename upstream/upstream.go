@@ -330,7 +330,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 	return nil
 }
 
-func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	// TODO Should we move byPassMethodExclusion to directives? How do we prevent clients from setting it?
 	startTime := time.Now()
 	cfg := u.Config()
@@ -443,11 +443,10 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			// (filtered by isSuccess inside the tracker), so the latency signal
 			// is preserved.
 			//
-			// The flag is set on the context at the network layer because the
-			// hedge policy lives there — the upstream's own failsafe has no
+			// isHedgeAttempt is passed explicitly from the network layer because
+			// the hedge policy lives there — the upstream's own failsafe has no
 			// hedge policy, so exec.Hedges() at this layer always reads zero.
-			isHedge, _ := ctx.Value(common.HedgeAttemptKey).(bool)
-			if !isHedge {
+			if !isHedgeAttempt {
 				u.metricsTracker.RecordUpstreamRequest(
 					u,
 					method,
@@ -551,7 +550,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
 					}
-					if !isHedge {
+					if !isHedgeAttempt {
 						u.metricsTracker.RecordUpstreamFailure(
 							u,
 							method,
@@ -764,7 +763,7 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
-	resp, err := u.Forward(ctx, pr, true)
+	resp, err := u.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}
