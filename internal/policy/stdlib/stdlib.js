@@ -1,0 +1,444 @@
+// Selection-policy std-lib.
+//
+// All chainable methods are installed on Array.prototype within this sobek
+// runtime. They are pure JS where possible; cross-tick state is read from
+// the per-tick global `__policyCtx` that the engine sets before running
+// the eval function.
+//
+// Bound by `internal/policy/stdlib/install.go`. See spec §4 for the
+// reference manual.
+
+(function () {
+  const proto = Array.prototype;
+  const _set = Object.defineProperty;
+  function define(name, fn) {
+    if (proto[name]) return; // idempotent: a re-installed primer must not throw
+    _set(proto, name, { value: fn, enumerable: false, writable: false, configurable: false });
+  }
+
+  // ─── small helpers ──────────────────────────────────────────────────────
+
+  // toIDs maps an upstream array to its IDs.
+  function toIDs(arr) {
+    const out = new Array(arr.length);
+    for (let i = 0; i < arr.length; i++) out[i] = arr[i].id;
+    return out;
+  }
+
+  // globMatch supports '*', '?', and '!' prefix for negation.
+  function globMatch(pattern, value) {
+    if (pattern == null) return true;
+    if (pattern === '*' || pattern === value) return true;
+    let neg = false;
+    if (pattern.startsWith('!')) { neg = true; pattern = pattern.slice(1); }
+    const re = new RegExp(
+      '^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$'
+    );
+    const m = re.test(value);
+    return neg ? !m : m;
+  }
+
+  // matchAny tests value against a pattern, an array of patterns (OR), or null.
+  function matchAny(pat, value) {
+    if (pat == null) return true;
+    if (Array.isArray(pat)) {
+      for (const p of pat) if (globMatch(p, value)) return true;
+      return false;
+    }
+    return globMatch(pat, value);
+  }
+
+  function annotate(u, note) {
+    if (!u.annotations) u.annotations = [];
+    u.annotations.push(note);
+  }
+
+  // ─── 4.2 Identity & label selection ─────────────────────────────────────
+
+  define('byId', function (id) { return this.filter(u => matchAny(id, u.id)); });
+  define('excludeId', function (id) { return this.filter(u => !matchAny(id, u.id)); });
+  define('byGroup', function (g) { return this.filter(u => matchAny(g, u.group || '')); });
+  define('excludeGroup', function (g) { return this.filter(u => !matchAny(g, u.group || '')); });
+  define('byVendor', function (v) { return this.filter(u => matchAny(v, u.vendor)); });
+  define('excludeVendor', function (v) { return this.filter(u => !matchAny(v, u.vendor)); });
+  define('byType', function (t) { return this.filter(u => matchAny(t, u.type)); });
+  define('where', function (f) {
+    return this.filter(u => {
+      if (f.id != null && !matchAny(f.id, u.id)) return false;
+      if (f.group != null && !matchAny(f.group, u.group || '')) return false;
+      if (f.vendor != null && !matchAny(f.vendor, u.vendor)) return false;
+      if (f.type != null && !matchAny(f.type, u.type)) return false;
+      return true;
+    });
+  });
+  define('whereNot', function (f) {
+    return this.filter(u => {
+      if (f.id != null && matchAny(f.id, u.id)) return false;
+      if (f.group != null && matchAny(f.group, u.group || '')) return false;
+      if (f.vendor != null && matchAny(f.vendor, u.vendor)) return false;
+      if (f.type != null && matchAny(f.type, u.type)) return false;
+      return true;
+    });
+  });
+
+  // ─── 4.3 Health filters ──────────────────────────────────────────────────
+
+  define('removeByErrorRate', function (max) {
+    return this.filter(u => {
+      if (u.metrics.errorRate <= max) return true;
+      annotate(u, 'removed:errorRate=' + u.metrics.errorRate.toFixed(3));
+      return false;
+    });
+  });
+  define('removeByThrottling', function (max) {
+    return this.filter(u => u.metrics.throttledRate <= max);
+  });
+  define('removeByMisbehavior', function (max) {
+    return this.filter(u => u.metrics.misbehaviorRate <= max);
+  });
+  define('removeByLag', function (opts) {
+    const bh = (opts && opts.blockHead != null) ? opts.blockHead : Infinity;
+    const fz = (opts && opts.finalization != null) ? opts.finalization : Infinity;
+    return this.filter(u => u.metrics.blockHeadLag < bh && u.metrics.finalizationLag < fz);
+  });
+  define('removeByMinRequests', function (min) {
+    return this.filter(u => u.metrics.requestsTotal >= min);
+  });
+  define('removeCordoned', function () {
+    return this.filter(u => !u.metrics.cordonedReason);
+  });
+  define('removeByLatency', function (opts) {
+    return this.filter(u => {
+      const m = u.metrics;
+      if (opts.p50Ms != null && m.p50ResponseSeconds * 1000 > opts.p50Ms) return false;
+      if (opts.p70Ms != null && m.p70ResponseSeconds * 1000 > opts.p70Ms) return false;
+      if (opts.p90Ms != null && m.p90ResponseSeconds * 1000 > opts.p90Ms) return false;
+      if (opts.p95Ms != null && m.p95ResponseSeconds * 1000 > opts.p95Ms) return false;
+      if (opts.p99Ms != null && m.p99ResponseSeconds * 1000 > opts.p99Ms) return false;
+      return true;
+    });
+  });
+  define('keepHealthy', function (opts) {
+    opts = opts || {};
+    const maxErr = opts.maxErrorRate != null ? opts.maxErrorRate : 0.5;
+    const maxLag = opts.maxBlockHeadLag != null ? opts.maxBlockHeadLag : 10;
+    const maxP95 = opts.maxP95Ms != null ? opts.maxP95Ms : 5000;
+    const maxThr = opts.maxThrottledRate != null ? opts.maxThrottledRate : 0.3;
+    return this.filter(u => {
+      const m = u.metrics;
+      return m.errorRate <= maxErr
+        && m.blockHeadLag <= maxLag
+        && (m.p95ResponseSeconds * 1000) <= maxP95
+        && m.throttledRate <= maxThr;
+    });
+  });
+
+  // ─── 4.4 Generic functional (extends what JS already gives us) ──────────
+
+  define('reject', function (fn) { return this.filter((u, i, a) => !fn(u, i, a)); });
+  define('partition', function (fn) {
+    const yes = [], no = [];
+    for (const u of this) (fn(u) ? yes : no).push(u);
+    return [yes, no];
+  });
+  define('unique', function (keyFn) {
+    const seen = new Set();
+    const out = [];
+    for (const u of this) {
+      const k = keyFn ? keyFn(u) : u.id;
+      if (!seen.has(k)) { seen.add(k); out.push(u); }
+    }
+    return out;
+  });
+  define('union', function (other) {
+    const seen = new Set(this.map(u => u.id));
+    const out = this.slice();
+    for (const u of other) if (!seen.has(u.id)) { seen.add(u.id); out.push(u); }
+    return out;
+  });
+  define('intersect', function (other) {
+    const ids = new Set(other.map(u => u.id));
+    return this.filter(u => ids.has(u.id));
+  });
+  define('difference', function (other) {
+    const ids = new Set(other.map(u => u.id));
+    return this.filter(u => !ids.has(u.id));
+  });
+  Object.defineProperty(proto, 'isEmpty', { get() { return this.length === 0; } });
+
+  // ─── 4.5 Sorting ─────────────────────────────────────────────────────────
+
+  // Score presets — kept in sync with stdlib/install.go. We re-expose them
+  // here in pure JS so the runtime doesn't need a round-trip to Go.
+  const PRESETS = {
+    BALANCED:               { errorRate: 8, respLatency: 4, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6 },
+    PREFER_FASTER:          { errorRate: 4, respLatency: 12, throttledRate: 4, blockHeadLag: 1, finalizationLag: 0, misbehaviors: 2 },
+    PREFER_FEWER_ERRORS:    { errorRate: 15, respLatency: 2, throttledRate: 6, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 12 },
+    PREFER_FRESHER_HEAD:    { errorRate: 4, respLatency: 2, throttledRate: 2, blockHeadLag: 15, finalizationLag: 8, misbehaviors: 3 },
+    PREFER_LESS_THROTTLED:  { errorRate: 8, respLatency: 4, throttledRate: 15, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 4 },
+  };
+  // PREFER_CHEAP is an alias of BALANCED per spec §4.1.
+  PRESETS.PREFER_CHEAP = PRESETS.BALANCED;
+
+  // Install presets as globals.
+  for (const k of Object.keys(PRESETS)) {
+    globalThis[k] = PRESETS[k];
+  }
+  // Also install the named-preset symbols (the JS object identity is used
+  // as the "preset" sentinel; weights map is what counts).
+
+  function quantileKey(name) {
+    const ok = { p50: 'p50ResponseSeconds', p70: 'p70ResponseSeconds', p90: 'p90ResponseSeconds', p95: 'p95ResponseSeconds', p99: 'p99ResponseSeconds' };
+    return ok[name] || 'p70ResponseSeconds';
+  }
+
+  function computePenalty(u, weights, latencyKey, overall) {
+    const m = u.metrics;
+    let p = 0;
+    if (weights.errorRate)       p += m.errorRate       * weights.errorRate;
+    if (weights.respLatency)     p += m[latencyKey]     * weights.respLatency;
+    if (weights.throttledRate)   p += m.throttledRate   * weights.throttledRate;
+    if (weights.blockHeadLag)    p += m.blockHeadLag    * weights.blockHeadLag;
+    if (weights.finalizationLag) p += m.finalizationLag * weights.finalizationLag;
+    if (weights.misbehaviors)    p += m.misbehaviorRate * weights.misbehaviors;
+    if (overall) p *= overall(u);
+    return p;
+  }
+
+  define('sortByScore', function (weightsOrFnOrPreset, opts) {
+    opts = opts || {};
+    const latencyKey = quantileKey(opts.latencyQuantile);
+    const overall = (typeof opts.overall === 'function') ? opts.overall : null;
+    const isFn = (typeof weightsOrFnOrPreset === 'function');
+    const out = this.slice();
+    for (const u of out) {
+      const w = isFn ? weightsOrFnOrPreset(u) : weightsOrFnOrPreset;
+      u.score = computePenalty(u, w, latencyKey, overall);
+    }
+    out.sort((a, b) => a.score - b.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return out;
+  });
+  define('sortBy', function (fn, opts) {
+    const desc = !!(opts && opts.desc);
+    const out = this.slice().sort((a, b) => {
+      const va = fn(a), vb = fn(b);
+      return desc ? (vb - va) : (va - vb);
+    });
+    return out;
+  });
+  define('sortByDesc', function (fn) { return this.sortBy(fn, { desc: true }); });
+  define('sortByLatency', function (q) {
+    const key = quantileKey(q);
+    return this.sortBy(u => u.metrics[key]);
+  });
+  define('sortByErrorRate', function () { return this.sortBy(u => u.metrics.errorRate); });
+  define('sortByThrottling', function () { return this.sortBy(u => u.metrics.throttledRate); });
+  define('sortByMisbehavior', function () { return this.sortBy(u => u.metrics.misbehaviorRate); });
+  define('sortByHeadLag', function () { return this.sortBy(u => u.metrics.blockHeadLag); });
+  define('sortByFinalizationLag', function () { return this.sortBy(u => u.metrics.finalizationLag); });
+
+  // ─── 4.6 Randomization & rotation ───────────────────────────────────────
+
+  function rngFromSeed(seed) {
+    let s = (seed | 0) || 1;
+    return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+  }
+  define('shuffle', function (seed) {
+    const out = this.slice();
+    const rand = seed != null ? rngFromSeed(seed) : Math.random;
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  });
+  define('rotateBy', function (n) {
+    if (this.length === 0) return this.slice();
+    const k = ((n % this.length) + this.length) % this.length;
+    return this.slice(k).concat(this.slice(0, k));
+  });
+
+  // ─── 4.7 Stability (cross-tick) ─────────────────────────────────────────
+
+  define('stickyPrimary', function (opts) {
+    opts = opts || {};
+    const hysteresis = (opts.hysteresis != null) ? opts.hysteresis : 0.10;
+    const ctx = globalThis.__policyCtx || {};
+    const prevPrimary = (ctx.previousOrder && ctx.previousOrder.length) ? ctx.previousOrder[0] : null;
+    if (!prevPrimary || this.length === 0) return this.slice();
+    const cur = this[0];
+    if (cur.id === prevPrimary) return this.slice();
+    const prevIdx = this.findIndex(u => u.id === prevPrimary);
+    if (prevIdx < 0) return this.slice();
+    const prevU = this[prevIdx];
+    const curScore = cur.score, prevScore = prevU.score;
+    if (curScore == null || prevScore == null) {
+      // No sortByScore ran; positional sticky: keep prev as primary.
+      const out = this.slice();
+      const removed = out.splice(prevIdx, 1)[0];
+      out.unshift(removed);
+      return out;
+    }
+    // Spec §4.7: switch only if challenger.score < prev.score * (1 - hysteresis).
+    if (curScore < prevScore * (1 - hysteresis)) {
+      return this.slice();
+    }
+    const out = this.slice();
+    const removed = out.splice(prevIdx, 1)[0];
+    out.unshift(removed);
+    return out;
+  });
+  // stickyOrder + keepRecentPrimary: deferred; uncommon use cases.
+
+  // ─── 4.8 Grouping & multi-tier (subset) ─────────────────────────────────
+
+  define('preferGroup', function (name, opts) {
+    opts = opts || {};
+    const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
+    const fallback = opts.fallback;
+    const inGroup = this.filter(u => (u.group || '') === name);
+    if (inGroup.length >= minHealthy) return inGroup;
+    if (fallback) {
+      const fb = this.filter(u => (u.group || '') === fallback);
+      if (fb.length > 0) return fb;
+    }
+    return this.slice();
+  });
+  define('preferVendor', function (name, opts) {
+    opts = opts || {};
+    const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
+    const fallback = opts.fallback;
+    const inVendor = this.filter(u => u.vendor === name);
+    if (inVendor.length >= minHealthy) return inVendor;
+    if (fallback) {
+      const fb = this.filter(u => u.vendor === fallback);
+      if (fb.length > 0) return fb;
+    }
+    return this.slice();
+  });
+
+  // ─── 4.9 Slicing & limits ───────────────────────────────────────────────
+
+  define('pickTop',    function (n) { return this.slice(0, n); });
+  define('pickBottom', function (n) { return this.slice(Math.max(0, this.length - n)); });
+  define('dropTop',    function (n) { return this.slice(n); });
+  define('dropBottom', function (n) { return this.slice(0, Math.max(0, this.length - n)); });
+  define('take',       function (n) { return this.slice(0, n); });
+  define('skip',       function (n) { return this.slice(n); });
+  define('at_',        function (i) { return this[i] || null; });
+  // `.at(i)` is already on Array.prototype in modern JS; we don't redefine it.
+
+  // ─── 4.10 Probing & forced inclusion ────────────────────────────────────
+
+  define('probeExcluded', function (opts) {
+    opts = opts || {};
+    const ctx = globalThis.__policyCtx || {};
+    const reAdmitAfterMs = globalThis.durationMs(opts.reAdmitAfter != null ? opts.reAdmitAfter : '5m');
+    const maxConcurrent  = opts.maxConcurrent != null ? opts.maxConcurrent : 1;
+    const longestFirst   = opts.longestFirst !== false;
+    const position       = opts.position || 'tail';
+    const now = ctx.now || Date.now();
+    const excludedSince = ctx.excludedSince || {};
+    const currentIDs = new Set(toIDs(this));
+    // Find candidates from the input universe (not the chain so far) — we
+    // need the engine to expose them; for now, fall back to ctx.previousExcluded.
+    const candidatePool = (ctx.previousExcluded || []).filter(id => !currentIDs.has(id));
+    const eligible = [];
+    for (const id of candidatePool) {
+      const since = excludedSince[id];
+      if (since == null) continue;
+      if (now - since < reAdmitAfterMs) continue;
+      eligible.push({ id, since });
+    }
+    eligible.sort((a, b) => longestFirst ? (a.since - b.since) : (b.since - a.since));
+    const pick = eligible.slice(0, maxConcurrent).map(e => e.id);
+
+    if (pick.length === 0) return this.slice();
+
+    // We need to materialize the actual upstream objects for these ids;
+    // the engine exposes `__policyAllUpstreams` per-tick.
+    const all = globalThis.__policyAllUpstreams || [];
+    const byId = {};
+    for (const u of all) byId[u.id] = u;
+    const probed = pick.map(id => byId[id]).filter(Boolean);
+    for (const u of probed) annotate(u, 'probed:reAdmitted');
+
+    if (position === 'head') return probed.concat(this);
+    if (position === 'random') {
+      const out = this.slice();
+      for (const p of probed) out.splice(Math.floor(Math.random() * (out.length + 1)), 0, p);
+      return out;
+    }
+    return this.concat(probed); // tail (default)
+  });
+
+  define('forceInclude', function (idOrFn, position) {
+    const all = globalThis.__policyAllUpstreams || [];
+    const matchFn = (typeof idOrFn === 'function')
+      ? idOrFn
+      : (u) => matchAny(idOrFn, u.id);
+    const haves = new Set(this.map(u => u.id));
+    const adds = all.filter(u => !haves.has(u.id) && matchFn(u));
+    if (adds.length === 0) return this.slice();
+    return (position === 'head') ? adds.concat(this) : this.concat(adds);
+  });
+
+  // ─── 4.11 Cooldown & warmup ─────────────────────────────────────────────
+
+  define('cooldown', function (duration) {
+    const ctx = globalThis.__policyCtx || {};
+    const ms = globalThis.durationMs(duration);
+    const since = ctx.excludedSince || {};
+    const now = ctx.now || Date.now();
+    return this.filter(u => {
+      const t = since[u.id];
+      if (t == null) return true;
+      return (now - t) >= ms;
+    });
+  });
+
+  // ─── 4.12 Combinators ───────────────────────────────────────────────────
+
+  define('if', function (cond, thenFn, elseFn) {
+    const c = (typeof cond === 'function') ? cond(this) : !!cond;
+    if (c) return thenFn(this);
+    if (elseFn) return elseFn(this);
+    return this.slice();
+  });
+  define('unless', function (cond, fn) {
+    const c = (typeof cond === 'function') ? cond(this) : !!cond;
+    if (!c) return fn(this);
+    return this.slice();
+  });
+  define('whenEmpty', function (fn) { return this.length === 0 ? fn() : this.slice(); });
+  define('whenNotEmpty', function (fn) { return this.length > 0 ? fn(this) : this.slice(); });
+  define('fallbackTo', function (arrOrFn) {
+    if (this.length > 0) return this.slice();
+    return (typeof arrOrFn === 'function') ? arrOrFn(globalThis.__policyCtx) : arrOrFn;
+  });
+  define('ensureMin', function (n, fn) { return this.length < n ? fn(this) : this.slice(); });
+
+  // ─── 4.13 Annotations & debug ───────────────────────────────────────────
+
+  define('tap',      function (fn) { fn(this); return this; });
+  define('label',    function (_name) { return this; }); // no-op for now; decision-record wiring in phase 6
+  define('annotate', function (fn) { for (const u of this) annotate(u, fn(u)); return this; });
+  define('mark',     function (pred, note) { for (const u of this) if (pred(u)) annotate(u, note); return this; });
+  define('dump',     function (level) {
+    const fn = (console[level || 'debug']) || console.log;
+    fn('[policy.dump]', toIDs(this));
+    return this;
+  });
+
+  // ─── 4.14 Module-level helpers ─────────────────────────────────────────
+
+  // upstreamsFromIds is bound by the Go side because it needs the input set.
+  globalThis.methodMatches = function (pat) {
+    const ctx = globalThis.__policyCtx || {};
+    return matchAny(pat, ctx.method);
+  };
+  globalThis.isFinalityRequest = function () {
+    const ctx = globalThis.__policyCtx || {};
+    return ctx.finality === 'finalized';
+  };
+})();

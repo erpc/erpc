@@ -142,11 +142,24 @@ func runEval(
 	}
 
 	upsArr := buildJSUpstreams(ups, metrics)
-	result, err := fn(
-		sobek.Undefined(),
-		vm.ToValue(upsArr),
-		vm.ToValue(evalCtx),
-	)
+	upsValue := vm.ToValue(upsArr)
+	ctxValue := vm.ToValue(evalCtx)
+
+	// Per-tick globals consumed by the stdlib (probeExcluded reads the full
+	// input universe; sticky/cooldown read ctx). Cleared on the way out so
+	// the pooled runtime cannot leak references across ticks.
+	if err := vm.GlobalObject().Set("__policyCtx", ctxValue); err != nil {
+		return nil, err
+	}
+	if err := vm.GlobalObject().Set("__policyAllUpstreams", upsValue); err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = vm.GlobalObject().Set("__policyCtx", sobek.Undefined())
+		_ = vm.GlobalObject().Set("__policyAllUpstreams", sobek.Undefined())
+	}()
+
+	result, err := fn(sobek.Undefined(), upsValue, ctxValue)
 	if err != nil {
 		return nil, fmt.Errorf("call eval: %w", err)
 	}

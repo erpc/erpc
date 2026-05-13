@@ -70,9 +70,19 @@ func NewEngine(
 // and starts its ticker. If `cfg.EvalPerMethod` is true, additional slots
 // are created lazily when GetOrdered is called with a specific method.
 //
+// If `cfg.Eval` is the placeholder identity policy (`common.DefaultSelectionPolicySource`),
+// this method upgrades it to the embedded rich default (sortByScore +
+// preferGroup + stickyPrimary + probeExcluded) — that policy uses std-lib
+// methods which only exist once a runtime has been primed. common/ cannot
+// reach internal/policy/, so the substitution happens here.
+//
 // The initial eval runs synchronously so callers can rely on a non-empty
 // cache being present once RegisterNetwork returns.
 func (e *Engine) RegisterNetwork(networkID string, upstreams []common.Upstream, cfg *common.SelectionPolicyConfig) error {
+	if err := upgradeDefaultPolicy(cfg); err != nil {
+		return err
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
