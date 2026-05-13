@@ -1435,6 +1435,198 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 	})
 }
 
+// TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream is the realistic,
+// end-to-end demonstration of the design's intent: hedging serves as the
+// on-ramp for a faster upstream to prove itself, and the latency-based
+// scoring eventually promotes it to primary — with no ErrorRate involvement.
+//
+// The flow it walks:
+//  1. Both upstreams start equal-scored → rpc1 is primary by alphabetical tiebreak.
+//  2. rpc1 has bimodal latency: fast (30ms) every other request, slow (200ms)
+//     in between. The fast requests win without firing the hedge — rpc1's
+//     quantile populates. The slow requests fire the hedge — rpc2 wins from
+//     the second position, populating ITS quantile.
+//  3. After both quantiles have realistic samples, scoring sees rpc2's
+//     consistently lower p90 latency and flips selection: rpc2 → primary.
+//  4. Post-flip, rpc2 is fast enough that hedges never fire — rpc1 stops
+//     receiving traffic. The system has stably routed onto the faster path.
+//
+// We use a long scoreRefreshInterval so the background refresh doesn't fire
+// mid-test (we want deterministic refresh timing), and a custom ScoringConfig
+// that drops EMA decay / hysteresis / cooldown — production smooths this same
+// dynamic over minutes to avoid flapping under transient blips, but we want
+// the dynamic visible in seconds for the test.
+func TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	const phase1Pairs = 6        // pairs of (rpc1-fast, rpc1-slow) — both quantiles populate together
+	const stabilizationCount = 6 // verify the flipped state stays flipped
+
+	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+
+	// Phase 1 mocks: rpc1 alternates fast (wins outright) and slow (loses to
+	// hedge). Set them up alternating so gock consumes them in that order.
+	for i := 0; i < phase1Pairs; i++ {
+		// fast: wins before hedge fires → rpc1 quantile populates
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Times(1).
+			Reply(200).
+			Delay(30 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+		// slow: hedge fires before this completes, rpc2 wins, rpc1 cancelled
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Times(1).
+			Reply(200).
+			Delay(300 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+	}
+	// Any post-flip overflow: rpc1 stays slow (it shouldn't be called).
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Persist().
+		Reply(200).
+		Delay(300 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+
+	// rpc2: consistently faster than rpc1's fast tail (20ms vs 30ms). This is
+	// the latency advantage scoring should pick up on.
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Persist().
+		Reply(200).
+		Delay(20 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upstreamConfigs := []*common.UpstreamConfig{
+		{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+	}
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			Hedge: &common.HedgePolicyConfig{
+				Delay:    common.Duration(70 * time.Millisecond),
+				MaxCount: 1,
+			},
+		}},
+	}
+	network := setupTestNetworkWithScoring(t, ctx, upstreamConfigs, networkConfig, &upstream.ScoringConfig{
+		PenaltyDecayRate:  -1, // instant penalty (no EMA memory)
+		SwitchHysteresis:  -1, // switch on any improvement
+		MinSwitchInterval: -1, // no cooldown between switches
+	})
+
+	rpc1, rpc2 := getUpstreamPair(t, network)
+	networkID := util.EvmNetworkId(123)
+	method := "eth_getBalance"
+
+	// --- Step 1: rpc1 starts as primary (alphabetical tiebreak).
+	initial, err := network.upstreamsRegistry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(initial), 2)
+	assert.Equal(t, "rpc1", initial[0].Id(), "rpc1 is initial primary by tiebreak")
+
+	// --- Step 2: run phase 1 — alternating fast/slow rpc1. Both quantiles
+	// populate before we trigger the first refresh.
+	rpc1Wins, rpc2Wins := 0, 0
+	for i := 0; i < phase1Pairs*2; i++ {
+		resp, ferr := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		require.NoError(t, ferr, "phase 1 request %d", i)
+		jrr, _ := resp.JsonRpcResponse()
+		switch {
+		case strings.Contains(jrr.GetResultString(), "0x1111"):
+			rpc1Wins++
+		case strings.Contains(jrr.GetResultString(), "0x2222"):
+			rpc2Wins++
+		}
+	}
+	// Roughly half should be rpc1 wins, half rpc2 wins — both quantiles fed.
+	assert.GreaterOrEqual(t, rpc1Wins, 1, "rpc1 won some when it was fast → quantile fed")
+	assert.GreaterOrEqual(t, rpc2Wins, 1, "rpc2 won some via hedge → quantile fed")
+
+	// Let any in-flight cancellations drain.
+	time.Sleep(100 * time.Millisecond)
+
+	// --- Step 3: trigger refresh. Both quantiles have data; rpc2's p90 (~20ms)
+	// should beat rpc1's p90 (~30ms) → rpc2 promoted to primary.
+	require.NoError(t, network.upstreamsRegistry.RefreshUpstreamNetworkMethodScores())
+
+	m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, method)
+	m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, method)
+	require.NotNil(t, m1)
+	require.NotNil(t, m2)
+	p90rpc1 := m1.GetResponseQuantiles().GetQuantile(0.9).Seconds()
+	p90rpc2 := m2.GetResponseQuantiles().GetQuantile(0.9).Seconds()
+	require.Greater(t, p90rpc1, 0.0, "rpc1 quantile populated by phase-1 fast wins")
+	require.Greater(t, p90rpc2, 0.0, "rpc2 quantile populated by phase-1 hedge wins")
+	require.Greater(t, p90rpc1, p90rpc2,
+		"rpc2's quantile (~20ms) must beat rpc1's (~30ms) for the flip to happen: rpc1=%.3fs rpc2=%.3fs",
+		p90rpc1, p90rpc2)
+
+	flipped, err := network.upstreamsRegistry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(flipped), 2)
+	assert.Equal(t, "rpc2", flipped[0].Id(),
+		"after both quantiles are measured, rpc2 (faster) gets promoted to primary")
+	assert.Equal(t, "rpc1", flipped[1].Id(),
+		"rpc1 is demoted to hedge candidate")
+
+	// --- Step 4: stabilization. rpc2 is now primary; at 20ms it always wins
+	// before the 70ms hedge delay → rpc1 never gets called. System has
+	// stably routed away from rpc1.
+	postFlipRpc2Wins := 0
+	for i := 0; i < stabilizationCount; i++ {
+		resp, ferr := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		require.NoError(t, ferr, "stabilization request %d", i)
+		jrr, _ := resp.JsonRpcResponse()
+		if strings.Contains(jrr.GetResultString(), "0x2222") {
+			postFlipRpc2Wins++
+		}
+	}
+	assert.Equal(t, stabilizationCount, postFlipRpc2Wins,
+		"post-flip: rpc2 wins every request as primary, no hedge needed")
+
+	require.NoError(t, network.upstreamsRegistry.RefreshUpstreamNetworkMethodScores())
+	stable, err := network.upstreamsRegistry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	assert.Equal(t, "rpc2", stable[0].Id(), "rpc2 remains primary post-flip")
+
+	// --- Step 5: bookkeeping invariants over the whole run.
+	// rpc1 was primary only for phase 1 (its primary attempts ticked
+	// RequestsTotal regardless of whether it won or lost the hedge race).
+	assert.Equal(t, int64(phase1Pairs*2), m1.RequestsTotal.Load(),
+		"rpc1 RequestsTotal = phase-1 primary attempts only, no hedge inflation")
+	assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+		"rpc1's hedge-induced cancellations never counted as errors")
+
+	// rpc2 was primary only for stabilization. Its hedge runs in phase 1 are
+	// excluded from RequestsTotal (the whole point of the PR).
+	assert.Equal(t, int64(stabilizationCount), m2.RequestsTotal.Load(),
+		"rpc2 RequestsTotal = post-flip primary attempts only, hedge runs in phase 1 excluded")
+	assert.Equal(t, int64(0), m2.ErrorsTotal.Load(),
+		"rpc2 succeeded every time it ran")
+}
+
 func getUpstreamPair(t *testing.T, network *Network) (rpc1, rpc2 *upstream.Upstream) {
 	t.Helper()
 	for _, u := range network.upstreamsRegistry.GetAllUpstreams() {
@@ -1517,6 +1709,22 @@ func setupTestNetworkWithMultipleUpstreams(t *testing.T, ctx context.Context, nu
 
 // Common network setup function
 func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
+	return setupTestNetworkWithScoring(t, ctx, upstreamConfigs, networkConfig, nil)
+}
+
+// setupTestNetworkWithScoring lets a test override the registry's scoring
+// behavior (e.g. instant penalty convergence, no hysteresis / cooldown)
+// without affecting other tests that rely on the production defaults. When
+// scoringCfg is non-nil, the background score refresh interval is also
+// disabled (set to 1 hour) so the test controls refresh timing explicitly;
+// otherwise the default 1s interval is used.
+func setupTestNetworkWithScoring(
+	t *testing.T,
+	ctx context.Context,
+	upstreamConfigs []*common.UpstreamConfig,
+	networkConfig *common.NetworkConfig,
+	scoringCfg *upstream.ScoringConfig,
+) *Network {
 	t.Helper()
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
@@ -1539,6 +1747,13 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 	})
 	require.NoError(t, err)
 
+	refreshInterval := 1 * time.Second
+	if scoringCfg != nil {
+		// Tests that pass an explicit ScoringConfig also want explicit refresh
+		// timing — disable the background ticker so RefreshUpstreamNetworkMethodScores()
+		// is the only thing that updates scores.
+		refreshInterval = 1 * time.Hour
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
@@ -1550,8 +1765,8 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		pr,
 		nil,
 		metricsTracker,
-		1*time.Second,
-		nil,
+		refreshInterval,
+		scoringCfg,
 		nil,
 	)
 
