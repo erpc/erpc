@@ -188,6 +188,24 @@ type BaseError struct {
 	Message string                 `json:"message,omitempty"`
 	Cause   error                  `json:"cause,omitempty"`
 	Details map[string]interface{} `json:"details,omitempty"`
+
+	// detailsMu guards reads and writes of Details after construction. Errors
+	// flow between goroutines via consensus / failsafe paths: one goroutine
+	// may iterate Details (e.g. fmt formatting → SonicCfg.Marshal) while another
+	// appends keys (e.g. failsafe.TranslateFailsafeError, WithRetryableTowardNetwork).
+	// Without this lock, sonic's map iterator races with the late writers and
+	// triggers the runtime's `concurrent map iteration and map write` fatal.
+	detailsMu sync.RWMutex `json:"-"`
+}
+
+// baseErrorJSON mirrors BaseError's exported fields for JSON serialization
+// without the embedded mutex — converting BaseError to a type-aliased value
+// for marshaling would otherwise copy the lock and trip `go vet`.
+type baseErrorJSON struct {
+	Code    ErrorCode              `json:"code,omitempty"`
+	Message string                 `json:"message,omitempty"`
+	Cause   error                  `json:"cause,omitempty"`
+	Details map[string]interface{} `json:"details,omitempty"`
 }
 
 type StandardError interface {
@@ -208,12 +226,58 @@ type RetryableError interface {
 
 func (e *BaseError) WithRetryableTowardNetwork(r bool) RetryableError {
 	if e != nil {
-		if e.Details == nil {
-			e.Details = map[string]interface{}{}
-		}
-		e.Details["retryableTowardNetwork"] = r
+		e.SetDetail("retryableTowardNetwork", r)
 	}
 	return e
+}
+
+// SetDetail safely writes a key into Details, allocating the map on first use.
+// Use this instead of direct map indexing on any BaseError that may be visible
+// to other goroutines (i.e. anything past the original construction site).
+func (e *BaseError) SetDetail(key string, value interface{}) {
+	if e == nil {
+		return
+	}
+	e.detailsMu.Lock()
+	if e.Details == nil {
+		e.Details = make(map[string]interface{})
+	}
+	e.Details[key] = value
+	e.detailsMu.Unlock()
+}
+
+// GetDetail safely reads a key from Details. The second return is false when
+// the map is nil or the key is absent.
+func (e *BaseError) GetDetail(key string) (interface{}, bool) {
+	if e == nil {
+		return nil, false
+	}
+	e.detailsMu.RLock()
+	defer e.detailsMu.RUnlock()
+	if e.Details == nil {
+		return nil, false
+	}
+	v, ok := e.Details[key]
+	return v, ok
+}
+
+// snapshotDetails returns a defensive shallow copy of Details, taken under
+// RLock so callers can iterate or marshal the result without coordinating
+// with concurrent writers. Returns nil when Details is empty.
+func (e *BaseError) snapshotDetails() map[string]interface{} {
+	if e == nil {
+		return nil
+	}
+	e.detailsMu.RLock()
+	defer e.detailsMu.RUnlock()
+	if len(e.Details) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(e.Details))
+	for k, v := range e.Details {
+		out[k] = v
+	}
+	return out
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -227,12 +291,15 @@ func (e *BaseError) Unwrap() error {
 func (e *BaseError) Error() string {
 	var detailsStr string
 
-	if len(e.Details) > 0 {
-		s, er := SonicCfg.Marshal(e.Details)
+	// Snapshot Details under RLock so sonic's iterator can't observe a
+	// concurrent write from another goroutine (the consensus tracker calls
+	// fmt.Sprintf("%v", err) while the failsafe stack appends method/upstreamId).
+	if snap := e.snapshotDetails(); len(snap) > 0 {
+		s, er := SonicCfg.Marshal(snap)
 		if er == nil {
 			detailsStr = fmt.Sprintf("(%s)", s)
 		} else {
-			detailsStr = fmt.Sprintf("(%v)", e.Details)
+			detailsStr = fmt.Sprintf("(%v)", snap)
 		}
 	}
 
@@ -272,10 +339,8 @@ func (e *BaseError) DeepestMessage() string {
 	return e.Message
 }
 func (e *BaseError) DeepSearch(key string) interface{} {
-	if e.Details != nil {
-		if v, ok := e.Details[key]; ok {
-			return v
-		}
+	if v, ok := e.GetDetail(key); ok {
+		return v
 	}
 	if e.Cause != nil {
 		if be, ok := e.Cause.(StandardError); ok {
@@ -299,17 +364,27 @@ func (e *BaseError) GetCause() error {
 	return e.Cause
 }
 
-func (e BaseError) MarshalJSON() ([]byte, error) {
-	type Alias BaseError
+// toJSONShape collects BaseError's exported fields into a lock-free shape
+// suitable for embedding in marshalable structs. Details is snapshot-copied
+// under RLock so the returned map is owned by the caller.
+func (e *BaseError) toJSONShape() baseErrorJSON {
+	return baseErrorJSON{
+		Code:    e.Code,
+		Message: e.Message,
+		Cause:   e.Cause,
+		Details: e.snapshotDetails(),
+	}
+}
 
+func (e *BaseError) MarshalJSON() ([]byte, error) {
 	if e.Code == "" || e.Code == "ErrUnknown" || e.Code == "ErrGeneric" {
 		if e.Cause != nil {
 			return SonicCfg.Marshal(&struct {
-				Alias
+				baseErrorJSON
 				Cause interface{} `json:"cause"`
 			}{
-				Alias: (Alias)(e),
-				Cause: e.Cause.Error(),
+				baseErrorJSON: e.toJSONShape(),
+				Cause:         e.Cause.Error(),
 			})
 		}
 		return SonicCfg.Marshal(e.Message)
@@ -327,27 +402,27 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 			}
 		}
 		return SonicCfg.Marshal(&struct {
-			Alias
+			baseErrorJSON
 			Cause []interface{} `json:"cause"`
 		}{
-			Alias: (Alias)(e),
-			Cause: causes,
+			baseErrorJSON: e.toJSONShape(),
+			Cause:         causes,
 		})
 	} else if cs, ok := cause.(StandardError); ok {
 		return SonicCfg.Marshal(&struct {
-			Alias
+			baseErrorJSON
 			Cause StandardError `json:"cause"`
 		}{
-			Alias: (Alias)(e),
-			Cause: cs,
+			baseErrorJSON: e.toJSONShape(),
+			Cause:         cs,
 		})
 	} else if cause != nil {
 		return SonicCfg.Marshal(&struct {
-			Alias
-			Cause BaseError `json:"cause"`
+			baseErrorJSON
+			Cause baseErrorJSON `json:"cause"`
 		}{
-			Alias: (Alias)(e),
-			Cause: BaseError{
+			baseErrorJSON: e.toJSONShape(),
+			Cause: baseErrorJSON{
 				Code:    "ErrGeneric",
 				Message: cause.Error(),
 			},
@@ -355,10 +430,10 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 	}
 
 	return SonicCfg.Marshal(&struct {
-		Alias
+		baseErrorJSON
 		Cause interface{} `json:"-"`
 	}{
-		Alias: (Alias)(e),
+		baseErrorJSON: e.toJSONShape(),
 	})
 }
 
@@ -406,8 +481,10 @@ func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
 			v.Str("cause", e.Cause.Error())
 		}
 	}
-	if e.Details != nil {
-		v.Interface("details", e.Details)
+	if snap := e.snapshotDetails(); snap != nil {
+		// zerolog defers field marshaling, so we hand it our owned snapshot
+		// rather than the live map another goroutine may still be writing to.
+		v.Interface("details", snap)
 	}
 }
 
@@ -811,11 +888,10 @@ func (e *ErrUpstreamRequest) IsObjectNull() bool {
 }
 
 func (e *ErrUpstreamRequest) UpstreamId() string {
-	if e.Details == nil {
-		return ""
-	}
-	if upstreamId, ok := e.Details["upstreamId"].(string); ok {
-		return upstreamId
+	if v, ok := e.GetDetail("upstreamId"); ok {
+		if upstreamId, ok := v.(string); ok {
+			return upstreamId
+		}
 	}
 	return ""
 }
@@ -825,31 +901,28 @@ func (e *ErrUpstreamRequest) FromCache() bool {
 }
 
 func (e *ErrUpstreamRequest) Attempts() int {
-	if e.Details == nil {
-		return 0
-	}
-	if attempts, ok := e.Details["attempts"].(int); ok {
-		return attempts
+	if v, ok := e.GetDetail("attempts"); ok {
+		if attempts, ok := v.(int); ok {
+			return attempts
+		}
 	}
 	return 0
 }
 
 func (e *ErrUpstreamRequest) Retries() int {
-	if e.Details == nil {
-		return 0
-	}
-	if retries, ok := e.Details["retries"].(int); ok {
-		return retries
+	if v, ok := e.GetDetail("retries"); ok {
+		if retries, ok := v.(int); ok {
+			return retries
+		}
 	}
 	return 0
 }
 
 func (e *ErrUpstreamRequest) Hedges() int {
-	if e.Details == nil {
-		return 0
-	}
-	if hedges, ok := e.Details["hedges"].(int); ok {
-		return hedges
+	if v, ok := e.GetDetail("hedges"); ok {
+		if hedges, ok := v.(int); ok {
+			return hedges
+		}
 	}
 	return 0
 }
@@ -1174,31 +1247,28 @@ func (e *ErrUpstreamsExhausted) FromCache() bool {
 }
 
 func (e *ErrUpstreamsExhausted) Attempts() int {
-	if e.Details == nil {
-		return 0
-	}
-	if attempts, ok := e.Details["attempts"].(int); ok {
-		return attempts
+	if v, ok := e.GetDetail("attempts"); ok {
+		if attempts, ok := v.(int); ok {
+			return attempts
+		}
 	}
 	return 0
 }
 
 func (e *ErrUpstreamsExhausted) Retries() int {
-	if e.Details == nil {
-		return 0
-	}
-	if retries, ok := e.Details["retries"].(int); ok {
-		return retries
+	if v, ok := e.GetDetail("retries"); ok {
+		if retries, ok := v.(int); ok {
+			return retries
+		}
 	}
 	return 0
 }
 
 func (e *ErrUpstreamsExhausted) Hedges() int {
-	if e.Details == nil {
-		return 0
-	}
-	if hedges, ok := e.Details["hedges"].(int); ok {
-		return hedges
+	if v, ok := e.GetDetail("hedges"); ok {
+		if hedges, ok := v.(int); ok {
+			return hedges
+		}
 	}
 	return 0
 }
@@ -1577,12 +1647,8 @@ var NewErrJsonRpcRequestPreparation = func(cause error, details map[string]inter
 		},
 	}
 
-	if err.Details == nil {
-		err.Details = make(map[string]interface{})
-	}
-
-	if _, ok := err.Details["retryableTowardNetwork"]; !ok {
-		err.Details["retryableTowardNetwork"] = false
+	if _, ok := err.GetDetail("retryableTowardNetwork"); !ok {
+		err.SetDetail("retryableTowardNetwork", false)
 	}
 
 	return err
@@ -2226,14 +2292,14 @@ func (e *ErrJsonRpcExceptionInternal) CodeChain() string {
 }
 
 func (e *ErrJsonRpcExceptionInternal) NormalizedCode() JsonRpcErrorNumber {
-	if code, ok := e.Details["normalizedCode"]; ok {
+	if code, ok := e.GetDetail("normalizedCode"); ok {
 		return code.(JsonRpcErrorNumber)
 	}
 	return 0
 }
 
 func (e *ErrJsonRpcExceptionInternal) OriginalCode() int {
-	if code, ok := e.Details["originalCode"]; ok {
+	if code, ok := e.GetDetail("originalCode"); ok {
 		if ic, ok := code.(int); ok {
 			return ic
 		} else if fc, ok := code.(float64); ok {
@@ -2442,9 +2508,11 @@ func IsRetryableTowardNetwork(err error) bool {
 		if !ok {
 			break
 		}
-		if base := cse.Base(); base != nil && base.Details != nil {
-			if rt, ok := base.Details["retryableTowardNetwork"].(bool); ok && !rt {
-				return false
+		if base := cse.Base(); base != nil {
+			if v, ok := base.GetDetail("retryableTowardNetwork"); ok {
+				if rt, ok := v.(bool); ok && !rt {
+					return false
+				}
 			}
 		}
 		next := cse.GetCause()
@@ -2649,10 +2717,11 @@ func (e *ErrConsensusLowParticipants) DeepestMessage() string {
 }
 
 func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
-	if e.Details == nil {
+	v, ok := e.GetDetail("participants")
+	if !ok {
 		return ""
 	}
-	participants, ok := e.Details["participants"].([]ParticipantInfo)
+	participants, ok := v.([]ParticipantInfo)
 	if !ok {
 		return ""
 	}

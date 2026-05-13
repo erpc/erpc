@@ -656,16 +656,19 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						return nil, ctxErr
 					}
 				}
+				ourTimeoutSet := false
 				if failsafeExecutor.timeout != nil {
 					if td := failsafeExecutor.timeout(ectx, nrq); td != nil {
 						var cancelFn context.CancelFunc
 						ectx, cancelFn = context.WithTimeoutCause(ectx, *td, common.ErrDynamicTimeoutExceeded)
 						defer cancelFn()
+						ourTimeoutSet = true
 					}
 				}
 
 				nr, err := tryForward(ectx, exec)
 				if err != nil {
+					err = injectDynamicTimeoutSentinelIfDeadlinePassed(err, ectx, ourTimeoutSet)
 					common.SetTraceSpanError(execSpan, err)
 					return nil, err
 				}
@@ -714,6 +717,69 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
+}
+
+// injectDynamicTimeoutSentinelIfDeadlinePassed welds ErrDynamicTimeoutExceeded
+// into err's cause chain when our scope's WithTimeoutCause has elapsed but a
+// race in the batched HTTP client lost the sentinel.
+//
+// Why this is needed: the batched http_json_rpc client builds its own
+// batch-deadline ctx via context.WithDeadline(c.appCtx, batchDeadline) —
+// distinct from the per-request ctx that carries
+// WithTimeoutCause(ErrDynamicTimeoutExceeded). Both contexts share the same
+// deadline, and each has its own time.AfterFunc goroutine. Under heavy
+// contention (e.g. parallel test shards or saturated runtime), batchCtx's
+// AfterFunc may fire microseconds before req.ctx's; the batch processor
+// unblocks from http.Client.Do, reads context.Cause(req.ctx), and observes
+// nil because req.ctx's cause hasn't been recorded yet. It falls back to
+// batchCause which is a bare context.DeadlineExceeded, so the inner error
+// chain loses the sentinel — and TranslateFailsafeError can't classify it
+// as ErrFailsafeTimeoutExceeded.
+//
+// Detection via context.Cause(ectx) at this layer is unreliable for the same
+// scheduling reason. The absolute deadline is a stable signal: when WE set
+// up the WithTimeoutCause and ectx.Deadline() has elapsed at the moment
+// tryForward returned, our scope's timeout is the cause regardless of which
+// goroutine recorded it first.
+//
+// Gated on:
+//   - ourTimeoutSet: this scope owns the WithTimeoutCause that may have fired
+//   - err is timeout-shaped (ErrCodeEndpointRequestTimeout or
+//     context.DeadlineExceeded); non-timeout errors are not touched
+//   - err doesn't already carry the sentinel (idempotent)
+//   - ectx's deadline has elapsed (so our timeout did fire)
+//
+// The mutation is shallow — it edits err.Base().Cause in place. Safe because
+// err is freshly returned by tryForward to a single goroutine and not yet
+// visible to any reader.
+func injectDynamicTimeoutSentinelIfDeadlinePassed(err error, ectx context.Context, ourTimeoutSet bool) error {
+	if !ourTimeoutSet || err == nil {
+		return err
+	}
+	if errors.Is(err, common.ErrDynamicTimeoutExceeded) {
+		return err
+	}
+	if !common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout) && !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	d, hasDeadline := ectx.Deadline()
+	if !hasDeadline || d.After(time.Now()) {
+		return err
+	}
+	se, ok := err.(common.StandardError)
+	if !ok {
+		return err
+	}
+	base := se.Base()
+	if base == nil {
+		return err
+	}
+	if base.Cause != nil {
+		base.Cause = errors.Join(base.Cause, common.ErrDynamicTimeoutExceeded)
+	} else {
+		base.Cause = common.ErrDynamicTimeoutExceeded
+	}
+	return err
 }
 
 func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
