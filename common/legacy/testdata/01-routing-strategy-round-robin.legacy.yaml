@@ -1,0 +1,37 @@
+# Scenario 01 — `routingStrategy: round-robin`
+#
+# DRIVING EVENTS (asserted in erpc/selection_safety_net_test.go::
+# TestSafetyNet_RoutingStrategy_RoundRobin_Rotates):
+#   - no metric pressure
+#   - 6 successive ticks
+#
+# EXPECTED OBSERVABLE: every upstream visits the primary slot at least once
+#   over those 6 ticks.
+#
+# EXPECTED WARNINGS:
+#   [deprecated config] project=main routingStrategy=round-robin is
+#     deprecated; translated to selectionPolicy.eval using rotateBy(ctx.tickCount)
+
+projects:
+  - id: main
+    routingStrategy: round-robin
+    upstreams:
+      - id: rpc1
+        endpoint: http://rpc1.localhost
+        type: evm
+        evm:
+          chainId: 123
+      - id: rpc2
+        endpoint: http://rpc2.localhost
+        type: evm
+        evm:
+          chainId: 123
+      - id: rpc3
+        endpoint: http://rpc3.localhost
+        type: evm
+        evm:
+          chainId: 123
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 123
