@@ -30,6 +30,14 @@ const (
 const RequestContextKey ContextKey = "rq"
 const UpstreamsContextKey ContextKey = "ups"
 
+// HedgeAttemptKey carries a bool flagging whether the current upstream attempt
+// is a hedge (speculative parallel fan-out). Set at the network layer where
+// failsafe-go's hedge counter lives; read at the upstream layer to gate the
+// per-upstream tracker counters (RequestsTotal / ErrorsTotal) so hedge
+// attempts don't inflate them or get double-penalized via ErrorRate on top
+// of latency.
+const HedgeAttemptKey ContextKey = "hedge_attempt"
+
 type directiveKeyNames struct {
 	header string
 	query  string

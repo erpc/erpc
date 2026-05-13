@@ -925,6 +925,154 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 	})
 }
 
+// TestNetwork_HedgeAttemptsExcludedFromTrackerCounters is the integration
+// counterpart to the unit tests in health/tracker_test.go and
+// upstream/registry_test.go: it walks an actual hedged request through
+// Network.Forward and asserts the tracker bookkeeping that motivated this
+// PR. The losing-hedge upstream's request/error counters must stay clean
+// (so its ErrorRate isn't suppressed by a now-stale denominator and its
+// scoring isn't double-penalized via ErrorRate on top of latency).
+func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
+	t.Run("PrimaryWins_HedgeAttemptExcludedFromRequestsTotal", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+
+		// rpc1 (primary) responds fast — wins before hedge fires.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(20 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+
+		// rpc2 hedge would be slow if it fires (it shouldn't).
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Delay(500 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+			Delay:    common.Duration(200 * time.Millisecond),
+			MaxCount: 1,
+		})
+
+		resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		rpc1, rpc2 := getUpstreamPair(t, network)
+
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		require.NotNil(t, m1)
+		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts")
+		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(), "rpc1 succeeded")
+
+		// rpc2's hedge never fired — clean slate.
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance")
+		if m2 != nil {
+			assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 was never tried")
+			assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
+		}
+	})
+
+	t.Run("HedgeWins_LosingPrimaryNotRecordedAsError_HedgeAttemptNotInRequestsTotal", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+
+		// rpc1 primary: slow. Will be cancelled when rpc2's hedge wins.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Delay(2 * time.Second).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+
+		// rpc2 hedge: fast — wins.
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(50 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+			Delay:    common.Duration(100 * time.Millisecond),
+			MaxCount: 1,
+		})
+
+		resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, jrr.GetResultString(), "0x2222", "hedge winner's response should be returned")
+
+		// Give a brief moment for the cancelled primary to unwind through
+		// upstream.tryForward (recording happens after SendRequest returns).
+		time.Sleep(100 * time.Millisecond)
+
+		rpc1, rpc2 := getUpstreamPair(t, network)
+
+		// rpc1 was the primary attempt → its RequestsTotal ticks. Its
+		// cancellation is ignored at both layers (upstream early-return
+		// branch + tracker skip list), so ErrorsTotal stays zero.
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		require.NotNil(t, m1)
+		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts in RequestsTotal")
+		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+			"rpc1's hedge-induced cancellation must NOT count as an upstream failure")
+
+		// rpc2 was the hedge attempt → EXCLUDED from RequestsTotal even
+		// though it ran successfully. Its successful latency still lands
+		// in ResponseQuantiles, preserving the latency signal.
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance")
+		require.NotNil(t, m2)
+		assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
+			"rpc2's hedge attempt must NOT inflate RequestsTotal — it's speculative fan-out")
+		assert.Equal(t, int64(0), m2.ErrorsTotal.Load(), "rpc2 succeeded")
+	})
+}
+
+func getUpstreamPair(t *testing.T, network *Network) (rpc1, rpc2 *upstream.Upstream) {
+	t.Helper()
+	for _, u := range network.upstreamsRegistry.GetAllUpstreams() {
+		switch u.Id() {
+		case "rpc1":
+			rpc1 = u
+		case "rpc2":
+			rpc2 = u
+		}
+	}
+	require.NotNil(t, rpc1, "rpc1 must be registered")
+	require.NotNil(t, rpc2, "rpc2 must be registered")
+	return
+}
+
 // Helper function to set up network with hedge policy
 func setupTestNetworkWithHedgePolicy(t *testing.T, ctx context.Context, hedgeConfig *common.HedgePolicyConfig) *Network {
 	t.Helper()

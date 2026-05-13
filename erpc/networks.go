@@ -435,6 +435,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		ctx, span := common.StartDetailSpan(execSpanCtx, "Network.TryForward")
 		defer span.End()
 
+		// Mark this attempt as a hedge so the upstream layer can keep its
+		// per-upstream tracker counters clean (see common.HedgeAttemptKey).
+		// The upstream's own failsafe executor has no hedge policy, so
+		// exec.Hedges() at the upstream layer always reads zero — this is
+		// the canonical signal.
+		if hedge > 0 {
+			ctx = context.WithValue(ctx, common.HedgeAttemptKey, true)
+		}
+
 		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Int("retry", retry).Msgf("trying to forward request to upstream")
 
 		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {

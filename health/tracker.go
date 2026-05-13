@@ -540,7 +540,12 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 	// - Unsupported: capability, not quality
 	// - CapacityExceeded: remote 429, already penalized via ThrottledRate
 	// - ClientSideException: user sent a bad request, not upstream's fault
-	// - RequestCanceled / HedgeCancelled: hedge lost the race, not an upstream fault
+	// - RequestCanceled / HedgeCancelled: indistinguishable from a client
+	//   disconnect at this layer (both surface as context cancellation). Hedge
+	//   attempts are excluded from RequestsTotal / ErrorsTotal at the call
+	//   site in upstream.tryForward, so cancellations only reach here for
+	//   primary attempts — where they almost always mean "client gave up,"
+	//   not "upstream failed."  Slowness is already captured by ResponseQuantiles.
 	if common.HasErrorCode(
 		err,
 		common.ErrCodeEndpointExecutionException,

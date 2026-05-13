@@ -776,7 +776,11 @@ func simulateFailedRequests(tracker *health.Tracker, upstream common.Upstream, m
 }
 
 // ---------------------------------------------------------------------------
-// Hedge cancellation must NOT penalize upstream scoring
+// Hedge cancellation must NOT directly penalize a slow-but-functional
+// upstream via ErrorRate. The slowness signal is carried by ResponseQuantiles
+// (only successful responses enter it, so consistently-slow upstreams climb
+// the quantile and lose score that way). Stacking an ErrorRate penalty on
+// top would double-punish.
 // ---------------------------------------------------------------------------
 
 func TestUpstreamsRegistry_HedgeCancellationDoesNotDegradeScore(t *testing.T) {
@@ -795,13 +799,15 @@ func TestUpstreamsRegistry_HedgeCancellationDoesNotDegradeScore(t *testing.T) {
 	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
 	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
-	// rpc1 and rpc2 each handle 100 requests successfully
+	// All three upstreams handle 100 requests successfully with the same latency.
 	simulateRequestsWithLatency(metricsTracker, ups[0], method, 100, 0.050)
 	simulateRequestsWithLatency(metricsTracker, ups[1], method, 100, 0.050)
 	simulateRequestsWithLatency(metricsTracker, ups[2], method, 100, 0.050)
 
-	// Simulate 50 hedge cancellations on rpc2 (rpc2 always lost the hedge race).
-	// These should NOT affect rpc2's score because they aren't real failures.
+	// rpc2 then "loses" 50 hedge races. These flow into the tracker as
+	// ErrCodeEndpointRequestCanceled — which the skip list ignores. They
+	// must not affect ErrorRate; they're indistinguishable from a client
+	// disconnect at the tracker level.
 	for i := 0; i < 50; i++ {
 		metricsTracker.RecordUpstreamRequest(ups[1], method)
 		metricsTracker.RecordUpstreamFailure(ups[1], method,
@@ -811,17 +817,15 @@ func TestUpstreamsRegistry_HedgeCancellationDoesNotDegradeScore(t *testing.T) {
 	err := registry.RefreshUpstreamNetworkMethodScores()
 	require.NoError(t, err)
 
-	// rpc1 and rpc2 should have equivalent scores because hedge cancellations
-	// are ignored by RecordUpstreamFailure. Both have zero real errors and
-	// the same latency. The EMA decay applies equally to both so comparing
-	// them directly avoids decay-drift issues.
 	scoreAfter1 := registry.GetUpstreamScore(ups[0].Id(), networkID, method)
 	scoreAfter2 := registry.GetUpstreamScore(ups[1].Id(), networkID, method)
 
+	// rpc1 and rpc2 should have equivalent scores: both have zero real errors
+	// and the same successful-latency profile.
 	assert.InDelta(t, scoreAfter1, scoreAfter2, 0.01,
-		"rpc2 (with hedge cancellations) should score the same as rpc1 (clean)")
+		"rpc2 (with simulated hedge cancellations) should score the same as rpc1 (clean)")
 
-	// Verify ordering hasn't changed — rpc2 should not have been demoted
+	// Ordering hasn't changed — rpc2 should not have been demoted.
 	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
 	require.NoError(t, err)
 
@@ -851,16 +855,16 @@ func TestUpstreamsRegistry_RealErrorsDegradeButHedgeCancellationsDont(t *testing
 	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
 	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
-	// rpc1: clean record
+	// rpc1: clean record.
 	simulateRequests(metricsTracker, ups[0], method, 100, 0)
-	// rpc2: 50 hedge cancellations (should be ignored) + 0 real errors
+	// rpc2: 50 hedge cancellations on top of a clean baseline — must be ignored.
 	simulateRequests(metricsTracker, ups[1], method, 100, 0)
 	for i := 0; i < 50; i++ {
 		metricsTracker.RecordUpstreamRequest(ups[1], method)
 		metricsTracker.RecordUpstreamFailure(ups[1], method,
 			common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
 	}
-	// rpc3: 30 real errors (should degrade score)
+	// rpc3: 30 real errors — should degrade score.
 	simulateRequests(metricsTracker, ups[2], method, 100, 30)
 
 	err := registry.RefreshUpstreamNetworkMethodScores()
@@ -870,12 +874,54 @@ func TestUpstreamsRegistry_RealErrorsDegradeButHedgeCancellationsDont(t *testing
 	s2 := registry.GetUpstreamScore(ups[1].Id(), networkID, method)
 	s3 := registry.GetUpstreamScore(ups[2].Id(), networkID, method)
 
-	// rpc2 (hedge cancellations only) should score similarly to rpc1 (clean)
+	// rpc2 (hedge cancellations only) should score similarly to rpc1 (clean).
 	assert.InDelta(t, s1, s2, 0.05,
 		"upstream with hedge cancellations should score similarly to clean upstream")
-	// rpc3 (real errors) should score worse than both
+	// rpc3 (real errors) should score worse than both.
 	assert.Greater(t, s1, s3, "clean upstream should score higher than one with real errors")
 	assert.Greater(t, s2, s3, "upstream with hedge cancellations should score higher than one with real errors")
+}
+
+// TestUpstreamsRegistry_SlowUpstreamDemotedByLatency verifies the remaining
+// half of the design: a consistently slow upstream IS pushed lower in
+// selection, but the signal comes from ResponseQuantiles (successful
+// responses' latency), not from hedge-cancellations being counted as errors.
+// This is the aram/William insight that motivated excluding hedges from
+// ErrorRate entirely.
+func TestUpstreamsRegistry_SlowUpstreamDemotedByLatency(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+
+	// rpc1, rpc3: fast successful responses (50 ms quantile).
+	simulateRequestsWithLatency(metricsTracker, ups[0], method, 100, 0.050)
+	simulateRequestsWithLatency(metricsTracker, ups[2], method, 100, 0.050)
+	// rpc2: succeeds, but ~5x slower (250 ms quantile) — this is exactly the
+	// "slow but functional" upstream we don't want to over-penalize as an error.
+	simulateRequestsWithLatency(metricsTracker, ups[1], method, 100, 0.250)
+
+	for i := 0; i < 5; i++ {
+		require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+	}
+
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.Len(t, ordered, 3)
+
+	// rpc2 (slow) should be demoted by the latency signal alone — no errors needed.
+	assert.Equal(t, "rpc2", ordered[len(ordered)-1].Id(),
+		"slow rpc2 should be demoted to LAST by latency-based scoring, with zero errors")
 }
 
 // ---------------------------------------------------------------------------

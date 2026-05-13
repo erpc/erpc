@@ -432,10 +432,27 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			// Span to track pre-request overhead (metrics, finality calculation)
 			_, preReqSpan := common.StartDetailSpan(ctx, "Upstream.tryForward.PreRequest")
 
-			u.metricsTracker.RecordUpstreamRequest(
-				u,
-				method,
-			)
+			// Hedge attempts are excluded from the per-upstream rate counters
+			// (RequestsTotal / ErrorsTotal). They are speculative extra fan-out
+			// triggered by failsafe; counting them inflates the denominator on
+			// every hedged request and, if their cancellations were also counted
+			// as failures, would double-penalize slow-but-functional upstreams
+			// (latency already feeds the score). Hedge activity stays observable
+			// via MetricNetworkHedgeDiscardsTotal at the network layer, and
+			// successful hedge responses still contribute to ResponseQuantiles
+			// (filtered by isSuccess inside the tracker), so the latency signal
+			// is preserved.
+			//
+			// The flag is set on the context at the network layer because the
+			// hedge policy lives there — the upstream's own failsafe has no
+			// hedge policy, so exec.Hedges() at this layer always reads zero.
+			isHedge, _ := ctx.Value(common.HedgeAttemptKey).(bool)
+			if !isHedge {
+				u.metricsTracker.RecordUpstreamRequest(
+					u,
+					method,
+				)
+			}
 			finality := nrq.Finality(ctx)
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
 				u.ProjectId,
@@ -525,18 +542,22 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
-					// Cancelled request (e.g. hedge lost the race). Not the upstream's
-					// fault — skip failure recording and generic error metric. The
-					// network layer records hedge discards via MetricNetworkHedgeDiscardsTotal.
+					// Cancelled request (e.g. hedge lost the race, or client
+					// disconnected). Not attributable to upstream quality from
+					// this layer — skip failure recording and the generic error
+					// metric. Hedge discards are accounted at the network layer
+					// via MetricNetworkHedgeDiscardsTotal.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
 					}
-					u.metricsTracker.RecordUpstreamFailure(
-						u,
-						method,
-						errCall,
-					)
+					if !isHedge {
+						u.metricsTracker.RecordUpstreamFailure(
+							u,
+							method,
+							errCall,
+						)
+					}
 					severity := common.ClassifySeverity(errCall)
 					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
 						u.ProjectId,
