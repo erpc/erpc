@@ -88,6 +88,47 @@ var (
 		Help:      "Whether upstream is un/cordoned (excluded from routing by selection policy).",
 	}, []string{"project", "vendor", "network", "upstream", "category", "reason"})
 
+	// ── Selection-policy engine metrics (see internal/policy + spec §8.2).
+	// Cardinality is fixed (no per-method category like the legacy
+	// scoreMetricsMode knob); operators don't get to dial it down per project.
+
+	MetricSelectionPosition = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_position",
+		Help:      "Selection-policy output position for an upstream: 0 = primary, 1+ = runner-up, -1 = excluded this tick.",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionRejectionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_rejection_total",
+		Help:      "Number of ticks each upstream was rejected by a specific std-lib step.",
+	}, []string{"project", "network", "method", "upstream", "step"})
+
+	MetricSelectionPrimarySwitchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_primary_switch_total",
+		Help:      "Primary-upstream changes per (project, network, method, from, to).",
+	}, []string{"project", "network", "method", "from", "to"})
+
+	MetricSelectionEvalDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "selection_eval_duration_seconds",
+		Help:      "Per-tick eval latency for the selection policy.",
+		Buckets:   []float64{0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+	}, []string{"project", "network", "method"})
+
+	MetricSelectionEvalErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_eval_errors_total",
+		Help:      "Eval failures by kind (timeout, throw, invalid_return, fallback_default).",
+	}, []string{"project", "network", "method", "kind"})
+
+	MetricSelectionEligibleUpstreams = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_eligible_upstreams",
+		Help:      "Count of upstreams returned by the most recent tick.",
+	}, []string{"project", "network", "method"})
+
 	MetricUpstreamStaleLatestBlock = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_stale_latest_block_total",

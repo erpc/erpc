@@ -9,7 +9,10 @@ module.exports = {
 		title: "Providers",
 	},
 	"selection-policies": {
-		title: "Selection policies",
+		title: "Selection policy",
+	},
+	"selection-policy-stdlib": {
+		title: "Selection policy stdlib",
 	},
 	cors: {
 		title: "CORS",

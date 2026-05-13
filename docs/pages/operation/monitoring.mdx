@@ -116,7 +116,12 @@ Here is a list of some of the most important metrics:
 | erpc_upstream_request_empty_response_total         | Counter   | Total number of empty responses from upstreams.                                                                                                                                               |
 | erpc_upstream_block_head_lag                       | Gauge     | Total number of blocks (head) behind the most up-to-date upstream.                                                                                                                            |
 | erpc_upstream_finalization_lag                     | Gauge     | Total number of finalized blocks behind the most up-to-date upstream.                                                                                                                         |
-| erpc_upstream_score_overall                        | Gauge     | Overall score of upstreams.                                                                                                                                                                   |
+| erpc_selection_position                            | Gauge     | Selection-policy output position for an upstream: 0 = primary, 1+ = runner-up, -1 = excluded this tick. Labels: project, network, method, upstream.                                            |
+| erpc_selection_rejection_total                     | Counter   | Number of ticks each upstream was rejected by a specific std-lib step. Labels: project, network, method, upstream, step.                                                                       |
+| erpc_selection_primary_switch_total                | Counter   | Primary-upstream changes. Labels: project, network, method, from, to.                                                                                                                          |
+| erpc_selection_eval_duration_seconds               | Histogram | Per-tick eval latency. Labels: project, network, method.                                                                                                                                       |
+| erpc_selection_eval_errors_total                   | Counter   | Eval failures by kind (timeout, throw, invalid_return, fallback_default). Labels: project, network, method, kind.                                                                              |
+| erpc_selection_eligible_upstreams                  | Gauge     | Count of upstreams returned by the most recent tick. Labels: project, network, method.                                                                                                         |
 | erpc_upstream_latest_block_number                  | Gauge     | Latest block number of upstreams.                                                                                                                                                             |
 | erpc_upstream_finalized_block_number               | Gauge     | Finalized block number of upstreams.                                                                                                                                                          |
 | erpc_network_latest_block_timestamp_distance_seconds | Gauge   | Distance in seconds between the latest block timestamp and current time for a network.                                                                                                        |
@@ -219,8 +224,14 @@ max(erpc_upstream_finalization_lag) by (network) > 5
 max(erpc_upstream_latest_block_number) by (network) -
 min(erpc_upstream_latest_block_number) by (network)
 
-# Overall upstream health score
-avg(erpc_upstream_score_overall) by (network, upstream)
+# Which upstream is primary for each (network, method)
+min(erpc_selection_position) by (network, method, upstream)
+
+# Primary-switch rate (5-min rolling)
+sum(rate(erpc_selection_primary_switch_total[5m])) by (network, method)
+
+# Per-step rejection rate (which std-lib filter is dropping which upstream)
+sum(rate(erpc_selection_rejection_total[5m])) by (network, upstream, step)
 
 # CORS issues by origin
 sum(rate(erpc_cors_disallowed_origin_total{}[5m])) by (project, origin)

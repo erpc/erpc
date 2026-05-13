@@ -1,117 +1,85 @@
 ---
-description: Selection policies allow you to influence how upstreams are selected to serve (or not) traffic...
+description: Selection policies decide which upstreams serve which methods, in what order. One JS function per network — order is law, missing means excluded.
 ---
 
 import { Callout, Tabs, Tab } from 'nextra/components'
 
-### Selection policies
+# Selection policy
 
-**Selection policy** allows you to influence how upstreams are selected to serve traffic (or not). A selection policy is defined at the network level and is responsible for returning a list of upstreams that must remain active. 
+The **Selection Policy** is the single mechanism that decides which upstreams
+serve which methods, in what order. A network-level JavaScript function
+(`eval`) returns an ordered list of upstreams; that list IS the routing
+decision — the request loop tries them in order, missing means excluded.
 
-The primary purpose of a selection policy is to define acceptable performance metrics and/or required conditions for selecting an upstream node.
-<Callout type='info'>
-  Selection policies can be configured to run per-method and network or per-network only. <br />
+<a id="customizing-scores-per-upstream"></a>
+<a id="priority--routing"></a>
+
+<Callout type="info">
+This replaces the dual "scoring mechanism" + "selection policy" pair that
+shipped in earlier releases. If you are upgrading, see the
+[migration guide](/migration/selection-policy) — legacy YAML continues to
+load via the translator for two more minor releases.
 </Callout>
 
-<Callout type='warning'>
-  Selection policies are not executed per request, instead they run on an interval much like a healthcheck and update the available upstreams.
-</Callout>
+## How it works
 
-#### Default fallback policy
+```
+                              every `evalInterval`
+                                       ▼
+upstreams + ctx (cross-tick state) ──► eval() ──► ordered upstream[]
+                                                       │
+                                                       ▼
+                            Network.Forward consumes the ordered list
+                            on every request (wait-free atomic load)
+```
 
-By default a built-in selection policy is activated if **at least one upstream** is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
+- The eval runs on a per-(network, method) timer.
+- The output is cached atomically; the request path reads it in O(1).
+- Each tick produces a **decision record** retained for `decisionHistory`,
+  joined to requests via `decision_id` so you can answer
+  *"why was upstream X used at time T for method M?"* from the
+  `/admin/selection/explain/<requestId>` endpoint.
 
-* `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
-* `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag, expressed as a number of blocks behind the network's highest known block (not seconds). Tolerances differ per chain — e.g. `10` is ≈120s on Ethereum but ≈2.5s on Arbitrum.
-* `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` (Default: "1"): Minimum number of healthy upstreams that must be included in default group.
-
-These environment variables allow you to adjust the default logic without rewriting the policy function.
-
-#### Use cases
-
-- **Block Lag:** Disable upstreams that are lagging behind more than a specified number of blocks until they resync.
-- **Error Rate:** Exclude upstreams exceeding a certain error rate and periodically check their status.
-- **Cost-Efficiency:** Prioritize "cheap" nodes and fallback to "fast" nodes only is all cheap nodes are down.
-
-##### Looking to influence selection ordering?
-
-If you only want to change ordering of upstreams (not entirely exclude them) check out [Scoring multipliers](/config/projects/upstreams#customizing-scores--priorities) docs. Remember selection policy will NOT influence the ordering of upstreams.
-
-#### Config
+## Configuration
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
+<Tab>
 ```yaml filename="erpc.yaml"
 projects:
-  - id: main 
-
+  - id: main
     upstreams:
-      - endpoint: cheap-1.com
-      - endpoint: cheap-2.com
-      - endpoint: fast-1.com
-        # Each upstream can have an arbitrary group name which is used in metrics, as well as 
-        # useful when writing an eval function in selectionPolicy below.
-        group: fallback
-      - endpoint: fast-2.com
+      - endpoint: alchemy://...
+      - endpoint: infura://...
+      - endpoint: drpc-eth://...
         group: fallback
 
     networks:
       - architecture: evm
-        evm:
-          chainId: 1
+        evm: { chainId: 1 }
 
-        # Determines when to include or exclude upstreams depending on their health and performance
         selectionPolicy:
-          # Every 1 minute evaluate which upstreams must be included,
-          # based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
-          evalInterval: 1m
-          
-          # Freeform TypeScript-based logic to select upstreams to be included by returning them:
-          evalFunction: |
-            (upstreams, method) => {
-              
-              const defaults = upstreams.filter(u => u.config.group !== 'fallback')
-              const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-              
-              // Maximum allowed error rate.
-              const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
-              
-              // Maximum allowed block head lag.
-              const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
-              
-              // Minimum number of healthy upstreams that must be included in default group.
-              const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
-              
-              // Filter upstreams that are healthy based on error rate and block head lag.
-              const healthyOnes = defaults.filter(
-                u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-              )
-              
-              // If there are enough healthy upstreams, return them.
-              if (healthyOnes.length >= minHealthyThreshold) {
-                return healthyOnes
-              }
-
-              // The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
-              // Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
-              return upstreams
-            }
-          
-          # To isolate selection evaluation and result to each "method" separately change this flag to true
+          # Tick frequency. Default: 1s.
+          evalInterval: 1s
+          # Per-tick hard timeout. Default: 100ms.
+          evalTimeout: 100ms
+          # Maintain a separate eval + cache per method. Default: false.
           evalPerMethod: false
+          # Rolling decision-record retention. Default: 5m.
+          decisionHistory: 5m
 
-          # When an upstream is excluded, you can give it a chance on a regular basis
-          # to handle a certain number of sample requests again, so that metrics are refreshed.
-          # For example, to see if error rate is improving after 5 minutes, or still too high.
-          # This is conceptually similar to how a circuit-breaker works in a "half-open" state.
-          # Resampling is not always needed because the "evm state poller" component will still make
-          # requests for the "latest" block, which still updates errorRate.
-          resampleExcluded: false
-          resampleInterval: 5m
-          resampleCount: 100
+          # JavaScript function. Must return Upstream[].
+          # If omitted, the embedded default policy applies.
+          eval: |
+            (upstreams, ctx) =>
+              upstreams
+                .removeByLag({ blockHead: 5, finalization: 50 })
+                .sortByScore(BALANCED)
+                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+                .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
+                .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```
-</Tabs.Tab>
-<Tabs.Tab>
+</Tab>
+<Tab>
 ```typescript filename="erpc.ts"
 import { createConfig } from "@erpc-cloud/config";
 
@@ -119,76 +87,27 @@ export default createConfig({
   projects: [
     {
       id: "main",
-
       upstreams: [
-        { endpoint: "cheap-1.com" },
-        { endpoint: "cheap-2.com" },
-        { endpoint: "fast-1.com", group: "fallback" },
-        { endpoint: "fast-2.com", group: "fallback" },
+        { endpoint: "alchemy://..." },
+        { endpoint: "infura://..." },
+        { endpoint: "drpc-eth://...", group: "fallback" },
       ],
-
       networks: [
         {
           architecture: "evm",
-          evm: {
-            chainId: 1,
-          },
-
-          /**
-           * Determines when to include or exclude upstreams depending on their health and performance
-           */
+          evm: { chainId: 1 },
           selectionPolicy: {
-            // Every 1 minute evaluate which upstreams must be included,
-            // based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
-            evalInterval: "1m",
-            
-            // Freeform TypeScript-based logic to select upstreams to be included by returning them.
-            // Reference "upstreams" and "method" explained in "evalFunction" section below.
-            evalFunction:
-              (upstreams, method) => {
-                // Separate upstreams into two groups:
-                const defaults = upstreams.filter(u => u.config.group !== 'fallback');
-                const fallbacks = upstreams.filter(u => u.config.group === 'fallback');
-                
-                // Maximum allowed error rate.
-                const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7');
-                
-                // Maximum allowed block head lag.
-                const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10');
-                
-                // Minimum number of healthy upstreams that must be included in default group.
-                const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1');
-                
-                // Filter upstreams that are healthy based on error rate and block head lag.
-                const healthyOnes = defaults.filter(
-                  u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-                );    
-                
-                // If there are enough healthy upstreams, return them.
-                if (healthyOnes.length >= minHealthyThreshold) {
-                  return healthyOnes;
-                }
-
-                // The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
-                // Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
-                return upstreams
-              }
-            ,
-            
-            // To isolate selection evaluation and result to each "method" separately, set this flag to true
+            evalInterval: "1s",
+            evalTimeout: "100ms",
             evalPerMethod: false,
-            
-            /*
-            * When an upstream is excluded, you can give it a chance on a regular basis
-            * to handle a certain number of sample requests again, so that metrics are refreshed.
-            * For example, to see if error rate is improving after 5 minutes, or still too high.
-            * This is conceptually similar to how a circuit-breaker works in a "half-open" state.
-            * Resampling is not always needed because the "evm state poller" component will still make
-            * requests for the "latest" block, which still updates errorRate.
-            */
-            resampleExcluded: false,
-            resampleInterval: "5m",
-            resampleCount: 100,
+            decisionHistory: "5m",
+            eval: `(upstreams, ctx) =>
+              upstreams
+                .removeByLag({ blockHead: 5, finalization: 50 })
+                .sortByScore(BALANCED)
+                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+                .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
+                .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })`,
           },
         },
       ],
@@ -196,69 +115,222 @@ export default createConfig({
   ],
 });
 ```
-</Tabs.Tab>
+</Tab>
 </Tabs>
 
-#### `evalFunction` parameters
+### Fields
 
-`upstreams` and `method` are available as variables in the `evalFunction`.
+| Field | Type | Description |
+|---|---|---|
+| `evalInterval` | `Duration` | How often the eval runs. Default `1s`. Setting to `0` disables the ticker (manual reevaluation only — useful for tests). |
+| `evalTimeout` | `Duration` | Wall-clock cap on each eval. Must be `< evalInterval`. Default `100ms`. On timeout, the prior cache is retained and the failure is logged. |
+| `evalPerMethod` | `bool` | If `true`, a separate eval + cache is maintained per method. Default `false`. |
+| `decisionHistory` | `Duration` | Rolling decision-record retention. Default `5m`. The ring buffer is sized as `decisionHistory / evalInterval`. |
+| `eval` | `string` | JavaScript function body. Must `return` an `Upstream[]`. If omitted, the [default policy](#default-policy) applies. |
 
-```ts filename="types.d.ts"
-// Current upstream
-export type Upstream = {
-    id: string;
-    config: UpstreamConfig;
-    metrics: UpstreamMetrics;
-};
+`selectionPolicy` is **network-level**. There are no project-level routing
+settings.
 
-// Upstream configuration
-export type UpstreamConfig = {
-    // Upstream ID is optional and can be used to identify the upstream in logs/metrics.
-    id: string;
+## Default policy
 
-    // Each upstream can have an arbitrary group name which is used in metrics, as well as 
-    // useful when writing an eval function in selectionPolicy below.
-    // Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
-    // and then fallback to this group if the default one doesn't have enough healthy upstreams.
-    group: string;
+When `selectionPolicy.eval` is omitted, eRPC applies this embedded default:
 
-    // Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
-    endpoint: string;
-};
-
-// Upstream metrics
-export type UpstreamMetrics = {
-    // p90 rate of errors of last X minutes (X is based on `project.scoreMetricsWindowSize`)
-    errorRate: number;
-
-    // total errors of this upstream
-    errorsTotal: number;
-
-    // total requests served by this upstream
-    requestsTotal: number;
-
-    // Throttled rate of this upstream.
-    throttledRate: number;
-
-    // p90 response time in seconds for this upstream.
-    p90ResponseSeconds: number;
-
-    // p95 response time in seconds for this upstream.
-    p95ResponseSeconds: number;
-
-    // p99 response time in seconds for this upstream.
-    p99ResponseSeconds: number;
-
-    // Number of blocks this upstream is behind the network's highest known block head.
-    // Note: this is a block-number delta, not seconds. Tolerances differ per chain
-    // (e.g. 10 blocks ≈ 120s on Ethereum, ≈ 2.5s on Arbitrum).
-    blockHeadLag: number;
-
-    // Number of finalized blocks this upstream is behind the network's highest known
-    // finalized block. Block-number delta, not seconds.
-    finalizationLag: number;
-};
-
-// Method is either `*` (all methods) or a specific method name.
-export type Method = '*' | string;
+```js
+(upstreams, ctx) =>
+  upstreams
+    .sortByScore(BALANCED)
+    .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+    .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
+    .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```
+
+Behavior:
+
+1. **`sortByScore(BALANCED)`** — order by penalty (lower = better). Weights
+   are `errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2,
+   finalizationLag=1, misbehaviors=6`. See the [stdlib reference](/config/projects/selection-policy-stdlib#sortbyscore)
+   for the full preset table.
+2. **`preferGroup('default', { minHealthy: 1, fallback: 'fallback' })`** —
+   keep only upstreams in group `default` if at least one is healthy. If
+   `default` is empty, fall back to upstreams in group `fallback`.
+3. **`stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })`** —
+   keep the current primary unless a challenger's score is at least 10%
+   lower AND at least 30s have passed since the last switch.
+4. **`probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })`** — every
+   tick, deterministically re-admit one upstream that has been excluded
+   for 5+ minutes so its metrics refresh.
+
+The default policy source is embedded in the binary and served at
+`GET /admin/selection/default-policy` for verification.
+
+## Eval inputs
+
+Inside the `eval` body, two variables are in scope:
+
+### `upstreams: Upstream[]`
+
+```ts
+type Upstream = {
+  readonly id: string
+  readonly vendor: string            // e.g. "alchemy", "infura", "drpc"
+  readonly type: 'evm' | string      // upstream architecture
+  readonly endpoint: string          // redacted
+
+  readonly config: UpstreamConfig    // raw user config (group, etc.)
+  readonly metrics: UpstreamMetrics  // snapshot from tick start
+
+  // Attached by std-lib steps; readable by later steps and decision records.
+  readonly score?: number            // set by sortByScore (lower = better)
+  readonly penaltyBreakdown?: ScoreBreakdown
+  readonly annotations?: string[]    // set by .annotate() / .mark() / std-lib
+}
+
+type UpstreamMetrics = {
+  errorRate: number                  // 0..1
+  errorsTotal: number
+  requestsTotal: number
+  throttledRate: number              // 0..1
+  misbehaviorRate: number
+  p50ResponseSeconds: number
+  p70ResponseSeconds: number
+  p90ResponseSeconds: number
+  p95ResponseSeconds: number
+  p99ResponseSeconds: number
+  blockHeadLag: number               // block-number delta
+  finalizationLag: number            // block-number delta
+  cordonedReason: string | null
+}
+```
+
+The `metrics` object is a **snapshot** captured once at the tick start, so
+all chained std-lib steps see a consistent view.
+
+### `ctx: EvalContext`
+
+```ts
+type EvalContext = {
+  network: string                    // e.g. "evm:1"
+  method: string                     // "*" if evalPerMethod=false
+  finality: 'realtime' | 'unfinalized' | 'finalized' | 'unknown'
+  now: number                        // unix ms
+
+  // Cross-tick state, fed back from the previous tick's output:
+  previousOrder: string[]            // upstream IDs from last tick
+  previousExcluded: string[]         // upstream IDs absent from last tick
+  lastSwitchAt: number | null        // unix ms of last sticky-primary switch
+  excludedSince: { [id: string]: number }
+  tickCount: number                  // monotonic, resets on slot reset
+}
+```
+
+`ctx` is the **only** carrier of cross-tick state. The engine itself stores
+nothing beyond what is serialized in/out of `ctx`, making evals testable as
+pure functions.
+
+### Globals
+
+Beyond `upstreams` and `ctx`:
+
+- **Constants:** `BALANCED`, `PREFER_FASTER`, `PREFER_FEWER_ERRORS`,
+  `PREFER_FRESHER_HEAD`, `PREFER_LESS_THROTTLED`, `PREFER_CHEAP`; finality
+  states `REALTIME` / `UNFINALIZED` / `FINALIZED` / `UNKNOWN`; reason
+  codes `REASON_LAG`, `REASON_ERROR_RATE`, etc.
+- **`process.env`** — environment variables, read-only.
+- **`console`** — `log` / `info` / `warn` / `error` → debug-level structured log.
+- Standard ECMAScript: `Math`, `Date`, `JSON`, `Number`, `String`, `Array`, `Object`.
+
+## Standard library
+
+Every method on `upstreams` (and chain results) returns an `Upstream[]`
+so they compose. Full catalogue at the
+[stdlib reference](/config/projects/selection-policy-stdlib); here is the
+at-a-glance map by category:
+
+| Category | Methods |
+|---|---|
+| **Identity** | `.where`, `.byId`, `.byGroup`, `.byVendor`, `.byType`, `.exclude*` |
+| **Health filters** | `.removeByErrorRate`, `.removeByLag`, `.removeByLatency`, `.removeByThrottling`, `.removeByMisbehavior`, `.removeCordoned`, `.removeByMinRequests`, `.keepHealthy` |
+| **Generic functional** | `.filter`, `.reject`, `.partition`, `.unique`, `.union`, `.intersect`, `.difference`, `.isEmpty` |
+| **Sorting** | `.sortByScore` (preset / weights map / `(u) => weights`), `.sortBy`, `.sortByLatency`, `.sortByErrorRate`, `.sortByThrottling`, `.sortByHeadLag`, `.sortByFinalizationLag`, `.sortByMisbehavior` |
+| **Randomization** | `.shuffle`, `.rotateBy` |
+| **Stability (cross-tick)** | `.stickyPrimary` |
+| **Grouping** | `.preferGroup`, `.preferVendor` |
+| **Slicing** | `.pickTop`, `.pickBottom`, `.dropTop`, `.dropBottom`, `.take`, `.skip` |
+| **Probing** | `.probeExcluded`, `.forceInclude` |
+| **Cooldown** | `.cooldown` |
+| **Combinators** | `.if`, `.unless`, `.whenEmpty`, `.whenNotEmpty`, `.fallbackTo`, `.ensureMin` |
+| **Debug** | `.tap`, `.annotate`, `.label`, `.mark`, `.dump` |
+
+## Common patterns
+
+### Cost-tier routing
+
+```js
+// Cheap upstreams first; fall back to fast tier only if cheap pool is unhealthy.
+(upstreams, ctx) =>
+  upstreams
+    .removeByErrorRate(0.5)
+    .preferGroup('cheap', { minHealthy: 2, fallback: 'fast' })
+    .sortByScore(BALANCED)
+```
+
+### Method-specific routing
+
+```js
+(upstreams, ctx) => {
+  if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber'])) {
+    return upstreams.byGroup('archive').sortByScore(PREFER_FASTER);
+  }
+  return upstreams.sortByScore(BALANCED).stickyPrimary();
+}
+```
+
+### Finality-aware weighting
+
+```js
+(upstreams, ctx) =>
+  upstreams.sortByScore(
+    ctx.finality === FINALIZED ? PREFER_FASTER : PREFER_FRESHER_HEAD
+  )
+```
+
+### Time-of-day rotation
+
+```js
+// Drain expensive vendors during business hours, lean on them at night.
+(upstreams, ctx) =>
+  upstreams.preferGroup(
+    inWindow('09:00', '18:00') ? 'cheap' : 'fast',
+    { minHealthy: 1, fallback: 'cheap' },
+  ).sortByScore(BALANCED)
+```
+
+More examples in the [stdlib reference](/config/projects/selection-policy-stdlib#examples).
+
+## Observability
+
+| Surface | What it gives you |
+|---|---|
+| `GET /admin/selection/<net>/<method>` | Latest decision record (input metrics, eval duration, output order, exclusion reasons, diff vs prior tick) |
+| `GET /admin/selection/<net>/<method>?since=10m` | Sparse log of decisions in the window |
+| `GET /admin/selection/explain/<requestId>` | Joins a specific request to the decision active at its time — answers *"why was upstream X used for this request?"* |
+| `GET /admin/selection/default-policy` | Source of the embedded default policy |
+| `POST /admin/selection/<net>/<method>/reeval` | Force a re-evaluation |
+| `POST /admin/selection/<net>/<method>/reset` | Drop cross-tick state, re-evaluate immediately |
+| `erpc_selection_position{project, network, method, upstream}` | Gauge: 0 = primary, 1+ = runners-up, -1 = excluded |
+| `erpc_selection_rejection_total{step, ...}` | Counter: per-std-lib-step rejections |
+| `erpc_selection_primary_switch_total{from, to, ...}` | Counter: primary upstream changes |
+| `erpc_selection_eval_duration_seconds{...}` | Histogram: per-tick eval latency |
+| `erpc_selection_eligible_upstreams{...}` | Gauge: count returned by the most recent tick |
+
+Every request log contains the `decision_id` of the decision active when it
+was served. Combine with the `/explain/<requestId>` endpoint for full
+attribution.
+
+## Coming from the legacy config?
+
+See the [migration guide](/migration/selection-policy) for the legacy →
+new mapping table, three worked examples, and the removal timeline. The
+translator runs at config load and emits a one-time deprecation warning
+per project; you can keep your old YAML running until you are ready to
+migrate.

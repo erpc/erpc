@@ -3,11 +3,13 @@ package policy
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 )
 
 // Slot is the per-(network, method) state container. Each Slot owns a
@@ -197,6 +199,57 @@ func (s *Slot) tickOnce() {
 	s.mu.Unlock()
 
 	s.ring.append(decision)
+	s.emitMetrics(decision, state)
+}
+
+// emitMetrics translates a Decision into Prometheus signal. Cardinality
+// is bounded by (project, network, method, upstream) — no per-step
+// proliferation beyond the steps the user's eval actually fires.
+func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
+	project := s.engine.projectID
+	labels := []string{project, s.networkID, s.method}
+
+	telemetry.MetricSelectionEvalDurationSeconds.WithLabelValues(labels...).
+		Observe(d.EvalDuration.Seconds())
+
+	if d.Error != "" {
+		kind := "throw"
+		if strings.Contains(d.Error, "timed out") {
+			kind = "timeout"
+		} else if strings.Contains(d.Error, ErrInvalidReturn.Error()) {
+			kind = "invalid_return"
+		}
+		telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues(project, s.networkID, s.method, kind).Inc()
+		return
+	}
+
+	telemetry.MetricSelectionEligibleUpstreams.WithLabelValues(labels...).Set(float64(len(d.Output.Order)))
+
+	for i, id := range d.Output.Order {
+		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkID, s.method, id).Set(float64(i))
+	}
+	for _, ex := range d.Output.Excluded {
+		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkID, s.method, ex.ID).Set(-1)
+		step := ex.Step
+		if step == "" {
+			step = "eval"
+		}
+		telemetry.MetricSelectionRejectionTotal.WithLabelValues(project, s.networkID, s.method, ex.ID, step).Inc()
+	}
+
+	if d.Diff.PrimaryChanged {
+		from := ""
+		if len(prevState.PreviousOrder) > 0 {
+			from = prevState.PreviousOrder[0]
+		}
+		to := ""
+		if len(d.Output.Order) > 0 {
+			to = d.Output.Order[0]
+		}
+		if from != to {
+			telemetry.MetricSelectionPrimarySwitchTotal.WithLabelValues(project, s.networkID, s.method, from, to).Inc()
+		}
+	}
 }
 
 // snapshotMetrics captures one consistent view of every upstream's metrics
