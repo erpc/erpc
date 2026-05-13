@@ -49,11 +49,11 @@ type RateLimiterBudget struct {
 
 	// inflight gauge, kept here for fast hot-path access without a labels
 	// lookup on every call. Refreshed at registration time.
-	inflightGauge      prometheus.Gauge
-	admissionShedded   prometheus.Counter
-	durationFailopen   prometheus.Observer
-	durationOK         prometheus.Observer
-	durationOverlimit  prometheus.Observer
+	inflightGauge     prometheus.Gauge
+	admissionShedded  prometheus.Counter
+	durationFailopen  prometheus.Observer
+	durationOK        prometheus.Observer
+	durationOverlimit prometheus.Observer
 }
 
 type RateLimitRule struct {

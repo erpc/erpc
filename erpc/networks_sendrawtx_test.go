@@ -1922,11 +1922,15 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		// Wait for background requests to complete. Even though parent
 		// context is cancelled, fire-and-forget background requests should
 		// still complete. We poll instead of sleeping a fixed interval
-		// because CI runners (especially with -race) can add significant
-		// slack on top of the 500 ms mock delay.
+		// because CI runners (especially with -race + parallel sibling
+		// suites scheduled on shared workers) can add several seconds of
+		// slack on top of the 500 ms mock delay. Empirically 3 s was tight
+		// enough to flake on GitHub Actions ubuntu-latest runners; 10 s
+		// keeps the happy path fast (typically returns in ~600 ms) while
+		// staying well within the package-level test timeout.
 		require.Eventually(t, func() bool {
 			return len(gock.Pending()) == util.EvmBlockTrackerMocks
-		}, 3*time.Second, 50*time.Millisecond,
+		}, 10*time.Second, 50*time.Millisecond,
 			"all sendRawTx mocks should be consumed - background requests must complete even after parent context cancelled")
 	})
 

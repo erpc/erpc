@@ -942,4 +942,3 @@ func TestRace_AnalyzerCompletesAfterCallerAbandons(t *testing.T) {
 	}, time.Second, 10*time.Millisecond,
 		"all participants must complete even after caller abandons")
 }
-

@@ -45,7 +45,7 @@ var blockdaemonNetworks = map[int64]string{
 	137:   "polygon/mainnet/native/http-rpc",
 	80002: "polygon/amoy/native/http-rpc",
 	// Tron (TVM is EVM-compatible; path uses /native/jsonrpc)
-	728126428: "tron/mainnet/native/jsonrpc",
+	728126428:  "tron/mainnet/native/jsonrpc",
 	3448148188: "tron/nile/native/jsonrpc",
 	// X Layer
 	196: "xlayer/mainnet/native",

@@ -69,7 +69,7 @@ func (v *ChainstackVendor) Name() string {
 }
 
 // SupportsNetwork follows the request-path safety rule: lock-free read,
-// async refresh on staleness, retryable error on cold-start. 
+// async refresh on staleness, retryable error on cold-start.
 func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
