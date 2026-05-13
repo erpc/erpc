@@ -19,11 +19,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// notImplementedConnector implements data.Connector with every method
+// panicking. Embed it in test stubs and override only the methods the
+// test actually exercises — accidental usage by future code under test
+// will be loud at the call site instead of silently hitting a zero-value
+// stub.
+type notImplementedConnector struct{}
+
+func (notImplementedConnector) Id() string { panic("notImplementedConnector: Id") }
+func (notImplementedConnector) Get(context.Context, string, string, string, interface{}) ([]byte, error) {
+	panic("notImplementedConnector: Get")
+}
+func (notImplementedConnector) Set(context.Context, string, string, []byte, *time.Duration) error {
+	panic("notImplementedConnector: Set")
+}
+func (notImplementedConnector) Delete(context.Context, string, string) error {
+	panic("notImplementedConnector: Delete")
+}
+func (notImplementedConnector) List(context.Context, string, int, string) ([]data.KeyValuePair, string, error) {
+	panic("notImplementedConnector: List")
+}
+func (notImplementedConnector) Lock(context.Context, string, time.Duration) (data.DistributedLock, error) {
+	panic("notImplementedConnector: Lock")
+}
+func (notImplementedConnector) WatchCounterInt64(context.Context, string) (<-chan data.CounterInt64State, func(), error) {
+	panic("notImplementedConnector: WatchCounterInt64")
+}
+func (notImplementedConnector) PublishCounterInt64(context.Context, string, data.CounterInt64State) error {
+	panic("notImplementedConnector: PublishCounterInt64")
+}
+
 // fakeConnector is a minimal data.Connector implementation that captures
-// Get call counts and returns programmable results. We only need to mock
-// Get for the auth strategy tests — every other interface method panics so
-// accidental usage is loud.
+// Get call counts and returns programmable results. By embedding
+// notImplementedConnector it inherits panic-on-call defaults for every
+// other interface method.
 type fakeConnector struct {
+	notImplementedConnector
 	id        string
 	getCalls  atomic.Int64
 	getResult func() ([]byte, error) // closure so tests can flip behavior over time
@@ -37,25 +68,6 @@ func (f *fakeConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 		return nil, errors.New("fakeConnector: no getResult configured")
 	}
 	return f.getResult()
-}
-
-func (f *fakeConnector) Set(_ context.Context, _, _ string, _ []byte, _ *time.Duration) error {
-	panic("fakeConnector.Set should not be called from auth tests")
-}
-func (f *fakeConnector) Delete(_ context.Context, _, _ string) error {
-	panic("fakeConnector.Delete should not be called from auth tests")
-}
-func (f *fakeConnector) List(_ context.Context, _ string, _ int, _ string) ([]data.KeyValuePair, string, error) {
-	panic("fakeConnector.List should not be called from auth tests")
-}
-func (f *fakeConnector) Lock(_ context.Context, _ string, _ time.Duration) (data.DistributedLock, error) {
-	panic("fakeConnector.Lock should not be called from auth tests")
-}
-func (f *fakeConnector) WatchCounterInt64(_ context.Context, _ string) (<-chan data.CounterInt64State, func(), error) {
-	panic("fakeConnector.WatchCounterInt64 should not be called from auth tests")
-}
-func (f *fakeConnector) PublishCounterInt64(_ context.Context, _ string, _ data.CounterInt64State) error {
-	panic("fakeConnector.PublishCounterInt64 should not be called from auth tests")
 }
 
 // newTestStrategyWith builds a DatabaseStrategy wired to a fakeConnector

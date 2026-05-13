@@ -376,6 +376,35 @@ func (p *PostgreSQLConnector) Id() string {
 	return p.id
 }
 
+// acquirePool takes the connMu read lock and returns the live pgxpool
+// snapshot together with a release function that the caller MUST defer.
+// It centralises the not-ready check so every entry point (Get/Set/Lock/
+// Delete/List/PublishCounterInt64) emits the same ErrConnectorNotReady
+// sentinel and the same span attribution.
+//
+// If the pool is nil (first init in flight, or reconnect storm has not
+// recovered yet), the read lock is released immediately and the span is
+// tagged before returning. Callers should treat the returned error
+// identically to any other connector error path; the sentinel is
+// errors.Is-comparable to ErrConnectorNotReady so the consumer-side auth
+// strategy can classify it as `db_not_ready` instead of `db_connection`.
+//
+// Usage:
+//
+//	pool, release, err := p.acquirePool(span)
+//	if err != nil { return err }
+//	defer release()
+//	// pool is safe to use until release() is called.
+func (p *PostgreSQLConnector) acquirePool(span trace.Span) (*pgxpool.Pool, func(), error) {
+	p.connMu.RLock()
+	if p.conn == nil {
+		p.connMu.RUnlock()
+		common.SetTraceSpanError(span, ErrConnectorNotReady)
+		return nil, nil, ErrConnectorNotReady
+	}
+	return p.conn, p.connMu.RUnlock, nil
+}
+
 func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Set")
 	defer span.End()
@@ -388,13 +417,11 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey st
 		)
 	}
 
-	p.connMu.RLock()
-	defer p.connMu.RUnlock()
-
-	if p.conn == nil {
-		common.SetTraceSpanError(span, ErrConnectorNotReady)
-		return ErrConnectorNotReady
+	pool, release, err := p.acquirePool(span)
+	if err != nil {
+		return err
 	}
+	defer release()
 
 	if len(value) < 1024 {
 		p.logger.Debug().Int("length", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
@@ -411,16 +438,15 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey st
 	ctx, cancel := context.WithTimeout(ctx, p.setTimeout)
 	defer cancel()
 
-	var err error
 	if expiresAt != nil {
-		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
+		_, err = pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %s (partition_key, range_key, value, expires_at)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (partition_key, range_key) DO UPDATE
 			SET value = $3, expires_at = $4
 		`, p.table), partitionKey, rangeKey, value, expiresAt)
 	} else {
-		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
+		_, err = pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %s (partition_key, range_key, value)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (partition_key, range_key) DO UPDATE
@@ -448,13 +474,11 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		)
 	}
 
-	p.connMu.RLock()
-	defer p.connMu.RUnlock()
-
-	if p.conn == nil {
-		common.SetTraceSpanError(span, ErrConnectorNotReady)
-		return nil, ErrConnectorNotReady
+	pool, release, err := p.acquirePool(span)
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 
 	var query string
 	var args []interface{}
@@ -463,7 +487,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	defer cancel()
 
 	if strings.HasSuffix(partitionKey, "*") || strings.HasSuffix(rangeKey, "*") {
-		return p.getWithWildcard(ctx, index, partitionKey, rangeKey)
+		return p.getWithWildcard(ctx, pool, index, partitionKey, rangeKey)
 	}
 
 	query = fmt.Sprintf(`
@@ -476,7 +500,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres")
 
 	var value []byte
-	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
+	err = pool.QueryRow(ctx, query, args...).Scan(&value)
 
 	if err != nil {
 		p.handleConnectionFailure(err)
@@ -509,25 +533,22 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 		)
 	}
 
-	p.connMu.RLock()
-	defer p.connMu.RUnlock()
-
-	if p.conn == nil {
-		common.SetTraceSpanError(span, ErrConnectorNotReady)
-		return nil, ErrConnectorNotReady
+	pool, release, err := p.acquirePool(span)
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 
 	// Generate consistent hash for the key as advisory lock ID
 	h := fnv.New64a()
-	_, err := h.Write([]byte(key))
-	if err != nil {
+	if _, err := h.Write([]byte(key)); err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to generate advisory lock ID: %w", err)
 	}
 	lockID := int64(h.Sum64()) // #nosec
 
 	// Start a transaction
-	tx, err := p.conn.Begin(ctx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		p.handleConnectionFailure(err)
 		common.SetTraceSpanError(span, err)
@@ -557,7 +578,7 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 	p.logger.Trace().Str("key", key).Int64("lockID", lockID).Msg("distributed lock acquired")
 
 	return &postgresLock{
-		conn:   p.conn,
+		conn:   pool,
 		lockID: lockID,
 		logger: p.logger,
 		tx:     tx,
@@ -674,13 +695,11 @@ func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key strin
 		)
 	}
 
-	p.connMu.RLock()
-	defer p.connMu.RUnlock()
-
-	if p.conn == nil {
-		common.SetTraceSpanError(span, ErrConnectorNotReady)
-		return ErrConnectorNotReady
+	pool, release, err := p.acquirePool(span)
+	if err != nil {
+		return err
 	}
+	defer release()
 
 	p.logger.Debug().Str("key", key).Int64("value", value.Value).Msg("publishing counter update to postgres")
 
@@ -690,7 +709,7 @@ func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key strin
 		common.SetTraceSpanError(span, err)
 		return err
 	}
-	_, err = p.conn.Exec(ctx, "SELECT pg_notify($1, $2)", channel, string(payload))
+	_, err = pool.Exec(ctx, "SELECT pg_notify($1, $2)", channel, string(payload))
 
 	if err != nil {
 		common.SetTraceSpanError(span, err)
@@ -979,7 +998,11 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 	return st, true, nil
 }
 
-func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
+// getWithWildcard takes an already-acquired pool from the caller so it
+// shares the same RLock-scope and skips a redundant nil check. Caller is
+// responsible for ensuring `pool` is non-nil and that the connMu read lock
+// is held for the duration of this call.
+func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool.Pool, index, partitionKey, rangeKey string) ([]byte, error) {
 	ctx, span := common.StartDetailSpan(ctx, "PostgreSQLConnector.getWithWildcard",
 		trace.WithAttributes(
 			attribute.String("index", index),
@@ -1021,7 +1044,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres with wildcard")
 
 	var value []byte
-	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
+	err := pool.QueryRow(ctx, query, args...).Scan(&value)
 
 	if err == pgx.ErrNoRows {
 		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
@@ -1114,20 +1137,18 @@ func (p *PostgreSQLConnector) Delete(ctx context.Context, partitionKey, rangeKey
 		)
 	}
 
-	p.connMu.RLock()
-	defer p.connMu.RUnlock()
-
-	if p.conn == nil {
-		common.SetTraceSpanError(span, ErrConnectorNotReady)
-		return ErrConnectorNotReady
+	pool, release, err := p.acquirePool(span)
+	if err != nil {
+		return err
 	}
+	defer release()
 
 	p.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting from postgres")
 
 	ctx, cancel := context.WithTimeout(ctx, p.setTimeout)
 	defer cancel()
 
-	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
+	_, err = pool.Exec(ctx, fmt.Sprintf(`
 		DELETE FROM %s 
 		WHERE partition_key = $1 AND range_key = $2
 	`, p.table), partitionKey, rangeKey)
@@ -1151,13 +1172,11 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 		)
 	}
 
-	p.connMu.RLock()
-	defer p.connMu.RUnlock()
-
-	if p.conn == nil {
-		common.SetTraceSpanError(span, ErrConnectorNotReady)
-		return nil, "", ErrConnectorNotReady
+	pool, release, err := p.acquirePool(span)
+	if err != nil {
+		return nil, "", err
 	}
+	defer release()
 
 	ctx, cancel := context.WithTimeout(ctx, p.getTimeout)
 	defer cancel()
@@ -1189,7 +1208,7 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 
 	p.logger.Debug().Str("query", query).Int("limit", limit).Int("offset", offset).Msg("listing from postgres")
 
-	rows, err := p.conn.Query(ctx, query, limit+1, offset) // Get one extra to check if there are more
+	rows, err := pool.Query(ctx, query, limit+1, offset) // Get one extra to check if there are more
 	if err != nil {
 		p.handleConnectionFailure(err)
 		common.SetTraceSpanError(span, err)
