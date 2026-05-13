@@ -1,0 +1,45 @@
+# Scenario 08 — implicit default policy reads `ROUTING_POLICY_*` env vars
+#
+# The legacy default selection policy (auto-attached when ANY upstream has
+# group: fallback) reads three env vars at runtime:
+#   - ROUTING_POLICY_MAX_ERROR_RATE        (default 0.7)
+#   - ROUTING_POLICY_MAX_BLOCK_HEAD_LAG    (default 10)
+#   - ROUTING_POLICY_MIN_HEALTHY_THRESHOLD (default 1)
+#
+# DRIVING EVENTS (asserted in erpc/selection_safety_net_test.go::
+# TestSafetyNet_RoutingPolicyEnv_*):
+#   - One scenario per env var (tightens threshold; one upstream becomes
+#     ineligible).
+#
+# EXPECTED WARNINGS:
+#   [deprecated config] project=main: implicit ROUTING_POLICY_* env-var
+#     fallback policy is deprecated; translated to an explicit
+#     selectionPolicy.eval that still reads process.env.X with the same
+#     defaults — see /docs/migration/selection-policy#routing-policy-env-vars.
+#
+# Note: No legacy field is set at the project level — the policy is
+# auto-attached purely because one upstream has group=fallback.
+
+projects:
+  - id: main
+    upstreams:
+      - id: rpc1
+        endpoint: http://rpc1.localhost
+        type: evm
+        evm:
+          chainId: 123
+      - id: rpc2
+        endpoint: http://rpc2.localhost
+        type: evm
+        evm:
+          chainId: 123
+      - id: rpc3
+        group: fallback
+        endpoint: http://rpc3.localhost
+        type: evm
+        evm:
+          chainId: 123
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 123
