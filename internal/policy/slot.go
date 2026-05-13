@@ -66,8 +66,12 @@ func newSlot(e *Engine, networkID, method string, upstreamsFn func() []common.Up
 }
 
 // start spawns the ticker goroutine. If evalInterval is zero or negative
-// the slot is "frozen" — only manual TickForTest or admin reeval will fire.
+// (or DisableTickerForTest is set) the slot is "frozen" — only manual
+// TickForTest or admin reeval will fire.
 func (s *Slot) start(ctx context.Context) {
+	if s.cfg.DisableTickerForTest {
+		return
+	}
 	interval := s.cfg.EvalInterval.Duration()
 	if interval <= 0 {
 		return

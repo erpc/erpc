@@ -1729,6 +1729,13 @@ type SelectionPolicyConfig struct {
 	DecisionHistory Duration `yaml:"decisionHistory,omitempty" json:"decisionHistory" tstype:"Duration"`
 	Eval            string   `yaml:"eval,omitempty" json:"eval"`
 
+	// DisableTickerForTest skips spawning the per-slot ticker goroutine.
+	// Tests that don't need background re-eval set this to avoid
+	// accumulating goroutines across hundreds of sub-tests + the per-tick
+	// JS overhead that pushes the race-detector CI past budget. Tests
+	// that need to step the engine call `policy.TickForTest` instead.
+	DisableTickerForTest bool `yaml:"-" json:"-"`
+
 	// CompiledProgram is set by SetDefaults/Validate; never marshalled.
 	CompiledProgram *sobek.Program `yaml:"-" json:"-"`
 	// EvalOriginal preserves the source for diagnostics + tooling.

@@ -25,6 +25,11 @@ func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 	if !ok || reg == nil {
 		return
 	}
+	// Stop the ticker for the lifetime of this override — tests that pin
+	// don't want background re-eval clobbering their cache mid-test, and
+	// thousands of test fixtures running at 1s tick each pushes the
+	// race-detector CI suite past its 20-minute budget.
+	slot.stop()
 	ups := reg.upstreamsFn()
 	index := make(map[string]common.Upstream, len(ups))
 	for _, u := range ups {
