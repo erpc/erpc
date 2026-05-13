@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -93,18 +92,16 @@ type SuperchainNetwork struct {
 	RPC     []string `json:"rpc"`
 }
 
+// SuperchainVendor uses RemoteDataCache for lock-free, async-refresh
+// access to the registry data. See remote_cache.go for the safety rule.
 type SuperchainVendor struct {
 	common.Vendor
-
-	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64][]string
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[map[int64][]string]
 }
 
 func CreateSuperchainVendor() common.Vendor {
 	return &SuperchainVendor{
-		remoteData:              make(map[string]map[int64][]string),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[map[int64][]string]("superchain"),
 	}
 }
 
@@ -137,18 +134,30 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultSuperchainRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, logger, recheckInterval, finalRegistryURL)
-	if err != nil {
-		return false, fmt.Errorf("unable to load remote data using URL '%s': %w", finalRegistryURL, err)
-	}
-
-	networks, ok := v.remoteData[finalRegistryURL]
-	if !ok || networks == nil {
-		return false, nil
+	networks, ok := v.resolveNetworks(logger, finalRegistryURL, recheckInterval)
+	if !ok {
+		return false, ErrRemoteCacheCold
 	}
 
 	rpcs, exists := networks[chainID]
 	return exists && len(rpcs) > 0, nil
+}
+
+// resolveNetworks does a lock-free Lookup, kicks off an async refresh on
+// staleness, and returns (data, true) on hit or (nil, false) on cold start.
+// Superchain has no built-in fallback, so cold start surfaces as a
+// retryable error. See remote_cache.go for the safety rule.
+func (v *SuperchainVendor) resolveNetworks(logger *zerolog.Logger, registryURL string, recheckInterval time.Duration) (map[int64][]string, bool) {
+	networks, fresh := v.cache.Lookup(registryURL, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, registryURL, func(ctx context.Context) (map[int64][]string, error) {
+			return v.fetchSuperchainNetworks(ctx, registryURL)
+		})
+	}
+	if networks == nil {
+		return nil, false
+	}
+	return networks, true
 }
 
 func (v *SuperchainVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -198,13 +207,9 @@ func (v *SuperchainVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultSuperchainRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, finalRegistryURL); err != nil {
-		return nil, fmt.Errorf("unable to load remote data using URL '%s': %w", finalRegistryURL, err)
-	}
-
-	networks, ok := v.remoteData[finalRegistryURL]
-	if !ok || networks == nil {
-		return nil, fmt.Errorf("network data not available from registry '%s'", finalRegistryURL)
+	networks, ok := v.resolveNetworks(logger, finalRegistryURL, recheckInterval)
+	if !ok {
+		return nil, ErrRemoteCacheCold
 	}
 
 	rpcs, ok := networks[chainID]
@@ -256,28 +261,6 @@ func (v *SuperchainVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	}
 
 	return false
-}
-
-func (v *SuperchainVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, registryURL string) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	if ltm, ok := v.remoteDataLastFetchedAt[registryURL]; ok && time.Since(ltm) < recheckInterval {
-		return nil
-	}
-
-	newData, err := v.fetchSuperchainNetworks(ctx, registryURL)
-	if err != nil {
-		if _, ok := v.remoteData[registryURL]; ok {
-			logger.Warn().Err(err).Msg("could not refresh Superchain registry data; will use stale data")
-			return nil
-		}
-		return err
-	}
-
-	v.remoteData[registryURL] = newData
-	v.remoteDataLastFetchedAt[registryURL] = time.Now()
-	return nil
 }
 
 func (v *SuperchainVendor) fetchSuperchainNetworks(ctx context.Context, registryURL string) (map[int64][]string, error) {

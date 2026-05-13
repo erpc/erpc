@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -188,18 +187,16 @@ type drpcNetworksResponse []struct {
 	} `json:"chains"`
 }
 
+// DrpcVendor uses RemoteDataCache for lock-free, async-refresh access to
+// the network list. See remote_cache.go for the request-path safety rule.
 type DrpcVendor struct {
 	common.Vendor
-
-	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64]string
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[map[int64]string]
 }
 
 func CreateDrpcVendor() common.Vendor {
 	return &DrpcVendor{
-		remoteData:              make(map[string]map[int64]string),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[map[int64]string]("drpc"),
 	}
 }
 
@@ -231,19 +228,25 @@ func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 		recheckInterval = DefaultDrpcRecheckInterval
 	}
 
-	if err = v.ensureRemoteData(ctx, logger, recheckInterval, chainsURL); err != nil {
-		logger.Warn().Err(err).Msg("could not fetch dRPC networks data on cold start, falling back to built-in network map")
-		_, exists := defaultDrpcNetworkNames[chainID]
-		return exists, nil
-	}
-
-	networks, ok := v.remoteData[chainsURL]
-	if !ok || networks == nil {
-		return false, nil
-	}
-
+	networks := v.resolveNetworks(logger, chainsURL, recheckInterval)
 	_, exists := networks[chainID]
 	return exists, nil
+}
+
+// resolveNetworks does a lock-free Lookup, kicks off an async refresh on
+// staleness, and falls back to the built-in network map on cold start.
+// Never blocks the request hot path on an HTTP call. See remote_cache.go.
+func (v *DrpcVendor) resolveNetworks(logger *zerolog.Logger, chainsURL string, recheckInterval time.Duration) map[int64]string {
+	networks, fresh := v.cache.Lookup(chainsURL, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, chainsURL, func(ctx context.Context) (map[int64]string, error) {
+			return v.fetchDrpcNetworks(ctx, logger, chainsURL)
+		})
+	}
+	if networks == nil {
+		return defaultDrpcNetworkNames
+	}
+	return networks
 }
 
 func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -279,13 +282,7 @@ func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 			recheckInterval = DefaultDrpcRecheckInterval
 		}
 
-		var networks map[int64]string
-		if err := v.ensureRemoteData(ctx, logger, recheckInterval, chainsURL); err != nil {
-			logger.Warn().Err(err).Msg("could not fetch dRPC networks data on cold start, falling back to built-in network map")
-			networks = defaultDrpcNetworkNames
-		} else {
-			networks = v.remoteData[chainsURL]
-		}
+		networks := v.resolveNetworks(logger, chainsURL, recheckInterval)
 
 		netName, ok := networks[chainID]
 		if !ok {
@@ -358,28 +355,6 @@ func (v *DrpcVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	}
 
 	return strings.Contains(ups.Endpoint, ".drpc.org")
-}
-
-func (v *DrpcVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, chainsURL string) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	if ltm, ok := v.remoteDataLastFetchedAt[chainsURL]; ok && time.Since(ltm) < recheckInterval {
-		return nil
-	}
-
-	newData, err := v.fetchDrpcNetworks(ctx, logger, chainsURL)
-	if err != nil {
-		if _, ok := v.remoteData[chainsURL]; ok {
-			logger.Warn().Err(err).Msg("could not refresh dRPC networks data; will use stale data")
-			return nil
-		}
-		return err
-	}
-
-	v.remoteData[chainsURL] = newData
-	v.remoteDataLastFetchedAt[chainsURL] = time.Now()
-	return nil
 }
 
 func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, logger *zerolog.Logger, chainsURL string) (map[int64]string, error) {

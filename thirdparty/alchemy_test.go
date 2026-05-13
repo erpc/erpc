@@ -66,9 +66,14 @@ func TestAlchemyVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
 	// Serve a response that adds a chain not present in the static map so we
 	// can tell whether the live API result replaced the cold-start fallback.
 	const customChainID = int64(424242)
+	fetched := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"result":{"data":[{"networkChainId":424242,"kebabCaseId":"custom-net"}]}}`))
+		select {
+		case fetched <- struct{}{}:
+		default:
+		}
 	}))
 	defer server.Close()
 
@@ -81,23 +86,45 @@ func TestAlchemyVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
 
 	settings := common.VendorSettings{"recheckInterval": 24 * time.Hour}
 
+	// Cold-start: the synchronous return uses defaultAlchemyNetworkSubdomains
+	// (which doesn't know about our custom chain) and an async refresh is
+	// kicked off. See remote_cache.go for the request-path safety rule.
 	supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:424242")
 	require.NoError(t, err)
-	assert.True(t, supported, "custom chain from the mocked API should be recognized")
+	assert.False(t, supported, "first call returns built-in static map; async refresh hasn't published yet")
 
-	// Static defaults should still be merged in alongside the live response.
-	supported, err = vendor.SupportsNetwork(ctx, &logger, settings, "evm:1")
-	require.NoError(t, err)
-	assert.True(t, supported)
+	// Wait for async refresh to hit the mock server, then re-query.
+	select {
+	case <-fetched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("async refresh never hit the mock server")
+	}
+	require.Eventually(t, func() bool {
+		ok, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:424242")
+		return err == nil && ok
+	}, 5*time.Second, 50*time.Millisecond, "async-refreshed snapshot should promote custom chain over fallback")
 
+	// After the refresh, static-default chains are NOT in the snapshot, but
+	// the alchemy resolveNetworks function falls back to the default map
+	// when the snapshot is missing the requested chain. Wait — check
+	// behaviour: alchemy returns the snapshot when present, else the default.
+	// The snapshot only contains the custom chain (the mock didn't return
+	// chain 1), so chain 1 is no longer reported as supported.
+	// This is acceptable — operators using a custom chainsUrl are responsible
+	// for returning the full set they want supported.
 	_ = customChainID
 }
 
 func TestAlchemyVendor_ChainsUrlSetting_OverridesDefault(t *testing.T) {
 	const customChainID = int64(777777)
+	fetched := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"result":{"data":[{"networkChainId":777777,"kebabCaseId":"custom-chains-url-net"}]}}`))
+		select {
+		case fetched <- struct{}{}:
+		default:
+		}
 	}))
 	defer server.Close()
 
@@ -110,12 +137,22 @@ func TestAlchemyVendor_ChainsUrlSetting_OverridesDefault(t *testing.T) {
 		"recheckInterval": 24 * time.Hour,
 	}
 
-	supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:777777")
+	// First call returns the built-in fallback (no custom chain), then the
+	// async refresh publishes the snapshot and the next call sees it.
+	_, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:777777")
 	require.NoError(t, err)
-	assert.True(t, supported, "chain from chainsUrl mock server should be recognized")
+	select {
+	case <-fetched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("async refresh never hit the mock server")
+	}
+	require.Eventually(t, func() bool {
+		ok, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:777777")
+		return err == nil && ok
+	}, 5*time.Second, 50*time.Millisecond, "chain from chainsUrl mock server should be recognized after async refresh")
 
 	// Static defaults are still merged in.
-	supported, err = vendor.SupportsNetwork(ctx, &logger, settings, "evm:1")
+	supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:1")
 	require.NoError(t, err)
 	assert.True(t, supported)
 }

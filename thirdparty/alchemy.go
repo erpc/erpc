@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -167,18 +166,16 @@ type alchemyNetworkConfigResponse struct {
 	} `json:"result"`
 }
 
+// AlchemyVendor uses RemoteDataCache for lock-free, async-refresh access to
+// the network list. See remote_cache.go for the request-path safety rule.
 type AlchemyVendor struct {
 	common.Vendor
-
-	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64]string
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[map[int64]string]
 }
 
 func CreateAlchemyVendor() common.Vendor {
 	return &AlchemyVendor{
-		remoteData:              make(map[string]map[int64]string),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[map[int64]string]("alchemy"),
 	}
 }
 
@@ -210,13 +207,7 @@ func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		recheckInterval = DefaultAlchemyRecheckInterval
 	}
 
-	if err = v.ensureRemoteData(ctx, logger, recheckInterval, apiUrl); err != nil {
-		logger.Warn().Err(err).Msg("could not fetch Alchemy API data on cold start, falling back to built-in subdomain map")
-		_, exists := defaultAlchemyNetworkSubdomains[chainID]
-		return exists, nil
-	}
-
-	networks := v.resolveNetworks(apiUrl)
+	networks := v.resolveNetworks(logger, apiUrl, recheckInterval)
 	_, exists := networks[chainID]
 	return exists, nil
 }
@@ -255,13 +246,7 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 			recheckInterval = DefaultAlchemyRecheckInterval
 		}
 
-		var networks map[int64]string
-		if err := v.ensureRemoteData(ctx, logger, recheckInterval, apiUrl); err != nil {
-			logger.Warn().Err(err).Msg("could not fetch Alchemy API data on cold start, falling back to built-in subdomain map")
-			networks = defaultAlchemyNetworkSubdomains
-		} else {
-			networks = v.resolveNetworks(apiUrl)
-		}
+		networks := v.resolveNetworks(logger, apiUrl, recheckInterval)
 
 		subdomain, ok := networks[chainID]
 		if !ok {
@@ -352,39 +337,22 @@ func (v *AlchemyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.Contains(ups.Endpoint, ".alchemy.com") || strings.Contains(ups.Endpoint, ".alchemyapi.io")
 }
 
-func (v *AlchemyVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, apiUrl string) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	if ltm, ok := v.remoteDataLastFetchedAt[apiUrl]; ok && time.Since(ltm) < recheckInterval {
-		return nil
+// resolveNetworks returns the cached network map for apiUrl, or the
+// built-in static map if no remote data has been fetched yet. Always
+// non-blocking: lock-free Lookup, async refresh on staleness, never holds
+// a mutex during HTTP. See remote_cache.go for the safety rule.
+func (v *AlchemyVendor) resolveNetworks(logger *zerolog.Logger, apiUrl string, recheckInterval time.Duration) map[int64]string {
+	networks, fresh := v.cache.Lookup(apiUrl, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, apiUrl, func(ctx context.Context) (map[int64]string, error) {
+			return v.fetchAlchemyNetworks(ctx, apiUrl)
+		})
 	}
-
-	newData, err := v.fetchAlchemyNetworks(ctx, apiUrl)
-	if err != nil {
-		if _, ok := v.remoteData[apiUrl]; ok {
-			logger.Warn().Err(err).Msg("could not refresh Alchemy API data, will use stale data")
-			return nil
-		}
-		// Cold start with no cached data — callers fall back to defaultAlchemyNetworkSubdomains.
-		// Do not stamp remoteDataLastFetchedAt so the next call retries the API.
-		return err
+	if networks == nil {
+		// Cold start: built-in fallback while async refresh is in flight.
+		return defaultAlchemyNetworkSubdomains
 	}
-
-	v.remoteData[apiUrl] = newData
-	v.remoteDataLastFetchedAt[apiUrl] = time.Now()
-	return nil
-}
-
-// resolveNetworks returns the cached network map for apiUrl, or the built-in
-// static subdomain map if no remote data has been fetched yet.
-func (v *AlchemyVendor) resolveNetworks(apiUrl string) map[int64]string {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-	if networks, ok := v.remoteData[apiUrl]; ok && networks != nil {
-		return networks
-	}
-	return defaultAlchemyNetworkSubdomains
+	return networks
 }
 
 func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context, apiUrl string) (map[int64]string, error) {

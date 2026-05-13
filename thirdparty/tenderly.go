@@ -8,24 +8,22 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
 
+// TenderlyVendor uses RemoteDataCache for lock-free, async-refresh access
+// to the supported-networks list. See remote_cache.go for the safety rule.
 type TenderlyVendor struct {
 	common.Vendor
-	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64]string
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[map[int64]string]
 }
 
 func CreateTenderlyVendor() common.Vendor {
 	return &TenderlyVendor{
-		remoteData:              make(map[string]map[int64]string),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[map[int64]string]("tenderly"),
 	}
 }
 
@@ -60,17 +58,29 @@ func (v *TenderlyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 		recheckInterval = DefaultTenderlyRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(ctx, logger, recheckInterval); err != nil {
-		return false, fmt.Errorf("unable to load remote data: %w", err)
+	networks, ok := v.resolveNetworks(logger, recheckInterval)
+	if !ok {
+		return false, ErrRemoteCacheCold
 	}
-
-	networks, ok := v.remoteData[tenderlyApiUrl]
-	if !ok || networks == nil {
-		return false, nil
-	}
-
 	_, exists := networks[chainID]
 	return exists, nil
+}
+
+// resolveNetworks does a lock-free Lookup, kicks off an async refresh on
+// staleness, and returns (data, true) on hit or (nil, false) on cold start.
+// Tenderly has no built-in fallback, so cold start returns the retryable
+// sentinel. See remote_cache.go for the safety rule.
+func (v *TenderlyVendor) resolveNetworks(logger *zerolog.Logger, recheckInterval time.Duration) (map[int64]string, bool) {
+	networks, fresh := v.cache.Lookup(tenderlyApiUrl, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, tenderlyApiUrl, func(ctx context.Context) (map[int64]string, error) {
+			return v.fetchTenderlyNetworks(ctx)
+		})
+	}
+	if networks == nil {
+		return nil, false
+	}
+	return networks, true
 }
 
 func (v *TenderlyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -98,13 +108,9 @@ func (v *TenderlyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Lo
 			recheckInterval = DefaultTenderlyRecheckInterval
 		}
 
-		if err := v.ensureRemoteData(ctx, logger, recheckInterval); err != nil {
-			return nil, fmt.Errorf("unable to load remote data: %w", err)
-		}
-
-		networks, ok := v.remoteData[tenderlyApiUrl]
-		if !ok || networks == nil {
-			return nil, fmt.Errorf("network data not available")
+		networks, ok := v.resolveNetworks(logger, recheckInterval)
+		if !ok {
+			return nil, ErrRemoteCacheCold
 		}
 
 		subdomain, ok := networks[chainID]
@@ -151,28 +157,6 @@ func (v *TenderlyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	}
 
 	return strings.Contains(ups.Endpoint, ".gateway.tenderly.co")
-}
-
-func (v *TenderlyVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	if ltm, ok := v.remoteDataLastFetchedAt[tenderlyApiUrl]; ok && time.Since(ltm) < recheckInterval {
-		return nil
-	}
-
-	newData, err := v.fetchTenderlyNetworks(ctx)
-	if err != nil {
-		if _, ok := v.remoteData[tenderlyApiUrl]; ok {
-			logger.Warn().Err(err).Msg("could not refresh Tenderly API data; will use stale data")
-			return nil
-		}
-		return err
-	}
-
-	v.remoteData[tenderlyApiUrl] = newData
-	v.remoteDataLastFetchedAt[tenderlyApiUrl] = time.Now()
-	return nil
 }
 
 func (v *TenderlyVendor) fetchTenderlyNetworks(ctx context.Context) (map[int64]string, error) {

@@ -60,9 +60,14 @@ func TestDrpcVendor_ColdStartFallback_GenerateConfigs(t *testing.T) {
 }
 
 func TestDrpcVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
+	fetched := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{"id":"custom","label":"Custom","chains":[{"name":"custom-net","chain_id":"0x67932","priority":100,"api_type":"jsonrpc","blockchain_type":"eth","has_premium":true}]}]`))
+		select {
+		case fetched <- struct{}{}:
+		default:
+		}
 	}))
 	defer server.Close()
 
@@ -75,10 +80,24 @@ func TestDrpcVendor_SuccessfulFetchPromotesOverFallback(t *testing.T) {
 
 	settings := common.VendorSettings{"recheckInterval": 24 * time.Hour}
 
-	// 0x67932 = 424242
+	// First call kicks off the async refresh; the synchronous return uses
+	// the built-in fallback, which doesn't know about our custom chain.
+	// This is by design (see remote_cache.go's request-path safety rule).
 	supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:424242")
 	require.NoError(t, err)
-	assert.True(t, supported, "custom chain from mocked API should be recognized")
+	assert.False(t, supported, "first call returns built-in fallback, which does not contain the custom chain")
+
+	// Wait for the async refresh to complete, then re-query.
+	select {
+	case <-fetched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("async refresh never hit the mock server")
+	}
+	// Allow the snapshot to publish after the response body is parsed.
+	require.Eventually(t, func() bool {
+		ok, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:424242")
+		return err == nil && ok
+	}, 5*time.Second, 50*time.Millisecond, "async-refreshed snapshot should promote custom chain over fallback")
 }
 
 func TestDrpcVendor_ChainsUrlSetting_InvalidURLReturnsError(t *testing.T) {

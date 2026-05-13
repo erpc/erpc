@@ -17,12 +17,12 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+// QuicknodeVendor uses RemoteDataCache for lock-free, async-refresh access
+// to the per-apiKey endpoint list. See remote_cache.go for the
+// request-path safety rule.
 type QuicknodeVendor struct {
 	common.Vendor
-
-	remoteDataLock          sync.RWMutex
-	remoteData              map[string][]*QuicknodeEndpoint
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[[]*QuicknodeEndpoint]
 }
 
 type QuicknodeEndpoint struct {
@@ -45,8 +45,7 @@ const DefaultQuicknodeRecheckInterval = 1 * time.Hour
 
 func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{
-		remoteData:              make(map[string][]*QuicknodeEndpoint),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[[]*QuicknodeEndpoint]("quicknode"),
 	}
 }
 
@@ -92,6 +91,11 @@ func (v *QuicknodeVendor) extractFilterParams(settings common.VendorSettings) *Q
 	return params
 }
 
+// SupportsNetwork answers the routing-time question "does this vendor
+// handle this network?" — on the request hot path. It MUST NOT block on a
+// mutex or an HTTP call. Reads are lock-free via RemoteDataCache; staleness
+// triggers an async refresh; cold start returns ErrRemoteCacheCold so the
+// bootstrap auto-retry loop reschedules.
 func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
@@ -107,34 +111,26 @@ func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 		return false, nil
 	}
 
-	// Check if we have endpoints for this chain ID
 	recheckInterval := DefaultQuicknodeRecheckInterval
 	if interval, ok := settings["recheckInterval"].(time.Duration); ok {
 		recheckInterval = interval
 	}
 
-	// Extract tag filtering settings
-	filterParams := v.extractFilterParams(settings)
-
-	err = v.ensureRefreshEndpoints(ctx, logger, apiKey, recheckInterval, filterParams)
-	if err != nil {
-		logger.Warn().Err(err).Msg("failed to refresh QuickNode endpoints")
-		return false, err
+	endpoints, ok := v.resolveEndpoints(logger, apiKey, recheckInterval, settings)
+	if !ok {
+		return false, ErrRemoteCacheCold
 	}
-
-	v.remoteDataLock.RLock()
-	endpoints := v.remoteData[apiKey]
-	v.remoteDataLock.RUnlock()
-
 	for _, endpoint := range endpoints {
 		if endpoint.ChainID == chainID && endpoint.HttpUrl != "" {
 			return true, nil
 		}
 	}
-
 	return false, nil
 }
 
+// GenerateConfigs builds upstream configurations for the given network.
+// Static Endpoint is in-memory only; dynamic discovery uses the same
+// lock-free snapshot as SupportsNetwork.
 func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
@@ -145,7 +141,6 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 		if !ok || apiKey == "" {
 			return nil, fmt.Errorf("apiKey is required in quicknode settings")
 		}
-
 		if upstream.Evm == nil {
 			return nil, fmt.Errorf("quicknode vendor requires upstream.evm to be defined")
 		}
@@ -154,29 +149,19 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 			return nil, fmt.Errorf("quicknode vendor requires upstream.evm.chainId to be defined")
 		}
 
-		// Try to use dynamic endpoint discovery
 		recheckInterval := DefaultQuicknodeRecheckInterval
 		if interval, ok := settings["recheckInterval"].(time.Duration); ok {
 			recheckInterval = interval
 		}
 
-		// Extract tag filtering settings
-		filterParams := v.extractFilterParams(settings)
-
-		err := v.ensureRefreshEndpoints(ctx, logger, apiKey, recheckInterval, filterParams)
-		if err != nil {
-			logger.Warn().Err(err).Msg("failed to refresh QuickNode endpoints, falling back to static endpoint generation")
-			return nil, err
+		endpoints, ok := v.resolveEndpoints(logger, apiKey, recheckInterval, settings)
+		if !ok {
+			return nil, ErrRemoteCacheCold
 		}
-
-		v.remoteDataLock.RLock()
-		endpoints := v.remoteData[apiKey]
-		v.remoteDataLock.RUnlock()
 
 		var upstreams []*common.UpstreamConfig
 		for _, endpoint := range endpoints {
 			if endpoint.ChainID == chainID && endpoint.HttpUrl != "" {
-				// Create a copy of the upstream config for each endpoint
 				upsCopy := upstream.Copy()
 				if upstream.Id != "" {
 					upsCopy.Id = fmt.Sprintf("%s-%s", upstream.Id, endpoint.ID)
@@ -185,47 +170,38 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 				}
 				upsCopy.Endpoint = endpoint.HttpUrl
 				upsCopy.Type = common.UpstreamTypeEvm
-
 				upstreams = append(upstreams, upsCopy)
 			}
 		}
 		return upstreams, nil
-	} else {
-		return []*common.UpstreamConfig{upstream}, nil
 	}
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *QuicknodeVendor) ensureRefreshEndpoints(ctx context.Context, logger *zerolog.Logger, apiKey string, recheckInterval time.Duration, filterParams *QuicknodeFilterParams) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	// Check if we've fetched recently
-	if lastFetch, ok := v.remoteDataLastFetchedAt[apiKey]; ok && time.Since(lastFetch) < recheckInterval {
-		return nil
+// resolveEndpoints does a lock-free Lookup, kicks off an async refresh on
+// staleness, and returns (endpoints, true) on hit or (nil, false) on cold
+// start. See remote_cache.go for the request-path safety rule.
+func (v *QuicknodeVendor) resolveEndpoints(logger *zerolog.Logger, apiKey string, recheckInterval time.Duration, settings common.VendorSettings) ([]*QuicknodeEndpoint, bool) {
+	endpoints, fresh := v.cache.Lookup(apiKey, recheckInterval)
+	if !fresh {
+		filterParams := v.extractFilterParams(settings)
+		v.cache.TriggerAsyncRefresh(logger, apiKey, func(ctx context.Context) ([]*QuicknodeEndpoint, error) {
+			fetched, err := v.fetchEndpoints(ctx, apiKey, filterParams)
+			if err != nil {
+				return nil, err
+			}
+			if err := v.fetchChainIDs(ctx, logger, fetched); err != nil {
+				// Partial success: chain ID fetches may individually fail
+				// without invalidating the rest of the data.
+				logger.Warn().Err(err).Msg("some quicknode chain ID fetches failed; continuing with available data")
+			}
+			return fetched, nil
+		})
 	}
-
-	// Fetch endpoints from API
-	endpoints, err := v.fetchEndpoints(ctx, apiKey, filterParams)
-	if err != nil {
-		// Keep stale data if fetch fails
-		if _, hasData := v.remoteData[apiKey]; hasData {
-			logger.Warn().Err(err).Msg("could not refresh QuickNode endpoints data; will use stale data")
-			return nil
-		}
-		return err
+	if endpoints == nil {
+		return nil, false
 	}
-
-	// Fetch chain IDs in parallel
-	err = v.fetchChainIDs(ctx, logger, endpoints)
-	if err != nil {
-		logger.Warn().Err(err).Msg("some chain ID fetches failed, but continuing with available data")
-	}
-
-	// Update cache
-	v.remoteData[apiKey] = endpoints
-	v.remoteDataLastFetchedAt[apiKey] = time.Now()
-
-	return nil
+	return endpoints, true
 }
 
 func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string, filterParams *QuicknodeFilterParams) ([]*QuicknodeEndpoint, error) {
