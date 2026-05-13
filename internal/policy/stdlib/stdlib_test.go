@@ -188,10 +188,9 @@ func TestStdlib_RemoveByLag(t *testing.T) {
 
 // TestStdlib_RichDefaultPolicy verifies the engine's auto-upgrade from the
 // trivial identity placeholder (common.DefaultSelectionPolicySource) to the
-// embedded `internal/policy/default_policy.js`. With no group named
-// "default" and a "fallback" group available, the default policy still
-// returns the whole input (preferGroup falls back to all upstreams when
-// neither named group matches).
+// embedded `internal/policy/default_policy.js`. Primary tier is matched as
+// `group !== 'fallback'`; rpc1 (group='default') is primary, rpc2 (group=
+// 'fallback') is the second tier.
 func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -215,6 +214,96 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	ordered := engine.GetOrdered("evm:1", "*")
 	require.Len(t, ordered, 1)
 	require.Equal(t, "rpc1", ordered[0].Id())
+}
+
+// TestStdlib_DefaultPolicy_DropsBrokenUpstream pins the production-ready
+// default policy's filter step: an upstream with >80% error rate is
+// dropped, healthy ones survive.
+func TestStdlib_DefaultPolicy_DropsBrokenUpstream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2")
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// rpc1: 90% error rate (broken). rpc2: clean.
+	for i := 0; i < 90; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+	}
+	for i := 0; i < 10; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	ordered := ids(engine.GetOrdered("evm:1", "*"))
+	require.Equal(t, []string{"rpc2"}, ordered, "rpc1 should be dropped by removeByErrorRate(0.8)")
+}
+
+// TestStdlib_DefaultPolicy_SafetyNetWhenAllBroken pins the safety-net step:
+// if filtering drops all upstreams (e.g. project-wide outage), the policy
+// returns the unfiltered set rather than failing closed.
+func TestStdlib_DefaultPolicy_SafetyNetWhenAllBroken(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2")
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// Both upstreams broken.
+	for _, u := range ups {
+		for i := 0; i < 90; i++ {
+			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamFailure(u, "*", fmt.Errorf("synth"))
+		}
+		for i := 0; i < 10; i++ {
+			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		}
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*")
+	require.Len(t, ordered, 2, "safety net: when all upstreams fail filter, return all rather than empty")
+}
+
+// TestStdlib_DefaultPolicy_FallbackTierWhenPrimaryEmpty pins the fallback
+// tier: with no upstreams in the primary group (`group !== 'fallback'`)
+// the policy falls through to the explicit `fallback` group.
+func TestStdlib_DefaultPolicy_FallbackTierWhenPrimaryEmpty(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	defer engine.Stop()
+
+	// All upstreams in 'fallback' group → primary tier (`!fallback`) is empty.
+	ups := mkUpsWithGroups(map[string]string{"rpc1": "fallback", "rpc2": "fallback"})
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.TickForTest(engine, "evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*")
+	require.Len(t, ordered, 2, "fallback tier should serve when primary is empty")
 }
 
 // TestStdlib_StickyPrimary_RetainsPriorPrimary verifies cross-tick stickiness.

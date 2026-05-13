@@ -49,8 +49,15 @@
   }
 
   function annotate(u, note) {
-    if (!u.annotations) u.annotations = [];
-    u.annotations.push(note);
+    // The Go bridge sometimes returns array-likes that don't support
+    // .push (e.g. value types vs pointer types). Best-effort only —
+    // annotations are diagnostic.
+    try {
+      if (!u.annotations) u.annotations = [];
+      if (typeof u.annotations.push === 'function') {
+        u.annotations.push(note);
+      }
+    } catch (_) {}
   }
 
   // ─── 4.2 Identity & label selection ─────────────────────────────────────
@@ -292,14 +299,19 @@
 
   // ─── 4.8 Grouping & multi-tier (subset) ─────────────────────────────────
 
+  // preferGroup / preferVendor support glob patterns ('!fallback', 'cheap*'),
+  // so e.g. `preferGroup('!fallback', { fallback: 'fallback' })` expresses
+  // "primary tier = everything not in the fallback group" — the
+  // convention legacy users had for fallback upstreams without setting
+  // `group: 'default'` on every primary.
   define('preferGroup', function (name, opts) {
     opts = opts || {};
     const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
     const fallback = opts.fallback;
-    const inGroup = this.filter(u => (u.group || '') === name);
+    const inGroup = this.filter(u => matchAny(name, u.group || ''));
     if (inGroup.length >= minHealthy) return inGroup;
     if (fallback) {
-      const fb = this.filter(u => (u.group || '') === fallback);
+      const fb = this.filter(u => matchAny(fallback, u.group || ''));
       if (fb.length > 0) return fb;
     }
     return this.slice();
@@ -308,10 +320,10 @@
     opts = opts || {};
     const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
     const fallback = opts.fallback;
-    const inVendor = this.filter(u => u.vendor === name);
+    const inVendor = this.filter(u => matchAny(name, u.vendor));
     if (inVendor.length >= minHealthy) return inVendor;
     if (fallback) {
-      const fb = this.filter(u => u.vendor === fallback);
+      const fb = this.filter(u => matchAny(fallback, u.vendor));
       if (fb.length > 0) return fb;
     }
     return this.slice();

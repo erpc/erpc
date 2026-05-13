@@ -80,14 +80,18 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string) Ups
 
 // jsUpstream is the JS-visible representation of one upstream. We use a
 // plain struct (no pointer to the original Go Upstream) so the eval cannot
-// mutate engine-owned state. The std-lib chainable methods (Phase 5) build
-// arrays of these.
+// mutate engine-owned state. The std-lib chainable methods build arrays of
+// these.
+//
+// Annotations is pre-allocated (non-nil empty slice) so std-lib steps that
+// `u.annotations.push(...)` from JS don't trip on undefined.
 type jsUpstream struct {
-	ID      string          `json:"id"`
-	Vendor  string          `json:"vendor"`
-	Type    string          `json:"type"`
-	Group   string          `json:"group,omitempty"`
-	Metrics UpstreamMetrics `json:"metrics"`
+	ID          string          `json:"id"`
+	Vendor      string          `json:"vendor"`
+	Type        string          `json:"type"`
+	Group       string          `json:"group,omitempty"`
+	Metrics     UpstreamMetrics `json:"metrics"`
+	Annotations []string        `json:"annotations"`
 
 	Score *float64 `json:"score,omitempty"`
 }
@@ -96,9 +100,10 @@ func buildJSUpstreams(ups []common.Upstream, metrics map[string]UpstreamMetrics)
 	out := make([]jsUpstream, len(ups))
 	for i, u := range ups {
 		out[i] = jsUpstream{
-			ID:      u.Id(),
-			Vendor:  u.VendorName(),
-			Metrics: metrics[u.Id()],
+			ID:          u.Id(),
+			Vendor:      u.VendorName(),
+			Metrics:     metrics[u.Id()],
+			Annotations: []string{},
 		}
 		if cfg := u.Config(); cfg != nil {
 			out[i].Type = string(cfg.Type)

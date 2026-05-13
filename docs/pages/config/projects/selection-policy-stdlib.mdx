@@ -1,21 +1,21 @@
 ---
-description: Full reference for every chainable method available inside selectionPolicy.eval — identity, health, sorting, stability, grouping, slicing, probing, combinators, debug.
+description: Reference of every chainable method available inside selectionPolicy.eval.
 ---
 
 # Selection policy stdlib reference
 
-Every method on `upstreams` (and on the result of any prior step) returns an
-`Upstream[]`, so chains compose. This page is the exhaustive catalogue —
-the [selection-policy overview](/config/projects/selection-policies) is
-where to start if you have not seen the new shape yet.
+Every method on `upstreams` returns an `Upstream[]` so chains compose.
+Start with the [selection policy overview](/config/projects/selection-policies)
+for the model; this page is the catalogue.
 
-All methods take their `this` as the upstream array; cross-tick state (the
-`previousOrder`, `excludedSince`, `lastSwitchAt`, `tickCount` fields) is
-read from the `ctx` argument of the outer eval function.
+Cross-tick state (`previousOrder`, `excludedSince`, `lastSwitchAt`,
+`tickCount`) is read from the `ctx` argument of the outer eval. Glob
+patterns (`*`, `?`, `!negation`) work everywhere a `string | string[]`
+is accepted.
 
 ## Constants
 
-Score presets — weight maps for `sortByScore`:
+**Score presets** (weight maps for `sortByScore`):
 
 | Constant | `errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors` |
 |---|---|
@@ -24,55 +24,43 @@ Score presets — weight maps for `sortByScore`:
 | `PREFER_FEWER_ERRORS` | `15, 2, 6, 2, 1, 12` |
 | `PREFER_FRESHER_HEAD` | `4, 2, 2, 15, 8, 3` |
 | `PREFER_LESS_THROTTLED` | `8, 4, 15, 2, 1, 4` |
-| `PREFER_CHEAP` | (alias of `BALANCED`; intended pairing with `preferGroup('cheap')`) |
+| `PREFER_CHEAP` | alias of `BALANCED` |
 
-Finality states (match values of `ctx.finality`):
-`REALTIME`, `UNFINALIZED`, `FINALIZED`, `UNKNOWN`.
+**Finality:** `REALTIME` · `UNFINALIZED` · `FINALIZED` · `UNKNOWN` —
+match values of `ctx.finality`.
 
-Reason codes used for annotation:
-`REASON_LAG`, `REASON_ERROR_RATE`, `REASON_LATENCY`, `REASON_THROTTLING`,
-`REASON_MISBEHAVIOR`, `REASON_CORDONED`, `REASON_GROUP`, `REASON_VENDOR`,
-`REASON_USER_FILTER`.
+**Reasons:** `REASON_LAG` · `REASON_ERROR_RATE` · `REASON_LATENCY` ·
+`REASON_THROTTLING` · `REASON_MISBEHAVIOR` · `REASON_CORDONED` ·
+`REASON_GROUP` · `REASON_VENDOR` · `REASON_USER_FILTER`.
 
 ## Identity & label selection
 
 ```ts
-.where(filter: { id?, group?, vendor?, type? })
-.whereNot(filter: same as above)
+.where(filter: { id?, group?, vendor?, type? })   // AND across fields
+.whereNot(filter)                                  // inverse
 .byId(id: string | string[])
-.excludeId(id: string | string[])
-.byGroup(name: string | string[])
-.excludeGroup(name: string | string[])
+.byGroup(name: string | string[])                  // 'cheap' or 'cheap*' or '!fallback'
 .byVendor(name: string | string[])
-.excludeVendor(name: string | string[])
 .byType(type: string | string[])
-```
-
-Filter values support glob patterns: `byGroup('primary*')`,
-`byVendor('!alchemy')` (`!` = negation). Multiple fields in `.where({...})`
-are AND-ed; arrays are OR-ed.
-
-```js
-upstreams.byGroup('primary*').excludeVendor('alchemy')
+.excludeId / .excludeGroup / .excludeVendor        // negation forms
 ```
 
 ## Health filters
 
-Each drops upstreams failing the predicate. Rejected upstreams are
-annotated `{rejectedBy: <step>, reason: <human string>}` and appear in the
-`excluded` list of the decision record.
+Each drops upstreams failing the predicate and annotates them for the
+decision record.
 
 ```ts
-.removeByErrorRate(maxRate: number)
+.removeByErrorRate(max: number)              // drop if errorRate > max
 .removeByLatency({ p50Ms?, p70Ms?, p90Ms?, p95Ms?, p99Ms? })
-.removeByThrottling(maxRate: number)
-.removeByMisbehavior(maxRate: number)
+.removeByThrottling(max: number)
+.removeByMisbehavior(max: number)
 .removeByLag({ blockHead?: number, finalization?: number })
-.removeByMinRequests(min: number)    // drop if requestsTotal < min
-.removeCordoned()                    // drop if metrics.cordonedReason != null
+.removeByMinRequests(min: number)            // require ≥ min samples
+.removeCordoned()                            // drop if cordonedReason != null
 ```
 
-Convenience composite:
+Composite shortcut:
 
 ```ts
 .keepHealthy({
@@ -83,132 +71,83 @@ Convenience composite:
 })
 ```
 
-```js
-upstreams.removeByLag({ blockHead: 5, finalization: 50 })
-         .removeByErrorRate(0.3)
-```
-
 ## Generic functional
 
+Standard array combinators that operate on upstream identity (set ops
+dedupe by `id`):
+
 ```ts
-.filter(fn: (u, idx, arr) => boolean)
-.reject(fn: (u, idx, arr) => boolean)        // inverse of .filter
-.partition(fn: (u) => boolean): [Upstream[], Upstream[]]
-.unique(keyFn?: (u) => any)                  // dedupe by id, or by keyFn
-.union(other: Upstream[])                    // set union by id
-.intersect(other: Upstream[])
-.difference(other: Upstream[])               // a \ b by id
-.slice(start: number, end?: number)
-.reverse()
-.isEmpty: boolean
+.filter(fn) · .reject(fn) · .partition(fn): [yes, no]
+.unique(keyFn?) · .union(other) · .intersect(other) · .difference(other)
+.slice(start, end?) · .reverse() · .isEmpty
 ```
 
 ## Sorting
 
-The primary scoring entry point:
+Primary entry point — `sortByScore`:
 
 ```ts
 .sortByScore(
-  weights: ScoreWeights | preset | ((u: Upstream) => ScoreWeights),
+  weights: ScoreWeights | preset | ((u) => ScoreWeights),
   opts?: {
     latencyQuantile?: 'p50' | 'p70' | 'p90' | 'p95' | 'p99'  // default 'p70'
-    overall?: (u: Upstream) => number   // per-upstream final-penalty multiplier
+    overall?: (u) => number                                   // post-multiplier
   }
-): Upstream[]
+)
 ```
 
-`ScoreWeights = { errorRate?, respLatency?, throttledRate?, blockHeadLag?, finalizationLag?, misbehaviors? }`.
+`penalty = Σ(metric × weight) × overall(u)`. Lower penalty = higher
+rank. Score + breakdown are attached to each upstream for later steps.
 
-The first argument can be:
-
-- a **flat weight map** — applied to every upstream;
-- a **preset constant** — `BALANCED`, `PREFER_FASTER`, etc.;
-- a **function `(u) => ScoreWeights`** — per-upstream weights. Useful for
-  vendor-specific tuning or migrating per-upstream multipliers from the
-  legacy config.
-
-`penalty = Σ(metric × weight) × overall(u)`. Lower penalty = higher rank.
-Each upstream's resulting `score` and `penaltyBreakdown` are attached and
-visible to subsequent steps + decision records.
-
-```js
-// Preset
-upstreams.sortByScore(BALANCED)
-
-// Flat weights
-upstreams.sortByScore({ errorRate: 10, respLatency: 3 })
-
-// Per-upstream weights (replaces legacy scoreMultipliers)
-const weightsByID = {
-  alchemy:  { errorRate: 8, respLatency: 12 },
-  drpc:     { errorRate: 8, respLatency: 4 },
-};
-upstreams.sortByScore((u) => weightsByID[u.id] || BALANCED)
-```
+The first arg can be:
+- a **preset** (`BALANCED`, `PREFER_FASTER`, ...);
+- a flat **weight map** (`{ errorRate: 10, respLatency: 3 }`);
+- a **per-upstream function** (`(u) => weights` — replaces legacy `scoreMultipliers`).
 
 Other sorts (ascending unless noted):
 
 ```ts
-.sortBy(fn: (u) => number, opts?: { desc?: boolean })
-.sortByDesc(fn: (u) => number)
-.sortByLatency(quantile?: 'p50' | 'p70' | 'p90' | 'p95' | 'p99')   // default 'p70'
-.sortByErrorRate()
-.sortByThrottling()
-.sortByMisbehavior()
-.sortByHeadLag()
-.sortByFinalizationLag()
+.sortBy(fn, { desc? }) · .sortByDesc(fn)
+.sortByLatency(quantile?) · .sortByErrorRate() · .sortByThrottling()
+.sortByMisbehavior() · .sortByHeadLag() · .sortByFinalizationLag()
 ```
 
 ## Randomization & rotation
 
 ```ts
-.shuffle(seed?: number)
-.rotateBy(n: number)   // rotate left by n positions; pair with ctx.tickCount for round-robin
-```
-
-```js
-// Round-robin replacement for legacy routingStrategy: round-robin
-upstreams.rotateBy(ctx.tickCount)
+.shuffle(seed?)
+.rotateBy(n)                  // left-rotate by n; pair with ctx.tickCount for RR
 ```
 
 ## Stability (cross-tick)
 
 ```ts
 .stickyPrimary({
-  hysteresis?: number = 0.10,
-  minSwitchInterval?: Duration = '30s'
+  hysteresis?: number = 0.10,             // challenger must be this fraction better
+  minSwitchInterval?: Duration = '30s'    // cooldown between switches
 })
 ```
 
-Reads `ctx.previousOrder[0]` and `ctx.lastSwitchAt`. Switches primary only
-when the challenger's `score` is at least `hysteresis` fraction lower AND
-`minSwitchInterval` has elapsed since the last switch. Without a prior
-`sortByScore`, falls back to positional stickiness (the prior primary is
-moved to position 0 if still present).
+Reads `ctx.previousOrder[0]` and `ctx.lastSwitchAt`. Switches only when
+the challenger's `score` is `< prevScore × (1 - hysteresis)` AND the
+cooldown has elapsed.
 
-## Grouping (multi-tier)
+## Grouping & multi-tier
 
 ```ts
-.preferGroup(name: string, opts?: {
-  minHealthy?: number = 1,
-  fallback?: string                  // if group < minHealthy, switch to this group
-})
+.preferGroup(name: string, opts?: { minHealthy?: number = 1, fallback?: string })
 .preferVendor(name: string, opts?: same)
 ```
 
-```js
-upstreams.preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
-```
+Returns upstreams matching `name` (glob, so `'!fallback'` works) if at
+least `minHealthy` match; else falls through to `fallback`; else returns
+the input unchanged.
 
 ## Slicing & limits
 
 ```ts
-.pickTop(n: number)        // first n
-.pickBottom(n: number)
-.dropTop(n: number)        // skip first n
-.dropBottom(n: number)
-.take(n)                   // alias for pickTop
-.skip(n)                   // alias for dropTop
+.pickTop(n) · .pickBottom(n) · .dropTop(n) · .dropBottom(n)
+.take(n) / .skip(n)            // aliases
 ```
 
 ## Probing & forced inclusion
@@ -218,22 +157,19 @@ upstreams.preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
   reAdmitAfter: Duration,
   maxConcurrent?: number = 1,
   longestFirst?: boolean = true,
-  position?: 'tail' | 'head' | 'random' = 'tail'
+  position?: 'tail' | 'head' | 'random' = 'tail',
 })
 ```
 
-Deterministic re-admission of excluded upstreams. Each tick, finds
-upstreams in `ctx.excludedSince` older than `reAdmitAfter`, sorts by
-exclusion age (oldest first when `longestFirst`), picks up to
-`maxConcurrent`, and inserts them at the specified position so their
-metrics refresh organically.
+Deterministic re-admission. Each tick, picks up to `maxConcurrent`
+upstreams whose `excludedSince` is older than `reAdmitAfter` (oldest
+first when `longestFirst`) and inserts them at `position`.
 
 ```ts
 .forceInclude(idOrFn: string | string[] | ((u) => boolean), position?: 'head' | 'tail' = 'tail')
 ```
 
-Always include matching upstream(s), bypassing prior filters. Useful for
-canary/maintenance modes.
+Always include matching upstreams, even if prior filters dropped them.
 
 ## Cooldown
 
@@ -241,123 +177,85 @@ canary/maintenance modes.
 .cooldown(duration: Duration)
 ```
 
-Removes upstreams whose `ctx.excludedSince[id]` is within `duration` of
-`ctx.now`. Pairs naturally with `probeExcluded`: keep recently-excluded
-upstreams out for at least the cooldown window, then probe them back in.
+Drops upstreams whose `excludedSince[id]` is within `duration` of
+`ctx.now`. Pairs naturally with `probeExcluded`.
 
-## Combinators (chain control flow)
+## Combinators
 
 ```ts
-.if(cond: boolean | ((arr) => boolean), thenFn: (arr) => Upstream[], elseFn?: (arr) => Upstream[])
-.unless(cond: boolean | ((arr) => boolean), fn: (arr) => Upstream[])
-.whenEmpty(fn: () => Upstream[])         // run only if chain currently empty
-.whenNotEmpty(fn: (arr) => Upstream[])
-.fallbackTo(arrOrFn: Upstream[] | ((ctx) => Upstream[]))   // if empty, replace
-.ensureMin(n: number, fn: (arr) => Upstream[])             // if length < n, run fn
-```
-
-```js
-upstreams
-  .keepHealthy()
-  .whenEmpty(() => upstreams.byGroup('fallback'))   // emergency fallback
-  .sortByScore(BALANCED)
+.if(cond, thenFn, elseFn?)             // cond is boolean | (arr) => boolean
+.unless(cond, fn)
+.whenEmpty(() => Upstream[])           // run only if currently empty
+.whenNotEmpty(fn)
+.fallbackTo(arrOrFn)                   // replace with alternative if empty
+.ensureMin(n, fn)                      // run fn to expand if length < n
 ```
 
 ## Debug & annotations
 
 ```ts
-.tap(fn: (arr) => void)                    // side effect; returns arr unchanged
-.label(name: string)                       // names this chain step in decision records
-.annotate(fn: (u) => string)               // attach a note to each upstream
-.mark(predicate: (u) => boolean, note: string)
+.tap(fn)                               // side effect; returns arr unchanged
+.label(name)                           // name this step in the decision record
+.annotate(fn)                          // attach a note to each upstream
+.mark(predicate, note)                 // annotate only matching upstreams
 .dump(level?: 'debug' | 'info' | 'warn' | 'error')
 ```
 
-`.label` is purely for the decision record — operators see which step a
-rejection came from. `.dump` writes the current chain state to the
-structured logger at the given level.
-
-## Free helpers (module-level globals)
+## Free helpers
 
 ```ts
-methodMatches(patternOrPatterns: string | string[]): boolean
-// Test ctx.method against glob patterns.
-
-isFinalityRequest(): boolean
-// Sugar for ctx.finality === FINALIZED.
-
-inWindow(start: string, end: string, tz?: string): boolean
-// Time-of-day window check using ctx.now (HH:MM, 24h).
-
-durationMs(d: Duration | string): number
-// Parse a duration string into ms. Used internally by stickyPrimary, etc.
+methodMatches(pattern: string | string[]): boolean    // glob ctx.method
+isFinalityRequest(): boolean                          // ctx.finality === FINALIZED
+inWindow(start: '09:00', end: '18:00', tz?: string): boolean
+durationMs(d: Duration | string): number              // parse '5m' → 300000
 ```
 
 ## Examples
 
-### Cost-tier with weekly schedule
-
+### Cost-tier with weekday schedule
 ```js
 (upstreams, ctx) => {
-  // Weekdays 9–18 local: drain expensive vendors.
-  const cheapHours = inWindow('09:00', '18:00') && (new Date().getDay() % 6) !== 0;
+  const cheapHours = inWindow('09:00', '18:00') && (new Date().getDay() % 6) !== 0
   return upstreams
     .removeByErrorRate(0.5)
     .preferGroup(cheapHours ? 'cheap' : 'fast', { minHealthy: 1, fallback: 'cheap' })
     .sortByScore(BALANCED)
-    .stickyPrimary({ hysteresis: 0.15, minSwitchInterval: '2m' });
+    .stickyPrimary({ hysteresis: 0.15, minSwitchInterval: '2m' })
 }
 ```
 
-### Per-method weight overrides
-
+### Per-method override
 ```js
 (upstreams, ctx) => {
-  if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber'])) {
-    return upstreams.byGroup('archive').sortByScore(PREFER_FASTER);
-  }
-  if (methodMatches('eth_getBalance')) {
-    return upstreams.sortByScore(PREFER_FEWER_ERRORS);
-  }
-  return upstreams.sortByScore(BALANCED).stickyPrimary();
+  if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
+    return upstreams.byGroup('archive').sortByScore(PREFER_FASTER)
+  if (methodMatches('eth_getBalance'))
+    return upstreams.sortByScore(PREFER_FEWER_ERRORS)
+  return upstreams.sortByScore(BALANCED).stickyPrimary()
 }
-```
-
-### Per-upstream weights (legacy `scoreMultipliers` replacement)
-
-```js
-const weights = {
-  alchemy:  { errorRate: 8, respLatency: 12, throttledRate: 4 },
-  infura:   { errorRate: 8, respLatency: 8,  throttledRate: 4 },
-  drpc:     { errorRate: 8, respLatency: 4,  throttledRate: 2 },
-};
-(upstreams, ctx) =>
-  upstreams.sortByScore((u) => weights[u.vendor] || BALANCED)
 ```
 
 ### Canary with cooldown
-
 ```js
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
     .removeByErrorRate(0.5)
-    .cooldown('1m')                                // keep excluded for 1m
+    .cooldown('1m')
     .sortByScore(BALANCED)
     .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
-    .forceInclude('canary-rpc', 'tail')             // ALWAYS include canary
+    .forceInclude('canary-rpc', 'tail')
 ```
 
 ### Debug a flaky decision
-
 ```js
 (upstreams, ctx) =>
   upstreams
     .removeByLag({ blockHead: 5 }).label('lag-filter')
     .sortByScore(BALANCED).label('score')
     .stickyPrimary().label('sticky')
-    .dump('debug')                                  // logs full chain state
+    .dump('debug')
 ```
 
-`label(...)` names a step so its rejections show `step: "lag-filter"` in
-the decision record's `excluded[]` array.
+`label(...)` makes each step's rejections show `step: "lag-filter"` in
+the decision record.

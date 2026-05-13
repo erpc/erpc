@@ -1,24 +1,21 @@
 ---
-description: Selection policies decide which upstreams serve which methods, in what order. One JS function per network — order is law, missing means excluded.
+description: One JavaScript function per network decides which upstreams serve which methods, in what order. Order is law — missing means excluded.
 ---
 
 import { Callout, Tabs, Tab } from 'nextra/components'
 
 # Selection policy
 
-The **Selection Policy** is the single mechanism that decides which upstreams
-serve which methods, in what order. A network-level JavaScript function
-(`eval`) returns an ordered list of upstreams; that list IS the routing
-decision — the request loop tries them in order, missing means excluded.
+A single JavaScript function (`eval`) per network returns the **ordered**
+list of upstreams that should serve requests. The order IS the routing
+decision: position 0 is the primary, position N is the Nth retry,
+anything missing is excluded.
 
 <a id="customizing-scores-per-upstream"></a>
 <a id="priority--routing"></a>
 
 <Callout type="info">
-This replaces the dual "scoring mechanism" + "selection policy" pair that
-shipped in earlier releases. If you are upgrading, see the
-[migration guide](/migration/selection-policy) — legacy YAML continues to
-load via the translator for two more minor releases.
+This replaces the dual "scoring mechanism" + legacy `selectionPolicy.evalFunction` shipped earlier. Upgrading from an older config? See the [migration guide](/migration/selection-policy) — legacy YAML keeps loading via the translator.
 </Callout>
 
 ## How it works
@@ -29,16 +26,15 @@ load via the translator for two more minor releases.
 upstreams + ctx (cross-tick state) ──► eval() ──► ordered upstream[]
                                                        │
                                                        ▼
-                            Network.Forward consumes the ordered list
-                            on every request (wait-free atomic load)
+                            Network.Forward consumes the list on every
+                            request (wait-free atomic load, O(1))
 ```
 
 - The eval runs on a per-(network, method) timer.
-- The output is cached atomically; the request path reads it in O(1).
-- Each tick produces a **decision record** retained for `decisionHistory`,
-  joined to requests via `decision_id` so you can answer
-  *"why was upstream X used at time T for method M?"* from the
-  `/admin/selection/explain/<requestId>` endpoint.
+- Output is cached atomically; the request path reads it lock-free.
+- Every tick produces a **decision record** joined to requests via
+  `decision_id` — `GET /admin/selection/explain/<requestId>` answers
+  *"why was upstream X used at time T for method M?"*.
 
 ## Configuration
 
@@ -49,32 +45,26 @@ projects:
   - id: main
     upstreams:
       - endpoint: alchemy://...
-      - endpoint: infura://...
       - endpoint: drpc-eth://...
-        group: fallback
-
+        group: fallback           # ← convention: 2nd tier
     networks:
       - architecture: evm
         evm: { chainId: 1 }
-
+        # The block below is the DEFAULT — omit `selectionPolicy`
+        # entirely if you're happy with these settings.
         selectionPolicy:
-          # Tick frequency. Default: 1s.
           evalInterval: 1s
-          # Per-tick hard timeout. Default: 100ms.
           evalTimeout: 100ms
-          # Maintain a separate eval + cache per method. Default: false.
           evalPerMethod: false
-          # Rolling decision-record retention. Default: 5m.
           decisionHistory: 5m
-
-          # JavaScript function. Must return Upstream[].
-          # If omitted, the embedded default policy applies.
           eval: |
             (upstreams, ctx) =>
               upstreams
-                .removeByLag({ blockHead: 5, finalization: 50 })
+                .removeCordoned()
+                .removeByErrorRate(0.8)
+                .whenEmpty(() => upstreams)
+                .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
                 .sortByScore(BALANCED)
-                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
                 .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
                 .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```
@@ -84,189 +74,167 @@ projects:
 import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  projects: [
-    {
-      id: "main",
-      upstreams: [
-        { endpoint: "alchemy://..." },
-        { endpoint: "infura://..." },
-        { endpoint: "drpc-eth://...", group: "fallback" },
-      ],
-      networks: [
-        {
-          architecture: "evm",
-          evm: { chainId: 1 },
-          selectionPolicy: {
-            evalInterval: "1s",
-            evalTimeout: "100ms",
-            evalPerMethod: false,
-            decisionHistory: "5m",
-            eval: `(upstreams, ctx) =>
-              upstreams
-                .removeByLag({ blockHead: 5, finalization: 50 })
-                .sortByScore(BALANCED)
-                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
-                .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
-                .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })`,
-          },
-        },
-      ],
-    },
-  ],
+  projects: [{
+    id: "main",
+    upstreams: [
+      { endpoint: "alchemy://..." },
+      { endpoint: "drpc-eth://...", group: "fallback" },
+    ],
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      selectionPolicy: {
+        evalInterval: "1s",
+        evalTimeout: "100ms",
+        evalPerMethod: false,
+        decisionHistory: "5m",
+        eval: `(upstreams, ctx) =>
+          upstreams
+            .removeCordoned()
+            .removeByErrorRate(0.8)
+            .whenEmpty(() => upstreams)
+            .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
+            .sortByScore(BALANCED)
+            .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
+            .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })`,
+      },
+    }],
+  }],
 });
 ```
 </Tab>
 </Tabs>
 
-### Fields
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `evalInterval` | Duration | `1s` | `0` disables the ticker (test only). |
+| `evalTimeout` | Duration | `100ms` | Must be `< evalInterval`. Prior cache retained on timeout. |
+| `evalPerMethod` | bool | `false` | Separate eval + cache per method. |
+| `decisionHistory` | Duration | `5m` | Ring buffer = `decisionHistory / evalInterval`. |
+| `eval` | string | (built-in default) | JS function returning `Upstream[]`. |
 
-| Field | Type | Description |
-|---|---|---|
-| `evalInterval` | `Duration` | How often the eval runs. Default `1s`. Setting to `0` disables the ticker (manual reevaluation only — useful for tests). |
-| `evalTimeout` | `Duration` | Wall-clock cap on each eval. Must be `< evalInterval`. Default `100ms`. On timeout, the prior cache is retained and the failure is logged. |
-| `evalPerMethod` | `bool` | If `true`, a separate eval + cache is maintained per method. Default `false`. |
-| `decisionHistory` | `Duration` | Rolling decision-record retention. Default `5m`. The ring buffer is sized as `decisionHistory / evalInterval`. |
-| `eval` | `string` | JavaScript function body. Must `return` an `Upstream[]`. If omitted, the [default policy](#default-policy) applies. |
+## The default policy
 
-`selectionPolicy` is **network-level**. There are no project-level routing
-settings.
-
-## Default policy
-
-When `selectionPolicy.eval` is omitted, eRPC applies this embedded default:
+Omitting `eval` applies a conservative, chain-agnostic policy designed
+for production:
 
 ```js
 (upstreams, ctx) =>
   upstreams
-    .sortByScore(BALANCED)
-    .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
-    .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
-    .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+    .removeCordoned()                  // 1. drop failsafe-cordoned
+    .removeByErrorRate(0.8)            // 2. drop > 80% errors over window
+    .whenEmpty(() => upstreams)        // 3. safety net: never empty
+    .preferGroup('!fallback', {        // 4. primary tier = group !== 'fallback'
+      minHealthy: 1,
+      fallback: 'fallback',
+    })
+    .sortByScore(BALANCED)             // 5. rank by composite score
+    .stickyPrimary({                   // 6. anti-flap
+      hysteresis: 0.10,
+      minSwitchInterval: '30s',
+    })
+    .probeExcluded({                   // 7. recover excluded upstreams
+      reAdmitAfter: '5m',
+      maxConcurrent: 1,
+    })
 ```
 
-Behavior:
+Step-by-step:
 
-1. **`sortByScore(BALANCED)`** — order by penalty (lower = better). Weights
-   are `errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2,
-   finalizationLag=1, misbehaviors=6`. See the [stdlib reference](/config/projects/selection-policy-stdlib#sortbyscore)
-   for the full preset table.
-2. **`preferGroup('default', { minHealthy: 1, fallback: 'fallback' })`** —
-   keep only upstreams in group `default` if at least one is healthy. If
-   `default` is empty, fall back to upstreams in group `fallback`.
-3. **`stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })`** —
-   keep the current primary unless a challenger's score is at least 10%
-   lower AND at least 30s have passed since the last switch.
-4. **`probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })`** — every
-   tick, deterministically re-admit one upstream that has been excluded
-   for 5+ minutes so its metrics refresh.
+1. **Drop cordoned** — failsafe / circuit-breaker explicitly marked the upstream bad.
+2. **Drop clearly broken** — 80% errors over the window means broken on any chain.
+3. **Safety net** — if filtering wiped everything (network-wide outage), serve from the raw set rather than fail closed.
+4. **Tier** — `group !== 'fallback'` is the primary tier; `group === 'fallback'` is the second tier. Matches the long-standing eRPC convention so adding a fallback upstream is one config line.
+5. **Score** — BALANCED weights: `errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6`. Lag and latency are CHAIN-SPECIFIC and contribute to ranking, not filtering, so the default works on Ethereum, Arbitrum, and everything in between.
+6. **Sticky primary** — keep the current primary unless a challenger's score is ≥10% better AND 30s passed since the last switch. Prevents flapping under transient blips.
+7. **Probe excluded** — every tick, re-admit one upstream that has been out for 5+ minutes so its metrics refresh.
 
-The default policy source is embedded in the binary and served at
-`GET /admin/selection/default-policy` for verification.
+Source served at `GET /admin/selection/default-policy`.
 
 ## Eval inputs
 
-Inside the `eval` body, two variables are in scope:
-
-### `upstreams: Upstream[]`
+Inside the function body, two variables are in scope: `upstreams` and `ctx`.
 
 ```ts
 type Upstream = {
   readonly id: string
-  readonly vendor: string            // e.g. "alchemy", "infura", "drpc"
-  readonly type: 'evm' | string      // upstream architecture
-  readonly endpoint: string          // redacted
+  readonly vendor: string                  // "alchemy", "infura", "drpc"
+  readonly type: 'evm' | string
+  readonly endpoint: string                // redacted
 
-  readonly config: UpstreamConfig    // raw user config (group, etc.)
-  readonly metrics: UpstreamMetrics  // snapshot from tick start
+  readonly config: UpstreamConfig          // user config (group, etc.)
+  readonly metrics: UpstreamMetrics        // tick-start snapshot
 
-  // Attached by std-lib steps; readable by later steps and decision records.
-  readonly score?: number            // set by sortByScore (lower = better)
+  // Attached by std-lib steps:
+  readonly score?: number                  // sortByScore (lower = better)
   readonly penaltyBreakdown?: ScoreBreakdown
-  readonly annotations?: string[]    // set by .annotate() / .mark() / std-lib
+  readonly annotations?: string[]
 }
 
 type UpstreamMetrics = {
-  errorRate: number                  // 0..1
+  errorRate: number                        // 0..1
   errorsTotal: number
   requestsTotal: number
-  throttledRate: number              // 0..1
+  throttledRate: number                    // 0..1
   misbehaviorRate: number
   p50ResponseSeconds: number
   p70ResponseSeconds: number
   p90ResponseSeconds: number
   p95ResponseSeconds: number
   p99ResponseSeconds: number
-  blockHeadLag: number               // block-number delta
-  finalizationLag: number            // block-number delta
+  blockHeadLag: number                     // BLOCK-number delta, NOT seconds
+  finalizationLag: number                  // block-number delta
   cordonedReason: string | null
 }
-```
 
-The `metrics` object is a **snapshot** captured once at the tick start, so
-all chained std-lib steps see a consistent view.
-
-### `ctx: EvalContext`
-
-```ts
 type EvalContext = {
-  network: string                    // e.g. "evm:1"
-  method: string                     // "*" if evalPerMethod=false
+  network: string                          // "evm:1"
+  method: string                           // "*" unless evalPerMethod=true
   finality: 'realtime' | 'unfinalized' | 'finalized' | 'unknown'
-  now: number                        // unix ms
+  now: number                              // unix ms
 
-  // Cross-tick state, fed back from the previous tick's output:
-  previousOrder: string[]            // upstream IDs from last tick
-  previousExcluded: string[]         // upstream IDs absent from last tick
-  lastSwitchAt: number | null        // unix ms of last sticky-primary switch
+  // Cross-tick state — the ONLY carrier of state between ticks.
+  previousOrder: string[]
+  previousExcluded: string[]
+  lastSwitchAt: number | null
   excludedSince: { [id: string]: number }
-  tickCount: number                  // monotonic, resets on slot reset
+  tickCount: number
 }
 ```
 
-`ctx` is the **only** carrier of cross-tick state. The engine itself stores
-nothing beyond what is serialized in/out of `ctx`, making evals testable as
-pure functions.
+The `metrics` object is captured ONCE at tick start, so chained std-lib
+steps see a consistent view.
 
-### Globals
+Globals: `BALANCED`, `PREFER_FASTER`, `PREFER_FEWER_ERRORS`,
+`PREFER_FRESHER_HEAD`, `PREFER_LESS_THROTTLED`, `PREFER_CHEAP`;
+`REALTIME`/`UNFINALIZED`/`FINALIZED`/`UNKNOWN`;
+`REASON_*` reason codes; `process.env`; `console.log/info/warn/error`;
+standard ECMAScript.
 
-Beyond `upstreams` and `ctx`:
-
-- **Constants:** `BALANCED`, `PREFER_FASTER`, `PREFER_FEWER_ERRORS`,
-  `PREFER_FRESHER_HEAD`, `PREFER_LESS_THROTTLED`, `PREFER_CHEAP`; finality
-  states `REALTIME` / `UNFINALIZED` / `FINALIZED` / `UNKNOWN`; reason
-  codes `REASON_LAG`, `REASON_ERROR_RATE`, etc.
-- **`process.env`** — environment variables, read-only.
-- **`console`** — `log` / `info` / `warn` / `error` → debug-level structured log.
-- Standard ECMAScript: `Math`, `Date`, `JSON`, `Number`, `String`, `Array`, `Object`.
-
-## Standard library
-
-Every method on `upstreams` (and chain results) returns an `Upstream[]`
-so they compose. Full catalogue at the
-[stdlib reference](/config/projects/selection-policy-stdlib); here is the
-at-a-glance map by category:
+## Standard library (at a glance)
 
 | Category | Methods |
 |---|---|
-| **Identity** | `.where`, `.byId`, `.byGroup`, `.byVendor`, `.byType`, `.exclude*` |
-| **Health filters** | `.removeByErrorRate`, `.removeByLag`, `.removeByLatency`, `.removeByThrottling`, `.removeByMisbehavior`, `.removeCordoned`, `.removeByMinRequests`, `.keepHealthy` |
-| **Generic functional** | `.filter`, `.reject`, `.partition`, `.unique`, `.union`, `.intersect`, `.difference`, `.isEmpty` |
-| **Sorting** | `.sortByScore` (preset / weights map / `(u) => weights`), `.sortBy`, `.sortByLatency`, `.sortByErrorRate`, `.sortByThrottling`, `.sortByHeadLag`, `.sortByFinalizationLag`, `.sortByMisbehavior` |
-| **Randomization** | `.shuffle`, `.rotateBy` |
-| **Stability (cross-tick)** | `.stickyPrimary` |
-| **Grouping** | `.preferGroup`, `.preferVendor` |
-| **Slicing** | `.pickTop`, `.pickBottom`, `.dropTop`, `.dropBottom`, `.take`, `.skip` |
-| **Probing** | `.probeExcluded`, `.forceInclude` |
-| **Cooldown** | `.cooldown` |
-| **Combinators** | `.if`, `.unless`, `.whenEmpty`, `.whenNotEmpty`, `.fallbackTo`, `.ensureMin` |
-| **Debug** | `.tap`, `.annotate`, `.label`, `.mark`, `.dump` |
+| Identity | `where` · `byId` · `byGroup` · `byVendor` · `byType` · `exclude*` |
+| Health filters | `removeByErrorRate` · `removeByLag` · `removeByLatency` · `removeByThrottling` · `removeByMisbehavior` · `removeCordoned` · `removeByMinRequests` · `keepHealthy` |
+| Generic | `filter` · `reject` · `partition` · `unique` · `union` · `intersect` · `difference` · `isEmpty` |
+| Sorting | `sortByScore` · `sortBy` · `sortByLatency` · `sortByErrorRate` · `sortByThrottling` · `sortByHeadLag` · `sortByFinalizationLag` · `sortByMisbehavior` |
+| Random / rotation | `shuffle` · `rotateBy` |
+| Stability | `stickyPrimary` |
+| Grouping | `preferGroup` · `preferVendor` |
+| Slicing | `pickTop` · `pickBottom` · `dropTop` · `dropBottom` · `take` · `skip` |
+| Probing | `probeExcluded` · `forceInclude` |
+| Cooldown | `cooldown` |
+| Combinators | `if` · `unless` · `whenEmpty` · `whenNotEmpty` · `fallbackTo` · `ensureMin` |
+| Debug | `tap` · `label` · `annotate` · `mark` · `dump` |
+
+Full reference: **[selection policy stdlib](/config/projects/selection-policy-stdlib)**.
 
 ## Common patterns
 
 ### Cost-tier routing
-
 ```js
-// Cheap upstreams first; fall back to fast tier only if cheap pool is unhealthy.
+// Cheap pool first; fall through to fast pool when cheap is exhausted.
 (upstreams, ctx) =>
   upstreams
     .removeByErrorRate(0.5)
@@ -274,63 +242,48 @@ at-a-glance map by category:
     .sortByScore(BALANCED)
 ```
 
-### Method-specific routing
-
+### Per-method routing
 ```js
 (upstreams, ctx) => {
-  if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber'])) {
-    return upstreams.byGroup('archive').sortByScore(PREFER_FASTER);
-  }
-  return upstreams.sortByScore(BALANCED).stickyPrimary();
+  if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
+    return upstreams.byGroup('archive').sortByScore(PREFER_FASTER)
+  return upstreams.sortByScore(BALANCED).stickyPrimary()
 }
 ```
 
-### Finality-aware weighting
-
+### Per-upstream weights (legacy `scoreMultipliers` replacement)
 ```js
+const w = {
+  alchemy: { errorRate: 8, respLatency: 12 },
+  drpc:    { errorRate: 8, respLatency: 4 },
+}
 (upstreams, ctx) =>
-  upstreams.sortByScore(
-    ctx.finality === FINALIZED ? PREFER_FASTER : PREFER_FRESHER_HEAD
-  )
+  upstreams.sortByScore((u) => w[u.vendor] || BALANCED)
 ```
 
-### Time-of-day rotation
-
-```js
-// Drain expensive vendors during business hours, lean on them at night.
-(upstreams, ctx) =>
-  upstreams.preferGroup(
-    inWindow('09:00', '18:00') ? 'cheap' : 'fast',
-    { minHealthy: 1, fallback: 'cheap' },
-  ).sortByScore(BALANCED)
-```
-
-More examples in the [stdlib reference](/config/projects/selection-policy-stdlib#examples).
+More patterns + every method explained at
+[selection policy stdlib](/config/projects/selection-policy-stdlib#examples).
 
 ## Observability
 
 | Surface | What it gives you |
 |---|---|
-| `GET /admin/selection/<net>/<method>` | Latest decision record (input metrics, eval duration, output order, exclusion reasons, diff vs prior tick) |
-| `GET /admin/selection/<net>/<method>?since=10m` | Sparse log of decisions in the window |
-| `GET /admin/selection/explain/<requestId>` | Joins a specific request to the decision active at its time — answers *"why was upstream X used for this request?"* |
-| `GET /admin/selection/default-policy` | Source of the embedded default policy |
-| `POST /admin/selection/<net>/<method>/reeval` | Force a re-evaluation |
-| `POST /admin/selection/<net>/<method>/reset` | Drop cross-tick state, re-evaluate immediately |
-| `erpc_selection_position{project, network, method, upstream}` | Gauge: 0 = primary, 1+ = runners-up, -1 = excluded |
-| `erpc_selection_rejection_total{step, ...}` | Counter: per-std-lib-step rejections |
-| `erpc_selection_primary_switch_total{from, to, ...}` | Counter: primary upstream changes |
-| `erpc_selection_eval_duration_seconds{...}` | Histogram: per-tick eval latency |
-| `erpc_selection_eligible_upstreams{...}` | Gauge: count returned by the most recent tick |
+| `GET /admin/selection/<net>/<method>` | Latest decision (input metrics, eval duration, output order, exclusions, diff vs prior tick) |
+| `GET /admin/selection/<net>/<method>?since=10m` | Sparse log of recent decisions |
+| `GET /admin/selection/explain/<requestId>` | Join a request to the decision active at its time |
+| `GET /admin/selection/default-policy` | Source of the built-in default |
+| `POST /admin/selection/<net>/<method>/reeval` | Force a tick |
+| `erpc_selection_position{...}` (gauge) | 0 = primary, 1+ = runner-up, -1 = excluded this tick |
+| `erpc_selection_rejection_total{step, ...}` | Per-std-lib-step rejections |
+| `erpc_selection_primary_switch_total{from, to, ...}` | Primary changes |
+| `erpc_selection_eval_duration_seconds{...}` | Per-tick eval latency |
+| `erpc_selection_eligible_upstreams{...}` | Count returned by the most recent tick |
 
-Every request log contains the `decision_id` of the decision active when it
-was served. Combine with the `/explain/<requestId>` endpoint for full
-attribution.
+Every request log includes the `decision_id` of the decision active when
+it was served — pair with `/explain/<requestId>` for full attribution.
 
-## Coming from the legacy config?
+## Migrating from the legacy config?
 
-See the [migration guide](/migration/selection-policy) for the legacy →
-new mapping table, three worked examples, and the removal timeline. The
-translator runs at config load and emits a one-time deprecation warning
-per project; you can keep your old YAML running until you are ready to
-migrate.
+See the [migration guide](/migration/selection-policy) — full field
+mapping, three side-by-side examples, removal timeline. The translator
+runs at load and emits a one-time deprecation warning per project.
