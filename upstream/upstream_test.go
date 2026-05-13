@@ -308,12 +308,19 @@ func (m *mockEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe 
 	return 0, nil
 }
 
+func (m *mockEvmStatePoller) StateReadyBlock() int64 { return m.latestBlock }
+
+func (m *mockEvmStatePoller) PollStateReady(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockEvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
-		Enabled:        true,
-		LatestBlock:    m.latestBlock,
-		FinalizedBlock: m.finalizedBlock,
-		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+		Enabled:         true,
+		LatestBlock:     m.latestBlock,
+		FinalizedBlock:  m.finalizedBlock,
+		StateReadyBlock: m.latestBlock,
+		SyncingState:    common.EvmSyncingStateNotSyncing.String(),
 	}
 }
 
@@ -623,12 +630,21 @@ func (m *mockEvmStatePollerWithUpdate) EarliestBlock(probe common.EvmAvailabilit
 	return 0
 }
 
+func (m *mockEvmStatePollerWithUpdate) StateReadyBlock() int64 {
+	return m.LatestBlock()
+}
+
+func (m *mockEvmStatePollerWithUpdate) PollStateReady(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockEvmStatePollerWithUpdate) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
-		Enabled:        true,
-		LatestBlock:    m.LatestBlock(),
-		FinalizedBlock: m.FinalizedBlock(),
-		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+		Enabled:         true,
+		LatestBlock:     m.LatestBlock(),
+		FinalizedBlock:  m.FinalizedBlock(),
+		StateReadyBlock: m.LatestBlock(),
+		SyncingState:    common.EvmSyncingStateNotSyncing.String(),
 	}
 }
 func (m *mockEvmStatePollerWithUpdate) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {

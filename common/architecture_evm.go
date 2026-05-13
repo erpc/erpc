@@ -35,6 +35,15 @@ type AvailbilityConfidence int
 const (
 	AvailbilityConfidenceBlockHead AvailbilityConfidence = 1
 	AvailbilityConfidenceFinalized AvailbilityConfidence = 2
+	// AvailbilityConfidenceStateReady requires that the upstream has not only
+	// observed a given block at its head, but that its state DB is consistent
+	// at that block. Distinguishes head-vs-trie races where a node's block
+	// header pointer has advanced but state slots for that block are not yet
+	// committed (returns 0x0 / "0x" / null silently).
+	//
+	// Requires EvmNetworkConfig.StateProbe to be configured. Without a probe
+	// config this confidence falls back to BlockHead semantics.
+	AvailbilityConfidenceStateReady AvailbilityConfidence = 3
 )
 
 func (c AvailbilityConfidence) String() string {
@@ -43,6 +52,8 @@ func (c AvailbilityConfidence) String() string {
 		return "blockHead"
 	case AvailbilityConfidenceFinalized:
 		return "finalizedBlock"
+	case AvailbilityConfidenceStateReady:
+		return "stateReady"
 	default:
 		return fmt.Sprintf("unknown(%d)", c)
 	}
@@ -68,6 +79,9 @@ func (c *AvailbilityConfidence) UnmarshalYAML(unmarshal func(interface{}) error)
 		return nil
 	case "finalizedblock", "2":
 		*c = AvailbilityConfidenceFinalized
+		return nil
+	case "stateready", "3":
+		*c = AvailbilityConfidenceStateReady
 		return nil
 	}
 
@@ -107,10 +121,20 @@ type EvmStatePoller interface {
 	PollLatestBlockNumber(ctx context.Context) (int64, error)
 	PollFinalizedBlockNumber(ctx context.Context) (int64, error)
 	PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType, staleness time.Duration) (int64, error)
+	// PollStateReady runs the configured StateProbe at the current latest block.
+	// On success advances StateReadyBlock to the probed block; on failure leaves
+	// it unchanged. Returns (block at which probe was attempted, error).
+	// When no StateProbe is configured, returns (0, nil) and StateReadyBlock
+	// will report LatestBlock as a backward-compatible fallback.
+	PollStateReady(ctx context.Context) (int64, error)
 	SyncingState() EvmSyncingState
 	SetSyncingState(state EvmSyncingState)
 	LatestBlock() int64
 	FinalizedBlock() int64
+	// StateReadyBlock returns the most recent block at which the state probe
+	// confirmed the upstream's state DB is consistent. When no StateProbe is
+	// configured, falls back to LatestBlock.
+	StateReadyBlock() int64
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
 	SuggestLatestBlock(blockNumber int64)
@@ -128,6 +152,13 @@ type EvmStatePollerDiagnostics struct {
 	// Block head information
 	LatestBlock    int64 `json:"latestBlock"`
 	FinalizedBlock int64 `json:"finalizedBlock"`
+
+	// State-readiness probe diagnostics.
+	StateReadyBlock           int64  `json:"stateReadyBlock,omitempty"`
+	StateProbeConfigured      bool   `json:"stateProbeConfigured,omitempty"`
+	StateProbeFailureCount    int    `json:"stateProbeFailureCount,omitempty"`
+	StateProbeSuccessfulOnce  bool   `json:"stateProbeSuccessfulOnce,omitempty"`
+	StateProbeDetectionIssue  string `json:"stateProbeDetectionIssue,omitempty"`
 
 	// Syncing state
 	SyncingState      string `json:"syncingState"`

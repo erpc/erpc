@@ -962,6 +962,53 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 
 		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's <= latest
 		return blockNumber <= latestBlock, nil
+	case common.AvailbilityConfidenceStateReady:
+		//
+		// StateReady: the upstream must have not only observed the block at its head
+		// but also confirmed (via the configured state probe) that its state DB is
+		// consistent at that block. Defends against the head-vs-trie race where a
+		// fast-ingesting node advances its head pointer before state slots are
+		// committed for that block, causing silent zero-valued state reads.
+		//
+		// When no StateProbe is configured for the network, StateReadyBlock falls
+		// back to LatestBlock — i.e. this behaves identically to BlockHead. This
+		// preserves backward compatibility for chains that haven't opted into the
+		// readiness probe yet.
+		//
+		stateReady := statePoller.StateReadyBlock()
+		// Same force-fresh semantics as BlockHead — if the requested block is
+		// beyond what we know is state-ready, give the poller one shot to catch
+		// up before rejecting.
+		if blockNumber > stateReady && forceFreshIfStale {
+			if _, err := statePoller.PollLatestBlockNumber(ctx); err != nil {
+				return false, fmt.Errorf("failed to poll latest block number: %w", err)
+			}
+			if _, err := statePoller.PollStateReady(ctx); err != nil {
+				return false, fmt.Errorf("failed to poll state-readiness probe: %w", err)
+			}
+			stateReady = statePoller.StateReadyBlock()
+		}
+		if blockNumber > stateReady {
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkLabel(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			return false, nil
+		}
+		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+			available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
+			if err != nil {
+				return false, err
+			}
+			if !available {
+				return false, nil
+			}
+		}
+		return true, nil
 	default:
 		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}

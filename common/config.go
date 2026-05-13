@@ -1789,6 +1789,110 @@ type EvmNetworkConfig struct {
 	// to work safely with transaction broadcasting.
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
+
+	// StateProbe configures a per-network state-readiness probe used by the
+	// state poller to detect the head-vs-trie race: a node's block-header
+	// pointer can advance to block N before its state DB is consistent at
+	// block N, causing state reads (eth_getBalance, eth_getCode,
+	// eth_getStorageAt, etc.) to silently return zero-valued or stale results.
+	//
+	// The probe is a single named strategy plus its typed inputs (see
+	// EvmStateProbeConfig). Each poller cycle runs the strategy at the
+	// upstream's current latest block; StateReadyBlock advances only when the
+	// strategy passes. State-read methods can then opt into the StateReady
+	// availability confidence to be routed away from upstreams whose state DB
+	// has not yet caught up to their advertised head.
+	//
+	// When not configured, StateReadyBlock falls back to LatestBlock and the
+	// new confidence behaves identically to BlockHead (no behavior change).
+	StateProbe *EvmStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
+}
+
+// EvmStateProbeStrategy names the algorithm an EvmStateProbeConfig invokes.
+// The set is intentionally small and curated; each strategy is a typed,
+// self-contained check rather than a user-composed expression. New strategies
+// land as code, not as config syntax.
+type EvmStateProbeStrategy string
+
+const (
+	// StateProbeChangingStorage reads eth_getStorageAt(address, slot, latestBlock)
+	// and passes iff the result is non-empty AND differs from the previous
+	// successful probe. Catches both "0x0 at head" (the literal failure mode
+	// from trace a96e11c29cdf5be9e26b05c7c15773b8 on Polygon, 2026-05-13) and
+	// the silent-stale-prev-block failure mode where a node serves the value
+	// from block N-1 while claiming to be at block N.
+	//
+	// Requires a slot that legitimately changes on most blocks (e.g. a
+	// high-activity ERC-20 totalSupply, a Uniswap V3 pool slot0). On chains
+	// where no such slot exists, prefer one of the simpler strategies that
+	// will land as follow-ups.
+	StateProbeChangingStorage EvmStateProbeStrategy = "changingStorage"
+)
+
+// EvmStateProbeConfig declares which named strategy the state poller runs
+// each cycle to verify an upstream's state DB is consistent at its advertised
+// head block.
+//
+// Example (Polygon, USDC.e totalSupply slot — changes on most blocks):
+//
+//	stateProbe:
+//	  strategy: changingStorage
+//	  address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+//	  slot:    "0x3"
+//
+// When stateProbe is nil, StateReadyBlock falls back to LatestBlock and
+// AvailbilityConfidenceStateReady behaves identically to BlockHead. Existing
+// networks are unaffected until they opt in.
+type EvmStateProbeConfig struct {
+	// Strategy selects the probe implementation. Currently only
+	// "changingStorage" is supported.
+	Strategy EvmStateProbeStrategy `yaml:"strategy" json:"strategy"`
+
+	// Address is the contract or account address the probe targets.
+	// Required for "changingStorage".
+	Address string `yaml:"address,omitempty" json:"address,omitempty"`
+
+	// Slot is the storage slot the probe reads.
+	// Required for "changingStorage".
+	Slot string `yaml:"slot,omitempty" json:"slot,omitempty"`
+
+	// FailureThreshold caps consecutive probe failures before the state poller
+	// disables the probe and StateReadyBlock falls back to LatestBlock
+	// (degraded permissive mode). Default 10.
+	FailureThreshold int `yaml:"failureThreshold,omitempty" json:"failureThreshold,omitempty"`
+}
+
+func (c *EvmStateProbeConfig) Copy() *EvmStateProbeConfig {
+	if c == nil {
+		return nil
+	}
+	return &EvmStateProbeConfig{
+		Strategy:         c.Strategy,
+		Address:          c.Address,
+		Slot:             c.Slot,
+		FailureThreshold: c.FailureThreshold,
+	}
+}
+
+// Validate returns nil iff the config is internally consistent for its strategy.
+func (c *EvmStateProbeConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	switch c.Strategy {
+	case "":
+		return fmt.Errorf("stateProbe.strategy is required")
+	case StateProbeChangingStorage:
+		if c.Address == "" {
+			return fmt.Errorf("stateProbe.address is required for strategy %q", c.Strategy)
+		}
+		if c.Slot == "" {
+			return fmt.Errorf("stateProbe.slot is required for strategy %q", c.Strategy)
+		}
+	default:
+		return fmt.Errorf("stateProbe.strategy %q is not a known strategy (supported: %q)", c.Strategy, StateProbeChangingStorage)
+	}
+	return nil
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

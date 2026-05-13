@@ -16,6 +16,30 @@ func IsNonRetryableWriteMethod(method string) bool {
 		method == "eth_newPendingTransactionFilter"
 }
 
+// IsStateReadMethod returns true for JSON-RPC methods whose result depends on
+// the state trie at a specific block. These methods are vulnerable to the
+// head-vs-trie race — an upstream may advance its head pointer to block N
+// before its state DB is consistent at N, causing a silent zero-valued response.
+//
+// State-read methods can opt into the StateReady availability confidence so
+// the upstream-selection and retry layers consult the state-readiness probe
+// instead of trusting the upstream's head pointer alone.
+func IsStateReadMethod(method string) bool {
+	switch method {
+	case "eth_getBalance",
+		"eth_getCode",
+		"eth_getStorageAt",
+		"eth_getTransactionCount",
+		"eth_getProof",
+		"eth_call",
+		"eth_estimateGas",
+		"eth_simulateV1",
+		"eth_createAccessList":
+		return true
+	}
+	return false
+}
+
 func IsMissingDataError(err error) bool {
 	txt := err.Error()
 	return strings.Contains(txt, "missing trie node") ||
