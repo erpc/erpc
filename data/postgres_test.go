@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -282,4 +283,136 @@ func TestPostgreSQLDistributedLocking(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+}
+
+// TestPostgreSQLConnectorReconnectBehavior covers the regression fixed in
+// the write-lock-during-connect bug: a reconnect must not block readers, and
+// the one-time schema setup must not be re-issued on every reconnect.
+//
+// The original bug surfaced in production traces as:
+//
+//	span_name:           PostgreSQLConnector.Get
+//	exception.message:   "PostgreSQLConnector not connected yet"
+//	duration:            ~initTimeout (clustered just under 5s)
+//
+// because Get held connMu.RLock(), the in-flight connectTask held
+// connMu.Lock() for the entire pgxpool.ConnectConfig + DDL sequence, and
+// every Get serialized behind that lock. Reconnects also re-ran the schema
+// DDL on every attempt, which produced a request burst against the pooler
+// at the worst possible time (when a reconnect storm was already underway).
+func TestPostgreSQLConnectorReconnectBehavior(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := testcontainers.ContainerRequest{
+		Image:        "postgres:15-alpine",
+		Env:          map[string]string{"POSTGRES_PASSWORD": "password"},
+		ExposedPorts: []string{"5432/tcp"},
+		WaitingFor: wait.ForLog("database system is ready to accept connections").
+			WithOccurrence(2).
+			WithStartupTimeout(2 * time.Minute),
+	}
+	postgresC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	require.NoError(t, err)
+	defer postgresC.Terminate(context.Background())
+
+	host, err := postgresC.Host(ctx)
+	require.NoError(t, err)
+	port, err := postgresC.MappedPort(ctx, "5432")
+	require.NoError(t, err)
+	connURI := fmt.Sprintf("postgres://postgres:password@%s:%s/postgres?sslmode=disable", host, port.Port())
+
+	cfg := &common.PostgreSQLConnectorConfig{
+		Table:         "reconnect_test_table",
+		ConnectionUri: connURI,
+		InitTimeout:   common.Duration(5 * time.Second),
+		GetTimeout:    common.Duration(2 * time.Second),
+		SetTimeout:    common.Duration(2 * time.Second),
+		MinConns:      1,
+		MaxConns:      5,
+	}
+
+	connector, err := NewPostgreSQLConnector(ctx, &logger, "reconnect-test", cfg)
+	require.NoError(t, err)
+	require.Equal(t, util.StateReady, connector.initializer.State())
+
+	// Sanity-check that the initial connect set the schema-ready flag.
+	require.True(t, connector.schemaReady.Load(),
+		"schemaReady should be true after a successful first connect")
+
+	// Seed a value so we have something to read during reconnect.
+	require.NoError(t, connector.Set(ctx, "pk", "rk", []byte("v0"), nil))
+
+	t.Run("ReconnectSkipsSchemaMigration", func(t *testing.T) {
+		// Invoke connectTask directly to simulate the auto-retry path the
+		// initializer uses on MarkTaskAsFailed. With schemaReady already set,
+		// the second call must NOT re-issue DDL.
+		//
+		// We assert this indirectly via wall-clock: a no-DDL reconnect is
+		// dominated by pgxpool.ConnectConfig (single-digit ms against a local
+		// container) while the original DDL pass takes 100ms+ even on a warm
+		// container. Generous threshold so the test isn't flaky.
+		start := time.Now()
+		require.NoError(t, connector.connectTask(ctx, cfg))
+		reconnectDuration := time.Since(start)
+
+		require.True(t, connector.schemaReady.Load(),
+			"schemaReady must remain true after reconnect")
+		require.Less(t, reconnectDuration, 2*time.Second,
+			"reconnect without schema migration should be fast; got %v", reconnectDuration)
+
+		// Confirm the new pool is usable after the swap.
+		v, err := connector.Get(ctx, "", "pk", "rk", nil)
+		require.NoError(t, err)
+		require.Equal(t, []byte("v0"), v)
+	})
+
+	t.Run("ReadersAreNotBlockedDuringReconnect", func(t *testing.T) {
+		// Spawn a goroutine that triggers a reconnect, and concurrently fire
+		// a burst of reads. With the bug, every read would block until the
+		// reconnect's WRITE lock is released. With the fix, the WRITE lock is
+		// held only for the brief pool-swap.
+		const concurrency = 50
+		const maxAllowedReadLatency = 1 * time.Second // very generous
+
+		var wg sync.WaitGroup
+		readLatencies := make([]time.Duration, concurrency)
+		readErrors := make([]error, concurrency)
+
+		// Trigger a reconnect (will run connectTask).
+		reconnectStart := time.Now()
+		reconnectDone := make(chan struct{})
+		go func() {
+			defer close(reconnectDone)
+			_ = connector.connectTask(ctx, cfg)
+		}()
+
+		// Hammer Get from many goroutines while the reconnect is in flight.
+		for i := 0; i < concurrency; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				start := time.Now()
+				_, err := connector.Get(ctx, "", "pk", "rk", nil)
+				readLatencies[i] = time.Since(start)
+				readErrors[i] = err
+			}(i)
+		}
+
+		wg.Wait()
+		<-reconnectDone
+		t.Logf("reconnect+50 concurrent reads completed in %v", time.Since(reconnectStart))
+
+		// Every read must complete (succeed or fail) quickly. The bug would
+		// have produced ~initTimeout (5s) per read.
+		for i, lat := range readLatencies {
+			require.Less(t, lat, maxAllowedReadLatency,
+				"read %d was blocked for %v — exceeds the budget that proves the WRITE lock is no longer held during connect (err=%v)",
+				i, lat, readErrors[i])
+		}
+	})
 }

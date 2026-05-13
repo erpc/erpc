@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -40,6 +41,17 @@ type PostgreSQLConnector struct {
 	setTimeout    time.Duration
 	listeners     sync.Map      // map[string]*pgxListener
 	listenerPool  *pgxpool.Pool // Separate pool for LISTEN connections
+
+	// schemaReady gates one-time schema setup (CREATE TABLE / CREATE INDEX /
+	// pg_cron). The DDL is idempotent but issuing it on every reconnect adds
+	// load to the database and pooler at precisely the moments when both are
+	// already strained. It is run exactly once per process lifetime, on the
+	// first successful connect.
+	schemaReady atomic.Bool
+
+	// cleanupStarted gates the local expired-items goroutine so repeated
+	// reconnects don't accumulate copies of it.
+	cleanupStarted sync.Once
 }
 
 type pgxListener struct {
@@ -100,12 +112,15 @@ func NewPostgreSQLConnector(
 }
 
 func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
-	p.connMu.Lock()
-	defer p.connMu.Unlock()
-
-	// Defer creation of listener pool until it's actually needed by WatchCounterInt64
-	p.listenerPool = nil
-
+	// The expensive work — pgxpool.ConnectConfig (TCP dial, TLS, auth, opening
+	// MinConns connections) and the one-time schema setup — runs WITHOUT the
+	// write lock. The previous design held connMu.Lock for the entire body of
+	// this function (often 4–5s), which serialized every Get/Set/Lock behind
+	// each reconnect attempt and caused traces to surface as
+	// `PostgreSQLConnector not connected yet` with duration ≈ initTimeout when
+	// in fact the connector either had a perfectly usable previous pool or was
+	// in the middle of building a new one. The lock is now scoped down to the
+	// brief field-swap at the end.
 	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
 	if err != nil {
 		return common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
@@ -118,13 +133,66 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	ctx, cancel := context.WithTimeout(ctx, p.initTimeout)
 	defer cancel()
 
-	conn, err := pgxpool.ConnectConfig(ctx, config)
+	newConn, err := pgxpool.ConnectConfig(ctx, config)
 	if err != nil {
 		return err
 	}
 
+	// Apply schema only on the very first successful connect for this process.
+	// The DDL is idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT
+	// EXISTS`, `CREATE INDEX IF NOT EXISTS`), but re-running it on every
+	// reconnect issues a half-dozen queries against the database and pooler at
+	// the worst possible time — when a reconnect storm is already underway.
+	if !p.schemaReady.Load() {
+		if err := p.applySchema(ctx, newConn, cfg); err != nil {
+			// The pool we just opened is about to be discarded — close it so its
+			// connections are released back to the pooler rather than lingering
+			// until GC.
+			newConn.Close()
+			return err
+		}
+		p.schemaReady.Store(true)
+	}
+
+	// Publish the new pool. This is the only critical section: readers see a
+	// consistent snapshot of (conn, listenerPool) and the swap is
+	// nanoseconds, not seconds.
+	p.connMu.Lock()
+	oldConn := p.conn
+	oldListenerPool := p.listenerPool
+	p.conn = newConn
+	// Force lazy re-creation of the listener pool against the fresh main pool.
+	p.listenerPool = nil
+	p.connMu.Unlock()
+
+	// Close the old pools outside the lock. pgxpool.Pool.Close blocks until
+	// in-flight queries return, which can take seconds and must not stall the
+	// hot read path.
+	if oldConn != nil {
+		oldConn.Close()
+	}
+	if oldListenerPool != nil {
+		oldListenerPool.Close()
+	}
+
+	p.logger.Info().Str("table", p.table).Msg("successfully connected to postgres")
+
+	// Spawn the local expired-items cleanup goroutine at most once per
+	// connector lifetime, regardless of how many times connectTask runs.
+	if p.cleanupTicker != nil {
+		p.cleanupStarted.Do(func() {
+			go p.startCleanup(ctx)
+		})
+	}
+	return nil
+}
+
+// applySchema runs the idempotent one-time schema setup against the supplied
+// pool. It is intentionally split from connectTask so that reconnects can
+// rebuild only the pool without re-issuing DDL.
+func (p *PostgreSQLConnector) applySchema(ctx context.Context, conn *pgxpool.Pool, cfg *common.PostgreSQLConnectorConfig) error {
 	// Create table if not exists with TTL column
-	_, err = conn.Exec(ctx, fmt.Sprintf(`
+	_, err := conn.Exec(ctx, fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			partition_key TEXT,
 			range_key TEXT,
@@ -140,8 +208,8 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	// Migrate existing TEXT column to BYTEA if needed
 	var dataType string
 	err = conn.QueryRow(ctx, `
-		SELECT data_type 
-		FROM information_schema.columns 
+		SELECT data_type
+		FROM information_schema.columns
 		WHERE table_name = $1 AND column_name = 'value'
 	`, cfg.Table).Scan(&dataType)
 
@@ -231,14 +299,6 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		}
 	}
 
-	p.conn = conn
-	p.logger.Info().Str("table", p.table).Msg("successfully connected to postgres")
-
-	// If we are *not* using pg_cron, we still have a non-nil ticker,
-	// so we spawn the local cleanup routine:
-	if p.cleanupTicker != nil {
-		go p.startCleanup(ctx)
-	}
 	return nil
 }
 
