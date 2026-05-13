@@ -11,10 +11,15 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
+
+func init() {
+	util.ConfigureTestLogger()
+}
 
 func TestPostgreConnectorInitialization(t *testing.T) {
 	t.Run("SucceedsValidConfigRealContainer", func(t *testing.T) {
@@ -301,7 +306,6 @@ func TestPostgreSQLDistributedLocking(t *testing.T) {
 // DDL on every attempt, which produced a request burst against the pooler
 // at the worst possible time (when a reconnect storm was already underway).
 func TestPostgreSQLConnectorReconnectBehavior(t *testing.T) {
-	logger := zerolog.New(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -336,20 +340,22 @@ func TestPostgreSQLConnectorReconnectBehavior(t *testing.T) {
 		MaxConns:      5,
 	}
 
-	connector, err := NewPostgreSQLConnector(ctx, &logger, "reconnect-test", cfg)
+	connector, err := NewPostgreSQLConnector(ctx, &log.Logger, "reconnect-test", cfg)
 	require.NoError(t, err)
 	require.Equal(t, util.StateReady, connector.initializer.State())
 
-	// Sanity-check that the initial connect set the schema-ready flag.
-	require.True(t, connector.schemaReady.Load(),
-		"schemaReady should be true after a successful first connect")
+	// Sanity-check that the initial connect set the schema-applied flag.
+	connector.schemaMu.Lock()
+	require.True(t, connector.schemaApplied,
+		"schemaApplied should be true after a successful first connect")
+	connector.schemaMu.Unlock()
 
 	// Seed a value so we have something to read during reconnect.
 	require.NoError(t, connector.Set(ctx, "pk", "rk", []byte("v0"), nil))
 
 	t.Run("ReconnectSkipsSchemaMigration", func(t *testing.T) {
 		// Invoke connectTask directly to simulate the auto-retry path the
-		// initializer uses on MarkTaskAsFailed. With schemaReady already set,
+		// initializer uses on MarkTaskAsFailed. With schemaApplied already set,
 		// the second call must NOT re-issue DDL.
 		//
 		// We assert this indirectly via wall-clock: a no-DDL reconnect is
@@ -360,8 +366,10 @@ func TestPostgreSQLConnectorReconnectBehavior(t *testing.T) {
 		require.NoError(t, connector.connectTask(ctx, cfg))
 		reconnectDuration := time.Since(start)
 
-		require.True(t, connector.schemaReady.Load(),
-			"schemaReady must remain true after reconnect")
+		connector.schemaMu.Lock()
+		applied := connector.schemaApplied
+		connector.schemaMu.Unlock()
+		require.True(t, applied, "schemaApplied must remain true after reconnect")
 		require.Less(t, reconnectDuration, 2*time.Second,
 			"reconnect without schema migration should be fast; got %v", reconnectDuration)
 
