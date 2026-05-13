@@ -57,28 +57,38 @@ type Network struct {
 	initializer          *util.Initializer
 }
 
-// Bootstrap registers this network with the policy engine, snapshotting the
-// current upstream list and selection-policy config. The engine kicks off
-// the slot's ticker and runs an initial synchronous eval so request-path
+// Bootstrap registers this network with the policy engine. The engine kicks
+// off the slot's ticker and runs an initial synchronous eval so request-path
 // reads through `policyEngine.GetOrdered` always see a populated cache.
+//
+// The upstream list is supplied as a closure so newly-bootstrapped upstreams
+// become visible to the engine each tick without a re-register.
 func (n *Network) Bootstrap(ctx context.Context) error {
 	if n.policyEngine == nil {
 		return nil
 	}
-	upsPtrs := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	upsIface := make([]common.Upstream, len(upsPtrs))
-	for i, u := range upsPtrs {
-		upsIface[i] = u
-	}
 	cfg := n.cfg.SelectionPolicy
 	if cfg == nil {
 		cfg = &common.SelectionPolicyConfig{}
-		if err := cfg.SetDefaults(); err != nil {
-			return fmt.Errorf("default selectionPolicy SetDefaults: %w", err)
-		}
 		n.cfg.SelectionPolicy = cfg
 	}
-	return n.policyEngine.RegisterNetwork(n.networkId, upsIface, cfg)
+	// Defensive: callers may have set Eval but skipped SetDefaults (common
+	// in tests that build Config as Go struct literals). Compile here so
+	// the engine never sees a nil program.
+	if cfg.CompiledProgram == nil {
+		if err := cfg.SetDefaults(); err != nil {
+			return fmt.Errorf("selectionPolicy SetDefaults: %w", err)
+		}
+	}
+	upstreamsFn := func() []common.Upstream {
+		ptrs := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+		out := make([]common.Upstream, len(ptrs))
+		for i, u := range ptrs {
+			out[i] = u
+		}
+		return out
+	}
+	return n.policyEngine.RegisterNetwork(n.networkId, upstreamsFn, cfg)
 }
 
 // PinUpstreamOrderForTest pins the upstream ordering for this network to

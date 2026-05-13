@@ -25,12 +25,13 @@ func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 	if !ok || reg == nil {
 		return
 	}
-	index := make(map[string]common.Upstream, len(reg.upstreams))
-	for _, u := range reg.upstreams {
+	ups := reg.upstreamsFn()
+	index := make(map[string]common.Upstream, len(ups))
+	for _, u := range ups {
 		index[u.Id()] = u
 	}
 	if len(ids) == 0 {
-		ids = make([]string, 0, len(reg.upstreams))
+		ids = make([]string, 0, len(ups))
 		for id := range index {
 			ids = append(ids, id)
 		}

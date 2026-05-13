@@ -18,8 +18,8 @@ type Slot struct {
 	networkID string
 	method    string
 
-	upstreams []common.Upstream
-	cfg       *common.SelectionPolicyConfig
+	upstreamsFn func() []common.Upstream
+	cfg         *common.SelectionPolicyConfig
 
 	// cache holds the most recent eval output. nil before the first tick.
 	cache atomic.Pointer[[]common.Upstream]
@@ -43,7 +43,7 @@ type Slot struct {
 	wg       sync.WaitGroup
 }
 
-func newSlot(e *Engine, networkID, method string, upstreams []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
+func newSlot(e *Engine, networkID, method string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
 	historyTicks := 1
 	if cfg.EvalInterval > 0 && cfg.DecisionHistory > 0 {
 		historyTicks = int(cfg.DecisionHistory.Duration() / cfg.EvalInterval.Duration())
@@ -55,7 +55,7 @@ func newSlot(e *Engine, networkID, method string, upstreams []common.Upstream, c
 		engine:        e,
 		networkID:     networkID,
 		method:        method,
-		upstreams:     upstreams,
+		upstreamsFn:   upstreamsFn,
 		cfg:           cfg,
 		excludedSince: make(map[string]int64),
 		ring:          newRingBuffer(historyTicks),
@@ -98,8 +98,11 @@ func (s *Slot) tickOnce() {
 	start := time.Now()
 	timeout := s.cfg.EvalTimeout.Duration()
 
+	// Re-resolve upstreams each tick so newly-bootstrapped ones become visible.
+	ups := s.upstreamsFn()
+
 	// 1. Snapshot metrics for every upstream.
-	metrics := snapshotMetrics(s.engine.tracker, s.upstreams, s.method)
+	metrics := snapshotMetrics(s.engine.tracker, ups, s.method)
 
 	// 2. Build EvalContext from cross-tick state.
 	s.mu.Lock()
@@ -121,7 +124,7 @@ func (s *Slot) tickOnce() {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		orderedIDs, evalErr = runEval(s.engine.pool, s.cfg, s.upstreams, metrics, evalCtx)
+		orderedIDs, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, evalCtx)
 	}()
 
 	if timeout > 0 {
@@ -142,7 +145,7 @@ func (s *Slot) tickOnce() {
 		TickAt:       start,
 		EvalDuration: time.Since(start),
 		Input: DecisionInput{
-			UpstreamIDs: upstreamIDs(s.upstreams),
+			UpstreamIDs: upstreamIDs(ups),
 			Metrics:     metrics,
 		},
 		State: state,
@@ -162,7 +165,7 @@ func (s *Slot) tickOnce() {
 	s.consecutiveFails = 0
 
 	// 4. Validate + materialize the ordered upstream slice.
-	ordered, excluded := materializeOrder(s.upstreams, orderedIDs)
+	ordered, excluded := materializeOrder(ups, orderedIDs)
 	decision.Output = DecisionOutput{Order: orderedIDs, Excluded: excluded}
 
 	// 5. Compute diff against previous tick.

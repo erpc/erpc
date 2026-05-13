@@ -37,8 +37,11 @@ type slotKey struct {
 }
 
 type networkRegistration struct {
-	upstreams []common.Upstream
-	cfg       *common.SelectionPolicyConfig
+	// upstreamsFn is queried at every tick so newly-bootstrapped upstreams
+	// become visible to the engine without a re-register. Static fixtures
+	// can use a closure that returns a frozen slice.
+	upstreamsFn func() []common.Upstream
+	cfg         *common.SelectionPolicyConfig
 }
 
 // NewEngine constructs an Engine. `tracker` is read-only from the engine's
@@ -70,25 +73,31 @@ func NewEngine(
 // and starts its ticker. If `cfg.EvalPerMethod` is true, additional slots
 // are created lazily when GetOrdered is called with a specific method.
 //
-// If `cfg.Eval` is the placeholder identity policy (`common.DefaultSelectionPolicySource`),
-// this method upgrades it to the embedded rich default (sortByScore +
-// preferGroup + stickyPrimary + probeExcluded) — that policy uses std-lib
-// methods which only exist once a runtime has been primed. common/ cannot
-// reach internal/policy/, so the substitution happens here.
+// The `upstreamsFn` callback is invoked at every tick so newly-bootstrapped
+// upstreams become visible to the engine without a re-register. For static
+// configurations a closure returning a frozen slice is fine.
+//
+// If `cfg.Eval` is the placeholder identity policy
+// (`common.DefaultSelectionPolicySource`), this method upgrades it to
+// the embedded rich default (sortByScore + preferGroup + stickyPrimary
+// + probeExcluded).
 //
 // The initial eval runs synchronously so callers can rely on a non-empty
 // cache being present once RegisterNetwork returns.
-func (e *Engine) RegisterNetwork(networkID string, upstreams []common.Upstream, cfg *common.SelectionPolicyConfig) error {
+func (e *Engine) RegisterNetwork(networkID string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) error {
 	if err := upgradeDefaultPolicy(cfg); err != nil {
 		return err
+	}
+	if upstreamsFn == nil {
+		upstreamsFn = func() []common.Upstream { return nil }
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.networks[networkID] = &networkRegistration{
-		upstreams: upstreams,
-		cfg:       cfg,
+		upstreamsFn: upstreamsFn,
+		cfg:         cfg,
 	}
 
 	// Tear down any pre-existing slots for this network so reconfiguration
@@ -100,7 +109,7 @@ func (e *Engine) RegisterNetwork(networkID string, upstreams []common.Upstream, 
 		}
 	}
 
-	wildcard := newSlot(e, networkID, "*", upstreams, cfg)
+	wildcard := newSlot(e, networkID, "*", upstreamsFn, cfg)
 	e.slots[slotKey{networkID, "*"}] = wildcard
 
 	// Initial eval is synchronous so the first request sees a populated cache.

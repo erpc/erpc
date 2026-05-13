@@ -94,7 +94,7 @@ func TestStdlib_PreferGroupFallback(t *testing.T) {
 	ups := mkUpsWithGroups(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", ups, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	ordered := engine.GetOrdered("evm:1", "*")
 	require.Len(t, ordered, 2, "should return both main-group upstreams")
@@ -114,7 +114,7 @@ func TestStdlib_RotateBy_RoundRobin(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2", "rpc3")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", ups, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	seen := map[string]bool{}
 	for i := 0; i < 6; i++ {
@@ -137,7 +137,7 @@ func TestStdlib_SortByScore_BalancedPenalizesErrors(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", ups, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// Drive rpc1 → high error rate; rpc2 → clean.
 	for i := 0; i < 80; i++ {
@@ -169,7 +169,7 @@ func TestStdlib_RemoveByLag(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2", "rpc3")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", ups, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// Force-create metric entries, then set lag directly. (We can't use
 	// SetLatestBlockNumber here without a real registry.)
@@ -205,7 +205,7 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUpsWithGroups(map[string]string{"rpc1": "default", "rpc2": "fallback"})
-	require.NoError(t, engine.RegisterNetwork("evm:1", ups, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// After RegisterNetwork the cfg should hold the rich default source.
 	require.Contains(t, cfg.Eval, "sortByScore(BALANCED)",
@@ -227,7 +227,7 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", ups, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// Tick 1: rpc1 clean, rpc2 broken → rpc1 becomes primary.
 	for i := 0; i < 100; i++ {
