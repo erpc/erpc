@@ -1,0 +1,250 @@
+---
+description: How to migrate from the legacy scoring + selectionPolicy.evalFunction config to the unified Selection Policy.
+---
+
+import { Callout, Tabs, Tab } from 'nextra/components'
+
+# Migrating to the unified Selection Policy
+
+eRPC used to have **two parallel systems** for deciding which upstream serves
+each request:
+
+1. The **scoring mechanism** — project-level knobs (`routingStrategy`,
+   `scoreMultipliers`, `scoreSwitchHysteresis`, `scoreMinSwitchInterval`,
+   `scoreMetricsMode`, etc.) plus a tick-driven ordering loop.
+2. The **selection policy** — a network-level JS `evalFunction` filter that
+   sat on top of the scoring output and decided which upstreams were
+   eligible at all.
+
+Both are gone. They are replaced by a single, unified **Selection Policy**:
+one JavaScript function per network whose return value is the ordered list
+of eligible upstreams. Order is law; missing means excluded.
+
+<Callout type="info">
+Existing configs continue to load. eRPC translates legacy fields at
+unmarshal time into an equivalent `selectionPolicy.eval`, with a deprecation
+warning per project. Translator stays for two minor releases; afterward,
+legacy YAML stops loading.
+</Callout>
+
+## Why
+
+- **One mental model.** Today you read `routingStrategy` + `scoreMultipliers`
+  + an `evalFunction` and reason about how they compose. After: one function
+  that produces the final order.
+- **Composable std-lib.** Chainable methods (`sortByScore`, `removeByLag`,
+  `preferGroup`, `stickyPrimary`, `probeExcluded`, …) replace nearly every
+  multi-field knob with a one-liner you can read top-to-bottom.
+- **Observability.** Every tick produces a `Decision` record (joined to
+  requests via `decision_id`). Operators answer
+  *"why was upstream X used at time T for method M?"* by following one link.
+
+## Field-by-field mapping
+
+| Legacy | New |
+|---|---|
+| `routingStrategy: score-based` (default) | Default — synthesized eval uses `sortByScore(BALANCED)` |
+| `routingStrategy: round-robin` | Synthesized eval: `upstreams.rotateBy(ctx.tickCount)` |
+| `scoreGranularity: upstream` | `selectionPolicy.evalPerMethod: false` (the default) |
+| `scoreGranularity: method` | `selectionPolicy.evalPerMethod: true` |
+| `scoreRefreshInterval: 30s` | `selectionPolicy.evalInterval: 30s` |
+| `scoreMetricsWindowSize: 10m` | Stays on the `health.Tracker` window (not part of `selectionPolicy`) |
+| `scorePenaltyDecayRate: 0.95` | `sortByScore(weights, { decay: 0.95 })` |
+| `scoreSwitchHysteresis: 0.10` | `stickyPrimary({ hysteresis: 0.10 })` |
+| `scoreMinSwitchInterval: 2m` | `stickyPrimary({ hysteresis, minSwitchInterval: '2m' })` |
+| `scoreMetricsMode: compact \| detailed \| none` | **Removed.** The new `erpc_selection_*` metrics have fixed cardinality. |
+| `upstream.routing.scoreMultipliers[*]` | Per-upstream weights via the function form of `sortByScore` (see "Worked example 2" below) |
+| `upstream.routing.scoreLatencyQuantile: 0.70` | `sortByScore(weights, { latencyQuantile: 'p70' })` (nearest of `p50/p70/p90/p95/p99`) |
+| `selectionPolicy.evalInterval` | Same — kept as-is. |
+| `selectionPolicy.evalFunction: "(upstreams, method) => …"` | Wrapped into `selectionPolicy.eval = "const __legacyFn = (upstreams, method) => …; return __legacyFn(upstreams, ctx.method);"` |
+| `selectionPolicy.evalPerMethod` | Same — kept as-is. |
+| `selectionPolicy.resampleExcluded: true` + `resampleInterval: M` | Appended to the chain: `.probeExcluded({ reAdmitAfter: M, maxConcurrent: 1, longestFirst: true })` |
+| `selectionPolicy.resampleCount: N` | **Dropped.** The new probe re-admits one upstream per tick (configurable via `maxConcurrent`) and traffic flows organically while it's in rotation; you no longer need to tell eRPC how many sample requests to send. |
+| `ROUTING_POLICY_MAX_ERROR_RATE`, `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG`, `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` env vars | Synthesized eval reads `process.env.X` with the same defaults, so existing deployments behave identically. New deployments should inline the thresholds in `selectionPolicy.eval` directly. |
+| `erpc_upstream_score_overall` metric | **Removed.** Use `erpc_selection_position` (gauge: 0 = primary, 1+ = runners-up, -1 = excluded). |
+| `erpc_upstream_routing_priority` metric | **Removed.** Same replacement. |
+
+## Worked examples
+
+### Example 1 — round-robin
+
+<Tabs items={["legacy", "new"]} defaultIndex={0}>
+<Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    routingStrategy: round-robin
+    upstreams:
+      - endpoint: alchemy://...
+      - endpoint: infura://...
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+```
+</Tab>
+<Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - endpoint: alchemy://...
+      - endpoint: infura://...
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        selectionPolicy:
+          evalInterval: 1s
+          eval: |
+            (upstreams, ctx) => upstreams.rotateBy(ctx.tickCount)
+```
+</Tab>
+</Tabs>
+
+### Example 2 — per-upstream score multipliers
+
+<Tabs items={["legacy", "new"]} defaultIndex={0}>
+<Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - id: hot
+        endpoint: alchemy://...
+        routing:
+          scoreMultipliers:
+            - network: "*"
+              method: "*"
+              errorRate: 8
+              respLatency: 12   # weight latency heavier on the fast tier
+              overall: 1
+      - id: cold
+        endpoint: drpc://...
+        routing:
+          scoreMultipliers:
+            - network: "*"
+              method: "*"
+              errorRate: 8
+              respLatency: 4
+              overall: 1
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+```
+</Tab>
+<Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - id: hot
+        endpoint: alchemy://...
+      - id: cold
+        endpoint: drpc://...
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        selectionPolicy:
+          evalInterval: 1s
+          eval: |
+            const weightsByID = {
+              hot:  { errorRate: 8, respLatency: 12 },
+              cold: { errorRate: 8, respLatency: 4 },
+            };
+            (upstreams, ctx) =>
+              upstreams.sortByScore((u) => weightsByID[u.id] || BALANCED)
+```
+</Tab>
+</Tabs>
+
+### Example 3 — network-level custom selection policy
+
+<Tabs items={["legacy", "new"]} defaultIndex={0}>
+<Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - id: rpc1
+        endpoint: https://rpc1.example/
+      - id: rpc2
+        endpoint: https://rpc2.example/
+      - id: rpc3
+        endpoint: https://rpc3.example/
+        group: fallback
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        selectionPolicy:
+          evalInterval: 1m
+          evalFunction: |
+            (upstreams, method) => {
+              const defaults  = upstreams.filter(u => u.config.group !== 'fallback');
+              const fallbacks = upstreams.filter(u => u.config.group === 'fallback');
+              const healthy   = defaults.filter(u => u.metrics.errorRate < 0.5);
+              if (healthy.length >= 1) return healthy;
+              return fallbacks.length > 0 ? fallbacks : upstreams;
+            }
+          resampleExcluded: true
+          resampleInterval: 5m
+```
+</Tab>
+<Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - id: rpc1
+        endpoint: https://rpc1.example/
+      - id: rpc2
+        endpoint: https://rpc2.example/
+      - id: rpc3
+        endpoint: https://rpc3.example/
+        group: fallback
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        selectionPolicy:
+          evalInterval: 1m
+          eval: |
+            (upstreams, ctx) =>
+              upstreams
+                .removeByErrorRate(0.5)
+                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+                .sortByScore(BALANCED)
+                .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+```
+</Tab>
+</Tabs>
+
+The new form is shorter and reads top-to-bottom: drop high-error upstreams,
+prefer the default group with fallback semantics, sort the survivors by the
+balanced score, and re-admit one excluded upstream every 5 minutes.
+
+## Auto-translate
+
+Two ways to migrate:
+
+- **Do nothing.** eRPC loads legacy YAML and emits a one-time deprecation
+  warning per project at startup. Your config keeps working until the
+  translator is removed (planned: two minor releases after this one).
+- **Convert in-place.** Run `erpc migrate-config erpc.yaml > erpc.new.yaml`
+  for a one-shot dump of the equivalent new-shape config, then replace the
+  file. (CLI command lands shortly; until then, use the deprecation
+  warnings as a checklist.)
+
+## Removal timeline
+
+| When | What |
+|---|---|
+| **This release** | New shape lands; translator handles legacy YAML; deprecation warnings emitted at load |
+| **+1 minor** | Deprecation warnings escalate to errors unless `--allow-legacy-config` is set |
+| **+2 minors** | `common/legacy/` package deleted; legacy YAML stops loading |
+
+The `erpc migrate-config` CLI stays forever — single-shot tool, no
+maintenance burden.
+
+## See also
+
+- [Selection policies](/config/projects/selection-policies) — full reference for the new shape.
+- [Selection policy stdlib](/config/projects/selection-policy-stdlib) — every chainable method, signature, semantics.
+- [feature spec](https://github.com/erpc/erpc/blob/main/specs/selection-policy/feature.md) — source of truth for behavior and API.

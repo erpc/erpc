@@ -20,4 +20,9 @@ module.exports = {
 		title: "Operations",
 	},
 	operation: { title: "Operation", display: "children" },
+	"-- Migration": {
+		type: "separator",
+		title: "Migration",
+	},
+	migration: { title: "Migration", display: "children" },
 };
