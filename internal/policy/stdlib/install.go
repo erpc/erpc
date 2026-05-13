@@ -45,14 +45,14 @@ func Install(rt *common.Runtime) error {
 
 	// 2. Reason constants (used by std-lib steps when annotating).
 	reasons := map[string]string{
-		"REASON_LAG":        "lag",
-		"REASON_ERROR_RATE": "errorRate",
-		"REASON_LATENCY":    "latency",
-		"REASON_THROTTLING": "throttling",
+		"REASON_LAG":         "lag",
+		"REASON_ERROR_RATE":  "errorRate",
+		"REASON_LATENCY":     "latency",
+		"REASON_THROTTLING":  "throttling",
 		"REASON_MISBEHAVIOR": "misbehavior",
-		"REASON_CORDONED":   "cordoned",
-		"REASON_GROUP":      "group",
-		"REASON_VENDOR":     "vendor",
+		"REASON_CORDONED":    "cordoned",
+		"REASON_GROUP":       "group",
+		"REASON_VENDOR":      "vendor",
 		"REASON_USER_FILTER": "user_filter",
 	}
 	for k, v := range reasons {

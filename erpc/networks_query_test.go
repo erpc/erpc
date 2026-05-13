@@ -84,7 +84,7 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, ntwCfg *common.Net
 	poller.SuggestLatestBlock(1000)
 	poller.SuggestFinalizedBlock(990)
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+	upr.OverrideOrderForTest(util.EvmNetworkId(123))
 	return ntw, upr
 }
 

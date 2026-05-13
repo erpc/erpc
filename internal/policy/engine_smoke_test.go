@@ -18,10 +18,10 @@ type fakeUpstream struct {
 	group string
 }
 
-func (f *fakeUpstream) Id() string                    { return f.id }
-func (f *fakeUpstream) VendorName() string            { return "test" }
-func (f *fakeUpstream) NetworkId() string             { return "evm:1" }
-func (f *fakeUpstream) NetworkLabel() string          { return "evm:1" }
+func (f *fakeUpstream) Id() string           { return f.id }
+func (f *fakeUpstream) VendorName() string   { return "test" }
+func (f *fakeUpstream) NetworkId() string    { return "evm:1" }
+func (f *fakeUpstream) NetworkLabel() string { return "evm:1" }
 func (f *fakeUpstream) Config() *common.UpstreamConfig {
 	return &common.UpstreamConfig{Id: f.id, Group: f.group}
 }

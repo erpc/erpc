@@ -38,7 +38,7 @@ type Slot struct {
 
 	ring *ringBuffer
 
-	stopCh chan struct{}
+	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 }

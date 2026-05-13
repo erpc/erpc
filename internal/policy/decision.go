@@ -40,15 +40,15 @@ type Decision struct {
 
 // DecisionInput captures the per-upstream metric snapshot the eval saw.
 type DecisionInput struct {
-	UpstreamIDs []string                    `json:"upstreamIds"`
-	Metrics     map[string]UpstreamMetrics  `json:"metrics"`
-	Annotations map[string][]string         `json:"annotations,omitempty"`
+	UpstreamIDs []string                   `json:"upstreamIds"`
+	Metrics     map[string]UpstreamMetrics `json:"metrics"`
+	Annotations map[string][]string        `json:"annotations,omitempty"`
 }
 
 // DecisionOutput is what the eval produced.
 type DecisionOutput struct {
-	Order    []string             `json:"order"`
-	Excluded []ExcludedUpstream   `json:"excluded,omitempty"`
+	Order    []string           `json:"order"`
+	Excluded []ExcludedUpstream `json:"excluded,omitempty"`
 }
 
 // ExcludedUpstream explains why an upstream was dropped.
@@ -70,10 +70,10 @@ type DecisionState struct {
 
 // DecisionDiff is a delta against the previous tick's output.
 type DecisionDiff struct {
-	OrderChanged    bool     `json:"orderChanged"`
-	PrimaryChanged  bool     `json:"primaryChanged"`
-	Added           []string `json:"added,omitempty"`
-	Removed         []string `json:"removed,omitempty"`
+	OrderChanged   bool     `json:"orderChanged"`
+	PrimaryChanged bool     `json:"primaryChanged"`
+	Added          []string `json:"added,omitempty"`
+	Removed        []string `json:"removed,omitempty"`
 }
 
 // UpstreamMetrics is the metric snapshot the eval saw for one upstream.

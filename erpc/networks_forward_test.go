@@ -76,7 +76,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			},
 			rlr, upsReg, mt,
-		nil,
+			nil,
 		)
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -162,7 +162,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				},
 			},
 			rlr, upr, mt,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 		require.NoError(t, ntw.Bootstrap(ctx))
@@ -267,7 +267,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 
 		// Bootstrap upstreams
@@ -299,7 +299,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			rlr,
 			upsReg,
 			mt,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -447,7 +447,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 
 		upsReg.Bootstrap(ctx)
@@ -469,7 +469,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			rlr,
 			upsReg,
 			mt,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 

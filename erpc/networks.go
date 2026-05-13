@@ -40,14 +40,14 @@ type FailsafeExecutor struct {
 }
 
 type Network struct {
-	networkId                string
-	networkLabel             string
-	projectId                string
-	logger                   *zerolog.Logger
-	bootstrapOnce            sync.Once
-	appCtx                   context.Context
-	cfg                      *common.NetworkConfig
-	inFlightRequests         *sync.Map
+	networkId            string
+	networkLabel         string
+	projectId            string
+	logger               *zerolog.Logger
+	bootstrapOnce        sync.Once
+	appCtx               context.Context
+	cfg                  *common.NetworkConfig
+	inFlightRequests     *sync.Map
 	failsafeExecutors    []*FailsafeExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL

@@ -230,7 +230,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 tried first, then rpc2 on retry
-		network.PinUpstreamOrderForTest( "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x123"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -670,7 +670,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 first
-		network.PinUpstreamOrderForTest( "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -758,7 +758,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 		pr,
 		nil,
 		metricsTracker,
-	nil,
+		nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -776,7 +776,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 	network.PinUpstreamOrderForTest()
 
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
-
+	upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
 	return network
 }
 
@@ -834,7 +834,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 		pr,
 		nil,
 		metricsTracker,
-	nil,
+		nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)

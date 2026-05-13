@@ -53,8 +53,8 @@ func TestTranslate_PreservesExistingEval(t *testing.T) {
 	prj := legacy.WidenedProject{RoutingStrategy: "score-based"}
 	user := "(upstreams, ctx) => upstreams.byGroup('hot')"
 	nwCfgs := []*common.NetworkConfig{{
-		Architecture: common.ArchitectureEvm,
-		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Architecture:    common.ArchitectureEvm,
+		Evm:             &common.EvmNetworkConfig{ChainId: 123},
 		SelectionPolicy: &common.SelectionPolicyConfig{Eval: user},
 	}}
 	_, err := legacy.Translate(prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)

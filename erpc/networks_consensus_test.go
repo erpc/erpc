@@ -2977,7 +2977,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 			},
 		},
 		nil, upsReg, mt,
-	nil,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -2986,7 +2986,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
-
+	upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
 	return ntw, upsReg
 }
 

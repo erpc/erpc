@@ -20,9 +20,9 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/internal/policy/stdlib"
-	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -122,7 +122,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		ntw, err := NewNetwork(
 			ctx,
@@ -138,7 +138,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -154,7 +154,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
-
+		upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Align to the start of the next second to avoid rate limit window rollover flakiness
 		now := time.Now()
 		time.Sleep(time.Until(now.Truncate(time.Second).Add(time.Second)))
@@ -281,7 +281,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -408,7 +408,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(50 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -505,7 +505,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(50 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -600,7 +600,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(50 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -685,7 +685,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(50 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -791,7 +791,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(50 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
@@ -890,7 +890,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(50 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
@@ -1002,7 +1002,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(50 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
@@ -1094,7 +1094,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		ntw, err := NewNetwork(
 			ctx,
@@ -1110,7 +1110,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1123,7 +1123,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
-
+		upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
 		var lastErr error
 
 		for i := 0; i < 10; i++ {
@@ -1211,7 +1211,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1245,6 +1245,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -1335,7 +1336,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1366,13 +1367,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(100 * time.Millisecond)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -1488,7 +1490,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1534,6 +1536,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -1652,7 +1655,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1698,6 +1701,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -1806,7 +1810,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1864,7 +1868,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1879,7 +1883,7 @@ func TestNetwork_Forward(t *testing.T) {
 		poller.SuggestFinalizedBlock(8)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -2005,7 +2009,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -2061,7 +2065,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2084,7 +2088,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
@@ -2215,7 +2219,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -2270,7 +2274,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2288,7 +2292,7 @@ func TestNetwork_Forward(t *testing.T) {
 		poller2.SuggestFinalizedBlock(8)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -2407,7 +2411,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -2462,7 +2466,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2480,7 +2484,7 @@ func TestNetwork_Forward(t *testing.T) {
 		poller2.SuggestFinalizedBlock(8)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -2620,7 +2624,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		_ = ntw.Bootstrap(ctx)
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Make the request
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
@@ -2760,7 +2764,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -2816,7 +2820,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2837,7 +2841,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
@@ -2968,7 +2972,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3016,7 +3020,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3027,7 +3031,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
@@ -3158,7 +3162,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3206,7 +3210,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3217,7 +3221,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
@@ -3341,7 +3345,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3351,7 +3355,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create and register clients for both upstreams
 		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
@@ -3391,7 +3395,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3402,7 +3406,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
@@ -3551,7 +3555,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3561,7 +3565,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create and register clients for all upstreams
 		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
@@ -3611,7 +3615,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3622,7 +3626,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request with RetryEmpty directive
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
@@ -3772,7 +3776,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3820,7 +3824,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3830,7 +3834,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create request without explicit directives
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
@@ -3963,7 +3967,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4008,7 +4012,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4019,7 +4023,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
@@ -4151,7 +4155,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4196,7 +4200,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4207,7 +4211,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
@@ -4320,7 +4324,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4352,14 +4356,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		// First request (should be cached)
 		fakeReq1 := common.NewNormalizedRequest(requestBytes)
 		resp1, err := ntw.Forward(ctx, fakeReq1)
@@ -4452,7 +4456,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4487,7 +4491,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		// First request marks the method as ignored
@@ -4608,7 +4612,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4662,7 +4666,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -4758,7 +4762,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4794,7 +4798,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -4890,7 +4894,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4925,7 +4929,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -5012,7 +5016,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 
 		upsReg.Bootstrap(ctx)
@@ -5037,14 +5041,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
-
+		upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
 		var lastErr error
 
 		for i := 0; i < 10; i++ {
@@ -5131,7 +5135,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5162,12 +5166,13 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -5263,7 +5268,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5294,12 +5299,13 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -5391,7 +5397,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5426,13 +5432,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -5524,7 +5531,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5555,13 +5562,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -5663,7 +5671,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5705,14 +5713,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -5816,7 +5824,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5858,14 +5866,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -5967,7 +5975,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6009,14 +6017,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -6118,7 +6126,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6149,14 +6157,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		var lastErr error
 		for i := 0; i < 10; i++ {
 			fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -6252,7 +6260,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6285,14 +6293,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		var lastErr error
 		var resp *common.NormalizedResponse
 		for i := 0; i < 2; i++ {
@@ -6393,7 +6401,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6426,14 +6434,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		r1, e1 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
 		r2, e2 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
 		_, e3 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
@@ -6539,7 +6547,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6571,14 +6579,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -6684,7 +6692,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6726,14 +6734,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -6822,7 +6830,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6854,14 +6862,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -6956,7 +6964,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7001,14 +7009,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -7108,7 +7116,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7150,14 +7158,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -7263,7 +7271,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7293,14 +7301,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create network: %v", err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		time.Sleep(300 * time.Millisecond)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -7396,7 +7404,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7419,14 +7427,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -7518,7 +7526,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7541,14 +7549,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -7640,7 +7648,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7663,14 +7671,14 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -7798,7 +7806,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
-
+		upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
 		mockRequests("eth_getLogs", "rpc1", 200*time.Millisecond)
 		mockRequests("eth_getLogs", "rpc2", 100*time.Millisecond)
 		mockRequests("eth_getLogs", "rpc3", 50*time.Millisecond)
@@ -7952,7 +7960,7 @@ func TestNetwork_Forward(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7971,7 +7979,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -7980,7 +7988,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 
 		// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
-
+		upr.OverrideOrderForTest(util.EvmNetworkId(123))
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 		if err != nil {
@@ -9580,7 +9588,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				pr,
 				nil,
 				metricsTracker,
-			nil,
+				nil,
 			)
 
 			networkConfig := &common.NetworkConfig{
@@ -9599,7 +9607,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 			require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 			require.NoError(t, network.Bootstrap(ctx))
-	network.PinUpstreamOrderForTest()
+			network.PinUpstreamOrderForTest()
 			time.Sleep(50 * time.Millisecond)
 
 			// toBlock is higher than initial latest, but latest update is delayed beyond best-effort budget
@@ -10907,7 +10915,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			pr,
 			nil,
 			mt,
-		nil,
+			nil,
 		)
 
 		ntwCfg := &common.NetworkConfig{
@@ -10922,7 +10930,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			rlr,
 			upr,
 			mt,
-		nil,
+			nil,
 		)
 
 		upr.Bootstrap(ctx)
@@ -11017,7 +11025,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		pr,
 		nil,
 		metricsTracker,
-	nil,
+		nil,
 	)
 	if networkConfig == nil {
 		networkConfig = &common.NetworkConfig{
@@ -11035,7 +11043,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
-	nil,
+		nil,
 	)
 	assert.NoError(t, err)
 
@@ -11059,7 +11067,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 	}
 
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
-
+	upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
 	return network
 }
 func setupTestNetworkWithFullAndArchiveNodeUpstreams(
@@ -11130,7 +11138,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		pr,
 		nil,
 		metricsTracker,
-	nil,
+		nil,
 	)
 
 	if failsafeConfig == nil {
@@ -11157,7 +11165,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
-	nil,
+		nil,
 	)
 	assert.NoError(t, err)
 
@@ -11173,7 +11181,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 	time.Sleep(200 * time.Millisecond)
 
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
-
+	upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
 	fb1, _ := common.HexToInt64("0x11117777")
 	upsList := upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 	err = upsList[0].Bootstrap(ctx)
@@ -11271,7 +11279,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			pr,
 			nil,
 			metricsTracker,
-		nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11289,7 +11297,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11301,7 +11309,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-	network.PinUpstreamOrderForTest()
+		network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11416,7 +11424,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			pr,
 			nil,
 			metricsTracker,
-		nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11435,7 +11443,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11447,7 +11455,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-	network.PinUpstreamOrderForTest()
+		network.PinUpstreamOrderForTest()
 		time.Sleep(100 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11575,7 +11583,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			pr,
 			nil,
 			metricsTracker,
-		nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11593,7 +11601,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11605,7 +11613,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-	network.PinUpstreamOrderForTest()
+		network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11703,7 +11711,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			pr,
 			nil,
 			metricsTracker,
-		nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11721,7 +11729,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11733,7 +11741,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-	network.PinUpstreamOrderForTest()
+		network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11838,7 +11846,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			pr,
 			nil,
 			metricsTracker,
-		nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11856,7 +11864,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11868,7 +11876,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-	network.PinUpstreamOrderForTest()
+		network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11970,7 +11978,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			pr,
 			nil,
 			metricsTracker,
-		nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11988,7 +11996,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -12000,7 +12008,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-	network.PinUpstreamOrderForTest()
+		network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -12100,7 +12108,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			pr,
 			nil,
 			metricsTracker,
-		nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -12118,7 +12126,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
-		nil,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -12130,7 +12138,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-	network.PinUpstreamOrderForTest()
+		network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))

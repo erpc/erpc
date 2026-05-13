@@ -418,7 +418,7 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 		pr,
 		nil,
 		metricsTracker,
-	nil,
+		nil,
 	)
 
 	network, err := NewNetwork(
@@ -429,7 +429,7 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
-	nil,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -454,6 +454,7 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 	time.Sleep(50 * time.Millisecond)
 
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
+	upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
 	time.Sleep(100 * time.Millisecond)
 
 	return network
