@@ -50,7 +50,13 @@ func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 // `upstream.ReorderUpstreams(registry, ids...)` which had no per-network
 // scoping. If `ids` is empty, each network's upstreams are pinned in
 // ascending-id order.
+//
+// Nil engine is treated as a no-op so tests that build a Network without
+// an engine (or via a partial fixture) don't panic.
 func OverrideAllForTest(e *Engine, ids ...string) {
+	if e == nil {
+		return
+	}
 	e.mu.RLock()
 	networks := make([]string, 0, len(e.networks))
 	for net := range e.networks {

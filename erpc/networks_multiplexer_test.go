@@ -441,6 +441,7 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	// Set up state pollers
 	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))

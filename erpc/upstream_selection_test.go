@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -195,7 +194,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 
 			// Setup network with the failsafe config
 			network := setupTestNetworkForTiming(t, ctx, tc.failsafeConfig)
-			policy.OverrideAllForTest(network.policyEngine)
+			network.PinUpstreamOrderForTest()
 
 			// Create request
 			req := common.NewNormalizedRequest([]byte(`{
@@ -503,7 +502,7 @@ func TestMixedResponseTypes(t *testing.T) {
 			network := setupTestNetworkForTiming(t, ctx, failsafeConfig)
 
 			time.Sleep(100 * time.Millisecond)
-			policy.OverrideAllForTest(network.policyEngine)
+			network.PinUpstreamOrderForTest()
 
 			// Create request with retryEmpty directive
 			req := common.NewNormalizedRequest([]byte(`{
@@ -621,7 +620,7 @@ func TestFourAttemptScenario(t *testing.T) {
 	}
 
 	network := setupTestNetworkWithFourUpstreams(t, ctx, failsafeConfig)
-	policy.OverrideAllForTest(network.policyEngine)
+	network.PinUpstreamOrderForTest()
 
 	// Create request
 	req := common.NewNormalizedRequest([]byte(`{
@@ -869,6 +868,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	// Set up state pollers
 	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))

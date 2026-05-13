@@ -289,6 +289,50 @@ func (u *UpstreamsRegistry) GetNetworkShadowUpstreams(networkId string) []*Upstr
 	return u.networkShadowUpstreams[networkId]
 }
 
+// OverrideOrderForTest pins the registration order of `networkUpstreams[networkId]`.
+// Test-only helper for fixtures that don't wire a policy.Engine; production
+// code uses `policy.OverrideAllForTest` against the engine. If `ids` is
+// empty, sorts the existing list by upstream id (matches legacy
+// ReorderUpstreams convenience).
+//
+// Lives here (not in test files) because in-package test helpers can't be
+// referenced from *_test.go in other packages.
+func (u *UpstreamsRegistry) OverrideOrderForTest(networkId string, ids ...string) {
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
+
+	src, ok := u.networkUpstreams[networkId]
+	if !ok || len(src) == 0 {
+		return
+	}
+	byID := make(map[string]*Upstream, len(src))
+	for _, up := range src {
+		byID[up.Id()] = up
+	}
+	if len(ids) == 0 {
+		ids = make([]string, 0, len(byID))
+		for id := range byID {
+			ids = append(ids, id)
+		}
+		// Deterministic ascending-id order.
+		for i := 1; i < len(ids); i++ {
+			for j := i; j > 0 && ids[j-1] > ids[j]; j-- {
+				ids[j-1], ids[j] = ids[j], ids[j-1]
+			}
+		}
+	}
+	reordered := make([]*Upstream, 0, len(ids))
+	for _, id := range ids {
+		if up, ok := byID[id]; ok {
+			reordered = append(reordered, up)
+		}
+	}
+	u.networkUpstreams[networkId] = reordered
+	cp := make([]*Upstream, len(reordered))
+	copy(cp, reordered)
+	u.networkUpstreamsAtomic.Store(networkId, cp)
+}
+
 func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId string) []*Upstream {
 	if ctx == nil {
 		ctx = u.appCtx

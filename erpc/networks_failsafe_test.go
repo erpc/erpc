@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -231,7 +230,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 tried first, then rpc2 on retry
-		policy.OverrideAllForTest(network.policyEngine, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest( "rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x123"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -671,7 +670,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 first
-		policy.OverrideAllForTest(network.policyEngine, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest( "rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -774,6 +773,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
 
@@ -849,6 +849,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	return network
 }

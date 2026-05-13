@@ -81,6 +81,19 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 	return n.policyEngine.RegisterNetwork(n.networkId, upsIface, cfg)
 }
 
+// PinUpstreamOrderForTest pins the upstream ordering for this network to
+// the given IDs (or alphabetical-by-id if `ids` is empty). Affects both
+// the underlying registry (so cold-start reads see the pinned order) and
+// the policy engine's cache when one is wired up. Test-only.
+func (n *Network) PinUpstreamOrderForTest(ids ...string) {
+	if n.upstreamsRegistry != nil {
+		n.upstreamsRegistry.OverrideOrderForTest(n.networkId, ids...)
+	}
+	if n.policyEngine != nil {
+		policy.OverrideOrderForTest(n.policyEngine, n.networkId, ids...)
+	}
+}
+
 func (n *Network) Id() string {
 	return n.networkId
 }

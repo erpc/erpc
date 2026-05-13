@@ -62,6 +62,7 @@ func setupIntegrityTestNetwork(t *testing.T, ctx context.Context, upstreams []*c
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
+	network.PinUpstreamOrderForTest()
 
 	return network, upr
 }

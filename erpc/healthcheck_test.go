@@ -74,5 +74,6 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 	require.NoError(t, err)
 
 	require.NoError(t, network.Bootstrap(ctx))
+	network.PinUpstreamOrderForTest()
 	return network
 }

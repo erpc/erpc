@@ -9599,6 +9599,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 			require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 			require.NoError(t, network.Bootstrap(ctx))
+	network.PinUpstreamOrderForTest()
 			time.Sleep(50 * time.Millisecond)
 
 			// toBlock is higher than initial latest, but latest update is delayed beyond best-effort budget
@@ -9954,7 +9955,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		policy.OverrideAllForTest(network.policyEngine)
+		network.PinUpstreamOrderForTest()
 
 		// Configure GetLogsAutoSplittingRangeThreshold = 1 to force splitting into individual blocks
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -10050,7 +10051,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		policy.OverrideAllForTest(network.policyEngine)
+		network.PinUpstreamOrderForTest()
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -10134,7 +10135,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		policy.OverrideAllForTest(network.policyEngine)
+		network.PinUpstreamOrderForTest()
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -10210,7 +10211,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		policy.OverrideAllForTest(network.policyEngine)
+		network.PinUpstreamOrderForTest()
 
 		// Configure network for splitting
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -11300,6 +11301,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11445,6 +11447,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 		time.Sleep(100 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11602,6 +11605,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11729,6 +11733,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11863,6 +11868,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -11994,6 +12000,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -12123,6 +12130,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
