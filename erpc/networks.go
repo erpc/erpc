@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -52,13 +53,32 @@ type Network struct {
 	cacheDal             common.CacheDAL
 	metricsTracker       *health.Tracker
 	upstreamsRegistry    *upstream.UpstreamsRegistry
+	policyEngine         *policy.Engine
 	initializer          *util.Initializer
 }
 
-// Bootstrap is currently a no-op; selection-policy lifecycle moves into
-// `internal/policy` (Phase 4–7).
+// Bootstrap registers this network with the policy engine, snapshotting the
+// current upstream list and selection-policy config. The engine kicks off
+// the slot's ticker and runs an initial synchronous eval so request-path
+// reads through `policyEngine.GetOrdered` always see a populated cache.
 func (n *Network) Bootstrap(ctx context.Context) error {
-	return nil
+	if n.policyEngine == nil {
+		return nil
+	}
+	upsPtrs := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	upsIface := make([]common.Upstream, len(upsPtrs))
+	for i, u := range upsPtrs {
+		upsIface[i] = u
+	}
+	cfg := n.cfg.SelectionPolicy
+	if cfg == nil {
+		cfg = &common.SelectionPolicyConfig{}
+		if err := cfg.SetDefaults(); err != nil {
+			return fmt.Errorf("default selectionPolicy SetDefaults: %w", err)
+		}
+		n.cfg.SelectionPolicy = cfg
+	}
+	return n.policyEngine.RegisterNetwork(n.networkId, upsIface, cfg)
 }
 
 func (n *Network) Id() string {
@@ -317,8 +337,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
-	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
-	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
+	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
+	var upsList []common.Upstream
+	if n.policyEngine != nil {
+		upsList = n.policyEngine.GetOrdered(n.networkId, method)
+	}
+	if len(upsList) == 0 {
+		// Cold-start fallback: serve the raw registration order until the
+		// engine's first tick completes for this slot.
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			upsList = append(upsList, u)
+		}
+	}
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
 		ids := make([]string, len(upsList))
@@ -331,7 +361,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 	upstreamSpan.End()
 
-	if err != nil {
+	if len(upsList) == 0 {
+		err := common.NewErrNoUpstreamsFound(n.projectId, n.networkId)
 		common.SetTraceSpanError(forwardSpan, err)
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)

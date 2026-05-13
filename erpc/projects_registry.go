@@ -12,6 +12,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/internal/policy/stdlib"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -137,6 +139,13 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	}
 
 	pp.upstreamsRegistry = upstreamsRegistry
+	pp.policyEngine = policy.NewEngine(
+		r.appCtx,
+		&lg,
+		prjCfg.Id,
+		metricsTracker,
+		stdlib.Install,
+	)
 	pp.networksRegistry = NewNetworksRegistry(
 		pp,
 		r.appCtx,
@@ -144,6 +153,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		metricsTracker,
 		r.evmJsonRpcCache,
 		r.rateLimitersRegistry,
+		pp.policyEngine,
 		&lg,
 	)
 	r.preparedProjects[prjCfg.Id] = pp

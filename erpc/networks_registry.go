@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
@@ -25,6 +26,7 @@ type NetworksRegistry struct {
 	metricsTracker       *health.Tracker
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
+	policyEngine         *policy.Engine
 	preparedNetworks     sync.Map // map[string]*Network
 	aliasToNetworkId     map[string]aliasEntry
 	aliasMu              *sync.RWMutex
@@ -44,6 +46,7 @@ func NewNetworksRegistry(
 	metricsTracker *health.Tracker,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
+	policyEngine *policy.Engine,
 	logger *zerolog.Logger,
 ) *NetworksRegistry {
 	lg := logger.With().Str("component", "networksRegistry").Logger()
@@ -54,6 +57,7 @@ func NewNetworksRegistry(
 		metricsTracker:       metricsTracker,
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
+		policyEngine:         policyEngine,
 		preparedNetworks:     sync.Map{},
 		aliasToNetworkId:     map[string]aliasEntry{},
 		aliasMu:              &sync.RWMutex{},
@@ -84,6 +88,7 @@ func NewNetwork(
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
+	policyEngine *policy.Engine,
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
@@ -174,6 +179,7 @@ func NewNetwork(
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
+		policyEngine:         policyEngine,
 
 		bootstrapOnce:     sync.Once{},
 		inFlightRequests:  &sync.Map{},
@@ -301,6 +307,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		nr.rateLimitersRegistry,
 		nr.upstreamsRegistry,
 		nr.metricsTracker,
+		nr.policyEngine,
 	)
 	if err != nil {
 		return nil, err
