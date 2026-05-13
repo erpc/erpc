@@ -58,18 +58,6 @@ var (
 		Help:      "Total number of finalized blocks behind the most up-to-date upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
-	MetricUpstreamScoreOverall = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_score_overall",
-		Help:      "Overall score of upstreams used for ordering during routing. Higher is better: 1/(1+penalty). Controlled by scoreMetricsMode (compact/detailed/none).",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
-
-	MetricUpstreamRoutingPriority = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_routing_priority",
-		Help:      "Sort position of upstream in routing order (1 = primary). Summary with category='*' always emitted; per-method detail added in detailed scoreMetricsMode.",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
-
 	MetricUpstreamLatestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_latest_block_number",
@@ -495,41 +483,6 @@ var (
 	MetricRateLimiterRemoteDuration           *LabeledHistogram
 	MetricUpstreamResponseSizeBytes           *LabeledHistogram
 )
-
-// ScoreMetricsMode controls how score metrics are emitted.
-//
-//	"compact" (default):
-//	  score_overall       — emitted with upstream="n/a", category="n/a" (low cardinality)
-//	  routing_priority    — not emitted (requires upstream identity)
-//	"detailed":
-//	  score_overall       — emitted per upstream + per method
-//	  routing_priority    — emitted per upstream + per method, plus an averaged summary
-//	"none":
-//	  all score metrics suppressed
-type ScoreMetricsMode string
-
-const (
-	ScoreModeCompact  ScoreMetricsMode = "compact"
-	ScoreModeDetailed ScoreMetricsMode = "detailed"
-	ScoreModeNone     ScoreMetricsMode = "none"
-)
-
-var currentScoreMetricsMode = ScoreModeCompact
-
-func SetScoreMetricsMode(v string) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "detailed":
-		currentScoreMetricsMode = ScoreModeDetailed
-	case "none":
-		currentScoreMetricsMode = ScoreModeNone
-	default:
-		currentScoreMetricsMode = ScoreModeCompact
-	}
-}
-
-func GetScoreMetricsMode() ScoreMetricsMode {
-	return currentScoreMetricsMode
-}
 
 // buildFilterAwareHistograms creates every LabeledHistogram using the current
 // filter. It does NOT register them — SetHistogramBuckets does that. init()

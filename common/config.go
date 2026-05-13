@@ -443,34 +443,8 @@ type ProjectConfig struct {
 	UpstreamDefaults       *UpstreamConfig   `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
 	Upstreams              []*UpstreamConfig `yaml:"upstreams,omitempty" json:"upstreams"`
 	NetworkDefaults        *NetworkDefaults  `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
-	Networks               []*NetworkConfig  `yaml:"networks,omitempty" json:"networks"`
-	RateLimitBudget        string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	ScoreMetricsWindowSize Duration          `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
-	ScoreRefreshInterval   Duration          `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
-	// RoutingStrategy selects the upstream ordering algorithm.
-	// "score-based" (default): penalty-based sticky routing.
-	// "round-robin": time-rotating equal distribution across upstreams.
-	RoutingStrategy string `yaml:"routingStrategy,omitempty" json:"routingStrategy"`
-	// ScoreGranularity controls whether penalties are computed per-upstream or per-method.
-	// "upstream" (default): one penalty across all methods using aggregate metrics.
-	// "method": separate penalty per (upstream, method) pair.
-	ScoreGranularity string `yaml:"scoreGranularity,omitempty" json:"scoreGranularity"`
-	// ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
-	// Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
-	// Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
-	ScorePenaltyDecayRate float64 `yaml:"scorePenaltyDecayRate,omitempty" json:"scorePenaltyDecayRate"`
-	// ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
-	// must be at least this fraction lower than the current primary's penalty to
-	// trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
-	ScoreSwitchHysteresis float64 `yaml:"scoreSwitchHysteresis,omitempty" json:"scoreSwitchHysteresis"`
-	// ScoreMinSwitchInterval is the cooldown between primary upstream switches.
-	ScoreMinSwitchInterval Duration `yaml:"scoreMinSwitchInterval,omitempty" json:"scoreMinSwitchInterval" tstype:"Duration"`
-	// ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
-	// Allowed values:
-	// - "compact": emit compact series by setting upstream and category labels to 'n/a'
-	// - "detailed": emit full project/vendor/network/upstream/category series
-	ScoreMetricsMode      string                              `yaml:"scoreMetricsMode,omitempty" json:"scoreMetricsMode"`
-	DeprecatedHealthCheck *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	Networks        []*NetworkConfig `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget string           `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	// Configure user agent tracking at the project level
 	UserAgentMode  UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
 	ForwardHeaders []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
@@ -613,7 +587,6 @@ type UpstreamConfig struct {
 	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
-	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
 	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
 }
 
@@ -655,7 +628,6 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty"`
 		RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty"`
 		RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty"`
-		Routing                      *RoutingConfig           `yaml:"routing,omitempty"`
 		Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty"`
 	}
 
@@ -679,7 +651,6 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
 	u.RateLimitBudget = old.RateLimitBudget
 	u.RateLimitAutoTune = old.RateLimitAutoTune
-	u.Routing = old.Routing
 	u.Shadow = old.Shadow
 
 	if old.Failsafe != nil {
@@ -712,9 +683,6 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 	if c.JsonRpc != nil {
 		copied.JsonRpc = c.JsonRpc.Copy()
-	}
-	if c.Routing != nil {
-		copied.Routing = c.Routing.Copy()
 	}
 	if c.RateLimitAutoTune != nil {
 		copied.RateLimitAutoTune = c.RateLimitAutoTune.Copy()
@@ -782,56 +750,6 @@ func (c *UpstreamIntegrityEthGetBlockReceiptsConfig) Copy() *UpstreamIntegrityEt
 	}
 
 	return copyCfg
-}
-
-type RoutingConfig struct {
-	ScoreMultipliers     []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
-	ScoreLatencyQuantile float64                  `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile"`
-}
-
-func (c *RoutingConfig) Copy() *RoutingConfig {
-	if c == nil {
-		return nil
-	}
-
-	copied := &RoutingConfig{}
-
-	if c.ScoreMultipliers != nil {
-		copied.ScoreMultipliers = make([]*ScoreMultiplierConfig, len(c.ScoreMultipliers))
-		for i, multiplier := range c.ScoreMultipliers {
-			copied.ScoreMultipliers[i] = multiplier.Copy()
-		}
-	}
-
-	return copied
-}
-
-type ScoreMultiplierConfig struct {
-	Network         string              `yaml:"network,omitempty" json:"network,omitempty"`
-	Method          string              `yaml:"method,omitempty" json:"method,omitempty"`
-	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
-	Overall         *float64            `yaml:"overall" json:"overall"`
-	ErrorRate       *float64            `yaml:"errorRate" json:"errorRate"`
-	RespLatency     *float64            `yaml:"respLatency" json:"respLatency"`
-	TotalRequests   *float64            `yaml:"totalRequests" json:"totalRequests"`
-	ThrottledRate   *float64            `yaml:"throttledRate" json:"throttledRate"`
-	BlockHeadLag    *float64            `yaml:"blockHeadLag" json:"blockHeadLag"`
-	FinalizationLag *float64            `yaml:"finalizationLag" json:"finalizationLag"`
-	Misbehaviors    *float64            `yaml:"misbehaviors" json:"misbehaviors"`
-}
-
-func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
-	if c == nil {
-		return nil
-	}
-	copied := &ScoreMultiplierConfig{}
-	*copied = *c
-	// Deep copy the Finality array
-	if c.Finality != nil {
-		copied.Finality = make([]DataFinalityState, len(c.Finality))
-		copy(copied.Finality, c.Finality)
-	}
-	return copied
 }
 
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
@@ -1543,10 +1461,6 @@ type ProxyPoolConfig struct {
 	Urls []string `yaml:"urls" json:"urls"`
 }
 
-type DeprecatedProjectHealthCheckConfig struct {
-	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
-}
-
 type MethodsConfig struct {
 	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
 	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
@@ -1801,91 +1715,24 @@ type EvmIntegrityConfig struct {
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 }
 
+// SelectionPolicyConfig declares the per-network upstream selection policy.
+//
+// The eval function is JavaScript that receives `upstreams` and `ctx` and
+// returns the ordered list of upstreams that should serve traffic for the
+// network/method scope. The chainable std-lib (see internal/policy/stdlib)
+// provides the building blocks (sortByScore, removeByLag, stickyPrimary,
+// probeExcluded, etc.) — see specs/selection-policy/feature.md.
 type SelectionPolicyConfig struct {
-	EvalInterval     Duration       `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
-	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
-	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
-	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
-	ResampleInterval Duration       `yaml:"resampleInterval,omitempty" json:"resampleInterval" tstype:"Duration"`
-	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount"`
+	EvalInterval    Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
+	EvalPerMethod   bool     `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
+	DecisionHistory Duration `yaml:"decisionHistory,omitempty" json:"decisionHistory" tstype:"Duration"`
+	Eval            string   `yaml:"eval,omitempty" json:"eval"`
 
-	evalFunctionOriginal string `yaml:"-" json:"-"`
-}
-
-func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawSelectionPolicyConfig struct {
-		EvalInterval     Duration `yaml:"evalInterval"`
-		EvalPerMethod    bool     `yaml:"evalPerMethod"`
-		EvalFunction     string   `yaml:"evalFunction"`
-		ResampleInterval Duration `yaml:"resampleInterval"`
-		ResampleCount    int      `yaml:"resampleCount"`
-		ResampleExcluded bool     `yaml:"resampleExcluded"`
-	}
-	raw := rawSelectionPolicyConfig{}
-
-	if err := unmarshal(&raw); err != nil {
-		return err
-	}
-	*c = SelectionPolicyConfig{
-		EvalInterval:     raw.EvalInterval,
-		EvalFunction:     nil,
-		EvalPerMethod:    raw.EvalPerMethod,
-		ResampleInterval: raw.ResampleInterval,
-		ResampleCount:    raw.ResampleCount,
-		ResampleExcluded: raw.ResampleExcluded,
-	}
-
-	if raw.EvalFunction != "" {
-		evalFunction, err := CompileFunction(raw.EvalFunction)
-		c.EvalFunction = evalFunction
-		c.evalFunctionOriginal = raw.EvalFunction
-		if err != nil {
-			return fmt.Errorf("failed to compile selectionPolicy.evalFunction: %v", err)
-		}
-	}
-
-	return nil
-}
-
-func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
-	evf := ""
-	if c.evalFunctionOriginal != "" {
-		evf = c.evalFunctionOriginal
-	} else if c.EvalFunction != nil {
-		evf = "<function>"
-	}
-	m := map[string]interface{}{
-		"evalPerMethod":    c.EvalPerMethod,
-		"resampleExcluded": c.ResampleExcluded,
-		"resampleCount":    c.ResampleCount,
-	}
-	if c.EvalInterval != 0 {
-		m["evalInterval"] = c.EvalInterval
-	}
-	if c.ResampleInterval != 0 {
-		m["resampleInterval"] = c.ResampleInterval
-	}
-	if evf != "" {
-		m["evalFunction"] = evf
-	}
-	return m, nil
-}
-
-func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
-	evf := "<undefined>"
-	if c.evalFunctionOriginal != "" {
-		evf = c.evalFunctionOriginal
-	} else if c.EvalFunction != nil {
-		evf = "<function>"
-	}
-	return sonic.Marshal(map[string]interface{}{
-		"evalInterval":     c.EvalInterval,
-		"evalPerMethod":    c.EvalPerMethod,
-		"evalFunction":     evf,
-		"resampleInterval": c.ResampleInterval,
-		"resampleCount":    c.ResampleCount,
-		"resampleExcluded": c.ResampleExcluded,
-	})
+	// CompiledProgram is set by SetDefaults/Validate; never marshalled.
+	CompiledProgram *sobek.Program `yaml:"-" json:"-"`
+	// EvalOriginal preserves the source for diagnostics + tooling.
+	EvalOriginal string `yaml:"-" json:"-"`
 }
 
 type AuthType string

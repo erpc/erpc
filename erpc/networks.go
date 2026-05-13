@@ -47,28 +47,17 @@ type Network struct {
 	appCtx                   context.Context
 	cfg                      *common.NetworkConfig
 	inFlightRequests         *sync.Map
-	failsafeExecutors        []*FailsafeExecutor
-	rateLimitersRegistry     *upstream.RateLimitersRegistry
-	cacheDal                 common.CacheDAL
-	metricsTracker           *health.Tracker
-	upstreamsRegistry        *upstream.UpstreamsRegistry
-	selectionPolicyEvaluator *PolicyEvaluator
-	initializer              *util.Initializer
+	failsafeExecutors    []*FailsafeExecutor
+	rateLimitersRegistry *upstream.RateLimitersRegistry
+	cacheDal             common.CacheDAL
+	metricsTracker       *health.Tracker
+	upstreamsRegistry    *upstream.UpstreamsRegistry
+	initializer          *util.Initializer
 }
 
+// Bootstrap is currently a no-op; selection-policy lifecycle moves into
+// `internal/policy` (Phase 4–7).
 func (n *Network) Bootstrap(ctx context.Context) error {
-	// Initialize policy evaluator if configured
-	if n.cfg.SelectionPolicy != nil {
-		evaluator, e := NewPolicyEvaluator(n.networkId, n.logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
-		if e != nil {
-			return fmt.Errorf("failed to create selection policy evaluator: %w", e)
-		}
-		if e := evaluator.Start(ctx); e != nil {
-			return fmt.Errorf("failed to start selection policy evaluator: %w", e)
-		}
-		n.selectionPolicyEvaluator = evaluator
-	}
-
 	return nil
 }
 
@@ -126,15 +115,6 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 			continue
 		}
 
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_blockNumber" as it's a common method that would be used to get latest block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_blockNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest latest block calculation")
-				continue
-			}
-		}
-
 		// Use effective latest block which considers blockAvailability.upper config
 		// (e.g., if upstream has latestBlockMinus: 5, use latest-5 instead of latest)
 		upBlock := u.EvmEffectiveLatestBlock()
@@ -164,15 +144,6 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest finalized block calculation")
 			continue
-		}
-
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest finalized block calculation")
-				continue
-			}
 		}
 
 		// Use effective finalized block which considers blockAvailability.upper config
@@ -205,15 +176,6 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for lowest finalized block calculation")
 			continue
-		}
-
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for lowest finalized block calculation")
-				continue
-			}
 		}
 
 		// Use effective finalized block which considers blockAvailability.upper config
@@ -359,16 +321,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
-		entries := make([]string, len(upsList))
+		ids := make([]string, len(upsList))
 		for i, u := range upsList {
-			bd := n.upstreamsRegistry.GetUpstreamScoreBreakdown(u, n.networkId, method)
-			entries[i] = fmt.Sprintf("%s(score=%.4f pen=%.4f err=%.3f lat=%.4fs thr=%.3f blag=%.0f flag=%.0f mis=%.3f cor=%v)",
-				u.Id(), bd.Score, bd.Penalty, bd.ErrorRate, bd.Latency, bd.ThrottledRate,
-				bd.BlockHeadLag, bd.FinalizationLag, bd.MisbehaviorRate, bd.Cordoned,
-			)
+			ids[i] = u.Id()
 		}
 		upstreamSpan.SetAttributes(
-			attribute.String("upstreams.sorted", strings.Join(entries, ", ")),
+			attribute.String("upstreams.sorted", strings.Join(ids, ", ")),
 		)
 	}
 	upstreamSpan.End()
@@ -436,10 +394,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer span.End()
 
 		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Int("retry", retry).Msgf("trying to forward request to upstream")
-
-		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
-			return nil, err
-		}
 
 		resp, err = n.doForward(ctx, u, req, false)
 
@@ -600,11 +554,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				attempted[u.Id()] = struct{}{}
 
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
-				if common.IsTracingDetailed {
-					loopSpan.SetAttributes(
-						attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
-					)
-				}
 				if eu, ok := u.(common.EvmUpstream); ok {
 					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 						loopSpan.SetAttributes(
@@ -1317,30 +1266,6 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 		return blockErr, false
 	}
 	return nil, false
-}
-
-func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.Logger, ups common.Upstream, req *common.NormalizedRequest) error {
-	if n.cfg.SelectionPolicy == nil {
-		return nil
-	}
-	_, span := common.StartDetailSpan(ctx, "Network.AcquireSelectionPolicyPermit")
-	defer span.End()
-
-	method, err := req.Method()
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return err
-	}
-
-	if dr := req.Directives(); dr != nil {
-		// If directive is instructed to use specific upstream(s), bypass selection policy evaluation
-		if dr.UseUpstream != "" {
-			span.SetAttributes(attribute.String("force_use_upstream", dr.UseUpstream))
-			return nil
-		}
-	}
-
-	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {

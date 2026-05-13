@@ -1183,33 +1183,6 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			return fmt.Errorf("failed to set defaults for cors: %w", err)
 		}
 	}
-	if p.ScoreMetricsWindowSize == 0 {
-		if p.DeprecatedHealthCheck != nil && p.DeprecatedHealthCheck.ScoreMetricsWindowSize != 0 {
-			p.ScoreMetricsWindowSize = p.DeprecatedHealthCheck.ScoreMetricsWindowSize
-		} else {
-			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
-		}
-	}
-	p.RoutingStrategy = strings.ToLower(strings.TrimSpace(p.RoutingStrategy))
-	if p.RoutingStrategy == "" {
-		p.RoutingStrategy = "score-based"
-	}
-	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
-	if p.ScoreGranularity == "" {
-		p.ScoreGranularity = "upstream"
-	}
-	// Numeric scoring defaults are intentionally NOT set here.
-	// ScoringConfig.withDefaults() is the single source of truth so that
-	// explicit zero values from the user (e.g. scoreSwitchHysteresis: 0)
-	// are not silently overridden. Use negative values to disable:
-	//   scorePenaltyDecayRate: -1   → no EMA memory (instant penalty only)
-	//   scoreSwitchHysteresis: -1   → no stickiness
-	//   scoreMinSwitchInterval: -1  → no cooldown
-	// Default score metrics mode to compact when not provided
-	if strings.TrimSpace(p.ScoreMetricsMode) == "" {
-		p.ScoreMetricsMode = "compact"
-	}
-
 	return nil
 }
 
@@ -1583,9 +1556,6 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			u.Evm.Integrity = defaults.Evm.Integrity.Copy()
 		}
 	}
-	if u.Routing == nil {
-		u.Routing = defaults.Routing
-	}
 	if u.AllowMethods == nil && defaults.AllowMethods != nil {
 		u.AllowMethods = append([]string{}, defaults.AllowMethods...)
 	}
@@ -1709,13 +1679,6 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	if err := u.JsonRpc.SetDefaults(); err != nil {
 		return fmt.Errorf("failed to set defaults for json rpc: %w", err)
 	}
-	if u.Routing == nil {
-		u.Routing = &RoutingConfig{}
-	}
-	if err := u.Routing.SetDefaults(); err != nil {
-		return fmt.Errorf("failed to set defaults for routing: %w", err)
-	}
-
 	// By default if any allowed methods are specified, all other methods are ignored (unless ignoreMethods is explicitly defined by user)
 	// Similar to how common network security policies work.
 	if u.AllowMethods != nil {
@@ -2441,161 +2404,31 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 	return nil
 }
 
-func (r *RoutingConfig) SetDefaults() error {
-	if len(r.ScoreMultipliers) == 0 {
-		r.ScoreMultipliers = []*ScoreMultiplierConfig{
-			// For realtime/unfinalized: prioritize block lag (need fresh data)
-			{
-				Network:  "*",
-				Method:   "*",
-				Finality: []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized},
-
-				ErrorRate:       util.Float64Ptr(4.0),
-				RespLatency:     util.Float64Ptr(6.0),
-				TotalRequests:   util.Float64Ptr(1.0),
-				ThrottledRate:   util.Float64Ptr(3.0),
-				BlockHeadLag:    util.Float64Ptr(8.0),
-				FinalizationLag: util.Float64Ptr(2.0),
-				Misbehaviors:    util.Float64Ptr(5.0),
-				Overall:         util.Float64Ptr(1.0),
-			},
-			// For finalized/unknown: prioritize latency (block lag doesn't matter)
-			// Even though "unknown" might include requests for tx hashes or block hashes
-			// of tip-of-chain range, they'll be retried due to retryEmpty logic if
-			//  an upstream doesn't have the data. This is not ideal for numeric getBlockByNumber calls.
-			{
-				Network:  "*",
-				Method:   "*",
-				Finality: []DataFinalityState{DataFinalityStateFinalized, DataFinalityStateUnknown},
-
-				ErrorRate:       util.Float64Ptr(4.0),
-				RespLatency:     util.Float64Ptr(8.0),
-				TotalRequests:   util.Float64Ptr(1.0),
-				ThrottledRate:   util.Float64Ptr(3.0),
-				BlockHeadLag:    util.Float64Ptr(2.0),
-				FinalizationLag: util.Float64Ptr(1.0),
-				Misbehaviors:    util.Float64Ptr(5.0),
-				Overall:         util.Float64Ptr(1.0),
-			},
-		}
-	} else {
-		for _, multiplier := range r.ScoreMultipliers {
-			if err := multiplier.SetDefaults(); err != nil {
-				return fmt.Errorf("failed to set defaults for score multiplier: %w", err)
-			}
-		}
-	}
-	if r.ScoreLatencyQuantile == 0 {
-		r.ScoreLatencyQuantile = 0.70
-	}
-
-	return nil
-}
-
-var DefaultScoreMultiplier = &ScoreMultiplierConfig{
-	Network: "*",
-	Method:  "*",
-	// Finality: nil means match all finality states
-
-	ErrorRate:       util.Float64Ptr(4.0),
-	RespLatency:     util.Float64Ptr(8.0),
-	TotalRequests:   util.Float64Ptr(1.0),
-	ThrottledRate:   util.Float64Ptr(3.0),
-	BlockHeadLag:    util.Float64Ptr(2.0),
-	FinalizationLag: util.Float64Ptr(1.0),
-	Misbehaviors:    util.Float64Ptr(5.0),
-
-	Overall: util.Float64Ptr(1.0),
-}
-
-func (s *ScoreMultiplierConfig) SetDefaults() error {
-	if s.Network == "" {
-		s.Network = DefaultScoreMultiplier.Network
-	}
-	if s.Method == "" {
-		s.Method = DefaultScoreMultiplier.Method
-	}
-	if s.ErrorRate == nil {
-		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
-	}
-	if s.RespLatency == nil {
-		s.RespLatency = DefaultScoreMultiplier.RespLatency
-	}
-	if s.TotalRequests == nil {
-		s.TotalRequests = DefaultScoreMultiplier.TotalRequests
-	}
-	if s.ThrottledRate == nil {
-		s.ThrottledRate = DefaultScoreMultiplier.ThrottledRate
-	}
-	if s.BlockHeadLag == nil {
-		s.BlockHeadLag = DefaultScoreMultiplier.BlockHeadLag
-	}
-	if s.FinalizationLag == nil {
-		s.FinalizationLag = DefaultScoreMultiplier.FinalizationLag
-	}
-	if s.Misbehaviors == nil {
-		s.Misbehaviors = DefaultScoreMultiplier.Misbehaviors
-	}
-	if s.Overall == nil {
-		s.Overall = DefaultScoreMultiplier.Overall
-	}
-
-	return nil
-}
-
-const DefaultPolicyFunction = `
-	(upstreams, method) => {
-		const defaults = upstreams.filter(u => u.config.group !== 'fallback')
-		const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-
-		const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
-		const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
-		const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
-
-		const healthyOnes = defaults.filter(
-			u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-		)
-
-		if (healthyOnes.length >= minHealthyThreshold) {
-			return healthyOnes
-		}
-
-		if (fallbacks.length > 0) {
-			let healthyFallbacks = fallbacks.filter(
-				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-			)
-
-			if (healthyFallbacks.length > 0) {
-				return healthyFallbacks
-			}
-		}
-
-		// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
-		// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
-		return upstreams
-	}
-`
+// DefaultSelectionPolicySource is the fallback JS used when a user has not
+// supplied `selectionPolicy.eval`. It is a placeholder until Phase 5.15
+// embeds the real default policy from `internal/policy/default_policy.js`.
+const DefaultSelectionPolicySource = `(upstreams, ctx) => upstreams`
 
 func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
-		c.EvalInterval = Duration(1 * time.Minute)
+		c.EvalInterval = Duration(1 * time.Second)
 	}
-	if c.EvalFunction == nil {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
-			return fmt.Errorf("failed to compile default selection policy function: %w", err)
-		}
-		c.EvalFunction = evalFunction
+	if c.EvalTimeout == 0 {
+		c.EvalTimeout = Duration(100 * time.Millisecond)
 	}
-	if c.ResampleExcluded {
-		if c.ResampleInterval == 0 {
-			c.ResampleInterval = Duration(5 * time.Minute)
-		}
-		if c.ResampleCount == 0 {
-			c.ResampleCount = 10
-		}
+	if c.DecisionHistory == 0 {
+		c.DecisionHistory = Duration(5 * time.Minute)
 	}
+	if c.Eval == "" {
+		c.Eval = DefaultSelectionPolicySource
+	}
+	c.EvalOriginal = c.Eval
+
+	program, err := CompileProgram(c.Eval)
+	if err != nil {
+		return fmt.Errorf("failed to compile selectionPolicy.eval: %w", err)
+	}
+	c.CompiledProgram = program
 
 	return nil
 }
@@ -2837,29 +2670,11 @@ func (c *CORSConfig) SetDefaults() error {
 	return nil
 }
 
+// NewDefaultNetworkConfig builds an empty NetworkConfig. Selection-policy
+// defaults are now applied uniformly by `SelectionPolicyConfig.SetDefaults`,
+// so this helper no longer auto-attaches a fallback-group policy. Users who
+// want a non-trivial policy must declare `selectionPolicy.eval` explicitly,
+// or rely on the translator (Phase 12) to synthesize one from legacy fields.
 func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
-	hasAnyFallbackUpstream := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-		return u.Group == "fallback"
-	})
-	n := &NetworkConfig{}
-	if hasAnyFallbackUpstream {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
-			panic(fmt.Sprintf("failed to compile default selection policy function: %v", err))
-		}
-
-		selectionPolicy := &SelectionPolicyConfig{
-			EvalInterval:     Duration(1 * time.Minute),
-			EvalFunction:     evalFunction,
-			EvalPerMethod:    false,
-			ResampleInterval: Duration(5 * time.Minute),
-			ResampleCount:    10,
-
-			evalFunctionOriginal: DefaultPolicyFunction,
-		}
-
-		n.SelectionPolicy = selectionPolicy
-	}
-	return n
+	return &NetworkConfig{}
 }

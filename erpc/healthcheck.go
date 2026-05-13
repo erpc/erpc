@@ -260,15 +260,7 @@ func (s *HttpServer) handleHealthCheck(
 				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
 				upstreamHealth.Metrics = mts
 
-				// Add last evaluation time from selection policy evaluator
-				if network, err := project.GetNetwork(ctx, networkId); err == nil && network != nil {
-					if network.selectionPolicyEvaluator != nil {
-						lastEvalTime := network.selectionPolicyEvaluator.GetLastEvalTime(ups.Id(), "*")
-						if !lastEvalTime.IsZero() {
-							upstreamHealth.LastEvaluation = lastEvalTime.Format(time.RFC3339)
-						}
-					}
-				}
+				// LastEvaluation timestamp wiring deferred to Phase 7 (policy engine).
 
 				// Add EVM state poller diagnostics for EVM upstreams
 				if ups.Config() != nil && ups.Config().Type == common.UpstreamTypeEvm {

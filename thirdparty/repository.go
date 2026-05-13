@@ -145,11 +145,6 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			autoTuner = &common.RateLimitAutoTuneConfig{}
 			*autoTuner = *upstream.RateLimitAutoTune
 		}
-		var routing *common.RoutingConfig
-		if upstream.Routing != nil {
-			routing = &common.RoutingConfig{}
-			*routing = *upstream.Routing
-		}
 		upsList = append(upsList, &common.UpstreamConfig{
 			Id:                           fmt.Sprintf("%s-%s", upstream.Id, util.RedactEndpoint(ep)),
 			Type:                         common.UpstreamTypeEvm,
@@ -163,7 +158,6 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			Failsafe:                     failsafe,
 			RateLimitBudget:              upstream.RateLimitBudget,
 			RateLimitAutoTune:            autoTuner,
-			Routing:                      routing,
 		})
 	}
 
