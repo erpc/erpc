@@ -655,7 +655,13 @@ func (u *UpstreamsRegistry) refreshScoreBased() error {
 }
 
 // computePenalties calculates the EMA-smoothed penalty for each upstream.
-// Uses absolute metric values (no peer-relative baseline) for stability.
+// Uses absolute metric values (no peer-relative baseline) for stability,
+// EXCEPT for the latency component: when an upstream has no measured
+// latency yet (empty quantile), we substitute the median of measured peers'
+// latencies so it's ranked in the middle of the pack — not at the top by
+// default (which would happen with GetQuantile() returning 0). This gives a
+// newly-seen-or-just-cancelled upstream a fair chance to prove itself with
+// real traffic without unjustly outranking measured-and-proven peers.
 func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, metricsMethod string) map[string]float64 {
 	cfg := u.scoringCfg
 	n := len(upsList)
@@ -663,7 +669,17 @@ func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, met
 		return nil
 	}
 
-	penalties := make(map[string]float64, n)
+	// Per-upstream prep: collect everything we need for the second pass.
+	type prep struct {
+		upsId        string
+		instantBase  float64 // sum of non-latency penalty contributions
+		latency      float64 // 0 if unmeasured
+		latencyMul   float64 // 0 if latency multiplier disabled
+		overallMul   float64 // 0 if not set
+	}
+	preps := make([]prep, 0, n)
+	measuredLatencies := make([]float64, 0, n)
+
 	for _, ups := range upsList {
 		upsId := ups.Id()
 		mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
@@ -675,49 +691,87 @@ func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, met
 			qn = upsCfg.Routing.ScoreLatencyQuantile
 		}
 
-		var instant float64
+		var instantBase float64
 
 		if mul.ErrorRate != nil && *mul.ErrorRate > 0 {
-			instant += mt.ErrorRate() * *mul.ErrorRate
+			instantBase += mt.ErrorRate() * *mul.ErrorRate
 		}
-
-		if mul.RespLatency != nil && *mul.RespLatency > 0 {
-			instant += mt.ResponseQuantiles.GetQuantile(qn).Seconds() * *mul.RespLatency
-		}
-
 		if mul.ThrottledRate != nil && *mul.ThrottledRate > 0 {
-			instant += mt.ThrottledRate() * *mul.ThrottledRate
+			instantBase += mt.ThrottledRate() * *mul.ThrottledRate
 		}
-
 		if mul.BlockHeadLag != nil && *mul.BlockHeadLag > 0 {
-			instant += math.Max(0, float64(mt.BlockHeadLag.Load())) * *mul.BlockHeadLag
+			instantBase += math.Max(0, float64(mt.BlockHeadLag.Load())) * *mul.BlockHeadLag
 		}
-
 		if mul.FinalizationLag != nil && *mul.FinalizationLag > 0 {
-			instant += math.Max(0, float64(mt.FinalizationLag.Load())) * *mul.FinalizationLag
+			instantBase += math.Max(0, float64(mt.FinalizationLag.Load())) * *mul.FinalizationLag
+		}
+		if mul.Misbehaviors != nil && *mul.Misbehaviors > 0 {
+			instantBase += mt.MisbehaviorRate() * *mul.Misbehaviors
 		}
 
-		if mul.Misbehaviors != nil && *mul.Misbehaviors > 0 {
-			instant += mt.MisbehaviorRate() * *mul.Misbehaviors
+		var latency, latencyMul float64
+		if mul.RespLatency != nil && *mul.RespLatency > 0 {
+			latency = mt.ResponseQuantiles.GetQuantile(qn).Seconds()
+			latencyMul = *mul.RespLatency
+			if latency > 0 {
+				measuredLatencies = append(measuredLatencies, latency)
+			}
+		}
+
+		var overallMul float64
+		if mul.Overall != nil && *mul.Overall > 0 {
+			overallMul = *mul.Overall
+		}
+
+		preps = append(preps, prep{upsId, instantBase, latency, latencyMul, overallMul})
+	}
+
+	// "Middle" baseline = median of measured peers' latencies. If no peer is
+	// measured (cold start across the board), this stays at 0 and every
+	// upstream falls back to the original behavior (no latency contribution).
+	medianLatency := medianOfFloat64s(measuredLatencies)
+
+	penalties := make(map[string]float64, n)
+	for _, p := range preps {
+		instant := p.instantBase
+		if p.latencyMul > 0 {
+			effectiveLatency := p.latency
+			if effectiveLatency == 0 {
+				effectiveLatency = medianLatency
+			}
+			instant += effectiveLatency * p.latencyMul
 		}
 
 		if math.IsNaN(instant) || math.IsInf(instant, 0) {
 			instant = 0
 		}
-
-		if mul.Overall != nil && *mul.Overall > 0 {
-			instant /= *mul.Overall
+		if p.overallMul > 0 {
+			instant /= p.overallMul
 		}
 
-		stored := u.getPenalty(upsId, networkId, metricsMethod)
+		stored := u.getPenalty(p.upsId, networkId, metricsMethod)
 		if math.IsNaN(stored) || math.IsInf(stored, 0) {
 			stored = 0
 		}
 		decayed := stored*cfg.PenaltyDecayRate + instant*(1.0-cfg.PenaltyDecayRate)
-		u.setPenalty(upsId, networkId, metricsMethod, decayed)
-		penalties[upsId] = decayed
+		u.setPenalty(p.upsId, networkId, metricsMethod, decayed)
+		penalties[p.upsId] = decayed
 	}
 	return penalties
+}
+
+// medianOfFloat64s returns the median of the provided slice. Mutates the
+// input (sorts it in place). Returns 0 for an empty slice.
+func medianOfFloat64s(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	sort.Float64s(xs)
+	mid := len(xs) / 2
+	if len(xs)%2 == 0 {
+		return (xs[mid-1] + xs[mid]) / 2
+	}
+	return xs[mid]
 }
 
 func (u *UpstreamsRegistry) getPenalty(upsId, networkId, method string) float64 {

@@ -435,13 +435,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		ctx, span := common.StartDetailSpan(execSpanCtx, "Network.TryForward")
 		defer span.End()
 
+		// hedge > 0 means failsafe spawned this attempt as a hedge (not the
+		// primary). Threaded down explicitly into doForward → Upstream.Forward
+		// so the per-upstream rate counters stay clean. The hedge policy lives
+		// at this network layer, so this is where the signal originates.
+		isHedgeAttempt := hedge > 0
+
 		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Int("retry", retry).Msgf("trying to forward request to upstream")
 
 		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
 			return nil, err
 		}
 
-		resp, err = n.doForward(ctx, u, req, false)
+		resp, err = n.doForward(ctx, u, req, false, isHedgeAttempt)
 
 		if err != nil && !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
@@ -1075,7 +1081,7 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	return finality
 }
 
-func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead bool) (*common.NormalizedResponse, error) {
+func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	switch n.cfg.Architecture {
 	case common.ArchitectureEvm:
 		if handled, resp, err := evm.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
@@ -1084,7 +1090,7 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 	}
 
 	// If not handled, then fallback to the normal forward
-	resp, err := u.Forward(execSpanCtx, req, false)
+	resp, err := u.Forward(execSpanCtx, req, false, isHedgeAttempt)
 	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 

@@ -116,7 +116,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			shadowReq.SetNetwork(origReq.Network())
 
 			// Execute the request against the shadow upstream (do bypass exclusion because we have to enforce method exclusion locally here - to ignore the shadow flag checking)
-			shadowResp, errForward := ups.Forward(shadowCtx, shadowReq, true)
+			shadowResp, errForward := ups.Forward(shadowCtx, shadowReq, true, false)
 			if errForward != nil {
 				telemetry.MetricShadowResponseErrorTotal.WithLabelValues(
 					p.Config.Id,

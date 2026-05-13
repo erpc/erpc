@@ -668,6 +668,13 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 }
 
 func TestRecordUpstreamFailure_IgnoresHedgeCancellationErrors(t *testing.T) {
+	// Hedge cancellations and bare client-disconnect cancellations both reach
+	// the tracker as ErrCodeEndpointRequestCanceled / ErrCodeUpstreamHedgeCancelled.
+	// They must not increment ErrorsTotal: hedge attempts are excluded
+	// entirely at the call site in upstream.tryForward (so they shouldn't even
+	// reach here), and any cancellation that does is almost always a client
+	// disconnect — not the upstream's fault. Slowness is captured by
+	// ResponseQuantiles instead, which already feeds selection scoring.
 	projectID := "test-project"
 	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -684,7 +691,7 @@ func TestRecordUpstreamFailure_IgnoresHedgeCancellationErrors(t *testing.T) {
 		mt := tracker.GetUpstreamMethodMetrics(ups, method)
 		require.NotNil(t, mt)
 		assert.Equal(t, int64(1), mt.RequestsTotal.Load(), "request should be counted")
-		assert.Equal(t, int64(0), mt.ErrorsTotal.Load(), "cancelled hedge should NOT count as error")
+		assert.Equal(t, int64(0), mt.ErrorsTotal.Load(), "cancellation should NOT count as error")
 		assert.Equal(t, float64(0), mt.ErrorRate(), "error rate should be zero")
 	})
 
@@ -717,11 +724,11 @@ func TestRecordUpstreamFailure_IgnoresHedgeCancellationErrors(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			tracker.RecordUpstreamRequest(ups4, method)
 		}
-		// 5 real failures
 		for i := 0; i < 5; i++ {
 			tracker.RecordUpstreamFailure(ups4, method, fmt.Errorf("timeout"))
 		}
-		// 5 hedge cancellations (should be ignored)
+		// 5 cancellations — must be ignored (could be hedge losses or
+		// client disconnects; neither attributable to upstream quality).
 		for i := 0; i < 5; i++ {
 			tracker.RecordUpstreamFailure(ups4, method, common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
 		}
@@ -729,9 +736,93 @@ func TestRecordUpstreamFailure_IgnoresHedgeCancellationErrors(t *testing.T) {
 		mt := tracker.GetUpstreamMethodMetrics(ups4, method)
 		require.NotNil(t, mt)
 		assert.Equal(t, int64(10), mt.RequestsTotal.Load())
-		assert.Equal(t, int64(5), mt.ErrorsTotal.Load(), "only real errors should be counted, not hedge cancellations")
-		assert.InDelta(t, 0.5, mt.ErrorRate(), 0.001, "error rate should only reflect real failures")
+		assert.Equal(t, int64(5), mt.ErrorsTotal.Load(), "only real errors counted, not cancellations")
+		assert.InDelta(t, 0.5, mt.ErrorRate(), 0.001, "error rate reflects only real failures")
 	})
+}
+
+// TestRecordUpstreamFailure_AllSkipCodesIgnored locks in the full matrix of
+// error codes that the tracker treats as non-quality signals.  Adding
+// RequestCanceled / HedgeCancelled here was the open question from PR #878
+// — they live in this list because they don't unambiguously attribute to
+// upstream quality at the tracker layer.
+func TestRecordUpstreamFailure_AllSkipCodesIgnored(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test-project", 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	method := "eth_call"
+
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"ExecutionException", common.NewErrEndpointExecutionException(fmt.Errorf("execution reverted"))},
+		{"ExcludedByPolicy", common.NewErrUpstreamExcludedByPolicy("ups")},
+		{"RequestSkipped", common.NewErrUpstreamRequestSkipped(fmt.Errorf("skipped"), "ups")},
+		{"Shadowing", common.NewErrUpstreamShadowing("ups")},
+		{"Unsupported", common.NewErrEndpointUnsupported(fmt.Errorf("not supported"))},
+		{"CapacityExceeded", common.NewErrEndpointCapacityExceeded(fmt.Errorf("429"))},
+		{"ClientSideException", common.NewErrEndpointClientSideException(fmt.Errorf("400"))},
+		{"RequestCanceled", common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled"))},
+		{"UpstreamHedgeCancelled", common.NewErrUpstreamHedgeCancelled("ups", fmt.Errorf("context canceled"))},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ups := common.NewFakeUpstream("ups-" + tc.name)
+			tracker.RecordUpstreamRequest(ups, method)
+			tracker.RecordUpstreamFailure(ups, method, tc.err)
+
+			mt := tracker.GetUpstreamMethodMetrics(ups, method)
+			require.NotNil(t, mt)
+			assert.Equal(t, int64(1), mt.RequestsTotal.Load(), "request counted")
+			assert.Equal(t, int64(0), mt.ErrorsTotal.Load(),
+				"%s should NOT count as an upstream failure", tc.name)
+			assert.Equal(t, float64(0), mt.ErrorRate(), "ErrorRate stays zero")
+		})
+	}
+}
+
+// TestRates_RealErrorsOnlyAffectRates is a defense against quietly bleeding
+// cancellations into ErrorRate / ThrottledRate / MisbehaviorRate. Cancellations
+// reaching the tracker (whether labeled as hedge losses or bare client cancels)
+// must leave all three rates untouched relative to the real-error baseline.
+func TestRates_RealErrorsOnlyAffectRates(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test-project", 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	method := "eth_call"
+	ups := common.NewFakeUpstream("mixed-ups")
+
+	// 100 attempts total; 25 cancellations; 10 throttled; 5 misbehaviors; 8 real errors.
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups, method)
+	}
+	for i := 0; i < 25; i++ {
+		tracker.RecordUpstreamFailure(ups, method,
+			common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
+	}
+	for i := 0; i < 10; i++ {
+		tracker.RecordUpstreamRemoteRateLimited(ctx, ups, method, nil)
+	}
+	for i := 0; i < 5; i++ {
+		tracker.RecordUpstreamMisbehavior(ups, method)
+	}
+	for i := 0; i < 8; i++ {
+		tracker.RecordUpstreamFailure(ups, method, fmt.Errorf("connection refused"))
+	}
+
+	mt := tracker.GetUpstreamMethodMetrics(ups, method)
+	require.NotNil(t, mt)
+	assert.Equal(t, int64(100), mt.RequestsTotal.Load())
+	assert.Equal(t, int64(8), mt.ErrorsTotal.Load(), "only real errors counted")
+	assert.InDelta(t, 0.08, mt.ErrorRate(), 0.001, "ErrorRate = 8/100, cancellations excluded from numerator")
+	assert.InDelta(t, 0.10, mt.ThrottledRate(), 0.001, "ThrottledRate = 10/100, untouched")
+	assert.InDelta(t, 0.05, mt.MisbehaviorRate(), 0.001, "MisbehaviorRate = 5/100, untouched")
 }
 
 func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
