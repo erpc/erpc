@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -230,7 +231,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 tried first, then rpc2 on retry
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		policy.OverrideAllForTest(network.policyEngine, "rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x123"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -670,7 +671,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 first
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		policy.OverrideAllForTest(network.policyEngine, "rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)

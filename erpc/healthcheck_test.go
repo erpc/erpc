@@ -7,6 +7,8 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/internal/policy/stdlib"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
@@ -18,82 +20,56 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
+// TestHealthCheckLastEvaluation pins: after the policy engine has run at
+// least one tick, the network exposes a non-zero "last eval" timestamp.
+// Health-check exporters use this signal to flag stale selection state.
 func TestHealthCheckLastEvaluation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Create a network with a selection policy evaluator
 	network := createTestNetworkWithSelectionPolicy(t, ctx)
 
-	// Test GetLastEvalTime method - initially should be zero time
-	lastEvalTime := network.selectionPolicyEvaluator.GetLastEvalTime("test-upstream", "*")
-	assert.True(t, lastEvalTime.IsZero())
+	// Before any tick, no decision is recorded.
+	assert.True(t, network.policyEngine.LastEvalAt("evm:123", "*").IsZero(),
+		"LastEvalAt should be zero before the first tick")
 
-	// Force an evaluation
-	err := network.selectionPolicyEvaluator.evaluateUpstreams()
-	if err != nil {
-		t.Logf("Expected evaluation error for test setup: %v", err)
-	}
+	// Force one tick so a decision is recorded.
+	policy.TickForTest(network.policyEngine, "evm:123", "*")
 
-	// Should have a non-zero time after evaluation attempt
-	lastEvalTime = network.selectionPolicyEvaluator.GetLastEvalTime("test-upstream", "*")
-	t.Logf("Last evaluation time: %v", lastEvalTime)
+	last := network.policyEngine.LastEvalAt("evm:123", "*")
+	assert.False(t, last.IsZero(), "LastEvalAt should be set after a tick")
+	assert.WithinDuration(t, time.Now(), last, time.Second,
+		"LastEvalAt should be approximately now")
 }
 
 func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Network {
-	// Create selection policy config
-	evalInterval := common.Duration(1 * time.Minute)
-	resampleInterval := common.Duration(5 * time.Minute)
+	tracker := health.NewTracker(&log.Logger, "test", time.Minute)
+	tracker.Bootstrap(ctx)
 
-	selectionPolicyConfig := &common.SelectionPolicyConfig{
-		EvalInterval:     evalInterval,
-		EvalPerMethod:    false,
-		ResampleExcluded: false,
-		ResampleInterval: resampleInterval,
-		ResampleCount:    10,
-		EvalFunction:     nil, // Will be set by config validation
-	}
-
-	// Create network config with selection policy
-	networkConfig := &common.NetworkConfig{
-		Architecture:    common.ArchitectureEvm,
-		Evm:             &common.EvmNetworkConfig{ChainId: 123},
-		SelectionPolicy: selectionPolicyConfig,
-	}
-
-	// Create upstream registry
-	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-	upstreamsRegistry := upstream.NewUpstreamsRegistry(
-		ctx,
-		&log.Logger,
-		"test",
+	upr := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
 		[]*common.UpstreamConfig{},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		metricsTracker,
-		1*time.Second,
-		nil,
+		nil, nil, nil, nil, nil,
+		tracker,
 		nil,
 	)
 
-	// Create network
-	network, err := NewNetwork(
-		ctx,
-		&log.Logger,
-		"test",
-		networkConfig,
-		nil,
-		upstreamsRegistry,
-		metricsTracker,
-	)
+	engine := policy.NewEngine(ctx, &log.Logger, "test", tracker, stdlib.Install)
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		SelectionPolicy: &common.SelectionPolicyConfig{
+			EvalInterval:    common.Duration(0), // frozen — tests drive ticks manually
+			EvalTimeout:     common.Duration(50 * time.Millisecond),
+			DecisionHistory: common.Duration(time.Minute),
+		},
+	}
+	require.NoError(t, networkConfig.SelectionPolicy.SetDefaults())
+
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, nil, upr, tracker, engine)
 	require.NoError(t, err)
 
-	// Bootstrap the network to initialize the policy evaluator
-	err = network.Bootstrap(ctx)
-	require.NoError(t, err)
-
+	require.NoError(t, network.Bootstrap(ctx))
 	return network
 }

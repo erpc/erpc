@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -194,7 +195,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 
 			// Setup network with the failsafe config
 			network := setupTestNetworkForTiming(t, ctx, tc.failsafeConfig)
-			upstream.ReorderUpstreams(network.upstreamsRegistry)
+			policy.OverrideAllForTest(network.policyEngine)
 
 			// Create request
 			req := common.NewNormalizedRequest([]byte(`{
@@ -502,7 +503,7 @@ func TestMixedResponseTypes(t *testing.T) {
 			network := setupTestNetworkForTiming(t, ctx, failsafeConfig)
 
 			time.Sleep(100 * time.Millisecond)
-			upstream.ReorderUpstreams(network.upstreamsRegistry)
+			policy.OverrideAllForTest(network.policyEngine)
 
 			// Create request with retryEmpty directive
 			req := common.NewNormalizedRequest([]byte(`{
@@ -620,7 +621,7 @@ func TestFourAttemptScenario(t *testing.T) {
 	}
 
 	network := setupTestNetworkWithFourUpstreams(t, ctx, failsafeConfig)
-	upstream.ReorderUpstreams(network.upstreamsRegistry)
+	policy.OverrideAllForTest(network.policyEngine)
 
 	// Create request
 	req := common.NewNormalizedRequest([]byte(`{

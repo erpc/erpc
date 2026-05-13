@@ -19,6 +19,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
@@ -10028,7 +10029,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		upstream.ReorderUpstreams(network.upstreamsRegistry)
+		policy.OverrideAllForTest(network.policyEngine)
 
 		// Configure GetLogsAutoSplittingRangeThreshold = 1 to force splitting into individual blocks
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -10124,7 +10125,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		upstream.ReorderUpstreams(network.upstreamsRegistry)
+		policy.OverrideAllForTest(network.policyEngine)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -10208,7 +10209,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		upstream.ReorderUpstreams(network.upstreamsRegistry)
+		policy.OverrideAllForTest(network.policyEngine)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -10284,7 +10285,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		time.Sleep(200 * time.Millisecond)
-		upstream.ReorderUpstreams(network.upstreamsRegistry)
+		policy.OverrideAllForTest(network.policyEngine)
 
 		// Configure network for splitting
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{

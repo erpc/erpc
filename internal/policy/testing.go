@@ -1,19 +1,22 @@
 package policy
 
 import (
+	"sort"
+
 	"github.com/erpc/erpc/common"
 )
 
 // OverrideOrderForTest replaces the cache for `(networkID, "*")` with the
 // given ordered upstream IDs (resolved against the network's registered
-// upstreams). Unknown ids are dropped. The slot's ticker stays running, but
-// the next tick will overwrite this override — tests that want stable
-// ordering for the duration of the test should also stop the slot via the
-// engine's lifecycle.
+// upstreams). If no IDs are given, all registered upstreams are pinned in
+// ascending-id order — mirrors the legacy `upstream.ReorderUpstreams`
+// convenience used by retry/hedge/failsafe tests that just want a
+// deterministic order without caring about policy behavior.
 //
-// This replaces the legacy `upstream.ReorderUpstreams` used by 20+
-// retry/hedge/failsafe tests that need deterministic ordering rather than
-// any policy behavior.
+// Unknown ids are dropped. The slot's ticker stays running, but the next
+// tick will overwrite this override — tests that want stable ordering for
+// the duration of the test should set `EvalInterval: 0` on the network's
+// SelectionPolicy.
 func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 	e.mu.RLock()
 	slot, ok := e.slots[slotKey{networkID, "*"}]
@@ -26,6 +29,13 @@ func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 	for _, u := range reg.upstreams {
 		index[u.Id()] = u
 	}
+	if len(ids) == 0 {
+		ids = make([]string, 0, len(reg.upstreams))
+		for id := range index {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+	}
 	ordered := make([]common.Upstream, 0, len(ids))
 	for _, id := range ids {
 		if u, ok := index[id]; ok {
@@ -33,6 +43,23 @@ func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 		}
 	}
 	slot.cache.Store(&ordered)
+}
+
+// OverrideAllForTest applies OverrideOrderForTest to EVERY network this
+// engine knows about. This is the direct replacement for the legacy
+// `upstream.ReorderUpstreams(registry, ids...)` which had no per-network
+// scoping. If `ids` is empty, each network's upstreams are pinned in
+// ascending-id order.
+func OverrideAllForTest(e *Engine, ids ...string) {
+	e.mu.RLock()
+	networks := make([]string, 0, len(e.networks))
+	for net := range e.networks {
+		networks = append(networks, net)
+	}
+	e.mu.RUnlock()
+	for _, net := range networks {
+		OverrideOrderForTest(e, net, ids...)
+	}
 }
 
 // TickForTest forces one synchronous eval cycle on the slot, bypassing the

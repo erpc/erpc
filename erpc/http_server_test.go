@@ -24,6 +24,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -2694,7 +2695,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		statusCode2, _, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, map[string]string{
 			"X-ERPC-Use-Upstream": "rpc2",
@@ -5565,7 +5566,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5644,7 +5645,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5733,7 +5734,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5830,7 +5831,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5928,7 +5929,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to learn highest block across both upstreams
 		time.Sleep(500 * time.Millisecond)
@@ -6032,7 +6033,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
@@ -6221,7 +6222,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -6413,7 +6414,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -6486,7 +6487,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6560,7 +6561,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6651,7 +6652,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6713,7 +6714,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6854,7 +6855,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Allow poller to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6936,7 +6937,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and populate highest finalized
 		time.Sleep(500 * time.Millisecond)
@@ -7158,7 +7159,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and learn about finalized blocks
 		time.Sleep(1 * time.Second)
@@ -7411,7 +7412,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		defer shutdown()
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		userRequest := `{
 			"jsonrpc": "2.0",
@@ -7541,7 +7542,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		defer shutdown()
 		userRequest := `{
@@ -7691,7 +7692,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		userRequest := `{
 			"jsonrpc": "2.0",
