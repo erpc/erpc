@@ -92,6 +92,23 @@ type EvmStatePoller struct {
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
 	earliestInitialDetectionDone map[common.EvmAvailabilityProbeType]bool // tracks if THIS instance did initial detection
 	earliestMu                   sync.RWMutex
+
+	// State-readiness probe tracking. stateReadyBlock is updated only when the
+	// configured strategy (EvmNetworkConfig.StateProbe) passes its assertions
+	// at the upstream's current latest block. When no probe is configured,
+	// StateReadyBlock() falls through to LatestBlock(). Protected by stateMu
+	// alongside the other detection-state fields.
+	//
+	// lastStateProbeResult holds the JSON-RPC result string from the most
+	// recent successful probe. It's the "prev" the changingStorage strategy
+	// compares against to detect silent-stale-prev-block staleness.
+	stateReadyBlock          int64
+	stateProbeFailureCount   int
+	stateProbeSuccessfulOnce bool
+	skipStateProbeCheck      bool
+	stateProbeDetectionIssue string
+	lastStateProbeResult     string
+	stateProbeInProgress     sync.Mutex
 }
 
 func NewEvmStatePoller(
@@ -343,6 +360,20 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 		e.initializeEarliestBlockDetectionAndStartScheduler(ctx)
 	}()
 
+	// State-readiness probe (only when configured on the network). Runs
+	// concurrently with latest/finalized poll — but reads latestBlockShared,
+	// so the first cycle may see block=0 and no-op. The next cycle will catch up.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if e.networkStateProbeConfig() == nil {
+			return
+		}
+		if _, err := e.PollStateReady(ctx); err != nil {
+			e.logger.Debug().Err(err).Msg("state-readiness probe returned error")
+		}
+	}()
+
 	wg.Wait()
 
 	if len(errs) > 0 {
@@ -482,6 +513,214 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 
 func (e *EvmStatePoller) LatestBlock() int64 {
 	return e.latestBlockShared.GetValue()
+}
+
+// StateReadyBlock returns the most recent block at which a state-readiness probe
+// confirmed the upstream's state DB is consistent.
+//
+// When no StateProbe is configured (or the probe has been skipped after repeated
+// failures), this falls back to LatestBlock() — preserving legacy behavior so
+// upstreams without a configured probe are NOT mistakenly excluded.
+func (e *EvmStatePoller) StateReadyBlock() int64 {
+	cfg := e.networkStateProbeConfig()
+	if cfg == nil {
+		return e.LatestBlock()
+	}
+	e.stateMu.RLock()
+	skip := e.skipStateProbeCheck
+	successOnce := e.stateProbeSuccessfulOnce
+	val := e.stateReadyBlock
+	e.stateMu.RUnlock()
+	if skip || !successOnce {
+		// Degraded fallback: probe has never succeeded (or was disabled) — be
+		// permissive rather than blocking all traffic on a missing signal.
+		return e.LatestBlock()
+	}
+	return val
+}
+
+// networkStateProbeConfig returns the per-network StateProbe config or nil.
+func (e *EvmStatePoller) networkStateProbeConfig() *common.EvmStateProbeConfig {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+	if e.cfg == nil {
+		return nil
+	}
+	return e.cfg.StateProbe
+}
+
+// PollStateReady runs the configured state-readiness probe at the upstream's
+// current latest block. On success advances stateReadyBlock to that block; on
+// failure leaves the previous value intact.
+//
+// Returns (block-at-which-probe-was-attempted, error). When no probe is
+// configured returns (0, nil) and StateReadyBlock falls back to LatestBlock.
+func (e *EvmStatePoller) PollStateReady(ctx context.Context) (int64, error) {
+	probeCfg := e.networkStateProbeConfig()
+	if probeCfg == nil || probeCfg.Strategy == "" {
+		return 0, nil
+	}
+
+	e.stateMu.RLock()
+	if e.skipStateProbeCheck {
+		e.stateMu.RUnlock()
+		return 0, nil
+	}
+	failureThreshold := probeCfg.FailureThreshold
+	if failureThreshold <= 0 {
+		failureThreshold = 10
+	}
+	e.stateMu.RUnlock()
+
+	// Coalesce concurrent probes — there's no value in running multiple at once
+	// against the same upstream/block.
+	if !e.stateProbeInProgress.TryLock() {
+		return 0, nil
+	}
+	defer e.stateProbeInProgress.Unlock()
+
+	block := e.LatestBlock()
+	if block <= 0 {
+		return 0, nil
+	}
+
+	// If we've already verified state at >= this block, skip.
+	e.stateMu.RLock()
+	already := e.stateReadyBlock
+	prevResult := e.lastStateProbeResult
+	e.stateMu.RUnlock()
+	if already >= block {
+		return block, nil
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollStateReady",
+		trace.WithAttributes(
+			attribute.String("upstream.id", e.upstream.Id()),
+			attribute.String("network.id", e.upstream.NetworkId()),
+			attribute.Int64("block.number", block),
+			attribute.String("probe.strategy", string(probeCfg.Strategy)),
+		),
+	)
+	defer span.End()
+
+	result, ready, err := e.runStateProbe(ctx, probeCfg, block, prevResult)
+	if err != nil {
+		e.recordStateProbeFailure(err.Error(), failureThreshold)
+		span.SetAttributes(attribute.Bool("probe.ready", false), attribute.String("probe.error", err.Error()))
+		return block, err
+	}
+	if !ready {
+		e.recordStateProbeFailure("probe assertions failed", failureThreshold)
+		span.SetAttributes(attribute.Bool("probe.ready", false))
+		return block, nil
+	}
+
+	e.stateMu.Lock()
+	if block > e.stateReadyBlock {
+		e.stateReadyBlock = block
+	}
+	e.stateProbeFailureCount = 0
+	e.stateProbeSuccessfulOnce = true
+	e.stateProbeDetectionIssue = ""
+	e.lastStateProbeResult = result
+	e.stateMu.Unlock()
+
+	span.SetAttributes(attribute.Bool("probe.ready", true))
+	return block, nil
+}
+
+func (e *EvmStatePoller) recordStateProbeFailure(detail string, threshold int) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.stateProbeSuccessfulOnce {
+		// Once we've seen success, transient probe failures don't disable the
+		// poller — they just leave stateReadyBlock at its prior value, which
+		// naturally caps freshness until the next successful probe.
+		e.stateProbeDetectionIssue = detail
+		return
+	}
+	e.stateProbeFailureCount++
+	if e.stateProbeFailureCount >= threshold {
+		e.skipStateProbeCheck = true
+		e.stateProbeDetectionIssue = fmt.Sprintf("disabled after %d consecutive failures: %s", e.stateProbeFailureCount, detail)
+		e.logger.Warn().
+			Int("failures", e.stateProbeFailureCount).
+			Str("detail", detail).
+			Msg("disabling state-readiness probe after consecutive failures; StateReadyBlock will fall through to LatestBlock")
+		return
+	}
+	e.stateProbeDetectionIssue = detail
+}
+
+// runStateProbe dispatches to the configured strategy. Returns
+// (resultBytes, ready, error). When ready=true the caller stores resultBytes
+// as the next "prev" for differs-against-prev assertions.
+func (e *EvmStatePoller) runStateProbe(
+	ctx context.Context,
+	probeCfg *common.EvmStateProbeConfig,
+	block int64,
+	prevResult string,
+) (string, bool, error) {
+	switch probeCfg.Strategy {
+	case common.StateProbeChangingStorage:
+		return e.runChangingStorageProbe(ctx, probeCfg, block, prevResult)
+	default:
+		return "", false, fmt.Errorf("state probe: unknown strategy %q", probeCfg.Strategy)
+	}
+}
+
+// runChangingStorageProbe reads eth_getStorageAt(address, slot, block) and
+// passes iff the result is non-empty AND differs from the previous successful
+// probe. Catches both "0x0 at head" and silent-stale-prev-block staleness in
+// one check.
+//
+// First-cycle semantics: when prevResult is empty (no successful probe yet),
+// the differs-against-prev check is bypassed so a healthy upstream can advance
+// stateReadyBlock on cold start without waiting for a second cycle.
+func (e *EvmStatePoller) runChangingStorageProbe(
+	ctx context.Context,
+	probeCfg *common.EvmStateProbeConfig,
+	block int64,
+	prevResult string,
+) (string, bool, error) {
+	hexBlock := fmt.Sprintf("0x%x", uint64(block))
+	body, err := common.SonicCfg.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      util.RandomID(),
+		"method":  "eth_getStorageAt",
+		"params":  []interface{}{probeCfg.Address, probeCfg.Slot, hexBlock},
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("state probe (changingStorage): marshal request: %w", err)
+	}
+
+	pr := common.NewNormalizedRequest(body)
+	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		if common.HasErrorCode(err,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+		) {
+			// Upstream can't run this probe at all (e.g. method not allowed).
+			// Treat as no-signal: don't advance, don't penalize.
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil || jrr == nil {
+		return "", false, fmt.Errorf("state probe (changingStorage): parse response: %w", err)
+	}
+	if jrr.Error != nil {
+		return "", false, fmt.Errorf("state probe (changingStorage): rpc error: %s", jrr.Error.Error())
+	}
+
+	result, ready := classifyChangingStorageResult(jrr.GetResultBytes(), prevResult)
+	return result, ready, nil
 }
 
 func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
@@ -903,6 +1142,7 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	// Collect state under stateMu first, then release before acquiring earliestMu
 	// to avoid nested lock ordering issues (always acquire locks in consistent order).
 	e.stateMu.RLock()
+	stateProbeConfigured := e.cfg != nil && e.cfg.StateProbe != nil && e.cfg.StateProbe.Strategy != ""
 	diag := &common.EvmStatePollerDiagnostics{
 		Enabled:        e.Enabled,
 		LatestBlock:    e.latestBlockShared.GetValue(),
@@ -921,6 +1161,13 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 		SkipFinalizedCheck:           e.skipFinalizedCheck,
 		FinalizedBlockFailureCount:   e.finalizedBlockFailureCount,
 		FinalizedBlockSuccessfulOnce: e.finalizedBlockSuccessfulOnce,
+
+		// State-readiness probe status
+		StateReadyBlock:          e.stateReadyBlock,
+		StateProbeConfigured:     stateProbeConfigured,
+		StateProbeFailureCount:   e.stateProbeFailureCount,
+		StateProbeSuccessfulOnce: e.stateProbeSuccessfulOnce,
+		StateProbeDetectionIssue: e.stateProbeDetectionIssue,
 	}
 
 	// Build detection issue messages
@@ -931,6 +1178,13 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	skipFinalizedCheck := e.skipFinalizedCheck
 	finalizedBlockSuccessfulOnce := e.finalizedBlockSuccessfulOnce
 	e.stateMu.RUnlock()
+
+	// When the probe isn't configured the StateReadyBlock falls through to
+	// LatestBlock — surface that so diagnostics readers aren't confused by a
+	// zero stateReadyBlock value.
+	if !stateProbeConfigured {
+		diag.StateReadyBlock = diag.LatestBlock
+	}
 
 	if skipSyncingCheck && !syncingSuccessfulOnce {
 		diag.SyncingCheckError = "syncing check disabled after consecutive failures (method may not be supported)"

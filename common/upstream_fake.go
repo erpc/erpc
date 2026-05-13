@@ -169,14 +169,27 @@ func (u *FakeUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
 }
 
 type FakeEvmStatePoller struct {
-	latestBlockNumber    int64
-	finalizedBlockNumber int64
+	latestBlockNumber     int64
+	finalizedBlockNumber  int64
+	stateReadyBlockNumber int64
+	stateProbeConfigured  bool
 }
 
 func NewFakeEvmStatePoller(latestBlockNumber int64, finalizedBlockNumber int64) EvmStatePoller {
 	return &FakeEvmStatePoller{
 		latestBlockNumber:    latestBlockNumber,
 		finalizedBlockNumber: finalizedBlockNumber,
+	}
+}
+
+// NewFakeEvmStatePollerWithStateReady constructs a fake whose StateReadyBlock is
+// decoupled from LatestBlock. Use for tests that exercise head-vs-trie races.
+func NewFakeEvmStatePollerWithStateReady(latestBlockNumber, finalizedBlockNumber, stateReadyBlockNumber int64) EvmStatePoller {
+	return &FakeEvmStatePoller{
+		latestBlockNumber:     latestBlockNumber,
+		finalizedBlockNumber:  finalizedBlockNumber,
+		stateReadyBlockNumber: stateReadyBlockNumber,
+		stateProbeConfigured:  true,
 	}
 }
 
@@ -224,6 +237,26 @@ func (p *FakeEvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, 
 	return p.latestBlockNumber, nil
 }
 
+func (p *FakeEvmStatePoller) PollStateReady(ctx context.Context) (int64, error) {
+	if !p.stateProbeConfigured {
+		return 0, nil
+	}
+	return p.stateReadyBlockNumber, nil
+}
+
+func (p *FakeEvmStatePoller) StateReadyBlock() int64 {
+	if !p.stateProbeConfigured {
+		return p.latestBlockNumber
+	}
+	return p.stateReadyBlockNumber
+}
+
+// SetStateReadyBlock overrides the state-ready block for fake testing.
+func (p *FakeEvmStatePoller) SetStateReadyBlock(blockNumber int64) {
+	p.stateReadyBlockNumber = blockNumber
+	p.stateProbeConfigured = true
+}
+
 func (p *FakeEvmStatePoller) SetNetworkConfig(config *NetworkConfig) {
 	// No-op for testing
 }
@@ -246,10 +279,12 @@ func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 
 func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
 	return &EvmStatePollerDiagnostics{
-		Enabled:        true,
-		LatestBlock:    p.latestBlockNumber,
-		FinalizedBlock: p.finalizedBlockNumber,
-		SyncingState:   EvmSyncingStateUnknown.String(),
+		Enabled:              true,
+		LatestBlock:          p.latestBlockNumber,
+		FinalizedBlock:       p.finalizedBlockNumber,
+		StateReadyBlock:      p.StateReadyBlock(),
+		StateProbeConfigured: p.stateProbeConfigured,
+		SyncingState:         EvmSyncingStateUnknown.String(),
 	}
 }
 

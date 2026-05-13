@@ -699,8 +699,25 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 										attribute.String("extracted_block_error", fmt.Sprintf("%v", ebn)),
 									)
 									if ebn == nil && bn > 0 {
+										// For state-read methods (eth_getBalance, eth_getCode, etc.) the
+										// upstream's reported head pointer is NOT a sufficient signal that
+										// an empty result is legitimate — the state DB may not yet be
+										// consistent at this block even though the header is. Consult the
+										// state-readiness probe via StateReady confidence so the shortcut
+										// only fires when the state trie has been verified.
+										//
+										// When no StateProbe is configured, StateReadyBlock falls through
+										// to LatestBlock, preserving prior behavior.
+										effectiveConfidence := emptyResultConfidence
+										if evm.IsStateReadMethod(method) {
+											effectiveConfidence = common.AvailbilityConfidenceStateReady
+										}
+										span.SetAttributes(
+											attribute.String("availability.confidence", effectiveConfidence.String()),
+											attribute.Bool("method.is_state_read", evm.IsStateReadMethod(method)),
+										)
 										// Use EvmAssertBlockAvailability to check if the upstream can handle the block
-										if avail, err := ups.EvmAssertBlockAvailability(ctx, method, emptyResultConfidence, false, bn); err == nil && avail {
+										if avail, err := ups.EvmAssertBlockAvailability(ctx, method, effectiveConfidence, false, bn); err == nil && avail {
 											// If the upstream can handle the block and returned empty, don't retry
 											span.SetAttributes(
 												attribute.Bool("block_available", true),

@@ -22,6 +22,11 @@ type mockEvmStatePollerEnhanced struct {
 	pollCount      int
 	// For simulating block progression
 	blockProgression []int64
+	// When non-zero, decouples StateReadyBlock from latestBlock so tests can
+	// exercise the head-vs-trie race. When zero, StateReadyBlock returns
+	// latestBlock as before.
+	stateReadyBlockOverride int64
+	pollStateReadyCallCount int
 }
 
 func (m *mockEvmStatePollerEnhanced) Bootstrap(ctx context.Context) error { return nil }
@@ -64,13 +69,27 @@ func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, 
 func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
-func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
+func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool { return m.isNull }
+func (m *mockEvmStatePollerEnhanced) StateReadyBlock() int64 {
+	if m.stateReadyBlockOverride != 0 {
+		return m.stateReadyBlockOverride
+	}
+	return m.latestBlock
+}
+func (m *mockEvmStatePollerEnhanced) PollStateReady(ctx context.Context) (int64, error) {
+	m.pollStateReadyCallCount++
+	if m.pollError != nil {
+		return 0, m.pollError
+	}
+	return m.StateReadyBlock(), nil
+}
 func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
-		Enabled:        true,
-		LatestBlock:    m.latestBlock,
-		FinalizedBlock: m.finalizedBlock,
-		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+		Enabled:         true,
+		LatestBlock:     m.latestBlock,
+		FinalizedBlock:  m.finalizedBlock,
+		StateReadyBlock: m.latestBlock,
+		SyncingState:    common.EvmSyncingStateNotSyncing.String(),
 	}
 }
 
@@ -626,13 +645,20 @@ func (m *mockEvmStatePollerWithCustomBehavior) IsBlockFinalized(blockNumber int6
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber int64)    {}
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
-func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
+func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool { return false }
+func (m *mockEvmStatePollerWithCustomBehavior) StateReadyBlock() int64 {
+	return m.getLatestBlock()
+}
+func (m *mockEvmStatePollerWithCustomBehavior) PollStateReady(ctx context.Context) (int64, error) {
+	return 0, nil
+}
 func (m *mockEvmStatePollerWithCustomBehavior) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
-		Enabled:        true,
-		LatestBlock:    m.getLatestBlock(),
-		FinalizedBlock: m.finalizedBlock,
-		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+		Enabled:         true,
+		LatestBlock:     m.getLatestBlock(),
+		FinalizedBlock:  m.finalizedBlock,
+		StateReadyBlock: m.getLatestBlock(),
+		SyncingState:    common.EvmSyncingStateNotSyncing.String(),
 	}
 }
 

@@ -260,7 +260,14 @@ func TestRetryPolicy_EmptyResultWithIgnore(t *testing.T) {
 				}
 			}
 			if shouldCheckAvailability {
-				mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, tt.method, common.AvailbilityConfidenceBlockHead, false, int64(100)).Return(true, nil).Maybe()
+				// State-read methods now request StateReady confidence so the
+				// retry shortcut consults the readiness probe instead of the raw
+				// head pointer. Non-state-read methods still use BlockHead.
+				expectedConfidence := common.AvailbilityConfidenceBlockHead
+				if evm.IsStateReadMethod(tt.method) {
+					expectedConfidence = common.AvailbilityConfidenceStateReady
+				}
+				mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, tt.method, expectedConfidence, false, int64(100)).Return(true, nil).Maybe()
 			}
 
 			// Create mock response
