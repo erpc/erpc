@@ -30,7 +30,7 @@ func (f *fakeUpstream) Vendor() common.Vendor   { return nil }
 func (f *fakeUpstream) Tracker() common.HealthTracker {
 	return nil
 }
-func (f *fakeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+func (f *fakeUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
 func (f *fakeUpstream) Cordon(method, reason string)   {}

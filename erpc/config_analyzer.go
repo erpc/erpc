@@ -1079,7 +1079,7 @@ func fetchBlockHashByNumber(ctx context.Context, ups *upstream.Upstream, blockTa
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
-	resp, err := ups.Forward(ctx, pr, true)
+	resp, err := ups.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}
@@ -1114,7 +1114,7 @@ func fetchBlockNumber(ctx context.Context, ups *upstream.Upstream, blockTag stri
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
-	resp, err := ups.Forward(ctx, pr, true)
+	resp, err := ups.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}
@@ -1161,7 +1161,7 @@ func fetchLatestNumber(ctx context.Context, ups *upstream.Upstream) (int64, erro
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["latest",false]}`, util.RandomID()),
 	))
-	resp, err := ups.Forward(ctx, pr, true)
+	resp, err := ups.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}

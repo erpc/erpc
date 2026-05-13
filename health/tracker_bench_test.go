@@ -36,7 +36,7 @@ func (m *MockUpstream) Logger() *zerolog.Logger        { return &log.Logger }
 func (m *MockUpstream) Config() *common.UpstreamConfig { return nil }
 func (m *MockUpstream) Vendor() common.Vendor          { return nil }
 func (m *MockUpstream) Tracker() common.HealthTracker  { return nil }
-func (m *MockUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+func (m *MockUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
 func (m *MockUpstream) Cordon(method string, reason string)   {}

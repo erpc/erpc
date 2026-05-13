@@ -7841,7 +7841,7 @@ func TestNetwork_Forward(t *testing.T) {
 					upstreamsRegistry.RUnlockUpstreams()
 					assert.NoError(t, err)
 					for _, up := range ups {
-						_, err = up.Forward(ctx, req, false)
+						_, err = up.Forward(ctx, req, false, false)
 						assert.NoError(t, err)
 					}
 				}(method)
