@@ -80,9 +80,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		pr,
 		nil,
 		mt,
-		1*time.Second,
-		nil,
-		nil,
+	nil,
 	)
 
 	upsReg.Bootstrap(ctx)
@@ -104,6 +102,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		rlr,
 		upsReg,
 		mt,
+	nil,
 	)
 	if err != nil {
 		b.Fatal(err)
@@ -186,9 +185,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		pr,
 		nil,
 		mt,
-		1*time.Second,
-		nil,
-		nil,
+	nil,
 	)
 
 	upsReg.Bootstrap(ctx)
@@ -210,6 +207,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		rlr,
 		upsReg,
 		mt,
+	nil,
 	)
 	if err != nil {
 		b.Fatal(err)
@@ -299,9 +297,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		pr,
 		nil,
 		mt,
-		1*time.Second,
-		nil,
-		nil,
+	nil,
 	)
 	upsReg.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -323,6 +319,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		rlr,
 		upsReg,
 		mt,
+	nil,
 	)
 	if err != nil {
 		b.Fatal(err)
@@ -416,9 +413,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		pr,
 		nil,
 		mt,
-		10*time.Second,
-		nil,
-		nil,
+	nil,
 	)
 	upsReg.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -443,6 +438,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		rlr,
 		upsReg,
 		mt,
+	nil,
 	)
 	if err != nil {
 		b.Fatal(err)

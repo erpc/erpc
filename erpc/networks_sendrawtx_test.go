@@ -2265,9 +2265,7 @@ func setupSendRawTxNetwork(t *testing.T, ctx context.Context, upstreamConfigs []
 		pr,
 		nil,
 		metricsTracker,
-		1*time.Second,
-		nil,
-		nil,
+	nil,
 	)
 
 	network, err := NewNetwork(
@@ -2278,6 +2276,7 @@ func setupSendRawTxNetwork(t *testing.T, ctx context.Context, upstreamConfigs []
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+	nil,
 	)
 	require.NoError(t, err)
 

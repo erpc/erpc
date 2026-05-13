@@ -29,17 +29,20 @@ func TestHealthCheckLastEvaluation(t *testing.T) {
 
 	network := createTestNetworkWithSelectionPolicy(t, ctx)
 
-	// Before any tick, no decision is recorded.
-	assert.True(t, network.policyEngine.LastEvalAt("evm:123", "*").IsZero(),
-		"LastEvalAt should be zero before the first tick")
-
-	// Force one tick so a decision is recorded.
-	policy.TickForTest(network.policyEngine, "evm:123", "*")
-
+	// Network.Bootstrap registers the network with the engine, which runs
+	// an initial synchronous eval — that decision is the LastEvalAt anchor
+	// health-check exporters use.
 	last := network.policyEngine.LastEvalAt("evm:123", "*")
-	assert.False(t, last.IsZero(), "LastEvalAt should be set after a tick")
+	assert.False(t, last.IsZero(), "LastEvalAt should be set after Bootstrap's initial tick")
 	assert.WithinDuration(t, time.Now(), last, time.Second,
 		"LastEvalAt should be approximately now")
+
+	// A subsequent tick advances the timestamp.
+	first := last
+	time.Sleep(5 * time.Millisecond)
+	policy.TickForTest(network.policyEngine, "evm:123", "*")
+	last = network.policyEngine.LastEvalAt("evm:123", "*")
+	assert.True(t, last.After(first), "LastEvalAt should advance after another tick")
 }
 
 func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Network {

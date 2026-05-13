@@ -60,7 +60,7 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, ntwCfg *common.Net
 	require.NoError(t, err)
 
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA",
-		[]*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil,
+		[]*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil,
 	)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -75,7 +75,7 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, ntwCfg *common.Net
 	require.NoError(t, err)
 	pup1.Client = cl1
 
-	ntw, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	ntw, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -83,7 +83,7 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, ntwCfg *common.Net
 	poller := pup1.EvmStatePoller()
 	poller.SuggestLatestBlock(1000)
 	poller.SuggestFinalizedBlock(990)
-	upstream.ReorderUpstreams(upr)
+	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upr)
 
 	return ntw, upr
 }

@@ -759,16 +759,14 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
-		nil,
+	nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)
 
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -777,7 +775,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
 
-	upstream.ReorderUpstreams(upstreamsRegistry)
+	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
 
 	return network
 }
@@ -836,16 +834,14 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
-		nil,
+	nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)
 
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())

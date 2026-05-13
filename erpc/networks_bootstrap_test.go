@@ -66,14 +66,12 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 		pr,
 		nil,
 		mt,
-		1*time.Second,
-		nil,
-		nil,
+	nil,
 	)
 
 	// Network config without static upstreams to force provider path
 	ncfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	net, err := NewNetwork(ctx, &log.Logger, "prjA", ncfg, rlr, upr, mt)
+	net, err := NewNetwork(ctx, &log.Logger, "prjA", ncfg, rlr, upr, mt, nil)
 	require.NoError(t, err)
 
 	// Prepare upstreams with provider tasks and wait; we expect initialization to succeed after provider config conversion.
@@ -104,7 +102,7 @@ func TestNetworksBootstrap_UnsupportedNetwork_FatalFast(t *testing.T) {
 	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{}, ssr, rlr, vr, pr, nil, mt, nil)
 
 	// No static upstreams; network id is valid but unsupported by providers -> fatal
 	err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(999999))
@@ -145,7 +143,7 @@ func TestNetworksBootstrap_ProviderInitializing_503Retry(t *testing.T) {
 	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{}, ssr, rlr, vr, pr, nil, mt, nil)
 
 	// Make provider JSON-RPC fail immediately to keep initializer in initializing state until context times out
 	gock.New("http://rpc9.localhost").

@@ -1025,9 +1025,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		pr,
 		nil,
 		metricsTracker,
-		1*time.Second,
-		nil,
-		nil,
+	nil,
 	)
 
 	network, err := NewNetwork(
@@ -1038,6 +1036,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+	nil,
 	)
 	require.NoError(t, err)
 
@@ -1060,7 +1059,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	upstream.ReorderUpstreams(upstreamsRegistry)
+	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
 	time.Sleep(100 * time.Millisecond)
 
 	return network

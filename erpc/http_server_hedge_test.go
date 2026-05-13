@@ -9,7 +9,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/internal/policy"
-	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
