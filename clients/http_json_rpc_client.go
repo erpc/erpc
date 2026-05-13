@@ -448,8 +448,28 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
 		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
 		// so the sentinel survives upstream-level error classification.
+		batchTimedOut := errors.Is(err, context.DeadlineExceeded)
 		for _, req := range requests {
 			reqErr := err
+			// Race fix: batchCtx and the per-request failsafe ctx are
+			// driven by independent Go runtime timers that both target the
+			// same nominal deadline (e.g. upstream-level timeout policy).
+			// If batchCtx's timer fires a few microseconds before the
+			// failsafe library's timer, context.Cause(req.ctx) is still
+			// nil here and the typed sentinel (ErrDynamicTimeoutExceeded)
+			// is lost — we'd then emit a generic
+			// ErrEndpointRequestTimeout and the upstream-level classifier
+			// would NOT promote it to ErrFailsafeTimeoutExceeded. Give
+			// req.ctx a brief settle window so its policy-attached cause
+			// becomes observable. Once req.ctx.Done() closes, Cause() is
+			// stable and reflects the policy sentinel set via
+			// context.WithCancelCause / WithTimeoutCause.
+			if batchTimedOut {
+				select {
+				case <-req.ctx.Done():
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
 			if rc := context.Cause(req.ctx); rc != nil {
 				reqErr = rc
 			}
