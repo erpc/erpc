@@ -334,7 +334,6 @@ type NormalizedRequest struct {
 
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
-
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -1003,7 +1002,6 @@ func (r *NormalizedRequest) SetAgentName(name string) {
 	}
 	r.agentName.Store(name)
 }
-
 
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm
 func (r *NormalizedRequest) EvmBlockRef() interface{} {
