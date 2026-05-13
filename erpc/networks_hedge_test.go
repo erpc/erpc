@@ -1627,6 +1627,74 @@ func TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream(t *testing.T) {
 		"rpc2 succeeded every time it ran")
 }
 
+// TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting verifies the
+// timing-edge case: rpc2 wins as hedge, rpc1's late response then arrives
+// (its goroutine wasn't fully unwound before the parent context cancellation
+// propagated). The late response must NOT pollute the tracker counters.
+func TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+
+	// rpc1: slow → hedge fires, rpc1 gets cancelled mid-flight.
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Persist().
+		Reply(200).
+		Delay(500 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+
+	// rpc2: fast → wins hedge.
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Persist().
+		Reply(200).
+		Delay(40 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+		Delay:    common.Duration(80 * time.Millisecond),
+		MaxCount: 1,
+	})
+
+	resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+	require.NoError(t, err)
+	jrr, _ := resp.JsonRpcResponse()
+	require.Contains(t, jrr.GetResultString(), "0x2222", "hedge winner returned")
+
+	// Wait LONGER than the slow primary's nominal completion time so that any
+	// late "ghost" bookkeeping would have a chance to fire.
+	time.Sleep(700 * time.Millisecond)
+
+	rpc1, rpc2 := getUpstreamPair(t, network)
+	m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+	require.NotNil(t, m1)
+	// rpc1 was the primary attempt → exactly one RequestsTotal tick. The
+	// cancellation is skipped at both layers. If the late goroutine fired
+	// any additional recording paths, we'd see > 1 here.
+	assert.Equal(t, int64(1), m1.RequestsTotal.Load(),
+		"rpc1's late response after cancellation must not trigger a second RequestsTotal tick")
+	assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+		"rpc1's cancellation is not an error; a late successful response after cancel also shouldn't dirty anything")
+
+	if m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance"); m2 != nil {
+		assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 hedge stayed excluded")
+		assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
+	}
+}
+
+
 func getUpstreamPair(t *testing.T, network *Network) (rpc1, rpc2 *upstream.Upstream) {
 	t.Helper()
 	for _, u := range network.upstreamsRegistry.GetAllUpstreams() {

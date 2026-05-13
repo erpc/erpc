@@ -924,6 +924,175 @@ func TestUpstreamsRegistry_SlowUpstreamDemotedByLatency(t *testing.T) {
 		"slow rpc2 should be demoted to LAST by latency-based scoring, with zero errors")
 }
 
+// TestUpstreamsRegistry_HysteresisPreventsScoreFlapping verifies that the
+// production scoring defaults actually resist a marginal latency edge: a 5 %
+// improvement on the challenger must NOT flip the primary, because Switch-
+// Hysteresis is 10 % by default and MinSwitchInterval is 2 minutes. This is
+// the load-bearing protection against flap-flop in a noisy environment.
+func TestUpstreamsRegistry_HysteresisPreventsScoreFlapping(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	// createTestRegistry uses production scoring defaults (hysteresis 10 %, cooldown 2 m).
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+
+	// Round 1: all three upstreams measure equal — rpc1 wins by alphabetical
+	// tiebreak. (We MUST populate every upstream, otherwise an unmeasured one
+	// would beat the measured ones by empty-quantile-bias — see the
+	// KnownLimitation test for that case.)
+	for _, u := range ups {
+		simulateRequestsWithLatency(metricsTracker, u, method, 30, 0.045)
+	}
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.Equal(t, "rpc1", ordered[0].Id(), "rpc1 is initial primary by tiebreak")
+
+	// Round 2: rpc2 improves by ~5 % (42 ms vs 45 ms). Hysteresis threshold
+	// is 10 % — and the 2-minute MinSwitchInterval definitely hasn't elapsed.
+	// rpc1 must STAY primary.
+	simulateRequestsWithLatency(metricsTracker, ups[1], method, 30, 0.042)
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	stuck, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	assert.Equal(t, "rpc1", stuck[0].Id(),
+		"hysteresis must keep rpc1 primary — rpc2's 5%% advantage is below the 10%% threshold")
+}
+
+// TestUpstreamsRegistry_TransientSlownessRecoversViaDecay verifies the EMA
+// smoothing actually un-demotes an upstream that recovers. A spike of
+// slowness shouldn't permanently penalize an upstream; subsequent fast
+// requests must pull the score back toward zero penalty.
+func TestUpstreamsRegistry_TransientSlownessRecoversViaDecay(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1")[0]
+
+	// Phase 1: sustained slowness. Many slow successful responses populate
+	// the quantile with a high p70.
+	simulateRequestsWithLatency(metricsTracker, ups, method, 100, 0.500)
+	for i := 0; i < 5; i++ {
+		require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+	}
+	scoreSpike := registry.GetUpstreamScore(ups.Id(), networkID, method)
+	require.Less(t, scoreSpike, 0.95,
+		"sustained slow latency should visibly drop the score below 1.0 (got %f)", scoreSpike)
+
+	// Phase 2: sustained recovery. Many fast successful responses. The
+	// quantile slides toward the new fast samples and the EMA-decayed penalty
+	// converges back toward zero across multiple refresh cycles.
+	for cycle := 0; cycle < 30; cycle++ {
+		simulateRequestsWithLatency(metricsTracker, ups, method, 50, 0.020)
+		require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+	}
+
+	scoreRecovered := registry.GetUpstreamScore(ups.Id(), networkID, method)
+	assert.Greater(t, scoreRecovered, scoreSpike,
+		"after sustained recovery, score should improve (was %f, now %f)",
+		scoreSpike, scoreRecovered)
+}
+
+// TestUpstreamsRegistry_UnmeasuredUpstreamRankedInTheMiddle verifies the
+// peer-median baseline for empty quantiles. An upstream with no measured
+// latency yet gets substituted with the median of its measured peers — so
+// it doesn't free-ride to the top (the historical empty-quantile bug) but
+// also isn't unfairly buried at the bottom. It sits in the middle of the
+// pack and earns its real rank as real traffic populates its quantile.
+func TestUpstreamsRegistry_UnmeasuredUpstreamRankedInTheMiddle(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "trace_block"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+
+	// rpc1: fast (30 ms), rpc3: slow (300 ms). rpc2: zero data — should be
+	// substituted with the median (here 165 ms = (30+300)/2 since two peers).
+	simulateRequestsWithLatency(metricsTracker, ups[0], method, 50, 0.030)
+	simulateRequestsWithLatency(metricsTracker, ups[2], method, 50, 0.300)
+	// rpc2 deliberately left unmeasured.
+
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.Len(t, ordered, 3)
+
+	assert.Equal(t, "rpc1", ordered[0].Id(),
+		"rpc1 (measured fast) wins — empty-quantile-bias has been fixed")
+	assert.Equal(t, "rpc2", ordered[1].Id(),
+		"rpc2 (unmeasured) sits in the middle by peer-median substitution")
+	assert.Equal(t, "rpc3", ordered[2].Id(),
+		"rpc3 (measured slow) is last")
+}
+
+// TestUpstreamsRegistry_AllUnmeasured_NoRegression confirms the fix doesn't
+// drop the cold-start path: when no peer has data, the median falls back to
+// 0 and every upstream keeps the neutral score of 1.0 — same as pre-fix
+// behavior. (The order between equally-scored upstreams is determined by
+// internal registration ordering and isn't part of this contract.)
+func TestUpstreamsRegistry_AllUnmeasured_NoRegression(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "trace_block"
+	networkID := "evm:123"
+
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	assert.Len(t, ordered, 3, "all upstreams remain candidates with no measurements")
+
+	// Every upstream's penalty is identical (zero), so the breakdown shows
+	// no latency contribution for anyone. The exact ordering is determined
+	// by internal registration order and isn't part of this contract — what
+	// matters is that all upstreams stay in play.
+	for _, u := range ordered {
+		bd := registry.GetUpstreamScoreBreakdown(u, networkID, method)
+		assert.Equal(t, 0.0, bd.Latency,
+			"%s has no measured latency → no latency contribution to penalty", u.Id())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetUpstreamScoreBreakdown
 // ---------------------------------------------------------------------------
