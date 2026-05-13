@@ -41,14 +41,30 @@ var _ Connector = (*PostgreSQLConnector)(nil)
 type PostgreSQLConnector struct {
 	id     string
 	logger *zerolog.Logger
-	// appCtx is the long-lived context passed to NewPostgreSQLConnector. It is
-	// used for goroutines that must outlive any single connectTask attempt
-	// (e.g. local TTL cleanup). connectTask itself receives a per-attempt
-	// context bounded by initTimeout.
-	appCtx            context.Context
-	conn              *pgxpool.Pool
-	connMu            sync.RWMutex
-	schemaInitialized atomic.Bool // true once first-init migration has succeeded; subsequent reconnects skip the migration
+	// appCtx is the long-lived context passed to NewPostgreSQLConnector. It
+	// outlives any single connectTask invocation and is what background
+	// goroutines (cleanup ticker, listener pumps) observe for shutdown.
+	// Earlier code passed the per-attempt timeout context to startCleanup,
+	// which caused the cleanup goroutine to exit microseconds after each
+	// successful connect.
+	appCtx context.Context
+	conn   *pgxpool.Pool
+	connMu sync.RWMutex
+	// schemaApplied + schemaMu gate one-time schema setup (CREATE TABLE /
+	// CREATE INDEX / pg_cron). The DDL is mostly idempotent but
+	// (a) re-running on every reconnect adds load to the database and
+	// pooler at exactly the moments when both are already strained, and
+	// (b) `cron.schedule` is NOT idempotent — every call inserts a new
+	// pg_cron job. We serialize the check-and-set under schemaMu so two
+	// concurrent connectTask calls cannot both observe schemaApplied==false
+	// and run the non-idempotent migration steps in parallel. (A bare
+	// atomic.Bool would have a race between Load() and Store() that two
+	// concurrent goroutines could pass through, both calling cron.schedule.)
+	schemaMu      sync.Mutex
+	schemaApplied bool
+	// cleanupOnce gates the local expired-items goroutine so repeated
+	// reconnects don't accumulate copies of it.
+	cleanupOnce sync.Once
 	// lastFailureMarkNanos records when the last MarkTaskAsFailed fired,
 	// in nanoseconds since Unix epoch. Used by handleConnectionFailure to
 	// coalesce concurrent failures so a burst of N failing Get/Set calls
@@ -137,32 +153,27 @@ func NewPostgreSQLConnector(
 }
 
 // connectTask establishes (or re-establishes) the pgxpool used by this
-// connector. It is invoked once by the initial bootstrap call and again by the
-// util.Initializer auto-retry loop whenever handleConnectionFailure marks the
-// task as failed.
+// connector. It is invoked once by the initial bootstrap call and again by
+// the util.Initializer auto-retry loop whenever handleConnectionFailure
+// marks the task as failed.
 //
-// IMPORTANT — both fixes below are direct mitigations for the 2026-05-13
-// edge-prod incident (auth-fd-lock OOM cascade):
+// All the slow work below — pgxpool.ConnectConfig (TCP dial, TLS, auth,
+// opening MinConns connections) and the one-time schema setup — runs WITHOUT
+// the connMu write lock. The previous design held connMu.Lock() for the
+// entire ~5s body of this function, which serialized every Get/Set/Lock
+// behind each reconnect attempt and was the proximate cause of the
+// 2026-05-13 fd-lock cascade: traces surfaced as
+// `PostgreSQLConnector not connected yet` with duration ≈ initTimeout
+// because the connMu.RLock() inside Get was blocked on the connectTask's
+// WRITE lock for ~5s.
 //
-//  1. The slow work (pgxpool.ConnectConfig + schema migration) is performed
-//     OUTSIDE the connMu write lock. Previously the lock was held for the
-//     entire ~5s sequence, which forced every concurrent Get to block on
-//     RLock and surface as "PostgreSQLConnector not connected yet" with
-//     5-second latency. That artificially-slow auth path is what filled the
-//     stdout fd queue and tripped the goroutine leak.
-//
-//  2. The schema migration (CREATE TABLE / ALTER / CREATE INDEX × 2 /
-//     pg_extension / pg_cron) is now gated on schemaInitialized and only
-//     runs on first init. On reconnect we just verify the new pool with a
-//     SELECT 1. This removes the AccessExclusive-lock contention at the DB
-//     that fed the cascade once 32 processes × 27 machines all started
-//     reconnecting simultaneously.
-//
-// The write lock is held only for the brief atomic field swap at the end.
+// The write lock is now scoped down to the brief field-swap at the end
+// (nanoseconds). The schema setup is gated by ensureSchema so it runs at
+// most once per process lifetime — re-running DDL on every reconnect was
+// also part of the cascade (especially the non-idempotent `cron.schedule`
+// call). Old pools are closed AFTER releasing the lock so a slow Close
+// (drain of in-flight queries) cannot stall the hot read path.
 func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
-	connectCtx, cancel := context.WithTimeout(ctx, p.initTimeout)
-	defer cancel()
-
 	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
 	if err != nil {
 		return common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
@@ -172,71 +183,95 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	config.MaxConnLifetime = 5 * time.Hour
 	config.MaxConnIdleTime = 30 * time.Minute
 
-	conn, err := pgxpool.ConnectConfig(connectCtx, config)
+	connectCtx, cancel := context.WithTimeout(ctx, p.initTimeout)
+	defer cancel()
+
+	newConn, err := pgxpool.ConnectConfig(connectCtx, config)
 	if err != nil {
 		return err
 	}
 
-	firstInit := !p.schemaInitialized.Load()
-	if firstInit {
-		if err := p.initSchema(connectCtx, conn, cfg); err != nil {
-			// Best-effort cleanup; if Close blocks we don't want to wedge the
-			// reconnect loop, so it runs in its own goroutine.
-			go conn.Close()
-			return err
-		}
-		p.schemaInitialized.Store(true)
-	} else {
-		// Reconnect path: cheap health check, no schema work.
-		if _, err := conn.Exec(connectCtx, "SELECT 1"); err != nil {
-			go conn.Close()
-			return fmt.Errorf("post-reconnect health check failed: %w", err)
-		}
+	// Apply schema at most once successfully per process. ensureSchema
+	// serializes the check-and-set under a mutex so two concurrent
+	// connectTask calls can't both run the migration in parallel — only
+	// the `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` parts
+	// are safe under that race; the TEXT→BYTEA `DROP COLUMN` and
+	// `cron.schedule` steps are not.
+	if err := p.ensureSchema(connectCtx, newConn, cfg); err != nil {
+		// The pool we just opened is about to be discarded — close it
+		// synchronously so its connections are released back to the
+		// pooler rather than lingering until GC.
+		newConn.Close()
+		return err
 	}
 
-	// Atomic swap. The write lock is held only for the field assignments
-	// (microseconds), not for the slow work above. Concurrent Get/Set will
-	// see either the old pool or the new pool — never an inconsistent
-	// intermediate state.
+	// Publish the new pool. This is the only critical section: readers see
+	// a consistent snapshot of (conn, listenerPool) and the swap is
+	// nanoseconds, not seconds.
 	p.connMu.Lock()
 	oldConn := p.conn
 	oldListenerPool := p.listenerPool
-	p.conn = conn
-	// Force the listener pool to rebuild lazily against the new main pool's
-	// config on the next WatchCounterInt64 call.
+	p.conn = newConn
+	// Force lazy re-creation of the listener pool against the fresh main
+	// pool on the next WatchCounterInt64 call.
 	p.listenerPool = nil
 	p.connMu.Unlock()
 
-	p.logger.Info().
-		Str("table", p.table).
-		Bool("firstInit", firstInit).
-		Msg("successfully connected to postgres")
-
-	// Close the old pool asynchronously so in-flight queries can drain.
-	// pgxpool.Close() is non-blocking — it tears down idle conns immediately
-	// and lets active conns finish before destroying them.
+	// Close the old pools OUTSIDE the lock. pgxpool.Pool.Close blocks until
+	// in-flight queries return, which can take seconds; doing it under the
+	// lock would defeat the entire purpose of the swap. Doing it
+	// synchronously (rather than in `go oldConn.Close()`) is preferred
+	// because the lock is already released — readers proceed against the
+	// new pool — and the initializer sees connectTask fully complete only
+	// after the previous pool has drained, which keeps semantics
+	// deterministic.
 	if oldConn != nil {
-		go oldConn.Close()
+		oldConn.Close()
 	}
 	if oldListenerPool != nil {
-		go oldListenerPool.Close()
+		oldListenerPool.Close()
 	}
 
-	// Spawn the local cleanup goroutine only on first init, and only if
-	// pg_cron wasn't successfully scheduled (in which case initSchema sets
-	// p.cleanupTicker to nil). On reconnect the goroutine — bound to
-	// p.appCtx, not ctx — is already running from the first init.
-	if firstInit && p.cleanupTicker != nil {
-		go p.startCleanup(p.appCtx)
-	}
+	p.logger.Info().Str("table", p.table).Msg("successfully connected to postgres")
+
+	// Spawn the local expired-items cleanup goroutine at most once per
+	// connector lifetime, regardless of how many times connectTask runs.
+	// Use p.appCtx — NOT the per-attempt ctx — so the goroutine survives
+	// the `defer cancel()` above and lives for the connector's actual
+	// lifetime. The nil check lives inside the Once closure so the gate
+	// fires exactly once even on the pg_cron path (where applySchema sets
+	// cleanupTicker=nil).
+	p.cleanupOnce.Do(func() {
+		if p.cleanupTicker != nil {
+			go p.startCleanup(p.appCtx)
+		}
+	})
 	return nil
 }
 
-// initSchema runs the one-time table + index + pg_cron setup. It is only
-// invoked on the first successful connect; every subsequent reconnect skips
-// this work to avoid AccessExclusive lock contention at the DB and to keep
-// the connectTask hot path short.
-func (p *PostgreSQLConnector) initSchema(ctx context.Context, conn *pgxpool.Pool, cfg *common.PostgreSQLConnectorConfig) error {
+// ensureSchema runs applySchema at most once successfully per process
+// lifetime. The check-and-set is serialized under schemaMu so concurrent
+// connectTask callers can't race past the gate and both run the
+// (partially non-idempotent) migration in parallel. On failure the bool
+// stays false and the next connectTask will retry.
+func (p *PostgreSQLConnector) ensureSchema(ctx context.Context, conn *pgxpool.Pool, cfg *common.PostgreSQLConnectorConfig) error {
+	p.schemaMu.Lock()
+	defer p.schemaMu.Unlock()
+	if p.schemaApplied {
+		return nil
+	}
+	if err := p.applySchema(ctx, conn, cfg); err != nil {
+		return err
+	}
+	p.schemaApplied = true
+	return nil
+}
+
+// applySchema runs the idempotent one-time schema setup against the
+// supplied pool. It is intentionally split from connectTask so that
+// reconnects can rebuild only the pool without re-issuing DDL — see the
+// long comment on connectTask for why this matters in production.
+func (p *PostgreSQLConnector) applySchema(ctx context.Context, conn *pgxpool.Pool, cfg *common.PostgreSQLConnectorConfig) error {
 	// Create table if not exists with TTL column
 	if _, err := conn.Exec(ctx, fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
@@ -848,31 +883,55 @@ func (p *PostgreSQLConnector) connectListener(ctx context.Context, channel strin
 		}
 		p.logger.Trace().Str("channel", channel).Msg("attempting to connect to postgres channel")
 
-		p.connMu.Lock()
-		// Lazily initialize listenerPool using the main pool's connection string
-		if p.listenerPool == nil {
-			if p.conn == nil {
-				p.connMu.Unlock()
+		// Snapshot the current pool state under RLock so we don't hold the
+		// WRITE lock across the slow pgxpool.ConnectConfig dial below. The
+		// previous design held connMu.Lock() for the entire body of this
+		// function — including ConnectConfig and Acquire — which
+		// serialized every Get/Set/Lock behind any listener that needed to
+		// build a new pool. This is the same anti-pattern that connectTask
+		// used to have (see the long comment there for incident context).
+		p.connMu.RLock()
+		listenerPool := p.listenerPool
+		mainConn := p.conn
+		p.connMu.RUnlock()
+
+		if listenerPool == nil {
+			if mainConn == nil {
 				time.Sleep(5 * time.Second)
 				continue
 			}
-			cfg, err := pgxpool.ParseConfig(p.conn.Config().ConnString())
+			lcfg, err := pgxpool.ParseConfig(mainConn.Config().ConnString())
 			if err != nil {
-				p.connMu.Unlock()
 				return nil, err
 			}
-			cfg.MaxConns = p.maxConns
-			pool, err := pgxpool.ConnectConfig(ctx, cfg)
+			lcfg.MaxConns = p.maxConns
+			// Build the new listener pool OUTSIDE any lock — this is the
+			// slow operation (TCP dial + TLS + auth + MinConns conns).
+			newPool, err := pgxpool.ConnectConfig(ctx, lcfg)
 			if err != nil {
-				p.connMu.Unlock()
 				time.Sleep(5 * time.Second)
 				continue
 			}
-			p.listenerPool = pool
+			// Brief WRITE lock only to install. Handle the race where
+			// another goroutine on this connector finished its own build
+			// first.
+			p.connMu.Lock()
+			if p.listenerPool == nil {
+				p.listenerPool = newPool
+				listenerPool = newPool
+			} else {
+				listenerPool = p.listenerPool
+			}
+			p.connMu.Unlock()
+			// If we lost the race, close our orphan pool.
+			if listenerPool != newPool {
+				newPool.Close()
+			}
 		}
-		conn, err := p.listenerPool.Acquire(ctx)
-		p.connMu.Unlock()
 
+		// listenerPool is non-nil. Acquire is fine outside the lock —
+		// pgxpool has its own internal synchronization.
+		conn, err := listenerPool.Acquire(ctx)
 		if err != nil {
 			p.logger.Trace().Err(err).Str("channel", channel).Msg("failed to acquire postgres listener connection, will retry")
 			time.Sleep(time.Second * 5)
