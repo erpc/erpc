@@ -121,16 +121,20 @@ func hasAnyLegacy(prj WidenedProject, ups []WidenedUpstream, nws []WidenedNetwor
 //   - else → sortByScore + stickyPrimary + probeExcluded with the
 //     project's legacy tuning baked in.
 //
-// Per-upstream `scoreMultipliers` are emitted as a per-upstream weights
-// function passed to sortByScore — see eval_synthesis.go.
+// Per-upstream `scoreMultipliers` are always gathered up-front and
+// flow into whichever branch wins (the legacy eval-function wrapper
+// uses them to pre-sort; the score-based branch hands them directly
+// to sortByScore). This keeps the translation lossless when a user
+// had BOTH evalFunction AND scoreMultipliers set.
 func synthesizeEval(
 	prj WidenedProject,
 	ups []*common.UpstreamConfig,
 	legacyUps []WidenedUpstream,
 	nw WidenedNetwork,
 ) string {
+	mulByID, defaultMul := collectMultipliers(ups, legacyUps)
 	if nw.SelectionPolicy != nil && strings.TrimSpace(nw.SelectionPolicy.EvalFunction) != "" {
-		return wrapLegacyEvalFunction(nw.SelectionPolicy)
+		return wrapLegacyEvalFunction(nw.SelectionPolicy, mulByID, defaultMul)
 	}
 	if strings.EqualFold(prj.RoutingStrategy, "round-robin") {
 		// `rotateBy` rotates each tick — uses ctx.tickCount.
@@ -139,7 +143,7 @@ func synthesizeEval(
 	// Score-based default — bake in any project-level hysteresis +
 	// min-switch interval, and emit per-upstream weights for legacy
 	// scoreMultipliers when present.
-	return synthesizeScoreBasedEval(prj, ups, legacyUps, nw)
+	return synthesizeScoreBasedEval(prj, mulByID, defaultMul, nw)
 }
 
 // formatDuration returns "30s" for time.Duration(30s). Used to inline

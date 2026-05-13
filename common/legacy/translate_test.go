@@ -98,3 +98,323 @@ func TestTranslate_StickyPrimaryHonorsLegacyHysteresis(t *testing.T) {
 	require.Contains(t, nwCfgs[0].SelectionPolicy.Eval, "hysteresis: 0.25")
 	require.Contains(t, nwCfgs[0].SelectionPolicy.Eval, "minSwitchInterval: '2m0s'")
 }
+
+// ----------------------------------------------------------------------
+// 2x2 matrix tests: (legacy selectionPolicy.evalFunction yes/no) ×
+// (upstream.routing.scoreMultipliers yes/no)
+//
+// Cell (NO eval × NO multipliers) is covered by
+// TestTranslate_ScoreBased_DefaultEmitsBalanced above. The other three
+// cells live here.
+// ----------------------------------------------------------------------
+
+// Cell (NO eval × YES multipliers): only score-multipliers, no legacy
+// project-level routing strategy. The translator should still trigger
+// (multipliers ARE a legacy field) and emit a per-id weights function
+// passed to sortByScore.
+func TestTranslate_ScoreMultipliers_OnlyMultipliers_EmitsWeightsFn(t *testing.T) {
+	upCfgs := []*common.UpstreamConfig{
+		{Id: "hot"},
+		{Id: "cold"},
+	}
+	legacyUps := []legacy.WidenedUpstream{
+		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{{
+			Network: "*", Method: "*",
+			ErrorRate: 8, RespLatency: 12, Overall: 1,
+		}}, 0),
+		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{{
+			Network: "*", Method: "*",
+			ErrorRate: 8, RespLatency: 4, Overall: 1,
+		}}, 0),
+	}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}}
+
+	warns, err := legacy.Translate(legacy.WidenedProject{}, legacyUps, upCfgs, []legacy.WidenedNetwork{{}}, nwCfgs)
+	require.NoError(t, err)
+
+	// Should emit the multipliers warning.
+	require.Truef(t, containsWarn(warns, "scoreMultipliers"),
+		"expected multipliers deprecation warning; got %v", warns)
+
+	require.NotNil(t, nwCfgs[0].SelectionPolicy)
+	eval := nwCfgs[0].SelectionPolicy.Eval
+	require.Contains(t, eval, "__mulById", "weights map should be emitted")
+	require.Contains(t, eval, `"hot"`, "hot upstream's weights must be in map")
+	require.Contains(t, eval, `"cold"`, "cold upstream's weights must be in map")
+	require.Contains(t, eval, "sortByScore(__weightsFn)", "function-form sortByScore")
+	require.Contains(t, eval, "stickyPrimary", "sticky-primary should still be appended")
+	// Per-upstream weight values land in the emitted JS literal.
+	require.Contains(t, eval, `"respLatency":12`, "hot upstream gets respLatency=12")
+	require.Contains(t, eval, `"respLatency":4`, "cold upstream gets respLatency=4")
+}
+
+// Cell (YES eval × NO multipliers): the legacy evalFunction is wrapped
+// untouched. No __mulById map should be emitted because no upstream had
+// multipliers.
+func TestTranslate_ScoreMultipliers_EvalFunctionOnly_NoWeightsMap(t *testing.T) {
+	legacyFn := "(upstreams, method) => upstreams.filter(u => u.metrics.errorRate < 0.5)"
+	upCfgs := []*common.UpstreamConfig{{Id: "a"}, {Id: "b"}}
+	legacyUps := []legacy.WidenedUpstream{{}, {}} // no multipliers
+	nws := []legacy.WidenedNetwork{{
+		SelectionPolicy: legacy.WidenedSelectionPolicyForTest(legacy.LegacyPolicySnapshot{
+			EvalFunction: legacyFn,
+		}),
+	}}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	_, err := legacy.Translate(legacy.WidenedProject{}, legacyUps, upCfgs, nws, nwCfgs)
+	require.NoError(t, err)
+
+	eval := nwCfgs[0].SelectionPolicy.Eval
+	require.Contains(t, eval, "const __legacyFn =", "legacy fn must be wrapped")
+	require.NotContains(t, eval, "__mulById", "no multipliers → no weights map")
+	require.NotContains(t, eval, "__weightsFn", "no multipliers → no weights fn")
+}
+
+// Cell (YES eval × YES multipliers): BOTH legacy fields set on the same
+// project. The wrapper must pre-sort upstreams by the per-id weights
+// (the legacy semantics passed the SCORED list to the eval fn) before
+// invoking the legacy fn — otherwise the multiplier configuration is
+// silently dropped at migration time.
+func TestTranslate_ScoreMultipliers_PlusEvalFunction_PreSortsByWeights(t *testing.T) {
+	legacyFn := "(upstreams, method) => upstreams.filter(u => u.metrics.errorRate < 0.5)"
+	upCfgs := []*common.UpstreamConfig{
+		{Id: "hot"},
+		{Id: "cold"},
+	}
+	legacyUps := []legacy.WidenedUpstream{
+		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{{
+			Network: "*", Method: "*",
+			ErrorRate: 8, RespLatency: 12, Overall: 1,
+		}}, 0),
+		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{{
+			Network: "*", Method: "*",
+			ErrorRate: 8, RespLatency: 4, Overall: 1,
+		}}, 0),
+	}
+	nws := []legacy.WidenedNetwork{{
+		SelectionPolicy: legacy.WidenedSelectionPolicyForTest(legacy.LegacyPolicySnapshot{
+			EvalFunction: legacyFn,
+		}),
+	}}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+
+	_, err := legacy.Translate(legacy.WidenedProject{}, legacyUps, upCfgs, nws, nwCfgs)
+	require.NoError(t, err)
+
+	eval := nwCfgs[0].SelectionPolicy.Eval
+	require.Contains(t, eval, "const __legacyFn =", "legacy fn must still be wrapped")
+	require.Contains(t, eval, "__mulById",
+		"multipliers MUST flow through into the wrapped eval — otherwise translation is lossy")
+	require.Contains(t, eval, "__weightsFn", "weights fn must be emitted")
+	require.Contains(t, eval, ".sortByScore(__weightsFn)",
+		"pre-sort by weights so the legacy fn sees the same ordered list it saw in the old system")
+	// And the legacy fn must be called against the pre-sorted list, not
+	// the raw input. Match a tolerant pattern that survives whitespace.
+	require.Regexp(t, `__legacyFn\(\s*__sorted\s*,\s*ctx\.method\s*\)`, eval,
+		"legacy fn must receive the pre-sorted list, not raw upstreams")
+}
+
+// Cell (YES eval × YES multipliers + score-based project): same as above
+// PLUS project-level routing strategy. The wrapper should still pre-sort
+// and the legacy eval-function still wins (it's an explicit user filter).
+func TestTranslate_ScoreMultipliers_PlusEvalFunctionAndScoreBased(t *testing.T) {
+	upCfgs := []*common.UpstreamConfig{{Id: "hot"}, {Id: "cold"}}
+	legacyUps := []legacy.WidenedUpstream{
+		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{
+			{Network: "*", Method: "*", ErrorRate: 10, RespLatency: 4},
+		}, 0),
+		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{
+			{Network: "*", Method: "*", ErrorRate: 2, RespLatency: 8},
+		}, 0),
+	}
+	nws := []legacy.WidenedNetwork{{
+		SelectionPolicy: legacy.WidenedSelectionPolicyForTest(legacy.LegacyPolicySnapshot{
+			EvalFunction: "(upstreams, method) => upstreams",
+		}),
+	}}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	prj := legacy.WidenedProject{
+		RoutingStrategy:        "score-based",
+		ScoreSwitchHysteresis:  0.2,
+		ScoreMinSwitchInterval: common.Duration(time.Minute),
+	}
+
+	warns, err := legacy.Translate(prj, legacyUps, upCfgs, nws, nwCfgs)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(warns), 2,
+		"both routingStrategy and scoreMultipliers should warn; got %v", warns)
+
+	eval := nwCfgs[0].SelectionPolicy.Eval
+	require.Contains(t, eval, "const __legacyFn =", "evalFunction takes precedence")
+	require.Contains(t, eval, "__mulById", "multipliers must NOT be silently dropped")
+}
+
+// Per-upstream-multipliers indexing test: 3 upstreams, only the middle
+// one has overrides. Verify the emitted map only includes that one id
+// and the default weights apply to the other two via fallback.
+func TestTranslate_ScoreMultipliers_PerUpstreamIndexing(t *testing.T) {
+	upCfgs := []*common.UpstreamConfig{
+		{Id: "rpc1"},
+		{Id: "rpc2"},
+		{Id: "rpc3"},
+	}
+	legacyUps := []legacy.WidenedUpstream{
+		{},
+		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{
+			{Network: "*", Method: "*", ErrorRate: 13, RespLatency: 7},
+		}, 0),
+		{},
+	}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	_, err := legacy.Translate(legacy.WidenedProject{}, legacyUps, upCfgs, []legacy.WidenedNetwork{{}}, nwCfgs)
+	require.NoError(t, err)
+
+	eval := nwCfgs[0].SelectionPolicy.Eval
+	require.Contains(t, eval, `"rpc2"`, "rpc2 (only one with overrides) MUST be in the map")
+	require.NotContains(t, eval, `"rpc1":{`, "rpc1 has no overrides; must NOT be a map key")
+	require.NotContains(t, eval, `"rpc3":{`, "rpc3 has no overrides; must NOT be a map key")
+	require.Contains(t, eval, `"errorRate":13`, "rpc2's errorRate weight is emitted")
+	require.Contains(t, eval, `"respLatency":7`, "rpc2's respLatency weight is emitted")
+	require.Contains(t, eval, "__mulDefault", "fallback default weights map must be defined")
+}
+
+// resampleExcluded + score-based: probeExcluded must be appended to the
+// chain with the user's interval honored.
+func TestTranslate_ScoreBased_WithResampleExcluded_AppendsProbe(t *testing.T) {
+	prj := legacy.WidenedProject{RoutingStrategy: "score-based"}
+	nws := []legacy.WidenedNetwork{{
+		SelectionPolicy: legacy.WidenedSelectionPolicyForTest(legacy.LegacyPolicySnapshot{
+			ResampleExcluded: true,
+			ResampleInterval: common.Duration(7 * time.Minute),
+		}),
+	}}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	_, err := legacy.Translate(prj, nil, nil, nws, nwCfgs)
+	require.NoError(t, err)
+	eval := nwCfgs[0].SelectionPolicy.Eval
+	require.Contains(t, eval, ".probeExcluded(", "probeExcluded must be appended")
+	require.Contains(t, eval, "reAdmitAfter: '7m0s'", "reAdmitAfter must use the legacy interval")
+}
+
+// resampleExcluded + evalFunction: probeExcluded is appended after the
+// wrapped legacy fn so its re-admission semantics still apply.
+func TestTranslate_EvalFunction_WithResampleExcluded_AppendsProbe(t *testing.T) {
+	legacyFn := "(upstreams, method) => upstreams"
+	nws := []legacy.WidenedNetwork{{
+		SelectionPolicy: legacy.WidenedSelectionPolicyForTest(legacy.LegacyPolicySnapshot{
+			EvalFunction:     legacyFn,
+			ResampleExcluded: true,
+			ResampleInterval: common.Duration(3 * time.Minute),
+		}),
+	}}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	_, err := legacy.Translate(legacy.WidenedProject{}, nil, nil, nws, nwCfgs)
+	require.NoError(t, err)
+	eval := nwCfgs[0].SelectionPolicy.Eval
+	require.Contains(t, eval, "const __legacyFn =", "legacy fn wrapped")
+	require.Contains(t, eval, ".probeExcluded(", "probeExcluded must be appended")
+	require.Contains(t, eval, "reAdmitAfter: '3m0s'", "reAdmitAfter from legacy interval")
+}
+
+// Legacy selectionPolicy.evalInterval must flow into the new shape.
+func TestTranslate_LegacyEvalInterval_Preserved(t *testing.T) {
+	nws := []legacy.WidenedNetwork{{
+		SelectionPolicy: legacy.WidenedSelectionPolicyForTest(legacy.LegacyPolicySnapshot{
+			EvalFunction: "(upstreams, method) => upstreams",
+			EvalInterval: common.Duration(45 * time.Second),
+		}),
+	}}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	_, err := legacy.Translate(legacy.WidenedProject{}, nil, nil, nws, nwCfgs)
+	require.NoError(t, err)
+	require.Equal(t, common.Duration(45*time.Second), nwCfgs[0].SelectionPolicy.EvalInterval,
+		"legacy evalInterval must carry over to new-shape EvalInterval")
+}
+
+// Legacy selectionPolicy.evalPerMethod must flow into the new shape.
+func TestTranslate_LegacyEvalPerMethod_Preserved(t *testing.T) {
+	nws := []legacy.WidenedNetwork{{
+		SelectionPolicy: legacy.WidenedSelectionPolicyForTest(legacy.LegacyPolicySnapshot{
+			EvalFunction:  "(upstreams, method) => upstreams",
+			EvalPerMethod: true,
+		}),
+	}}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	_, err := legacy.Translate(legacy.WidenedProject{}, nil, nil, nws, nwCfgs)
+	require.NoError(t, err)
+	require.True(t, nwCfgs[0].SelectionPolicy.EvalPerMethod,
+		"legacy evalPerMethod must carry over to new-shape EvalPerMethod")
+}
+
+// scoreMetricsMode is removed; the translator must surface a warning.
+func TestTranslate_ScoreMetricsMode_EmitsWarning(t *testing.T) {
+	prj := legacy.WidenedProject{
+		RoutingStrategy:  "score-based",
+		ScoreMetricsMode: "detailed",
+	}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 1},
+	}}
+	warns, err := legacy.Translate(prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)
+	require.NoError(t, err)
+	require.Truef(t, containsWarn(warns, "scoreMetricsMode"),
+		"expected scoreMetricsMode deprecation warning; got %v", warns)
+}
+
+// Translator must run per-network for a multi-network project, applying
+// the same synthesized eval to each.
+func TestTranslate_MultiNetwork_AppliesPerNetwork(t *testing.T) {
+	prj := legacy.WidenedProject{RoutingStrategy: "round-robin"}
+	nwCfgs := []*common.NetworkConfig{
+		{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 1}},
+		{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 10}},
+		{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 137}},
+	}
+	nws := []legacy.WidenedNetwork{{}, {}, {}}
+	_, err := legacy.Translate(prj, nil, nil, nws, nwCfgs)
+	require.NoError(t, err)
+	for i, cfg := range nwCfgs {
+		require.NotNilf(t, cfg.SelectionPolicy, "network[%d] should have a synthesized selection policy", i)
+		require.Containsf(t, cfg.SelectionPolicy.Eval, "rotateBy(ctx.tickCount)",
+			"network[%d] should have round-robin eval", i)
+	}
+}
+
+// helpers
+
+func containsWarn(warnings []string, needle string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, needle) {
+			return true
+		}
+	}
+	return false
+}

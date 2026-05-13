@@ -11,16 +11,48 @@ import (
 // wrapLegacyEvalFunction takes a legacy `selectionPolicy.evalFunction`
 // source (which had signature `(upstreams, method) => upstream[]`) and
 // produces a new-shape eval (signature `(upstreams, ctx) => upstream[]`)
-// that preserves behavior. The legacy fn is bound once and invoked with
-// (upstreams, ctx.method); the new chainable .probeExcluded() may be
-// appended if the user enabled `resampleExcluded`.
-func wrapLegacyEvalFunction(sp *selectionPolicy) string {
+// that preserves behavior.
+//
+// Legacy semantics: the upstreams arg passed to the user's eval-function
+// was the ALREADY-SCORED list (the scoring loop ran first; the eval-
+// function filtered/reordered on top). So if the user had per-upstream
+// `scoreMultipliers`, those weights must be applied BEFORE invoking the
+// legacy fn — otherwise translation is silently lossy.
+//
+// When `mulByID` is non-empty the wrapper emits the per-id weights map,
+// calls `.sortByScore(__weightsFn)` first, and passes `__sorted` (not
+// raw upstreams) into the legacy fn. When `mulByID` is empty the legacy
+// fn sees `upstreams` directly — equivalent to default weights, which
+// the new sort doesn't actually need to materialize.
+//
+// `.probeExcluded()` is appended at the end if the user enabled
+// `resampleExcluded`.
+func wrapLegacyEvalFunction(sp *selectionPolicy, mulByID map[string]scoreWeights, defaultMul scoreWeights) string {
 	var b strings.Builder
 	b.WriteString("(upstreams, ctx) => {\n")
 	b.WriteString("  const __legacyFn = ")
 	b.WriteString(strings.TrimSpace(sp.EvalFunction))
 	b.WriteString(";\n")
-	b.WriteString("  let result = __legacyFn(upstreams, ctx.method);\n")
+
+	inputVar := "upstreams"
+	if len(mulByID) > 0 {
+		jsonMul, _ := json.Marshal(mulByID)
+		jsonDefault, _ := json.Marshal(defaultMul)
+		b.WriteString("  const __mulById = ")
+		b.WriteString(string(jsonMul))
+		b.WriteString(";\n")
+		b.WriteString("  const __mulDefault = ")
+		b.WriteString(string(jsonDefault))
+		b.WriteString(";\n")
+		b.WriteString("  const __weightsFn = (u) => __mulById[u.id] || __mulDefault;\n")
+		b.WriteString("  const __sorted = upstreams.sortByScore(__weightsFn);\n")
+		inputVar = "__sorted"
+	}
+
+	b.WriteString("  let result = __legacyFn(")
+	b.WriteString(inputVar)
+	b.WriteString(", ctx.method);\n")
+
 	if sp.ResampleExcluded && sp.ResampleInterval > 0 {
 		// .probeExcluded preserves the spirit of legacy resampling.
 		b.WriteString(fmt.Sprintf(
@@ -37,11 +69,12 @@ func wrapLegacyEvalFunction(sp *selectionPolicy) string {
 // the user's legacy ScoreSwitchHysteresis + ScoreMinSwitchInterval. If
 // any upstream had per-(network/method/finality) `scoreMultipliers`, the
 // weights are emitted as a static map keyed by upstream id and looked up
-// at sort time.
+// at sort time. The caller pre-collects `mulByID` so the same map can be
+// reused by the eval-function-wrapping branch.
 func synthesizeScoreBasedEval(
 	prj WidenedProject,
-	ups []*common.UpstreamConfig,
-	legacyUps []WidenedUpstream,
+	mulByID map[string]scoreWeights,
+	defaultMul scoreWeights,
 	nw WidenedNetwork,
 ) string {
 	hysteresis := prj.ScoreSwitchHysteresis
@@ -58,7 +91,6 @@ func synthesizeScoreBasedEval(
 
 	// If any upstream had multipliers, emit a per-id weights map and use
 	// the function form of sortByScore. Otherwise default to BALANCED.
-	mulByID, defaultMul := collectMultipliers(ups, legacyUps)
 	if len(mulByID) > 0 {
 		jsonMul, _ := json.Marshal(mulByID)
 		jsonDefault, _ := json.Marshal(defaultMul)

@@ -92,3 +92,53 @@ func WidenedSelectionPolicyForTest(s LegacyPolicySnapshot) *selectionPolicy {
 		ResampleCount:    s.ResampleCount,
 	}
 }
+
+// ScoreMultiplierSnapshot is the test-only public projection of the
+// legacy `scoreMultiplier` shape. Zero values mean "no override on that
+// metric" — pass non-zero numbers for the weights you want emitted.
+type ScoreMultiplierSnapshot struct {
+	Network         string
+	Method          string
+	Finality        []common.DataFinalityState
+	Overall         float64
+	ErrorRate       float64
+	RespLatency     float64
+	TotalRequests   float64
+	ThrottledRate   float64
+	BlockHeadLag    float64
+	FinalizationLag float64
+	Misbehaviors    float64
+}
+
+// WidenedUpstreamForTest constructs a WidenedUpstream with the given
+// legacy score multipliers + latency quantile. Test-only constructor
+// (mirrors WidenedSelectionPolicyForTest). Pass a zero-length slice for
+// "no multipliers" — callers usually want at most one entry per upstream.
+func WidenedUpstreamForTest(multipliers []ScoreMultiplierSnapshot, latencyQuantile float64) WidenedUpstream {
+	if len(multipliers) == 0 && latencyQuantile == 0 {
+		return WidenedUpstream{}
+	}
+	rc := &routingConfig{ScoreLatencyQuantile: latencyQuantile}
+	ptr := func(v float64) *float64 {
+		if v == 0 {
+			return nil
+		}
+		return &v
+	}
+	for _, s := range multipliers {
+		rc.ScoreMultipliers = append(rc.ScoreMultipliers, &scoreMultiplier{
+			Network:         s.Network,
+			Method:          s.Method,
+			Finality:        s.Finality,
+			Overall:         ptr(s.Overall),
+			ErrorRate:       ptr(s.ErrorRate),
+			RespLatency:     ptr(s.RespLatency),
+			TotalRequests:   ptr(s.TotalRequests),
+			ThrottledRate:   ptr(s.ThrottledRate),
+			BlockHeadLag:    ptr(s.BlockHeadLag),
+			FinalizationLag: ptr(s.FinalizationLag),
+			Misbehaviors:    ptr(s.Misbehaviors),
+		})
+	}
+	return WidenedUpstream{Routing: rc}
+}
