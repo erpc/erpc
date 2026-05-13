@@ -1,4 +1,4 @@
-import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults, SelectionPolicyEvalFunction } from "./types";
+import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults } from "./types";
 export declare const UpstreamTypeEvm: UpstreamType;
 export type EvmUpstream = Upstream;
 export type AvailbilityConfidence = number;
@@ -357,44 +357,6 @@ export interface ProjectConfig {
     networkDefaults?: NetworkDefaults;
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
-    scoreMetricsWindowSize?: Duration;
-    scoreRefreshInterval?: Duration;
-    /**
-     * RoutingStrategy selects the upstream ordering algorithm.
-     * "score-based" (default): penalty-based sticky routing.
-     * "round-robin": time-rotating equal distribution across upstreams.
-     */
-    routingStrategy?: string;
-    /**
-     * ScoreGranularity controls whether penalties are computed per-upstream or per-method.
-     * "upstream" (default): one penalty across all methods using aggregate metrics.
-     * "method": separate penalty per (upstream, method) pair.
-     */
-    scoreGranularity?: string;
-    /**
-     * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
-     * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
-     * Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
-     */
-    scorePenaltyDecayRate?: number;
-    /**
-     * ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
-     * must be at least this fraction lower than the current primary's penalty to
-     * trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
-     */
-    scoreSwitchHysteresis?: number;
-    /**
-     * ScoreMinSwitchInterval is the cooldown between primary upstream switches.
-     */
-    scoreMinSwitchInterval?: Duration;
-    /**
-     * ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
-     * Allowed values:
-     * - "compact": emit compact series by setting upstream and category labels to 'n/a'
-     * - "detailed": emit full project/vendor/network/upstream/category series
-     */
-    scoreMetricsMode?: string;
-    healthCheck?: DeprecatedProjectHealthCheckConfig;
     /**
      * Configure user agent tracking at the project level
      */
@@ -423,6 +385,12 @@ export interface NetworkDefaults {
     evm?: TsEvmNetworkConfigForDefaults;
     multiplexing?: boolean;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -459,9 +427,14 @@ export interface UpstreamConfig {
     failsafe?: (FailsafeConfig | undefined)[];
     rateLimitBudget?: string;
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
-    routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     sampleRate?: number;
@@ -476,23 +449,6 @@ export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
     enabled?: boolean;
     checkLogIndexStrictIncrements?: boolean;
     checkLogsBloom?: boolean;
-}
-export interface RoutingConfig {
-    scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
-    scoreLatencyQuantile?: number;
-}
-export interface ScoreMultiplierConfig {
-    network?: string;
-    method?: string;
-    finality?: DataFinalityState[];
-    overall?: number;
-    errorRate?: number;
-    respLatency?: number;
-    totalRequests?: number;
-    throttledRate?: number;
-    blockHeadLag?: number;
-    finalizationLag?: number;
-    misbehaviors?: number;
 }
 export type UJAlias = UpstreamConfig;
 export type UYAlias = UpstreamConfig;
@@ -781,9 +737,6 @@ export interface ProxyPoolConfig {
     id: string;
     urls: string[];
 }
-export interface DeprecatedProjectHealthCheckConfig {
-    scoreMetricsWindowSize: Duration;
-}
 export interface MethodsConfig {
     preserveDefaultMethods?: boolean;
     definitions?: {
@@ -831,6 +784,12 @@ export interface StaticResponseErrorConfig {
     message: string;
     data?: any;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -974,13 +933,20 @@ export interface EvmIntegrityConfig {
      */
     enforceNonNullTaggedBlocks?: boolean;
 }
+/**
+ * SelectionPolicyConfig declares the per-network upstream selection policy.
+ * The eval function is JavaScript that receives `upstreams` and `ctx` and
+ * returns the ordered list of upstreams that should serve traffic for the
+ * network/method scope. The chainable std-lib (see internal/policy/stdlib)
+ * provides the building blocks (sortByScore, removeByLag, stickyPrimary,
+ * probeExcluded, etc.) — see specs/selection-policy/feature.md.
+ */
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;
-    evalFunction?: SelectionPolicyEvalFunction | undefined;
     evalPerMethod?: boolean;
-    resampleExcluded?: boolean;
-    resampleInterval?: Duration;
-    resampleCount?: number;
+    evalTimeout?: Duration;
+    decisionHistory?: Duration;
+    eval?: string;
 }
 export type AuthType = string;
 export declare const AuthTypeSecret: AuthType;

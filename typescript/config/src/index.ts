@@ -74,8 +74,6 @@ export type {
   EvmQueryShimConfig,
   UpstreamIntegrityConfig,
   UpstreamIntegrityEthGetBlockReceiptsConfig,
-  RoutingConfig,
-  ScoreMultiplierConfig,
   RateLimitAutoTuneConfig,
   JsonRpcUpstreamConfig,
   // Failsafe related

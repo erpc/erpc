@@ -255,3 +255,105 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 	// Sticky shouldn't matter here — rpc1 is still better.
 	require.Equal(t, "rpc1", engine.GetOrdered("evm:1", "*")[0].Id())
 }
+
+// TestStdlib_KeepHealthy_CompositeFilter pins the composite filter from
+// spec §4.3: drops on errorRate > threshold OR blockHeadLag > threshold
+// OR p95Ms > threshold OR throttledRate > threshold.
+func TestStdlib_KeepHealthy_CompositeFilter(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.keepHealthy({ maxErrorRate: 0.3, maxBlockHeadLag: 10 })`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2", "rpc3")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// rpc1: clean. rpc2: 50% errors. rpc3: blockHeadLag=50.
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	for i := 0; i < 50; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamFailure(ups[1], "*", fmt.Errorf("synth"))
+	}
+	for i := 0; i < 50; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	for _, u := range ups {
+		tracker.GetUpstreamMethodMetrics(u, "*").BlockHeadLag.Store(0)
+	}
+	tracker.GetUpstreamMethodMetrics(ups[2], "*").BlockHeadLag.Store(50)
+	for i := 0; i < 10; i++ {
+		tracker.RecordUpstreamRequest(ups[2], "*")
+		tracker.RecordUpstreamDuration(ups[2], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	ordered := ids(engine.GetOrdered("evm:1", "*"))
+	require.Contains(t, ordered, "rpc1")
+	require.NotContains(t, ordered, "rpc2", "rpc2 dropped: errorRate 0.5 > 0.3")
+	require.NotContains(t, ordered, "rpc3", "rpc3 dropped: blockHeadLag 50 > 10")
+}
+
+// TestStdlib_Combinators_WhenEmpty_FallbackTo exercises chain control flow.
+func TestStdlib_Combinators_WhenEmpty_FallbackTo(t *testing.T) {
+	eval := `
+		(upstreams, ctx) =>
+			upstreams
+				.byGroup('nonexistent')
+				.whenEmpty(() => upstreams.byGroup('main'))
+	`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsWithGroups(map[string]string{"rpc1": "main", "rpc2": "main"})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	ordered := engine.GetOrdered("evm:1", "*")
+	require.Len(t, ordered, 2, "whenEmpty should fall back to main group")
+}
+
+// TestStdlib_Slicing_PickTop_DropTop pins the slicing primitives.
+func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED).pickTop(2)`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2", "rpc3", "rpc4")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	require.Len(t, engine.GetOrdered("evm:1", "*"), 2, "pickTop(2) should cap output at 2")
+}
+
+// TestStdlib_DecisionRecord_CapturesExclusions pins the decision-record
+// output that powers the /admin/selection/* endpoints.
+func TestStdlib_DecisionRecord_CapturesExclusions(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.byGroup('main')`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsWithGroups(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.TickForTest(engine, "evm:1", "*")
+	decisions := policy.DecisionsForTest(engine, "evm:1", "*")
+	require.NotEmpty(t, decisions)
+	latest := decisions[len(decisions)-1]
+	require.Empty(t, latest.Error)
+	require.Len(t, latest.Output.Order, 2, "main group has two members")
+	require.Len(t, latest.Output.Excluded, 1, "rpc3 (fallback) is excluded")
+	require.Equal(t, "rpc3", latest.Output.Excluded[0].ID)
+}
