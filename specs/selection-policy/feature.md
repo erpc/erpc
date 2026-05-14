@@ -413,7 +413,23 @@ Convenience preference operators (the most common multi-tier patterns):
 .fallbackTo(arrOrFn: Upstream[] | ((ctx) => Upstream[]))   // if empty, replace with alternative
 .coalesce(...arrs: Upstream[][])                            // first non-empty wins; chain continues
 .ensureMin(n: number, fn: (arr) => Upstream[])              // if length < n, run fn to expand
+
+.byFinality(handlers: {
+  realtime?:    (arr) => Upstream[]
+  unfinalized?: (arr) => Upstream[]
+  finalized?:   (arr) => Upstream[]
+  unknown?:     (arr) => Upstream[]
+})
 ```
+
+`byFinality` routes the chain to the handler matching `ctx.finality`.
+A missing handler for the current finality bucket is a passthrough
+(returns input unchanged), so `byFinality({ finalized: f })` only
+branches on FINALIZED requests and is a no-op elsewhere.
+
+Use case: the recurring "strict consensus on latest, trust-any on
+finalized, custom for pending" pattern collapses to one expression
+instead of nested `.if(ctx.finality === ..., ...)` calls.
 
 ---
 

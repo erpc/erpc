@@ -450,6 +450,21 @@
   });
   define('ensureMin', function (n, fn) { return this.length < n ? fn(this) : this.slice(); });
 
+  // byFinality routes to one of four handlers based on ctx.finality —
+  // syntactic sugar over `.if(ctx.finality === ..., ...)` for the
+  // recurring "strict consensus on latest, trust-any on finalized,
+  // custom for pending" pattern. A missing handler for the current
+  // finality bucket is a passthrough (returns the input unchanged),
+  // which means `byFinality({ finalized: f })` only branches on
+  // FINALIZED and is a no-op for everything else.
+  define('byFinality', function (handlers) {
+    handlers = handlers || {};
+    const ctx = globalThis.__policyCtx || {};
+    const fin = ctx.finality || 'unknown';
+    const h = handlers[fin];
+    return (typeof h === 'function') ? h(this) : this.slice();
+  });
+
   // ─── 4.13 Annotations & debug ───────────────────────────────────────────
 
   define('tap',      function (fn) { fn(this); return this; });

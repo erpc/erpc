@@ -611,6 +611,91 @@ func TestStdlib_Combinators_WhenEmpty_FallbackTo(t *testing.T) {
 	require.Len(t, ordered, 2, "whenEmpty should fall back to main group")
 }
 
+// TestStdlib_ByFinality_RoutesToCorrectHandler verifies the per-finality
+// dispatch primitive. Each finality bucket should route to its handler,
+// and a missing handler should pass through unchanged. The policy
+// below shifts which upstream lands as primary depending on finality:
+//
+//	REALTIME    → take only rpc1
+//	FINALIZED   → take only rpc2
+//	UNFINALIZED → unhandled → passthrough (both rpcs)
+func TestStdlib_ByFinality_RoutesToCorrectHandler(t *testing.T) {
+	eval := `
+		(upstreams, ctx) =>
+			upstreams.byFinality({
+				realtime:  u => u.byId('rpc1'),
+				finalized: u => u.byId('rpc2'),
+				// unfinalized + unknown intentionally omitted
+			})
+	`
+	for _, tc := range []struct {
+		name     string
+		finality string
+		want     []string
+	}{
+		{"REALTIME picks rpc1", "realtime", []string{"rpc1"}},
+		{"FINALIZED picks rpc2", "finalized", []string{"rpc2"}},
+		{"UNFINALIZED passthrough", "unfinalized", []string{"rpc1", "rpc2"}},
+		{"UNKNOWN passthrough", "unknown", []string{"rpc1", "rpc2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, _, _, cancel := newTestEngine(t, eval)
+			defer cancel()
+			defer engine.Stop()
+
+			ups := mkUps("rpc1", "rpc2")
+			cfg := &common.SelectionPolicyConfig{
+				EvalInterval:    0,
+				EvalTimeout:     common.Duration(50 * time.Millisecond),
+				DecisionHistory: common.Duration(time.Minute),
+				Eval:            eval,
+			}
+			require.NoError(t, cfg.SetDefaults())
+			require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+			policy.SetFinalityForTest(engine, "evm:1", "*", tc.finality)
+			policy.TickForTest(engine, "evm:1", "*")
+			got := ids(engine.GetOrdered("evm:1", "*"))
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestStdlib_ByFinality_ChainsCleanly verifies that byFinality returns
+// a real Upstream[] (not e.g. a sub-typed array), so subsequent stdlib
+// methods on the result work. Catches the "primitive forgot to call
+// .slice()" class of bug.
+func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
+	eval := `
+		(upstreams, ctx) =>
+			upstreams
+				.byFinality({
+					finalized: u => u,
+					realtime:  u => u,
+				})
+				.sortByScore(BALANCED)
+				.pickTop(1)
+	`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2")
+	cfg := &common.SelectionPolicyConfig{
+		EvalInterval:    0,
+		EvalTimeout:     common.Duration(50 * time.Millisecond),
+		DecisionHistory: common.Duration(time.Minute),
+		Eval:            eval,
+	}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.SetFinalityForTest(engine, "evm:1", "*", "realtime")
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Len(t, got, 1, "pickTop(1) must work on byFinality() output")
+}
+
 // TestStdlib_Slicing_PickTop_DropTop pins the slicing primitives.
 func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED).pickTop(2)`

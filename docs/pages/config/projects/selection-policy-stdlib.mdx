@@ -189,6 +189,28 @@ Drops upstreams whose `excludedSince[id]` is within `duration` of
 .whenNotEmpty(fn)
 .fallbackTo(arrOrFn)                   // replace with alternative if empty
 .ensureMin(n, fn)                      // run fn to expand if length < n
+
+.byFinality({                          // route by ctx.finality
+  realtime?:    (u) => Upstream[],
+  unfinalized?: (u) => Upstream[],
+  finalized?:   (u) => Upstream[],
+  unknown?:     (u) => Upstream[],
+})
+```
+
+`byFinality` dispatches to the handler matching `ctx.finality`. A
+missing handler passes through unchanged — `byFinality({ finalized: f })`
+only branches on FINALIZED requests, no-op for the rest. Replaces the
+recurring `if (ctx.finality === ...)` boilerplate.
+
+```js
+// Trust any upstream for finalized reads; strict for live-latest;
+// fall back to balanced for everything else.
+upstreams.byFinality({
+  finalized: u => u.sortByScore(PREFER_CHEAP),
+  realtime:  u => u.removeByLag({ blockHead: 5 }).sortByScore(PREFER_FRESHER_HEAD),
+})
+.sortByScore(BALANCED)                 // applies to unfinalized + unknown only
 ```
 
 ## Debug & annotations
@@ -268,8 +290,7 @@ designing workarounds:
 
 | Planned | Solves | Status |
 |---|---|---|
-| `.byFinality({ realtime, unfinalized, finalized, unknown })` | Per-finality strategy boilerplate. Most operators write `if (ctx.finality === ...)` branches by hand. | Ergonomic sugar over `ctx.finality`; ~30 LoC. Coming. |
-| `.spreadAcrossGroups({ by, minDistinct })` | Cohort / blast-radius cascades — e.g. all upstreams behind the same OP-Stack sequencer fail together. `preferGroup` expresses *preference*, not *correlation*. | Adds a `cohort` field to `UpstreamConfig`. Coming. |
+| `.spreadAcrossGroups({ by, minDistinct })` | Cohort / blast-radius cascades — e.g. all upstreams behind the same shared backend fail together. `preferGroup` expresses *preference*, not *correlation*. | Adds a `cohort` field to `UpstreamConfig`. Coming. |
 | `.probeState({ method, target, slot, every, expectChange, excludeOn })` | Lying upstreams that claim a fresh block but serve `0x0` or stale state. Currently undetectable from request-side metrics; operators have to manually disable. | Background prober + DSL surface. Larger change; tracked separately. |
 
 These are not workarounds you can build yourself today using existing
