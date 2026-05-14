@@ -41,8 +41,7 @@ func ComputeBackoff(cfg *common.RetryPolicyConfig, attempt int) time.Duration {
 	}
 
 	if jt := cfg.Jitter.Duration(); jt > 0 {
-		// nolint:gosec // jitter doesn't need crypto randomness
-		d += time.Duration(rand.Int63n(int64(jt)))
+		d += time.Duration(rand.Int63n(int64(jt))) // #nosec G404 -- jitter doesn't need crypto randomness
 	}
 
 	return d
