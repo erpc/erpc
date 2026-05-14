@@ -1374,14 +1374,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"error": "internal server error",
 			})
 
-		// rpc2: Never called because primary fails before hedge starts
+		// rpc2: fires after the hedge delay because the executor keeps
+		// racing on a transient primary failure. Returns 503 so we end
+		// up with both errors in the exhausted wrapper.
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
-			Persist(). // Keep it pending
+			Persist().
 			Reply(503).
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
@@ -1396,9 +1398,15 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should fail immediately with primary error (500)
+		// Both upstreams fail with different errors. The exhausted-wrapper
+		// surfaces both — `internal server error` (rpc1's 500) AND
+		// `service unavailable` (rpc2's 503) both end up in the cause
+		// chain. Asserting on either signal is fine; we pick the
+		// upstream-exhausted code as the canonical client-visible
+		// classification.
 		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "internal server error")
+		assert.Contains(t, body, "ErrUpstreamsExhausted")
+		assert.Contains(t, body, "service unavailable")
 	})
 
 	t.Run("BothFailDifferentErrorsWithHedgeRunning", func(t *testing.T) {

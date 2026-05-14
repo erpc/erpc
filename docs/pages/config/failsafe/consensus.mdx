@@ -198,6 +198,29 @@ When fewer than `agreementThreshold` valid responses are available:
   **Block Head Leader**: The upstream reporting the highest block number. This is determined by each upstream's state poller and ensures you're getting data from the most synchronized node.
 </Callout>
 
+## Tail-latency caps (`maxWaitOnResult` / `maxWaitOnEmpty`)
+
+By default consensus waits for every participant (subject to the network `timeout` and the short-circuit math). When one participant is consistently slow — e.g. a 10s archive query while siblings return in 50ms — that single laggard drags the whole request's wall-clock.
+
+The wait caps bound this **after the first response arrives**:
+
+| Field | Type | Triggers when |
+|---|---|---|
+| `maxWaitOnResult` | Duration | At least one **non-empty** response is in the bag. |
+| `maxWaitOnEmpty` | Duration | The first response (of any kind — empty, error, or non-empty) is in the bag. |
+
+When the cap fires, the analyzer resolves with what it has using the configured `disputeBehavior` / `lowParticipantsBehavior`. In-flight participants are cancelled (or left running under `fireAndForget`). The earlier of the two caps wins, so set `maxWaitOnResult < maxWaitOnEmpty` when you want quicker decisions once you have *some* real data.
+
+```yaml
+consensus:
+  maxParticipants:    5
+  agreementThreshold: 3
+  maxWaitOnResult:    200ms     # once any non-empty is in, give the rest 200ms
+  maxWaitOnEmpty:     2s        # if only empty/error so far, wait up to 2s for a real answer
+```
+
+Defaults are `0` (no cap — preserves the original "wait for all" behavior). The `erpc_consensus_wait_capped_total{trigger}` metric counts firings by trigger (`result` or `empty`); a high rate signals an upstream that should be tightened or dropped from the pool.
+
 ## How it works
 1. Send the request to up to `maxParticipants` (if less upstreams it continues with the available ones); group identical results/errors.
 2. If any valid group meets `agreementThreshold`, it wins

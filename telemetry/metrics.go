@@ -220,6 +220,54 @@ var (
 		Help:      "Total number of requests that were killed by the timeout policy (fixed or quantile-based).",
 	}, []string{"project", "network", "category", "finality", "scope"})
 
+	// MetricUpstreamSelectionTotal counts each upstream pick by the
+	// reason for selection: primary / retry / hedge / consensus_slot /
+	// sweep. Lets operators see whether one upstream is dominating one
+	// selection path (e.g. always being chosen as the hedge target).
+	MetricUpstreamSelectionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_selection_total",
+		Help:      "Total upstream selections by reason (primary/retry/hedge/consensus_slot/sweep). One increment per attempt start.",
+	}, []string{"project", "network", "upstream", "category", "reason", "finality"})
+
+	// MetricUpstreamAttemptOutcomeTotal counts each upstream attempt's
+	// terminal outcome. This is the canonical per-upstream-per-attempt
+	// observability lens — answers "what happened with this upstream
+	// for this request?".
+	MetricUpstreamAttemptOutcomeTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_attempt_outcome_total",
+		Help:      "Per-(upstream, method, outcome) attempt count. Outcomes: success/empty/transport_error/server_error/client_error/rate_limited/missing_data/exec_revert/block_unavailable/breaker_open/cancelled/timeout/skipped.",
+	}, []string{"project", "network", "upstream", "category", "outcome", "is_hedge", "is_retry", "finality"})
+
+	// MetricNetworkRetryAttemptTotal counts retry attempts at the
+	// network scope, labeled by the reason for retry (empty_result /
+	// pending_tx / retryable_error / block_unavailable / missing_data).
+	MetricNetworkRetryAttemptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_retry_attempt_total",
+		Help:      "Total network-scope retry attempts by reason (empty_result/pending_tx/retryable_error/block_unavailable/missing_data).",
+	}, []string{"project", "network", "category", "reason", "finality"})
+
+	// MetricNetworkHedgeWinnerTotal counts hedge-race winners by
+	// upstream. Operators use this to detect skew: is one upstream
+	// consistently winning hedges (good — pick it as primary) or
+	// consistently losing (bad — drop it from the pool)?
+	MetricNetworkHedgeWinnerTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_hedge_winner_total",
+		Help:      "Total hedge races won by upstream (the one whose response was kept).",
+	}, []string{"project", "network", "upstream", "category", "finality"})
+
+	// MetricUpstreamBreakerStateChange counts breaker state transitions
+	// per upstream. Operators see frequency of open/close churn,
+	// useful for debugging flapping upstreams.
+	MetricUpstreamBreakerStateChange = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_breaker_state_change_total",
+		Help:      "Total circuit-breaker state transitions per upstream and direction (closed_to_open/half_open_to_open/half_open_to_closed/open_to_half_open).",
+	}, []string{"project", "upstream", "transition"})
+
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
@@ -417,6 +465,17 @@ var (
 		Name:      "consensus_short_circuit_total",
 		Help:      "Total number of consensus rounds that short-circuited.",
 	}, []string{"project", "network", "category", "reason", "finality"})
+
+	// MetricConsensusWaitCapped counts consensus rounds resolved early
+	// because maxWaitOnResult / maxWaitOnEmpty fired before every
+	// participant returned. High rates indicate persistently slow
+	// upstreams dragging tail latency — operators can drop those
+	// upstreams or tighten the wait caps further.
+	MetricConsensusWaitCapped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_wait_capped_total",
+		Help:      "Total number of consensus rounds resolved early due to MaxWaitOnResult/MaxWaitOnEmpty firing.",
+	}, []string{"project", "network", "category", "trigger", "finality"})
 
 	MetricConsensusErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

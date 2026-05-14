@@ -14,11 +14,8 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
-	"github.com/failsafe-go/failsafe-go"
-	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
-	"github.com/failsafe-go/failsafe-go/policy"
-	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
+	"golang.org/x/time/rate"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -75,13 +72,16 @@ func (rt ResponseType) String() string {
 	}
 }
 
-// executor implements the Failsafe policy executor for consensus.
+// executor orchestrates the consensus fan-out: spawns N participant
+// goroutines per slot, collects responses, hands them to the analyzer,
+// and resolves the winner.
 type executor struct {
-	*policy.BaseExecutor[*common.NormalizedResponse]
 	*consensusPolicy
 }
 
-var _ policy.Executor[*common.NormalizedResponse] = &executor{}
+// inner is the per-slot worker signature passed in by the network
+// executor (or directly by *Consensus.Run).
+type inner = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 
 // execResult holds the result from a single upstream execution with cached analysis.
 type execResult struct {
@@ -101,47 +101,49 @@ type execResult struct {
 // caller's select. All fields must be fully populated before the send so the
 // caller always receives a consistent snapshot.
 type consensusOutcome struct {
-	winner         *failsafeCommon.PolicyResult[*common.NormalizedResponse]
+	winner         *slotResult
 	analysis       *consensusAnalysis
 	shortCircuited bool
 }
 
-// Apply is the main entry point for the consensus policy. It delegates to
-// executeConsensus which decouples caller-visible latency from analysis
-// completion (see runAnalyzer).
-func (e *executor) Apply(innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse]) func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-	return func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-		startTime := time.Now()
-		ctx := exec.Context()
+// Run is the main entry point for the consensus executor.
+// It delegates to executeConsensus which decouples caller-visible
+// latency from analysis completion (see runAnalyzer).
+func (e *executor) Run(
+	ctx context.Context,
+	originalReq *common.NormalizedRequest,
+	in inner,
+) (*common.NormalizedResponse, error) {
+	startTime := time.Now()
 
-		// Extract request and prepare tracing/logging context.
-		originalReq, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-		if !ok || originalReq == nil {
-			e.logger.Error().Msg("Unexpected nil request in consensus policy")
-			return innerFn(exec) // Fallback to simple execution
-		}
-
-		labels := e.extractMetricsLabels(ctx, originalReq)
-		ctx, consensusSpan := e.startConsensusSpan(ctx, labels, exec)
-		defer consensusSpan.End()
-
-		lg := e.logger.With().
-			Interface("id", originalReq.ID()).
-			Str("component", "consensus").
-			Str("networkId", labels.networkId).
-			Logger()
-
-		return e.executeConsensus(
-			ctx,
-			&lg,
-			originalReq,
-			labels,
-			exec.(policy.ExecutionInternal[*common.NormalizedResponse]),
-			innerFn,
-			startTime,
-			consensusSpan,
-		)
+	if originalReq == nil {
+		e.logger.Error().Msg("Unexpected nil request in consensus policy")
+		return in(ctx, originalReq)
 	}
+
+	labels := e.extractMetricsLabels(ctx, originalReq)
+	ctx, consensusSpan := e.startConsensusSpan(ctx, labels)
+	defer consensusSpan.End()
+
+	lg := e.logger.With().
+		Interface("id", originalReq.ID()).
+		Str("component", "consensus").
+		Str("networkId", labels.networkId).
+		Logger()
+
+	out := e.executeConsensus(
+		ctx,
+		&lg,
+		originalReq,
+		labels,
+		in,
+		startTime,
+		consensusSpan,
+	)
+	if out == nil {
+		return nil, nil
+	}
+	return out.Result, out.Error
 }
 
 // executeConsensus decouples two distinct concerns:
@@ -161,11 +163,10 @@ func (e *executor) executeConsensus(
 	lg *zerolog.Logger,
 	originalReq *common.NormalizedRequest,
 	labels metricsLabels,
-	parentExecution policy.ExecutionInternal[*common.NormalizedResponse],
-	innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse],
+	in inner,
 	startTime time.Time,
 	consensusSpan trace.Span,
-) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+) *slotResult {
 	ctx, collectionSpan := common.StartDetailSpan(ctx, "Consensus.CollectResponses")
 	// NOTE: collectionSpan.End() is owned by runAnalyzer (in its deferred
 	// cleanup), not this function. The analyzer outlives executeConsensus on
@@ -204,11 +205,16 @@ func (e *executor) executeConsensus(
 		maxToSpawn = 1
 	}
 	responseChan := make(chan *execResult, maxToSpawn)
-	// Prepare and retain per-attempt executions so we can cancel losers explicitly
-	attempts := make([]policy.ExecutionInternal[*common.NormalizedResponse], maxToSpawn)
+	// Per-slot cancellable child contexts let us cancel losers explicitly.
+	// Each slot inherits the shared cancellableCtx (which is cancelled
+	// when the analyzer signals a winner / fire-and-forget exits / etc.)
+	// AND has the request bound for downstream helpers that read
+	// common.RequestContextKey.
+	attemptCancels := make([]context.CancelFunc, maxToSpawn)
 	for i := 0; i < maxToSpawn; i++ {
-		attempts[i] = parentExecution.CopyForCancellableWithValue(common.RequestContextKey, originalReq).(policy.ExecutionInternal[*common.NormalizedResponse])
-		go e.executeParticipant(cancellableCtx, lg, attempts[i], labels, innerFn, i, responseChan)
+		slotCtx := context.WithValue(cancellableCtx, common.RequestContextKey, originalReq)
+		slotCtx, attemptCancels[i] = context.WithCancel(slotCtx)
+		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan)
 	}
 
 	// outcomeCh is buffered so the analyzer can signal the caller and
@@ -222,8 +228,8 @@ func (e *executor) executeConsensus(
 	// to avoid racing trackAndPunishMisbehavingUpstreams on winner.Result.
 	analyzerDone := make(chan struct{})
 	go e.runAnalyzer(
-		lg, originalReq, labels, parentExecution,
-		responseChan, attempts, maxToSpawn, cancelRemaining,
+		ctx, lg, originalReq, labels,
+		responseChan, attemptCancels, maxToSpawn, cancelRemaining,
 		outcomeCh, analyzerDone, collectionSpan,
 	)
 
@@ -288,7 +294,7 @@ func (e *executor) handleCallerAbandoned(
 	startTime time.Time,
 	consensusSpan trace.Span,
 	cancelErr error,
-) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+) *slotResult {
 	telemetry.MetricConsensusCancellations.
 		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
 		Inc()
@@ -301,7 +307,7 @@ func (e *executor) handleCallerAbandoned(
 	common.SetTraceSpanError(consensusSpan, cancelErr)
 	consensusSpan.SetAttributes(attribute.String("consensus.outcome", "caller_abandoned"))
 	lg.Warn().Err(cancelErr).Msg("consensus caller abandoned; analysis continues in background")
-	return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: cancelErr}
+	return &slotResult{Error: cancelErr}
 }
 
 // runAnalyzer owns all consensus work downstream of participant dispatch:
@@ -317,12 +323,12 @@ func (e *executor) handleCallerAbandoned(
 // function returns, so the caller's select never deadlocks. The deferred
 // panic handler preserves this invariant.
 func (e *executor) runAnalyzer(
+	ctx context.Context,
 	lg *zerolog.Logger,
 	originalReq *common.NormalizedRequest,
 	labels metricsLabels,
-	parentExecution policy.ExecutionInternal[*common.NormalizedResponse],
 	responseChan <-chan *execResult,
-	attempts []policy.ExecutionInternal[*common.NormalizedResponse],
+	attemptCancels []context.CancelFunc,
 	maxToSpawn int,
 	cancelRemaining func(),
 	outcomeCh chan<- consensusOutcome,
@@ -356,23 +362,93 @@ func (e *executor) runAnalyzer(
 				WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
 				Inc()
 			sendOutcomeOnce(consensusOutcome{
-				winner: &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errPanicInConsensus},
+				winner: &slotResult{Error: errPanicInConsensus},
 			})
 		}
 		collectionSpan.End()
 	}()
 
 	responses := make([]*execResult, 0, maxToSpawn)
-	var winner *failsafeCommon.PolicyResult[*common.NormalizedResponse]
+	var winner *slotResult
 	var analysis *consensusAnalysis
 	var shortCircuitReason string
 	shortCircuited := false
+	waitCapped := false
 
-	// Collect all responses. Every participant is guaranteed to write exactly
+	// waitDeadline tracks the earliest of:
+	//   - first-response-ever  + maxWaitOnEmpty   (only set when > 0)
+	//   - first-non-empty-resp + maxWaitOnResult  (only set when > 0)
+	// A zero value means "no cap, wait for every participant".
+	var waitDeadline time.Time
+	var waitTimer *time.Timer
+	armTimer := func(d time.Time) {
+		if d.IsZero() {
+			return
+		}
+		if !waitDeadline.IsZero() && !d.Before(waitDeadline) {
+			return
+		}
+		waitDeadline = d
+		remaining := time.Until(waitDeadline)
+		if remaining < 0 {
+			remaining = 0
+		}
+		if waitTimer == nil {
+			waitTimer = time.NewTimer(remaining)
+		} else {
+			if !waitTimer.Stop() {
+				select {
+				case <-waitTimer.C:
+				default:
+				}
+			}
+			waitTimer.Reset(remaining)
+		}
+	}
+	timerC := func() <-chan time.Time {
+		if waitTimer == nil {
+			return nil
+		}
+		return waitTimer.C
+	}
+	considerWaitCap := func(resp *execResult) {
+		if e.config.maxWaitOnEmpty <= 0 && e.config.maxWaitOnResult <= 0 {
+			return
+		}
+		now := time.Now()
+		// First response of any kind arms maxWaitOnEmpty.
+		if e.config.maxWaitOnEmpty > 0 && waitDeadline.IsZero() {
+			armTimer(now.Add(e.config.maxWaitOnEmpty))
+		}
+		// A non-empty result arms (or tightens) maxWaitOnResult.
+		if e.config.maxWaitOnResult > 0 && resp != nil && resp.Err == nil &&
+			resp.Result != nil && !resp.Result.IsResultEmptyish(ctx) {
+			armTimer(now.Add(e.config.maxWaitOnResult))
+		}
+	}
+
+	// Collect responses. Every participant is guaranteed to write exactly
 	// once to responseChan (see executeParticipant: all exit paths + panic
 	// recovery write; channel is buffered to maxToSpawn so writes never block).
 	for i := 0; i < maxToSpawn; i++ {
-		resp := <-responseChan
+		var resp *execResult
+		select {
+		case resp = <-responseChan:
+		case <-timerC():
+			// Wait cap fired — resolve with what we have.
+			waitCapped = true
+			if !e.config.fireAndForget {
+				cancelRemaining()
+				for ai := range attemptCancels {
+					if attemptCancels[ai] != nil {
+						attemptCancels[ai]()
+					}
+				}
+			}
+		}
+		if waitCapped {
+			break
+		}
 		if resp == nil {
 			continue
 		}
@@ -380,8 +456,7 @@ func (e *executor) runAnalyzer(
 		if shortCircuited {
 			// Analysis is frozen at the short-circuit moment. Any response
 			// that arrives after is NOT in analysis.groups, so
-			// releaseNonWinningResponses won't cover it. Release it here,
-			// mirroring the old drainResponsesInBackground behavior.
+			// releaseNonWinningResponses won't cover it. Release it here.
 			if resp.Result != nil {
 				resp.Result.Release()
 			}
@@ -389,16 +464,16 @@ func (e *executor) runAnalyzer(
 		}
 
 		responses = append(responses, resp)
+		considerWaitCap(resp)
 
-		analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
+		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
 		winner = e.determineWinner(lg, analysis)
 		if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
 			shortCircuited = true
 			shortCircuitReason = reason
 
 			// Release caller immediately. The winner won't change even if
-			// more responses arrive, matching pre-refactor short-circuit
-			// semantics for the winner returned to the caller.
+			// more responses arrive.
 			sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: true})
 
 			if e.config.fireAndForget {
@@ -408,19 +483,22 @@ func (e *executor) runAnalyzer(
 					Msg("fire-and-forget mode: remaining requests complete in background")
 			} else {
 				cancelRemaining()
-				for ai := range attempts {
-					if attempts[ai] != nil {
-						attempts[ai].Cancel(nil)
+				for ai := range attemptCancels {
+					if attemptCancels[ai] != nil {
+						attemptCancels[ai]()
 					}
 				}
 			}
 		}
 	}
+	if waitTimer != nil {
+		waitTimer.Stop()
+	}
 
 	// All participants accounted for. If no short-circuit fired, compute the
 	// final analysis and send the winner now.
 	if analysis == nil {
-		analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
+		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
 		winner = e.determineWinner(lg, analysis)
 	}
 	sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: shortCircuited})
@@ -429,6 +507,7 @@ func (e *executor) runAnalyzer(
 	// outcome has been sent, so they don't block the caller.
 	collectionSpan.SetAttributes(
 		attribute.Bool("short_circuited", shortCircuited),
+		attribute.Bool("wait_capped", waitCapped),
 		attribute.Int("responses.collected", len(responses)),
 	)
 
@@ -459,6 +538,21 @@ func (e *executor) runAnalyzer(
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr).
 			Inc()
 	}
+	if waitCapped {
+		// Trigger label distinguishes which cap fired: maxWaitOnResult
+		// (at least one non-empty in the bag) vs maxWaitOnEmpty (only
+		// empty/error responses so far).
+		trigger := "empty"
+		for _, r := range responses {
+			if r != nil && r.Err == nil && r.Result != nil && !r.Result.IsResultEmptyish(ctx) {
+				trigger = "result"
+				break
+			}
+		}
+		telemetry.MetricConsensusWaitCapped.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, trigger, labels.finalityStr).
+			Inc()
+	}
 
 	// Track misbehavior with the final winner + analysis. Previously this
 	// ran synchronously in Apply(). Moving it here guarantees it sees every
@@ -474,7 +568,7 @@ func (e *executor) runAnalyzer(
 // loop in Apply() so behavior is preserved.
 func (e *executor) releaseNonWinningResponses(
 	analysis *consensusAnalysis,
-	winner *failsafeCommon.PolicyResult[*common.NormalizedResponse],
+	winner *slotResult,
 ) {
 	if analysis == nil {
 		return
@@ -498,9 +592,9 @@ func (e *executor) releaseNonWinningResponses(
 func (e *executor) executeParticipant(
 	ctx context.Context,
 	lg *zerolog.Logger,
-	attemptExecution policy.ExecutionInternal[*common.NormalizedResponse],
 	labels metricsLabels,
-	innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse],
+	in inner,
+	req *common.NormalizedRequest,
 	index int,
 	responseChan chan<- *execResult,
 ) {
@@ -526,48 +620,43 @@ func (e *executor) executeParticipant(
 		return
 	}
 
-	// Execute using the pre-created cancellable attempt execution
-	result := innerFn(attemptExecution)
+	// Execute the slot inner — returns (response, error) directly.
+	respObj, respErr := in(ctx, req)
 
-	// Track post-execution cancellations for observability, but do NOT discard the result.
-	// The result is still valid and should participate in consensus analysis.
-	// Discarding here caused 0 groups → ErrConsensusLowParticipants "participants: null".
+	// Track post-execution cancellations for observability, but do NOT discard
+	// the result. The result is still valid and should participate in
+	// consensus analysis.
 	if ctx.Err() != nil {
 		telemetry.MetricConsensusCancellations.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).
 			Inc()
 	}
 
-	if result == nil {
+	if respObj == nil && respErr == nil {
 		responseChan <- nil
 		return
 	}
 
 	var upstream common.Upstream
-	if resp, ok := any(result.Result).(*common.NormalizedResponse); ok {
-		upstream = resp.Upstream()
+	if respObj != nil {
+		upstream = respObj.Upstream()
 	}
-	if upstream == nil && result.Error != nil {
+	if upstream == nil && respErr != nil {
 		var uae interface{ Upstream() common.Upstream }
-		if errors.As(result.Error, &uae) {
+		if errors.As(respErr, &uae) {
 			upstream = uae.Upstream()
 		}
 		var uxe *common.ErrUpstreamsExhausted
-		if errors.As(result.Error, &uxe) {
+		if errors.As(respErr, &uxe) {
 			if ups := uxe.Upstreams(); len(ups) > 0 {
 				upstream = ups[0]
 			}
 		}
 	}
 
-	// It is possible that result.Result is nil (pure error); in that case, we still propagate the error
-	var nr *common.NormalizedResponse
-	if rr, ok := any(result.Result).(*common.NormalizedResponse); ok {
-		nr = rr
-	}
 	responseChan <- &execResult{
-		Result:   nr,
-		Err:      result.Error,
+		Result:   respObj,
+		Err:      respErr,
 		Upstream: upstream,
 		Index:    index,
 	}
@@ -576,7 +665,7 @@ func (e *executor) executeParticipant(
 // shouldShortCircuit decides if remaining requests can be safely cancelled.
 // This happens if one group's lead over the second-place group is greater
 // than the number of remaining responses.
-func (e *executor) shouldShortCircuit(winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis) (string, bool) {
+func (e *executor) shouldShortCircuit(winner *slotResult, analysis *consensusAnalysis) (string, bool) {
 	for _, rule := range shortCircuitRules {
 		if rule.Condition(winner, analysis) {
 			return rule.Reason, true
@@ -587,7 +676,7 @@ func (e *executor) shouldShortCircuit(winner *failsafeCommon.PolicyResult[*commo
 
 // determineWinner applies configured policies to the analysis to produce a final result.
 // It uses a rules-based approach for clear, maintainable decision logic.
-func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalysis) *slotResult {
 	// Since we know R is *common.NormalizedResponse at runtime, we can safely work with it
 	// Evaluate rules in priority order
 	for _, rule := range consensusRules {
@@ -603,14 +692,14 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 
 	// Ultimate fallback (should never reach here due to no-winner rule)
 	lg.Error().Msg("no consensus rule matched - using fallback")
-	return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+	return &slotResult{
 		Error: common.NewErrConsensusDispute("no consensus rule matched", nil, nil),
 	}
 }
 
 // --- Tracing, Metrics, and Punishment ---
 
-func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *common.NormalizedRequest, labels metricsLabels, winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis) {
+func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *common.NormalizedRequest, labels metricsLabels, winner *slotResult, analysis *consensusAnalysis) {
 	// Skip tracking when there are no valid participants (all infra errors)
 	if analysis.validParticipants == 0 {
 		return
@@ -812,7 +901,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					// Apply punishment only if configured and conditions are met
 					if e.shouldPunishUpstream(lg, consensusGroup, analysis) {
 						limiter := e.createRateLimiter(lg, upstreamId)
-						if !limiter.TryAcquirePermit() {
+						if !limiter.Allow() {
 							e.handleMisbehavingUpstream(lg, result.Upstream, upstreamId, labels.projectId, labels.networkId)
 						}
 					}
@@ -893,7 +982,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 }
 
 // buildMisbehaviorRecord converts current context into JSONL bytes without truncation
-func (e *executor) buildMisbehaviorRecord(labels metricsLabels, req *common.NormalizedRequest, winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis, consensusGroup *responseGroup, allParticipants []participantInfo) ([]byte, error) {
+func (e *executor) buildMisbehaviorRecord(labels metricsLabels, req *common.NormalizedRequest, winner *slotResult, analysis *consensusAnalysis, consensusGroup *responseGroup, allParticipants []participantInfo) ([]byte, error) {
 	// Request raw
 	var reqRaw []byte
 	if jrq, _ := req.JsonRpcRequest(); jrq != nil {
@@ -1052,10 +1141,10 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, timer)
 }
 
-func (e *executor) createRateLimiter(logger *zerolog.Logger, upstreamId string) ratelimiter.RateLimiter[any] {
+func (e *executor) createRateLimiter(logger *zerolog.Logger, upstreamId string) *rate.Limiter {
 	// Try to get existing limiter
 	if limiter, ok := e.misbehavingUpstreamsLimiter.Load(upstreamId); ok {
-		return limiter.(ratelimiter.RateLimiter[any])
+		return limiter.(*rate.Limiter)
 	}
 
 	logger.Info().
@@ -1064,13 +1153,22 @@ func (e *executor) createRateLimiter(logger *zerolog.Logger, upstreamId string) 
 		Str("disputeWindow", e.punishMisbehavior.DisputeWindow.String()).
 		Msg("creating new dispute limiter")
 
-	limiter := ratelimiter.
-		BurstyBuilder[any](e.punishMisbehavior.DisputeThreshold, e.punishMisbehavior.DisputeWindow.Duration()).
-		Build()
+	// Bursty rate limiter: `threshold` tokens per `window` (token-bucket).
+	window := e.punishMisbehavior.DisputeWindow.Duration()
+	burst := int(e.punishMisbehavior.DisputeThreshold)
+	if burst < 1 {
+		burst = 1
+	}
+	var lim *rate.Limiter
+	if window > 0 {
+		lim = rate.NewLimiter(rate.Every(window/time.Duration(burst)), burst)
+	} else {
+		lim = rate.NewLimiter(rate.Inf, burst)
+	}
 
 	// Use LoadOrStore to handle concurrent creation
-	actual, _ := e.misbehavingUpstreamsLimiter.LoadOrStore(upstreamId, limiter)
-	return actual.(ratelimiter.RateLimiter[any])
+	actual, _ := e.misbehavingUpstreamsLimiter.LoadOrStore(upstreamId, lim)
+	return actual.(*rate.Limiter)
 }
 
 func (e *executor) extractMetricsLabels(ctx context.Context, req *common.NormalizedRequest) metricsLabels {
@@ -1091,17 +1189,16 @@ func (e *executor) extractMetricsLabels(ctx context.Context, req *common.Normali
 	}
 }
 
-func (e *executor) startConsensusSpan(ctx context.Context, labels metricsLabels, exec failsafe.Execution[*common.NormalizedResponse]) (context.Context, trace.Span) {
-	return common.StartSpan(ctx, "Consensus.Apply",
+func (e *executor) startConsensusSpan(ctx context.Context, labels metricsLabels) (context.Context, trace.Span) {
+	return common.StartSpan(ctx, "Consensus.Run",
 		trace.WithAttributes(
 			attribute.String("network.id", labels.networkId),
 			attribute.String("request.method", labels.method),
-			attribute.Int("execution.attempts", exec.Attempts()),
 		),
 	)
 }
 
-func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startTime time.Time, result *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis, labels metricsLabels, span trace.Span) {
+func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startTime time.Time, result *slotResult, analysis *consensusAnalysis, labels metricsLabels, span trace.Span) {
 	// Defensive: analysis is nil on the catastrophic-path where the analyzer
 	// goroutine panicked before any responses could be classified. Emit
 	// minimal metrics and mark the span error rather than nil-dereferencing.

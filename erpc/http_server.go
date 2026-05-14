@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -754,7 +755,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			common.EnrichHTTPServerSpan(httpCtx, http.StatusOK, nil)
 		} else {
 			res := responses[0]
-			setResponseHeaders(httpCtx, res, w)
+			setResponseHeaders(httpCtx, res, w, s.executionHeadersMode())
 
 			// x402 Payment Required: set headers before WriteHeader, then write raw x402 JSON.
 			// Both body and PAYMENT-REQUIRED header carry the requirements for v1/v2 client compatibility.
@@ -1126,7 +1127,20 @@ func (s *HttpServer) handleCORS(httpCtx context.Context, w http.ResponseWriter, 
 	return true
 }
 
-func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWriter) {
+// executionHeadersMode returns the configured per-request diagnostic
+// header mode, defaulting to "all" when unset.
+func (s *HttpServer) executionHeadersMode() common.ExecutionHeadersMode {
+	if s == nil || s.serverCfg == nil || s.serverCfg.ExecutionHeaders == nil {
+		return common.ExecutionHeadersAll
+	}
+	return *s.serverCfg.ExecutionHeaders
+}
+
+func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWriter, mode common.ExecutionHeadersMode) {
+	if mode == common.ExecutionHeadersOff {
+		return
+	}
+
 	var rm common.ResponseMetadata
 	var ok bool
 	rm, ok = res.(common.ResponseMetadata)
@@ -1156,7 +1170,71 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 	}
 	if resp, ok := res.(*common.NormalizedResponse); ok {
 		w.Header().Set("X-ERPC-Duration", fmt.Sprintf("%d", resp.Duration().Milliseconds()))
+		// Per-attempt execution trace from ExecState.
+		// Skipped in "summary" mode to keep header bytes minimal for
+		// bandwidth-constrained clients.
+		if mode != common.ExecutionHeadersSummary {
+			if req := resp.Request(); req != nil {
+				writeExecStateHeaders(req.ExecState(), w)
+			}
+		}
 	}
+}
+
+// writeExecStateHeaders emits the full per-request execution trace as
+// X-ERPC-* headers. Empty / zero values are still emitted so clients
+// can rely on header presence as a contract.
+func writeExecStateHeaders(st *common.ExecState, w http.ResponseWriter) {
+	if st == nil {
+		return
+	}
+	snap := st.Snapshot()
+	w.Header().Set("X-ERPC-Network-Attempts", fmt.Sprintf("%d", snap.NetworkAttempts))
+	w.Header().Set("X-ERPC-Network-Retries", fmt.Sprintf("%d", snap.NetworkRetries))
+	w.Header().Set("X-ERPC-Network-Hedges", fmt.Sprintf("%d", snap.NetworkHedges))
+	if snap.ConsensusSlots > 0 {
+		w.Header().Set("X-ERPC-Consensus-Slots", fmt.Sprintf("%d", snap.ConsensusSlots))
+	}
+	if snap.ConsensusDisputes > 0 {
+		w.Header().Set("X-ERPC-Consensus-Disputes", fmt.Sprintf("%d", snap.ConsensusDisputes))
+	}
+	if snap.ConsensusLowParticipants > 0 {
+		w.Header().Set("X-ERPC-Consensus-Low-Participants", fmt.Sprintf("%d", snap.ConsensusLowParticipants))
+	}
+
+	attempts := st.UpstreamAttempts()
+	if len(attempts) == 0 {
+		return
+	}
+	tried := make([]string, len(attempts))
+	outcomes := make([]string, len(attempts))
+	reasons := make([]string, len(attempts))
+	durations := make([]string, len(attempts))
+	flags := make([]string, len(attempts))
+	for i, a := range attempts {
+		tried[i] = a.UpstreamId
+		outcomes[i] = string(a.Outcome)
+		reasons[i] = string(a.Reason)
+		durations[i] = strconv.FormatInt(a.Duration.Milliseconds(), 10)
+		// Per-attempt flag block: h=hedge, r=retry, both = "hr",
+		// neither = "-". Compact and grep-friendly.
+		var fl strings.Builder
+		if a.IsHedge {
+			fl.WriteByte('h')
+		}
+		if a.IsRetry {
+			fl.WriteByte('r')
+		}
+		if fl.Len() == 0 {
+			fl.WriteByte('-')
+		}
+		flags[i] = fl.String()
+	}
+	w.Header().Set("X-ERPC-Upstreams-Tried", strings.Join(tried, ","))
+	w.Header().Set("X-ERPC-Upstreams-Outcomes", strings.Join(outcomes, ","))
+	w.Header().Set("X-ERPC-Upstreams-Reasons", strings.Join(reasons, ","))
+	w.Header().Set("X-ERPC-Upstreams-Durations-Ms", strings.Join(durations, ","))
+	w.Header().Set("X-ERPC-Upstreams-Flags", strings.Join(flags, ","))
 }
 
 // determineResponseStatusCode extracts any error from a response and determines

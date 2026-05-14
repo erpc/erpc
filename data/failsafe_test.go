@@ -16,17 +16,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCacheFailsafe_CreatePolicies_RejectsConsensus(t *testing.T) {
+func TestCacheExecutor_RejectsConsensus(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	cfg := &common.FailsafeConfig{
 		Consensus: &common.ConsensusPolicyConfig{},
 	}
-	_, err := CreateCacheFailsafePolicies(&logger, "test-conn", cfg)
+	_, err := NewCacheExecutor(cfg, &logger)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "consensus is not supported")
 }
 
-func TestCacheFailsafe_CreatePolicies_RejectsHedgeQuantile(t *testing.T) {
+func TestCacheExecutor_RejectsHedgeQuantile(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	cfg := &common.FailsafeConfig{
 		Hedge: &common.HedgePolicyConfig{
@@ -34,12 +34,12 @@ func TestCacheFailsafe_CreatePolicies_RejectsHedgeQuantile(t *testing.T) {
 			MaxCount: 1,
 		},
 	}
-	_, err := CreateCacheFailsafePolicies(&logger, "test-conn", cfg)
+	_, err := NewCacheExecutor(cfg, &logger)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hedge quantile is not supported")
 }
 
-func TestCacheFailsafe_CreatePolicies_AcceptsValid(t *testing.T) {
+func TestCacheExecutor_AcceptsValid(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	cfg := &common.FailsafeConfig{
 		Timeout: &common.TimeoutPolicyConfig{
@@ -59,13 +59,9 @@ func TestCacheFailsafe_CreatePolicies_AcceptsValid(t *testing.T) {
 			MaxCount: 1,
 		},
 	}
-	policies, err := CreateCacheFailsafePolicies(&logger, "test-conn", cfg)
+	ex, err := NewCacheExecutor(cfg, &logger)
 	require.NoError(t, err)
-	assert.Len(t, policies, 4)
-	assert.Contains(t, policies, "timeout")
-	assert.Contains(t, policies, "retry")
-	assert.Contains(t, policies, "circuitBreaker")
-	assert.Contains(t, policies, "hedge")
+	require.NotNil(t, ex)
 }
 
 func TestCacheFailsafe_RetryPolicy_DoesNotRetryRecordNotFound(t *testing.T) {

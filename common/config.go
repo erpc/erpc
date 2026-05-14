@@ -112,7 +112,30 @@ type ServerConfig struct {
 	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+
+	// ExecutionHeaders controls the per-request diagnostic headers
+	// (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
+	// eRPC routed and resolved each request. Defaults to "all" — set
+	// "summary" to keep only counters, or "off" to disable entirely
+	// (useful for low-latency / bandwidth-constrained clients).
+	ExecutionHeaders *ExecutionHeadersMode `yaml:"executionHeaders,omitempty" json:"executionHeaders" tstype:"ExecutionHeadersMode"`
 }
+
+// ExecutionHeadersMode controls how much per-request execution detail is
+// exposed in HTTP response headers.
+type ExecutionHeadersMode string
+
+const (
+	// ExecutionHeadersAll emits the full set: counters + per-upstream
+	// trace (upstream IDs, outcomes, reasons, durations). Default.
+	ExecutionHeadersAll ExecutionHeadersMode = "all"
+	// ExecutionHeadersSummary emits only the counter triplet
+	// (X-ERPC-Attempts/Retries/Hedges) + the cache-hit / final-upstream
+	// markers. Skips the (potentially large) per-attempt slice headers.
+	ExecutionHeadersSummary ExecutionHeadersMode = "summary"
+	// ExecutionHeadersOff disables all X-ERPC-* diagnostic headers.
+	ExecutionHeadersOff ExecutionHeadersMode = "off"
+)
 
 type HealthCheckConfig struct {
 	Mode        HealthCheckMode `yaml:"mode,omitempty" json:"mode"`
@@ -1066,6 +1089,22 @@ type FailsafeConfig struct {
 	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 }
 
+// NetworkFailsafeConfig is the scope-specific alias for network-level
+// failsafe policies. By convention, CircuitBreaker is not used at this
+// scope (use upstream-scope breakers instead); validation enforces this.
+type NetworkFailsafeConfig = FailsafeConfig
+
+// UpstreamFailsafeConfig is the scope-specific alias for per-upstream
+// failsafe policies. By convention, Consensus is not used at this
+// scope (consensus is a network-scope concern only); validation
+// enforces this.
+type UpstreamFailsafeConfig = FailsafeConfig
+
+// CacheFailsafeConfig is the scope-specific alias for cache-connector
+// failsafe policies. Hedge.Quantile is not allowed here (no per-method
+// quantile data on cache reads); validation enforces this.
+type CacheFailsafeConfig = FailsafeConfig
+
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	if c == nil {
 		return nil
@@ -1226,6 +1265,21 @@ type ConsensusPolicyConfig struct {
 	// broadcast the transaction to as many nodes as possible while still returning quickly.
 	// Default is false (normal behavior - cancel remaining requests on short-circuit).
 	FireAndForget bool `yaml:"fireAndForget,omitempty" json:"fireAndForget"`
+
+	// MaxWaitOnResult caps how long consensus waits for additional participants
+	// AFTER at least one non-empty response has arrived. Use this to bound
+	// p99 latency when most upstreams are fast but one is a slow straggler:
+	// once a real answer is in hand, give the rest at most this long to
+	// confirm or dispute, then resolve with what we have.
+	// Default: 0 (wait for every participant or short-circuit).
+	MaxWaitOnResult Duration `yaml:"maxWaitOnResult,omitempty" json:"maxWaitOnResult" tstype:"Duration"`
+
+	// MaxWaitOnEmpty caps how long consensus waits for additional participants
+	// AFTER the first response (of any kind — empty, error, or non-empty)
+	// has arrived. Typically set larger than MaxWaitOnResult because an
+	// operator is more patient when no useful data is in hand yet.
+	// Default: 0 (wait for every participant or short-circuit).
+	MaxWaitOnEmpty Duration `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty" tstype:"Duration"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
