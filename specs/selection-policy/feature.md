@@ -633,42 +633,58 @@ The ring buffer is **sparse**: only ticks where `changes.primaryChanged || chang
 
 ## 7. Default policy
 
-When `selectionPolicy.eval` is omitted, the engine applies the production-ready default embedded as `internal/policy/default_policy.js` (also served at `GET /admin/selection/default-policy`):
+When `selectionPolicy.eval` is omitted, the engine applies the production-hardened default embedded as `internal/policy/default_policy.js` (also served at `GET /admin/selection/default-policy`):
 
 ```js
 (upstreams, ctx) =>
   upstreams
-    .removeCordoned()                  // 1. drop failsafe-cordoned
-    .removeByErrorRate(0.8)            // 2. drop > 80% errors over window
-    .whenEmpty(() => upstreams)        // 3. safety net: never empty
-    .preferGroup('!fallback', {        // 4. primary tier = group !== 'fallback'
+    .removeCordoned()                  // 1
+    .keepHealthy({                     // 2 — composite filter
+      maxErrorRate:     0.5,
+      maxBlockHeadLag:  16,
+      maxP95Ms:         10_000,
+      maxThrottledRate: 0.3,
+    })
+    .whenEmpty(() => upstreams)        // 3 — safety net
+    .preferGroup('!fallback', {        // 4 — tier
       minHealthy: 1,
-      fallback: 'fallback',
+      fallback:   'fallback',
     })
-    .sortByScore(BALANCED)             // 5. rank by composite score
-    .stickyPrimary({                   // 6. anti-flap
-      hysteresis: 0.10,
-      minSwitchInterval: '30s',
-    })
-    .probeExcluded({                   // 7. recover excluded upstreams
-      reAdmitAfter: '5m',
-      maxConcurrent: 1,
+    .sortByScore(BALANCED)             // 5 — rank survivors
+    .if(ctx.finality === REALTIME,     // 6 — sticky for live-latest only
+        u => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
+        u => u)
+    .probeExcluded({                   // 7 — fast re-admit
+      reAdmitAfter:  '90s',
+      maxConcurrent: 2,
     })
 ```
 
 **Step-by-step rationale:**
 
 1. **Drop cordoned** — failsafe / circuit-breaker has explicitly marked the upstream bad.
-2. **Drop clearly broken** — `errorRate > 0.8` is broken on any chain. Conservative threshold to avoid false positives.
-3. **Safety net** — if filtering wiped everything (network-wide outage), serve from the raw set rather than fail closed.
+
+2. **Keep healthy** — single composite filter dropping any upstream that fails on errors, lag, latency, or throttling BEFORE it can compete on score:
+   - `maxErrorRate: 0.5` — more than half-erroring is broken regardless of chain.
+   - `maxBlockHeadLag: 16` — ~1 min behind tip on Ethereum, ~32 s on a 2 s chain; clearly degraded.
+   - `maxP95Ms: 10_000` — catches a slow vendor before its blended percentile poisons the pool's hedge / consensus timeouts.
+   - `maxThrottledRate: 0.3` — vendor is rate-limiting; reroute before quota burns.
+
+   Filtering on these signals (rather than only ranking via `sortByScore`) is the key defence against the "slow or erroring upstream still wins by score" class of incident.
+
+3. **Safety net** — if step 2 wiped everything (network-wide outage), serve from the raw set rather than fail closed.
+
 4. **Tier** — `group !== 'fallback'` is the primary tier; `group === 'fallback'` is the second tier. Adding a fallback upstream is one config line. The `!` glob is the canonical eRPC convention.
-5. **Score** — `BALANCED` weights (errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6). Chain-specific signals (lag, latency) contribute to *ranking*, not *filtering*, so this default works on Ethereum mainnet, L2s, sidechains, testnets alike.
-6. **Sticky primary** — keep the current primary unless a challenger's score is ≥10% better AND 30s have passed since the last switch. Prevents flapping under transient blips.
-7. **Probe excluded** — every tick, re-admit one upstream that has been out for 5+ minutes so its metrics refresh.
+
+5. **Score** — `BALANCED` weights (errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6). Ranks the survivors of step 2.
+
+6. **Sticky primary, REALTIME only** — keep the current primary unless a challenger's score is ≥10% better AND 30 s have passed since the last switch. Finalized/unfinalized requests are reorg-tolerant and skip stickiness (no benefit during a real incident; only amplifies bad-primary impact).
+
+7. **Probe excluded** — re-admit two excluded upstreams every 90 s so they get a chance to prove they've recovered. Matches typical transient-blip recovery windows (rate-limit reset, regional networking dip).
 
 `BALANCED` weights are defined in §4.1.
 
-**Tuning under prod load.** The conservative default may be too forgiving for high-traffic environments. Operators running tight finality SLOs should consider a stricter variant — `keepHealthy(...)` composite in step 2, an explicit `removeByLag` step before scoring, finality-conditional `stickyPrimary`, and a shorter probe re-admit window. The default ships *conservative* on purpose so it doesn't surprise users with aggressive exclusion; the "production-tuned" variant lives in the docs as a recommended override, not the default.
+**Loosening for low-traffic / dev environments.** Single-upstream setups, or environments where serving from a degraded upstream beats failing closed, can ship an explicit `eval` that drops the `keepHealthy` step in favor of just `removeByErrorRate(0.8)`. Pre-rewrite eRPC users who depended on permissive routing can recreate the old default via explicit `eval`. The new default is "safe-for-most-prod"; we explicitly choose to surprise low-traffic users rather than let prod users suffer the inverse default.
 
 ---
 

@@ -115,78 +115,82 @@ export default createConfig({
 
 ## The default policy
 
-Omitting `eval` applies a conservative, chain-agnostic policy designed
-for production:
+Omitting `eval` applies a production-hardened, chain-agnostic policy.
+Each step addresses a distinct failure class — the *absence* of any
+one of them lets a degraded upstream keep receiving traffic:
 
 ```js
 (upstreams, ctx) =>
   upstreams
-    .removeCordoned()                  // 1. drop failsafe-cordoned
-    .removeByErrorRate(0.8)            // 2. drop > 80% errors over window
-    .whenEmpty(() => upstreams)        // 3. safety net: never empty
-    .preferGroup('!fallback', {        // 4. primary tier = group !== 'fallback'
+    .removeCordoned()                  // 1
+    .keepHealthy({                     // 2 — composite filter
+      maxErrorRate:     0.5,
+      maxBlockHeadLag:  16,
+      maxP95Ms:         10_000,
+      maxThrottledRate: 0.3,
+    })
+    .whenEmpty(() => upstreams)        // 3 — safety net
+    .preferGroup('!fallback', {        // 4 — tier
       minHealthy: 1,
-      fallback: 'fallback',
+      fallback:   'fallback',
     })
-    .sortByScore(BALANCED)             // 5. rank by composite score
-    .stickyPrimary({                   // 6. anti-flap
-      hysteresis: 0.10,
-      minSwitchInterval: '30s',
-    })
-    .probeExcluded({                   // 7. recover excluded upstreams
-      reAdmitAfter: '5m',
-      maxConcurrent: 1,
+    .sortByScore(BALANCED)             // 5 — rank survivors
+    .if(ctx.finality === REALTIME,     // 6 — sticky for live-latest only
+        u => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
+        u => u)
+    .probeExcluded({                   // 7 — fast re-admit
+      reAdmitAfter:  '90s',
+      maxConcurrent: 2,
     })
 ```
 
 Step-by-step:
 
-1. **Drop cordoned** — failsafe / circuit-breaker explicitly marked the upstream bad.
-2. **Drop clearly broken** — 80% errors over the window means broken on any chain.
-3. **Safety net** — if filtering wiped everything (network-wide outage), serve from the raw set rather than fail closed.
-4. **Tier** — `group !== 'fallback'` is the primary tier; `group === 'fallback'` is the second tier. Matches the long-standing eRPC convention so adding a fallback upstream is one config line.
-5. **Score** — BALANCED weights: `errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6`. Lag and latency are CHAIN-SPECIFIC and contribute to ranking, not filtering, so the default works on Ethereum, Arbitrum, and everything in between.
-6. **Sticky primary** — keep the current primary unless a challenger's score is ≥10% better AND 30s passed since the last switch. Prevents flapping under transient blips.
-7. **Probe excluded** — every tick, re-admit one upstream that has been out for 5+ minutes so its metrics refresh.
+1. **Drop cordoned** — failsafe / circuit-breaker has marked the upstream bad.
+
+2. **Keep healthy** — a single composite filter that drops a degraded
+   upstream BEFORE it can win on score:
+   - `maxErrorRate: 0.5` — anything erroring more than half the time is broken on any chain.
+   - `maxBlockHeadLag: 16` — ~1 min behind tip on Ethereum mainnet, ~32 s on a 2 s chain. Clearly degraded for `latest`-style queries.
+   - `maxP95Ms: 10_000` — catches a slow vendor before its blended percentile poisons the pool's hedge / consensus timeouts.
+   - `maxThrottledRate: 0.3` — the vendor is rate-limiting us; reroute before quota burns.
+
+   Filtering on these signals (rather than only ranking) is the key
+   defence against "an upstream is slow / erroring but its score is
+   still in the top tier".
+
+3. **Safety net** — if step 2 wiped everything (project-wide outage), serve from the raw set rather than fail closed.
+
+4. **Tier** — `group !== 'fallback'` is the primary tier; `group === 'fallback'` is the second tier. One config line per fallback upstream.
+
+5. **Score** — `BALANCED` weights (`errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6`). Ranks the survivors of step 2.
+
+6. **Sticky primary for REALTIME only** — keeping the current primary across ticks prevents flapping for live-latest queries. Finalized/unfinalized requests are reorg-tolerant; pinning to a degrading primary on those just amplifies incident impact.
+
+7. **Probe excluded** — re-admit two excluded upstreams every 90 s so they get a chance to prove they've recovered. Typical transient-blip windows (rate-limit reset, regional networking dip) recover in 60-90 s.
 
 Source served at `GET /admin/selection/default-policy`.
 
-### Production-tuned alternative
+### Loosening the default for low-traffic / dev setups
 
-The default ships *conservative* on purpose — it won't surprise users
-with aggressive exclusion. For high-traffic environments running tight
-finality SLOs, the same primitives compose into a stricter chain that
-addresses the most common operational failure classes (head-lag rotation,
-slow-upstream drag, prolonged-bad-primary during reorgs):
+If the defaults above are too strict for your environment — e.g. you
+have only one upstream per network and you'd rather a degraded
+upstream serve traffic than fail closed — write an explicit `eval`
+that loosens or replaces specific steps. Common loosener:
 
 ```js
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
-    .keepHealthy({                                  // ← stricter filter
-      maxErrorRate: 0.5,
-      maxBlockHeadLag: 16,
-      maxP95Ms: 10_000,
-      maxThrottledRate: 0.3,
-    })
-    .removeByLag({ blockHead: 16, finalization: 64 })
+    .removeByErrorRate(0.8)            // looser error threshold
     .whenEmpty(() => upstreams)
-    .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
     .sortByScore(BALANCED)
-    .if(ctx.finality === REALTIME,                  // ← no sticky on finalized
-        (u) => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
-        (u) => u)
-    .probeExcluded({ reAdmitAfter: '90s', maxConcurrent: 2 })
+    .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
+    .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```
 
-The four differences vs. the conservative default:
-- **filter, don't just rank** lag and p95 latency before sorting,
-- **tighter error threshold** (`0.5` vs `0.8`),
-- **drop stickiness for finalized/unfinalized** requests (reorg-tolerant anyway),
-- **faster probe re-admit** (`90s` vs `5m`) for transient-blip recovery.
-
-If your operators have ever had to comment out an upstream because
-it was lagging but error-free, the chain above is what you want.
+This was the default in earlier eRPC versions; ship it as your
+`eval` if you depended on that behavior.
 
 ## Eval inputs
 
