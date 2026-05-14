@@ -57,6 +57,16 @@ The [shared state feature](/config/database/shared-state) allows your eRPC insta
 
 The shared state feature requires minimal storage (less than 1MB per upstream) while significantly improving coordination between instances. For high-traffic deployments with multiple replicas, this pattern is strongly recommended.
 
+## WebSocket subscriptions
+
+If you serve [`eth_subscribe`](/operation/websocket) traffic, a few additional notes:
+
+- **One upstream subscription per (network, filter)** — eRPC de-duplicates across clients. 1,000 clients subscribed to the same `logs` filter consume one upstream subscription, not 1,000.
+- **Per-network memory for reorg tracking** — eRPC keeps a bounded ring of the last N canonical block headers per network (default 256, tune via [`indexer.canonicalChainDepth`](/operation/websocket#indexer-configuration)) plus an index of delivered logs keyed by `blockHash`. Upper bound is roughly `ring-depth × logs-per-block × payload-size`. On logs-heavy chains (~50 logs/block, ~400 B each) that is well under 10 MB per network — dominated by log payload, not ring metadata.
+- **Pod-local reorg view** — client WS connections are sticky to one pod. The `removed: true` re-emission that pod sends reflects *that pod's* local observation of the canonical chain. Cross-pod exactly-once reorg delivery is not provided; if required, rely on upstream consensus policies.
+- **Slow-client policy** — each subscription gets a bounded notification buffer. A slow client drops its *own* oldest queued notifications rather than blocking upstream delivery or other clients. No tuning knob; scale connections horizontally if drops become meaningful.
+- **`waitBeforeShutdown` still applies** — WS connections are drained during the grace window along with HTTP requests. A 30s `waitBeforeShutdown` is a safe default when a load balancer sits in front of eRPC.
+
 ## Explicitly configure Chain ID
 
 Even though eRPC can automatically detect the chain ID, it's recommended to explicitly configure the chain ID in the project configuration. This ensures faster startup time and more resilient rollouts.
@@ -70,22 +80,17 @@ There are mainly 2 places to configure the chain ID:
 
 For a zero-downtime smooth rollout, configure [Healthcheck](/operation/healthcheck) in your orchestration platform (e.g. kubernetes).
 
-#### Example: Cilium/Envoy and zero-downtime deployments
+#### Graceful shutdown during rolling updates
 
-When using Cilium with Envoy (either Ingress or Gateway-API) we observed that keeping
-`waitBeforeShutdown` and `waitAfterShutdown` **both** at 30s (together with a readiness
-probe that fails in ≤ 10 s) eliminates `connection reset / refused` errors during
-rolling updates:
+For zero-downtime deployments behind any L7 load balancer, pair a readiness probe that fails quickly (≤ 10s) with generous shutdown windows. This gives the load balancer enough time to stop routing new requests before the process exits, and lets in-flight requests drain:
 
 ```yaml
 server:
-  waitBeforeShutdown: 30s # pod is in draining mode
-  waitAfterShutdown:  30s # process stays alive until Envoy finishes
+  waitBeforeShutdown: 30s # pod is in draining mode (readiness fails, but serving continues)
+  waitAfterShutdown:  30s # process stays alive after the listener is closed
 ```
 
-Shorter values let Envoy reuse a connection after the listener is gone or try to reach
-a pod that has already exited. Use these numbers as a safe starting point and adjust
-to match your own probe intervals.
+Shorter values risk the load balancer reusing a connection after the listener is gone, or routing new requests to a pod that has already exited. Use these numbers as a safe starting point and adjust to match your own probe intervals.
 
 ## Custom response headers
 

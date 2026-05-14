@@ -185,6 +185,22 @@ func NewNetwork(
 		nwCfg.Architecture = common.ArchitectureEvm
 	}
 
+	// Cross-pod monotonic block counters. Tolerates up to 1024-block rollbacks
+	// (same threshold as per-upstream state pollers) so a rare deep reorg can
+	// still correct the value, but routine per-upstream jitter cannot.
+	if upstreamsRegistry != nil {
+		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
+			network.latestBlockShared = ssr.GetCounterInt64(
+				fmt.Sprintf("network/%s/latestBlock", netId),
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+			network.finalizedBlockShared = ssr.GetCounterInt64(
+				fmt.Sprintf("network/%s/finalizedBlock", netId),
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+		}
+	}
+
 	return network, nil
 }
 

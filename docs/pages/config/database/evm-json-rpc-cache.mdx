@@ -558,6 +558,7 @@ The cache system recognizes three finality states:
 - `finalized`: (default) Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
 - `unfinalized`: Data from recent blocks that could still be reorged. Also any data/transaction from pending blocks is considered unfinalized.
 - `realtime`: Data that is expected to be updated on every new block (e.g. eth_blockNumber, eth_gasPrice, eth_maxPriorityFeePerGas, etc). You must use a short TTL (i.e. 2 * block time) to ensure it's fresh enough.
+  - For `eth_getBlockByNumber` requests that use a moving tag (`"latest"`, `"finalized"`, `"safe"`), eRPC keys the cache entry by the concrete block number — the response's own number on write, the network's tracked tip on read. That means a burst of concurrent tag queries landing on the same tip coalesces onto one cached entry, but once the tip advances the key changes and the next request forwards upstream. You don't have to worry about a `"latest"` query returning a block that's multiple tips stale just because the TTL hasn't expired.
 - `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`). Most often it is safe to cache this data without reorg safety because they are not referenced by final actual blocks (e.g. eth_getTransactionByHash).
 
 #### `empty` states

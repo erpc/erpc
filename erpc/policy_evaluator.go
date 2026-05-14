@@ -11,16 +11,24 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
 )
 
 // PolicyEvaluator is responsible for evaluating which upstreams should be active
-// based on their performance metrics and configured policy rules
+// based on their performance metrics and configured policy rules.
+//
+// The JS eval function is compiled once per evaluator into the evaluator's own
+// sobek.Runtime (see NewPolicyEvaluator). Sharing a single compiled Callable
+// across multiple evaluators is unsafe — the Callable closes over the Runtime
+// it was compiled in, and a sobek.Runtime is not goroutine-safe, so concurrent
+// per-network ticks would corrupt that shared Runtime's state.
 type PolicyEvaluator struct {
 	networkId         string
 	logger            *zerolog.Logger
 	config            *common.SelectionPolicyConfig
 	runtime           *common.Runtime
+	evalFn            sobek.Callable
 	upstreamsMu       sync.RWMutex
 	metricsTracker    *health.Tracker
 	upstreamsRegistry *upstream.UpstreamsRegistry
@@ -56,16 +64,58 @@ func NewPolicyEvaluator(
 		return nil, fmt.Errorf("failed to create JavaScript runtime: %w", err)
 	}
 
+	evalFn, err := compileEvalFunction(runtime, config)
+	if err != nil {
+		return nil, err
+	}
+
 	return &PolicyEvaluator{
 		networkId:         networkId,
 		logger:            logger,
 		config:            config,
 		runtime:           runtime,
+		evalFn:            evalFn,
 		methodStates:      make(map[string]map[string]*upstreamState),
 		globalState:       make(map[string]*upstreamState),
 		upstreamsRegistry: upstreamsRegistry,
 		metricsTracker:    metricsTracker,
 	}, nil
+}
+
+// compileEvalFunction compiles the policy's JS eval function into runtime so
+// that the returned Callable is owned by this evaluator's runtime exclusively.
+// Source resolution order:
+//  1. config.EvalFunctionSource — the preferred input; compiled per-evaluator
+//     so the resulting Callable is owned by runtime and never shared.
+//  2. config.EvalFunction — legacy precompiled Callable. Returned as-is for
+//     backward compatibility with callers that constructed
+//     SelectionPolicyConfig programmatically before EvalFunctionSource
+//     existed; those callers must serialize evaluations externally to avoid
+//     the shared-runtime race.
+//  3. common.DefaultPolicyFunction — applied when both are empty. Matches
+//     the default that SelectionPolicyConfig.SetDefaults installs and keeps
+//     NewPolicyEvaluator robust to callers that bypass SetDefaults.
+func compileEvalFunction(runtime *common.Runtime, config *common.SelectionPolicyConfig) (sobek.Callable, error) {
+	source := config.EvalFunctionSource
+	if source == "" && config.EvalFunction == nil {
+		source = common.DefaultPolicyFunction
+	}
+	if source != "" {
+		val, err := runtime.Evaluate(source)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compile selectionPolicy.evalFunction: %w", err)
+		}
+		obj, ok := val.(*sobek.Object)
+		if !ok {
+			return nil, fmt.Errorf("selectionPolicy.evalFunction must evaluate to a function, got %T", val)
+		}
+		fn, ok := sobek.AssertFunction(obj)
+		if !ok {
+			return nil, fmt.Errorf("selectionPolicy.evalFunction must evaluate to a function")
+		}
+		return fn, nil
+	}
+	return config.EvalFunction, nil
 }
 
 func (p *PolicyEvaluator) Start(ctx context.Context) error {
@@ -182,7 +232,7 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		}
 	}()
 
-	result, err := p.config.EvalFunction(nil, p.runtime.ToValue(metricsData), p.runtime.ToValue(method))
+	result, err := p.evalFn(nil, p.runtime.ToValue(metricsData), p.runtime.ToValue(method))
 	if err != nil {
 		return fmt.Errorf("failed to evaluate selection policy: %w", err)
 	}

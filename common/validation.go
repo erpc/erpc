@@ -63,6 +63,23 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if c.Indexer != nil {
+		if err := c.Indexer.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate rejects nonsensical values; zeros pass through and resolve to
+// internal defaults inside the indexer.
+func (i *IndexerConfig) Validate() error {
+	if i.CanonicalChainDepth < 0 {
+		return fmt.Errorf("indexer.canonicalChainDepth must be >= 0 (0 uses the default)")
+	}
+	if i.DedupWindowSize < 0 {
+		return fmt.Errorf("indexer.dedupWindowSize must be >= 0 (0 uses the default)")
+	}
 	return nil
 }
 
@@ -1378,7 +1395,7 @@ func (c *SelectionPolicyConfig) Validate() error {
 	if c.EvalInterval <= 0 {
 		return fmt.Errorf("selectionPolicy.evalInterval must be greater than 0")
 	}
-	if c.EvalFunction == nil {
+	if c.EvalFunctionSource == "" && c.EvalFunction == nil {
 		return fmt.Errorf("selectionPolicy.evalFunction is required")
 	}
 	// ResampleInterval and ResampleCount are only required when ResampleExcluded is true

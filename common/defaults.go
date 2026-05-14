@@ -718,6 +718,25 @@ func (s *ServerConfig) SetDefaults() error {
 		s.IncludeErrorDetails = util.BoolPtr(true)
 	}
 
+	if s.WebSocket == nil {
+		s.WebSocket = &WebSocketServerConfig{}
+	}
+	if s.WebSocket.ReadBufferSize == 0 {
+		s.WebSocket.ReadBufferSize = 4096
+	}
+	if s.WebSocket.WriteBufferSize == 0 {
+		s.WebSocket.WriteBufferSize = 4096
+	}
+	if s.WebSocket.MaxMessageSize == 0 {
+		s.WebSocket.MaxMessageSize = 1 * 1024 * 1024 // 1MB
+	}
+	if s.WebSocket.PingInterval == nil {
+		d := Duration(30 * time.Second)
+		s.WebSocket.PingInterval = &d
+	}
+	if s.WebSocket.MaxSubscriptionsPerConnection == 0 {
+		s.WebSocket.MaxSubscriptionsPerConnection = 100
+	}
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured
@@ -1216,6 +1235,8 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
 	if strings.HasPrefix(upstream.Endpoint, "http://") ||
 		strings.HasPrefix(upstream.Endpoint, "https://") ||
+		strings.HasPrefix(upstream.Endpoint, "ws://") ||
+		strings.HasPrefix(upstream.Endpoint, "wss://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
 		return nil, nil
@@ -1855,6 +1876,14 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			v := *defaults.Multiplexing
 			n.Multiplexing = &v
 		}
+		if n.Failover == nil && defaults.Failover != nil {
+			cp := *defaults.Failover
+			if defaults.Failover.OnDefaultsExhausted != nil {
+				v := *defaults.Failover.OnDefaultsExhausted
+				cp.OnDefaultsExhausted = &v
+			}
+			n.Failover = &cp
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}
@@ -1937,9 +1966,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 	if len(upstreams) > 0 {
 		anyUpstreamInFallbackGroup := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-			return u.Group == "fallback"
+			return u.Group == UpstreamGroupFallback
 		})
-		if anyUpstreamInFallbackGroup && n.SelectionPolicy == nil {
+		// Only auto-apply the fallback-filtering selection policy if the user
+		// hasn't opted into per-request failover. When Failover.Enabled() is
+		// true the request loop handles escalation directly and needs
+		// fallback upstreams to remain in the eligible set.
+		if anyUpstreamInFallbackGroup && n.SelectionPolicy == nil && !n.Failover.Enabled() {
 			defCfg := NewDefaultNetworkConfig(upstreams)
 			n.SelectionPolicy = defCfg.SelectionPolicy
 		}
@@ -2580,13 +2613,11 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
 		c.EvalInterval = Duration(1 * time.Minute)
 	}
-	if c.EvalFunction == nil {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
+	if c.EvalFunctionSource == "" && c.EvalFunction == nil {
+		if _, err := CompileFunction(DefaultPolicyFunction); err != nil {
 			return fmt.Errorf("failed to compile default selection policy function: %w", err)
 		}
-		c.EvalFunction = evalFunction
+		c.EvalFunctionSource = DefaultPolicyFunction
 	}
 	if c.ResampleExcluded {
 		if c.ResampleInterval == 0 {
@@ -2839,27 +2870,23 @@ func (c *CORSConfig) SetDefaults() error {
 
 func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 	hasAnyFallbackUpstream := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-		return u.Group == "fallback"
+		return u.Group == UpstreamGroupFallback
 	})
 	n := &NetworkConfig{}
 	if hasAnyFallbackUpstream {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
+		// Validate the default function compiles; each PolicyEvaluator
+		// compiles its own copy from EvalFunctionSource.
+		if _, err := CompileFunction(DefaultPolicyFunction); err != nil {
 			panic(fmt.Sprintf("failed to compile default selection policy function: %v", err))
 		}
 
-		selectionPolicy := &SelectionPolicyConfig{
-			EvalInterval:     Duration(1 * time.Minute),
-			EvalFunction:     evalFunction,
-			EvalPerMethod:    false,
-			ResampleInterval: Duration(5 * time.Minute),
-			ResampleCount:    10,
-
-			evalFunctionOriginal: DefaultPolicyFunction,
+		n.SelectionPolicy = &SelectionPolicyConfig{
+			EvalInterval:       Duration(1 * time.Minute),
+			EvalFunctionSource: DefaultPolicyFunction,
+			EvalPerMethod:      false,
+			ResampleInterval:   Duration(5 * time.Minute),
+			ResampleCount:      10,
 		}
-
-		n.SelectionPolicy = selectionPolicy
 	}
 	return n
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -35,10 +36,11 @@ type TimeoutFunc func(ctx context.Context, req *common.NormalizedRequest) *time.
 
 // FailsafeExecutor wraps a failsafe executor with method and finality filters
 type FailsafeExecutor struct {
-	method     string
-	finalities []common.DataFinalityState
-	executor   failsafe.Executor[*common.NormalizedResponse]
-	timeout    TimeoutFunc
+	method         string
+	finalities     []common.DataFinalityState
+	executor       failsafe.Executor[*common.NormalizedResponse]
+	timeout        TimeoutFunc
+	circuitBreaker circuitbreaker.CircuitBreaker[*common.NormalizedResponse]
 }
 
 type Upstream struct {
@@ -60,6 +62,11 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	// Guards lazy creation of evmStatePoller so concurrent or repeated
+	// Bootstrap calls don't construct a second poller — every prior poller's
+	// goroutine listens on appCtx and never exits, so reassigning leaks one
+	// goroutine per call.
+	evmStatePollerMu sync.Mutex
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 }
@@ -96,11 +103,20 @@ func NewUpstream(
 			if method == "" {
 				method = "*"
 			}
+			// createCircuitBreakerPolicy always returns a CircuitBreaker[...]
+			// (the policy's concrete type), so this assertion is infallible —
+			// a failure here is a programmer error introduced by changing the
+			// factory's return type without updating this path.
+			var cb circuitbreaker.CircuitBreaker[*common.NormalizedResponse]
+			if cbPolicy, ok := policiesMap["circuitBreaker"]; ok {
+				cb = cbPolicy.(circuitbreaker.CircuitBreaker[*common.NormalizedResponse])
+			}
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-				method:     method,
-				finalities: fsCfg.MatchFinality,
-				executor:   failsafe.NewExecutor(policiesArray...),
-				timeout:    timeoutFn,
+				method:         method,
+				finalities:     fsCfg.MatchFinality,
+				executor:       failsafe.NewExecutor(policiesArray...),
+				timeout:        timeoutFn,
+				circuitBreaker: cb,
 			})
 		}
 	}
@@ -172,16 +188,21 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 	}
 
 	if u.config.Type == common.UpstreamTypeEvm {
-		u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
-	}
-
-	if u.evmStatePoller != nil {
-		err = u.evmStatePoller.Bootstrap(ctx)
-		if err != nil {
-			// The reason we're not returning error is to allow upstream to still be registered
-			// even if background block polling fails initially.
-			u.logger.Error().Err(err).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+		// Guard against repeated calls. Bootstrap can be re-entered when the
+		// owning task is retried (e.g. provider regeneration re-submits the
+		// same upstream task name); without this check the previous
+		// EvmStatePoller's polling goroutine would be orphaned and live
+		// until appCtx shutdown.
+		u.evmStatePollerMu.Lock()
+		if u.evmStatePoller == nil {
+			u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
+			if perr := u.evmStatePoller.Bootstrap(ctx); perr != nil {
+				// The reason we're not returning error is to allow upstream to still be registered
+				// even if background block polling fails initially.
+				u.logger.Error().Err(perr).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+			}
 		}
+		u.evmStatePollerMu.Unlock()
 	}
 
 	return nil
@@ -234,6 +255,18 @@ func (u *Upstream) Config() *common.UpstreamConfig {
 		return nil
 	}
 	return u.config
+}
+
+func (u *Upstream) IsDown() bool {
+	if u == nil {
+		return true
+	}
+	for _, fe := range u.failsafeExecutors {
+		if fe.circuitBreaker != nil && fe.circuitBreaker.IsOpen() {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *Upstream) MetricsTracker() *health.Tracker {
@@ -424,7 +457,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	// Send the request based on client type
 	//
 	switch clientType {
-	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds:
+	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds, clients.ClientTypeWsJsonRpc:
 		tryForward := func(
 			ctx context.Context,
 			exec failsafe.Execution[*common.NormalizedResponse],

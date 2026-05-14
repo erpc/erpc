@@ -420,17 +420,36 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// (e.g. Redis lock acquisition) can block normal request flow.
 	span.SetAttributes(attribute.Bool("foreground_remote_io_disabled", true))
 
-	// Execute the refresh function (e.g., RPC call to get latest block) in background
+	// Execute the refresh function (e.g., RPC call to get latest block) in background.
+	//
+	// Timeout source: fallbackTimeout is the "remote storage op" default (Redis
+	// get/set, ~3s) and is intentionally tight. But executeNewValueFn often does
+	// work that legitimately takes longer (e.g., polling latest block on a slow
+	// chain). If the caller passes a context with an explicit deadline (the state
+	// poller sets one derived from lockTtl+operationBuffer), honor it when it's
+	// longer than fallbackTimeout — otherwise we silently cap slow-chain polls at
+	// 3s and the shared state never updates, producing a flood of
+	// "context deadline exceeded" logs with no way to raise the bound.
+	//
+	// Note: parent remains c.registry.appCtx (not ctx) so the background fetch
+	// survives foreground cancellation — only the timeout is read from ctx.
+	fnTimeout := c.registry.fallbackTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > fnTimeout {
+			fnTimeout = remaining
+		}
+	}
+
 	resultCh := make(chan refreshResult, 1)
 	go func() {
-		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, fnTimeout)
 		defer fnCancel()
 
 		// Create a span for the actual RPC/refresh call - this is usually what takes time
 		_, fnSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.ExecuteRefresh",
 			trace.WithAttributes(
 				attribute.String("key", c.key),
-				attribute.Int64("timeout_ms", c.registry.fallbackTimeout.Milliseconds()),
+				attribute.Int64("timeout_ms", fnTimeout.Milliseconds()),
 			),
 		)
 		value, err := executeNewValueFn(fnCtx)

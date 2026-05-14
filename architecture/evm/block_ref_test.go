@@ -449,3 +449,85 @@ func TestExtractBlockReference(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveCacheBlockRef covers the cache-specific helper that rewrites
+// moving-tag blockRefs ("latest"/"finalized"/"safe") to a concrete block
+// number so each tip advance produces a distinct cache key. The previous
+// behaviour pinned all "latest" responses under the literal "latest" ref,
+// causing stale cache hits for up to TTL after a tip advance.
+func TestResolveCacheBlockRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("numeric ref passes through unchanged (no rewrite for non-tag)", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"0x1234", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		// ExtractBlockReferenceFromRequest normalizes a numeric request ref
+		// to its decimal string form; the helper forwards whatever that
+		// returns for non-tag refs.
+		assert.Equal(t, "4660", ref)
+		assert.Equal(t, int64(0x1234), num)
+	})
+
+	t.Run("latest tag + response with block number rewrites ref to response hex", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"latest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0xabcdef","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+		nrq.SetLastValidResponse(ctx, nrs)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "0xabcdef", ref, "write path must key by response's actual block number, not 'latest'")
+		assert.Equal(t, int64(0xabcdef), num)
+	})
+
+	t.Run("latest tag with no network and no response falls back to tag literal", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"latest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "latest", ref, "with no response and no network, helper must fall back to tag so caller can decide to skip caching")
+		assert.Equal(t, int64(0), num)
+	})
+
+	t.Run("finalized tag rewrite on write path uses response block number", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"finalized", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0x100","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+		nrq.SetLastValidResponse(ctx, nrs)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "0x100", ref)
+		assert.Equal(t, int64(0x100), num)
+	})
+
+	t.Run("earliest tag not rewritten (not tip-bound, existing semantics preserved)", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"earliest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, _, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "earliest", ref, "earliest does not move with the tip; must not be rewritten")
+	})
+}

@@ -47,26 +47,26 @@ export default createConfig({
 
 ### Reducing Metrics Cardinality
 
-eRPC provides two configuration options to help reduce metrics cardinality, which can significantly decrease the storage requirements and query performance of your monitoring system.
+eRPC provides configuration options to help reduce metrics cardinality, which can significantly decrease the storage requirements and query performance of your monitoring system.
 
 #### Error Label Mode
 
-The `errorLabelMode` setting controls how detailed error information is included in metrics labels:
+Controls how detailed error information is included in error counter labels:
 
-- `verbose`: Uses the full error message as labels (default for backward compatibility)
-- `compact`: Uses only the error type as labels, reducing cardinality significantly
+- `verbose` (default): Full error fingerprint as labels.
+- `compact`: Groups similar errors by type only.
     
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 metrics:
-  errorLabelMode: "compact" # "verbose" or "compact"
+  errorLabelMode: "compact"
 ```
   </Tabs.Tab>
   <Tabs.Tab>
 ```ts filename="erpc.ts"
 metrics: {
-  errorLabelMode: "compact", // "verbose" or "compact"
+  errorLabelMode: "compact",
 }
 ```
   </Tabs.Tab>
@@ -74,7 +74,7 @@ metrics: {
 
 #### Histogram Buckets
 
-You can customize histogram buckets to reduce cardinality and focus on relevant latency ranges:
+Fewer buckets = proportionally fewer series per histogram. The default (`0.05, 0.5, 5, 30`) is already minimal at 4 buckets. Only change if you need finer latency percentile resolution.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -92,7 +92,6 @@ metrics: {
   </Tabs.Tab>
 </Tabs>
 
-Setting fewer buckets or focusing on relevant latency ranges can significantly reduce the number of time series stored in your monitoring system.
 
 Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up montoring.
 

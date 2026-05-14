@@ -1721,6 +1721,130 @@ func TestPolicyEvaluator(t *testing.T) {
 		err = evaluator.AcquirePermit(&logger, ups3, "method1")
 		assert.NoError(t, err, "Fallback should be active when defaults have high error rates")
 	})
+
+	// ConcurrentEvaluatorsShareConfigSource constructs many PolicyEvaluators
+	// from the same SelectionPolicyConfig (matching the production layout where
+	// defaults.network.selectionPolicy is shared across every per-network
+	// evaluator) and runs their evaluation paths in parallel.
+	//
+	// Regression: previously the shared config's compiled sobek.Callable closed
+	// over a single sobek.Runtime, and that one Runtime was driven concurrently
+	// by every evaluator's ticker. sobek.Runtime is not goroutine-safe, so this
+	// produced sporadic "Value is not an Object", "Not a function", filter
+	// ReferenceError, and nil-pointer-deref panics — and when an eval errored
+	// or panicked, the state-update loop never ran, so any upstream cordoned
+	// by a prior good eval stayed cordoned permanently.
+	//
+	// With per-evaluator compilation each evaluator owns its own Runtime, so
+	// parallel evaluations cannot interfere.
+	t.Run("ConcurrentEvaluatorsShareConfigSource", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+		mt := ntw.metricsTracker
+
+		mt.RecordUpstreamRequest(ups1, "m")
+		mt.RecordUpstreamDuration(ups1, "m", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		mt.RecordUpstreamRequest(ups2, "m")
+		mt.RecordUpstreamDuration(ups2, "m", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:  common.Duration(time.Hour),
+			EvalPerMethod: false,
+			EvalFunctionSource: `
+				(upstreams, method) => {
+					return upstreams.filter(u => {
+						const m = (u && u.metrics) || {}
+						const err = m.errorRate
+						const lag = m.blockHeadLag
+						return (err == null || err < 0.5) && (lag == null || lag < 5)
+					})
+				}
+			`,
+		}
+
+		const evaluators = 16
+		const iterations = 50
+
+		// All evaluators share the registry/tracker from the same test network.
+		// The race we're guarding against is purely on the shared sobek runtime
+		// referenced via the shared config, so the upstream set being identical
+		// across evaluators is fine — independent PolicyEvaluator instances
+		// each compile their own copy from EvalFunctionSource.
+		evals := make([]*PolicyEvaluator, evaluators)
+		for i := range evals {
+			ev, err := NewPolicyEvaluator(
+				"evm:123",
+				&logger,
+				config,
+				ntw.upstreamsRegistry,
+				mt,
+			)
+			require.NoError(t, err)
+			evals[i] = ev
+		}
+
+		var wg sync.WaitGroup
+		errs := make(chan error, evaluators*iterations)
+		for _, ev := range evals {
+			wg.Add(1)
+			go func(ev *PolicyEvaluator) {
+				defer wg.Done()
+				for j := 0; j < iterations; j++ {
+					if err := ev.evaluateUpstreams(); err != nil {
+						errs <- err
+						return
+					}
+				}
+			}(ev)
+		}
+		wg.Wait()
+		close(errs)
+
+		for err := range errs {
+			t.Fatalf("concurrent evaluator failed: %v", err)
+		}
+
+		// After all evaluators have finished, every primary upstream should be
+		// permitted on at least one of them — the absorbing-stuck-cordoned
+		// behavior from the shared-runtime race would leave permits denied.
+		for _, ev := range evals {
+			require.NoError(t, ev.AcquirePermit(&logger, ups1, "m"))
+			require.NoError(t, ev.AcquirePermit(&logger, ups2, "m"))
+		}
+	})
+
+	// Verify NewPolicyEvaluator falls back to the default policy function
+	// when the config carries neither an EvalFunctionSource nor a legacy
+	// precompiled Callable. This matches what SelectionPolicyConfig.SetDefaults
+	// installs and keeps NewPolicyEvaluator robust to callers that bypass
+	// SetDefaults (e.g. tests that construct configs by hand).
+	t.Run("FallsBackToDefaultPolicyFunction", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, _, _, _ := createTestNetwork(t, ctx)
+
+		ev, err := NewPolicyEvaluator(
+			"evm:123",
+			&logger,
+			&common.SelectionPolicyConfig{EvalInterval: common.Duration(time.Second)},
+			ntw.upstreamsRegistry,
+			ntw.metricsTracker,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, ev)
+	})
 }
 
 func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.Upstream, *upstream.Upstream, *upstream.Upstream) {
