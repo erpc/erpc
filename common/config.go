@@ -577,6 +577,14 @@ type UpstreamConfig struct {
 	Id                           string                   `yaml:"id,omitempty" json:"id"`
 	Type                         UpstreamType             `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
 	Group                        string                   `yaml:"group,omitempty" json:"group"`
+	// Cohort labels upstreams that share fate beyond what `group` or
+	// `vendorName` describe — e.g. multiple distinct upstreams hitting
+	// the same L2 sequencer ("op-base-sequencer"), or upstreams in one
+	// cloud region ("gcp-us-central"), or a shared internal node fleet.
+	// Consumed by `selectionPolicy` primitives that care about
+	// blast-radius diversity (e.g. `spreadAcrossGroups({ by: 'cohort' })`).
+	// Optional; empty means "this upstream is its own cohort".
+	Cohort                       string                   `yaml:"cohort,omitempty" json:"cohort,omitempty"`
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
@@ -618,6 +626,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Id                           string                   `yaml:"id,omitempty"`
 		Type                         UpstreamType             `yaml:"type,omitempty"`
 		Group                        string                   `yaml:"group,omitempty"`
+		Cohort                       string                   `yaml:"cohort,omitempty"`
 		VendorName                   string                   `yaml:"vendorName,omitempty"`
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
@@ -642,6 +651,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.Id = old.Id
 	u.Type = old.Type
 	u.Group = old.Group
+	u.Cohort = old.Cohort
 	u.VendorName = old.VendorName
 	u.Endpoint = old.Endpoint
 	u.Evm = old.Evm

@@ -417,6 +417,12 @@ export interface UpstreamConfig {
     id?: string;
     type?: TsUpstreamType;
     group?: string;
+    /**
+     * Cohort labels upstreams that share fate beyond what `group` or `vendorName`
+     * describe (shared backend, region, sequencer). Consumed by selectionPolicy
+     * primitives that care about blast-radius diversity (e.g. `spreadAcrossGroups({ by: 'cohort' })`).
+     */
+    cohort?: string;
     vendorName?: string;
     endpoint?: string;
     evm?: EvmUpstreamConfig;

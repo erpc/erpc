@@ -90,6 +90,7 @@ type jsUpstream struct {
 	Vendor      string          `json:"vendor"`
 	Type        string          `json:"type"`
 	Group       string          `json:"group,omitempty"`
+	Cohort      string          `json:"cohort,omitempty"`
 	Metrics     UpstreamMetrics `json:"metrics"`
 	Annotations []string        `json:"annotations"`
 
@@ -108,6 +109,7 @@ func buildJSUpstreams(ups []common.Upstream, metrics map[string]UpstreamMetrics)
 		if cfg := u.Config(); cfg != nil {
 			out[i].Type = string(cfg.Type)
 			out[i].Group = cfg.Group
+			out[i].Cohort = cfg.Cohort
 		}
 	}
 	return out

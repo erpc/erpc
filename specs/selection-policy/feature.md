@@ -59,9 +59,12 @@ type Upstream = {
   readonly id: string
   readonly vendor: string                  // e.g. "alchemy", "infura", "drpc"
   readonly type: 'evm' | string            // upstream architecture
+  readonly group?: string                  // user-set tier label ('main', 'fallback', etc.)
+  readonly cohort?: string                 // user-set shared-fate label (see UpstreamConfig.cohort);
+                                           // consumed by spreadAcrossGroups({ by: 'cohort' })
   readonly endpoint: string                // redacted
 
-  readonly config: UpstreamConfig          // raw user config (includes user-set `group`, etc.)
+  readonly config: UpstreamConfig          // raw user config (full block)
   readonly metrics: UpstreamMetrics        // snapshot taken at the start of this tick
 
   // Attached by std-lib steps; readable by subsequent steps and visible in decision records.
@@ -346,6 +349,26 @@ Convenience preference operators (the most common multi-tier patterns):
 )
 // Generic form: prefer upstreams where keyFn(u) === value.
 ```
+
+Blast-radius interleave (used after sorting):
+
+```ts
+.spreadAcrossGroups(opts: {
+  by: 'vendor' | 'group' | 'cohort' | ((u: Upstream) => string)
+  minDistinct?: number                     // informational; default 2
+})
+```
+
+Re-interleaves an already-sorted list so adjacent positions don't share
+the chosen partition key. Use after `sortByScore` to ensure the failover
+order has fault-domain diversity — the primary stays the best by score,
+the first runner-up comes from a different cohort, and so on. Stable
+within each bucket.
+
+Reads `UpstreamConfig.cohort` when `by: 'cohort'`. Cohort is an optional
+operator-set string describing shared fate beyond what `vendor` /
+`group` capture (e.g. multiple distinct vendors routing through one
+shared backend, or multiple upstreams in one cloud region).
 
 ---
 

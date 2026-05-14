@@ -137,11 +137,36 @@ cooldown has elapsed.
 ```ts
 .preferGroup(name: string, opts?: { minHealthy?: number = 1, fallback?: string })
 .preferVendor(name: string, opts?: same)
+
+.spreadAcrossGroups(opts: {
+  by: 'vendor' | 'group' | 'cohort' | ((u: Upstream) => string)
+  minDistinct?: number      // informational; default 2
+})
 ```
 
-Returns upstreams matching `name` (glob, so `'!fallback'` works) if at
-least `minHealthy` match; else falls through to `fallback`; else returns
-the input unchanged.
+`preferGroup` / `preferVendor` return upstreams matching `name` (glob,
+so `'!fallback'` works) if at least `minHealthy` match; else fall
+through to `fallback`; else return the input unchanged.
+
+`spreadAcrossGroups` *re-interleaves* an already-sorted list so adjacent
+positions don't share the chosen partition key. Use it AFTER
+`sortByScore` to get blast-radius diversity in the failover order
+without losing the score-based selection of the primary.
+
+```js
+// Top 3 by score might all be alchemy. Without spread, an alchemy
+// regional outage kills primary AND first two fallbacks simultaneously.
+// With spread, position 0 = best alchemy, position 1 = best non-alchemy,
+// position 2 = second-best alchemy, etc.
+upstreams.sortByScore(BALANCED).spreadAcrossGroups({ by: 'vendor' })
+```
+
+The `cohort` partition reads `UpstreamConfig.cohort` — an optional
+operator-set string describing shared fate beyond what `vendor` or
+`group` capture (e.g. multiple distinct vendors all routing through
+the same L2 sequencer; multiple upstreams in one cloud region). When
+`by: 'cohort'`, upstreams with an empty `cohort` fall back to grouping
+by `vendor`.
 
 ## Slicing & limits
 
@@ -290,7 +315,6 @@ designing workarounds:
 
 | Planned | Solves | Status |
 |---|---|---|
-| `.spreadAcrossGroups({ by, minDistinct })` | Cohort / blast-radius cascades — e.g. all upstreams behind the same shared backend fail together. `preferGroup` expresses *preference*, not *correlation*. | Adds a `cohort` field to `UpstreamConfig`. Coming. |
 | `.probeState({ method, target, slot, every, expectChange, excludeOn })` | Lying upstreams that claim a fresh block but serve `0x0` or stale state. Currently undetectable from request-side metrics; operators have to manually disable. | Background prober + DSL surface. Larger change; tracked separately. |
 
 These are not workarounds you can build yourself today using existing

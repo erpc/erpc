@@ -434,6 +434,15 @@ export interface UpstreamConfig {
   id?: string;
   type?: TsUpstreamType;
   group?: string;
+  /**
+   * Cohort labels upstreams that share fate beyond what `group` or `vendorName`
+   * describe — e.g. multiple distinct upstreams hitting the same L2 sequencer,
+   * or upstreams in one cloud region, or a shared internal node fleet.
+   * Consumed by `selectionPolicy` primitives that care about blast-radius
+   * diversity (e.g. `spreadAcrossGroups({ by: 'cohort' })`). Optional;
+   * empty means "this upstream is its own cohort".
+   */
+  cohort?: string;
   vendorName?: string;
   endpoint?: string;
   evm?: EvmUpstreamConfig;

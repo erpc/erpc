@@ -19,6 +19,7 @@ type fakeUpstream struct {
 	id     string
 	group  string
 	vendor string
+	cohort string
 }
 
 func (f *fakeUpstream) Id() string         { return f.id }
@@ -28,7 +29,7 @@ func (f *fakeUpstream) NetworkLabel() string {
 	return "evm:1"
 }
 func (f *fakeUpstream) Config() *common.UpstreamConfig {
-	return &common.UpstreamConfig{Id: f.id, Group: f.group}
+	return &common.UpstreamConfig{Id: f.id, Group: f.group, Cohort: f.cohort}
 }
 func (f *fakeUpstream) Logger() *zerolog.Logger { l := zerolog.Nop(); return &l }
 func (f *fakeUpstream) Vendor() common.Vendor   { return nil }
@@ -54,6 +55,22 @@ func mkUpsWithGroups(spec map[string]string) []common.Upstream {
 	out := make([]common.Upstream, 0, len(spec))
 	for id, group := range spec {
 		out = append(out, &fakeUpstream{id: id, group: group, vendor: "v"})
+	}
+	return out
+}
+
+// mkUpsRich constructs N upstreams with explicit (id, group, vendor,
+// cohort). Slices must be the same length; missing fields default to
+// id-derived placeholders. The ORDER of `ids` is preserved in the
+// returned slice (unlike `mkUpsWithGroups`'s map-iteration order).
+func mkUpsRich(specs []struct{ id, group, vendor, cohort string }) []common.Upstream {
+	out := make([]common.Upstream, len(specs))
+	for i, s := range specs {
+		v := s.vendor
+		if v == "" {
+			v = "v" + s.id
+		}
+		out[i] = &fakeUpstream{id: s.id, group: s.group, vendor: v, cohort: s.cohort}
 	}
 	return out
 }
@@ -694,6 +711,113 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*"))
 	require.Len(t, got, 1, "pickTop(1) must work on byFinality() output")
+}
+
+// TestStdlib_SpreadAcrossGroups_ByVendor verifies cohort interleaving.
+// With 4 upstreams pre-sorted by score, all from 2 vendors:
+//
+//	input  [alc-1, alc-2, alc-3, inf-1]   (already sorted)
+//	output [alc-1, inf-1, alc-2, alc-3]   (interleaved, no two
+//	                                       same-vendor adjacent)
+//
+// Failure mode without this primitive: the top-3 by score are all
+// alchemy; if alchemy has a regional outage, all 3 retry positions
+// fail together and the policy thought it had 3-way fault tolerance.
+func TestStdlib_SpreadAcrossGroups_ByVendor(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'vendor' })`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
+		{"alc-1", "main", "alchemy", ""},
+		{"alc-2", "main", "alchemy", ""},
+		{"alc-3", "main", "alchemy", ""},
+		{"inf-1", "main", "infura", ""},
+	})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Equal(t, []string{"alc-1", "inf-1", "alc-2", "alc-3"}, got,
+		"spreadAcrossGroups: alchemy and infura interleaved; alc retains its sort order")
+}
+
+// TestStdlib_SpreadAcrossGroups_StableForTies preserves within-bucket
+// order. Two upstreams of vendor=alc in input order [alc-A, alc-B]
+// stay in that order after interleaving.
+func TestStdlib_SpreadAcrossGroups_StableForTies(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'vendor' })`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
+		{"alc-A", "main", "alchemy", ""},
+		{"alc-B", "main", "alchemy", ""},
+		{"inf-A", "main", "infura", ""},
+		{"inf-B", "main", "infura", ""},
+	})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Equal(t, []string{"alc-A", "inf-A", "alc-B", "inf-B"}, got,
+		"alc-A before alc-B, inf-A before inf-B preserved")
+}
+
+// TestStdlib_SpreadAcrossGroups_ByCohort verifies the explicit
+// `cohort` field on UpstreamConfig. Two upstreams in cohort
+// 'op-base-sequencer' (Alchemy + Infura both routing through the
+// same L2 sequencer) should be interleaved with a non-shared
+// upstream rather than ranked adjacent.
+func TestStdlib_SpreadAcrossGroups_ByCohort(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'cohort' })`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
+		{"alc-base", "main", "alchemy", "op-base-sequencer"},
+		{"inf-base", "main", "infura", "op-base-sequencer"},
+		{"drpc-direct", "main", "drpc", "drpc-direct"},
+	})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Equal(t, []string{"alc-base", "drpc-direct", "inf-base"}, got,
+		"different cohorts adjacent: alc-base, drpc-direct, inf-base")
+}
+
+// TestStdlib_SpreadAcrossGroups_SingleBucketFallthrough: when every
+// upstream shares the chosen key, interleaving is impossible — the
+// primitive returns the input order unchanged.
+func TestStdlib_SpreadAcrossGroups_SingleBucketFallthrough(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'vendor' })`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
+		{"alc-1", "main", "alchemy", ""},
+		{"alc-2", "main", "alchemy", ""},
+		{"alc-3", "main", "alchemy", ""},
+	})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Equal(t, []string{"alc-1", "alc-2", "alc-3"}, got,
+		"single-bucket input: order preserved")
 }
 
 // TestStdlib_Slicing_PickTop_DropTop pins the slicing primitives.

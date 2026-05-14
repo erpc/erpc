@@ -349,6 +349,58 @@
     return this.slice();
   });
 
+  // spreadAcrossGroups re-interleaves an already-sorted list so that
+  // adjacent positions don't share a partition key (vendor, group,
+  // cohort, or a custom keyFn). Use it AFTER sortByScore — the input
+  // order is preserved within each partition; the output is a stable
+  // round-robin across partitions.
+  //
+  // Purpose: blast-radius diversity. When N upstreams share a backend
+  // (same L2 sequencer, same regional fleet) they fail together; the
+  // best-by-score top-3 might all be in one cohort, giving 0 actual
+  // fault tolerance. This primitive ensures position[0] and position[1]
+  // come from different cohorts when possible.
+  //
+  // `minDistinct` is informational only — it's surfaced in the
+  // decision record (future) but doesn't change the algorithm; the
+  // interleave is always maximally-distinct given the input.
+  define('spreadAcrossGroups', function (opts) {
+    opts = opts || {};
+    if (this.length <= 1) return this.slice();
+    const by = opts.by || 'vendor';
+    const keyFn = (typeof by === 'function')
+      ? by
+      : (u) => (by === 'vendor' ? u.vendor
+              : by === 'group'  ? (u.group  || '')
+              : by === 'cohort' ? (u.cohort || u.vendor || '')   // cohort defaults to vendor when unset
+              : '');
+    // Preserve input order WITHIN each bucket — the input is assumed
+    // already sorted, so the first occurrence of each key is the best
+    // representative of that partition.
+    const buckets = new Map(); // key -> Upstream[]
+    const order   = [];        // insertion order of distinct keys
+    for (const u of this) {
+      const k = keyFn(u) || '';
+      let b = buckets.get(k);
+      if (!b) { b = []; buckets.set(k, b); order.push(k); }
+      b.push(u);
+    }
+    // Round-robin across buckets in insertion order until exhausted.
+    const out = [];
+    let pulled = true;
+    while (pulled) {
+      pulled = false;
+      for (const k of order) {
+        const b = buckets.get(k);
+        if (b && b.length > 0) {
+          out.push(b.shift());
+          pulled = true;
+        }
+      }
+    }
+    return out;
+  });
+
   // ─── 4.9 Slicing & limits ───────────────────────────────────────────────
 
   define('pickTop',    function (n) { return this.slice(0, n); });
