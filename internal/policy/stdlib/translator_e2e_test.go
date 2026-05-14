@@ -57,6 +57,16 @@ func runTranslatedPolicy(
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// RegisterNetwork synchronously runs an initial tick so the cache is
+	// populated before the first request. With empty metrics that initial
+	// tick picks the alphabetically-first upstream as primary AND records
+	// `lastSwitchAt`. The translator emits `stickyPrimary({minSwitchInterval:
+	// '30s'})` and the new (spec-correct) sticky impl enforces that cooldown,
+	// so the test's subsequent TickForTest would be held by sticky regardless
+	// of score gap. Push virtual time past the cooldown so each test
+	// observes the post-cooldown order it wants to assert.
+	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 31*time.Second)
 	return engine, tracker, cfg, cancel
 }
 

@@ -259,3 +259,19 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
 
 `label(...)` makes each step's rejections show `step: "lag-filter"` in
 the decision record.
+
+## Planned primitives (not yet shipped)
+
+Three additional primitives are tracked in the spec but not yet in the
+stdlib. Listed here so policy authors know what's coming and can defer
+designing workarounds:
+
+| Planned | Solves | Status |
+|---|---|---|
+| `.byFinality({ realtime, unfinalized, finalized, unknown })` | Per-finality strategy boilerplate. Most operators write `if (ctx.finality === ...)` branches by hand. | Ergonomic sugar over `ctx.finality`; ~30 LoC. Coming. |
+| `.spreadAcrossGroups({ by, minDistinct })` | Cohort / blast-radius cascades — e.g. all upstreams behind the same OP-Stack sequencer fail together. `preferGroup` expresses *preference*, not *correlation*. | Adds a `cohort` field to `UpstreamConfig`. Coming. |
+| `.probeState({ method, target, slot, every, expectChange, excludeOn })` | Lying upstreams that claim a fresh block but serve `0x0` or stale state. Currently undetectable from request-side metrics; operators have to manually disable. | Background prober + DSL surface. Larger change; tracked separately. |
+
+These are not workarounds you can build yourself today using existing
+primitives — they need new behavior (cohort labels, background probes)
+or new ergonomics.

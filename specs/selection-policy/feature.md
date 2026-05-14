@@ -633,21 +633,42 @@ The ring buffer is **sparse**: only ticks where `changes.primaryChanged || chang
 
 ## 7. Default policy
 
-When `selectionPolicy.eval` is omitted:
+When `selectionPolicy.eval` is omitted, the engine applies the production-ready default embedded as `internal/policy/default_policy.js` (also served at `GET /admin/selection/default-policy`):
 
 ```js
-return upstreams
-  .sortByScore(BALANCED)
-  .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
-  .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
-  .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()                  // 1. drop failsafe-cordoned
+    .removeByErrorRate(0.8)            // 2. drop > 80% errors over window
+    .whenEmpty(() => upstreams)        // 3. safety net: never empty
+    .preferGroup('!fallback', {        // 4. primary tier = group !== 'fallback'
+      minHealthy: 1,
+      fallback: 'fallback',
+    })
+    .sortByScore(BALANCED)             // 5. rank by composite score
+    .stickyPrimary({                   // 6. anti-flap
+      hysteresis: 0.10,
+      minSwitchInterval: '30s',
+    })
+    .probeExcluded({                   // 7. recover excluded upstreams
+      reAdmitAfter: '5m',
+      maxConcurrent: 1,
+    })
 ```
 
-This covers: weighted scoring across all metrics, automatic fallback to upstreams in group `fallback` when the primary group is unhealthy, sticky primary with 10% hysteresis and 30s cooldown, and deterministic re-admission of excluded upstreams after 5 minutes (one at a time, to refresh their metrics).
+**Step-by-step rationale:**
+
+1. **Drop cordoned** — failsafe / circuit-breaker has explicitly marked the upstream bad.
+2. **Drop clearly broken** — `errorRate > 0.8` is broken on any chain. Conservative threshold to avoid false positives.
+3. **Safety net** — if filtering wiped everything (network-wide outage), serve from the raw set rather than fail closed.
+4. **Tier** — `group !== 'fallback'` is the primary tier; `group === 'fallback'` is the second tier. Adding a fallback upstream is one config line. The `!` glob is the canonical eRPC convention.
+5. **Score** — `BALANCED` weights (errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6). Chain-specific signals (lag, latency) contribute to *ranking*, not *filtering*, so this default works on Ethereum mainnet, L2s, sidechains, testnets alike.
+6. **Sticky primary** — keep the current primary unless a challenger's score is ≥10% better AND 30s have passed since the last switch. Prevents flapping under transient blips.
+7. **Probe excluded** — every tick, re-admit one upstream that has been out for 5+ minutes so its metrics refresh.
 
 `BALANCED` weights are defined in §4.1.
 
-The default policy source is embedded in the binary as `internal/policy/default_policy.js` and exposed at `GET /admin/selection/default-policy` for visibility.
+**Tuning under prod load.** The conservative default may be too forgiving for high-traffic environments. Operators running tight finality SLOs should consider a stricter variant — `keepHealthy(...)` composite in step 2, an explicit `removeByLag` step before scoring, finality-conditional `stickyPrimary`, and a shorter probe re-admit window. The default ships *conservative* on purpose so it doesn't surprise users with aggressive exclusion; the "production-tuned" variant lives in the docs as a recommended override, not the default.
 
 ---
 
@@ -1037,3 +1058,4 @@ return result
 - **Probe / resample** — Periodic re-admission of an excluded upstream so its metrics refresh.
 - **Penalty** — Output of `sortByScore`: weighted sum of metric values. Lower = better.
 - **Score** — Synonym for penalty in the decision record (lower = better). Naming is "score" externally for legibility; internally the math is penalty.
+

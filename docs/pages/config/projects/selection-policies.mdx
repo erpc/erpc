@@ -151,6 +151,43 @@ Step-by-step:
 
 Source served at `GET /admin/selection/default-policy`.
 
+### Production-tuned alternative
+
+The default ships *conservative* on purpose — it won't surprise users
+with aggressive exclusion. For high-traffic environments running tight
+finality SLOs, the same primitives compose into a stricter chain that
+addresses the most common operational failure classes (head-lag rotation,
+slow-upstream drag, prolonged-bad-primary during reorgs):
+
+```js
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()
+    .keepHealthy({                                  // ← stricter filter
+      maxErrorRate: 0.5,
+      maxBlockHeadLag: 16,
+      maxP95Ms: 10_000,
+      maxThrottledRate: 0.3,
+    })
+    .removeByLag({ blockHead: 16, finalization: 64 })
+    .whenEmpty(() => upstreams)
+    .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
+    .sortByScore(BALANCED)
+    .if(ctx.finality === REALTIME,                  // ← no sticky on finalized
+        (u) => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
+        (u) => u)
+    .probeExcluded({ reAdmitAfter: '90s', maxConcurrent: 2 })
+```
+
+The four differences vs. the conservative default:
+- **filter, don't just rank** lag and p95 latency before sorting,
+- **tighter error threshold** (`0.5` vs `0.8`),
+- **drop stickiness for finalized/unfinalized** requests (reorg-tolerant anyway),
+- **faster probe re-admit** (`90s` vs `5m`) for transient-blip recovery.
+
+If your operators have ever had to comment out an upstream because
+it was lagging but error-free, the chain above is what you want.
+
 ## Eval inputs
 
 Inside the function body, two variables are in scope: `upstreams` and `ctx`.

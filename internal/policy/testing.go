@@ -2,6 +2,7 @@ package policy
 
 import (
 	"sort"
+	"time"
 
 	"github.com/erpc/erpc/common"
 )
@@ -87,6 +88,56 @@ func TickForTest(e *Engine, networkID, method string) {
 	if slot != nil {
 		slot.tickOnce()
 	}
+}
+
+// SetFinalityForTest overrides `ctx.finality` on the slot's next tick(s)
+// without threading finality through the request layer. Useful for
+// testing policies that branch by finality (e.g. the default policy's
+// finality-conditional `stickyPrimary`).
+//
+// Pass "" to clear. Accepted values: "realtime", "unfinalized",
+// "finalized", "unknown" — matches `EvalContext.Finality`.
+func SetFinalityForTest(e *Engine, networkID, method, finality string) {
+	slot := lookupSlotForTest(e, networkID, method)
+	if slot == nil {
+		return
+	}
+	slot.mu.Lock()
+	slot.testFinality = finality
+	slot.mu.Unlock()
+}
+
+// AdvanceEvalNowForTest adds `delta` to `ctx.now` on the slot's next
+// tick(s). The slot's `excludedSince` timestamps stay anchored to real
+// time, so this effectively simulates "wall clock has advanced by
+// `delta` since the upstream was excluded" — exactly what
+// `probeExcluded(reAdmitAfter:...)` reads.
+//
+// Calls accumulate: two AdvanceEvalNowForTest(60s) bumps push ctx.now
+// forward by 120 s. Pass a negative delta to roll back.
+func AdvanceEvalNowForTest(e *Engine, networkID, method string, delta time.Duration) {
+	slot := lookupSlotForTest(e, networkID, method)
+	if slot == nil {
+		return
+	}
+	slot.mu.Lock()
+	slot.testNowOffset += delta.Milliseconds()
+	slot.mu.Unlock()
+}
+
+// lookupSlotForTest resolves a slot by (network, method), falling back
+// to (network, "*") if no method-specific slot exists.
+func lookupSlotForTest(e *Engine, networkID, method string) *Slot {
+	if e == nil {
+		return nil
+	}
+	e.mu.RLock()
+	slot, ok := e.slots[slotKey{networkID, method}]
+	if !ok {
+		slot = e.slots[slotKey{networkID, "*"}]
+	}
+	e.mu.RUnlock()
+	return slot
 }
 
 // DecisionsForTest returns the slot's ring-buffer snapshot

@@ -1,35 +1,55 @@
 // Default selection policy. Applied when `selectionPolicy.eval` is omitted.
 // See specs/selection-policy/feature.md §7.
 //
-// Designed to be conservative and chain-agnostic:
+// Designed to prevent two common failure classes: an upstream that
+// becomes slow drags the whole pool's latency percentiles down (and
+// stalls consensus); an upstream that starts erroring keeps receiving
+// traffic until its score crosses some ranking threshold. This default
+// FILTERS aggressively before scoring, so a degraded upstream is OUT,
+// not just LOWER-RANKED.
 //
-//   1. Drop only what's clearly broken regardless of chain — failsafe-cordoned
-//      upstreams, and upstreams whose error rate is >80% over the metric
-//      window. Lag and latency vary too much per chain (10 blocks ≈ 120s on
-//      Ethereum vs ≈ 2.5s on Arbitrum) and feed into scoring instead.
+//   1. Drop failsafe-cordoned upstreams (circuit-breaker explicitly marked bad).
 //
-//   2. Safety net: if filters wipe everything (e.g. project-wide outage),
-//      serve from the original set rather than fail closed. Better a flaky
-//      response than no response.
+//   2. keepHealthy — composite health filter:
+//        - errorRate    > 0.5  → out  (more than half-erroring is broken)
+//        - blockHeadLag > 16   → out  (~1 min behind tip on Ethereum, ~32s
+//                                       on a 2s chain — clearly degraded)
+//        - p95 latency  > 10s  → out  (catches a slow vendor before its
+//                                       blended percentile poisons the pool)
+//        - throttledRate > 0.3 → out  (vendor is rate-limiting us; reroute
+//                                       before quota burns)
+//      A single composite step keeps the four signals tunable together.
 //
-//   3. Tier: primary = `group !== 'fallback'`, fallback = `group ==='fallback'`.
-//      This matches the long-standing eRPC convention so existing configs
-//      keep working without setting `group: 'default'` on every upstream.
+//   3. Safety net: if the filter wiped everything (project-wide outage),
+//      serve from the raw set rather than fail closed.
 //
-//   4. Sort by the BALANCED composite (errorRate, latency, throttling, lag,
-//      misbehaviors).
+//   4. Tier: primary = `group !== 'fallback'`, fallback = `group === 'fallback'`.
+//      Long-standing eRPC convention; one config line to add a fallback upstream.
 //
-//   5. Sticky primary with 10% hysteresis + 30s cooldown so a marginal lead
-//      doesn't flap upstreams on every tick.
+//   5. Sort by the BALANCED composite (errorRate, latency, throttling, lag,
+//      misbehaviors). Filtering happened in step 2 — this step orders the
+//      survivors.
 //
-//   6. Deterministically re-admit one excluded upstream every 5 minutes so
-//      recovered upstreams get traffic again and their metrics refresh.
+//   6. Sticky primary ONLY for REALTIME requests. Finalized/unfinalized
+//      requests are reorg-tolerant and don't benefit from primary stability;
+//      stickiness on those just holds a degrading primary during incidents.
+//
+//   7. Probe excluded — re-admit one upstream every 90s (was 5m). Typical
+//      transient-blip windows (rate-limit reset, regional networking dip)
+//      recover in 60-90s; 5m hold-outs are excessive.
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
-    .removeByErrorRate(0.8)
+    .keepHealthy({
+      maxErrorRate:     0.5,
+      maxBlockHeadLag:  16,
+      maxP95Ms:         10_000,
+      maxThrottledRate: 0.3,
+    })
     .whenEmpty(() => upstreams)
     .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
     .sortByScore(BALANCED)
-    .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
-    .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+    .if(ctx.finality === REALTIME,
+        u => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
+        u => u)
+    .probeExcluded({ reAdmitAfter: '90s', maxConcurrent: 2 })

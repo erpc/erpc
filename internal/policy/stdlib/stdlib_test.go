@@ -248,7 +248,7 @@ func TestStdlib_DefaultPolicy_DropsBrokenUpstream(t *testing.T) {
 
 	policy.TickForTest(engine, "evm:1", "*")
 	ordered := ids(engine.GetOrdered("evm:1", "*"))
-	require.Equal(t, []string{"rpc2"}, ordered, "rpc1 should be dropped by removeByErrorRate(0.8)")
+	require.Equal(t, []string{"rpc2"}, ordered, "rpc1 should be dropped by keepHealthy (errorRate=0.9 > 0.5)")
 }
 
 // TestStdlib_DefaultPolicy_SafetyNetWhenAllBroken pins the safety-net step:
@@ -304,6 +304,208 @@ func TestStdlib_DefaultPolicy_FallbackTierWhenPrimaryEmpty(t *testing.T) {
 	policy.TickForTest(engine, "evm:1", "*")
 	ordered := engine.GetOrdered("evm:1", "*")
 	require.Len(t, ordered, 2, "fallback tier should serve when primary is empty")
+}
+
+// TestStdlib_DefaultPolicy_DropsLaggingErrorFreeUpstream (G1):
+// an upstream with 0 errors and great latency but blockHeadLag > 16 is
+// excluded by `keepHealthy(maxBlockHeadLag: 16)`. This is the class of
+// incident where a node falls behind tip silently (still returns 200s
+// for whatever it has) and consensus or `latest`-style queries get
+// stale data because the policy only ranked, not filtered, on lag.
+func TestStdlib_DefaultPolicy_DropsLaggingErrorFreeUpstream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2")
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// Drive 100 clean requests for both; only rpc1 is lagging.
+	for _, u := range ups {
+		for i := 0; i < 100; i++ {
+			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		}
+	}
+	// rpc1 lags 30 blocks behind tip (> 16 default threshold).
+	tracker.GetUpstreamMethodMetrics(ups[0], "*").BlockHeadLag.Store(30)
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Equal(t, []string{"rpc2"}, got,
+		"rpc1 has 0 errors but blockHeadLag=30 > 16 → must be excluded by keepHealthy, not just ranked lower")
+}
+
+// TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream (G2):
+// an upstream with 0 errors but p95 > 10s is excluded. This is the
+// "slow-vendor drag" class — one upstream serving 3-second traces
+// pulls the pool's blended latency percentiles down and stalls
+// consensus on faster requests.
+func TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2")
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// rpc1: 100 requests, all SLOW (12s) → p95 ≈ 12s > 10s threshold.
+	// rpc2: 100 requests, all fast (10ms) → p95 ≈ 10ms.
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamDuration(ups[0], "*", 12*time.Second, true, "none", common.DataFinalityStateUnknown, "n/a")
+		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Equal(t, []string{"rpc2"}, got,
+		"rpc1 has 0 errors but p95=12s > 10s → must be excluded by keepHealthy(maxP95Ms:10_000)")
+}
+
+// TestStdlib_DefaultPolicy_StickyPrimary_OnlyForRealtime (G3):
+// the default's `stickyPrimary` is wrapped in
+// `.if(ctx.finality === REALTIME, ...)`. On REALTIME requests, sticky
+// behavior holds the primary across ticks. On FINALIZED requests, the
+// challenger immediately takes over when scoring favors it.
+//
+// Setup: tick 1 with rpc1 clean and rpc2 broken → rpc1 is primary.
+// Then make rpc1 worse than rpc2 (rpc2 already accumulated errors that
+// kept it out; flip the script so rpc1 errors heavily and rpc2 is now
+// clean). Under REALTIME the 30s minSwitchInterval should hold rpc1
+// as primary. Under FINALIZED, no stickiness → rpc2 should take over.
+func TestStdlib_DefaultPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
+	// Test the JS branching directly with a frozen ctx, so we don't need
+	// to thread finality through the request path. Two evals — same
+	// default body — driven against ctx.finality=REALTIME and
+	// ctx.finality=FINALIZED with identical metrics and previousOrder.
+	// Asserts that REALTIME respects stickiness, FINALIZED does not.
+	defaultPolicy := policy.DefaultPolicySource()
+
+	mkEngine := func(finality string) (*policy.Engine, []common.Upstream, *health.Tracker, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		logger := zerolog.Nop()
+		tracker := health.NewTracker(&logger, "p1", time.Minute)
+		cfg := &common.SelectionPolicyConfig{
+			Eval: defaultPolicy,
+		}
+		require.NoError(t, cfg.SetDefaults())
+		engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+
+		ups := mkUps("rpc1", "rpc2")
+		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+		// Both clean enough to pass keepHealthy, but rpc1 is slightly
+		// preferred. The challenger advantage we'll later introduce is
+		// large (rpc1 errors heavily) so any non-sticky policy switches.
+		for _, u := range ups {
+			for i := 0; i < 100; i++ {
+				tracker.RecordUpstreamRequest(u, "*")
+				tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+			}
+		}
+		_ = finality // ctx.finality is set via policy.OverrideFinalityForTest below
+		return engine, ups, tracker, cancel
+	}
+
+	for _, tc := range []struct {
+		name           string
+		finality       string
+		expectPrimary  string
+		expectSwitched bool
+	}{
+		{"REALTIME holds prior primary", "realtime", "rpc1", false},
+		{"FINALIZED switches immediately", "finalized", "rpc2", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, ups, tracker, cancel := mkEngine(tc.finality)
+			defer cancel()
+			defer engine.Stop()
+
+			// Force finality on the engine's eval ctx so the .if() branches.
+			policy.SetFinalityForTest(engine, "evm:1", "*", tc.finality)
+
+			// Tick 1 — equal metrics → rpc1 wins by id tiebreak. Sticky
+			// state now records rpc1 as primary at this timestamp.
+			policy.TickForTest(engine, "evm:1", "*")
+			first := ids(engine.GetOrdered("evm:1", "*"))
+			require.Equal(t, "rpc1", first[0], "tick 1: rpc1 wins by id tiebreak")
+
+			// Make rpc1 clearly worse than rpc2 (challenger advantage > hysteresis).
+			for i := 0; i < 30; i++ {
+				tracker.RecordUpstreamRequest(ups[0], "*")
+				tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+			}
+
+			// Tick 2 — under REALTIME, the 30s minSwitchInterval keeps
+			// rpc1 as primary. Under FINALIZED, no stickiness, switch.
+			policy.TickForTest(engine, "evm:1", "*")
+			second := ids(engine.GetOrdered("evm:1", "*"))
+			require.GreaterOrEqual(t, len(second), 1)
+			require.Equal(t, tc.expectPrimary, second[0],
+				"tick 2 primary under finality=%s should be %s", tc.finality, tc.expectPrimary)
+		})
+	}
+}
+
+// TestStdlib_DefaultPolicy_ProbeReadmitsAt90s (G4): an upstream
+// excluded by the filter is re-admitted at ~90s, not the prior 5m.
+// Verifies the default's `probeExcluded({ reAdmitAfter: '90s' })`.
+//
+// Setup: rpc1 errors hard, gets filtered out. We drive enough ticks at
+// frozen monotonic time to verify it isn't re-admitted in the first 89s
+// and IS re-admitted at 91s.
+func TestStdlib_DefaultPolicy_ProbeReadmitsAt90s(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	defer engine.Stop()
+
+	ups := mkUps("rpc1", "rpc2")
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// rpc1 broken; rpc2 healthy.
+	for i := 0; i < 90; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	// Tick 1 — rpc1 excluded, excludedSince[rpc1] = now.
+	policy.TickForTest(engine, "evm:1", "*")
+	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*")))
+
+	// Advance virtual time 60s. probeExcluded(reAdmitAfter:'90s') must
+	// NOT re-admit yet (need > 90s).
+	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 60*time.Second)
+	policy.TickForTest(engine, "evm:1", "*")
+	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*")),
+		"at +60s rpc1 must still be excluded (reAdmitAfter='90s')")
+
+	// Advance to +120s total (60s since registration + 60s more = 120s).
+	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 60*time.Second)
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*"))
+	require.Contains(t, got, "rpc1",
+		"at +120s rpc1 must be re-admitted (reAdmitAfter='90s' elapsed)")
 }
 
 // TestStdlib_StickyPrimary_RetainsPriorPrimary verifies cross-tick stickiness.

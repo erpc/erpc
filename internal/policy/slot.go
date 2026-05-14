@@ -38,6 +38,13 @@ type Slot struct {
 	// after 3 consecutive failures. (Hookup deferred to Phase 5.15.)
 	consecutiveFails int
 
+	// Test-only overrides applied inside tickOnce after buildEvalContext.
+	// Zero values mean "no override". Guarded by `mu` along with the
+	// cross-tick state. SetFinalityForTest / AdvanceEvalNowForTest in
+	// testing.go are the only call sites.
+	testFinality  string
+	testNowOffset int64 // added to ctx.Now (milliseconds)
+
 	ring *ringBuffer
 
 	stopCh   chan struct{}
@@ -120,6 +127,13 @@ func (s *Slot) tickOnce() {
 		TickCount:        s.tickCount,
 	}
 	evalCtx := buildEvalContext(s.networkID, s.method, state)
+	// Apply test-only overrides (no-ops in production where these stay zero).
+	if s.testFinality != "" {
+		evalCtx.Finality = s.testFinality
+	}
+	if s.testNowOffset != 0 {
+		evalCtx.Now += s.testNowOffset
+	}
 	s.mu.Unlock()
 
 	// 3. Run the eval (with optional timeout).

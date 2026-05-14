@@ -267,33 +267,53 @@
 
   // ─── 4.7 Stability (cross-tick) ─────────────────────────────────────────
 
+  // Spec §4.7: hold the previous primary across ticks unless BOTH
+  //   (a) challenger.score < prev.score × (1 - hysteresis), AND
+  //   (b) at least `minSwitchInterval` has elapsed since the last switch.
+  // Both are needed: during an incident the score gap between primary
+  // and challenger can be huge, so without (b) sticky becomes a no-op
+  // and a degrading primary still flaps every tick. With (b), a recent
+  // switch is locked in for the cooldown window regardless of score gap.
   define('stickyPrimary', function (opts) {
     opts = opts || {};
-    const hysteresis = (opts.hysteresis != null) ? opts.hysteresis : 0.10;
+    const hysteresis    = (opts.hysteresis != null) ? opts.hysteresis : 0.10;
+    const minSwitchMs   = (opts.minSwitchInterval != null)
+      ? durationMs(opts.minSwitchInterval)
+      : 30_000;
     const ctx = globalThis.__policyCtx || {};
     const prevPrimary = (ctx.previousOrder && ctx.previousOrder.length) ? ctx.previousOrder[0] : null;
     if (!prevPrimary || this.length === 0) return this.slice();
     const cur = this[0];
-    if (cur.id === prevPrimary) return this.slice();
+    if (cur.id === prevPrimary) return this.slice();          // already sticky
     const prevIdx = this.findIndex(u => u.id === prevPrimary);
-    if (prevIdx < 0) return this.slice();
+    if (prevIdx < 0) return this.slice();                     // prev is gone (excluded etc.)
     const prevU = this[prevIdx];
-    const curScore = cur.score, prevScore = prevU.score;
-    if (curScore == null || prevScore == null) {
-      // No sortByScore ran; positional sticky: keep prev as primary.
+
+    // Move prev to head; we'll only NOT do this when both conditions
+    // for a switch are satisfied.
+    function keepPrev() {
       const out = this.slice();
       const removed = out.splice(prevIdx, 1)[0];
       out.unshift(removed);
       return out;
     }
-    // Spec §4.7: switch only if challenger.score < prev.score * (1 - hysteresis).
-    if (curScore < prevScore * (1 - hysteresis)) {
-      return this.slice();
+
+    // Cooldown not elapsed → keep prev regardless of score gap.
+    if (ctx.lastSwitchAt != null && (ctx.now - ctx.lastSwitchAt) < minSwitchMs) {
+      return keepPrev.call(this);
     }
-    const out = this.slice();
-    const removed = out.splice(prevIdx, 1)[0];
-    out.unshift(removed);
-    return out;
+
+    const curScore = cur.score, prevScore = prevU.score;
+    if (curScore == null || prevScore == null) {
+      // No sortByScore ran; positional sticky: keep prev as primary.
+      return keepPrev.call(this);
+    }
+
+    // Cooldown elapsed; check hysteresis.
+    if (curScore < prevScore * (1 - hysteresis)) {
+      return this.slice();                                    // switch
+    }
+    return keepPrev.call(this);
   });
   // stickyOrder + keepRecentPrimary: deferred; uncommon use cases.
 
