@@ -53,3 +53,14 @@ func WarnRoutingPolicyEnvVars() string {
 		migrationDoc,
 	)
 }
+
+// warnInertField emits a deprecation warning for a project-level
+// legacy field that has NO behavioral mapping in the new system. The
+// translator must NOT synthesize an eval on account of these fields —
+// they're warning-only so the canonical default policy stays in place.
+func warnInertField(field, replacement string) string {
+	return fmt.Sprintf(
+		"[deprecated config] %s is no longer used (%s). Remove from your config; see %s",
+		field, replacement, migrationDoc,
+	)
+}

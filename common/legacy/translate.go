@@ -30,16 +30,34 @@ func Translate(
 	networks []WidenedNetwork,
 	networkConfigs []*common.NetworkConfig,
 ) ([]string, error) {
-	if !hasAnyLegacy(prj, upstreams, networks) {
+	semantic := hasSemanticLegacy(prj, upstreams, networks)
+	inert := hasInertLegacy(prj)
+	if !semantic && !inert {
 		return nil, nil
 	}
 
-	warnings := make([]string, 0, 4)
+	warnings := make([]string, 0, 6)
 	if prj.RoutingStrategy != "" {
 		warnings = append(warnings, warnRoutingStrategy(prj.RoutingStrategy))
 	}
 	if prj.ScoreMetricsMode != "" {
 		warnings = append(warnings, warnScoreMetricsMode(prj.ScoreMetricsMode))
+	}
+	if prj.ScoreMetricsWindowSize != 0 {
+		warnings = append(warnings, warnInertField("scoreMetricsWindowSize",
+			"metrics windowing is owned by health.Tracker; this field has no behavioral effect"))
+	}
+	if prj.ScoreGranularity != "" {
+		warnings = append(warnings, warnInertField("scoreGranularity",
+			"replaced by selectionPolicy.evalPerMethod (false=upstream, true=method)"))
+	}
+	if prj.ScoreRefreshInterval != 0 {
+		warnings = append(warnings, warnInertField("scoreRefreshInterval",
+			"replaced by selectionPolicy.evalInterval"))
+	}
+	if prj.ScorePenaltyDecayRate != 0 {
+		warnings = append(warnings, warnInertField("scorePenaltyDecayRate",
+			"no equivalent; sortByScore uses a fresh metric snapshot every tick"))
 	}
 	hasLegacyMul := false
 	for _, u := range upstreams {
@@ -50,6 +68,17 @@ func Translate(
 	}
 	if hasLegacyMul {
 		warnings = append(warnings, warnScoreMultipliers())
+	}
+
+	// If only inert legacy fields are present, emit warnings but DON'T
+	// synthesize an eval — the network's selectionPolicy stays nil so
+	// SetDefaults installs the canonical default policy. Operators
+	// removing their score-multiplier blocks while leaving a stray
+	// `scoreMetricsWindowSize` knob get the FULL default policy
+	// (removeCordoned + keepHealthy + preferTag + sortByScore + sticky
+	// + probeExcluded), not a minimal score-only stand-in.
+	if !semantic {
+		return warnings, nil
 	}
 
 	for i := range networkConfigs {
@@ -91,11 +120,24 @@ func Translate(
 	return warnings, nil
 }
 
-func hasAnyLegacy(prj WidenedProject, ups []WidenedUpstream, nws []WidenedNetwork) bool {
-	if prj.RoutingStrategy != "" || prj.ScoreGranularity != "" ||
-		prj.ScorePenaltyDecayRate != 0 || prj.ScoreSwitchHysteresis != 0 ||
-		prj.ScoreMinSwitchInterval != 0 || prj.ScoreMetricsMode != "" ||
-		prj.ScoreMetricsWindowSize != 0 || prj.ScoreRefreshInterval != 0 {
+// hasSemanticLegacy returns true if the user wrote ANY legacy field that
+// the synthesizer can translate into a meaningful eval. These are the
+// fields that ALTER selection behavior:
+//
+//   - prj.RoutingStrategy            ("round-robin" → rotateBy; "score-based" → sortByScore)
+//   - prj.ScoreSwitchHysteresis      (stickyPrimary({hysteresis}))
+//   - prj.ScoreMinSwitchInterval     (stickyPrimary({minSwitchInterval}))
+//   - upstream.routing.scoreMultipliers / scoreLatencyQuantile
+//                                    (per-id weights map handed to sortByScore)
+//   - network.selectionPolicy.evalFunction  (wrapped as legacy fn)
+//   - network.selectionPolicy.resample*     (appended as probeExcluded)
+//
+// If none of these are set, the translator must leave selectionPolicy
+// nil so the canonical default policy installs unchanged.
+func hasSemanticLegacy(prj WidenedProject, ups []WidenedUpstream, nws []WidenedNetwork) bool {
+	if prj.RoutingStrategy != "" ||
+		prj.ScoreSwitchHysteresis != 0 ||
+		prj.ScoreMinSwitchInterval != 0 {
 		return true
 	}
 	for _, u := range ups {
@@ -111,6 +153,18 @@ func hasAnyLegacy(prj WidenedProject, ups []WidenedUpstream, nws []WidenedNetwor
 		}
 	}
 	return false
+}
+
+// hasInertLegacy returns true if the user wrote ANY project-level legacy
+// field that has no behavioral mapping in the new system. The translator
+// emits a deprecation warning per inert field but does NOT synthesize an
+// eval on their account.
+func hasInertLegacy(prj WidenedProject) bool {
+	return prj.ScoreGranularity != "" ||
+		prj.ScorePenaltyDecayRate != 0 ||
+		prj.ScoreMetricsMode != "" ||
+		prj.ScoreMetricsWindowSize != 0 ||
+		prj.ScoreRefreshInterval != 0
 }
 
 // synthesizeEval emits a JS eval source string equivalent to the legacy
@@ -174,8 +228,10 @@ func TranslateFromConfig(cfg *common.Config) ([]string, error) {
 		wUps := widenedUpstreamsFromConfig(prj.Upstreams)
 		wNws := widenedNetworksFromConfig(prj.Networks)
 
-		// Fast path: no legacy fields anywhere → skip.
-		if !hasAnyLegacy(wp, wUps, wNws) {
+		// Fast path: no legacy fields anywhere → skip. Inert legacy
+		// (warning-only) still goes through Translate so the warning
+		// fires; only the genuinely-clean case short-circuits.
+		if !hasSemanticLegacy(wp, wUps, wNws) && !hasInertLegacy(wp) {
 			clearLegacyStashes(prj)
 			continue
 		}

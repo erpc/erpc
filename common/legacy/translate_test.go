@@ -170,6 +170,87 @@ func TestTranslate_NoLegacy_NoOp(t *testing.T) {
 	require.Nil(t, nwCfgs[0].SelectionPolicy, "no legacy → no synthesized selectionPolicy")
 }
 
+// TestTranslate_InertLegacyOnly: a config that only carries deprecated
+// fields with NO behavioral mapping (scoreMetricsWindowSize,
+// scoreMetricsMode, scoreGranularity, scorePenaltyDecayRate,
+// scoreRefreshInterval) must emit warnings and leave SelectionPolicy
+// alone — so SetDefaults installs the canonical default policy.
+//
+// Regression for: legacy translator firing on any inert field caused
+// `scoreMetricsWindowSize: 10m` alone to override the rich default
+// policy with a minimal sortByScore-only synth.
+func TestTranslate_InertLegacyOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prj     legacy.WidenedProject
+		expects string // substring that must appear in warnings
+	}{
+		{
+			"scoreMetricsWindowSize alone",
+			legacy.WidenedProject{ScoreMetricsWindowSize: common.Duration(10 * time.Minute)},
+			"scoreMetricsWindowSize",
+		},
+		{
+			"scoreMetricsMode alone",
+			legacy.WidenedProject{ScoreMetricsMode: "compact"},
+			"scoreMetricsMode",
+		},
+		{
+			"scoreGranularity alone",
+			legacy.WidenedProject{ScoreGranularity: "method"},
+			"scoreGranularity",
+		},
+		{
+			"scorePenaltyDecayRate alone",
+			legacy.WidenedProject{ScorePenaltyDecayRate: 0.95},
+			"scorePenaltyDecayRate",
+		},
+		{
+			"scoreRefreshInterval alone",
+			legacy.WidenedProject{ScoreRefreshInterval: common.Duration(30 * time.Second)},
+			"scoreRefreshInterval",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nwCfgs := []*common.NetworkConfig{{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			}}
+			warns, err := legacy.Translate(tc.prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)
+			require.NoError(t, err)
+			require.NotEmpty(t, warns, "inert legacy field must emit a warning")
+			require.True(t, strings.Contains(strings.Join(warns, "|"), tc.expects),
+				"warning must mention %q; got %v", tc.expects, warns)
+			require.Nil(t, nwCfgs[0].SelectionPolicy,
+				"inert legacy must NOT synthesize a selectionPolicy; the default policy must install via SetDefaults")
+		})
+	}
+}
+
+// TestTranslate_SemanticPlusInertLegacy: when BOTH inert + semantic
+// legacy fields are present, semantic wins — synthesizer fires, AND
+// inert warnings still flow through. This is the typical "operator
+// removed scoreMultipliers but left scoreMetricsWindowSize" case.
+func TestTranslate_SemanticPlusInertLegacy(t *testing.T) {
+	prj := legacy.WidenedProject{
+		RoutingStrategy:        "round-robin",        // semantic
+		ScoreMetricsWindowSize: common.Duration(10 * time.Minute), // inert
+	}
+	nwCfgs := []*common.NetworkConfig{{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}}
+	warns, err := legacy.Translate(prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)
+	require.NoError(t, err)
+	joined := strings.Join(warns, "|")
+	require.Contains(t, joined, "routingStrategy", "semantic warning must fire")
+	require.Contains(t, joined, "scoreMetricsWindowSize", "inert warning must fire too")
+	require.NotNil(t, nwCfgs[0].SelectionPolicy,
+		"semantic field present → synth runs")
+	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "rotateBy",
+		"routing-strategy round-robin synthesizes rotateBy")
+}
+
 func TestTranslate_PreservesExistingEval(t *testing.T) {
 	prj := legacy.WidenedProject{RoutingStrategy: "score-based"}
 	user := "(upstreams, ctx) => upstreams.byTag('tier:hot')"
