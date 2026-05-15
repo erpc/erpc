@@ -1,356 +1,330 @@
 # Traffic Simulator — Implementation Plan
 
 **Branch**: `feat/traffic-simulator` (off `feat/selection-policy-rewrite` once it merges to main).
-**Spec**: [feature.md](feature.md) — single source of truth.
-**Goal**: Ship a single Go binary that boots a browser UI for tuning eRPC selection policies against synthetic traffic, using real `internal/policy.Engine` and real `upstream.Upstream` objects against a loopback fake-server.
+**Spec**: [feature.md](feature.md) — single source of truth for behavior, API, performance targets.
+**Goal**: Ship `bin/erpc-simulator` — a single Go binary that boots real `erpc.NewERPC(...)` against a loopback fake-server, serves an embedded browser UI for live tuning, and sustains 10k rps while streaming events to the GUI.
 
-The plan is incremental — each phase is shippable and independently testable. Total estimate: ~4.5 focused days to Phase 4 (full MVP); Phase 5 is its own arc.
+The plan is incremental — every phase ships independently and is testable end-to-end. Estimated total: ~8 focused days to v1.
 
 ---
 
 ## Glossary
 
 - **DELETE-WHOLE** — remove the entire file.
-- **DELETE-LINES** — remove specific lines/symbols within an otherwise-kept file.
+- **DELETE-LINES** — remove specific lines/symbols.
 - **REPLACE** — rewrite a section / function / type.
 - **NEW** — create a new file/symbol.
-- **KEEP** — touch only to verify; should not change as part of this work.
+- **MODIFY** — small, targeted change in an existing file.
 
 ---
 
 ## Decisions resolved during spec drafting (locked in)
 
-1. **Loopback fake-server, not mock transport.** `SimUpstream` is a real `upstream.Upstream`. Endpoint `http://127.0.0.1:<port>/sim/<id>` hits the simulator's own HTTP server. Rationale: uses 100% real eRPC code path; cheaper than building a parallel mock transport; future Phase-5 full-config import is a one-line endpoint rewrite.
+1. **Real eRPC stack, fake upstream transport.** The simulator imports `erpc.NewERPC(...)` and runs the FULL production code path — selection policy, failsafe, hedge, retry, timeout, circuit-breaker, metrics tracker, EVM integrity, cache. The ONLY mock is the upstream HTTP response, served by a loopback `/sim/{id}` handler inside the same binary.
 
-2. **Policy-only forwarding in MVP.** Each "simulated request" calls `Engine.GetOrdered(network, method)` and directly invokes `winner.Forward(...)`. No `network.Forward` (which would bring in failsafe / hedging / retry / cache). Phase 5 swaps in the full network forward path.
+2. **Full eRPC config is the primary input.** Not synthesized; not subset. The operator pastes / drops their real `erpc.yaml` (or `erpc.ts`). The simulator parses it via `common.LoadConfig` — same loader, same legacy translator — then rewrites every `upstream.endpoint` to `http://127.0.0.1:<port>/sim/<gen-id>` at apply time. Tracing → no-op exporter. Database connectors → in-memory only. RateLimiter store → memory.
 
-3. **GUI stack: vanilla HTML + ES modules + Chart.js + CodeMirror 6.** Zero build, zero node, zero transpile. Everything embedded via `embed.FS`. CodeMirror 6 over Monaco because Monaco is ~5 MB + needs a worker; CM6 is ~150 KB with basic JS highlighting and is plenty for editing one function body.
+3. **10k rps target on a developer laptop.** Drives the event-pipeline design: no per-request WS frames. Instead three tiers: in-process atomic counters → 100ms aggregated `StatsFrame` → 1% trace sampling for `TraceFrame`. Binary frames (msgpack), capped at ~70 KB/s of WS bandwidth.
 
-4. **WebSocket for streaming.** Single bidirectional stream (`/api/events`). Server pushes; client doesn't speak (config goes through REST). Bounded fan-out channel; drop oldest on slow consumer.
+4. **Animated flow stage, not raw events.** A particle on screen is a SAMPLED representation, throttled to ~50 particles/s regardless of actual rps. Aggregates drive the chart; animation drives intuition. (See feature.md §4.4.)
 
-5. **Single port.** GUI + API + WS + fake-server all mount on the same `http.ServeMux`. Default `8080`. Operators don't manage multiple ports.
+5. **YAML + knob bidirectional sync via a single AST.** CodeMirror 6 (YAML lang) shares an in-memory `yaml.Node` tree with the knob form. Knob edits mutate the AST → re-serialize preserving comments. YAML edits re-parse → re-derive knobs.
 
-6. **Co-located packages.** `cmd/erpc-simulator/` + `internal/simulator/`. Same module, same `go build`. Imports `common`, `internal/policy`, `internal/policy/stdlib`, `upstream`, `health` directly — no replication.
+6. **TS configs are accepted at apply time, displayed text-only.** `loadConfigFromTypescript` runs; the unified pipeline produces a Config. But the editor's knob mirror requires YAML round-trip; we don't ship a TS AST mutator.
 
-7. **Reuses `selectionPolicy.evalFunc` canonical name.** The simulator's policy editor and API use the same field name as production. Same stdlib install, same default policy.
+7. **Single port, embedded assets.** Default 8080. Bind to `127.0.0.1` only (CLI flag to override). Vendored Chart.js + CodeMirror 6 in `internal/simulator/assets/vendor/`. Zero node, zero bundler.
 
-8. **No persistent state in MVP.** Every boot starts from `--config` or the bundled defaults. Saving runs is Phase 5.
+8. **Co-located packages.** `cmd/erpc-simulator/` + `internal/simulator/`. Same module, same `go build`.
 
 ---
 
 ## Phase 0 — Skeleton (½ day)
 
-**Goal**: One Go binary, one port, embedded HTML saying "hello", `/api/state` returns hardcoded sample state.
+**Goal**: One binary serves an embedded "hello" page; `/api/state` returns a stub.
 
-### 0.1 New files
+### 0.1 Files
 
 - [ ] **NEW** `cmd/erpc-simulator/main.go`
-  - `cli/v3` flag parsing: `--port`, `--config`, `--erpc-config` (Phase 5, parsed but unused).
-  - Initialize logger.
-  - Build `internal/simulator.Server`; mount on `:port`.
+  - `urfave/cli` flag parsing: `--port`, `--bind`, `--config`, `--scenario-dir`.
+  - `wireLegacyTranslator()` — same hook setup as `cmd/erpc/main.go`.
+  - Build `internal/simulator.Server`; `ListenAndServe`.
   - Graceful shutdown on SIGINT/SIGTERM.
 
 - [ ] **NEW** `internal/simulator/server.go`
-  - `type Server struct { mux *http.ServeMux; engine *Engine; logger *zerolog.Logger }`
-  - `NewServer(cfg *Config, log *zerolog.Logger) (*Server, error)` — wires routes.
-  - Routes registered (handlers are stubs):
-    - `GET /` → serves embedded `index.html`.
-    - `GET /api/state` → returns the in-memory state as JSON.
-    - All other endpoints return `501 Not Implemented`.
-  - `func (s *Server) ListenAndServe(addr string) error` — wraps `http.Server`.
+  - `type Server struct { mux, engine, logger }`.
+  - Routes registered (handlers stubbed `501`):
+    - `GET /` → embedded `index.html`.
+    - `GET /api/state` → hardcoded snapshot.
+    - All others → `501`.
 
-- [ ] **NEW** `internal/simulator/config.go`
-  - `type Config`, `type UpstreamSpec`, `type TrafficSpec`, `type NetworkSpec` — matches the YAML shape in feature.md §3.2.
-  - YAML/JSON tags on every field.
-  - `func LoadConfigOrDefaults(path string) (*Config, error)` — returns built-in defaults if path is empty.
-  - `func DefaultConfig() *Config` — the 4-upstream / paused-traffic / default-policy bundle.
+- [ ] **NEW** `internal/simulator/assets/{index.html,embed.go}` — minimal page; `//go:embed *` exposes `Files embed.FS`.
 
-- [ ] **NEW** `internal/simulator/assets/index.html`
-  - Minimal HTML with a `<script>` block that fetches `/api/state` and renders the JSON pretty-printed in a `<pre>`.
+### 0.2 Acceptance
 
-- [ ] **NEW** `internal/simulator/assets/embed.go`
-  - `//go:embed *.html *.js *.css vendor/*` → exposes `Files embed.FS`.
-
-### 0.2 Verification
-
-- [ ] `go build ./cmd/erpc-simulator/...` succeeds.
-- [ ] `go run ./cmd/erpc-simulator --port 8080` boots, browser shows the JSON state.
-- [ ] No tests yet — phase 0 is a skeleton.
-
-### 0.3 Acceptance
-
-The binary builds, serves a page, returns a state snapshot. That's it.
+`go run ./cmd/erpc-simulator --port 8080` boots, browser shows the state JSON. No tests yet.
 
 ---
 
-## Phase 1 — Fake-server + one real upstream end-to-end (1 day)
+## Phase 1 — Real eRPC boot from a config (1.5 days)
 
-**Goal**: Build the fake-server. Build a real `upstream.Upstream` pointed at it. Make one call. Confirm `health.Tracker` observed it.
+**Goal**: `--config erpc.yaml` boots the full eRPC stack with rewritten upstream endpoints. One curl to `/sim/<id>` produces a real, observed call.
 
-### 1.1 New files
+### 1.1 Files
 
-- [ ] **NEW** `internal/simulator/upstreams.go`
-  - `type SimUpstream struct { Spec *UpstreamSpec; Real common.Upstream }` — `Real` is the real `*upstream.Upstream`.
-  - `func buildSimUpstream(spec *UpstreamSpec, baseURL string) (*SimUpstream, error)`
-    - Construct a `*common.UpstreamConfig` with:
-      - `Id`, `Type: common.UpstreamTypeEvm`, `VendorName: spec.Vendor`, `Tags: spec.Tags`.
-      - `Endpoint: baseURL + "/sim/" + spec.Id`.
-      - `Evm: &common.EvmUpstreamConfig{ ChainId: networkChainId }` (parsed from the config's `network.id`).
-      - `IgnoreMethods` / `AllowMethods` derived from `spec.MethodGlobs` (negation handled).
-    - Call `upstream.NewUpstream(ctx, &log, projectId, cfg, ...)` to build the real upstream.
-  - `func rebuildSimUpstreams(state *State, baseURL string) ([]common.Upstream, error)` — used on any spec change.
+- [ ] **NEW** `internal/simulator/loader.go`
+  - `func LoadAndRewrite(path, baseURL string) (*common.Config, []*UpstreamMapping, error)`
+    1. `common.LoadConfig(fs, path, opts)` — full pipeline.
+    2. Walk `cfg.Projects[].Upstreams` + `cfg.Projects[].Providers[].Overrides` to enumerate every upstream endpoint.
+    3. Generate a stable per-upstream `genId` from `(project, networkId, original-id)` so reloads keep the same fake-URL.
+    4. Rewrite each `Endpoint` to `<baseURL>/sim/<genId>`.
+    5. Force-disable tracing (`cfg.Tracing = nil`).
+    6. Rewrite `cfg.Database.EvmJsonRpcCache.Connectors` to a single in-memory connector.
+    7. Force `cfg.RateLimiters.Store = nil` (memory).
+    8. Return the mutated config + a side-table of `{ genId → originalEndpoint, displayId }` for the UI.
+
+- [ ] **NEW** `internal/simulator/synth.go`
+  - `type UpstreamSynthSpec struct { BaseLatencyMs, JitterMs, ErrorRate, TimeoutRate, ThrottleRate, BlockLagBlocks, … }`
+  - `type SynthRegistry struct { mu, specs map[string]*UpstreamSynthSpec }` — concurrent-safe.
+  - `(*SynthRegistry) Default(genId) *UpstreamSynthSpec` — populates from defaults.
 
 - [ ] **NEW** `internal/simulator/fakeserver.go`
-  - `handleSim(w http.ResponseWriter, r *http.Request)` — mounted at `/sim/`.
-  - Steps: parse path → look up spec → if `!available` close conn → if method not allowed return `-32601` → sleep `base ± jitter` → maybe error → return canned response.
-  - Method-to-response map per feature.md §4.4.
-
-- [ ] **NEW** `internal/simulator/state.go`
-  - `type State struct { mu sync.RWMutex; cfg *Config; sims []*SimUpstream; chainHeight atomic.Int64 }`
-  - `(s *State) UpdateUpstream(id string, spec *UpstreamSpec) error`
-  - `(s *State) Get() *Config` — clone-on-read.
-  - Goroutine to tick `chainHeight` every 2 s.
-
-### 1.2 Engine wiring
+  - `handleSim(w, r, synth *SynthRegistry, chain *ChainState)` mounted at `/sim/`.
+  - Parses path → looks up spec → applies behavior per feature.md §4.4 + §3.2.
+  - `ChainState` is a goroutine that advances a per-network height every 2 s; the handler subtracts `blockLagBlocks` to synthesize lag.
 
 - [ ] **NEW** `internal/simulator/engine.go`
-  - `type Engine struct { state *State; policy *policy.Engine; tracker *health.Tracker; ... }`
-  - `NewEngine(cfg *Config, baseURL string, log *zerolog.Logger) (*Engine, error)`:
-    1. Build `health.Tracker`.
-    2. Build sims via `buildSimUpstream`.
-    3. Build `*policy.Engine` (same constructor as production).
-    4. Register network: `policy.RegisterNetwork(cfg.Network.Id, func(){return commonUpstreams}, &SelectionPolicyConfig{EvalFunc: cfg.Network.EvalFunc, EvalInterval: cfg.Network.EvalInterval, EvalTimeout: cfg.Network.EvalTimeout})`.
-  - `func (e *Engine) SimulateOnce(method string) (*SelectionEvent, error)`:
-    1. `ordered := e.policy.GetOrdered(network, method)`.
-    2. If empty → emit `no-upstream` event, return.
-    3. `winner := ordered[0]`.
-    4. Build a `NormalizedRequest`.
-    5. `resp, err := winner.Forward(ctx, req, true, false)` — `byPassMethodExclusion=true` because we already pre-filtered via specs.
-    6. Build `SelectionEvent` with top-5.
+  - `type Engine struct { erpc *erpc.ERPC; synth *SynthRegistry; chain *ChainState; cfg *common.Config; mappings []*UpstreamMapping; logger }`
+  - `func NewEngine(cfgPath, baseURL string, log *zerolog.Logger) (*Engine, error)`:
+    1. `cfg, mappings := loader.LoadAndRewrite(...)`.
+    2. `erpc, err := erpc.NewERPC(ctx, log, cfg, ...)`.
+    3. Populate default `UpstreamSynthSpec` per mapping.
+  - `(*Engine) Forward(ctx, networkId, method, params) (*common.NormalizedResponse, error)` — wraps `erpc.GetProject(...).GetNetwork(...).Forward(ctx, req)`.
+  - `(*Engine) ReloadConfig(yamlSrc string) error` — parse + rebuild + atomic swap (replaces `erpc.ERPC` instance, cancels old context).
 
-### 1.3 Policy hot-reload helper
-
-The current `policy.Engine` doesn't expose an in-place update API. Add one:
-
-- [ ] **MODIFY** `internal/policy/engine.go` — `UpdateNetworkPolicy(networkID string, cfg *common.SelectionPolicyConfig) error`. Internally: `e.UnregisterNetwork(networkID); return e.RegisterNetwork(networkID, registeredUpstreamsFn, cfg)`. Keep the existing upstreamsFn registered for that network. (If we can't reach the old fn cleanly, the simulator can pass its own closure.) **OR**: keep things outside `internal/policy` and just do `Unregister + Register` from the simulator side — that works without core changes. Decision in implementation: prefer the side-only approach unless tests require otherwise.
-
-### 1.4 Verification
+### 1.2 Verification
 
 - [ ] **NEW** `internal/simulator/engine_test.go`
-  - `TestSimulateOnce_HappyPath` — 2 upstreams, identity policy, fire 100 calls. Assert both got called. Assert latencies match specs (± jitter).
-  - `TestSimulateOnce_RespectsAvailability` — toggle `available: false` on one upstream. Fire 50 calls. Assert all hit the other.
-  - `TestSimulateOnce_RespectsMethodGlobs` — one upstream rejects `eth_traceTransaction`. Fire mixed traffic. Assert traces only hit the other.
+  - `TestEngine_BootsFromMinimalConfig` — synthesizes a 2-upstream YAML inline, asserts `NewEngine` succeeds, asserts one `Forward` call returns a synthesized response.
+  - `TestEngine_RewritesAllEndpoints` — asserts every upstream's runtime `endpoint` starts with the baseURL prefix.
+  - `TestEngine_ReloadConfig_HotSwaps` — load A, reload B, assert subsequent `Forward` uses B's upstreams.
 
-### 1.5 Acceptance
+### 1.3 Acceptance
 
-Two real upstreams, one fake-server, real `policy.Engine`, real `health.Tracker`. Single `SimulateOnce` call returns a sensible `SelectionEvent`. Tests pass under `-race`.
+`erpc-simulator --config simulator-tests/minimal.yaml --port 8080` boots; `curl localhost:8080/sim/<id>` returns synthetic JSON-RPC. From the same binary, calling `Engine.Forward` exercises the full eRPC stack and returns a real response. Tests pass under `-race`.
 
 ---
 
-## Phase 2 — Traffic loop + WebSocket fan-out (1 day)
+## Phase 2 — Traffic generator + 10k-rps event pipeline (1.5 days)
 
-**Goal**: A goroutine fires `SimulateOnce` at the configured `rps`. Events stream to subscribed WS clients.
+**Goal**: Hit the engine at configurable rps. Events flow through the three-tier pipeline. WebSocket subscribers get binary frames at ≤ 70 KB/s.
 
-### 2.1 New files
+### 2.1 Files
 
 - [ ] **NEW** `internal/simulator/traffic.go`
-  - `type TrafficGen struct { state *State; engine *Engine; bus *EventBus; stopCh chan struct{}; ... }`
-  - `func (t *TrafficGen) Run(ctx context.Context)`:
-    - Loop: `dt := time.Duration(1e9 / rps)`. `time.Sleep(dt)`.
-    - Pick method by weighted random.
-    - `evt := t.engine.SimulateOnce(method)`.
-    - `t.bus.Publish(evt)`.
-    - If `paused` or `rps==0`, sleep 100 ms and re-check.
-  - Re-read `rps`/`methods`/`paused` from `state.Get()` on every tick (cheap; state is small).
+  - `type TrafficGen struct { engine *Engine; state *State; bus *EventBus }`
+  - `(*TrafficGen) Run(ctx)`:
+    - Poisson-ish ticker driven by `state.RPS()`.
+    - For each tick: pick method by weighted dist, build `NormalizedRequest`, async `engine.Forward(...)`.
+    - Apply shape: `poisson` / `constant` / `bursty`.
+  - Pool of N worker goroutines pulling from a channel; channel-depth `4 * N` bounded — drops on overflow with a counter.
+
+- [ ] **NEW** `internal/simulator/observer.go`
+  - Hooks into the real failsafe / selection / cache code paths to record lifecycle events. Three approaches, pick at impl time:
+    - (a) **Context-attached observer**: stash an `*Observer` in `ctx`; key code paths in eRPC call `observer.Record(...)` if present. Cleanest but requires sprinkling hooks across `internal/policy`, failsafe, cache, network.
+    - (b) **Span hook**: register an OTel span processor; convert spans → events. No core changes; relies on existing spans being comprehensive.
+    - (c) **Metric hook**: read the existing Prometheus counters every 100 ms; diff against last snapshot. Cheap but loses per-request detail (no trace sampling).
+  - Likely a hybrid: (c) for the stats frames + (a) with a minimal observer interface for the trace stream. Decide in Phase 2.
 
 - [ ] **NEW** `internal/simulator/events.go`
-  - `type EventBus` with `Subscribe() (<-chan Event, func())` (returns the channel + unsubscribe).
-  - `Publish(e Event)` — non-blocking fan-out; drops to slow subscribers (channel capacity 256).
-  - `type Event` is an interface; concrete types: `SelectionEvent`, `StatsEvent`, `PolicyReloadEvent`, `EvalErrorEvent`.
+  - `type EventBus { Subscribe() (<-chan Frame, cancel); Publish(Frame) }`.
+  - `type Frame interface { Encode() []byte }` — binary serializer (msgpack or hand-rolled).
+  - Per-subscriber bounded channel (256 cap); slow subscribers drop oldest frames.
 
-- [ ] **NEW** `internal/simulator/stats.go`
-  - Goroutine ticking every 500 ms.
-  - Reads `health.Tracker` per-upstream method metrics for the network's "*" slot.
-  - Reads `policy.Engine.GetOrdered(network, "*")` for position.
-  - Emits `StatsEvent` to the bus.
+- [ ] **NEW** `internal/simulator/aggregator.go`
+  - 100 ms ticker → builds `StatsFrame` from atomic counters + tracker reads.
+  - Reads `policy.Engine.GetOrdered(...)` for current position.
+  - Reads `health.Tracker` for per-upstream method metrics.
+  - Publishes to bus.
 
-### 2.2 Server wiring
+- [ ] **NEW** `internal/simulator/sampler.go`
+  - Configurable trace-sample rate (default 1% of completed requests, capped at 100/s).
+  - Builds `TraceFrame` from the observer's per-request record.
+  - Publishes to bus.
 
 - [ ] **MODIFY** `internal/simulator/server.go`
-  - Add `/api/events` handler — upgrades to WebSocket (use `nhooyr.io/websocket` or `golang.org/x/net/websocket`; pick whichever is already in go.mod, otherwise nhooyr).
-  - Per-client subscriber goroutine: reads from `bus`, writes JSON to the WS connection. On error/close, calls the unsubscribe func.
+  - Implement `GET /api/events` — WS upgrade, subscribe to bus, write binary frames.
+  - Implement `POST /api/traffic` — update `state.Traffic` atomically.
+
+### 2.2 Bench
+
+- [ ] **NEW** `internal/simulator/bench/main.go` (or `_test.go`)
+  - Boots the engine, generator at 10k rps, runs for 30 s headless.
+  - Verifies: 0 forward-loop panics, p99 wall-clock latency < 2× synthetic baseline, RSS < 1 GB, dropped-events counter < 0.1% of total.
 
 ### 2.3 Verification
 
-- [ ] **NEW** `internal/simulator/traffic_test.go`
-  - `TestTrafficGen_HitsRPS` — set `rps=20`, run for 1 s, assert call count is in `[15, 25]` (loose).
-  - `TestTrafficGen_PausedDoesNothing` — set `paused=true`, wait 500 ms, assert 0 calls.
-
-- [ ] **Manual smoke**: `websocat ws://localhost:8080/api/events` while traffic runs; observe JSON events.
+- [ ] `TestTrafficGen_HitsRPS` — set 1000 rps, run 1 s, assert calls in `[850, 1150]`.
+- [ ] `TestEventPipeline_NoLoss_AtSubscriberSide` — slow subscriber drops; fast subscriber gets full stream.
+- [ ] `TestAggregator_StatsFrameShape` — every field non-nil, values within expected ranges.
 
 ### 2.4 Acceptance
 
-Traffic generator runs at `rps`. Events stream to any WS subscriber. Stats fire every 500 ms. Pause/resume reflects within ~100 ms.
+Headless bench sustains 10k rps. `websocat ws://localhost:8080/api/events` while traffic runs shows readable binary frames decoding to sensible numbers.
 
 ---
 
-## Phase 3 — GUI (1.5 days)
+## Phase 3 — Configuration UI (1.5 days)
 
-**Goal**: Browser shows the full layout from feature.md §5. All knobs work.
+**Goal**: Browser shows the YAML editor, knob mirror, paste / drop support, validation.
 
-### 3.1 Vendored deps
+### 3.1 Vendored deps (committed under `assets/vendor/`)
 
-Download once and commit under `internal/simulator/assets/vendor/`:
+- [ ] CodeMirror 6 with YAML + JSON langs (single-bundle, ~250 KB).
+- [ ] (later phases) Chart.js + chartjs-plugin-streaming.
 
-- [ ] `chart.js` (UMD, ≤ 200 KB minified)
-- [ ] `chartjs-plugin-streaming` (≤ 30 KB) — for live-scrolling time axis
-- [ ] `codemirror-bundle.js` (CodeMirror 6 with JS lang, ≤ 200 KB) — pre-built single-bundle from the CM6 starter
-
-Update `embed.go` glob to pick them up.
-
-### 3.2 HTML layout
-
-- [ ] **REPLACE** `internal/simulator/assets/index.html`
-  - Three-column flexbox per feature.md §5.2.
-  - Top bar with status badges (running / policy-valid).
-  - Empty containers for each panel; population done by `app.js`.
-
-### 3.3 Frontend logic
+### 3.2 Frontend
 
 - [ ] **NEW** `internal/simulator/assets/app.js` (ES module)
-  - On load: `fetch('/api/state')` → render upstream cards, populate editor with `evalFunc`, populate traffic panel.
-  - Open WebSocket to `/api/events`; route incoming events:
-    - `selection` → prepend to event log (cap at 50)
-    - `stats` → update per-upstream cards + push to chart streaming dataset
-    - `policy_reload` → flash status badge
-    - `eval_error` → red row in event log
-  - Wire knob changes: `oninput` on each slider → debounced (200 ms) `POST /api/upstreams`.
-  - Wire "Apply" button on editor → `POST /api/policy` with current source; render compile error inline if 400.
-  - Wire traffic panel → `POST /api/traffic` on any change.
+  - Boot: `fetch('/api/state')` → render initial state.
+  - Open WS, route frames by type.
+  - Config editor: CodeMirror 6 init, YAML mode, "Apply" / `Cmd-Enter`.
+  - Knob mirror: derived from `yaml.parse(currentSrc)`; bidirectional sync via shared AST.
+  - Paste / drop handler on the editor; reads file → POSTs to `/api/config`.
+  - Compile-error rendering: inline diagnostics via CodeMirror's `lintGutter`.
+
+- [ ] **NEW** `internal/simulator/assets/yaml-ast.js`
+  - Tiny `yaml.Node`-style parser sufficient for the knob mirror. Could use the `yaml` npm pkg bundled — verify size first.
 
 - [ ] **NEW** `internal/simulator/assets/style.css`
-  - Minimal: layout, card shape, slider styling. Use system fonts. Dark-mode-aware via `prefers-color-scheme`.
+  - Three-column responsive grid. Dark-mode aware.
 
-### 3.4 Server endpoints
+### 3.3 Server endpoints
 
 - [ ] **MODIFY** `internal/simulator/server.go`
-  - Implement `POST /api/upstreams`, `POST /api/policy`, `POST /api/traffic`, `POST /api/reset`.
-  - Each handler validates, mutates `state`, and (for policy) calls `engine.UpdatePolicy(src)`.
-  - `engine.UpdatePolicy(src)`:
-    1. `prog, err := common.CompileProgram(src)` — if err, return as `{ ok: false, error, line, col }`.
-    2. Unregister + re-register the network on `policy.Engine`.
-    3. Bus.Publish a `PolicyReloadEvent{ok: true}`.
+  - Implement `POST /api/config { yaml }`:
+    1. Tee the YAML to a temp file (because `common.LoadConfig` takes a filesystem path).
+    2. `common.LoadConfig(fs, path, opts)`.
+    3. On error: return `400 { errors: [{line, col, msg}] }`.
+    4. On OK: `engine.ReloadConfig(yamlSrc)`; publish `ConfigSwapFrame`.
+  - Implement `POST /api/upstreams/{id}` — update synth atomic.
 
-### 3.5 Verification
+### 3.4 Verification
 
-- [ ] **Manual**: every interaction from feature.md §5 works. Tweaks reflect in < 1 s. Policy compile errors render inline. Chart updates smoothly with no flicker.
-- [ ] **NEW** `internal/simulator/server_test.go` — integration tests for each POST endpoint (in-process httptest).
+- [ ] **Manual**: paste a 100-line eRPC YAML, hit Apply, see knob mirror populate, edit a knob, see the YAML re-render with the edit.
+- [ ] **Integration test**: in-process httptest server, `POST /api/config` with the sanitized prod manifest, assert 200 + `/api/state.configValid == true`.
 
-### 3.6 Acceptance
+### 3.5 Acceptance
 
-A new user can land on `http://localhost:8080/`, modify a knob, see the chart shift, edit the policy, hit Apply, and see the new behavior — all without opening a terminal.
+A new operator can drop their `erpc.yaml` onto the page and within 2 s see the full knob mirror populated. Editing either side syncs the other.
 
 ---
 
-## Phase 4 — Polish + the wow moment (1 day)
+## Phase 4 — Animated flow stage + charts + event log (1.5 days)
 
-**Goal**: Make the demo feel inevitable. Smooth animations. Clear error states. README + GIF.
+**Goal**: The wow visual. Animated particles, live charts, event log with full lifecycle drawer.
 
-### 4.1 UX polish
+### 4.1 Flow stage
 
-- [ ] Smooth Chart.js streaming — no full re-draw, no flicker on stats tick.
-- [ ] Policy compile errors highlight the failing line in the editor (use CodeMirror 6's `lintGutter` + a single `Diagnostic`).
-- [ ] Per-upstream "inject failure" toggle that sets `available: false` for a click-configurable duration (default 30 s) and auto-reverts. Wired through `POST /api/upstreams`.
-- [ ] Reset button on the top bar — `POST /api/reset` + clear local stats.
-- [ ] Friendly empty states (no events yet, traffic paused, no eligible upstream).
+- [ ] **NEW** `internal/simulator/assets/flow.js`
+  - SVG (or canvas) stage with three lanes (Client / eRPC / Upstreams).
+  - Particle pool (recycle DOM/canvas objects; aim for 60 fps with 100 particles in flight).
+  - On `TraceFrame`: spawn a particle, animate it left-to-right along its lane, color by outcome (green/yellow/orange/red/blue/gray per §4.4 of feature.md).
+  - On hedge: spawn a SECOND particle that branches to the hedge upstream; whichever finishes first dims the other.
+  - Hover lane → tooltip with current per-upstream stats.
+  - Click particle → side drawer with full lifecycle.
 
-### 4.2 Stdlib autocomplete
+### 4.2 Charts
 
-- [ ] Pre-populate CodeMirror's completion source with the stdlib primitives. Just static suggestions (no semantic LSP); enough to surface the API.
-  - `byTag`, `byVendor`, `byId`, `preferTag`, `preferVendor`, `sortByScore`, `sortByLatency`, `removeByErrorRate`, `removeByLag`, `removeCordoned`, `keepHealthy`, `stickyPrimary`, `probeExcluded`, `whenEmpty`, `if`, `methodMatches`, `isFinalityRequest`.
+- [ ] **NEW** `internal/simulator/assets/charts.js`
+  - Selection-share stacked-area chart (Chart.js + streaming).
+  - Per-upstream stat cards (driven by `StatsFrame.upstreams[]`).
+  - Failsafe activity strip (retry-rate, hedge-rate, timeout-rate, CB-state per upstream).
 
-### 4.3 Docs + demo
+### 4.3 Event log
 
-- [ ] **NEW** `cmd/erpc-simulator/README.md`
-  - Quick start (one command).
-  - The 4 demo workflows: "tune a slow upstream", "test a fallback tier", "rewrite the policy live", "watch the score adapt".
-- [ ] **NEW** `docs/pages/tools/traffic-simulator.mdx` — public-docs page.
-- [ ] Record a ≤ 30 s screen-cap GIF showing the rebuild-policy-live workflow; embed in README + docs.
+- [ ] **NEW** `internal/simulator/assets/eventlog.js`
+  - Last 50 sampled traces. Row click → drawer with full lifecycle.
+  - Drawer renders selection trail (the ordered upstream list and which got picked) + every attempt with timing breakdown.
 
 ### 4.4 Acceptance
 
-The simulator is production-quality for the four demo workflows. Anyone running `erpc-simulator` against the bundled defaults can complete each workflow inside 30 s.
-
-**Cumulative estimate to here: ~4.5 focused days.**
+`./erpc-simulator --config prod.yaml`; set traffic to 5000 rps; tweak `errorRate` on one upstream → within 2 s see (a) the chart's selection-share for that upstream collapse, (b) red particles for failed requests, (c) the eval-error counter NOT increment (because keepHealthy filtered it out before scoring).
 
 ---
 
-## Phase 5 — Full `erpc.yaml` import (deferred)
+## Phase 5 — Scenarios + upstream knobs + polish (1 day)
 
-**Goal**: `--erpc-config /path/to/erpc.yaml` boots the simulator with the full eRPC stack against synthetic upstreams.
+**Goal**: The bundled scenario library is functional. Per-upstream knobs are smooth. Polish + docs + GIF.
 
-### 5.1 Loader
+### 5.1 Scenario engine
 
-- [ ] **NEW** `internal/simulator/loader.go`
-  - Read the user's config via `common.LoadConfig(fs, path, opts)` — already supports both YAML and TS through the unified pipeline.
-  - For every `UpstreamConfig.Endpoint`: rewrite to `http://127.0.0.1:<port>/sim/<gen-id>` and record `gen-id → original-endpoint` in a side table (for display only).
-  - Auto-generate `SimUpstreamSpec` per upstream — synthesize plausible defaults (`baseLatencyMs: 40, jitterMs: 20, errorRate: 0, available: true`), pre-fill `tags` from `UpstreamConfig.Tags`.
-  - Skip the auth + database + rate-limiter + tracing sections of the config (simulator-isolated).
-  - Hand the rewritten `*common.Config` to the same code path eRPC uses to bootstrap a project: `erpc.NewERPC(...)` against an in-memory upstream registry.
+- [ ] **NEW** `internal/simulator/scenario.go`
+  - YAML schema per feature.md §10.
+  - `(*Engine) RunScenario(name string)` — non-blocking; emits `ScenarioFrame` events.
+  - Mutates `state.UpstreamSynth` and `state.Traffic` on a timeline.
 
-### 5.2 Forward path
+- [ ] **NEW** `internal/simulator/scenarios/*.yaml`
+  - `gradual-degradation.yaml`, `vendor-region-outage.yaml`, `slow-network.yaml`, `traffic-spike.yaml`, `hedge-saturator.yaml`, `circuit-breaker-trip.yaml`.
 
-Instead of `winner.Forward(...)` directly, route through `*Network.Forward(...)` — exercises failsafe, hedge, retry, cache. The simulator's traffic generator becomes a thin loop around `network.Forward`.
+### 5.2 Upstream-knobs panel
 
-### 5.3 GUI updates
+- [ ] **MODIFY** `app.js` — bind every knob to a debounced `POST /api/upstreams/{id}`. Surface bulk-actions ("outage all vendor=alchemy"). Failure-injection quick-button (60 s outage auto-revert).
 
-- [ ] Network dropdown (top bar) when multiple networks present.
-- [ ] Upstream cards group by network.
-- [ ] Per-method evaluation when `evalPerMethod=true`.
+### 5.3 Documentation
 
-### 5.4 Risk: tracing + database
+- [ ] **NEW** `cmd/erpc-simulator/README.md` — quickstart + the four canonical workflows.
+- [ ] **NEW** `docs/pages/tools/traffic-simulator.mdx` — public docs.
+- [ ] Record a 30 s GIF (paste a config → trigger scenario → watch flow + chart).
 
-The full eRPC stack pulls in OpenTelemetry tracing and any configured database connectors. Both must be no-op'd in the simulator:
+### 5.4 Acceptance
 
-- Tracing: install a no-op exporter regardless of config.
-- Database: rewrite `database.evmJsonRpcCache.connectors` to a single in-memory connector at config load time (same as the sanitization yq we used during the prod-manifest test).
+A new operator can: (1) paste their config, (2) pick `gradual-degradation`, (3) watch their failsafe + selection policy handle it. End-to-end inside 60 s. Cumulative estimate: ~6 focused days.
 
-### 5.5 Acceptance
+---
 
-`erpc-simulator --erpc-config /Users/aram/.../erpc.yaml` boots, all networks register, all upstreams point at `/sim/<gen-id>`, the simulator's GUI shows every network's upstream list, and per-network traffic generators work independently.
+## Phase 6 — Bench mode + replay (stretch, ~2 days)
+
+- [ ] `--bench-mode` — no GUI, no animation, just outputs a JSON report after running a named scenario for N seconds. Usable in CI to gate config changes.
+- [ ] Export-import: dump the current state + last 60 s of traces to a file; `--replay <file>` reloads it.
+- [ ] A/B compare: run two configs against the same scenario in parallel; report SLA delta per upstream.
 
 ---
 
 ## Acceptance criteria (full project)
 
-- [ ] **Faithfulness**: `internal/simulator/policy.go` does not contain a mock for `internal/policy.Engine`. The engine the simulator runs is byte-for-byte the production engine.
-- [ ] **Same shape as production config**: the simulator's `evalFunc` field, the `tags` slice, every stdlib primitive, the default policy — all are the literal production names.
-- [ ] **Zero new third-party Go deps** beyond what eRPC already vendors (sobek, zerolog, prometheus, gopkg.in/yaml.v3, etc.) — plus one WebSocket lib (nhooyr or x/net) and the embedded JS vendors.
+- [ ] **Faithfulness**: `internal/simulator/` contains NO mock of `internal/policy`, `failsafe`, `health.Tracker`, `data.Cache`, `upstream.Upstream`, or `erpc.Network`. Only the loopback HTTP handler `handleSim` synthesizes anything.
+- [ ] **Same config shape as prod**: the YAML the operator pastes is the YAML they ship — same loader, same translator, same field names.
+- [ ] **10k rps sustained** in `--bench-mode` for 5 minutes on an M-series Mac. p99 traffic-loop overhead ≤ 50 µs / req beyond synthetic baseline.
+- [ ] **Browser stays smooth** (60 fps animation) at 10k rps with GUI open.
+- [ ] **Build size** ≤ 80 MB stripped.
+- [ ] **Boot time** ≤ 2 s from CLI invocation to first browser paint.
+- [ ] **Zero new third-party Go deps** beyond what eRPC already vendors + one WebSocket lib (`nhooyr.io/websocket`) + msgpack codec (`github.com/vmihailenco/msgpack/v5`).
 - [ ] **Race-clean** under `go test -race -count=1 ./cmd/erpc-simulator/... ./internal/simulator/...`.
-- [ ] **Build size**: the final binary < 50 MB stripped.
-- [ ] **Boot time**: `erpc-simulator --port 8080` to page-renders-in-browser in < 2 s.
 
 ---
 
 ## Open questions / risks
 
-1. **`health.Tracker` lifecycle.** Production wires the tracker into a `Project` and an `UpstreamRegistry`. The simulator skips those — does the tracker need them, or can it run standalone? Quick spike: build a `health.Tracker` directly with a network + project label, register a couple of upstream IDs, observe a request via `RecordUpstreamRequest`. If it works, no scaffold needed; if not, we extract a minimal helper.
+1. **Observer hook coverage.** Option (a) from §2.1 of Phase 2 needs hooks sprinkled across `internal/policy`, failsafe, network, cache. Lots of code touched. Mitigation: start with (b) span-based events and only add explicit hooks where spans don't capture enough detail (likely: hedge winner attribution, retry-budget-consumed-but-rejected events).
 
-2. **`policy.Engine` registration without a real `Project`.** Verify the engine's slot ticker fires cleanly when the registration is direct (not via `erpc.NewERPC`). Same spike as above.
+2. **eRPC's failsafe is in-house** (see prior merge of `10513c82`). The simulator must use that exact failsafe stack; verify all observability hooks fire (retry counters, hedge counters, CB transitions are visible to the observer/spans).
 
-3. **WebSocket library choice.** `nhooyr.io/websocket` is the cleanest API but adds a dep. `golang.org/x/net/websocket` is older but already commonly transitive. Pick at start of Phase 2.
+3. **Tracing tear-down**. The simulator force-disables OTel exporters at config-load time, but the global tracer provider is set once per process. Need to confirm: switching configs across reloads doesn't try to re-init the global. Likely answer: install a no-op provider at simulator boot and never call any other tracing init.
 
-4. **Method count cardinality.** If the operator's method-mix table grows large (50+ methods), the Prometheus `policy_selection_*` labels can explode. Cap at 16 methods in the UI; warn if more.
+4. **YAML AST library**. Go's `gopkg.in/yaml.v3` has `yaml.Node` with line-numbers + comments. JS-side, the `yaml` npm pkg (Eemeli Aro) is the gold standard but is ~250 KB bundled. Verify total page weight stays under our 1 MB target with CodeMirror + Chart.js + yaml + chartjs-streaming.
 
-5. **Race-detector budget.** The simulator's traffic loop, event bus, and engine ticker are three concurrent goroutines. CI must run race-mode without timing out. Mitigation: per-phase tests are small + scoped; the traffic-loop test uses a short window (1 s) and a low rps (20).
+5. **CB / retry / hedge attribution in the observer**. Failsafe wraps multiple layers; we need to know which attempt corresponds to which strategy. The simulator's observer hook must record `(strategy, attempt#, upstreamId, outcome, latencyMs)` per attempt. May require adding a context-attached event sink to the failsafe code paths — small but real change.
 
-6. **Default policy + tier:fallback.** The bundled defaults should include one `tier:fallback` upstream so the user can see `preferTag` working out of the box. Confirmed in §3.3 of the spec.
+6. **At 10k rps, message-pack encoding of `StatsFrame`** at 10 Hz × upstream-count × field-count is ~5 KB/frame. WS bandwidth easily fits. But JSON encoding the same on the browser side could spike GC; consider streaming the binary frames straight into a Float32Array-backed ring buffer in JS.
+
+7. **Knob ↔ YAML AST sync UX**. Editing the YAML by hand mid-typing shouldn't constantly redraw knobs — debounce 200 ms after last keystroke. Editing a knob also shouldn't cause a full editor reflow — only mutate the affected lines. The implementation is finicky; budget a half-day for polish.
 
 ---
 
 ## Out of scope for this plan
 
-- The simulator's GUI is a one-page tool. No multi-page navigation, no per-experiment URL routes.
-- No SaaS deployment story. The simulator runs locally only.
-- No auth. If anyone exposes it beyond localhost, that's their problem to solve (a flag-gated `--bind 0.0.0.0` is OK to add but defaults to `127.0.0.1`).
-- No support for non-EVM architectures in the bundled defaults. The fake-server response shapes are EVM-specific. A user can supply any string for `methods[]`, but the canned responses won't be valid for non-EVM RPC dialects.
+- Production deployment. The simulator is local-only.
+- Authentication / multi-user.
+- Replay against a REAL remote eRPC instance (would need network-level state injection — out of scope; the simulator owns its own erpc.ERPC).
+- A drag-and-drop visual policy builder. The policy is JS source; the editor is a text editor with linting.
+- Saving simulation runs to a database (memory-only state; Phase 6 export/import is the only persistence path).
