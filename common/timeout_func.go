@@ -12,93 +12,80 @@ import (
 // timeout applies (caller skips context.WithTimeout).
 type TimeoutFunc func(ctx context.Context, req *NormalizedRequest) *time.Duration
 
-// NewTimeoutFunc builds a TimeoutFunc from config. The returned function
-// is applied at request time via context.WithTimeoutCause.
+// NewTimeoutFunc builds a TimeoutFunc from config. The timeout is a
+// DurationSpec: a Base (static fallback) plus an optional Quantile that
+// pulls the cap from the per-method latency tracker, clamped by Min/Max.
 //
-// When Quantile > 0 the timeout is computed per request from method
-// latency percentiles; otherwise it returns the fixed Duration.
-//
-// MinDuration / MaxDuration floor/ceiling the result. **MinDuration
-// auto-populates to Duration/2 (or 500ms when Duration is zero) when
-// Quantile > 0 and MinDuration is unset** — this prevents the
-// feedback-loop bug where success quantiles can drop to 50ms because
-// every request fast-fails at 50ms (the previous timeout). See
-// specs/failsafe/feature.md §9.4.
+// When Quantile > 0 but Min is unset, Min auto-populates to Base/2 (or
+// 500ms when Base is also zero) — this prevents the feedback-loop bug
+// where success quantiles can collapse to 50ms because every request
+// fast-fails at 50ms (the previous timeout).
 func NewTimeoutFunc(logger *zerolog.Logger, cfg *TimeoutPolicyConfig) TimeoutFunc {
-	if cfg == nil {
+	if cfg == nil || cfg.Duration.IsZero() {
 		return nil
 	}
+	spec := cfg.Duration
 
-	if cfg.Quantile > 0 {
-		fixedDur := cfg.Duration.Duration()
-		minDur := cfg.MinDuration.Duration()
-		maxDur := cfg.MaxDuration.Duration()
-		quantile := cfg.Quantile
-
-		// Auto-populate MinDuration floor if unset (prod-bug fix).
-		if minDur == 0 {
-			if fixedDur > 0 {
-				minDur = fixedDur / 2
-			} else {
-				minDur = 500 * time.Millisecond
-			}
-		}
-
-		return func(ctx context.Context, req *NormalizedRequest) *time.Duration {
-			ntw := req.Network()
-			if ntw == nil {
-				logger.Debug().Object("request", req).Msg("quantile timeout: no network on request, using fallback")
-				return coldStartFallback(fixedDur, maxDur)
-			}
-			m, _ := req.Method()
-			if m == "" {
-				logger.Debug().Object("request", req).Msg("quantile timeout: empty method, using fallback")
-				return coldStartFallback(fixedDur, maxDur)
-			}
-			mt := ntw.GetMethodMetrics(m)
-			if mt == nil {
-				logger.Debug().Object("request", req).Str("method", m).Msg("quantile timeout: no metrics tracker, using fallback")
-				return coldStartFallback(fixedDur, maxDur)
-			}
-			qt := mt.GetResponseQuantiles()
-			dr := qt.GetQuantile(quantile)
-			if dr <= 0 {
-				logger.Debug().Object("request", req).Str("method", m).Msg("quantile timeout: no latency data yet, using fallback")
-				return coldStartFallback(fixedDur, maxDur)
-			}
-
-			if minDur > 0 && dr < minDur {
-				dr = minDur
-			}
-			if maxDur > 0 && dr > maxDur {
-				dr = maxDur
-			}
-			finality := req.Finality(ctx)
-			telemetry.ObserverHandle(
-				telemetry.MetricNetworkTimeoutDurationSeconds,
-				ntw.ProjectId(),
-				req.NetworkLabel(),
-				m,
-				finality.String(),
-			).Observe(dr.Seconds())
-			logger.Trace().Object("request", req).Dur("timeout", dr).Msgf("calculated dynamic timeout")
-			return &dr
+	// Apply the auto-floor only when Quantile-driven and Min is unset.
+	resolved := *spec
+	if resolved.Quantile > 0 && resolved.Min == 0 {
+		if resolved.Base > 0 {
+			resolved.Min = Duration(resolved.Base.Duration() / 2)
+		} else {
+			resolved.Min = Duration(500 * time.Millisecond)
 		}
 	}
 
-	dur := cfg.Duration.Duration()
-	if dur == 0 {
-		return nil
+	if resolved.Quantile <= 0 {
+		dur := resolved.Resolve(nil)
+		if dur <= 0 {
+			return nil
+		}
+		return func(_ context.Context, _ *NormalizedRequest) *time.Duration {
+			return &dur
+		}
 	}
-	return func(_ context.Context, _ *NormalizedRequest) *time.Duration {
-		return &dur
+
+	return func(ctx context.Context, req *NormalizedRequest) *time.Duration {
+		ntw := req.Network()
+		if ntw == nil {
+			logger.Debug().Object("request", req).Msg("quantile timeout: no network on request, using fallback")
+			return coldStartFallback(&resolved)
+		}
+		m, _ := req.Method()
+		if m == "" {
+			logger.Debug().Object("request", req).Msg("quantile timeout: empty method, using fallback")
+			return coldStartFallback(&resolved)
+		}
+		mt := ntw.GetMethodMetrics(m)
+		if mt == nil {
+			logger.Debug().Object("request", req).Str("method", m).Msg("quantile timeout: no metrics tracker, using fallback")
+			return coldStartFallback(&resolved)
+		}
+		qt := mt.GetResponseQuantiles()
+		dr := resolved.Resolve(qt)
+		if dr <= 0 {
+			logger.Debug().Object("request", req).Str("method", m).Msg("quantile timeout: no latency data yet, using fallback")
+			return coldStartFallback(&resolved)
+		}
+
+		finality := req.Finality(ctx)
+		telemetry.ObserverHandle(
+			telemetry.MetricNetworkTimeoutDurationSeconds,
+			ntw.ProjectId(),
+			req.NetworkLabel(),
+			m,
+			finality.String(),
+		).Observe(dr.Seconds())
+		logger.Trace().Object("request", req).Dur("timeout", dr).Msgf("calculated dynamic timeout")
+		return &dr
 	}
 }
 
-func coldStartFallback(fixedDur, maxDur time.Duration) *time.Duration {
-	fallback := fixedDur
+func coldStartFallback(spec *DurationSpec) *time.Duration {
+	fallback := spec.Base.Duration()
 	if fallback == 0 {
-		fallback = maxDur
+		fallback = spec.Max.Duration()
 	}
 	if fallback > 0 {
 		return &fallback

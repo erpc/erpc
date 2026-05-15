@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -1191,37 +1192,179 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 	return copied
 }
 
+// TimeoutPolicyConfig is the timeout policy. Duration is the unified
+// DurationSpec — a scalar shorthand ("5s") or an object form
+// ({base, quantile, min, max}) for adaptive caps driven by per-method
+// latency quantiles.
+//
+// Wire format also accepts the legacy flat form
+// (`duration: 5s, quantile: 0.99, minDuration: 200ms, maxDuration: 10s`)
+// — siblings get folded into Duration at YAML/JSON unmarshal time.
 type TimeoutPolicyConfig struct {
-	Duration    Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
-	Quantile    float64  `yaml:"quantile,omitempty" json:"quantile"`
-	MinDuration Duration `yaml:"minDuration,omitempty" json:"minDuration" tstype:"Duration"`
-	MaxDuration Duration `yaml:"maxDuration,omitempty" json:"maxDuration" tstype:"Duration"`
+	Duration *DurationSpec `yaml:"duration,omitempty" json:"duration,omitempty" tstype:"Duration | DurationSpec"`
 }
 
 func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {
 	if c == nil {
 		return nil
 	}
-	copied := &TimeoutPolicyConfig{}
-	*copied = *c
-	return copied
+	return &TimeoutPolicyConfig{Duration: c.Duration.Copy()}
 }
 
+// UnmarshalYAML accepts the new unified form (Duration as scalar or
+// DurationSpec object) and the legacy flat form with sibling
+// quantile/minDuration/maxDuration fields — siblings fold into Duration.
+func (c *TimeoutPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type legacy struct {
+		Duration    *DurationSpec `yaml:"duration,omitempty"`
+		Quantile    float64       `yaml:"quantile,omitempty"`
+		MinDuration Duration      `yaml:"minDuration,omitempty"`
+		MaxDuration Duration      `yaml:"maxDuration,omitempty"`
+	}
+	var raw legacy
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	c.Duration = raw.Duration
+	c.applyLegacySiblings(raw.Quantile, raw.MinDuration, raw.MaxDuration)
+	return nil
+}
+
+// UnmarshalJSON mirrors the YAML behaviour for admin/RPC entry points.
+func (c *TimeoutPolicyConfig) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	type legacy struct {
+		Duration    *DurationSpec   `json:"duration,omitempty"`
+		Quantile    float64         `json:"quantile,omitempty"`
+		MinDuration json.RawMessage `json:"minDuration,omitempty"`
+		MaxDuration json.RawMessage `json:"maxDuration,omitempty"`
+	}
+	var raw legacy
+	if err := SonicCfg.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	minD, err := parseJSONDuration(raw.MinDuration)
+	if err != nil {
+		return fmt.Errorf("timeout.minDuration: %w", err)
+	}
+	maxD, err := parseJSONDuration(raw.MaxDuration)
+	if err != nil {
+		return fmt.Errorf("timeout.maxDuration: %w", err)
+	}
+	c.Duration = raw.Duration
+	c.applyLegacySiblings(raw.Quantile, minD, maxD)
+	return nil
+}
+
+func (c *TimeoutPolicyConfig) applyLegacySiblings(quantile float64, minD, maxD Duration) {
+	if quantile == 0 && minD == 0 && maxD == 0 {
+		return
+	}
+	if c.Duration == nil {
+		c.Duration = &DurationSpec{}
+	}
+	if c.Duration.Quantile == 0 {
+		c.Duration.Quantile = quantile
+	}
+	if c.Duration.Min == 0 {
+		c.Duration.Min = minD
+	}
+	if c.Duration.Max == 0 {
+		c.Duration.Max = maxD
+	}
+}
+
+// HedgePolicyConfig is the hedge policy. Delay is the unified
+// DurationSpec — scalar shorthand ("100ms") or object form
+// ({base, quantile, min, max}) for quantile-driven hedge timing.
+//
+// Wire format also accepts the legacy flat form
+// (`delay: 100ms, quantile: 0.95, minDelay: 50ms, maxDelay: 2s`) —
+// siblings get folded into Delay at YAML/JSON unmarshal time.
 type HedgePolicyConfig struct {
-	Delay    Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
-	MaxCount int      `yaml:"maxCount" json:"maxCount"`
-	Quantile float64  `yaml:"quantile,omitempty" json:"quantile"`
-	MinDelay Duration `yaml:"minDelay,omitempty" json:"minDelay" tstype:"Duration"`
-	MaxDelay Duration `yaml:"maxDelay,omitempty" json:"maxDelay" tstype:"Duration"`
+	Delay    *DurationSpec `yaml:"delay,omitempty" json:"delay,omitempty" tstype:"Duration | DurationSpec"`
+	MaxCount int           `yaml:"maxCount" json:"maxCount"`
 }
 
 func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
 	if c == nil {
 		return nil
 	}
-	copied := &HedgePolicyConfig{}
-	*copied = *c
-	return copied
+	return &HedgePolicyConfig{
+		Delay:    c.Delay.Copy(),
+		MaxCount: c.MaxCount,
+	}
+}
+
+// UnmarshalYAML accepts the new unified form (Delay as scalar or
+// DurationSpec object) and the legacy flat form with sibling
+// quantile/minDelay/maxDelay fields — siblings fold into Delay.
+func (c *HedgePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type legacy struct {
+		Delay    *DurationSpec `yaml:"delay,omitempty"`
+		MaxCount int           `yaml:"maxCount,omitempty"`
+		Quantile float64       `yaml:"quantile,omitempty"`
+		MinDelay Duration      `yaml:"minDelay,omitempty"`
+		MaxDelay Duration      `yaml:"maxDelay,omitempty"`
+	}
+	var raw legacy
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	c.Delay = raw.Delay
+	c.MaxCount = raw.MaxCount
+	c.applyLegacySiblings(raw.Quantile, raw.MinDelay, raw.MaxDelay)
+	return nil
+}
+
+// UnmarshalJSON mirrors the YAML behaviour.
+func (c *HedgePolicyConfig) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	type legacy struct {
+		Delay    *DurationSpec   `json:"delay,omitempty"`
+		MaxCount int             `json:"maxCount,omitempty"`
+		Quantile float64         `json:"quantile,omitempty"`
+		MinDelay json.RawMessage `json:"minDelay,omitempty"`
+		MaxDelay json.RawMessage `json:"maxDelay,omitempty"`
+	}
+	var raw legacy
+	if err := SonicCfg.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	minD, err := parseJSONDuration(raw.MinDelay)
+	if err != nil {
+		return fmt.Errorf("hedge.minDelay: %w", err)
+	}
+	maxD, err := parseJSONDuration(raw.MaxDelay)
+	if err != nil {
+		return fmt.Errorf("hedge.maxDelay: %w", err)
+	}
+	c.Delay = raw.Delay
+	c.MaxCount = raw.MaxCount
+	c.applyLegacySiblings(raw.Quantile, minD, maxD)
+	return nil
+}
+
+func (c *HedgePolicyConfig) applyLegacySiblings(quantile float64, minD, maxD Duration) {
+	if quantile == 0 && minD == 0 && maxD == 0 {
+		return
+	}
+	if c.Delay == nil {
+		c.Delay = &DurationSpec{}
+	}
+	if c.Delay.Quantile == 0 {
+		c.Delay.Quantile = quantile
+	}
+	if c.Delay.Min == 0 {
+		c.Delay.Min = minD
+	}
+	if c.Delay.Max == 0 {
+		c.Delay.Max = maxD
+	}
 }
 
 type ConsensusLowParticipantsBehavior string
@@ -1271,15 +1414,20 @@ type ConsensusPolicyConfig struct {
 	// p99 latency when most upstreams are fast but one is a slow straggler:
 	// once a real answer is in hand, give the rest at most this long to
 	// confirm or dispute, then resolve with what we have.
-	// Default: 0 (wait for every participant or short-circuit).
-	MaxWaitOnResult Duration `yaml:"maxWaitOnResult,omitempty" json:"maxWaitOnResult" tstype:"Duration"`
+	//
+	// Accepts a duration scalar ("200ms") or a DurationSpec object
+	// ({base, quantile, min, max}) for adaptive caps driven by per-method
+	// latency quantiles. Defaults are applied when consensus is configured
+	// but this field is omitted — see common/defaults.go.
+	MaxWaitOnResult *DurationSpec `yaml:"maxWaitOnResult,omitempty" json:"maxWaitOnResult,omitempty" tstype:"Duration | DurationSpec"`
 
 	// MaxWaitOnEmpty caps how long consensus waits for additional participants
 	// AFTER the first response (of any kind — empty, error, or non-empty)
 	// has arrived. Typically set larger than MaxWaitOnResult because an
 	// operator is more patient when no useful data is in hand yet.
-	// Default: 0 (wait for every participant or short-circuit).
-	MaxWaitOnEmpty Duration `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty" tstype:"Duration"`
+	//
+	// Same shape as MaxWaitOnResult; defaults applied when consensus is set.
+	MaxWaitOnEmpty *DurationSpec `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty,omitempty" tstype:"Duration | DurationSpec"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1312,6 +1460,9 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 			copy(copied.PreferHighestValueFor[method], fields)
 		}
 	}
+
+	copied.MaxWaitOnResult = c.MaxWaitOnResult.Copy()
+	copied.MaxWaitOnEmpty = c.MaxWaitOnEmpty.Copy()
 
 	return copied
 }

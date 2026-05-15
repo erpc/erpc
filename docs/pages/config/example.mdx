@@ -215,12 +215,7 @@ projects:
           hedge:
             delay: 500ms
             maxCount: 1
-          circuitBreaker:
-            failureThresholdCount: 160 # 80% error rate
-            failureThresholdCapacity: 200
-            halfOpenAfter: 5m
-            successThresholdCount: 3
-            successThresholdCapacity: 3
+          # circuitBreaker is upstream-scope only — see upstreams.failsafe below.
       - architecture: evm
         evm:
           chainId: 42161
@@ -260,6 +255,14 @@ projects:
             backoffMaxDelay: 3s
             backoffFactor: 1.2
             jitter: 0ms
+          # Per-upstream circuit breaker — opens on 80% failure rate over the
+          # last 200 reqs, probes every 5m, closes on 3 consecutive successes.
+          circuitBreaker:
+            failureThresholdCount:    160
+            failureThresholdCapacity: 200
+            halfOpenAfter:            5m
+            successThresholdCount:    3
+            successThresholdCapacity: 3
       - id: blastapi-chain-1
         type: evm
         endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx

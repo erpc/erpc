@@ -39,7 +39,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(10 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
 									},
 								},
 							},
@@ -140,7 +140,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 2,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -264,7 +264,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 2,
-										Delay:    common.Duration(30 * time.Millisecond), // Short delay
+										Delay:    common.NewStaticDurationSpec(30 * time.Millisecond), // Short delay
 									},
 								},
 							},
@@ -394,7 +394,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(200 * time.Millisecond), // Hedge delay
+										Delay:    common.NewStaticDurationSpec(200 * time.Millisecond), // Hedge delay
 									},
 								},
 							},
@@ -505,7 +505,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(30 * time.Millisecond), // Short hedge delay
+										Delay:    common.NewStaticDurationSpec(30 * time.Millisecond), // Short hedge delay
 									},
 								},
 							},
@@ -615,7 +615,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 2,
-										Delay:    common.Duration(50 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
 									},
 								},
 							},
@@ -734,7 +734,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(200 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
 									},
 								},
 							},
@@ -833,7 +833,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -928,7 +928,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -1028,7 +1028,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -1129,7 +1129,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(50 * time.Millisecond), // Hedge starts quickly
+										Delay:    common.NewStaticDurationSpec(50 * time.Millisecond), // Hedge starts quickly
 									},
 								},
 							},
@@ -1230,7 +1230,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -1326,7 +1326,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -1433,7 +1433,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(500 * time.Millisecond), // Short delay
+										Delay:    common.NewStaticDurationSpec(500 * time.Millisecond), // Short delay
 									},
 								},
 							},
@@ -1533,7 +1533,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(50 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
 									},
 								},
 							},
@@ -1602,7 +1602,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.Duration(10 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1673,7 +1673,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.Duration(300 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(300 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1770,7 +1770,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.Duration(50 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1871,7 +1871,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 										Delay:       common.Duration(10 * time.Millisecond),
 									},
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.Duration(50 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1985,7 +1985,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(10 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
 									},
 								},
 							},
@@ -2070,7 +2070,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry:   nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -2187,10 +2187,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(50 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
 									},
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(1000 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(1000 * time.Millisecond),
 									},
 								},
 							},
@@ -2208,7 +2208,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(100 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},
@@ -2227,7 +2227,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(500 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(500 * time.Millisecond),
 									},
 								},
 							},
@@ -2307,10 +2307,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(1000 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(1000 * time.Millisecond),
 									},
 								},
 							},
@@ -2328,7 +2328,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(1000 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(1000 * time.Millisecond),
 									},
 								},
 							},
@@ -2347,7 +2347,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(1000 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(1000 * time.Millisecond),
 									},
 								},
 							},
@@ -2430,10 +2430,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(10 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
 									},
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(300 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(300 * time.Millisecond),
 									},
 								},
 							},
@@ -2450,7 +2450,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(150 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(150 * time.Millisecond),
 									},
 									Retry: nil,
 								},
@@ -2469,7 +2469,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(200 * time.Millisecond),
+										Duration: common.NewStaticDurationSpec(200 * time.Millisecond),
 									},
 									Retry: nil,
 								},
@@ -2548,7 +2548,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(10 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
 									},
 								},
 							},
@@ -2653,7 +2653,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(10 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
 									},
 								},
 							},
@@ -2755,7 +2755,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(100 * time.Millisecond),
+										Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 									},
 								},
 							},

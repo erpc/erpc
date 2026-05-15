@@ -39,14 +39,7 @@ failsafe:
 
 ## `timeout`
 
-Fixed wall-clock cap or per-method dynamic cap based on observed latency quantile.
-
-| Field | Type | Notes |
-|---|---|---|
-| `duration` | Duration | Static cap; cold-start fallback when `quantile > 0`. |
-| `quantile` | float 0–1 | Compute cap from per-method DDSketch (e.g. `0.99` → p99). |
-| `minDuration` | Duration | Floor for the computed cap. **Auto-set to `duration / 2` (or 500ms) when `quantile > 0` and unset** — prevents a feedback loop where the timeout collapses to near-zero on naturally-fast methods. |
-| `maxDuration` | Duration | Ceiling for the computed cap; cold-start fallback when `duration` is omitted. |
+`duration` is a [DurationSpec](#durationspec---reusable-duration-with-quantile-and-bounds) — a scalar shorthand or the full object form for adaptive caps driven by per-method latency.
 
 Network-scope timeout bounds the **entire** request lifecycle (including retries + hedges). Upstream-scope timeout bounds **each** attempt independently.
 
@@ -54,16 +47,21 @@ Network-scope timeout bounds the **entire** request lifecycle (including retries
 networks:
   - failsafe:
       - matchMethod: "*"
-        timeout: { duration: 30s }            # lifecycle cap
+        timeout:
+          duration: 30s                       # static lifecycle cap
+
 upstreams:
   - failsafe:
       - matchMethod: "eth_call|eth_getLogs"
         timeout:
-          duration:    30s                    # cold-start fallback
-          quantile:    0.99                   # cap at p99
-          minDuration: 200ms                  # floor (auto-derived if unset)
-          maxDuration: 30s                    # ceiling
+          duration:                           # adaptive per-attempt cap
+            base:     30s                     # cold-start fallback
+            quantile: 0.99                    # cap at p99 of observed latency
+            min:      200ms                   # floor (auto-derived from base/2 if unset)
+            max:      30s                     # ceiling
 ```
+
+When `quantile > 0` and `min` is unset, the floor auto-populates to `base / 2` (or `500ms` when `base` is zero) — this prevents a feedback loop where the timeout collapses to near-zero on naturally-fast methods.
 
 **Metrics:** `erpc_network_timeout_duration_seconds` (histogram of computed values), `erpc_network_timeout_fired_total{scope}`.
 
@@ -109,10 +107,7 @@ Speculative parallel attempt. Fires after `delay` if the primary hasn't returned
 
 | Field | Type | Notes |
 |---|---|---|
-| `delay` | Duration | Fixed time before firing the first hedge. |
-| `quantile` | float 0–1 | Compute `delay` from per-method latency (e.g. `0.95` → p95). |
-| `minDelay` | Duration | Floor when `quantile` is set (applies even at cold start). |
-| `maxDelay` | Duration | Ceiling. |
+| `delay` | [DurationSpec](#durationspec---reusable-duration-with-quantile-and-bounds) | Time before firing the first hedge — scalar (e.g. `100ms`) or object with quantile-driven adaptive timing. |
 | `maxCount` | int | Max additional hedges beyond the primary (e.g. `1` = primary + 1 backup). |
 
 Hedge fan-out **rolls to a fresh upstream** via the per-request rotation atomic — siblings never collide on the same upstream. Non-retryable / write methods (`eth_sendTransaction`, `eth_createAccessList`, `eth_submit*`, filter methods) skip hedging; `eth_sendRawTransaction` is hedged (idempotent broadcast). Hedge attempts are **excluded** from per-upstream request/error counters and from the circuit breaker — they're speculative fan-out, not signal.
@@ -122,11 +117,14 @@ networks:
   - failsafe:
       - matchMethod: "*"
         hedge:
-          quantile: 0.95
-          minDelay: 150ms
-          maxDelay: 2s
+          delay:
+            quantile: 0.95               # fire when p95 of observed latency has passed
+            min:      150ms              # but never sooner than 150ms (cold-start floor)
+            max:      2s                 # and never later than 2s
           maxCount: 2
 ```
+
+**Defaults applied when only some fields are set**: hedge `delay.min` defaults to `100ms` and `delay.max` to `999s` if unset.
 
 **Metrics:** `erpc_network_hedged_request_total`, `erpc_network_hedge_discards_total` (wasted hedges), `erpc_network_hedge_winner_total{upstream}` (consistent winners → promote to primary; consistent losers → drop), `erpc_network_hedge_delay_seconds` (computed delay histogram).
 
@@ -161,6 +159,45 @@ upstreams:
 ## `consensus`
 
 Cross-upstream agreement at network scope. See [Consensus →](/config/failsafe/consensus) for the full reference, including the dispute / low-participant behaviors, misbehavior tracking, and the **wait caps (`maxWaitOnResult` / `maxWaitOnEmpty`) that bound tail latency when one participant lags**.
+
+## DurationSpec — reusable duration with quantile and bounds
+
+Several knobs (`timeout.duration`, `hedge.delay`, `consensus.maxWaitOnResult/onEmpty`) accept the same flexible shape: a scalar shorthand for static values, or an object for adaptive durations driven by per-method latency.
+
+| Field | Type | Notes |
+|---|---|---|
+| `base` | Duration | Static value; cold-start fallback when `quantile > 0`. Added on top of the resolved quantile value. |
+| `quantile` | float 0–1 | When set, the value is computed from the per-method DDSketch (e.g. `0.5` → p50). |
+| `min` | Duration | Floor — applied after `base + adaptive`. Also used as the cold-start adaptive component when no latency data exists yet. |
+| `max` | Duration | Ceiling. |
+
+**Resolution math:**
+
+```
+if quantile == 0:
+  value = base                         # static; min/max are NOT applied
+
+if quantile > 0:
+  adaptive = qt.GetQuantile(quantile)  # adaptive value from per-method latency
+  adaptive = min  if cold start (no data yet)
+  value    = base + adaptive
+  value    = clamp(value, min, max)
+```
+
+`min`/`max` only apply when `quantile > 0` — they're floor/ceiling for the **adaptive** component. A static `duration: 10ms` is honored exactly even if a sibling default has `min: 100ms`.
+
+**Two equivalent ways to write a static 5-second timeout:**
+
+```yaml
+timeout:
+  duration: 5s                          # scalar shorthand
+# ────────  or  ────────
+timeout:
+  duration:
+    base: 5s                            # object form
+```
+
+**Backward-compat:** Pre-DurationSpec configs that flatten the fields as siblings still work — `quantile`, `minDuration` / `minDelay`, `maxDuration` / `maxDelay` get folded into the object form at load time. Prefer the object form for new configs since it's reusable across all policies.
 
 ## Per-attempt observability
 
@@ -212,12 +249,17 @@ server:
 networks:
   - failsafe:
       - matchMethod: "*"
-        timeout: { duration: 5s, quantile: 0.99 }
-        hedge:   { quantile: 0.95, minDelay: 100ms, maxCount: 1 }
-        retry:   { maxAttempts: 2, delay: 100ms }
+        timeout:
+          duration: { base: 5s, quantile: 0.99 }
+        hedge:
+          delay:    { quantile: 0.95, min: 100ms }
+          maxCount: 1
+        retry:
+          maxAttempts: 2
+          delay:       100ms
 ```
 
-Hedge accelerates p99 by racing past slow upstreams. Quantile timeout self-tunes per method.
+Hedge accelerates p99 by racing past slow upstreams. Quantile-driven timeout and hedge self-tune per method using observed latency.
 
 ### Heavy historical queries (archival indexer)
 
@@ -253,12 +295,19 @@ networks:
         consensus:
           maxParticipants:    5
           agreementThreshold: 3
-          maxWaitOnResult:    200ms    # once one valid answer is in, wait at most 200ms more
-          maxWaitOnEmpty:     2s       # if all responses so far are empty/error, wait longer
+          # Adaptive caps (defaults applied when omitted).
+          maxWaitOnResult:                # once any valid answer is in, wait at most p50 more
+            quantile: 0.5
+            min:      5ms
+            max:      1s
+          maxWaitOnEmpty:                 # if only empties so far, wait up to p90
+            quantile: 0.9
+            min:      50ms
+            max:      2s
           disputeBehavior:    returnError
 ```
 
-Three of five must agree, but a slow fifth upstream can't add more than 200ms once consensus has a real answer to compare.
+Three of five must agree, but a slow fifth upstream can't add more than ~p50 of observed latency once consensus has a real answer to compare. The wait caps default to these exact values when consensus is configured but the fields are omitted — set them only if you want different bounds.
 
 ### Finality-tiered policies
 
@@ -275,7 +324,9 @@ failsafe:
   - matchMethod: "*"
     matchFinality: ["realtime"]
     timeout: { duration: 2s }
-    hedge:   { quantile: 0.9, minDelay: 100ms, maxCount: 1 }
+    hedge:
+      delay:    { quantile: 0.9, min: 100ms }
+      maxCount: 1
   - matchMethod: "*"
     matchFinality: ["unknown"]
     timeout: { duration: 15s }

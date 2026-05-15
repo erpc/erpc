@@ -45,7 +45,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 		// Fixed timeout with no quantile — backward compatible behavior
 		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration: common.Duration(5 * time.Second),
+			Duration: common.NewStaticDurationSpec(5 * time.Second),
 		})
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -85,7 +85,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 		// Short timeout that the request should exceed
 		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration: common.Duration(200 * time.Millisecond),
+			Duration: common.NewStaticDurationSpec(200 * time.Millisecond),
 		})
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -128,7 +128,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		setupCtx, cancelSetup := context.WithCancel(context.Background())
 		defer cancelSetup()
 		network := setupTestNetworkWithTimeoutPolicy(t, setupCtx, &common.TimeoutPolicyConfig{
-			Duration: common.Duration(10 * time.Second),
+			Duration: common.NewStaticDurationSpec(10 * time.Second),
 		})
 
 		parentCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -189,10 +189,12 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		// Quantile-based timeout: p90 of latencies (~60ms), clamped to [200ms, 5s]
 		// minDuration ensures timeout is at least 200ms even though p90 is ~60ms
 		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration:    common.Duration(1 * time.Second), // fallback
-			Quantile:    0.9,
-			MinDuration: common.Duration(200 * time.Millisecond),
-			MaxDuration: common.Duration(5 * time.Second),
+			Duration: &common.DurationSpec{
+				Base:     common.Duration(1 * time.Second), // fallback
+				Quantile: 0.9,
+				Min:      common.Duration(200 * time.Millisecond),
+				Max:      common.Duration(5 * time.Second),
+			},
 		})
 
 		// Build up metrics
@@ -257,9 +259,11 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 		// p10 of very fast responses would be ~5ms, but minDuration is 200ms
 		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Quantile:    0.1,
-			MinDuration: common.Duration(200 * time.Millisecond),
-			MaxDuration: common.Duration(5 * time.Second),
+			Duration: &common.DurationSpec{
+				Quantile: 0.1,
+				Min:      common.Duration(200 * time.Millisecond),
+				Max:      common.Duration(5 * time.Second),
+			},
 		})
 
 		// Build metrics
@@ -308,10 +312,12 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 		// Quantile-based timeout with Duration as cold start fallback
 		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration:    common.Duration(5 * time.Second), // fallback during cold start
-			Quantile:    0.9,
-			MinDuration: common.Duration(100 * time.Millisecond),
-			MaxDuration: common.Duration(10 * time.Second),
+			Duration: &common.DurationSpec{
+				Base:     common.Duration(5 * time.Second), // fallback during cold start
+				Quantile: 0.9,
+				Min:      common.Duration(100 * time.Millisecond),
+				Max:      common.Duration(10 * time.Second),
+			},
 		})
 
 		// First request — no metrics yet, should use Duration fallback (5s)
@@ -352,9 +358,11 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 		// No Duration set — should fall back to MaxDuration during cold start
 		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Quantile:    0.9,
-			MinDuration: common.Duration(100 * time.Millisecond),
-			MaxDuration: common.Duration(10 * time.Second),
+			Duration: &common.DurationSpec{
+				Quantile: 0.9,
+				Min:      common.Duration(100 * time.Millisecond),
+				Max:      common.Duration(10 * time.Second),
+			},
 		})
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -399,7 +407,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithTimeoutAndRetry(t, ctx,
-			&common.TimeoutPolicyConfig{Duration: common.Duration(500 * time.Millisecond)},
+			&common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(500 * time.Millisecond)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(10 * time.Millisecond)},
 		)
 
@@ -455,7 +463,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithUpstreamTimeoutAndRetry(t, ctx,
-			&common.TimeoutPolicyConfig{Duration: common.Duration(50 * time.Millisecond)},
+			&common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(50 * time.Millisecond)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(10 * time.Millisecond)},
 		)
 
@@ -512,7 +520,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration: common.Duration(100 * time.Millisecond),
+			Duration: common.NewStaticDurationSpec(100 * time.Millisecond),
 		})
 
 		upstreamBefore := timeoutFiredCounterValue(t, "upstream")
@@ -560,7 +568,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 
 		// Timeout at NETWORK only; upstream has no timeout.
 		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration: common.Duration(100 * time.Millisecond),
+			Duration: common.NewStaticDurationSpec(100 * time.Millisecond),
 		})
 
 		upstreamBefore := timeoutFiredCounterValue(t, "upstream")
@@ -606,7 +614,7 @@ func TestUpstream_TimeoutPolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration: common.Duration(150 * time.Millisecond),
+			Duration: common.NewStaticDurationSpec(150 * time.Millisecond),
 		})
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -661,10 +669,12 @@ func TestUpstream_TimeoutPolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
-			Duration:    common.Duration(1 * time.Second),
-			Quantile:    0.9,
-			MinDuration: common.Duration(200 * time.Millisecond),
-			MaxDuration: common.Duration(5 * time.Second),
+			Duration: &common.DurationSpec{
+				Base:     common.Duration(1 * time.Second),
+				Quantile: 0.9,
+				Min:      common.Duration(200 * time.Millisecond),
+				Max:      common.Duration(5 * time.Second),
+			},
 		})
 
 		for i := 0; i < 10; i++ {

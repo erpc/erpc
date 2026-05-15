@@ -492,7 +492,7 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
 	}
-	if fsCfg.Hedge != nil && fsCfg.Hedge.Quantile > 0 {
+	if fsCfg.Hedge != nil && fsCfg.Hedge.Delay != nil && fsCfg.Hedge.Delay.Quantile > 0 {
 		return fmt.Errorf("%s: hedge quantile is not supported for connector-level failsafe (no latency metric source)", prefix)
 	}
 	return nil
@@ -1064,20 +1064,10 @@ func (f *FailsafeConfig) Validate() error {
 }
 
 func (t *TimeoutPolicyConfig) Validate() error {
-	if t.Quantile > 0 {
-		if t.Quantile > 1 {
-			return fmt.Errorf("upstream.*.failsafe.timeout.quantile must be between 0 and 1")
-		}
-		if t.Duration == 0 && t.MaxDuration == 0 {
-			return fmt.Errorf("upstream.*.failsafe.timeout.duration or maxDuration is required when quantile is set")
-		}
-	} else if t.Duration == 0 {
+	if t.Duration == nil {
 		return fmt.Errorf("upstream.*.failsafe.timeout.duration is required")
 	}
-	if t.MinDuration > 0 && t.MaxDuration > 0 && t.MinDuration > t.MaxDuration {
-		return fmt.Errorf("upstream.*.failsafe.timeout.minDuration must be less than or equal to maxDuration")
-	}
-	return nil
+	return t.Duration.validate("upstream.*.failsafe.timeout.duration")
 }
 
 func (r *RetryPolicyConfig) Validate() error {
@@ -1091,10 +1081,10 @@ func (r *RetryPolicyConfig) Validate() error {
 }
 
 func (h *HedgePolicyConfig) Validate() error {
-	if h.Quantile <= 0 && h.Delay <= 0 {
-		return fmt.Errorf("failsafe.hedge.delay or failsafe.hedge.quantile is required")
+	if h.Delay == nil || h.Delay.IsZero() {
+		return fmt.Errorf("failsafe.hedge.delay is required")
 	}
-	return nil
+	return h.Delay.validate("failsafe.hedge.delay")
 }
 
 func (c *CircuitBreakerPolicyConfig) Validate() error {

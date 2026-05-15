@@ -34,7 +34,7 @@ func NewCacheExecutor(cfg *common.CacheFailsafeConfig, logger *zerolog.Logger) (
 			map[string]interface{}{"policy": "consensus"},
 		)
 	}
-	if cfg.Hedge != nil && cfg.Hedge.Quantile > 0 {
+	if cfg.Hedge != nil && cfg.Hedge.Delay != nil && cfg.Hedge.Delay.Quantile > 0 {
 		return nil, common.NewErrFailsafeConfiguration(
 			errors.New("hedge quantile is not supported for connector-level failsafe (no latency metric source)"),
 			map[string]interface{}{"policy": "hedge.quantile"},
@@ -132,7 +132,9 @@ func (e *cacheExecutor) runHedgeBytes(
 	if e.cfg == nil || e.cfg.Hedge == nil || e.cfg.Hedge.MaxCount <= 0 {
 		return e.callBreaker(ctx, inner)
 	}
-	delay := e.cfg.Hedge.Delay.Duration()
+	// Cache scope has no QuantileTracker, so Resolve(nil) returns
+	// Base + Min (cold-start semantics). Static delays just yield Base.
+	delay := e.cfg.Hedge.Delay.Resolve(nil)
 	delayFn := func(idx int) time.Duration { return delay }
 	wrap := func(hctx context.Context) ([]byte, error) {
 		return e.callBreaker(hctx, inner)
@@ -162,7 +164,7 @@ func (e *cacheExecutor) callBreaker(
 	}
 	hasTimeout := false
 	if e.cfg != nil && e.cfg.Timeout != nil {
-		td := e.cfg.Timeout.Duration.Duration()
+		td := e.cfg.Timeout.Duration.Resolve(nil)
 		if td > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeoutCause(ctx, td, common.ErrDynamicTimeoutExceeded)

@@ -157,7 +157,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 				Failsafe: []*common.FailsafeConfig{
-					{Timeout: &common.TimeoutPolicyConfig{Duration: common.Duration(250 * time.Millisecond)}},
+					{Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(250 * time.Millisecond)}},
 				},
 			},
 			rlr, upr, mt,
@@ -291,7 +291,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				Failsafe: []*common.FailsafeConfig{
 					{
 						Timeout: &common.TimeoutPolicyConfig{
-							Duration: common.Duration(1 * time.Second), // Timeout to prevent actual infinite loop
+							Duration: common.NewStaticDurationSpec(1 * time.Second), // Timeout to prevent actual infinite loop
 						},
 					},
 				},

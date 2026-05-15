@@ -28,14 +28,18 @@ export GOMEMLIMIT=2GiB
 
 ## Failsafe policies
 
-Make sure to configure [retry policy](/config/failsafe#retry-policy) on both network-level and upstream-level.
+Configure [retry](/config/failsafe#retry) at both network and upstream scopes:
 
-- Network-level retry configuration is useful to try other upstreams if one has an issue. Even when you only have 1 upstream, network-level retry is still useful. Recommendation is to configure `maxCount` to be equal to the number of upstreams.
-- Upstream-level retry configuration covers intermittent issues with a specific upstream. It is recommended to set at least 2 and at most 5 as `maxCount`.
+- **Network-level retry** rotates to a different upstream on a transient failure. Even with a single upstream it's worth enabling. Set `maxAttempts` ≈ number of upstreams.
+- **Upstream-level retry** covers per-attempt flakiness within the same upstream. Use 2–5 `maxAttempts`.
 
-[Timeout policy](/config/failsafe#timeout-policy) depends on the expected response time for your use-case, for example when using "trace" methods on EVM chains, providers might take up to 10 seconds to respond. Therefore a low timeout might ultimately always fail. If you are not using heavy methods such as trace or large getLogs, you can use `3s` as a default timeout.
+[Timeout](/config/failsafe#timeout): match the slowest realistic response (e.g. `trace_*` can take 10s+). For non-trace traffic, `3s` is a sensible default. Set `quantile: 0.99` on the upstream-scope timeout to auto-tune per method.
 
-[Hedge policy](/config/failsafe#hedge-policy) is **highly-recommended** if you prefer "fast response as soon as possible". For example setting `500ms` as "delay" will make sure if upstream A did not respond under 500 milliseconds, simultaneously another request to upstream B will be fired, and eRPC will respond back as soon as any of them comes back with result faster. Note: since more requests are sent, it might incur higher costs to achieve the "fast response" goal.
+[Hedge](/config/failsafe#hedge) is **highly recommended** for latency-sensitive reads. With `delay: 500ms`, eRPC races a second upstream once the primary has been quiet for 500ms and returns the first kept response — at the cost of duplicate traffic for slow requests. Hedge attempts are excluded from per-upstream scoring and from the circuit breaker.
+
+[Consensus](/config/failsafe/consensus) for high-trust reads (gas price, nonce, contract calls during write paths). Set [`maxWaitOnResult`](/config/failsafe/consensus#tail-latency-caps-maxwaitonresult--maxwaitonempty) to bound the tail when one participant lags.
+
+[Execution trace headers](/config/failsafe#http-response-headers) (`X-ERPC-Upstreams-Tried`, `-Outcomes`, `-Reasons`, `-Durations-Ms`, `-Flags`) ship by default — clients can debug retry/hedge/consensus decisions without server-side traces. Disable with `server.executionHeaders: off` if you want zero diagnostic leakage.
 
 ## Caching database
 

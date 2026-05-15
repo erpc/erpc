@@ -473,39 +473,14 @@ func (e *networkExecutor) runHedge(
 		}
 	}
 
-	delay := e.cfg.Hedge.Delay.Duration()
-	quantile := e.cfg.Hedge.Quantile
-	minDelay := e.cfg.Hedge.MinDelay.Duration()
-	maxDelay := e.cfg.Hedge.MaxDelay.Duration()
+	// Hedge delay is the unified DurationSpec — scalar Base for fixed
+	// delays, Quantile for adaptive timing, Min/Max for floor/ceiling.
+	// ResolveForRequest looks up per-method latency via the network's
+	// QuantileTracker; returns Base alone when no data is available
+	// (cold start, no quantile, or no network on the request).
+	spec := e.cfg.Hedge.Delay
 	delayFn := func(idx int) time.Duration {
-		// Quantile-based per-request hedge delay.
-		if quantile > 0 {
-			d := delay
-			if req != nil {
-				if ntw := req.Network(); ntw != nil {
-					if m, _ := req.Method(); m != "" {
-						if mt := ntw.GetMethodMetrics(m); mt != nil {
-							qt := mt.GetResponseQuantiles()
-							dr := qt.GetQuantile(quantile)
-							if dr > 0 {
-								d = dr + delay
-							}
-						}
-					}
-				}
-			}
-			// MinDelay floor applies even when no quantile metric is
-			// available yet (cold start). Without this, the very first
-			// hedge fires at d=delay=0 before the primary has a chance.
-			if minDelay > 0 && d < minDelay {
-				d = minDelay
-			}
-			if maxDelay > 0 && d > maxDelay {
-				d = maxDelay
-			}
-			return d
-		}
-		return delay
+		return spec.ResolveForRequest(req)
 	}
 	var fireCount atomic.Int32
 	wrapInner := func(hctx context.Context) (*common.NormalizedResponse, error) {

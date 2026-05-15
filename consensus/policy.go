@@ -25,8 +25,8 @@ type config struct {
 	preferLargerResponses   bool
 	preferHighestValueFor   map[string][]string
 	fireAndForget           bool
-	maxWaitOnResult         time.Duration
-	maxWaitOnEmpty          time.Duration
+	maxWaitOnResult         *common.DurationSpec
+	maxWaitOnEmpty          *common.DurationSpec
 }
 
 // builder is the internal builder used by NewConsensus.
@@ -93,11 +93,11 @@ func (b *builder) WithPreferHighestValueFor(m map[string][]string) *builder {
 	return b
 }
 func (b *builder) WithFireAndForget(v bool) *builder { b.cfg.fireAndForget = v; return b }
-func (b *builder) WithMaxWaitOnResult(d time.Duration) *builder {
+func (b *builder) WithMaxWaitOnResult(d *common.DurationSpec) *builder {
 	b.cfg.maxWaitOnResult = d
 	return b
 }
-func (b *builder) WithMaxWaitOnEmpty(d time.Duration) *builder {
+func (b *builder) WithMaxWaitOnEmpty(d *common.DurationSpec) *builder {
 	b.cfg.maxWaitOnEmpty = d
 	return b
 }

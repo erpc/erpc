@@ -97,7 +97,7 @@ func TestHedgeConsensus_AllUpstreamsMissingData_HedgeRecovery(t *testing.T) {
 	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
 		3,
 		&common.HedgePolicyConfig{
-			Delay:    common.Duration(200 * time.Millisecond),
+			Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
 			MaxCount: 1,
 		},
 		&common.ConsensusPolicyConfig{
@@ -195,7 +195,7 @@ func TestHedgeConsensus_ServerError_HedgeRecovery(t *testing.T) {
 	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
 		3,
 		&common.HedgePolicyConfig{
-			Delay:    common.Duration(200 * time.Millisecond),
+			Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
 			MaxCount: 1,
 		},
 		&common.ConsensusPolicyConfig{
@@ -269,7 +269,7 @@ func TestHedgeConsensus_ExecutionReverted_CancelsHedge(t *testing.T) {
 	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
 		3,
 		&common.HedgePolicyConfig{
-			Delay:    common.Duration(200 * time.Millisecond),
+			Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
 			MaxCount: 1,
 		},
 		&common.ConsensusPolicyConfig{
@@ -354,7 +354,7 @@ func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testi
 	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
 		3,
 		&common.HedgePolicyConfig{
-			Delay:    common.Duration(100 * time.Millisecond),
+			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 			MaxCount: 1,
 		},
 		&common.ConsensusPolicyConfig{

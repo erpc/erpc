@@ -277,10 +277,10 @@ func (e *upstreamExecutor) runHedge(
 		}
 	}
 
-	delay := e.cfg.Hedge.Delay.Duration()
+	spec := e.cfg.Hedge.Delay
 
 	var fireCount atomic.Int32
-	delayFn := func(idx int) time.Duration { return delay }
+	delayFn := func(idx int) time.Duration { return spec.ResolveForRequest(req) }
 	innerFn := func(hctx context.Context) (*common.NormalizedResponse, error) {
 		isHedge := false
 		if v := hctx.Value(hedgeCtxKey{}); v != nil {

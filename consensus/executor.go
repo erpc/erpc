@@ -375,6 +375,13 @@ func (e *executor) runAnalyzer(
 	shortCircuited := false
 	waitCapped := false
 
+	// Resolve the wait caps once per round. DurationSpec.ResolveForRequest
+	// looks up per-method latency quantiles via the request's network;
+	// returns 0 when the spec is zero/nil or no data is available — the
+	// arm-timer logic treats 0 as "no cap".
+	maxWaitOnResult := e.config.maxWaitOnResult.ResolveForRequest(originalReq)
+	maxWaitOnEmpty := e.config.maxWaitOnEmpty.ResolveForRequest(originalReq)
+
 	// waitDeadline tracks the earliest of:
 	//   - first-response-ever  + maxWaitOnEmpty   (only set when > 0)
 	//   - first-non-empty-resp + maxWaitOnResult  (only set when > 0)
@@ -412,18 +419,18 @@ func (e *executor) runAnalyzer(
 		return waitTimer.C
 	}
 	considerWaitCap := func(resp *execResult) {
-		if e.config.maxWaitOnEmpty <= 0 && e.config.maxWaitOnResult <= 0 {
+		if maxWaitOnEmpty <= 0 && maxWaitOnResult <= 0 {
 			return
 		}
 		now := time.Now()
 		// First response of any kind arms maxWaitOnEmpty.
-		if e.config.maxWaitOnEmpty > 0 && waitDeadline.IsZero() {
-			armTimer(now.Add(e.config.maxWaitOnEmpty))
+		if maxWaitOnEmpty > 0 && waitDeadline.IsZero() {
+			armTimer(now.Add(maxWaitOnEmpty))
 		}
 		// A non-empty result arms (or tightens) maxWaitOnResult.
-		if e.config.maxWaitOnResult > 0 && resp != nil && resp.Err == nil &&
+		if maxWaitOnResult > 0 && resp != nil && resp.Err == nil &&
 			resp.Result != nil && !resp.Result.IsResultEmptyish(ctx) {
-			armTimer(now.Add(e.config.maxWaitOnResult))
+			armTimer(now.Add(maxWaitOnResult))
 		}
 	}
 

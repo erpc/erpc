@@ -30,7 +30,9 @@ func TestCacheExecutor_RejectsHedgeQuantile(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	cfg := &common.FailsafeConfig{
 		Hedge: &common.HedgePolicyConfig{
-			Quantile: 0.95,
+			Delay: &common.DurationSpec{
+				Quantile: 0.95,
+			},
 			MaxCount: 1,
 		},
 	}
@@ -43,7 +45,7 @@ func TestCacheExecutor_AcceptsValid(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	cfg := &common.FailsafeConfig{
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.Duration(2 * time.Second),
+			Duration: common.NewStaticDurationSpec(2 * time.Second),
 		},
 		Retry: &common.RetryPolicyConfig{
 			MaxAttempts: 3,
@@ -55,7 +57,7 @@ func TestCacheExecutor_AcceptsValid(t *testing.T) {
 			HalfOpenAfter:            common.Duration(30 * time.Second),
 		},
 		Hedge: &common.HedgePolicyConfig{
-			Delay:    common.Duration(200 * time.Millisecond),
+			Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
 			MaxCount: 1,
 		},
 	}
@@ -234,7 +236,7 @@ func TestCacheFailsafe_Timeout_Exceeded(t *testing.T) {
 	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
 		{
 			Timeout: &common.TimeoutPolicyConfig{
-				Duration: common.Duration(50 * time.Millisecond),
+				Duration: common.NewStaticDurationSpec(50 * time.Millisecond),
 			},
 		},
 	}, nil)
@@ -443,7 +445,10 @@ func TestCacheFailsafe_Validation_RejectsHedgeQuantile(t *testing.T) {
 		Driver: common.DriverMemory,
 		Memory: &common.MemoryConnectorConfig{MaxItems: 100, MaxTotalSize: "1MB"},
 		FailsafeForSets: []*common.FailsafeConfig{
-			{Hedge: &common.HedgePolicyConfig{Quantile: 0.9, MaxCount: 1}},
+			{Hedge: &common.HedgePolicyConfig{
+				Delay:    &common.DurationSpec{Quantile: 0.9},
+				MaxCount: 1,
+			}},
 		},
 	}
 	err := cfg.Validate()
@@ -458,7 +463,7 @@ func TestCacheFailsafe_Validation_AcceptsValidConfig(t *testing.T) {
 		Memory: &common.MemoryConnectorConfig{MaxItems: 100, MaxTotalSize: "1MB"},
 		FailsafeForGets: []*common.FailsafeConfig{
 			{
-				Timeout: &common.TimeoutPolicyConfig{Duration: common.Duration(2 * time.Second)},
+				Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(2 * time.Second)},
 				Retry:   &common.RetryPolicyConfig{MaxAttempts: 3},
 			},
 		},
@@ -495,7 +500,7 @@ func TestCacheFailsafe_Get_Success(t *testing.T) {
 
 	fc, err := NewFailsafeConnector(&logger, mc, []*common.FailsafeConfig{
 		{
-			Timeout: &common.TimeoutPolicyConfig{Duration: common.Duration(1 * time.Second)},
+			Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(1 * time.Second)},
 			Retry:   &common.RetryPolicyConfig{MaxAttempts: 3},
 		},
 	}, nil)
@@ -515,7 +520,7 @@ func TestCacheFailsafe_Set_Success(t *testing.T) {
 
 	fc, err := NewFailsafeConnector(&logger, mc, nil, []*common.FailsafeConfig{
 		{
-			Timeout: &common.TimeoutPolicyConfig{Duration: common.Duration(1 * time.Second)},
+			Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(1 * time.Second)},
 		},
 	})
 	require.NoError(t, err)

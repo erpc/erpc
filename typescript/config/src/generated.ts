@@ -135,7 +135,35 @@ export interface ServerConfig {
   trustedIPForwarders?: string[];
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
+  /**
+   * ExecutionHeaders controls the per-request diagnostic headers
+   * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
+   * eRPC routed and resolved each request. Defaults to "all" — set
+   * "summary" to keep only counters, or "off" to disable entirely
+   * (useful for low-latency / bandwidth-constrained clients).
+   */
+  executionHeaders?: ExecutionHeadersMode;
 }
+/**
+ * ExecutionHeadersMode controls how much per-request execution detail is
+ * exposed in HTTP response headers.
+ */
+export type ExecutionHeadersMode = string;
+/**
+ * ExecutionHeadersAll emits the full set: counters + per-upstream
+ * trace (upstream IDs, outcomes, reasons, durations). Default.
+ */
+export const ExecutionHeadersAll: ExecutionHeadersMode = "all";
+/**
+ * ExecutionHeadersSummary emits only the counter triplet
+ * (X-ERPC-Attempts/Retries/Hedges) + the cache-hit / final-upstream
+ * markers. Skips the (potentially large) per-attempt slice headers.
+ */
+export const ExecutionHeadersSummary: ExecutionHeadersMode = "summary";
+/**
+ * ExecutionHeadersOff disables all X-ERPC-* diagnostic headers.
+ */
+export const ExecutionHeadersOff: ExecutionHeadersMode = "off";
 export interface HealthCheckConfig {
   mode?: HealthCheckMode;
   auth?: AuthConfig;
@@ -444,6 +472,12 @@ export interface NetworkDefaults {
   evm?: TsEvmNetworkConfigForDefaults;
   multiplexing?: boolean;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -479,6 +513,12 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   sampleRate?: number /* float64 */;
@@ -602,6 +642,25 @@ export interface FailsafeConfig {
   hedge?: HedgePolicyConfig;
   consensus?: ConsensusPolicyConfig;
 }
+/**
+ * NetworkFailsafeConfig is the scope-specific alias for network-level
+ * failsafe policies. By convention, CircuitBreaker is not used at this
+ * scope (use upstream-scope breakers instead); validation enforces this.
+ */
+export type NetworkFailsafeConfig = FailsafeConfig;
+/**
+ * UpstreamFailsafeConfig is the scope-specific alias for per-upstream
+ * failsafe policies. By convention, Consensus is not used at this
+ * scope (consensus is a network-scope concern only); validation
+ * enforces this.
+ */
+export type UpstreamFailsafeConfig = FailsafeConfig;
+/**
+ * CacheFailsafeConfig is the scope-specific alias for cache-connector
+ * failsafe policies. Hedge.Quantile is not allowed here (no per-method
+ * quantile data on cache reads); validation enforces this.
+ */
+export type CacheFailsafeConfig = FailsafeConfig;
 export interface RetryPolicyConfig {
   maxAttempts: number /* int */;
   delay?: Duration;
@@ -641,18 +700,29 @@ export interface CircuitBreakerPolicyConfig {
   successThresholdCount: number /* uint */;
   successThresholdCapacity: number /* uint */;
 }
+/**
+ * TimeoutPolicyConfig is the timeout policy. Duration is the unified
+ * DurationSpec — a scalar shorthand ("5s") or an object form
+ * ({base, quantile, min, max}) for adaptive caps driven by per-method
+ * latency quantiles.
+ * Wire format also accepts the legacy flat form
+ * (`duration: 5s, quantile: 0.99, minDuration: 200ms, maxDuration: 10s`)
+ * — siblings get folded into Duration at YAML/JSON unmarshal time.
+ */
 export interface TimeoutPolicyConfig {
-  duration?: Duration;
-  quantile?: number /* float64 */;
-  minDuration?: Duration;
-  maxDuration?: Duration;
+  duration?: Duration | DurationSpec;
 }
+/**
+ * HedgePolicyConfig is the hedge policy. Delay is the unified
+ * DurationSpec — scalar shorthand ("100ms") or object form
+ * ({base, quantile, min, max}) for quantile-driven hedge timing.
+ * Wire format also accepts the legacy flat form
+ * (`delay: 100ms, quantile: 0.95, minDelay: 50ms, maxDelay: 2s`) —
+ * siblings get folded into Delay at YAML/JSON unmarshal time.
+ */
 export interface HedgePolicyConfig {
-  delay?: Duration;
+  delay?: Duration | DurationSpec;
   maxCount: number /* int */;
-  quantile?: number /* float64 */;
-  minDelay?: Duration;
-  maxDelay?: Duration;
 }
 export type ConsensusLowParticipantsBehavior = string;
 export const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior = "returnError";
@@ -691,6 +761,26 @@ export interface ConsensusPolicyConfig {
    * Default is false (normal behavior - cancel remaining requests on short-circuit).
    */
   fireAndForget?: boolean;
+  /**
+   * MaxWaitOnResult caps how long consensus waits for additional participants
+   * AFTER at least one non-empty response has arrived. Use this to bound
+   * p99 latency when most upstreams are fast but one is a slow straggler:
+   * once a real answer is in hand, give the rest at most this long to
+   * confirm or dispute, then resolve with what we have.
+   * Accepts a duration scalar ("200ms") or a DurationSpec object
+   * ({base, quantile, min, max}) for adaptive caps driven by per-method
+   * latency quantiles. Defaults are applied when consensus is configured
+   * but this field is omitted — see common/defaults.go.
+   */
+  maxWaitOnResult?: Duration | DurationSpec;
+  /**
+   * MaxWaitOnEmpty caps how long consensus waits for additional participants
+   * AFTER the first response (of any kind — empty, error, or non-empty)
+   * has arrived. Typically set larger than MaxWaitOnResult because an
+   * operator is more patient when no useful data is in hand yet.
+   * Same shape as MaxWaitOnResult; defaults applied when consensus is set.
+   */
+  maxWaitOnEmpty?: Duration | DurationSpec;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";
@@ -838,6 +928,12 @@ export interface StaticResponseErrorConfig {
   message: string;
   data?: any;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
@@ -1199,6 +1295,39 @@ export const CachePolicyAppliesToGet: CachePolicyAppliesTo = "get";
 export const CachePolicyAppliesToSet: CachePolicyAppliesTo = "set";
 
 //////////
+// source: duration_spec.go
+
+/**
+ * DurationSpec describes a duration that may be static, derived from a
+ * per-method latency quantile, or both. It's the reusable building block
+ * for any failsafe knob that wants "fixed base + adaptive component
+ * clamped between min/max" semantics — currently consensus wait caps,
+ * with timeout/hedge supporting it as an alternative entry-point.
+ * Resolution rules:
+ *   final = Base + adaptive
+ * where `adaptive` is:
+ *   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists
+ *   - `Min` (the floor) when Quantile > 0 but quantile data is cold (no
+ *     observations yet) — this gives a sensible non-zero cap immediately
+ *     after boot
+ *   - `0` when Quantile is unset
+ * After `Base + adaptive`, the result is clamped to [Min, Max] when those
+ * are set. A nil or all-zero DurationSpec returns 0 (the caller treats
+ * that as "no cap" / "disabled").
+ * Wire format accepts both shorthand and object form:
+ * 	caps: 500ms                                   # shorthand: Base only
+ * 	caps: { base: 500ms }                         # explicit Base
+ * 	caps: { quantile: 0.5, min: 5ms, max: 1s }    # quantile with bounds
+ * 	caps: { base: 100ms, quantile: 0.9, max: 2s } # combined
+ */
+export interface DurationSpec {
+  base?: Duration;
+  quantile?: number /* float64 */;
+  min?: Duration;
+  max?: Duration;
+}
+
+//////////
 // source: error_extractor.go
 
 /**
@@ -1215,6 +1344,134 @@ export type JsonRpcErrorExtractor = any;
 export type JsonRpcErrorExtractorFunc = any;
 
 //////////
+// source: exec_state.go
+
+/**
+ * UpstreamAttemptOutcome enumerates the possible per-attempt outcomes
+ * recorded against an upstream. The set is closed: every attempt ends
+ * in exactly one of these.
+ */
+export type UpstreamAttemptOutcome = string;
+export const UpstreamOutcomeSuccess: UpstreamAttemptOutcome = "success";
+export const UpstreamOutcomeEmpty: UpstreamAttemptOutcome = "empty";
+export const UpstreamOutcomeTransportError: UpstreamAttemptOutcome = "transport_error";
+export const UpstreamOutcomeServerError: UpstreamAttemptOutcome = "server_error";
+export const UpstreamOutcomeClientError: UpstreamAttemptOutcome = "client_error";
+export const UpstreamOutcomeRateLimited: UpstreamAttemptOutcome = "rate_limited";
+export const UpstreamOutcomeMissingData: UpstreamAttemptOutcome = "missing_data";
+export const UpstreamOutcomeExecRevert: UpstreamAttemptOutcome = "exec_revert";
+export const UpstreamOutcomeBlockUnavailable: UpstreamAttemptOutcome = "block_unavailable";
+export const UpstreamOutcomeBreakerOpen: UpstreamAttemptOutcome = "breaker_open";
+export const UpstreamOutcomeCancelled: UpstreamAttemptOutcome = "cancelled";
+export const UpstreamOutcomeTimeout: UpstreamAttemptOutcome = "timeout";
+export const UpstreamOutcomeSkipped: UpstreamAttemptOutcome = "skipped";
+/**
+ * UpstreamSelectionReason describes WHY a particular upstream was
+ * selected for a given attempt. Operators use this to debug skew in
+ * upstream-pick distribution (e.g. why is one upstream getting all
+ * the hedge fan-out?).
+ */
+export type UpstreamSelectionReason = string;
+export const SelectionReasonPrimary: UpstreamSelectionReason = "primary"; // initial pick
+export const SelectionReasonRetry: UpstreamSelectionReason = "retry"; // network-scope retry
+export const SelectionReasonHedge: UpstreamSelectionReason = "hedge"; // speculative hedge fan-out
+export const SelectionReasonConsensusSlot: UpstreamSelectionReason = "consensus_slot"; // one consensus participant
+export const SelectionReasonSweep: UpstreamSelectionReason = "sweep"; // try-all-upstreams iteration
+/**
+ * UpstreamAttempt is one (upstream, attempt) record. The executors
+ * append these as participants come and go so operators can answer
+ * "which upstreams were involved in this request, why were they
+ * chosen, and what happened to them?" without parsing trace data.
+ */
+export interface UpstreamAttempt {
+  upstreamid: string;
+  vendorname: string;
+  startedat: any /* time.Time */;
+  duration: number /* time in nanoseconds (time.Duration) */;
+  outcome: UpstreamAttemptOutcome;
+  reason: UpstreamSelectionReason;
+  ishedge: boolean;
+  isretry: boolean;
+  attemptidx: number /* int */; // 0-based attempt index within the parent loop
+  errorcode: string; // ErrorCode string when Outcome is an error variant
+  errordetail: string; // free-form short description (truncated)
+}
+/**
+ * ExecState centralizes the per-request execution counters and the
+ * per-upstream attempt log. Created lazily on first access via
+ * (*NormalizedRequest).ExecState().
+ * All counters are atomic; the struct itself is safe for concurrent use.
+ */
+export interface ExecState {
+  /**
+   * Attempts counts every Forward attempt: the primary + any retry +
+   * any hedge.
+   */
+  attempts: any /* atomic.Int32 */;
+  /**
+   * Retries counts retry attempts only (Attempts - 1 - Hedges).
+   */
+  retries: any /* atomic.Int32 */;
+  /**
+   * Hedges counts the number of hedge fires (1 = the primary plus one
+   * hedge ran in parallel).
+   */
+  hedges: any /* atomic.Int32 */;
+  /**
+   * NetworkAttempts / NetworkRetries / NetworkHedges track the same
+   * metrics at the network scope. The upstream scope's counters are
+   * the bare Attempts/Retries/Hedges above.
+   */
+  networkattempts: any /* atomic.Int32 */;
+  networkretries: any /* atomic.Int32 */;
+  networkhedges: any /* atomic.Int32 */;
+  /**
+   * CacheAttempts / CacheRetries / CacheHedges track cache-layer
+   * retries and hedges.
+   */
+  cacheattempts: any /* atomic.Int32 */;
+  cacheretries: any /* atomic.Int32 */;
+  cachehedges: any /* atomic.Int32 */;
+  /**
+   * ConsensusSlots counts how many consensus participants ran.
+   */
+  consensusslots: any /* atomic.Int32 */;
+  /**
+   * ConsensusDisputes counts dispute events.
+   */
+  consensusdisputes: any /* atomic.Int32 */;
+  /**
+   * ConsensusLowParticipants counts low-participant events.
+   */
+  consensuslowparticipants: any /* atomic.Int32 */;
+  startedat: any /* time.Time */;
+}
+/**
+ * ExecStateSnapshot is a plain-int view of ExecState for log/span
+ * labeling — captured at a point in time.
+ */
+export interface ExecStateSnapshot {
+  attempts: number /* int */;
+  retries: number /* int */;
+  hedges: number /* int */;
+  networkattempts: number /* int */;
+  networkretries: number /* int */;
+  networkhedges: number /* int */;
+  cacheattempts: number /* int */;
+  cacheretries: number /* int */;
+  cachehedges: number /* int */;
+  consensusslots: number /* int */;
+  consensusdisputes: number /* int */;
+  consensuslowparticipants: number /* int */;
+  startedat: any /* time.Time */;
+}
+/**
+ * execStateOnce is embedded on NormalizedRequest to lazy-init the
+ * ExecState struct without making every request pay the allocation when
+ * the field is never accessed.
+ */
+
+//////////
 // source: network.go
 
 export type NetworkArchitecture = string;
@@ -1222,6 +1479,15 @@ export const ArchitectureEvm: NetworkArchitecture = "evm";
 export type Network = any;
 export type QuantileTracker = any;
 export type TrackedMetrics = any;
+
+//////////
+// source: timeout_func.go
+
+/**
+ * TimeoutFunc computes the timeout for a request. Returns nil when no
+ * timeout applies (caller skips context.WithTimeout).
+ */
+export type TimeoutFunc = any;
 
 //////////
 // source: upstream.go

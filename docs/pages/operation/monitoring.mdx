@@ -157,6 +157,29 @@ Here is a list of some of the most important metrics:
 | erpc_cors_preflight_requests_total                 | Counter   | Total number of CORS preflight requests received.                                                                                                                                             |
 | erpc_cors_disallowed_origin_total                  | Counter   | Total number of CORS requests from disallowed origins.                                                                                                                                        |
 
+#### Resilience policy metrics
+
+Emitted by the [failsafe](/config/failsafe) executor. Use these to size retry budgets, tune hedge delays, watch breaker churn, and detect tail-latency laggards inside consensus.
+
+| Metric | Type | Description |
+|---|---|---|
+| `erpc_upstream_selection_total{upstream,reason}` | Counter | Why each upstream attempt was picked. `reason` ∈ `primary` / `retry` / `hedge` / `consensus_slot` / `sweep`. |
+| `erpc_upstream_attempt_outcome_total{upstream,outcome,is_hedge,is_retry}` | Counter | Per-attempt classification. `outcome` ∈ `success` / `empty` / `transport_error` / `server_error` / `client_error` / `rate_limited` / `missing_data` / `exec_revert` / `block_unavailable` / `breaker_open` / `cancelled` / `timeout` / `skipped`. |
+| `erpc_network_retry_attempt_total{reason}` | Counter | Retry pressure by trigger: `retryable_error` / `block_unavailable` / `missing_data` / `empty_result` / `pending_tx` / `execution_exception_retryable`. |
+| `erpc_network_hedged_request_total{upstream}` | Counter | Hedge fires per upstream. |
+| `erpc_network_hedge_winner_total{upstream}` | Counter | Hedge race winners — consistently winning = promote to primary; consistently losing = drop. |
+| `erpc_network_hedge_discards_total{upstream}` | Counter | Hedge attempts cancelled because a sibling won — wasted work signal. |
+| `erpc_network_hedge_delay_seconds` | Histogram | Computed hedge fire delay (from `quantile`-driven config). |
+| `erpc_network_timeout_fired_total{scope}` | Counter | Timeouts firing per scope (`network` / `upstream`). |
+| `erpc_network_timeout_duration_seconds` | Histogram | Quantile-derived timeout values actually used. |
+| `erpc_upstream_breaker_state_change_total{upstream,transition}` | Counter | Circuit-breaker state churn (`closed_to_open`, `open_to_half_open`, `half_open_to_closed`, ...). |
+| `erpc_consensus_short_circuit_total{reason}` | Counter | Consensus rounds resolved before all participants returned. |
+| `erpc_consensus_wait_capped_total{trigger}` | Counter | Consensus `maxWaitOnResult` / `maxWaitOnEmpty` firings — high rates flag a slow upstream that should be tightened or dropped. |
+
+#### Per-request execution trace
+
+Every response carries the full attempt log as `X-ERPC-*` headers (winning upstream, per-attempt outcomes, reasons, durations, retry/hedge flags). Toggle verbosity with `server.executionHeaders: all|summary|off`. See [failsafe → HTTP response headers](/config/failsafe#http-response-headers) for the full field list.
+
 #### PromQL examples
 
 ```bash
@@ -237,4 +260,22 @@ erpc_network_latest_block_timestamp_distance_seconds{network=~"${network:regex}"
 
 # Alert if block timestamp is too far behind (> 30 seconds)
 erpc_network_latest_block_timestamp_distance_seconds > 30
+
+# Retry pressure by reason — spikes on `block_unavailable` usually mean a slow upstream
+sum(rate(erpc_network_retry_attempt_total[5m])) by (network, reason)
+
+# Hedge effectiveness: which upstream usually wins the race (promote candidates)
+topk(5, sum(rate(erpc_network_hedge_winner_total[10m])) by (network, upstream))
+
+# Wasted hedge work — high rate means hedge `delay` is too short
+sum(rate(erpc_network_hedge_discards_total[5m])) by (network, upstream)
+
+# Per-attempt outcome distribution — separates real vs speculative traffic
+sum(rate(erpc_upstream_attempt_outcome_total[5m])) by (upstream, outcome, is_hedge)
+
+# Circuit-breaker churn — frequent open/half_open transitions = bad upstream
+sum(increase(erpc_upstream_breaker_state_change_total{transition="closed_to_open"}[1h])) by (upstream)
+
+# Consensus wait-cap firings — a hot signal for laggard upstreams in a consensus group
+sum(rate(erpc_consensus_wait_capped_total[5m])) by (network, trigger)
 ```

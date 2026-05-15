@@ -90,7 +90,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 				},
 				Hedge: &common.HedgePolicyConfig{
 					MaxCount: 2,
-					Delay:    common.Duration(200 * time.Millisecond), // Hedge after 200ms
+					Delay:    common.NewStaticDurationSpec(200 * time.Millisecond), // Hedge after 200ms
 				},
 			},
 			expectedBehavior:   "retry should not wait for hedge delay when failure is fast",
@@ -129,10 +129,10 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 			failsafeConfig: &common.FailsafeConfig{
 				Hedge: &common.HedgePolicyConfig{
 					MaxCount: 2,
-					Delay:    common.Duration(100 * time.Millisecond),
+					Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
 				},
 				Timeout: &common.TimeoutPolicyConfig{
-					Duration: common.Duration(1 * time.Second),
+					Duration: common.NewStaticDurationSpec(1 * time.Second),
 				},
 			},
 			expectedBehavior:   "should hedge to additional upstreams",
@@ -286,10 +286,10 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 	failsafeConfig := &common.FailsafeConfig{
 		Hedge: &common.HedgePolicyConfig{
 			MaxCount: 2,                                       // Allow up to 2 hedges (3 total requests)
-			Delay:    common.Duration(100 * time.Millisecond), // Hedge quickly
+			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond), // Hedge quickly
 		},
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.Duration(2 * time.Second),
+			Duration: common.NewStaticDurationSpec(2 * time.Second),
 		},
 	}
 
@@ -612,10 +612,10 @@ func TestFourAttemptScenario(t *testing.T) {
 		},
 		Hedge: &common.HedgePolicyConfig{
 			MaxCount: 3, // Allow multiple hedges
-			Delay:    common.Duration(hedgeDelay),
+			Delay:    common.NewStaticDurationSpec(hedgeDelay),
 		},
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.Duration(1 * time.Second),
+			Duration: common.NewStaticDurationSpec(1 * time.Second),
 		},
 	}
 
