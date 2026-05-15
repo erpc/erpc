@@ -28,6 +28,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
+	policystdlib "github.com/erpc/erpc/internal/policy/stdlib"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -125,7 +127,13 @@ func setupTwoUpstreamNetworkForSkip(
 		SelectionPolicy: selectionPolicy,
 	}
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkCfg, rlr, upr, mt, nil)
+	// Build a real policy engine so subtests that pass a non-nil
+	// `selectionPolicy` (e.g. SelectionPolicyCordoned) actually have an
+	// eval running. Subtests that pass nil `selectionPolicy` get the
+	// default policy — harmless here since the default policy filters
+	// only on observed metrics, and these tests don't seed any.
+	pe := policy.NewEngine(ctx, &log.Logger, "test", mt, policystdlib.Install)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkCfg, rlr, upr, mt, pe)
 	require.NoError(t, err)
 
 	upr.Bootstrap(ctx)
@@ -133,11 +141,17 @@ func setupTwoUpstreamNetworkForSkip(
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
-	// Legacy `upstream.ReorderUpstreams(upr)` is gone; the selection-policy
-	// engine drives routing. For tests that built Network with `policyEngine=nil`
-	// (above), there's no engine to drive — the request path falls back to
-	// raw registration order via `upstreamsRegistry.GetNetworkUpstreams`,
-	// which is what the original ReorderUpstreams call was guaranteeing.
+	if selectionPolicy == nil {
+		// No custom policy → tests want a deterministic registration
+		// order (rpc1 before rpc2). Pre-rewrite this was
+		// `upstream.ReorderUpstreams(upr)`; the new equivalent is
+		// `PinUpstreamOrderForTest()` which also stops the engine's
+		// ticker so the cached order can't drift mid-test.
+		network.PinUpstreamOrderForTest()
+	}
+	// If a selectionPolicy IS set, we leave the engine ticking so its
+	// eval can take effect (the SelectionPolicyCordoned subtest
+	// explicitly sleeps to wait for the first tick).
 	return network
 }
 
