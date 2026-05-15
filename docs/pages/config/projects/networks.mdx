@@ -65,7 +65,7 @@ projects:
         # (OPTIONAL) See /config/projects/selection-policies for the
         # full reference. The block below shows the defaults the
         # engine uses when `eval` is omitted — sortByScore(BALANCED)
-        # plus preferGroup/stickyPrimary/probeExcluded. Override
+        # plus preferTag/stickyPrimary/probeExcluded. Override
         # `eval` to express any custom logic via the chainable stdlib.
         selectionPolicy:
           evalInterval: 1s
@@ -76,7 +76,7 @@ projects:
             (upstreams, ctx) =>
               upstreams
                 .sortByScore(BALANCED)
-                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+                .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
                 .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
                 .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 
@@ -173,7 +173,7 @@ export default createConfig({
             eval: `(upstreams, ctx) =>
               upstreams
                 .sortByScore(BALANCED)
-                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+                .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
                 .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
                 .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })`,
           },

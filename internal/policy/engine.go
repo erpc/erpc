@@ -79,7 +79,7 @@ func NewEngine(
 //
 // If `cfg.Eval` is the placeholder identity policy
 // (`common.DefaultSelectionPolicySource`), this method upgrades it to
-// the embedded rich default (sortByScore + preferGroup + stickyPrimary
+// the embedded rich default (sortByScore + preferTag + stickyPrimary
 // + probeExcluded).
 //
 // The initial eval runs synchronously so callers can rely on a non-empty

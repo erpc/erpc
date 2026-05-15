@@ -600,9 +600,8 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 type UpstreamConfig struct {
 	Id   string       `yaml:"id,omitempty" json:"id"`
 	Type UpstreamType `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
-	// Tags is an open-ended set of labels attached to this upstream. The
-	// recommended convention is `<dimension>:<value>` so a single upstream
-	// can carry orthogonal labels:
+	// Tags is the single canonical user-applied label set. Convention is
+	// `<dimension>:<value>` so a single upstream can carry orthogonal labels:
 	//
 	//   tags:
 	//     - tier:main               # used by .preferTag for tiering
@@ -615,16 +614,12 @@ type UpstreamConfig struct {
 	// Tier convention: `tier:fallback` declares a fallback-tier upstream
 	// (matches the long-standing eRPC convention; the default policy
 	// looks for `!tier:fallback` as the primary tier).
+	//
+	// The legacy `group: X` / `cohort: Y` YAML keys are accepted at
+	// load time only — UnmarshalYAML rewrites them as `tier:X` /
+	// `cohort:Y` tags and forgets them. There is no Go-level Group or
+	// Cohort field; programmatic code uses Tags directly.
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-
-	// Group is deprecated. Use `Tags` with a `tier:<value>` entry instead;
-	// UnmarshalYAML auto-migrates `group: X` to `tier:X`. The field is
-	// kept on the struct only so legacy YAML still parses; it's hidden
-	// from JSON output and code should not read it directly.
-	Group string `yaml:"group,omitempty" json:"-"`
-	// Cohort is deprecated. Use `Tags` with a `cohort:<value>` entry instead;
-	// UnmarshalYAML auto-migrates `cohort: Y` to `cohort:Y`. Same caveat as Group.
-	Cohort string `yaml:"cohort,omitempty" json:"-"`
 
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
@@ -639,34 +634,47 @@ type UpstreamConfig struct {
 	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
 }
 
-// UnmarshalYAML provides backward compatibility for old single failsafe object format
+// UnmarshalYAML accepts the current canonical schema, plus two legacy
+// shapes for backward compatibility at load time only:
+//
+//  1. `failsafe:` as a single object (pre-list shape).
+//  2. `group:` / `cohort:` keys at the top level — rewritten as
+//     `tier:<value>` / `cohort:<value>` entries in `tags`.
+//
+// Neither legacy field exists on the runtime struct. Programmatic
+// callers use `Tags` directly.
 func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// Define a type alias to avoid recursion
-	type rawUpstreamConfig UpstreamConfig
-	raw := (*rawUpstreamConfig)(u)
+	// Strict-schema shadow: inlines the canonical config and adds the
+	// deprecated yaml-only Group / Cohort keys. yaml v3 ignores
+	// `json:"-"` so this is safe.
+	type canonicalUpstreamConfig UpstreamConfig
+	type shadow struct {
+		canonicalUpstreamConfig `yaml:",inline"`
+		Group                   string `yaml:"group,omitempty"`
+		Cohort                  string `yaml:"cohort,omitempty"`
+	}
 
-	// Try unmarshaling normally first
-	err := unmarshal(raw)
+	var s shadow
+	err := unmarshal(&s)
 	if err == nil {
-		u.migrateDeprecatedLabelFieldsIntoTags()
+		*u = UpstreamConfig(s.canonicalUpstreamConfig)
+		mergeLegacyLabelKeysIntoTags(u, s.Group, s.Cohort)
 		return nil
 	}
 
-	// Save the original error - it might be more informative
 	originalErr := err
-
-	// Check if the error is about unknown fields - if so, return it as is
-	// This preserves errors like "field maxCount not found in type"
 	errStr := err.Error()
+	// Unknown-field errors are real schema bugs; surface them as-is.
 	if strings.Contains(errStr, "not found in type") ||
 		strings.Contains(errStr, "unknown field") {
 		return originalErr
 	}
 
-	// If that fails, try the old format with single failsafe object
-	type oldUpstreamConfig struct {
+	// Legacy shape: `failsafe:` as a single object instead of a list.
+	type oldShadow struct {
 		Id                           string                   `yaml:"id,omitempty"`
 		Type                         UpstreamType             `yaml:"type,omitempty"`
+		Tags                         []string                 `yaml:"tags,omitempty"`
 		Group                        string                   `yaml:"group,omitempty"`
 		Cohort                       string                   `yaml:"cohort,omitempty"`
 		VendorName                   string                   `yaml:"vendorName,omitempty"`
@@ -682,18 +690,14 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty"`
 	}
 
-	var old oldUpstreamConfig
+	var old oldShadow
 	if err := unmarshal(&old); err != nil {
-		// If both formats fail, return the original error as it's likely more informative
-		// about the actual problem (like invalid field names)
 		return originalErr
 	}
 
-	// Convert old format to new format
 	u.Id = old.Id
 	u.Type = old.Type
-	u.Group = old.Group
-	u.Cohort = old.Cohort
+	u.Tags = old.Tags
 	u.VendorName = old.VendorName
 	u.Endpoint = old.Endpoint
 	u.Evm = old.Evm
@@ -706,14 +710,13 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.Shadow = old.Shadow
 
 	if old.Failsafe != nil {
-		// Ensure MatchMethod has a default value for backward compatibility
 		if old.Failsafe.MatchMethod == "" {
 			old.Failsafe.MatchMethod = "*"
 		}
 		u.Failsafe = []*FailsafeConfig{old.Failsafe}
 	}
 
-	u.migrateDeprecatedLabelFieldsIntoTags()
+	mergeLegacyLabelKeysIntoTags(u, old.Group, old.Cohort)
 	return nil
 }
 
@@ -728,12 +731,10 @@ func (u *UpstreamConfig) HasTag(tag string) bool {
 	return false
 }
 
-// migrateDeprecatedLabelFieldsIntoTags collapses the deprecated `Group`
-// and `Cohort` fields into the canonical `Tags` slice. After this runs,
-// production code may rely on `Tags` as the sole source of truth.
-//
-// Idempotent: a tag synthesized once won't be duplicated on a re-run.
-func (u *UpstreamConfig) migrateDeprecatedLabelFieldsIntoTags() {
+// mergeLegacyLabelKeysIntoTags appends `tier:<group>` / `cohort:<cohort>`
+// to u.Tags for the deprecated yaml-only keys, deduplicating against
+// what's already there. Called once from UnmarshalYAML; not exported.
+func mergeLegacyLabelKeysIntoTags(u *UpstreamConfig, group, cohort string) {
 	has := func(tag string) bool {
 		for _, t := range u.Tags {
 			if t == tag {
@@ -742,17 +743,15 @@ func (u *UpstreamConfig) migrateDeprecatedLabelFieldsIntoTags() {
 		}
 		return false
 	}
-	if u.Group != "" {
-		if t := "tier:" + u.Group; !has(t) {
+	if group != "" {
+		if t := "tier:" + group; !has(t) {
 			u.Tags = append(u.Tags, t)
 		}
-		u.Group = ""
 	}
-	if u.Cohort != "" {
-		if t := "cohort:" + u.Cohort; !has(t) {
+	if cohort != "" {
+		if t := "cohort:" + cohort; !has(t) {
 			u.Tags = append(u.Tags, t)
 		}
-		u.Cohort = ""
 	}
 }
 

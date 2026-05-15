@@ -51,7 +51,7 @@ func TestTranslate_NoLegacy_NoOp(t *testing.T) {
 
 func TestTranslate_PreservesExistingEval(t *testing.T) {
 	prj := legacy.WidenedProject{RoutingStrategy: "score-based"}
-	user := "(upstreams, ctx) => upstreams.byGroup('hot')"
+	user := "(upstreams, ctx) => upstreams.byTag('tier:hot')"
 	nwCfgs := []*common.NetworkConfig{{
 		Architecture:    common.ArchitectureEvm,
 		Evm:             &common.EvmNetworkConfig{ChainId: 123},

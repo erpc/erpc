@@ -55,10 +55,11 @@ same thing. Array form mixes: positive patterns are OR'd (any match wins);
 negated patterns are AND'd (all must hold); both kinds together mean
 `(any positive matches OR no positives in the array) AND (all negations hold)`.
 
-**Deprecated aliases** — `byGroup(name)` / `excludeGroup(name)` /
-`preferGroup(name, opts)` still work as shims for `byTag('tier:'+name)`
-etc., so policies written before the tags merge keep running. New
-policies should use the tag methods directly.
+> **Legacy YAML keys.** If your config still uses `group: X` /
+> `cohort: Y` keys on an upstream, the loader rewrites them at parse
+> time to `tier:X` / `cohort:Y` tags. There is no other back-compat
+> path — `byGroup` / `preferGroup` / `spreadAcrossGroups` have been
+> removed. Use the tag-prefixed primitives instead.
 
 ## Health filters
 
@@ -183,15 +184,10 @@ Upstreams without any tag matching the prefix all land in the
 empty-key bucket and interleave together at the end of the partition
 order.
 
-**Deprecated.** `preferGroup(name, opts)` and `spreadAcrossGroups({ by })`
-remain as shims:
-
-- `preferGroup('main', ...)` ≡ `preferTag('tier:main', ...)`
-- `spreadAcrossGroups({ by: 'cohort' })` ≡ `spreadAcrossTags('cohort:')`
-- `spreadAcrossGroups({ by: 'vendor' })` ≡ partition by `u.vendor`
-  (no direct tag equivalent; `vendor` isn't a tag — it's a derived
-  attribute). If you need this, use `.sortByScore(...).spreadAcrossGroups({by:'vendor'})`
-  for now; a future `spreadAcrossVendors()` may replace it.
+**Want vendor diversity?** Add explicit `vendor:<name>` tags to your
+upstreams and call `spreadAcrossTags('vendor:')`. There is no separate
+`spreadAcrossVendors` primitive — one canonical spreader, one canonical
+data model.
 
 ## Slicing & limits
 

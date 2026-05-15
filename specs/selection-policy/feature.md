@@ -10,7 +10,7 @@
 
 The **Selection Policy** is the sole mechanism that decides which upstreams handle which requests and in what order. It runs as a per-network (optionally per-method) background loop. Each tick takes a snapshot of upstream identity, configuration, and tracked metrics, executes a user-defined JavaScript evaluation function, and produces an **ordered list of upstreams**. That list is the routing decision: requests are served from the head of the list, falling through to subsequent entries on retry/failure. Upstreams not present in the returned list are excluded for that tick.
 
-The evaluation function has access to a Go-implemented standard library exposed as chainable methods on the upstream array. Authors compose built-in operators (`sortByScore`, `removeByLag`, `preferGroup`, `stickyPrimary`, etc.) or drop into plain JS when needed. The default policy is a single chain covering the common case.
+The evaluation function has access to a Go-implemented standard library exposed as chainable methods on the upstream array. Authors compose built-in operators (`sortByScore`, `removeByLag`, `preferTag`, `stickyPrimary`, etc.) or drop into plain JS when needed. The default policy is a single chain covering the common case.
 
 There is no separate "scoring" subsystem, no `routingStrategy` knob, no permit-acquisition gate at request time, and no cordon table. Routing behavior is *entirely* expressed by the eval function.
 
@@ -61,10 +61,6 @@ type Upstream = {
   readonly type: 'evm' | string            // upstream architecture
   readonly tags: readonly string[]         // user-applied labels (convention: 'prefix:value');
                                            // consumed by byTag / preferTag / spreadAcrossTags
-  readonly group?: string                  // DEPRECATED. Derived from `tier:*` tag for back-compat
-                                           //   with byGroup / preferGroup
-  readonly cohort?: string                 // DEPRECATED. Derived from `cohort:*` tag for back-compat
-                                           //   with spreadAcrossGroups({ by: 'cohort' })
   readonly endpoint: string                // redacted
 
   readonly config: UpstreamConfig          // raw user config (full block)
@@ -149,7 +145,7 @@ Methods are exposed on the upstream array (and on every chain result) as instanc
 | `PREFER_FEWER_ERRORS` | `15, 2, 6, 2, 1, 12` |
 | `PREFER_FRESHER_HEAD` | `4, 2, 2, 15, 8, 3` |
 | `PREFER_LESS_THROTTLED` | `8, 4, 15, 2, 1, 4` |
-| `PREFER_CHEAP` | (no weights — alias for `BALANCED`; intended pairing with `preferGroup('cheap')`) |
+| `PREFER_CHEAP` | (no weights — alias for `BALANCED`; intended pairing with `preferTag('tier:cheap')`) |
 
 #### Finality states
 
@@ -181,7 +177,7 @@ Filter values support glob patterns: `byTag('tier:primary*')`, `byVendor('!alche
 
 **Tag negation semantic.** `byTag('!X')` matches upstreams that have NO tag matching `X` (it's the dual of `byTag('X')`). Array form mixes: positive patterns are OR'd, negated patterns are AND'd, and an upstream matches iff `(no positives in array OR at least one positive matches) AND (all negations hold)`.
 
-**Deprecated.** `byGroup(name)` / `excludeGroup(name)` remain as shims for `byTag('tier:'+name)` / `excludeTag('tier:'+name)`. They read the derived `u.group` field surfaced by `buildJSUpstreams` (computed from the first `tier:*` tag, or the deprecated `UpstreamConfig.Group` field).
+**Legacy YAML keys.** `group: X` / `cohort: Y` at the upstream level are accepted at config-load time only: the loader rewrites them as `tier:X` / `cohort:Y` tags. There is no Go-level `Group` or `Cohort` field on `UpstreamConfig`, and the stdlib does not expose `byGroup`, `preferGroup`, or `spreadAcrossGroups` — those names have been removed.
 
 ---
 
@@ -272,7 +268,7 @@ Other sorts (ascending unless noted):
 .sortByHeadLag()
 .sortByFinalizationLag()
 .sortByRequestsTotal({ desc?: boolean = true })            // most experienced first by default
-.sortByGroup(order: string[])              // explicit group ordering; groups not in `order` go last
+.sortByTag(prefix: string, order: string[])// explicit ordering by the value of a tag-prefix; tags not in `order` go last
 .sortByVendor(order: string[])             // same idea for vendors
 .sortById(order: string[])                 // explicit id ordering
 ```
@@ -282,7 +278,7 @@ Manual score adjustments (must run after `sortByScore` — operate on the attach
 ```ts
 .boostBy(fn: (u) => number)                // multiplies u.score by fn(u); re-sorts
 .penalizeBy(fn: (u) => number)             // divides u.score by fn(u); re-sorts
-.boostByGroup(name: string, factor: number)
+.boostByTag(pattern: string, factor: number)
 .boostByVendor(name: string, factor: number)
 ```
 
@@ -326,20 +322,13 @@ Manual score adjustments (must run after `sortByScore` — operate on the attach
 
 ### 4.8 Grouping & multi-tier
 
+The canonical multi-tier surface is the pair `preferTag` (tier selection
+with fallback) and `spreadAcrossTags` (partition + interleave by a tag
+prefix). There is no `groupBy` / `Group[]` type and no separate "group"
+data model — tags carry every dimension of upstream classification.
+
 ```ts
-.groupBy(keyFnOrField: ((u) => string) | keyof Upstream | 'group' | 'vendor' | 'type')
-  : Group[]   // each Group is itself chainable as Upstream[]
-
-// On Group[]:
-.flat()                                    // back to Upstream[]
-.pickTopPerGroup(n: number)                // keep first n in each group, flatten
-.pickFromEachGroup(n: number)              // alias
-.balanceAcrossGroups()                     // round-robin merge: [g1[0], g2[0], g1[1], g2[1], ...]
-.interleaveGroups(weights?: number[])      // weighted round-robin
-.sortGroupsBy(fn: (group) => number)
-.mapGroups(fn: (group) => Upstream[])      // apply per-group transformation, flatten
-
-// On Upstream[] (no prior groupBy):
+// On Upstream[]:
 .interleave(other: Upstream[])             // round-robin merge of two arrays
 ```
 
@@ -374,15 +363,10 @@ diversity — the primary stays the best by score, the first runner-up
 comes from a different bucket, and so on. Stable within each bucket.
 Upstreams with no matching tag share the empty-key bucket.
 
-**Deprecated.** `preferGroup(name, opts)` and `spreadAcrossGroups({ by })` remain as back-compat shims:
-- `preferGroup('main', ...)` ≡ `preferTag('tier:main', ...)`
-- `spreadAcrossGroups({ by: 'cohort' })` ≡ `spreadAcrossTags('cohort:')`
-- `spreadAcrossGroups({ by: 'vendor' })` still partitions by `u.vendor` (a derived, not user-set, attribute; no direct tag equivalent).
-
-Reads `UpstreamConfig.cohort` when `by: 'cohort'`. Cohort is an optional
-operator-set string describing shared fate beyond what `vendor` /
-`group` capture (e.g. multiple distinct vendors routing through one
-shared backend, or multiple upstreams in one cloud region).
+To partition by vendor (a non-user-controlled attribute), apply
+explicit `vendor:<name>` tags to your upstreams and call
+`spreadAcrossTags('vendor:')`. There is no separate `spreadAcrossVendors`
+primitive: one canonical spreader, one canonical data model.
 
 ---
 
@@ -699,9 +683,9 @@ When `selectionPolicy.eval` is omitted, the engine applies the production-harden
       maxThrottledRate: 0.3,
     })
     .whenEmpty(() => upstreams)        // 3 — safety net
-    .preferGroup('!fallback', {        // 4 — tier
+    .preferTag('!tier:fallback', {     // 4 — tier
       minHealthy: 1,
-      fallback:   'fallback',
+      fallback:   'tier:fallback',
     })
     .sortByScore(BALANCED)             // 5 — rank survivors
     .if(ctx.finality === REALTIME,     // 6 — sticky for live-latest only
@@ -850,13 +834,13 @@ internal/policy/
 
 internal/policy/stdlib/
   install.go             # sobek wiring: install methods, constants, helpers
-  identity.go            # where, byId, byGroup, ...
+  identity.go            # where, byId, byTag, byVendor, byType, ...
   health.go              # removeBy*, keepHealthy
   generic.go             # filter, reject, find, partition, set ops
   sort.go                # sortByScore (the big one), sortBy*, boost/penalize
   random.go              # shuffle, rotateBy, weightedRandom
   sticky.go              # stickyPrimary, stickyOrder, keepRecentPrimary
-  group.go               # groupBy + Group methods + preferGroup
+  tags.go                # preferTag, spreadAcrossTags
   limit.go               # pickTop, dropTop, at, head, tail, ...
   probe.go               # probeExcluded, forceInclude
   cooldown.go            # cooldown, warmup
@@ -944,7 +928,7 @@ The default policy is exercised against canonical fixtures:
 | All healthy, two upstreams | Both ordered by score, sticky kept |
 | Primary degrades (error rate spikes) | Sticky retains until hysteresis exceeded, then switches |
 | Primary recovers within minSwitchInterval | No switch back |
-| All "default" group unhealthy, "fallback" group healthy | `preferGroup` switches to fallback |
+| All `tier:default` upstreams unhealthy, `tier:fallback` healthy | `preferTag('!tier:fallback', { fallback: 'tier:fallback' })` switches to fallback |
 | Lag spike on one upstream | `removeByLag` excludes it; resampling re-admits later |
 | Eval throws | Cache preserved, error metric emitted |
 | Eval times out | Same |
@@ -982,7 +966,7 @@ For each fixture scenario, snapshot the decision record to `testdata/decisions/<
 ```js
 return upstreams
   .removeByLag({ blockHead: 10 })
-  .preferGroup('cheap', { minHealthy: 2, fallback: 'premium' })
+  .preferTag('tier:cheap', { minHealthy: 2, fallback: 'tier:premium' })
   .sortByScore(BALANCED)
   .stickyPrimary({ hysteresis: 0.15, minSwitchInterval: '1m' })
 ```
@@ -1009,27 +993,29 @@ selectionPolicy:
 return upstreams.rotateBy(Math.floor(ctx.now / 1000))
 ```
 
-### 12.4 Vendor diversification
+### 12.4 Vendor diversification (via explicit vendor tags)
+
+Tag your upstreams with `vendor:<name>` and:
 
 ```js
 return upstreams
   .sortByScore(BALANCED)
-  .groupBy('vendor').pickTopPerGroup(1)
+  .spreadAcrossTags('vendor:')
   .stickyPrimary({ hysteresis: 0.10 })
 ```
 
-### 12.5 Strict primary group, fallback only when nothing healthy
+### 12.5 Strict primary tier, fallback only when nothing healthy
 
 ```js
 const primaries = upstreams
-  .byGroup('primary')
+  .byTag('tier:primary')
   .removeByErrorRate(0.10)
   .removeByLag({ blockHead: 5 })
 
 if (primaries.length > 0) {
   return primaries.sortByScore(BALANCED).stickyPrimary()
 }
-return upstreams.byGroup('fallback').sortByScore(PREFER_FASTER)
+return upstreams.byTag('tier:fallback').sortByScore(PREFER_FASTER)
 ```
 
 ### 12.6 Canary in rotation
@@ -1056,8 +1042,8 @@ return upstreams
 const cheap = inWindow('00:00', '06:00', 'UTC')
 return upstreams
   .if(cheap,
-    arr => arr.preferGroup('cheap', { fallback: 'premium' }),
-    arr => arr.preferGroup('premium'))
+    arr => arr.preferTag('tier:cheap',   { fallback: 'tier:premium' }),
+    arr => arr.preferTag('tier:premium'))
   .sortByScore(BALANCED)
   .stickyPrimary()
 ```
@@ -1085,12 +1071,17 @@ return upstreams
 ### 12.11 Multi-tier with explicit ordering
 
 ```js
+// Each upstream is tagged `tier:primary` / `tier:secondary` / `tier:fallback`.
+const priority = { 'tier:primary': 0, 'tier:secondary': 1, 'tier:fallback': 2 }
 return upstreams
   .removeCordoned()
-  .groupBy('group')
-  .sortGroupsBy(g => ({ primary: 0, secondary: 1, fallback: 2 }[g[0].config.group] ?? 99))
-  .mapGroups(g => g.sortByScore(BALANCED))
-  .flat()
+  .sortByScore(BALANCED)
+  .sortBy(u => {
+    for (const t of u.tags || []) {
+      if (priority[t] != null) return priority[t]
+    }
+    return 99
+  })
   .stickyOrder({ hysteresis: 0.10, minSwitchInterval: '30s' })
 ```
 
@@ -1101,7 +1092,7 @@ const sorted = upstreams.sortByScore(BALANCED)
 const result = []
 for (const u of sorted) {
   if (u.metrics.errorRate > 0.5) continue
-  if (u.config.group === 'experimental' && ctx.finality === FINALIZED) continue
+  if ((u.tags || []).includes('tier:experimental') && ctx.finality === FINALIZED) continue
   result.push(u)
 }
 return result

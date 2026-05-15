@@ -119,18 +119,10 @@
   define('excludeVendor', function (v) { return this.filter(u => !matchAny(v, u.vendor)); });
   define('byType', function (t) { return this.filter(u => matchAny(t, u.type)); });
 
-  // Deprecated. byGroup('main') ≡ byTag('tier:main'). Kept so policies
-  // written before the tags merge keep running; emits no warning because
-  // it's a perfectly valid alias on the back-compat-derived `u.group`
-  // field surfaced by buildJSUpstreams.
-  define('byGroup', function (g) { return this.filter(u => matchAny(g, u.group || '')); });
-  define('excludeGroup', function (g) { return this.filter(u => !matchAny(g, u.group || '')); });
-
   define('where', function (f) {
     return this.filter(u => {
       if (f.id != null && !matchAny(f.id, u.id)) return false;
       if (f.tag != null && !hasMatchingTag(u, f.tag)) return false;
-      if (f.group != null && !matchAny(f.group, u.group || '')) return false;
       if (f.vendor != null && !matchAny(f.vendor, u.vendor)) return false;
       if (f.type != null && !matchAny(f.type, u.type)) return false;
       return true;
@@ -140,7 +132,6 @@
     return this.filter(u => {
       if (f.id != null && matchAny(f.id, u.id)) return false;
       if (f.tag != null && hasMatchingTag(u, f.tag)) return false;
-      if (f.group != null && matchAny(f.group, u.group || '')) return false;
       if (f.vendor != null && matchAny(f.vendor, u.vendor)) return false;
       if (f.type != null && matchAny(f.type, u.type)) return false;
       return true;
@@ -401,21 +392,6 @@
     }
     return this.slice();
   });
-
-  // Deprecated. preferGroup('main', ...) ≡ preferTag('tier:main', ...).
-  // Kept as a back-compat alias on the derived `u.group` field.
-  define('preferGroup', function (name, opts) {
-    opts = opts || {};
-    const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
-    const fallback = opts.fallback;
-    const inGroup = this.filter(u => matchAny(name, u.group || ''));
-    if (inGroup.length >= minHealthy) return inGroup;
-    if (fallback) {
-      const fb = this.filter(u => matchAny(fallback, u.group || ''));
-      if (fb.length > 0) return fb;
-    }
-    return this.slice();
-  });
   define('preferVendor', function (name, opts) {
     opts = opts || {};
     const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
@@ -458,24 +434,9 @@
     });
   });
 
-  // Deprecated. spreadAcrossGroups({by:'cohort'}) ≡ spreadAcrossTags('cohort:').
-  // Kept as a back-compat shim for policies authored before the tags merge.
-  define('spreadAcrossGroups', function (opts) {
-    opts = opts || {};
-    if (this.length <= 1) return this.slice();
-    const by = opts.by || 'vendor';
-    const keyFn = (typeof by === 'function')
-      ? by
-      : (u) => (by === 'vendor' ? u.vendor
-              : by === 'group'  ? (u.group  || '')
-              : by === 'cohort' ? (u.cohort || u.vendor || '')   // cohort defaults to vendor when unset
-              : '');
-    return _interleaveByKey.call(this, keyFn);
-  });
-
-  // Stable round-robin interleave used by spreadAcrossTags + spreadAcrossGroups.
-  // Preserves input order WITHIN each bucket (so the first occurrence of
-  // each key remains the best representative of that partition) and
+  // Stable round-robin interleave used by spreadAcrossTags. Preserves
+  // input order WITHIN each bucket (so the first occurrence of each
+  // key remains the best representative of that partition) and
   // round-robins across buckets in insertion order.
   function _interleaveByKey(keyFn) {
     const buckets = new Map(); // key -> Upstream[]

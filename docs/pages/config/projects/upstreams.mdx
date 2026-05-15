@@ -28,11 +28,13 @@ projects:
       # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
       - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
 
-        # Each upstream can have an arbitrary group name which is used in metrics, as well as 
-        # useful when writing an eval function in selectionPolicy below.
-        # Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
-        # and then fallback to this group if the default one doesn't have enough healthy upstreams.
-        group: fallback
+        # Each upstream carries arbitrary label tags consumed by the
+        # selectionPolicy stdlib (byTag / preferTag / spreadAcrossTags).
+        # Convention: `<dimension>:<value>`. Use `tier:fallback` to let
+        # eRPC's default selection policy treat this upstream as a
+        # safety net used only when the primary tier is empty.
+        tags:
+          - tier:fallback
         
         # (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
         id: blastapi-chain-42161
@@ -157,12 +159,12 @@ export default createConfig({
           endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
 
           /*
-          * (OPTIONAL) Each upstream can have an arbitrary group name which is used in metrics, as well as 
-          * useful when writing an eval function in selectionPolicy below.
-          * Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
-          * and then fallback to this group if the default one doesn't have enough healthy upstreams.
+          * (OPTIONAL) Tags are arbitrary `<dimension>:<value>` labels
+          * consumed by the selectionPolicy stdlib (byTag / preferTag /
+          * spreadAcrossTags). Use `tier:fallback` to mark this upstream
+          * as a safety net used only when the primary tier is empty.
           */
-          group: "fallback",
+          tags: ["tier:fallback"],
 
           // (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
           id: "blastapi-chain-42161",
@@ -314,8 +316,9 @@ projects:
       # ... example above ^
     
     upstreamDefaults:
-      # Default group for all upstreams
-      group: "default"
+      # Default tags applied to every upstream that doesn't override them.
+      tags:
+        - tier:default
       
       # Default JSON-RPC settings
       jsonRpc:
@@ -363,7 +366,7 @@ Upstream ordering is decided by the network's **selection policy**, not by per-u
 The upstream fields that the selection policy reads:
 
 - `id` — referenced from `selectionPolicy.eval` and admin endpoints.
-- `group` — used by `.preferGroup(...)` and the default policy's `fallback` semantics.
+- `tags` — user-applied labels (`<dimension>:<value>` convention) consumed by `.byTag(...)`, `.preferTag(...)`, `.spreadAcrossTags(prefix)`. `tier:fallback` drives the default policy's safety-net behavior.
 - `vendor` — used by `.preferVendor(...)` and `.byVendor(...)` filters.
 - `type` — used by `.byType(...)` filters.
 

@@ -368,10 +368,10 @@ For every method: implement in Go, expose to sobek as an array prototype method,
 
 ### 5.2 Identity & labels (`stdlib/identity.go`)
 
-- [ ] `where({id?, group?, vendor?, type?, finality?})` — AND across fields, OR within array values, glob patterns
+- [ ] `where({id?, tag?, vendor?, type?, finality?})` — AND across fields, OR within array values, glob patterns
 - [ ] `whereNot(...)`
 - [ ] `byId(id|id[])`, `excludeId(id|id[])`
-- [ ] `byGroup`, `excludeGroup`
+- [ ] `byTag(pattern|patterns)`, `excludeTag`
 - [ ] `byVendor`, `excludeVendor`
 - [ ] `byType`
 
@@ -394,9 +394,9 @@ For every method: implement in Go, expose to sobek as an array prototype method,
 - [ ] `sortByLatency(quantile?)`
 - [ ] `sortByErrorRate`, `sortByThrottling`, `sortByMisbehavior`, `sortByHeadLag`, `sortByFinalizationLag`
 - [ ] `sortByRequestsTotal({desc?: true})`
-- [ ] `sortByGroup(order[])`, `sortByVendor(order[])`, `sortById(order[])`
+- [ ] `sortByTag(prefix, order[])`, `sortByVendor(order[])`, `sortById(order[])`
 - [ ] `boostBy(fn)`, `penalizeBy(fn)` (require prior sortByScore — store score on upstream)
-- [ ] `boostByGroup(name, factor)`, `boostByVendor(name, factor)`
+- [ ] `boostByTag(pattern, factor)`, `boostByVendor(name, factor)`
 
 ### 5.5 Randomization & rotation (`stdlib/random.go`)
 
@@ -410,14 +410,12 @@ For every method: implement in Go, expose to sobek as an array prototype method,
 - [ ] `stickyOrder({hysteresis?, minSwitchInterval?})` — full-list stability.
 - [ ] `keepRecentPrimary(duration)`
 
-### 5.7 Grouping (`stdlib/group.go`)
+### 5.7 Tag-based partitioning (`stdlib/tags.go`)
 
-- [ ] `groupBy(keyFnOrField)` — returns `Group[]` with its own method set.
-- [ ] On `Group[]`: `flat`, `pickTopPerGroup`, `pickFromEachGroup`, `balanceAcrossGroups`, `interleaveGroups(weights?)`, `sortGroupsBy`, `mapGroups`.
-- [ ] On `Upstream[]`: `interleave(other)`.
-- [ ] `preferGroup(name, {minHealthy?, fallback?})`
+- [ ] `preferTag(pattern, {minHealthy?, fallback?})` — tier selection with fallback
 - [ ] `preferVendor(name, opts?)`
-- [ ] `preferAttribute(keyFn, value, opts?)`
+- [ ] `spreadAcrossTags(prefix)` — partition + round-robin by tag prefix
+- [ ] On `Upstream[]`: `interleave(other)` — round-robin merge of two arrays.
 
 ### 5.8 Slicing (`stdlib/limit.go`)
 
@@ -468,7 +466,7 @@ For every method: implement in Go, expose to sobek as an array prototype method,
   ```js
   return upstreams
     .sortByScore(BALANCED)
-    .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+    .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
     .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
     .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
   ```
@@ -825,7 +823,7 @@ These tests aren't about scoring at all — they pin order to test retry/hedge/f
 | `internal/policy/stdlib/sort.go` | sortByScore + all sort variants |
 | `internal/policy/stdlib/random.go` | shuffle/rotate/weightedRandom |
 | `internal/policy/stdlib/sticky.go` | stickyPrimary / stickyOrder |
-| `internal/policy/stdlib/group.go` | groupBy + Group methods + prefer* |
+| `internal/policy/stdlib/tags.go` | preferTag / spreadAcrossTags + prefer* |
 | `internal/policy/stdlib/limit.go` | pickTop / dropTop / at / head / tail |
 | `internal/policy/stdlib/probe.go` | includeExcludedOccasionally / probeExcluded / forceInclude |
 | `internal/policy/stdlib/cooldown.go` | cooldown / warmup |
@@ -987,7 +985,7 @@ const minHealthy       = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHO
 return upstreams
   .removeByErrorRate(maxErrorRate)
   .removeByLag({ blockHead: maxBlockHeadLag })
-  .preferGroup('default', { minHealthy, fallback: 'fallback' })
+  .preferTag('!tier:fallback', { minHealthy, fallback: 'tier:fallback' })
   .sortByScore(BALANCED)
   .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
   .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })

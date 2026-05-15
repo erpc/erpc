@@ -563,11 +563,11 @@ func TestNetworkPolicy_MixedDegraded_OnlyHealthyServed(t *testing.T) {
 
 // TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken
 // reproduces the case where both primary upstreams are degraded and
-// the secondary tier (group: 'fallback') has to take over. The
+// the secondary tier (tag: tier:fallback) has to take over. The
 // hardened default does `keepHealthy → whenEmpty(() => upstreams) →
-// preferGroup('!fallback', {fallback:'fallback'})`. When primaries
-// fail keepHealthy AND the safety net puts them back AND preferGroup
-// sees no healthy primaries, it switches to the fallback group.
+// preferTag('!tier:fallback', {fallback:'tier:fallback'})`. When
+// primaries fail keepHealthy AND the safety net puts them back AND
+// preferTag sees no healthy primaries, it switches to the fallback tier.
 func TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -580,7 +580,7 @@ func TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken(t *testing.T) 
 	network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
 		{Type: common.UpstreamTypeEvm, Id: "primA", Endpoint: upstreamHostFromID("primA"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		{Type: common.UpstreamTypeEvm, Id: "primB", Endpoint: upstreamHostFromID("primB"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "backup", Group: "fallback", Endpoint: upstreamHostFromID("backup"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "backup", Tags: []string{"tier:fallback"}, Endpoint: upstreamHostFromID("backup"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	})
 
 	// Both primaries broken; backup is healthy.
@@ -603,11 +603,11 @@ func TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken(t *testing.T) 
 	require.NotNil(t, resp)
 
 	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("backup")), 1,
-		"backup (group=fallback) must take over when primary tier is empty")
+		"backup (tier:fallback) must take over when primary tier is empty")
 	assert.Equal(t, 0, gockHits(upstreamHostFromID("primA")),
-		"primA filtered by keepHealthy; preferGroup picks fallback")
+		"primA filtered by keepHealthy; preferTag picks fallback")
 	assert.Equal(t, 0, gockHits(upstreamHostFromID("primB")),
-		"primB filtered; preferGroup picks fallback")
+		"primB filtered; preferTag picks fallback")
 }
 
 // TestNetworkPolicy_SafetyNet_WhenAllBroken — every upstream is
@@ -787,15 +787,15 @@ func TestNetworkPolicy_ProbeReAdmit_AtNinetySeconds(t *testing.T) {
 	assert.Contains(t, ids, "alive")
 }
 
-// TestNetworkPolicy_SpreadAcrossGroups_PreventsCohortCascade verifies
-// the spreadAcrossGroups primitive at network level. With 4 upstreams
-// (3 sharing one cohort, 1 in another), the failover order should
-// interleave cohorts rather than fill the top 3 positions with the
-// shared-fate group — i.e. one vendor outage shouldn't take out the
-// primary AND the first two fallbacks. The default policy doesn't
-// include spreadAcrossGroups; operators wanting this behaviour opt in
+// TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade verifies
+// the spreadAcrossTags primitive at network level. With 4 upstreams
+// (3 sharing one cohort:* tag, 1 in another), the failover order
+// should interleave cohorts rather than fill the top 3 positions with
+// the shared-fate group — i.e. one cohort outage shouldn't take out
+// the primary AND the first two fallbacks. The default policy doesn't
+// include spreadAcrossTags; operators wanting this behaviour opt in
 // via a custom eval.
-func TestNetworkPolicy_SpreadAcrossGroups_PreventsCohortCascade(t *testing.T) {
+func TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -804,15 +804,17 @@ func TestNetworkPolicy_SpreadAcrossGroups_PreventsCohortCascade(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	tagCohort1 := []string{"cohort:cohort-1"}
+	tagCohort2 := []string{"cohort:cohort-2"}
 	upstreamConfigs := []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "cohort1-A", Cohort: "cohort-1", Endpoint: upstreamHostFromID("cohort1-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "cohort1-B", Cohort: "cohort-1", Endpoint: upstreamHostFromID("cohort1-B"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "cohort1-C", Cohort: "cohort-1", Endpoint: upstreamHostFromID("cohort1-C"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "cohort2-A", Cohort: "cohort-2", Endpoint: upstreamHostFromID("cohort2-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "cohort1-A", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "cohort1-B", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-B"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "cohort1-C", Tags: tagCohort1, Endpoint: upstreamHostFromID("cohort1-C"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "cohort2-A", Tags: tagCohort2, Endpoint: upstreamHostFromID("cohort2-A"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	}
 	network := setupSelectionPolicyNetworkWithEval(t, ctx, upstreamConfigs,
 		`(upstreams, ctx) =>
-			upstreams.sortByScore(BALANCED).spreadAcrossGroups({ by: 'cohort' })`)
+			upstreams.sortByScore(BALANCED).spreadAcrossTags('cohort:')`)
 
 	// All clean.
 	for _, u := range upstreamConfigs {
@@ -828,13 +830,25 @@ func TestNetworkPolicy_SpreadAcrossGroups_PreventsCohortCascade(t *testing.T) {
 	// only non-cohort-1 upstream); positions[2,3] are the remaining
 	// cohort-1s. Critical assertion: positions 0 and 1 must NOT share
 	// a cohort.
-	c0 := order[0].Config().Cohort
-	c1 := order[1].Config().Cohort
+	c0 := firstTagWithPrefix(order[0].Config().Tags, "cohort:")
+	c1 := firstTagWithPrefix(order[1].Config().Tags, "cohort:")
 	assert.NotEqual(t, c0, c1,
 		"primary and first runner-up must be different cohorts (no cascade); got %s, %s",
 		c0, c1)
-	assert.Equal(t, "cohort-2", c1,
-		"cohort-2 (the only one) must be position[1] under spreadAcrossGroups({by:'cohort'})")
+	assert.Equal(t, "cohort:cohort-2", c1,
+		"cohort:cohort-2 (the only one) must be position[1] under spreadAcrossTags('cohort:')")
+}
+
+// firstTagWithPrefix returns the first tag in `tags` whose value
+// begins with `prefix`, or "" if none. Test-only helper used to
+// inspect tag-encoded labels in network-level assertions.
+func firstTagWithPrefix(tags []string, prefix string) string {
+	for _, t := range tags {
+		if len(t) >= len(prefix) && t[:len(prefix)] == prefix {
+			return t
+		}
+	}
+	return ""
 }
 
 // setupSelectionPolicyNetworkWithEval is a sibling of

@@ -33,7 +33,7 @@ legacy YAML stops loading.
   + an `evalFunction` and reason about how they compose. After: one function
   that produces the final order.
 - **Composable std-lib.** Chainable methods (`sortByScore`, `removeByLag`,
-  `preferGroup`, `stickyPrimary`, `probeExcluded`, …) replace nearly every
+  `preferTag`, `stickyPrimary`, `probeExcluded`, …) replace nearly every
   multi-field knob with a one-liner you can read top-to-bottom.
 - **Observability.** Every tick produces a `Decision` record (joined to
   requests via `decision_id`). Operators answer
@@ -178,7 +178,7 @@ projects:
         endpoint: https://rpc2.example/
       - id: rpc3
         endpoint: https://rpc3.example/
-        group: fallback
+        group: fallback                # ← legacy yaml key; auto-migrates to tier:fallback tag
     networks:
       - architecture: evm
         evm: { chainId: 1 }
@@ -207,7 +207,7 @@ projects:
         endpoint: https://rpc2.example/
       - id: rpc3
         endpoint: https://rpc3.example/
-        group: fallback
+        tags: [tier:fallback]
     networks:
       - architecture: evm
         evm: { chainId: 1 }
@@ -217,7 +217,7 @@ projects:
             (upstreams, ctx) =>
               upstreams
                 .removeByErrorRate(0.5)
-                .preferGroup('default', { minHealthy: 1, fallback: 'fallback' })
+                .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
                 .sortByScore(BALANCED)
                 .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```
@@ -225,8 +225,9 @@ projects:
 </Tabs>
 
 The new form is shorter and reads top-to-bottom: drop high-error upstreams,
-prefer the default group with fallback semantics, sort the survivors by the
-balanced score, and re-admit one excluded upstream every 5 minutes.
+prefer non-fallback-tier upstreams (with the fallback tier as backstop),
+sort the survivors by the balanced score, and re-admit one excluded
+upstream every 5 minutes.
 
 ## Auto-translate
 

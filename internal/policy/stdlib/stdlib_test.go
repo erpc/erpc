@@ -15,13 +15,11 @@ import (
 )
 
 // fakeUpstream — minimal impl of common.Upstream for engine tests.
-// The deprecated `group` / `cohort` fields drive buildJSUpstreams' back-
-// compat path; the canonical `tags` field exercises the new code path.
+// Only the canonical fields (id, vendor, tags) are tracked; legacy
+// group / cohort fields are gone and tests must use tags directly.
 type fakeUpstream struct {
 	id     string
-	group  string
 	vendor string
-	cohort string
 	tags   []string
 }
 
@@ -32,7 +30,7 @@ func (f *fakeUpstream) NetworkLabel() string {
 	return "evm:1"
 }
 func (f *fakeUpstream) Config() *common.UpstreamConfig {
-	return &common.UpstreamConfig{Id: f.id, Group: f.group, Cohort: f.cohort, Tags: f.tags}
+	return &common.UpstreamConfig{Id: f.id, Tags: f.tags}
 }
 func (f *fakeUpstream) Logger() *zerolog.Logger { l := zerolog.Nop(); return &l }
 func (f *fakeUpstream) Vendor() common.Vendor   { return nil }
@@ -49,39 +47,25 @@ func (f *fakeUpstream) IgnoreMethod(method string)     {}
 func mkUps(ids ...string) []common.Upstream {
 	out := make([]common.Upstream, len(ids))
 	for i, id := range ids {
-		out[i] = &fakeUpstream{id: id, group: "main", vendor: "v" + id}
+		out[i] = &fakeUpstream{id: id, vendor: "v" + id, tags: []string{"tier:main"}}
 	}
 	return out
 }
 
-func mkUpsWithGroups(spec map[string]string) []common.Upstream {
+// mkUpsWithTier constructs upstreams with explicit tier tags
+// (`tier:<value>`). Map iteration order is non-deterministic; tests
+// that care about input order must use `mkUpsWithTags` directly.
+func mkUpsWithTier(spec map[string]string) []common.Upstream {
 	out := make([]common.Upstream, 0, len(spec))
-	for id, group := range spec {
-		out = append(out, &fakeUpstream{id: id, group: group, vendor: "v"})
+	for id, tier := range spec {
+		out = append(out, &fakeUpstream{id: id, vendor: "v", tags: []string{"tier:" + tier}})
 	}
 	return out
 }
 
-// mkUpsRich constructs N upstreams with explicit (id, group, vendor,
-// cohort). Slices must be the same length; missing fields default to
-// id-derived placeholders. The ORDER of `ids` is preserved in the
-// returned slice (unlike `mkUpsWithGroups`'s map-iteration order).
-func mkUpsRich(specs []struct{ id, group, vendor, cohort string }) []common.Upstream {
-	out := make([]common.Upstream, len(specs))
-	for i, s := range specs {
-		v := s.vendor
-		if v == "" {
-			v = "v" + s.id
-		}
-		out[i] = &fakeUpstream{id: s.id, group: s.group, vendor: v, cohort: s.cohort}
-	}
-	return out
-}
-
-// mkUpsWithTags is the tags-canonical sibling of mkUpsRich. Each spec
-// declares an id, a vendor, and a tags slice. Use when the test wants
-// to exercise the new `byTag` / `preferTag` / `spreadAcrossTags` path
-// without touching the deprecated Group / Cohort fields.
+// mkUpsWithTags constructs N upstreams with explicit (id, vendor,
+// tags). Slice order is preserved. Use when the test cares about
+// input order or carries multi-dimensional tags.
 func mkUpsWithTags(specs []struct {
 	id     string
 	vendor string
@@ -122,24 +106,25 @@ func ids(ups []common.Upstream) []string {
 	return out
 }
 
-// TestStdlib_PreferGroupFallback validates the most-used legacy default-policy
-// pattern: prefer the "main" group; if it has < minHealthy, fall back to the
-// "fallback" group.
-func TestStdlib_PreferGroupFallback(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.preferGroup('main', { minHealthy: 1, fallback: 'fallback' })`
+// TestStdlib_PreferTagFallback validates the most-used default-policy
+// pattern: prefer the `tier:main` upstreams; if fewer than `minHealthy`
+// match, fall back to `tier:fallback`.
+func TestStdlib_PreferTagFallback(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.preferTag('tier:main', { minHealthy: 1, fallback: 'tier:fallback' })`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
 
-	ups := mkUpsWithGroups(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
+	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	ordered := engine.GetOrdered("evm:1", "*")
-	require.Len(t, ordered, 2, "should return both main-group upstreams")
+	require.Len(t, ordered, 2, "should return both tier:main upstreams")
 	for _, u := range ordered {
-		require.Equal(t, "main", u.Config().Group)
+		require.True(t, u.Config().HasTag("tier:main"),
+			"selected upstream %s must carry tier:main", u.Id())
 	}
 }
 
@@ -229,8 +214,8 @@ func TestStdlib_RemoveByLag(t *testing.T) {
 // TestStdlib_RichDefaultPolicy verifies the engine's auto-upgrade from the
 // trivial identity placeholder (common.DefaultSelectionPolicySource) to the
 // embedded `internal/policy/default_policy.js`. Primary tier is matched as
-// `group !== 'fallback'`; rpc1 (group='default') is primary, rpc2 (group=
-// 'fallback') is the second tier.
+// `!tier:fallback`; rpc1 (tier:default) is primary, rpc2 (tier:fallback)
+// is the second tier.
 func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -243,14 +228,15 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
 	defer engine.Stop()
 
-	ups := mkUpsWithGroups(map[string]string{"rpc1": "default", "rpc2": "fallback"})
+	ups := mkUpsWithTier(map[string]string{"rpc1": "default", "rpc2": "fallback"})
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// After RegisterNetwork the cfg should hold the rich default source.
 	require.Contains(t, cfg.Eval, "sortByScore(BALANCED)",
 		"engine should upgrade the placeholder to the rich default")
 
-	// And the policy should run end-to-end: rpc1 in 'default' group wins.
+	// And the policy should run end-to-end: rpc1 (tier:default) wins
+	// because tier:fallback is only used as a backstop.
 	ordered := engine.GetOrdered("evm:1", "*")
 	require.Len(t, ordered, 1)
 	require.Equal(t, "rpc1", ordered[0].Id())
@@ -337,8 +323,9 @@ func TestStdlib_DefaultPolicy_FallbackTierWhenPrimaryEmpty(t *testing.T) {
 	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
 	defer engine.Stop()
 
-	// All upstreams in 'fallback' group → primary tier (`!fallback`) is empty.
-	ups := mkUpsWithGroups(map[string]string{"rpc1": "fallback", "rpc2": "fallback"})
+	// All upstreams tagged tier:fallback → primary tier
+	// (`!tier:fallback`) is empty.
+	ups := mkUpsWithTier(map[string]string{"rpc1": "fallback", "rpc2": "fallback"})
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
@@ -635,20 +622,20 @@ func TestStdlib_Combinators_WhenEmpty_FallbackTo(t *testing.T) {
 	eval := `
 		(upstreams, ctx) =>
 			upstreams
-				.byGroup('nonexistent')
-				.whenEmpty(() => upstreams.byGroup('main'))
+				.byTag('tier:nonexistent')
+				.whenEmpty(() => upstreams.byTag('tier:main'))
 	`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
 
-	ups := mkUpsWithGroups(map[string]string{"rpc1": "main", "rpc2": "main"})
+	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	ordered := engine.GetOrdered("evm:1", "*")
-	require.Len(t, ordered, 2, "whenEmpty should fall back to main group")
+	require.Len(t, ordered, 2, "whenEmpty should fall back to tier:main")
 }
 
 // TestStdlib_ByFinality_RoutesToCorrectHandler verifies the per-finality
@@ -736,8 +723,9 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 	require.Len(t, got, 1, "pickTop(1) must work on byFinality() output")
 }
 
-// TestStdlib_SpreadAcrossGroups_ByVendor verifies cohort interleaving.
-// With 4 upstreams pre-sorted by score, all from 2 vendors:
+// TestStdlib_SpreadAcrossTags_ByVendorTag verifies vendor interleaving
+// via explicit `vendor:` tags. With 4 upstreams pre-sorted by score,
+// all from 2 vendor labels:
 //
 //	input  [alc-1, alc-2, alc-3, inf-1]   (already sorted)
 //	output [alc-1, inf-1, alc-2, alc-3]   (interleaved, no two
@@ -746,17 +734,21 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 // Failure mode without this primitive: the top-3 by score are all
 // alchemy; if alchemy has a regional outage, all 3 retry positions
 // fail together and the policy thought it had 3-way fault tolerance.
-func TestStdlib_SpreadAcrossGroups_ByVendor(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'vendor' })`
+func TestStdlib_SpreadAcrossTags_ByVendorTag(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.spreadAcrossTags('vendor:')`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
 
-	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
-		{"alc-1", "main", "alchemy", ""},
-		{"alc-2", "main", "alchemy", ""},
-		{"alc-3", "main", "alchemy", ""},
-		{"inf-1", "main", "infura", ""},
+	ups := mkUpsWithTags([]struct {
+		id     string
+		vendor string
+		tags   []string
+	}{
+		{"alc-1", "alchemy", []string{"vendor:alchemy"}},
+		{"alc-2", "alchemy", []string{"vendor:alchemy"}},
+		{"alc-3", "alchemy", []string{"vendor:alchemy"}},
+		{"inf-1", "infura", []string{"vendor:infura"}},
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
@@ -765,23 +757,27 @@ func TestStdlib_SpreadAcrossGroups_ByVendor(t *testing.T) {
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*"))
 	require.Equal(t, []string{"alc-1", "inf-1", "alc-2", "alc-3"}, got,
-		"spreadAcrossGroups: alchemy and infura interleaved; alc retains its sort order")
+		"spreadAcrossTags('vendor:'): vendors interleaved; alc retains its sort order")
 }
 
-// TestStdlib_SpreadAcrossGroups_StableForTies preserves within-bucket
-// order. Two upstreams of vendor=alc in input order [alc-A, alc-B]
+// TestStdlib_SpreadAcrossTags_StableForTies preserves within-bucket
+// order. Two upstreams of vendor:alchemy in input order [alc-A, alc-B]
 // stay in that order after interleaving.
-func TestStdlib_SpreadAcrossGroups_StableForTies(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'vendor' })`
+func TestStdlib_SpreadAcrossTags_StableForTies(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.spreadAcrossTags('vendor:')`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
 
-	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
-		{"alc-A", "main", "alchemy", ""},
-		{"alc-B", "main", "alchemy", ""},
-		{"inf-A", "main", "infura", ""},
-		{"inf-B", "main", "infura", ""},
+	ups := mkUpsWithTags([]struct {
+		id     string
+		vendor string
+		tags   []string
+	}{
+		{"alc-A", "alchemy", []string{"vendor:alchemy"}},
+		{"alc-B", "alchemy", []string{"vendor:alchemy"}},
+		{"inf-A", "infura", []string{"vendor:infura"}},
+		{"inf-B", "infura", []string{"vendor:infura"}},
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
@@ -793,45 +789,23 @@ func TestStdlib_SpreadAcrossGroups_StableForTies(t *testing.T) {
 		"alc-A before alc-B, inf-A before inf-B preserved")
 }
 
-// TestStdlib_SpreadAcrossGroups_ByCohort verifies the explicit
-// `cohort` field on UpstreamConfig. Two upstreams in cohort
-// 'op-base-sequencer' (Alchemy + Infura both routing through the
-// same L2 sequencer) should be interleaved with a non-shared
-// upstream rather than ranked adjacent.
-func TestStdlib_SpreadAcrossGroups_ByCohort(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'cohort' })`
+// TestStdlib_SpreadAcrossTags_SingleBucketFallthrough: when every
+// upstream shares the chosen tag prefix, interleaving is impossible
+// — the primitive returns the input order unchanged.
+func TestStdlib_SpreadAcrossTags_SingleBucketFallthrough(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.spreadAcrossTags('vendor:')`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
 
-	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
-		{"alc-base", "main", "alchemy", "op-base-sequencer"},
-		{"inf-base", "main", "infura", "op-base-sequencer"},
-		{"drpc-direct", "main", "drpc", "drpc-direct"},
-	})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
-	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
-
-	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
-	require.Equal(t, []string{"alc-base", "drpc-direct", "inf-base"}, got,
-		"different cohorts adjacent: alc-base, drpc-direct, inf-base")
-}
-
-// TestStdlib_SpreadAcrossGroups_SingleBucketFallthrough: when every
-// upstream shares the chosen key, interleaving is impossible — the
-// primitive returns the input order unchanged.
-func TestStdlib_SpreadAcrossGroups_SingleBucketFallthrough(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.spreadAcrossGroups({ by: 'vendor' })`
-	engine, _, _, cancel := newTestEngine(t, eval)
-	defer cancel()
-	defer engine.Stop()
-
-	ups := mkUpsRich([]struct{ id, group, vendor, cohort string }{
-		{"alc-1", "main", "alchemy", ""},
-		{"alc-2", "main", "alchemy", ""},
-		{"alc-3", "main", "alchemy", ""},
+	ups := mkUpsWithTags([]struct {
+		id     string
+		vendor string
+		tags   []string
+	}{
+		{"alc-1", "alchemy", []string{"vendor:alchemy"}},
+		{"alc-2", "alchemy", []string{"vendor:alchemy"}},
+		{"alc-3", "alchemy", []string{"vendor:alchemy"}},
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
@@ -998,32 +972,6 @@ func TestStdlib_SpreadAcrossTags_MissingTagBucketed(t *testing.T) {
 		"position 1 must come from a different bucket than position 0 when possible")
 }
 
-// TestStdlib_TagsViaDeprecatedFields verifies the back-compat path: Go
-// code that programmatically sets the deprecated `Group` / `Cohort`
-// fields (instead of `Tags`) still works through the stdlib.
-//
-// Without this back-compat layer, `byGroup('main')` would return an
-// empty set whenever a test fixture is built with `group: "main"`
-// instead of `tags: ["tier:main"]`.
-func TestStdlib_TagsViaDeprecatedFields(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.byTag('tier:main')`
-	engine, _, _, cancel := newTestEngine(t, eval)
-	defer cancel()
-	defer engine.Stop()
-
-	// mkUpsWithGroups sets the deprecated `group` field directly.
-	ups := mkUpsWithGroups(map[string]string{"alc": "main", "drpc": "fallback"})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
-	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
-
-	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
-	require.Equal(t, []string{"alc"}, got,
-		"byTag('tier:main') must match upstream with deprecated group:main "+
-			"(buildJSUpstreams promotes it to a tier:main tag)")
-}
-
 // TestStdlib_Slicing_PickTop_DropTop pins the slicing primitives.
 func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED).pickTop(2)`
@@ -1042,12 +990,12 @@ func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
 // TestStdlib_DecisionRecord_CapturesExclusions pins the decision-record
 // output that powers the /admin/selection/* endpoints.
 func TestStdlib_DecisionRecord_CapturesExclusions(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.byGroup('main')`
+	eval := `(upstreams, ctx) => upstreams.byTag('tier:main')`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
 
-	ups := mkUpsWithGroups(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
+	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
@@ -1057,7 +1005,7 @@ func TestStdlib_DecisionRecord_CapturesExclusions(t *testing.T) {
 	require.NotEmpty(t, decisions)
 	latest := decisions[len(decisions)-1]
 	require.Empty(t, latest.Error)
-	require.Len(t, latest.Output.Order, 2, "main group has two members")
-	require.Len(t, latest.Output.Excluded, 1, "rpc3 (fallback) is excluded")
+	require.Len(t, latest.Output.Order, 2, "tier:main has two members")
+	require.Len(t, latest.Output.Excluded, 1, "rpc3 (tier:fallback) is excluded")
 	require.Equal(t, "rpc3", latest.Output.Excluded[0].ID)
 }

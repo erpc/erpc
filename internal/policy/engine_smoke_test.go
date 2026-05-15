@@ -14,8 +14,8 @@ import (
 
 // fakeUpstream is a minimal `common.Upstream` for engine smoke tests.
 type fakeUpstream struct {
-	id    string
-	group string
+	id   string
+	tier string
 }
 
 func (f *fakeUpstream) Id() string           { return f.id }
@@ -23,7 +23,11 @@ func (f *fakeUpstream) VendorName() string   { return "test" }
 func (f *fakeUpstream) NetworkId() string    { return "evm:1" }
 func (f *fakeUpstream) NetworkLabel() string { return "evm:1" }
 func (f *fakeUpstream) Config() *common.UpstreamConfig {
-	return &common.UpstreamConfig{Id: f.id, Group: f.group}
+	cfg := &common.UpstreamConfig{Id: f.id}
+	if f.tier != "" {
+		cfg.Tags = []string{"tier:" + f.tier}
+	}
+	return cfg
 }
 func (f *fakeUpstream) Logger() *zerolog.Logger { l := zerolog.Nop(); return &l }
 func (f *fakeUpstream) Vendor() common.Vendor   { return nil }
@@ -62,9 +66,9 @@ func TestEngine_IdentityPolicy_PassesThrough(t *testing.T) {
 	defer engine.Stop()
 
 	ups := []common.Upstream{
-		&fakeUpstream{id: "rpc1", group: "main"},
-		&fakeUpstream{id: "rpc2", group: "main"},
-		&fakeUpstream{id: "rpc3", group: "fallback"},
+		&fakeUpstream{id: "rpc1", tier: "main"},
+		&fakeUpstream{id: "rpc2", tier: "main"},
+		&fakeUpstream{id: "rpc3", tier: "fallback"},
 	}
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
