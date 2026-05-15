@@ -473,7 +473,7 @@ func (e *networkExecutor) runHedge(
 		}
 	}
 
-	// Hedge delay is the unified DurationSpec — scalar Base for fixed
+	// Hedge delay is the unified AdaptiveDuration — scalar Base for fixed
 	// delays, Quantile for adaptive timing, Min/Max for floor/ceiling.
 	// ResolveForRequest looks up per-method latency via the network's
 	// QuantileTracker; returns Base alone when no data is available

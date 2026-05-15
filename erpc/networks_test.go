@@ -2580,7 +2580,7 @@ func TestNetwork_Forward(t *testing.T) {
 		// Configure network with hedge policy
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDurationSpec(hedgeDelay),
+				Delay:    common.NewStaticDuration(hedgeDelay),
 				MaxCount: 1,
 			},
 		}
@@ -5459,7 +5459,7 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 				Failsafe: []*common.FailsafeConfig{{
 					Timeout: &common.TimeoutPolicyConfig{
-						Duration: common.NewStaticDurationSpec(30 * time.Millisecond),
+						Duration: common.NewStaticDuration(30 * time.Millisecond),
 					}},
 				},
 			},
@@ -5521,7 +5521,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
-				Duration: common.NewStaticDurationSpec(1 * time.Second),
+				Duration: common.NewStaticDuration(1 * time.Second),
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -5654,7 +5654,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
+				Delay:    common.NewStaticDuration(200 * time.Millisecond),
 				MaxCount: 1,
 			},
 		}
@@ -5808,7 +5808,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
 				MaxCount: 5,
 			},
 		}
@@ -5960,7 +5960,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
 				MaxCount: 5,
 			},
 		}
@@ -8705,7 +8705,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				Retry: nil,
 				Hedge: nil,
 				Timeout: &common.TimeoutPolicyConfig{
-					Duration: common.NewStaticDurationSpec(50 * time.Millisecond),
+					Duration: common.NewStaticDuration(50 * time.Millisecond),
 				}},
 			},
 		}, nil)

@@ -30,7 +30,7 @@ func parseJSONDuration(raw json.RawMessage) (Duration, error) {
 	return Duration(time.Duration(f) * time.Millisecond), nil
 }
 
-// DurationSpec describes a duration that may be static, derived from a
+// AdaptiveDuration describes a duration that may be static, derived from a
 // per-method latency quantile, or both. It's the reusable building block
 // for any failsafe knob that wants "fixed base + adaptive component
 // clamped between min/max" semantics — currently consensus wait caps,
@@ -48,7 +48,7 @@ func parseJSONDuration(raw json.RawMessage) (Duration, error) {
 //   - `0` when Quantile is unset
 //
 // After `Base + adaptive`, the result is clamped to [Min, Max] when those
-// are set. A nil or all-zero DurationSpec returns 0 (the caller treats
+// are set. A nil or all-zero AdaptiveDuration returns 0 (the caller treats
 // that as "no cap" / "disabled").
 //
 // Wire format accepts both shorthand and object form:
@@ -57,7 +57,7 @@ func parseJSONDuration(raw json.RawMessage) (Duration, error) {
 //	caps: { base: 500ms }                         # explicit Base
 //	caps: { quantile: 0.5, min: 5ms, max: 1s }    # quantile with bounds
 //	caps: { base: 100ms, quantile: 0.9, max: 2s } # combined
-type DurationSpec struct {
+type AdaptiveDuration struct {
 	Base     Duration `yaml:"base,omitempty" json:"base,omitempty" tstype:"Duration"`
 	Quantile float64  `yaml:"quantile,omitempty" json:"quantile,omitempty"`
 	Min      Duration `yaml:"min,omitempty" json:"min,omitempty" tstype:"Duration"`
@@ -66,7 +66,7 @@ type DurationSpec struct {
 
 // IsZero reports whether the spec has no fields set (caller should
 // treat as "not configured" / disabled).
-func (d *DurationSpec) IsZero() bool {
+func (d *AdaptiveDuration) IsZero() bool {
 	if d == nil {
 		return true
 	}
@@ -80,7 +80,7 @@ func (d *DurationSpec) IsZero() bool {
 // Min/Max only apply when Quantile > 0 — they're floor/ceiling for the
 // adaptive component. Static configs (Quantile == 0) return Base
 // unchanged, so a user-supplied scalar like "10ms" is honored exactly.
-func (d *DurationSpec) Resolve(qt QuantileTracker) time.Duration {
+func (d *AdaptiveDuration) Resolve(qt QuantileTracker) time.Duration {
 	if d == nil || d.IsZero() {
 		return 0
 	}
@@ -109,7 +109,7 @@ func (d *DurationSpec) Resolve(qt QuantileTracker) time.Duration {
 }
 
 // Copy returns a deep copy. Safe to call on nil (returns nil).
-func (d *DurationSpec) Copy() *DurationSpec {
+func (d *AdaptiveDuration) Copy() *AdaptiveDuration {
 	if d == nil {
 		return nil
 	}
@@ -119,7 +119,7 @@ func (d *DurationSpec) Copy() *DurationSpec {
 
 // validate ensures the spec is internally consistent. `field` is a
 // dotted path for error messages (e.g. "upstream.failsafe.timeout.duration").
-func (d *DurationSpec) validate(field string) error {
+func (d *AdaptiveDuration) validate(field string) error {
 	if d == nil {
 		return nil
 	}
@@ -141,7 +141,7 @@ func (d *DurationSpec) validate(field string) error {
 // inheritFrom fills any zero field in d with the corresponding value
 // from src. Used by SetDefaults to merge per-policy defaults without
 // clobbering user-supplied values. Safe on nil src.
-func (d *DurationSpec) inheritFrom(src *DurationSpec) {
+func (d *AdaptiveDuration) inheritFrom(src *AdaptiveDuration) {
 	if d == nil || src == nil {
 		return
 	}
@@ -161,7 +161,7 @@ func (d *DurationSpec) inheritFrom(src *DurationSpec) {
 
 // UnmarshalYAML accepts either a scalar (string "500ms", number 500ms)
 // or an object ({base, quantile, min, max}). Scalars populate Base.
-func (d *DurationSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (d *AdaptiveDuration) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var s string
 	if err := unmarshal(&s); err == nil {
 		parsed, perr := time.ParseDuration(s)
@@ -180,19 +180,19 @@ func (d *DurationSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		d.Base = Duration(time.Duration(f) * time.Millisecond)
 		return nil
 	}
-	type alias DurationSpec
+	type alias AdaptiveDuration
 	var obj alias
 	if err := unmarshal(&obj); err != nil {
-		return fmt.Errorf("DurationSpec must be a duration scalar or {base, quantile, min, max} object: %w", err)
+		return fmt.Errorf("AdaptiveDuration must be a duration scalar or {base, quantile, min, max} object: %w", err)
 	}
-	*d = DurationSpec(obj)
+	*d = AdaptiveDuration(obj)
 	return nil
 }
 
 // UnmarshalJSON accepts either a scalar or an object, same shape as
 // the YAML side. Strings use time.ParseDuration; numbers are treated as
 // milliseconds (matching Duration's YAML semantics).
-func (d *DurationSpec) UnmarshalJSON(data []byte) error {
+func (d *AdaptiveDuration) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || string(data) == "null" {
 		return nil
 	}
@@ -218,19 +218,19 @@ func (d *DurationSpec) UnmarshalJSON(data []byte) error {
 			Max      json.RawMessage `json:"max"`
 		}
 		if err := SonicCfg.Unmarshal(data, &raw); err != nil {
-			return fmt.Errorf("DurationSpec object: %w", err)
+			return fmt.Errorf("AdaptiveDuration object: %w", err)
 		}
 		base, err := parseJSONDuration(raw.Base)
 		if err != nil {
-			return fmt.Errorf("DurationSpec.base: %w", err)
+			return fmt.Errorf("AdaptiveDuration.base: %w", err)
 		}
 		minD, err := parseJSONDuration(raw.Min)
 		if err != nil {
-			return fmt.Errorf("DurationSpec.min: %w", err)
+			return fmt.Errorf("AdaptiveDuration.min: %w", err)
 		}
 		maxD, err := parseJSONDuration(raw.Max)
 		if err != nil {
-			return fmt.Errorf("DurationSpec.max: %w", err)
+			return fmt.Errorf("AdaptiveDuration.max: %w", err)
 		}
 		d.Base = base
 		d.Quantile = raw.Quantile
@@ -240,7 +240,7 @@ func (d *DurationSpec) UnmarshalJSON(data []byte) error {
 	default:
 		var asFloat float64
 		if err := SonicCfg.Unmarshal(data, &asFloat); err != nil {
-			return fmt.Errorf("DurationSpec must be a duration scalar (\"500ms\" or 500) or {base, quantile, min, max} object: %w", err)
+			return fmt.Errorf("AdaptiveDuration must be a duration scalar (\"500ms\" or 500) or {base, quantile, min, max} object: %w", err)
 		}
 		d.Base = Duration(time.Duration(asFloat) * time.Millisecond)
 		return nil
@@ -249,25 +249,25 @@ func (d *DurationSpec) UnmarshalJSON(data []byte) error {
 
 // MarshalJSON always emits the object form for round-trip stability —
 // the scalar shorthand is input-only.
-func (d *DurationSpec) MarshalJSON() ([]byte, error) {
+func (d *AdaptiveDuration) MarshalJSON() ([]byte, error) {
 	if d == nil {
 		return []byte("null"), nil
 	}
-	type alias DurationSpec
+	type alias AdaptiveDuration
 	return SonicCfg.Marshal(alias(*d))
 }
 
-// NewStaticDurationSpec is a convenience constructor for tests and
+// NewStaticDuration is a convenience constructor for tests and
 // callers that only want a static base value.
-func NewStaticDurationSpec(d time.Duration) *DurationSpec {
-	return &DurationSpec{Base: Duration(d)}
+func NewStaticDuration(d time.Duration) *AdaptiveDuration {
+	return &AdaptiveDuration{Base: Duration(d)}
 }
 
 // ResolveForRequest is a convenience wrapper for Resolve that pulls
 // the per-method QuantileTracker off the request's network. Returns 0
 // when the spec is zero/nil or when the request lacks a network — the
 // caller treats 0 as "no cap" / disabled.
-func (d *DurationSpec) ResolveForRequest(req *NormalizedRequest) time.Duration {
+func (d *AdaptiveDuration) ResolveForRequest(req *NormalizedRequest) time.Duration {
 	if d.IsZero() || req == nil {
 		return 0
 	}

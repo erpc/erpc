@@ -204,8 +204,8 @@ When one participant is consistently slow — e.g. a 10s archive query while sib
 
 | Field | Type | Triggers when |
 |---|---|---|
-| `maxWaitOnResult` | [DurationSpec](/config/failsafe#durationspec---reusable-duration-with-quantile-and-bounds) | At least one **non-empty** response is in the bag. |
-| `maxWaitOnEmpty` | [DurationSpec](/config/failsafe#durationspec---reusable-duration-with-quantile-and-bounds) | The first response (of any kind — empty, error, or non-empty) is in the bag. |
+| `maxWaitOnResult` | [AdaptiveDuration](/config/failsafe#adaptiveduration---reusable-duration-with-quantile-and-bounds) | At least one **non-empty** response is in the bag. |
+| `maxWaitOnEmpty` | [AdaptiveDuration](/config/failsafe#adaptiveduration---reusable-duration-with-quantile-and-bounds) | The first response (of any kind — empty, error, or non-empty) is in the bag. |
 
 When the cap fires, the analyzer resolves with what it has using the configured `disputeBehavior` / `lowParticipantsBehavior`. In-flight participants are cancelled (or left running under `fireAndForget`). The earlier of the two caps wins.
 

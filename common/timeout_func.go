@@ -13,7 +13,7 @@ import (
 type TimeoutFunc func(ctx context.Context, req *NormalizedRequest) *time.Duration
 
 // NewTimeoutFunc builds a TimeoutFunc from config. The timeout is a
-// DurationSpec: a Base (static fallback) plus an optional Quantile that
+// AdaptiveDuration: a Base (static fallback) plus an optional Quantile that
 // pulls the cap from the per-method latency tracker, clamped by Min/Max.
 //
 // When Quantile > 0 but Min is unset, Min auto-populates to Base/2 (or
@@ -82,7 +82,7 @@ func NewTimeoutFunc(logger *zerolog.Logger, cfg *TimeoutPolicyConfig) TimeoutFun
 	}
 }
 
-func coldStartFallback(spec *DurationSpec) *time.Duration {
+func coldStartFallback(spec *AdaptiveDuration) *time.Duration {
 	fallback := spec.Base.Duration()
 	if fallback == 0 {
 		fallback = spec.Max.Duration()

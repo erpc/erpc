@@ -9,10 +9,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestTimeoutPolicyConfig_LegacyYAML verifies that pre-DurationSpec configs
+// TestTimeoutPolicyConfig_LegacyYAML verifies that pre-AdaptiveDuration configs
 // still parse correctly. Old configs declared Duration/Quantile/Min/Max as
 // siblings; the new UnmarshalYAML folds those siblings into the unified
-// Duration *DurationSpec field.
+// Duration *AdaptiveDuration field.
 func TestTimeoutPolicyConfig_LegacyYAML(t *testing.T) {
 	t.Parallel()
 
@@ -24,7 +24,7 @@ func TestTimeoutPolicyConfig_LegacyYAML(t *testing.T) {
 		{
 			name: "legacy scalar duration only",
 			yaml: `duration: 5s`,
-			want: &TimeoutPolicyConfig{Duration: NewStaticDurationSpec(5 * time.Second)},
+			want: &TimeoutPolicyConfig{Duration: NewStaticDuration(5 * time.Second)},
 		},
 		{
 			name: "legacy flat with quantile + bounds",
@@ -33,7 +33,7 @@ quantile: 0.99
 minDuration: 200ms
 maxDuration: 10s`,
 			want: &TimeoutPolicyConfig{
-				Duration: &DurationSpec{
+				Duration: &AdaptiveDuration{
 					Base:     Duration(5 * time.Second),
 					Quantile: 0.99,
 					Min:      Duration(200 * time.Millisecond),
@@ -49,7 +49,7 @@ maxDuration: 10s`,
   min: 200ms
   max: 10s`,
 			want: &TimeoutPolicyConfig{
-				Duration: &DurationSpec{
+				Duration: &AdaptiveDuration{
 					Base:     Duration(5 * time.Second),
 					Quantile: 0.99,
 					Min:      Duration(200 * time.Millisecond),
@@ -64,7 +64,7 @@ maxDuration: 10s`,
   min: 5ms
   max: 1s`,
 			want: &TimeoutPolicyConfig{
-				Duration: &DurationSpec{
+				Duration: &AdaptiveDuration{
 					Quantile: 0.5,
 					Min:      Duration(5 * time.Millisecond),
 					Max:      Duration(1 * time.Second),
@@ -79,7 +79,7 @@ maxDuration: 10s`,
 quantile: 0.50
 minDuration: 1s`,
 			want: &TimeoutPolicyConfig{
-				Duration: &DurationSpec{
+				Duration: &AdaptiveDuration{
 					Base:     Duration(10 * time.Second),
 					Quantile: 0.95,
 					Min:      Duration(1 * time.Second), // legacy filled because Min was unset
@@ -114,7 +114,7 @@ func TestHedgePolicyConfig_LegacyYAML(t *testing.T) {
 			yaml: `delay: 100ms
 maxCount: 1`,
 			want: &HedgePolicyConfig{
-				Delay:    NewStaticDurationSpec(100 * time.Millisecond),
+				Delay:    NewStaticDuration(100 * time.Millisecond),
 				MaxCount: 1,
 			},
 		},
@@ -126,7 +126,7 @@ quantile: 0.95
 minDelay: 50ms
 maxDelay: 2s`,
 			want: &HedgePolicyConfig{
-				Delay: &DurationSpec{
+				Delay: &AdaptiveDuration{
 					Base:     Duration(100 * time.Millisecond),
 					Quantile: 0.95,
 					Min:      Duration(50 * time.Millisecond),
@@ -144,7 +144,7 @@ maxDelay: 2s`,
   max: 2s
 maxCount: 2`,
 			want: &HedgePolicyConfig{
-				Delay: &DurationSpec{
+				Delay: &AdaptiveDuration{
 					Base:     Duration(100 * time.Millisecond),
 					Quantile: 0.95,
 					Min:      Duration(50 * time.Millisecond),
@@ -158,7 +158,7 @@ maxCount: 2`,
 			yaml: `quantile: 0.7
 maxCount: 1`,
 			want: &HedgePolicyConfig{
-				Delay:    &DurationSpec{Quantile: 0.7},
+				Delay:    &AdaptiveDuration{Quantile: 0.7},
 				MaxCount: 1,
 			},
 		},
@@ -176,7 +176,7 @@ maxCount: 1`,
 }
 
 // TestConsensusWaitCaps_YAML verifies the wait caps accept both scalar
-// shorthand and the object form via the DurationSpec unmarshaler.
+// shorthand and the object form via the AdaptiveDuration unmarshaler.
 func TestConsensusWaitCaps_YAML(t *testing.T) {
 	t.Parallel()
 

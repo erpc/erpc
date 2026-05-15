@@ -9,24 +9,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestDurationSpec_UnmarshalYAML(t *testing.T) {
+func TestAdaptiveDuration_UnmarshalYAML(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name    string
 		input   string
-		want    DurationSpec
+		want    AdaptiveDuration
 		wantErr bool
 	}{
 		{
 			name:  "scalar string sets Base only",
 			input: `caps: 500ms`,
-			want:  DurationSpec{Base: Duration(500 * time.Millisecond)},
+			want:  AdaptiveDuration{Base: Duration(500 * time.Millisecond)},
 		},
 		{
 			name:  "scalar number sets Base in milliseconds",
 			input: `caps: 250`,
-			want:  DurationSpec{Base: Duration(250 * time.Millisecond)},
+			want:  AdaptiveDuration{Base: Duration(250 * time.Millisecond)},
 		},
 		{
 			name: "object with quantile + bounds",
@@ -34,7 +34,7 @@ func TestDurationSpec_UnmarshalYAML(t *testing.T) {
   quantile: 0.5
   min: 5ms
   max: 1s`,
-			want: DurationSpec{
+			want: AdaptiveDuration{
 				Quantile: 0.5,
 				Min:      Duration(5 * time.Millisecond),
 				Max:      Duration(1 * time.Second),
@@ -47,7 +47,7 @@ func TestDurationSpec_UnmarshalYAML(t *testing.T) {
   quantile: 0.9
   min: 50ms
   max: 2s`,
-			want: DurationSpec{
+			want: AdaptiveDuration{
 				Base:     Duration(100 * time.Millisecond),
 				Quantile: 0.9,
 				Min:      Duration(50 * time.Millisecond),
@@ -61,7 +61,7 @@ func TestDurationSpec_UnmarshalYAML(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var wrapper struct {
-				Caps DurationSpec `yaml:"caps"`
+				Caps AdaptiveDuration `yaml:"caps"`
 			}
 			err := yaml.Unmarshal([]byte(tc.input), &wrapper)
 			if tc.wantErr {
@@ -74,29 +74,29 @@ func TestDurationSpec_UnmarshalYAML(t *testing.T) {
 	}
 }
 
-func TestDurationSpec_UnmarshalJSON(t *testing.T) {
+func TestAdaptiveDuration_UnmarshalJSON(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name    string
 		input   string
-		want    DurationSpec
+		want    AdaptiveDuration
 		wantErr bool
 	}{
 		{
 			name:  "string scalar",
 			input: `"750ms"`,
-			want:  DurationSpec{Base: Duration(750 * time.Millisecond)},
+			want:  AdaptiveDuration{Base: Duration(750 * time.Millisecond)},
 		},
 		{
 			name:  "number scalar (ms)",
 			input: `1000`,
-			want:  DurationSpec{Base: Duration(1 * time.Second)},
+			want:  AdaptiveDuration{Base: Duration(1 * time.Second)},
 		},
 		{
 			name:  "object",
 			input: `{"base": "100ms", "quantile": 0.5, "min": "5ms", "max": "1s"}`,
-			want: DurationSpec{
+			want: AdaptiveDuration{
 				Base:     Duration(100 * time.Millisecond),
 				Quantile: 0.5,
 				Min:      Duration(5 * time.Millisecond),
@@ -106,7 +106,7 @@ func TestDurationSpec_UnmarshalJSON(t *testing.T) {
 		{
 			name:  "null is no-op",
 			input: `null`,
-			want:  DurationSpec{},
+			want:  AdaptiveDuration{},
 		},
 		{
 			name:    "invalid string fails",
@@ -119,7 +119,7 @@ func TestDurationSpec_UnmarshalJSON(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var got DurationSpec
+			var got AdaptiveDuration
 			err := got.UnmarshalJSON([]byte(tc.input))
 			if tc.wantErr {
 				require.Error(t, err)
@@ -138,12 +138,12 @@ func (f *fakeQuantile) Add(_ float64)                        {}
 func (f *fakeQuantile) GetQuantile(_ float64) time.Duration  { return f.val }
 func (f *fakeQuantile) Reset()                               {}
 
-func TestDurationSpec_Resolve(t *testing.T) {
+func TestAdaptiveDuration_Resolve(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name string
-		spec *DurationSpec
+		spec *AdaptiveDuration
 		qt   QuantileTracker
 		want time.Duration
 	}{
@@ -154,41 +154,41 @@ func TestDurationSpec_Resolve(t *testing.T) {
 		},
 		{
 			name: "zero spec returns 0",
-			spec: &DurationSpec{},
+			spec: &AdaptiveDuration{},
 			want: 0,
 		},
 		{
 			name: "static base only",
-			spec: &DurationSpec{Base: Duration(200 * time.Millisecond)},
+			spec: &AdaptiveDuration{Base: Duration(200 * time.Millisecond)},
 			want: 200 * time.Millisecond,
 		},
 		{
 			name: "quantile with data uses quantile value",
-			spec: &DurationSpec{Quantile: 0.5, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
+			spec: &AdaptiveDuration{Quantile: 0.5, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
 			qt:   &fakeQuantile{val: 100 * time.Millisecond},
 			want: 100 * time.Millisecond,
 		},
 		{
 			name: "quantile cold start falls back to min",
-			spec: &DurationSpec{Quantile: 0.5, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
+			spec: &AdaptiveDuration{Quantile: 0.5, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
 			qt:   &fakeQuantile{val: 0},
 			want: 5 * time.Millisecond,
 		},
 		{
 			name: "quantile nil tracker falls back to min",
-			spec: &DurationSpec{Quantile: 0.5, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
+			spec: &AdaptiveDuration{Quantile: 0.5, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
 			qt:   nil,
 			want: 5 * time.Millisecond,
 		},
 		{
 			name: "base + quantile additive",
-			spec: &DurationSpec{Base: Duration(100 * time.Millisecond), Quantile: 0.5, Max: Duration(1 * time.Second)},
+			spec: &AdaptiveDuration{Base: Duration(100 * time.Millisecond), Quantile: 0.5, Max: Duration(1 * time.Second)},
 			qt:   &fakeQuantile{val: 200 * time.Millisecond},
 			want: 300 * time.Millisecond,
 		},
 		{
 			name: "max clamps high values",
-			spec: &DurationSpec{Quantile: 0.99, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
+			spec: &AdaptiveDuration{Quantile: 0.99, Min: Duration(5 * time.Millisecond), Max: Duration(1 * time.Second)},
 			qt:   &fakeQuantile{val: 5 * time.Second},
 			want: 1 * time.Second,
 		},
@@ -197,13 +197,13 @@ func TestDurationSpec_Resolve(t *testing.T) {
 			// don't apply. This preserves legacy hedge/timeout semantics:
 			// `delay: 10ms` means exactly 10ms even if a Min default exists.
 			name: "static base ignores min clamp",
-			spec: &DurationSpec{Base: Duration(2 * time.Millisecond), Min: Duration(10 * time.Millisecond)},
+			spec: &AdaptiveDuration{Base: Duration(2 * time.Millisecond), Min: Duration(10 * time.Millisecond)},
 			want: 2 * time.Millisecond,
 		},
 		{
 			// When Quantile > 0, the Min floors the (base + adaptive) sum.
 			name: "min clamps adaptive value",
-			spec: &DurationSpec{Quantile: 0.5, Min: Duration(10 * time.Millisecond)},
+			spec: &AdaptiveDuration{Quantile: 0.5, Min: Duration(10 * time.Millisecond)},
 			qt:   &fakeQuantile{val: 2 * time.Millisecond},
 			want: 10 * time.Millisecond,
 		},
@@ -219,22 +219,22 @@ func TestDurationSpec_Resolve(t *testing.T) {
 	}
 }
 
-func TestDurationSpec_IsZero(t *testing.T) {
+func TestAdaptiveDuration_IsZero(t *testing.T) {
 	t.Parallel()
-	assert.True(t, (*DurationSpec)(nil).IsZero())
-	assert.True(t, (&DurationSpec{}).IsZero())
-	assert.False(t, (&DurationSpec{Base: Duration(1)}).IsZero())
-	assert.False(t, (&DurationSpec{Quantile: 0.5}).IsZero())
-	assert.False(t, (&DurationSpec{Min: Duration(1)}).IsZero())
-	assert.False(t, (&DurationSpec{Max: Duration(1)}).IsZero())
+	assert.True(t, (*AdaptiveDuration)(nil).IsZero())
+	assert.True(t, (&AdaptiveDuration{}).IsZero())
+	assert.False(t, (&AdaptiveDuration{Base: Duration(1)}).IsZero())
+	assert.False(t, (&AdaptiveDuration{Quantile: 0.5}).IsZero())
+	assert.False(t, (&AdaptiveDuration{Min: Duration(1)}).IsZero())
+	assert.False(t, (&AdaptiveDuration{Max: Duration(1)}).IsZero())
 }
 
-func TestDurationSpec_Copy(t *testing.T) {
+func TestAdaptiveDuration_Copy(t *testing.T) {
 	t.Parallel()
-	orig := &DurationSpec{Base: Duration(100 * time.Millisecond), Quantile: 0.5}
+	orig := &AdaptiveDuration{Base: Duration(100 * time.Millisecond), Quantile: 0.5}
 	copied := orig.Copy()
 	assert.Equal(t, orig, copied)
 	copied.Base = Duration(999 * time.Millisecond)
 	assert.NotEqual(t, orig.Base, copied.Base)
-	assert.Nil(t, (*DurationSpec)(nil).Copy())
+	assert.Nil(t, (*AdaptiveDuration)(nil).Copy())
 }

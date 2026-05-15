@@ -2962,10 +2962,10 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 	// doesn't set them explicitly. Wait-cap behavior has its own
 	// dedicated tests in consensus/wait_cap_test.go.
 	if tc.consensusConfig.MaxWaitOnResult == nil {
-		tc.consensusConfig.MaxWaitOnResult = &common.DurationSpec{}
+		tc.consensusConfig.MaxWaitOnResult = &common.AdaptiveDuration{}
 	}
 	if tc.consensusConfig.MaxWaitOnEmpty == nil {
-		tc.consensusConfig.MaxWaitOnEmpty = &common.DurationSpec{}
+		tc.consensusConfig.MaxWaitOnEmpty = &common.AdaptiveDuration{}
 	}
 	if err := tc.consensusConfig.SetDefaults(); err != nil {
 		t.Fatalf("failed to set defaults on consensus config: %v", err)

@@ -376,7 +376,7 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 		defer cancel()
 
 		network := setupSendRawTxTestNetworkWithHedge(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    common.NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -1224,7 +1224,7 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 				Delay:       common.Duration(10 * time.Millisecond),
 			},
 			&common.HedgePolicyConfig{
-				Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
 				MaxCount: 1,
 			},
 		)

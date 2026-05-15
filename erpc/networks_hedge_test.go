@@ -72,7 +72,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    common.NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -133,7 +133,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
+			Delay:    common.NewStaticDuration(200 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -213,7 +213,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 		// Set up network with quantile-based hedge
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.DurationSpec{
+			Delay: &common.AdaptiveDuration{
 				Base:     common.Duration(50 * time.Millisecond), // Base delay
 				Quantile: 0.9,                                    // 90th percentile
 				Min:      common.Duration(20 * time.Millisecond), // Min boundary
@@ -312,7 +312,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 		// Set up network with quantile that would result in very low delay
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.DurationSpec{
+			Delay: &common.AdaptiveDuration{
 				Quantile: 0.1,                                     // 10th percentile (will be low)
 				Min:      common.Duration(100 * time.Millisecond), // Min boundary
 				Max:      common.Duration(500 * time.Millisecond),
@@ -417,7 +417,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 		// Set up network with quantile that would result in very high delay
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.DurationSpec{
+			Delay: &common.AdaptiveDuration{
 				Base:     common.Duration(300 * time.Millisecond), // High base delay
 				Quantile: 0.99,                                    // 99th percentile
 				Min:      common.Duration(10 * time.Millisecond),
@@ -488,7 +488,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
+			Delay:    common.NewStaticDuration(50 * time.Millisecond),
 			MaxCount: 5,
 		})
 
@@ -544,7 +544,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 		// Create network with 4 upstreams but MaxCount=2
 		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
+			Delay:    common.NewStaticDuration(50 * time.Millisecond),
 			MaxCount: 2, // Only 2 hedges allowed (total 3 requests including primary)
 		})
 
@@ -611,7 +611,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
+			Delay:    common.NewStaticDuration(50 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -690,7 +690,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
+			Delay:    common.NewStaticDuration(50 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -767,7 +767,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
+			Delay:    common.NewStaticDuration(50 * time.Millisecond),
 			MaxCount: 3, // Allow 3 hedges
 		})
 
@@ -836,11 +836,11 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		// Set up network with quantile-based hedge but no metrics.
-		// With DurationSpec, when Quantile is set but no metrics exist,
+		// With AdaptiveDuration, when Quantile is set but no metrics exist,
 		// the resolver adds Min as the adaptive fallback; we leave Min
 		// at 0 here so cold-start delay equals Base alone (~100ms).
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay: &common.DurationSpec{
+			Delay: &common.AdaptiveDuration{
 				Base:     common.Duration(100 * time.Millisecond), // Base delay (fallback)
 				Quantile: 0.9,
 				Max:      common.Duration(200 * time.Millisecond),
@@ -895,7 +895,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    common.NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -974,7 +974,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(200 * time.Millisecond),
+			Delay:    common.NewStaticDuration(200 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -1029,7 +1029,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    common.NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -1105,7 +1105,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(80 * time.Millisecond),
+			Delay:    common.NewStaticDuration(80 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -1171,7 +1171,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    common.NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -1250,7 +1250,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 3, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(80 * time.Millisecond),
+			Delay:    common.NewStaticDuration(80 * time.Millisecond),
 			MaxCount: 2,
 		})
 
@@ -1321,7 +1321,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		setupCtx, setupCancel := context.WithCancel(context.Background())
 		defer setupCancel()
 		network := setupTestNetworkWithHedgePolicy(t, setupCtx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(10 * time.Second), // hedge never fires in this test window
+			Delay:    common.NewStaticDuration(10 * time.Second), // hedge never fires in this test window
 			MaxCount: 1,
 		})
 
@@ -1401,7 +1401,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		defer cancel()
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(80 * time.Millisecond),
+			Delay:    common.NewStaticDuration(80 * time.Millisecond),
 			MaxCount: 1,
 		})
 
@@ -1534,7 +1534,7 @@ func TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream(t *testing.T) {
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		Failsafe: []*common.FailsafeConfig{{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDurationSpec(70 * time.Millisecond),
+				Delay:    common.NewStaticDuration(70 * time.Millisecond),
 				MaxCount: 1,
 			},
 		}},
@@ -1673,7 +1673,7 @@ func TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting(t *testing.T)
 	defer cancel()
 
 	network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
-		Delay:    common.NewStaticDurationSpec(80 * time.Millisecond),
+		Delay:    common.NewStaticDuration(80 * time.Millisecond),
 		MaxCount: 1,
 	})
 

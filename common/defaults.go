@@ -132,10 +132,10 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 								BackoffFactor:   1.0,
 							},
 							Timeout: &TimeoutPolicyConfig{
-								Duration: NewStaticDurationSpec(120 * time.Second),
+								Duration: NewStaticDuration(120 * time.Second),
 							},
 							Hedge: &HedgePolicyConfig{
-								Delay:    &DurationSpec{Quantile: 0.7},
+								Delay:    &AdaptiveDuration{Quantile: 0.7},
 								MaxCount: 2,
 							},
 						},
@@ -153,7 +153,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 								Delay:       Duration(500 * time.Millisecond),
 							},
 							Timeout: &TimeoutPolicyConfig{
-								Duration: NewStaticDurationSpec(60 * time.Second),
+								Duration: NewStaticDuration(60 * time.Second),
 							},
 						},
 					},
@@ -2270,9 +2270,9 @@ const (
 
 func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
 	if h.Delay == nil {
-		h.Delay = &DurationSpec{}
+		h.Delay = &AdaptiveDuration{}
 	}
-	var defDelay *DurationSpec
+	var defDelay *AdaptiveDuration
 	if defaults != nil {
 		defDelay = defaults.Delay
 	}
@@ -2386,14 +2386,14 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 	// to land. Both clamp at [5ms, 1s] to keep tail latency bounded
 	// even when the latency distribution is degenerate.
 	if c.MaxWaitOnResult == nil {
-		c.MaxWaitOnResult = &DurationSpec{
+		c.MaxWaitOnResult = &AdaptiveDuration{
 			Quantile: 0.5,
 			Min:      Duration(5 * time.Millisecond),
 			Max:      Duration(1 * time.Second),
 		}
 	}
 	if c.MaxWaitOnEmpty == nil {
-		c.MaxWaitOnEmpty = &DurationSpec{
+		c.MaxWaitOnEmpty = &AdaptiveDuration{
 			Quantile: 0.9,
 			Min:      Duration(50 * time.Millisecond),
 			Max:      Duration(2 * time.Second),

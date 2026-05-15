@@ -23,7 +23,7 @@ func TestWaitCap_MaxWaitOnResult_BoundsTailLatency(t *testing.T) {
 		WithMaxParticipants(3).
 		WithAgreementThreshold(3). // require 3 to disable short-circuit
 		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		WithMaxWaitOnResult(common.NewStaticDurationSpec(100 * time.Millisecond)).
+		WithMaxWaitOnResult(common.NewStaticDuration(100 * time.Millisecond)).
 		Build()
 
 	req := newTestRequest()
@@ -67,7 +67,7 @@ func TestWaitCap_MaxWaitOnEmpty_TighterFloor(t *testing.T) {
 		WithMaxParticipants(3).
 		WithAgreementThreshold(3).
 		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
-		WithMaxWaitOnEmpty(common.NewStaticDurationSpec(150 * time.Millisecond)).
+		WithMaxWaitOnEmpty(common.NewStaticDuration(150 * time.Millisecond)).
 		Build()
 
 	req := newTestRequest()

@@ -1193,7 +1193,7 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 }
 
 // TimeoutPolicyConfig is the timeout policy. Duration is the unified
-// DurationSpec — a scalar shorthand ("5s") or an object form
+// AdaptiveDuration — a scalar shorthand ("5s") or an object form
 // ({base, quantile, min, max}) for adaptive caps driven by per-method
 // latency quantiles.
 //
@@ -1201,7 +1201,7 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 // (`duration: 5s, quantile: 0.99, minDuration: 200ms, maxDuration: 10s`)
 // — siblings get folded into Duration at YAML/JSON unmarshal time.
 type TimeoutPolicyConfig struct {
-	Duration *DurationSpec `yaml:"duration,omitempty" json:"duration,omitempty" tstype:"Duration | DurationSpec"`
+	Duration *AdaptiveDuration `yaml:"duration,omitempty" json:"duration,omitempty" tstype:"Duration | AdaptiveDuration"`
 }
 
 func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {
@@ -1212,11 +1212,11 @@ func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {
 }
 
 // UnmarshalYAML accepts the new unified form (Duration as scalar or
-// DurationSpec object) and the legacy flat form with sibling
+// AdaptiveDuration object) and the legacy flat form with sibling
 // quantile/minDuration/maxDuration fields — siblings fold into Duration.
 func (c *TimeoutPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type legacy struct {
-		Duration    *DurationSpec `yaml:"duration,omitempty"`
+		Duration    *AdaptiveDuration `yaml:"duration,omitempty"`
 		Quantile    float64       `yaml:"quantile,omitempty"`
 		MinDuration Duration      `yaml:"minDuration,omitempty"`
 		MaxDuration Duration      `yaml:"maxDuration,omitempty"`
@@ -1236,7 +1236,7 @@ func (c *TimeoutPolicyConfig) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	type legacy struct {
-		Duration    *DurationSpec   `json:"duration,omitempty"`
+		Duration    *AdaptiveDuration   `json:"duration,omitempty"`
 		Quantile    float64         `json:"quantile,omitempty"`
 		MinDuration json.RawMessage `json:"minDuration,omitempty"`
 		MaxDuration json.RawMessage `json:"maxDuration,omitempty"`
@@ -1263,7 +1263,7 @@ func (c *TimeoutPolicyConfig) applyLegacySiblings(quantile float64, minD, maxD D
 		return
 	}
 	if c.Duration == nil {
-		c.Duration = &DurationSpec{}
+		c.Duration = &AdaptiveDuration{}
 	}
 	if c.Duration.Quantile == 0 {
 		c.Duration.Quantile = quantile
@@ -1277,14 +1277,14 @@ func (c *TimeoutPolicyConfig) applyLegacySiblings(quantile float64, minD, maxD D
 }
 
 // HedgePolicyConfig is the hedge policy. Delay is the unified
-// DurationSpec — scalar shorthand ("100ms") or object form
+// AdaptiveDuration — scalar shorthand ("100ms") or object form
 // ({base, quantile, min, max}) for quantile-driven hedge timing.
 //
 // Wire format also accepts the legacy flat form
 // (`delay: 100ms, quantile: 0.95, minDelay: 50ms, maxDelay: 2s`) —
 // siblings get folded into Delay at YAML/JSON unmarshal time.
 type HedgePolicyConfig struct {
-	Delay    *DurationSpec `yaml:"delay,omitempty" json:"delay,omitempty" tstype:"Duration | DurationSpec"`
+	Delay    *AdaptiveDuration `yaml:"delay,omitempty" json:"delay,omitempty" tstype:"Duration | AdaptiveDuration"`
 	MaxCount int           `yaml:"maxCount" json:"maxCount"`
 }
 
@@ -1299,11 +1299,11 @@ func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
 }
 
 // UnmarshalYAML accepts the new unified form (Delay as scalar or
-// DurationSpec object) and the legacy flat form with sibling
+// AdaptiveDuration object) and the legacy flat form with sibling
 // quantile/minDelay/maxDelay fields — siblings fold into Delay.
 func (c *HedgePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type legacy struct {
-		Delay    *DurationSpec `yaml:"delay,omitempty"`
+		Delay    *AdaptiveDuration `yaml:"delay,omitempty"`
 		MaxCount int           `yaml:"maxCount,omitempty"`
 		Quantile float64       `yaml:"quantile,omitempty"`
 		MinDelay Duration      `yaml:"minDelay,omitempty"`
@@ -1325,7 +1325,7 @@ func (c *HedgePolicyConfig) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	type legacy struct {
-		Delay    *DurationSpec   `json:"delay,omitempty"`
+		Delay    *AdaptiveDuration   `json:"delay,omitempty"`
 		MaxCount int             `json:"maxCount,omitempty"`
 		Quantile float64         `json:"quantile,omitempty"`
 		MinDelay json.RawMessage `json:"minDelay,omitempty"`
@@ -1354,7 +1354,7 @@ func (c *HedgePolicyConfig) applyLegacySiblings(quantile float64, minD, maxD Dur
 		return
 	}
 	if c.Delay == nil {
-		c.Delay = &DurationSpec{}
+		c.Delay = &AdaptiveDuration{}
 	}
 	if c.Delay.Quantile == 0 {
 		c.Delay.Quantile = quantile
@@ -1415,11 +1415,11 @@ type ConsensusPolicyConfig struct {
 	// once a real answer is in hand, give the rest at most this long to
 	// confirm or dispute, then resolve with what we have.
 	//
-	// Accepts a duration scalar ("200ms") or a DurationSpec object
+	// Accepts a duration scalar ("200ms") or an AdaptiveDuration object
 	// ({base, quantile, min, max}) for adaptive caps driven by per-method
 	// latency quantiles. Defaults are applied when consensus is configured
 	// but this field is omitted — see common/defaults.go.
-	MaxWaitOnResult *DurationSpec `yaml:"maxWaitOnResult,omitempty" json:"maxWaitOnResult,omitempty" tstype:"Duration | DurationSpec"`
+	MaxWaitOnResult *AdaptiveDuration `yaml:"maxWaitOnResult,omitempty" json:"maxWaitOnResult,omitempty" tstype:"Duration | AdaptiveDuration"`
 
 	// MaxWaitOnEmpty caps how long consensus waits for additional participants
 	// AFTER the first response (of any kind — empty, error, or non-empty)
@@ -1427,7 +1427,7 @@ type ConsensusPolicyConfig struct {
 	// operator is more patient when no useful data is in hand yet.
 	//
 	// Same shape as MaxWaitOnResult; defaults applied when consensus is set.
-	MaxWaitOnEmpty *DurationSpec `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty,omitempty" tstype:"Duration | DurationSpec"`
+	MaxWaitOnEmpty *AdaptiveDuration `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty,omitempty" tstype:"Duration | AdaptiveDuration"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {

@@ -15,6 +15,39 @@ import type {
 } from "./types"
 
 //////////
+// source: adaptive_duration.go
+
+/**
+ * AdaptiveDuration describes a duration that may be static, derived from a
+ * per-method latency quantile, or both. It's the reusable building block
+ * for any failsafe knob that wants "fixed base + adaptive component
+ * clamped between min/max" semantics — currently consensus wait caps,
+ * with timeout/hedge supporting it as an alternative entry-point.
+ * Resolution rules:
+ *   final = Base + adaptive
+ * where `adaptive` is:
+ *   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists
+ *   - `Min` (the floor) when Quantile > 0 but quantile data is cold (no
+ *     observations yet) — this gives a sensible non-zero cap immediately
+ *     after boot
+ *   - `0` when Quantile is unset
+ * After `Base + adaptive`, the result is clamped to [Min, Max] when those
+ * are set. A nil or all-zero AdaptiveDuration returns 0 (the caller treats
+ * that as "no cap" / "disabled").
+ * Wire format accepts both shorthand and object form:
+ * 	caps: 500ms                                   # shorthand: Base only
+ * 	caps: { base: 500ms }                         # explicit Base
+ * 	caps: { quantile: 0.5, min: 5ms, max: 1s }    # quantile with bounds
+ * 	caps: { base: 100ms, quantile: 0.9, max: 2s } # combined
+ */
+export interface AdaptiveDuration {
+  base?: Duration;
+  quantile?: number /* float64 */;
+  min?: Duration;
+  max?: Duration;
+}
+
+//////////
 // source: architecture_evm.go
 
 export const UpstreamTypeEvm: UpstreamType = "evm";
@@ -702,7 +735,7 @@ export interface CircuitBreakerPolicyConfig {
 }
 /**
  * TimeoutPolicyConfig is the timeout policy. Duration is the unified
- * DurationSpec — a scalar shorthand ("5s") or an object form
+ * AdaptiveDuration — a scalar shorthand ("5s") or an object form
  * ({base, quantile, min, max}) for adaptive caps driven by per-method
  * latency quantiles.
  * Wire format also accepts the legacy flat form
@@ -710,18 +743,18 @@ export interface CircuitBreakerPolicyConfig {
  * — siblings get folded into Duration at YAML/JSON unmarshal time.
  */
 export interface TimeoutPolicyConfig {
-  duration?: Duration | DurationSpec;
+  duration?: Duration | AdaptiveDuration;
 }
 /**
  * HedgePolicyConfig is the hedge policy. Delay is the unified
- * DurationSpec — scalar shorthand ("100ms") or object form
+ * AdaptiveDuration — scalar shorthand ("100ms") or object form
  * ({base, quantile, min, max}) for quantile-driven hedge timing.
  * Wire format also accepts the legacy flat form
  * (`delay: 100ms, quantile: 0.95, minDelay: 50ms, maxDelay: 2s`) —
  * siblings get folded into Delay at YAML/JSON unmarshal time.
  */
 export interface HedgePolicyConfig {
-  delay?: Duration | DurationSpec;
+  delay?: Duration | AdaptiveDuration;
   maxCount: number /* int */;
 }
 export type ConsensusLowParticipantsBehavior = string;
@@ -767,12 +800,12 @@ export interface ConsensusPolicyConfig {
    * p99 latency when most upstreams are fast but one is a slow straggler:
    * once a real answer is in hand, give the rest at most this long to
    * confirm or dispute, then resolve with what we have.
-   * Accepts a duration scalar ("200ms") or a DurationSpec object
+   * Accepts a duration scalar ("200ms") or an AdaptiveDuration object
    * ({base, quantile, min, max}) for adaptive caps driven by per-method
    * latency quantiles. Defaults are applied when consensus is configured
    * but this field is omitted — see common/defaults.go.
    */
-  maxWaitOnResult?: Duration | DurationSpec;
+  maxWaitOnResult?: Duration | AdaptiveDuration;
   /**
    * MaxWaitOnEmpty caps how long consensus waits for additional participants
    * AFTER the first response (of any kind — empty, error, or non-empty)
@@ -780,7 +813,7 @@ export interface ConsensusPolicyConfig {
    * operator is more patient when no useful data is in hand yet.
    * Same shape as MaxWaitOnResult; defaults applied when consensus is set.
    */
-  maxWaitOnEmpty?: Duration | DurationSpec;
+  maxWaitOnEmpty?: Duration | AdaptiveDuration;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";
@@ -1293,39 +1326,6 @@ export type CachePolicyAppliesTo = string;
 export const CachePolicyAppliesToBoth: CachePolicyAppliesTo = "both";
 export const CachePolicyAppliesToGet: CachePolicyAppliesTo = "get";
 export const CachePolicyAppliesToSet: CachePolicyAppliesTo = "set";
-
-//////////
-// source: duration_spec.go
-
-/**
- * DurationSpec describes a duration that may be static, derived from a
- * per-method latency quantile, or both. It's the reusable building block
- * for any failsafe knob that wants "fixed base + adaptive component
- * clamped between min/max" semantics — currently consensus wait caps,
- * with timeout/hedge supporting it as an alternative entry-point.
- * Resolution rules:
- *   final = Base + adaptive
- * where `adaptive` is:
- *   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists
- *   - `Min` (the floor) when Quantile > 0 but quantile data is cold (no
- *     observations yet) — this gives a sensible non-zero cap immediately
- *     after boot
- *   - `0` when Quantile is unset
- * After `Base + adaptive`, the result is clamped to [Min, Max] when those
- * are set. A nil or all-zero DurationSpec returns 0 (the caller treats
- * that as "no cap" / "disabled").
- * Wire format accepts both shorthand and object form:
- * 	caps: 500ms                                   # shorthand: Base only
- * 	caps: { base: 500ms }                         # explicit Base
- * 	caps: { quantile: 0.5, min: 5ms, max: 1s }    # quantile with bounds
- * 	caps: { base: 100ms, quantile: 0.9, max: 2s } # combined
- */
-export interface DurationSpec {
-  base?: Duration;
-  quantile?: number /* float64 */;
-  min?: Duration;
-  max?: Duration;
-}
 
 //////////
 // source: error_extractor.go

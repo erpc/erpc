@@ -375,7 +375,7 @@ func (e *executor) runAnalyzer(
 	shortCircuited := false
 	waitCapped := false
 
-	// Resolve the wait caps once per round. DurationSpec.ResolveForRequest
+	// Resolve the wait caps once per round. AdaptiveDuration.ResolveForRequest
 	// looks up per-method latency quantiles via the request's network;
 	// returns 0 when the spec is zero/nil or no data is available — the
 	// arm-timer logic treats 0 as "no cap".

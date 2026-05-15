@@ -229,10 +229,10 @@ func BenchmarkPerf_Defi_RealtimeRead(b *testing.B) {
 		newBenchUpstream(benchMethod, nil),
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(2 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(2 * time.Second)},
 		Retry:   &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(50 * time.Millisecond)},
 		Hedge: &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
+			Delay:    common.NewStaticDuration(50 * time.Millisecond),
 			MaxCount: 1,
 		},
 	}}, mocks)
@@ -250,7 +250,7 @@ func BenchmarkPerf_Indexer_ArchivalRead(b *testing.B) {
 		newBenchUpstream(benchMethod, nil),
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(60 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(60 * time.Second)},
 		Retry: &common.RetryPolicyConfig{
 			MaxAttempts:     5,
 			Delay:           common.Duration(200 * time.Millisecond),
@@ -273,7 +273,7 @@ func BenchmarkPerf_Consensus_3of5_WithRetry(b *testing.B) {
 		mocks[i] = newBenchUpstream(benchMethod, nil)
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(10 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(10 * time.Second)},
 		Retry:   &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(0)},
 		Consensus: &common.ConsensusPolicyConfig{
 			MaxParticipants:    5,
@@ -300,12 +300,12 @@ func BenchmarkPerf_Consensus_TailLatencyCapped(b *testing.B) {
 		}),
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(10 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(10 * time.Second)},
 		Consensus: &common.ConsensusPolicyConfig{
 			MaxParticipants:    5,
 			AgreementThreshold: 3,
-			MaxWaitOnResult:    common.NewStaticDurationSpec(50 * time.Millisecond),
-			MaxWaitOnEmpty:     common.NewStaticDurationSpec(2 * time.Second),
+			MaxWaitOnResult:    common.NewStaticDuration(50 * time.Millisecond),
+			MaxWaitOnEmpty:     common.NewStaticDuration(2 * time.Second),
 		},
 	}}, mocks)
 	defer bn.Close()
@@ -322,7 +322,7 @@ func BenchmarkPerf_Write_BroadcastFireAndForget(b *testing.B) {
 		mocks[i] = newBenchUpstream(benchMethod, nil)
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(5 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(5 * time.Second)},
 		Consensus: &common.ConsensusPolicyConfig{
 			MaxParticipants:    5,
 			AgreementThreshold: 1,
@@ -350,10 +350,10 @@ func BenchmarkPerf_Failover_UnreliablePrimary(b *testing.B) {
 		newBenchUpstream(benchMethod, nil),
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(3 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(3 * time.Second)},
 		Retry:   &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(20 * time.Millisecond)},
 		Hedge: &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    common.NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 1,
 		},
 	}}, mocks)
@@ -370,12 +370,12 @@ func BenchmarkPerf_Memory_ConsensusFullStack(b *testing.B) {
 		mocks[i] = newBenchUpstream(benchMethod, nil)
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(10 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(10 * time.Second)},
 		Retry:   &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(0)},
 		Consensus: &common.ConsensusPolicyConfig{
 			MaxParticipants:    5,
 			AgreementThreshold: 3,
-			MaxWaitOnResult:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			MaxWaitOnResult:    common.NewStaticDuration(100 * time.Millisecond),
 		},
 	}}, mocks)
 	defer bn.Close()

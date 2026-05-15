@@ -175,7 +175,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.NewStaticDurationSpec(10 * time.Second),
+									Duration: common.NewStaticDuration(10 * time.Second),
 								},
 							}},
 						},
@@ -191,7 +191,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							// Very short upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.NewStaticDurationSpec(50 * time.Millisecond),
+									Duration: common.NewStaticDuration(50 * time.Millisecond),
 								},
 							}},
 						},
@@ -285,7 +285,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{{
 								// Very short network timeout
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.NewStaticDurationSpec(50 * time.Millisecond),
+									Duration: common.NewStaticDuration(50 * time.Millisecond),
 								},
 							}},
 						},
@@ -301,7 +301,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							// Higher upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.NewStaticDurationSpec(5 * time.Second),
+									Duration: common.NewStaticDuration(5 * time.Second),
 								},
 							}},
 						},
@@ -396,7 +396,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			NetworkDefaults: &common.NetworkDefaults{
 				Failsafe: []*common.FailsafeConfig{{
 					Timeout: &common.TimeoutPolicyConfig{
-						Duration: common.NewStaticDurationSpec(7 * time.Second),
+						Duration: common.NewStaticDuration(7 * time.Second),
 					},
 				}},
 			},

@@ -1470,7 +1470,7 @@ func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *te
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 4,
-				Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Consensus: &common.ConsensusPolicyConfig{
 				MaxParticipants:    4,
@@ -1550,7 +1550,7 @@ func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 2,
-				Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
@@ -1763,7 +1763,7 @@ func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegri
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 4,
-				Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Consensus: &common.ConsensusPolicyConfig{
 				MaxParticipants:    8,
@@ -1775,7 +1775,7 @@ func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegri
 				Delay:       common.Duration(5 * time.Millisecond),
 			},
 			Timeout: &common.TimeoutPolicyConfig{
-				Duration: common.NewStaticDurationSpec(10 * time.Second),
+				Duration: common.NewStaticDuration(10 * time.Second),
 			},
 		}},
 		DirectiveDefaults: &common.DirectiveDefaultsConfig{
@@ -2120,7 +2120,7 @@ func TestNetworkIntegrity_HedgeConsensus_PreferLargerResponses_ValidationIntegri
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 4,
-				Delay:    common.NewStaticDurationSpec(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Consensus: &common.ConsensusPolicyConfig{
 				MaxParticipants:         4,

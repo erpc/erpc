@@ -39,7 +39,7 @@ failsafe:
 
 ## `timeout`
 
-`duration` is a [DurationSpec](#durationspec---reusable-duration-with-quantile-and-bounds) — a scalar shorthand or the full object form for adaptive caps driven by per-method latency.
+`duration` is an [AdaptiveDuration](#adaptiveduration---reusable-duration-with-quantile-and-bounds) — a scalar shorthand or the full object form for adaptive caps driven by per-method latency.
 
 Network-scope timeout bounds the **entire** request lifecycle (including retries + hedges). Upstream-scope timeout bounds **each** attempt independently.
 
@@ -107,7 +107,7 @@ Speculative parallel attempt. Fires after `delay` if the primary hasn't returned
 
 | Field | Type | Notes |
 |---|---|---|
-| `delay` | [DurationSpec](#durationspec---reusable-duration-with-quantile-and-bounds) | Time before firing the first hedge — scalar (e.g. `100ms`) or object with quantile-driven adaptive timing. |
+| `delay` | [AdaptiveDuration](#adaptiveduration---reusable-duration-with-quantile-and-bounds) | Time before firing the first hedge — scalar (e.g. `100ms`) or object with quantile-driven adaptive timing. |
 | `maxCount` | int | Max additional hedges beyond the primary (e.g. `1` = primary + 1 backup). |
 
 Hedge fan-out **rolls to a fresh upstream** via the per-request rotation atomic — siblings never collide on the same upstream. Non-retryable / write methods (`eth_sendTransaction`, `eth_createAccessList`, `eth_submit*`, filter methods) skip hedging; `eth_sendRawTransaction` is hedged (idempotent broadcast). Hedge attempts are **excluded** from per-upstream request/error counters and from the circuit breaker — they're speculative fan-out, not signal.
@@ -160,7 +160,7 @@ upstreams:
 
 Cross-upstream agreement at network scope. See [Consensus →](/config/failsafe/consensus) for the full reference, including the dispute / low-participant behaviors, misbehavior tracking, and the **wait caps (`maxWaitOnResult` / `maxWaitOnEmpty`) that bound tail latency when one participant lags**.
 
-## DurationSpec — reusable duration with quantile and bounds
+## AdaptiveDuration — reusable duration with quantile and bounds
 
 Several knobs (`timeout.duration`, `hedge.delay`, `consensus.maxWaitOnResult/onEmpty`) accept the same flexible shape: a scalar shorthand for static values, or an object for adaptive durations driven by per-method latency.
 
@@ -197,7 +197,7 @@ timeout:
     base: 5s                            # object form
 ```
 
-**Backward-compat:** Pre-DurationSpec configs that flatten the fields as siblings still work — `quantile`, `minDuration` / `minDelay`, `maxDuration` / `maxDelay` get folded into the object form at load time. Prefer the object form for new configs since it's reusable across all policies.
+**Backward-compat:** Pre-AdaptiveDuration configs that flatten the fields as siblings still work — `quantile`, `minDuration` / `minDelay`, `maxDuration` / `maxDelay` get folded into the object form at load time. Prefer the object form for new configs since it's reusable across all policies.
 
 ## Per-attempt observability
 

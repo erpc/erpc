@@ -195,11 +195,11 @@ func TestUpstreamDegradationScenarios(t *testing.T) {
 			ExpectedFinalScoreOrder: []string{"fast_upstream", "slow_upstream", "worst_upstream"},
 			NetworkFailsafe: &common.FailsafeConfig{
 				Timeout: &common.TimeoutPolicyConfig{
-					Duration: common.NewStaticDurationSpec(30 * time.Second),
+					Duration: common.NewStaticDuration(30 * time.Second),
 				},
 				Hedge: &common.HedgePolicyConfig{
 					MaxCount: 2,
-					Delay: &common.DurationSpec{
+					Delay: &common.AdaptiveDuration{
 						Quantile: 0.95,
 						Min:      common.Duration(100 * time.Millisecond),
 						Max:      common.Duration(5 * time.Second),
@@ -332,7 +332,7 @@ type TestResult struct {
 func getDefaultUpstreamFailsafe(timeout time.Duration) *common.FailsafeConfig {
 	return &common.FailsafeConfig{
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.NewStaticDurationSpec(timeout),
+			Duration: common.NewStaticDuration(timeout),
 		},
 	}
 }

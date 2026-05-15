@@ -26,7 +26,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 			Failsafe: []*FailsafeConfig{
 				{
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(100 * time.Millisecond),
+						Duration: NewStaticDuration(100 * time.Millisecond),
 					},
 				},
 			},
@@ -36,7 +36,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.Len(t, network.Failsafe, 1)
 		assert.EqualValues(t, &FailsafeConfig{
 			Timeout: &TimeoutPolicyConfig{
-				Duration: NewStaticDurationSpec(100 * time.Millisecond),
+				Duration: NewStaticDuration(100 * time.Millisecond),
 			},
 		}, network.Failsafe[0])
 		assert.Nil(t, network.Failsafe[0].Hedge)
@@ -50,7 +50,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 			Failsafe: []*FailsafeConfig{
 				{
 					Hedge: &HedgePolicyConfig{
-						Delay:    NewStaticDurationSpec(100 * time.Millisecond),
+						Delay:    NewStaticDuration(100 * time.Millisecond),
 						MaxCount: 10,
 					},
 				},
@@ -60,7 +60,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
 		assert.EqualValues(t, &HedgePolicyConfig{
-			Delay:    NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 10,
 		}, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].Timeout)
@@ -123,7 +123,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 			Failsafe: []*FailsafeConfig{
 				{
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(5 * time.Second),
+						Duration: NewStaticDuration(5 * time.Second),
 					},
 				},
 			},
@@ -132,7 +132,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 			Failsafe: []*FailsafeConfig{
 				{
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -242,7 +242,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -279,7 +279,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 					MatchMethod:   "eth_getLogs",
 					MatchFinality: []DataFinalityState{DataFinalityStateUnfinalized},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -521,7 +521,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -532,7 +532,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_call",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(5 * time.Second),
+						Duration: NewStaticDuration(5 * time.Second),
 					},
 				},
 			},
@@ -557,26 +557,26 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 					MatchMethod:   "eth_getLogs|eth_getBlockReceipts",
 					MatchFinality: []DataFinalityState{DataFinalityStateUnfinalized},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 				{
 					MatchFinality: []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(6 * time.Second),
+						Duration: NewStaticDuration(6 * time.Second),
 					},
 				},
 				{
 					MatchMethod:   "eth_getLogs|eth_getBlockReceipts",
 					MatchFinality: []DataFinalityState{DataFinalityStateUnknown},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 				{
 					MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(20 * time.Second),
+						Duration: NewStaticDuration(20 * time.Second),
 					},
 				},
 			},
@@ -587,7 +587,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_sendTransaction",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(30 * time.Second),
+						Duration: NewStaticDuration(30 * time.Second),
 					},
 				},
 			},
@@ -619,7 +619,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 					MatchMethod:   "eth_getLogs",
 					MatchFinality: []DataFinalityState{DataFinalityStateUnfinalized},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -655,7 +655,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					// No MatchMethod specified
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -690,7 +690,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_call",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -725,7 +725,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					// No MatchMethod specified
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -761,7 +761,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -793,7 +793,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -824,7 +824,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -861,7 +861,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -894,7 +894,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs|eth_getBlockReceipts",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -928,7 +928,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -968,13 +968,13 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(5 * time.Second),
+						Duration: NewStaticDuration(5 * time.Second),
 					},
 				},
 				{
 					MatchMethod: "eth_call",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -1043,7 +1043,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_getLogs",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -1078,7 +1078,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 				{
 					MatchMethod: "eth_call",
 					Timeout: &TimeoutPolicyConfig{
-						Duration: NewStaticDurationSpec(10 * time.Second),
+						Duration: NewStaticDuration(10 * time.Second),
 					},
 				},
 			},
@@ -1186,8 +1186,8 @@ func TestSetDefaults_ConsensusWaitCaps(t *testing.T) {
 		c := &ConsensusPolicyConfig{
 			MaxParticipants:    3,
 			AgreementThreshold: 2,
-			MaxWaitOnResult:    NewStaticDurationSpec(250 * time.Millisecond),
-			MaxWaitOnEmpty:     NewStaticDurationSpec(800 * time.Millisecond),
+			MaxWaitOnResult:    NewStaticDuration(250 * time.Millisecond),
+			MaxWaitOnEmpty:     NewStaticDuration(800 * time.Millisecond),
 		}
 		require := assert.New(t)
 		require.NoError(c.SetDefaults())

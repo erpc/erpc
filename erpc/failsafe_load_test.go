@@ -126,10 +126,10 @@ func BenchmarkLoad_Defi_Realtime_256w(b *testing.B) {
 		newBenchUpstream(benchMethod, nil),
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(2 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(2 * time.Second)},
 		Retry:   &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(50 * time.Millisecond)},
 		Hedge: &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(50 * time.Millisecond),
+			Delay:    common.NewStaticDuration(50 * time.Millisecond),
 			MaxCount: 1,
 		},
 	}}, mocks)
@@ -144,7 +144,7 @@ func BenchmarkLoad_Consensus_3of5_256w(b *testing.B) {
 		mocks[i] = newBenchUpstream(benchMethod, nil)
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(10 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(10 * time.Second)},
 		Retry:   &common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(0)},
 		Consensus: &common.ConsensusPolicyConfig{
 			MaxParticipants:    5,
@@ -170,10 +170,10 @@ func BenchmarkLoad_FailoverPrimary_256w(b *testing.B) {
 		newBenchUpstream(benchMethod, nil),
 	}
 	bn := setupBenchNetwork(b, []*common.FailsafeConfig{{
-		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDurationSpec(3 * time.Second)},
+		Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(3 * time.Second)},
 		Retry:   &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(20 * time.Millisecond)},
 		Hedge: &common.HedgePolicyConfig{
-			Delay:    common.NewStaticDurationSpec(100 * time.Millisecond),
+			Delay:    common.NewStaticDuration(100 * time.Millisecond),
 			MaxCount: 1,
 		},
 	}}, mocks)
