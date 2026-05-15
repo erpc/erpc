@@ -254,9 +254,19 @@ export type UpstreamMetrics = {
     // (e.g. 10 blocks ≈ 120s on Ethereum, ≈ 2.5s on Arbitrum).
     blockHeadLag: number;
 
+    // Seconds this upstream is behind the network's highest known block head,
+    // derived from blockHeadLag × the EMA-estimated block time.
+    // Zero until the block-time EMA has collected at least 3 samples.
+    blockHeadLagSeconds: number;
+
     // Number of finalized blocks this upstream is behind the network's highest known
     // finalized block. Block-number delta, not seconds.
     finalizationLag: number;
+
+    // Seconds this upstream is behind the network's highest known finalized block,
+    // derived from finalizationLag × the EMA-estimated block time.
+    // Zero until the block-time EMA has collected at least 3 samples.
+    finalizationLagSeconds: number;
 };
 
 // Method is either `*` (all methods) or a specific method name.

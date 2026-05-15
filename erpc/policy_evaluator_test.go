@@ -2164,3 +2164,182 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		}
 	})
 }
+
+func TestPolicyEvaluatorLagSeconds(t *testing.T) {
+	logger := log.Logger
+
+	// warmEMA feeds 4 observations into the tracker with a fixed 2-second block
+	// time so that GetNetworkBlockTime returns ~2s for the test network.
+	warmEMA := func(mt *health.Tracker, ups *upstream.Upstream) {
+		base := int64(1700000000)
+		mt.SetLatestBlockNumber(ups, 100, base)
+		mt.SetLatestBlockNumber(ups, 101, base+2)
+		mt.SetLatestBlockNumber(ups, 102, base+4)
+		mt.SetLatestBlockNumber(ups, 103, base+6)
+	}
+
+	t.Run("BlockHeadLagSecondsZeroBeforeEMAWarm", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		// Policy filters on blockHeadLagSeconds; with a cold EMA all seconds
+		// values are 0 so every upstream passes the threshold.
+		evalFn, err := common.CompileFunction(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.config.group === 'main');
+				return defaults.filter(u => u.metrics.blockHeadLagSeconds < 5);
+			}
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalPerMethod: false,
+			EvalFunction:  evalFn,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+		evaluator.appCtx = ctx
+
+		// Precondition: EMA must be cold so blockHeadLagSeconds is 0 regardless of lag.
+		require.Zero(t, mt.GetNetworkBlockTime("evm:123"), "EMA must be cold before this test")
+
+		// Give ups2 a large block lag but pass no timestamps, so EMA stays cold.
+		mt.SetLatestBlockNumber(ups1, 120, 0)
+		mt.SetLatestBlockNumber(ups2, 100, 0) // 20-block lag, but lagSeconds = 0
+
+		require.NoError(t, evaluator.evaluateUpstreams())
+
+		// Both should be active because blockHeadLagSeconds == 0 when EMA is cold.
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active")
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be active: lagSeconds is 0 when EMA not warm")
+	})
+
+	t.Run("BlockHeadLagSecondsFiltering", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		evalFn, err := common.CompileFunction(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.config.group === 'main');
+				return defaults.filter(u => u.metrics.blockHeadLagSeconds < 10);
+			}
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalPerMethod: false,
+			EvalFunction:  evalFn,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+		evaluator.appCtx = ctx
+
+		// Pre-create metric rows so upstreamsByNetwork is populated before lag
+		// values are written; without this, SetLatestBlockNumber finds an empty
+		// index and the lag is never stored.
+		mt.RecordUpstreamRequest(ups1, "*")
+		mt.RecordUpstreamRequest(ups2, "*")
+
+		// Warm up the EMA to ~2s block time using ups1 as the advancing upstream.
+		warmEMA(mt, ups1)
+		// ups1 is now at block 103 (network head); ups2 at block 97 → lag = 6 blocks → ~12s.
+		mt.SetLatestBlockNumber(ups2, 97, 0)
+
+		require.NoError(t, evaluator.evaluateUpstreams())
+
+		// ups1: 0s lag → passes. ups2: ~12s lag → cordoned.
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active with 0s lag")
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.Error(t, err, "ups2 should be cordoned: ~12s lag exceeds 10s threshold")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamExcludedByPolicy))
+
+		// ups2 catches up: lag = 1 block → ~2s, which is under the 10s threshold.
+		mt.SetLatestBlockNumber(ups2, 102, 0)
+
+		require.NoError(t, evaluator.evaluateUpstreams())
+
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should remain active")
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be uncordoned: ~2s lag is under threshold")
+	})
+
+	t.Run("FinalizationLagSecondsFiltering", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		evalFn, err := common.CompileFunction(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.config.group === 'main');
+				return defaults.filter(u => u.metrics.finalizationLagSeconds < 30);
+			}
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalPerMethod: false,
+			EvalFunction:  evalFn,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+		evaluator.appCtx = ctx
+
+		// Pre-create metric rows so upstreamsByNetwork is populated before lag
+		// values are written; without this, SetLatestBlockNumber finds an empty
+		// index and the lag is never stored.
+		mt.RecordUpstreamRequest(ups1, "*")
+		mt.RecordUpstreamRequest(ups2, "*")
+
+		// Warm up the EMA to ~2s block time.
+		warmEMA(mt, ups1)
+
+		// ups1 finalized at 100 (network head); ups2 finalized at 80 → lag = 20 → ~40s.
+		mt.SetFinalizedBlockNumber(ups1, 100)
+		mt.SetFinalizedBlockNumber(ups2, 80)
+
+		require.NoError(t, evaluator.evaluateUpstreams())
+
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active with 0s finalization lag")
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.Error(t, err, "ups2 should be cordoned: ~40s finalization lag exceeds 30s threshold")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamExcludedByPolicy))
+
+		// ups2 catches up: lag = 4 blocks → ~8s, under the 30s threshold.
+		mt.SetFinalizedBlockNumber(ups2, 96)
+
+		require.NoError(t, evaluator.evaluateUpstreams())
+
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should remain active")
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be uncordoned: ~8s finalization lag is under threshold")
+	})
+}

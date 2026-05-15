@@ -105,6 +105,8 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 		return fmt.Errorf("no upstreams found for network: %s", p.networkId)
 	}
 
+	blockTime := p.metricsTracker.GetNetworkBlockTime(p.networkId)
+
 	if p.config.EvalPerMethod {
 		// Handle method-specific evaluations
 		// Get all metrics to find unique methods
@@ -118,13 +120,13 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 
 		// Evaluate each method separately
 		for method := range allMetrics {
-			if err := p.evaluateMethod(method, upsList); err != nil {
+			if err := p.evaluateMethod(method, upsList, blockTime); err != nil {
 				p.logger.Error().Err(err).Str("method", method).Msg("failed to evaluate user-defined selectionPolicy for method")
 			}
 		}
 	} else {
 		// Handle network-level evaluation
-		if err := p.evaluateMethod("*", upsList); err != nil {
+		if err := p.evaluateMethod("*", upsList, blockTime); err != nil {
 			p.logger.Error().Err(err).Msg("failed to evaluate user-defined selectionPolicy for network")
 		}
 	}
@@ -132,23 +134,36 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 	return nil
 }
 
-func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upstream) error {
+func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upstream, blockTime time.Duration) error {
 	metricsData := make([]metricData, len(upsList))
 	for i, ups := range upsList {
 		metrics := p.metricsTracker.GetUpstreamMethodMetrics(ups, method)
+
+		blockHeadLag := metrics.BlockHeadLag.Load()
+		finalizationLag := metrics.FinalizationLag.Load()
+
+		blockHeadLagSeconds := 0.0
+		finalizationLagSeconds := 0.0
+		if blockTime > 0 {
+			blockHeadLagSeconds = float64(blockHeadLag) * blockTime.Seconds()
+			finalizationLagSeconds = float64(finalizationLag) * blockTime.Seconds()
+		}
+
 		metricsData[i] = metricData{
 			"id":     ups.Id(),
 			"config": ups.Config(),
 			"metrics": map[string]interface{}{
-				"errorRate":          metrics.ErrorRate(),
-				"errorsTotal":        metrics.ErrorsTotal.Load(),
-				"requestsTotal":      metrics.RequestsTotal.Load(),
-				"throttledRate":      metrics.ThrottledRate(),
-				"p90ResponseSeconds": metrics.ResponseQuantiles.GetQuantile(0.90).Seconds(),
-				"p95ResponseSeconds": metrics.ResponseQuantiles.GetQuantile(0.95).Seconds(),
-				"p99ResponseSeconds": metrics.ResponseQuantiles.GetQuantile(0.99).Seconds(),
-				"blockHeadLag":       metrics.BlockHeadLag.Load(),
-				"finalizationLag":    metrics.FinalizationLag.Load(),
+				"errorRate":              metrics.ErrorRate(),
+				"errorsTotal":            metrics.ErrorsTotal.Load(),
+				"requestsTotal":          metrics.RequestsTotal.Load(),
+				"throttledRate":          metrics.ThrottledRate(),
+				"p90ResponseSeconds":     metrics.ResponseQuantiles.GetQuantile(0.90).Seconds(),
+				"p95ResponseSeconds":     metrics.ResponseQuantiles.GetQuantile(0.95).Seconds(),
+				"p99ResponseSeconds":     metrics.ResponseQuantiles.GetQuantile(0.99).Seconds(),
+				"blockHeadLag":           blockHeadLag,
+				"finalizationLag":        finalizationLag,
+				"blockHeadLagSeconds":    blockHeadLagSeconds,
+				"finalizationLagSeconds": finalizationLagSeconds,
 
 				// @deprecated
 				"p90LatencySecs": metrics.ResponseQuantiles.GetQuantile(0.90).Seconds(),
