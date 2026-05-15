@@ -26,12 +26,12 @@ func upgradeDefaultPolicy(cfg *common.SelectionPolicyConfig) error {
 	if cfg == nil {
 		return nil
 	}
-	if strings.TrimSpace(cfg.Eval) != strings.TrimSpace(common.DefaultSelectionPolicySource) {
+	if strings.TrimSpace(cfg.EvalFunc) != strings.TrimSpace(common.DefaultSelectionPolicySource) {
 		return nil
 	}
-	cfg.Eval = DefaultPolicySource()
-	cfg.EvalOriginal = cfg.Eval
-	program, err := common.CompileProgram(cfg.Eval)
+	cfg.EvalFunc = DefaultPolicySource()
+	cfg.EvalFuncOriginal = cfg.EvalFunc
+	program, err := common.CompileProgram(cfg.EvalFunc)
 	if err != nil {
 		return fmt.Errorf("compile default selection policy: %w", err)
 	}

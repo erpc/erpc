@@ -48,6 +48,240 @@ logLevel: DEBUG
 	}
 }
 
+// TestLoadConfig_LegacyFieldsAccepted pins the back-compat contract:
+// a prod-shape YAML carrying legacy `routing.scoreMultipliers` on
+// upstreams + `scoreMetricsWindowSize` at the project level loads
+// without strict-decode errors. The stashes land on the parsed Config
+// (LegacyProject / LegacyRouting), which the legacy translator hook
+// then folds into selectionPolicy.eval — that hook is wired by the
+// cmd/erpc init and is NOT installed here, so this test just verifies
+// the parse + stash, not the eval synthesis (that has its own test
+// suite in common/legacy/translate_test.go).
+func TestLoadConfig_LegacyFieldsAccepted(t *testing.T) {
+	yamlSrc := `
+logLevel: error
+projects:
+  - id: prod-shape
+    scoreMetricsWindowSize: 10m
+    upstreamDefaults:
+      routing:
+        scoreLatencyQuantile: 0.9
+        scoreMultipliers:
+          - finality: [realtime, unfinalized]
+            respLatency: 10
+            errorRate: 2
+    upstreams:
+      - id: alc-eth-mainnet
+        endpoint: https://eth.example/
+        evm: { chainId: 1 }
+        routing:
+          scoreMultipliers:
+            - overall: 0.2
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+`
+	fs := afero.NewMemMapFs()
+	tmp, err := afero.TempFile(fs, "", "legacy.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tmp.WriteString(yamlSrc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hook intentionally NOT set — this test pins the parse+stash
+	// shape so even consumers that bypass the hook get a useful error
+	// path (rather than a strict-decode rejection).
+	prev := LegacyTranslateFn
+	LegacyTranslateFn = nil
+	t.Cleanup(func() { LegacyTranslateFn = prev })
+
+	cfg, err := LoadConfig(fs, tmp.Name(), &DefaultOptions{})
+	if err != nil {
+		t.Fatalf("expected legacy YAML to load, got: %v", err)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
+	}
+	prj := cfg.Projects[0]
+	if prj.LegacyProject == nil || prj.LegacyProject.ScoreMetricsWindowSize == 0 {
+		t.Fatalf("LegacyProject.ScoreMetricsWindowSize not captured; got %+v", prj.LegacyProject)
+	}
+	if prj.UpstreamDefaults == nil || prj.UpstreamDefaults.LegacyRouting == nil ||
+		len(prj.UpstreamDefaults.LegacyRouting.ScoreMultipliers) != 1 {
+		t.Fatalf("upstreamDefaults.routing.scoreMultipliers not captured; got %+v",
+			prj.UpstreamDefaults)
+	}
+	if len(prj.Upstreams) == 0 || prj.Upstreams[0].LegacyRouting == nil ||
+		len(prj.Upstreams[0].LegacyRouting.ScoreMultipliers) != 1 ||
+		prj.Upstreams[0].LegacyRouting.ScoreMultipliers[0].Overall == nil ||
+		*prj.Upstreams[0].LegacyRouting.ScoreMultipliers[0].Overall != 0.2 {
+		t.Fatalf("upstream legacy routing.overall not captured")
+	}
+}
+
+// TestLoadConfig_TypeScriptUnifiedPipeline pins the TS load path
+// going through the same yaml.Decode pipeline as the YAML path:
+//   1. function values for string fields (`eval`) get stringified to source;
+//   2. legacy YAML keys written via TS (`group:`, `routing:`) also
+//      flow through the shadow types and get migrated.
+//
+// We don't run the legacy translator hook here — that has its own
+// suite. This test just verifies that the TS object survives the
+// round-trip with the same stash semantics as YAML.
+func TestLoadConfig_TypeScriptUnifiedPipeline(t *testing.T) {
+	// Write a tiny TS config to a real (on-disk) file, since esbuild
+	// needs a path it can read from the filesystem.
+	dir := t.TempDir()
+	tsPath := dir + "/erpc.ts"
+	tsSrc := `
+export default {
+  logLevel: 'warn',
+  projects: [
+    {
+      id: 'ts-test',
+      upstreams: [
+        {
+          id: 'u1',
+          endpoint: 'https://u1.example/',
+          evm: { chainId: 1 },
+          group: 'main',
+          routing: {
+            scoreMultipliers: [{ errorRate: 7 }]
+          }
+        }
+      ],
+      networks: [
+        {
+          architecture: 'evm',
+          evm: { chainId: 1 },
+          selectionPolicy: {
+            evalFunc: (upstreams, ctx) => upstreams.sortByScore({ errorRate: 99 })
+          }
+        }
+      ]
+    }
+  ]
+};
+`
+	if err := afero.WriteFile(afero.NewOsFs(), tsPath, []byte(tsSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := LegacyTranslateFn
+	LegacyTranslateFn = nil
+	t.Cleanup(func() { LegacyTranslateFn = prev })
+
+	cfg, err := LoadConfig(afero.NewOsFs(), tsPath, &DefaultOptions{})
+	if err != nil {
+		t.Fatalf("LoadConfig TS: %v", err)
+	}
+
+	prj := cfg.Projects[0]
+	u := prj.Upstreams[0]
+
+	// (1) Legacy `group: 'main'` migrated to a `tier:main` tag via the
+	// UnmarshalYAML shadow on UpstreamConfig.
+	if got := strings.Join(u.Tags, ","); !strings.Contains(got, "tier:main") {
+		t.Fatalf("group→tag migration failed; tags=%q", got)
+	}
+
+	// (2) Legacy `routing.scoreMultipliers` stashed on LegacyRouting.
+	if u.LegacyRouting == nil || len(u.LegacyRouting.ScoreMultipliers) != 1 {
+		t.Fatalf("routing stash missing; LegacyRouting=%+v", u.LegacyRouting)
+	}
+	if u.LegacyRouting.ScoreMultipliers[0].ErrorRate == nil ||
+		*u.LegacyRouting.ScoreMultipliers[0].ErrorRate != 7 {
+		t.Fatalf("routing scoreMultipliers value not preserved")
+	}
+
+	// (3) Function-valued `eval` stringified to source.
+	sp := prj.Networks[0].SelectionPolicy
+	if sp == nil {
+		t.Fatal("selectionPolicy missing")
+	}
+	if !strings.Contains(sp.EvalFunc, "sortByScore") || !strings.Contains(sp.EvalFunc, "errorRate: 99") {
+		t.Fatalf("function eval not stringified to source; got %q", sp.EvalFunc)
+	}
+}
+
+// TestLoadConfig_LegacyHookFiresAndClearsStashes wires the actual
+// translator into the LoadConfig hook (mirroring what cmd/erpc does
+// at init time) and verifies the synthesized selectionPolicy.eval
+// lands on the network AND the legacy stashes are nil after load.
+func TestLoadConfig_LegacyHookFiresAndClearsStashes(t *testing.T) {
+	yamlSrc := `
+logLevel: error
+projects:
+  - id: hook-test
+    upstreams:
+      - id: u1
+        endpoint: https://u1.example/
+        evm: { chainId: 1 }
+        routing:
+          scoreMultipliers:
+            - errorRate: 10
+              respLatency: 5
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+`
+	fs := afero.NewMemMapFs()
+	tmp, err := afero.TempFile(fs, "", "legacy-hook.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp.WriteString(yamlSrc)
+
+	// Inline a minimal translator hook that touches exactly the same
+	// stashes the real common/legacy.TranslateFromConfig touches. We
+	// can't import common/legacy here without creating a cycle (legacy
+	// imports common), so we hand-roll the writeback.
+	prev := LegacyTranslateFn
+	LegacyTranslateFn = func(cfg *Config) ([]string, error) {
+		for _, prj := range cfg.Projects {
+			for _, u := range prj.Upstreams {
+				if u.LegacyRouting != nil {
+					u.LegacyRouting = nil // simulate "consumed"
+				}
+			}
+			for _, n := range prj.Networks {
+				if n.SelectionPolicy == nil {
+					n.SelectionPolicy = &SelectionPolicyConfig{EvalFunc: "(upstreams, ctx) => upstreams"}
+				}
+			}
+		}
+		return []string{"test-warn"}, nil
+	}
+	t.Cleanup(func() { LegacyTranslateFn = prev })
+
+	var captured []string
+	LegacyTranslateLogger = func(w string) { captured = append(captured, w) }
+	t.Cleanup(func() { LegacyTranslateLogger = nil })
+
+	cfg, err := LoadConfig(fs, tmp.Name(), &DefaultOptions{})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if want, got := []string{"test-warn"}, captured; !strings.EqualFold(strings.Join(want, "|"), strings.Join(got, "|")) {
+		t.Fatalf("warnings not flowed through LegacyTranslateLogger: got %v", got)
+	}
+	if cfg.Projects[0].Upstreams[0].LegacyRouting != nil {
+		t.Fatalf("hook must clear LegacyRouting stash")
+	}
+	if cfg.Projects[0].Networks[0].SelectionPolicy == nil ||
+		cfg.Projects[0].Networks[0].SelectionPolicy.EvalFunc == "" {
+		t.Fatalf("hook must populate selectionPolicy.eval on the network")
+	}
+
+	// And the load completed (SetDefaults + Validate ran).
+	if cfg.LogLevel != "error" {
+		t.Fatalf("expected logLevel from yaml; got %q", cfg.LogLevel)
+	}
+	_ = time.Second
+}
+
 func TestFailsafeConfigBackwardCompatibility(t *testing.T) {
 	t.Run("NetworkDefaults old format with empty MatchMethod", func(t *testing.T) {
 		yamlData := `

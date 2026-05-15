@@ -64,15 +64,17 @@ projects:
         alias: ethereum
         # (OPTIONAL) See /config/projects/selection-policies for the
         # full reference. The block below shows the defaults the
-        # engine uses when `eval` is omitted — sortByScore(BALANCED)
+        # engine uses when `evalFunc` is omitted — sortByScore(BALANCED)
         # plus preferTag/stickyPrimary/probeExcluded. Override
-        # `eval` to express any custom logic via the chainable stdlib.
+        # `evalFunc` to express any custom logic via the chainable stdlib.
+        # Investigations: per-tick reasoning is exposed via tracing +
+        # the `policy_selection_*` Prometheus metric family; there is
+        # no in-memory decision-history buffer.
         selectionPolicy:
           evalInterval: 1s
           evalTimeout: 100ms
           evalPerMethod: false
-          decisionHistory: 5m
-          eval: |
+          evalFunc: |
             (upstreams, ctx) =>
               upstreams
                 .sortByScore(BALANCED)
@@ -163,14 +165,13 @@ export default createConfig({
           /**
            * (OPTIONAL) See /config/projects/selection-policies for the
            * full reference. The block below shows the defaults the
-           * engine uses when `eval` is omitted.
+           * engine uses when `evalFunc` is omitted.
            */
           selectionPolicy: {
             evalInterval: "1s",
             evalTimeout: "100ms",
             evalPerMethod: false,
-            decisionHistory: "5m",
-            eval: `(upstreams, ctx) =>
+            evalFunc: `(upstreams, ctx) =>
               upstreams
                 .sortByScore(BALANCED)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })

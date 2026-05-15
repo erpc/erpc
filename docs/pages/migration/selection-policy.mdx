@@ -22,7 +22,7 @@ of eligible upstreams. Order is law; missing means excluded.
 
 <Callout type="info">
 Existing configs continue to load. eRPC translates legacy fields at
-unmarshal time into an equivalent `selectionPolicy.eval`, with a deprecation
+unmarshal time into an equivalent `selectionPolicy.evalFunc`, with a deprecation
 warning per project. Translator stays for two minor releases; afterward,
 legacy YAML stops loading.
 </Callout>
@@ -35,9 +35,11 @@ legacy YAML stops loading.
 - **Composable std-lib.** Chainable methods (`sortByScore`, `removeByLag`,
   `preferTag`, `stickyPrimary`, `probeExcluded`, …) replace nearly every
   multi-field knob with a one-liner you can read top-to-bottom.
-- **Observability.** Every tick produces a `Decision` record (joined to
-  requests via `decision_id`). Operators answer
-  *"why was upstream X used at time T for method M?"* by following one link.
+- **Observability.** Per-tick reasoning surfaces in standard tooling:
+  `policy_selection_*` Prometheus metrics for selection/position/
+  rejection/primary-switch counts, plus OTLP tracing spans on each
+  request that carry the selected upstream and tick id. No bespoke
+  in-memory decision-record buffer.
 
 ## Field-by-field mapping
 
@@ -64,11 +66,11 @@ legacy YAML stops loading.
 | `upstream.routing.scoreMultipliers[*]` | Per-upstream weights via the function form of `sortByScore` (see "Worked example 2" below) |
 | `upstream.routing.scoreLatencyQuantile: 0.70` | `sortByScore(weights, { latencyQuantile: 'p70' })` (nearest of `p50/p70/p90/p95/p99`) |
 | `selectionPolicy.evalInterval` | Same — kept as-is. |
-| `selectionPolicy.evalFunction: "(upstreams, method) => …"` | Wrapped into `selectionPolicy.eval = "const __legacyFn = (upstreams, method) => …; return __legacyFn(upstreams, ctx.method);"` |
+| `selectionPolicy.evalFunction: "(upstreams, method) => …"` | Wrapped into `selectionPolicy.evalFunc = "const __legacyFn = (upstreams, method) => …; return __legacyFn(upstreams, ctx.method);"` |
 | `selectionPolicy.evalPerMethod` | Same — kept as-is. |
 | `selectionPolicy.resampleExcluded: true` + `resampleInterval: M` | Appended to the chain: `.probeExcluded({ reAdmitAfter: M, maxConcurrent: 1, longestFirst: true })` |
 | `selectionPolicy.resampleCount: N` | **Dropped.** The new probe re-admits one upstream per tick (configurable via `maxConcurrent`) and traffic flows organically while it's in rotation; you no longer need to tell eRPC how many sample requests to send. |
-| `ROUTING_POLICY_MAX_ERROR_RATE`, `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG`, `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` env vars | Synthesized eval reads `process.env.X` with the same defaults, so existing deployments behave identically. New deployments should inline the thresholds in `selectionPolicy.eval` directly. |
+| `ROUTING_POLICY_MAX_ERROR_RATE`, `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG`, `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` env vars | Synthesized eval reads `process.env.X` with the same defaults, so existing deployments behave identically. New deployments should inline the thresholds in `selectionPolicy.evalFunc` directly. |
 | `erpc_upstream_score_overall` metric | **Removed.** Use `erpc_selection_position` (gauge: 0 = primary, 1+ = runners-up, -1 = excluded). |
 | `erpc_upstream_routing_priority` metric | **Removed.** Same replacement. |
 
@@ -102,7 +104,7 @@ projects:
         evm: { chainId: 1 }
         selectionPolicy:
           evalInterval: 1s
-          eval: |
+          evalFunc: |
             (upstreams, ctx) => upstreams.rotateBy(ctx.tickCount)
 ```
 </Tab>
@@ -153,7 +155,7 @@ projects:
         evm: { chainId: 1 }
         selectionPolicy:
           evalInterval: 1s
-          eval: |
+          evalFunc: |
             const weightsByID = {
               hot:  { errorRate: 8, respLatency: 12 },
               cold: { errorRate: 8, respLatency: 4 },
@@ -213,7 +215,7 @@ projects:
         evm: { chainId: 1 }
         selectionPolicy:
           evalInterval: 1m
-          eval: |
+          evalFunc: |
             (upstreams, ctx) =>
               upstreams
                 .removeByErrorRate(0.5)

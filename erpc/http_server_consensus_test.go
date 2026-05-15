@@ -48,11 +48,10 @@ func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 							SelectionPolicy: &common.SelectionPolicyConfig{
 								EvalInterval:    common.Duration(100 * time.Millisecond),
 								EvalTimeout:     common.Duration(50 * time.Millisecond),
-								DecisionHistory: common.Duration(time.Minute),
 								// Weight misbehavior heavily so the misbehaving upstream is
 								// deprioritized over time. Matches the legacy intent of the
 								// per-upstream `scoreMultipliers: { misbehaviors: 10 }` config.
-								Eval: `(upstreams, ctx) => upstreams.sortByScore({ misbehaviors: 10 })`,
+								EvalFunc: `(upstreams, ctx) => upstreams.sortByScore({ misbehaviors: 10 })`,
 							},
 						},
 					},

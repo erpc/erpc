@@ -1082,8 +1082,15 @@ export interface SelectionPolicyConfig {
   evalInterval?: Duration;
   evalPerMethod?: boolean;
   evalTimeout?: Duration;
-  decisionHistory?: Duration;
-  eval?: string;
+  /**
+   * JavaScript source for the per-tick evaluation function.
+   * Signature: `(upstreams, ctx) => Upstream[]`. Functions written
+   * directly in TS get stringified to their source automatically.
+   *
+   * The legacy `evalFunction` key (signature `(upstreams, method)`) is
+   * still accepted in YAML and rewritten at load time.
+   */
+  evalFunc?: string | ((upstreams: unknown[], ctx: unknown) => unknown[]);
 }
 export type AuthType = string;
 export const AuthTypeSecret: AuthType = "secret";

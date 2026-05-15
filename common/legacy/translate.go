@@ -9,20 +9,20 @@ import (
 )
 
 // Translate inspects (prj, ups, networks) for legacy fields and, if any
-// are present, synthesizes a new-shape selectionPolicy.Eval on each
+// are present, synthesizes a new-shape selectionPolicy.EvalFunc on each
 // network. Returns a list of deprecation warnings the caller should log.
 //
 // Cardinal rule: NEVER mutate the new-shape config in a way that loses
 // information the user explicitly set. The translator only fills in
-// `selectionPolicy.eval` when:
+// `selectionPolicy.evalFunc` when:
 //
 //   - the network had no explicit `selectionPolicy` block; OR
 //   - the network had a `selectionPolicy.evalFunction` (legacy field) and
-//     no `selectionPolicy.eval` (new field).
+//     no `selectionPolicy.evalFunc` (new field).
 //
-// In both cases the synthesized eval is compiled and assigned to
-// `cfg.Eval` + `cfg.CompiledProgram`. SetDefaults can still fill in any
-// remaining unset fields (EvalInterval, EvalTimeout, DecisionHistory).
+// In both cases the synthesized source is assigned to `cfg.EvalFunc`;
+// SetDefaults will compile it into `cfg.CompiledProgram` and fill the
+// remaining unset fields (EvalInterval, EvalTimeout).
 func Translate(
 	prj WidenedProject,
 	upstreams []WidenedUpstream,
@@ -62,7 +62,7 @@ func Translate(
 		// Decide whether to synthesize. If the user already wrote
 		// `selectionPolicy.eval` (new field), we leave it alone — even if
 		// they ALSO wrote legacy fields, the new eval takes precedence.
-		if nwCfg.SelectionPolicy != nil && strings.TrimSpace(nwCfg.SelectionPolicy.Eval) != "" {
+		if nwCfg.SelectionPolicy != nil && strings.TrimSpace(nwCfg.SelectionPolicy.EvalFunc) != "" {
 			continue
 		}
 
@@ -74,7 +74,7 @@ func Translate(
 		if nwCfg.SelectionPolicy == nil {
 			nwCfg.SelectionPolicy = &common.SelectionPolicyConfig{}
 		}
-		nwCfg.SelectionPolicy.Eval = evalSrc
+		nwCfg.SelectionPolicy.EvalFunc = evalSrc
 
 		// Honor legacy evalInterval/evalPerMethod if the user wrote a
 		// legacy selectionPolicy block.
@@ -153,4 +153,134 @@ func formatDuration(d common.Duration) string {
 		return "0"
 	}
 	return fmt.Sprintf("'%s'", time.Duration(d).String())
+}
+
+// TranslateFromConfig is the LoadConfig hook (assigned to
+// common.LegacyTranslateFn). It walks every project's stashed legacy
+// fields (captured by the UnmarshalYAML shadows on ProjectConfig /
+// UpstreamConfig / SelectionPolicyConfig), runs the existing Translate
+// over them, and clears the stashes so the runtime sees a clean
+// canonical Config.
+func TranslateFromConfig(cfg *common.Config) ([]string, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	var allWarnings []string
+	for _, prj := range cfg.Projects {
+		if prj == nil {
+			continue
+		}
+		wp := widenedProjectFromConfig(prj)
+		wUps := widenedUpstreamsFromConfig(prj.Upstreams)
+		wNws := widenedNetworksFromConfig(prj.Networks)
+
+		// Fast path: no legacy fields anywhere → skip.
+		if !hasAnyLegacy(wp, wUps, wNws) {
+			clearLegacyStashes(prj)
+			continue
+		}
+
+		warns, err := Translate(wp, wUps, prj.Upstreams, wNws, prj.Networks)
+		if err != nil {
+			return allWarnings, fmt.Errorf("project %q: %w", prj.Id, err)
+		}
+		for _, w := range warns {
+			allWarnings = append(allWarnings, fmt.Sprintf("project %q: %s", prj.Id, w))
+		}
+		clearLegacyStashes(prj)
+	}
+	return allWarnings, nil
+}
+
+func widenedProjectFromConfig(prj *common.ProjectConfig) WidenedProject {
+	if prj.LegacyProject == nil {
+		return WidenedProject{}
+	}
+	lp := prj.LegacyProject
+	return WidenedProject{
+		RoutingStrategy:        lp.RoutingStrategy,
+		ScoreGranularity:       lp.ScoreGranularity,
+		ScorePenaltyDecayRate:  lp.ScorePenaltyDecayRate,
+		ScoreSwitchHysteresis:  lp.ScoreSwitchHysteresis,
+		ScoreMinSwitchInterval: lp.ScoreMinSwitchInterval,
+		ScoreMetricsMode:       lp.ScoreMetricsMode,
+		ScoreMetricsWindowSize: lp.ScoreMetricsWindowSize,
+		ScoreRefreshInterval:   lp.ScoreRefreshInterval,
+	}
+}
+
+func widenedUpstreamsFromConfig(ups []*common.UpstreamConfig) []WidenedUpstream {
+	out := make([]WidenedUpstream, len(ups))
+	for i, u := range ups {
+		if u == nil || u.LegacyRouting == nil {
+			continue
+		}
+		out[i] = WidenedUpstream{Routing: routingConfigFromCommon(u.LegacyRouting)}
+	}
+	return out
+}
+
+func widenedNetworksFromConfig(nws []*common.NetworkConfig) []WidenedNetwork {
+	out := make([]WidenedNetwork, len(nws))
+	for i, n := range nws {
+		if n == nil || n.SelectionPolicy == nil || n.SelectionPolicy.LegacySelectionPolicy == nil {
+			continue
+		}
+		lp := n.SelectionPolicy.LegacySelectionPolicy
+		out[i] = WidenedNetwork{
+			SelectionPolicy: &selectionPolicy{
+				// EvalInterval / EvalPerMethod live on the canonical
+				// SelectionPolicyConfig; the translator only needs them
+				// when the user wrote a legacy block AND no modern eval.
+				// Copy them over so synthesized eval keeps the cadence.
+				EvalInterval:     n.SelectionPolicy.EvalInterval,
+				EvalPerMethod:    n.SelectionPolicy.EvalPerMethod,
+				EvalFunction:     lp.EvalFunction,
+				ResampleExcluded: lp.ResampleExcluded,
+				ResampleInterval: lp.ResampleInterval,
+				ResampleCount:    lp.ResampleCount,
+			},
+		}
+	}
+	return out
+}
+
+func routingConfigFromCommon(lr *common.LegacyUpstreamRouting) *routingConfig {
+	rc := &routingConfig{ScoreLatencyQuantile: lr.ScoreLatencyQuantile}
+	for _, m := range lr.ScoreMultipliers {
+		if m == nil {
+			continue
+		}
+		rc.ScoreMultipliers = append(rc.ScoreMultipliers, &scoreMultiplier{
+			Network:         m.Network,
+			Method:          m.Method,
+			Finality:        m.Finality,
+			Overall:         m.Overall,
+			ErrorRate:       m.ErrorRate,
+			RespLatency:     m.RespLatency,
+			TotalRequests:   m.TotalRequests,
+			ThrottledRate:   m.ThrottledRate,
+			BlockHeadLag:    m.BlockHeadLag,
+			FinalizationLag: m.FinalizationLag,
+			Misbehaviors:    m.Misbehaviors,
+		})
+	}
+	return rc
+}
+
+func clearLegacyStashes(prj *common.ProjectConfig) {
+	prj.LegacyProject = nil
+	for _, u := range prj.Upstreams {
+		if u != nil {
+			u.LegacyRouting = nil
+		}
+	}
+	if prj.UpstreamDefaults != nil {
+		prj.UpstreamDefaults.LegacyRouting = nil
+	}
+	for _, n := range prj.Networks {
+		if n != nil && n.SelectionPolicy != nil {
+			n.SelectionPolicy.LegacySelectionPolicy = nil
+		}
+	}
 }

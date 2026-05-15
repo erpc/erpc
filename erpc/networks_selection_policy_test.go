@@ -892,7 +892,7 @@ func setupSelectionPolicyNetworkWithEval(t *testing.T, ctx context.Context, upst
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		SelectionPolicy: &common.SelectionPolicyConfig{
 			EvalInterval: 0,
-			Eval:         evalSrc,
+			EvalFunc:     evalSrc,
 		},
 	}
 

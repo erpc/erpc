@@ -50,10 +50,6 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		return e.handleUpdateApiKey(ctx, nq)
 	case "erpc_deleteApiKey":
 		return e.handleDeleteApiKey(ctx, nq)
-	case "erpc_selectionDecision":
-		return e.handleSelectionDecision(ctx, nq)
-	case "erpc_selectionDecisions":
-		return e.handleSelectionDecisions(ctx, nq)
 	case "erpc_selectionReeval":
 		return e.handleSelectionReeval(ctx, nq)
 	case "erpc_selectionDefaultPolicy":
@@ -107,40 +103,6 @@ func (e *ERPC) getProjectEngine(projectID string) (*policy.Engine, error) {
 		return nil, fmt.Errorf("selection admin: project %s has no policy engine", projectID)
 	}
 	return prj.policyEngine, nil
-}
-
-// handleSelectionDecision returns the latest decision for (network, method).
-// Maps to spec §8.1 `GET /admin/selection/<net>/<method>`.
-func (e *ERPC) handleSelectionDecision(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	p, err := parseSelectionParams(nq)
-	if err != nil {
-		return nil, err
-	}
-	engine, err := e.getProjectEngine(p.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	decisions := policy.DecisionsForTest(engine, p.Network, p.Method)
-	if len(decisions) == 0 {
-		return makeSelectionResponse(nq, map[string]interface{}{"decision": nil})
-	}
-	return makeSelectionResponse(nq, map[string]interface{}{"decision": decisions[len(decisions)-1]})
-}
-
-// handleSelectionDecisions returns the full ring-buffer snapshot
-// (oldest → newest). Maps to spec §8.1 `?since=<dur>` variant.
-func (e *ERPC) handleSelectionDecisions(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	p, err := parseSelectionParams(nq)
-	if err != nil {
-		return nil, err
-	}
-	engine, err := e.getProjectEngine(p.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	return makeSelectionResponse(nq, map[string]interface{}{
-		"decisions": policy.DecisionsForTest(engine, p.Network, p.Method),
-	})
 }
 
 // handleSelectionReeval forces a synchronous eval cycle for the slot. Maps

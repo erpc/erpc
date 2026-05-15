@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/common/legacy"
 	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/util"
 	"github.com/joho/godotenv"
@@ -26,6 +27,15 @@ import (
 
 func init() {
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, os.Stderr))
+
+	// Wire the legacy → modern config migration hook. Done here (init
+	// of cmd/erpc) rather than in common so that the common package
+	// itself stays free of the common/legacy dependency. Tests that
+	// exercise legacy YAML can mirror this assignment in TestMain.
+	common.LegacyTranslateFn = legacy.TranslateFromConfig
+	common.LegacyTranslateLogger = func(w string) {
+		log.Warn().Str("source", "config-migration").Msg(w)
+	}
 
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {

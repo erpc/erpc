@@ -90,8 +90,7 @@ func newTestEngine(t *testing.T, eval string) (*policy.Engine, []common.Upstream
 	cfg := &common.SelectionPolicyConfig{
 		EvalInterval:    common.Duration(0), // frozen — tests drive manual ticks
 		EvalTimeout:     common.Duration(50 * time.Millisecond),
-		DecisionHistory: common.Duration(time.Minute),
-		Eval:            eval,
+		EvalFunc:            eval,
 	}
 	require.NoError(t, cfg.SetDefaults())
 	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
@@ -116,7 +115,7 @@ func TestStdlib_PreferTagFallback(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -137,7 +136,7 @@ func TestStdlib_RotateBy_RoundRobin(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2", "rpc3")
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -160,7 +159,7 @@ func TestStdlib_SortByScore_BalancedPenalizesErrors(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -192,7 +191,7 @@ func TestStdlib_RemoveByLag(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2", "rpc3")
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -223,7 +222,7 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{} // empty → SetDefaults installs trivial → engine upgrades.
 	require.NoError(t, cfg.SetDefaults())
-	require.Equal(t, common.DefaultSelectionPolicySource, cfg.Eval, "SetDefaults should install the placeholder")
+	require.Equal(t, common.DefaultSelectionPolicySource, cfg.EvalFunc, "SetDefaults should install the placeholder")
 
 	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
 	defer engine.Stop()
@@ -232,7 +231,7 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// After RegisterNetwork the cfg should hold the rich default source.
-	require.Contains(t, cfg.Eval, "sortByScore(BALANCED)",
+	require.Contains(t, cfg.EvalFunc, "sortByScore(BALANCED)",
 		"engine should upgrade the placeholder to the rich default")
 
 	// And the policy should run end-to-end: rpc1 (tier:default) wins
@@ -425,7 +424,7 @@ func TestStdlib_DefaultPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
 		logger := zerolog.Nop()
 		tracker := health.NewTracker(&logger, "p1", time.Minute)
 		cfg := &common.SelectionPolicyConfig{
-			Eval: defaultPolicy,
+			EvalFunc: defaultPolicy,
 		}
 		require.NoError(t, cfg.SetDefaults())
 		engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
@@ -543,7 +542,7 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -584,7 +583,7 @@ func TestStdlib_KeepHealthy_CompositeFilter(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2", "rpc3")
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -630,7 +629,7 @@ func TestStdlib_Combinators_WhenEmpty_FallbackTo(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main"})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -674,8 +673,7 @@ func TestStdlib_ByFinality_RoutesToCorrectHandler(t *testing.T) {
 			cfg := &common.SelectionPolicyConfig{
 				EvalInterval:    0,
 				EvalTimeout:     common.Duration(50 * time.Millisecond),
-				DecisionHistory: common.Duration(time.Minute),
-				Eval:            eval,
+				EvalFunc:            eval,
 			}
 			require.NoError(t, cfg.SetDefaults())
 			require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
@@ -711,8 +709,7 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 	cfg := &common.SelectionPolicyConfig{
 		EvalInterval:    0,
 		EvalTimeout:     common.Duration(50 * time.Millisecond),
-		DecisionHistory: common.Duration(time.Minute),
-		Eval:            eval,
+		EvalFunc:            eval,
 	}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
@@ -750,7 +747,7 @@ func TestStdlib_SpreadAcrossTags_ByVendorTag(t *testing.T) {
 		{"alc-3", "alchemy", []string{"vendor:alchemy"}},
 		{"inf-1", "infura", []string{"vendor:infura"}},
 	})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -779,7 +776,7 @@ func TestStdlib_SpreadAcrossTags_StableForTies(t *testing.T) {
 		{"inf-A", "infura", []string{"vendor:infura"}},
 		{"inf-B", "infura", []string{"vendor:infura"}},
 	})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -807,7 +804,7 @@ func TestStdlib_SpreadAcrossTags_SingleBucketFallthrough(t *testing.T) {
 		{"alc-2", "alchemy", []string{"vendor:alchemy"}},
 		{"alc-3", "alchemy", []string{"vendor:alchemy"}},
 	})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -852,7 +849,7 @@ func TestStdlib_ByTag_GlobAndNegation(t *testing.T) {
 				{"c", "drpc", []string{"region:us-west"}},
 				{"fb", "fallback-vendor", []string{"tier:fallback"}},
 			})
-			cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: tc.eval}
+			cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: tc.eval}
 			require.NoError(t, cfg.SetDefaults())
 			require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -882,7 +879,7 @@ func TestStdlib_PreferTag_Fallback(t *testing.T) {
 			{"prim-b", "infura", []string{"tier:main"}},
 			{"backup", "drpc", []string{"tier:fallback"}},
 		})
-		cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+		cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 		require.NoError(t, cfg.SetDefaults())
 		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -904,7 +901,7 @@ func TestStdlib_PreferTag_Fallback(t *testing.T) {
 		}{
 			{"backup", "drpc", []string{"tier:fallback"}},
 		})
-		cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+		cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 		require.NoError(t, cfg.SetDefaults())
 		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -932,7 +929,7 @@ func TestStdlib_SpreadAcrossTags_ByPrefix(t *testing.T) {
 		{"inf-base", "infura", []string{"cohort:op-base-sequencer"}},
 		{"drpc-direct", "drpc", []string{"cohort:drpc-direct"}},
 	})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -960,7 +957,7 @@ func TestStdlib_SpreadAcrossTags_MissingTagBucketed(t *testing.T) {
 		{"west-1", "drpc", []string{"region:us-west"}},
 		{"untagged", "infura", []string{}}, // no region:* tag
 	})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
@@ -980,32 +977,32 @@ func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2", "rpc3", "rpc4")
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	require.Len(t, engine.GetOrdered("evm:1", "*"), 2, "pickTop(2) should cap output at 2")
 }
 
-// TestStdlib_DecisionRecord_CapturesExclusions pins the decision-record
-// output that powers the /admin/selection/* endpoints.
-func TestStdlib_DecisionRecord_CapturesExclusions(t *testing.T) {
+// TestStdlib_LatestDecision_OrderAndExclusions verifies the
+// slot's cached "what survived / what got dropped" surface. There is
+// no ring buffer or admin endpoint behind this — just the slot's
+// previousOrder + previousExcluded after the latest tick. Real
+// investigations go through traces + metrics (see telemetry/metrics.go).
+func TestStdlib_LatestDecision_OrderAndExclusions(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams.byTag('tier:main')`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
 
 	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
-	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), DecisionHistory: common.Duration(time.Minute), Eval: eval}
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := policy.DecisionsForTest(engine, "evm:1", "*")
-	require.NotEmpty(t, decisions)
-	latest := decisions[len(decisions)-1]
-	require.Empty(t, latest.Error)
-	require.Len(t, latest.Output.Order, 2, "tier:main has two members")
-	require.Len(t, latest.Output.Excluded, 1, "rpc3 (tier:fallback) is excluded")
-	require.Equal(t, "rpc3", latest.Output.Excluded[0].ID)
+	order, excluded := policy.LatestDecisionOutputForTest(engine, "evm:1", "*")
+	require.Len(t, order, 2, "tier:main has two members")
+	require.Len(t, excluded, 1, "rpc3 (tier:fallback) is excluded")
+	require.Equal(t, "rpc3", excluded[0])
 }

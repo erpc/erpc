@@ -56,8 +56,7 @@ projects:
           evalInterval: 1s
           evalTimeout: 100ms
           evalPerMethod: false
-          decisionHistory: 5m
-          eval: |
+          evalFunc: |
             (upstreams, ctx) =>
               upstreams
                 .removeCordoned()
@@ -87,8 +86,7 @@ export default createConfig({
         evalInterval: "1s",
         evalTimeout: "100ms",
         evalPerMethod: false,
-        decisionHistory: "5m",
-        eval: `(upstreams, ctx) =>
+        evalFunc: `(upstreams, ctx) =>
           upstreams
             .removeCordoned()
             .removeByErrorRate(0.8)
@@ -110,12 +108,18 @@ export default createConfig({
 | `evalInterval` | Duration | `1s` | `0` disables the ticker (test only). |
 | `evalTimeout` | Duration | `100ms` | Must be `< evalInterval`. Prior cache retained on timeout. |
 | `evalPerMethod` | bool | `false` | Separate eval + cache per method. |
-| `decisionHistory` | Duration | `5m` | Ring buffer = `decisionHistory / evalInterval`. |
-| `eval` | string | (built-in default) | JS function returning `Upstream[]`. |
+| `evalFunc` | string | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. |
+
+> **Investigations.** There is no in-memory decision-history buffer
+> or admin endpoint for inspecting past evals. Per-tick reasoning is
+> exposed via OTLP tracing spans and the `policy_selection_*`
+> Prometheus metric family (selection counters, primary-switch counters,
+> rejection counters, eval-duration histogram). Use your existing
+> tracing / metrics stack for incident investigation.
 
 ## The default policy
 
-Omitting `eval` applies a production-hardened, chain-agnostic policy.
+Omitting `evalFunc` applies a production-hardened, chain-agnostic policy.
 Each step addresses a distinct failure class — the *absence* of any
 one of them lets a degraded upstream keep receiving traffic:
 

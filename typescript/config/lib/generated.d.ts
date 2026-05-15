@@ -1110,11 +1110,17 @@ export interface EvmIntegrityConfig {
 }
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;
-    evalFunction?: SelectionPolicyEvalFunction | undefined;
     evalPerMethod?: boolean;
-    resampleExcluded?: boolean;
-    resampleInterval?: Duration;
-    resampleCount?: number;
+    evalTimeout?: Duration;
+    /**
+     * JavaScript source for the per-tick evaluation function.
+     * Signature: `(upstreams, ctx) => Upstream[]`. Functions written
+     * directly in TS get stringified to their source automatically.
+     *
+     * The legacy `evalFunction` key (signature `(upstreams, method)`) is
+     * still accepted in YAML and rewritten at load time.
+     */
+    evalFunc?: string | SelectionPolicyEvalFunction;
 }
 export type AuthType = string;
 export declare const AuthTypeSecret: AuthType;

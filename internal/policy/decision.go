@@ -1,83 +1,78 @@
 package policy
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
-// Decision is the structured record of a single tick of a slot's eval.
-// Retained in the slot's ring buffer for `selectionPolicy.decisionHistory`
-// and exposed via admin endpoints. See spec §6.
+// Decision is the per-tick value the slot threads through metrics
+// emission. It is NOT persisted: no ring buffer, no admin endpoint,
+// no operator-visible retention knob. Investigations go through:
+//
+//   - traces (per-request span attributes — `policy.selected_upstream`,
+//     `policy.tick_id`)
+//   - metrics (`policy_selection_*` Prometheus families in telemetry/metrics.go)
+//   - structured logs (slot.go logs eval failures with full context)
+//
+// If a future need genuinely requires per-tick records again, derive
+// them from traces — don't add another in-memory mechanism.
 type Decision struct {
-	// Stable identifier — network/method/tickUnixMillis. Joined to request
-	// logs via `decision_id` so operators can answer "why was upstream X
-	// used at time T?".
-	ID string `json:"id"`
+	ID           string
+	NetworkID    string
+	Method       string
+	TickAt       time.Time
+	EvalDuration time.Duration
 
-	NetworkID string    `json:"network"`
-	Method    string    `json:"method"`
-	TickAt    time.Time `json:"tickAt"`
+	Input  DecisionInput
+	Output DecisionOutput
+	State  DecisionState
+	Diff   DecisionDiff
 
-	EvalDuration time.Duration `json:"evalDurationMs"`
-
-	// Input snapshot: every upstream considered, with the metric snapshot
-	// the eval was run against.
-	Input DecisionInput `json:"input"`
-
-	// Output: the ordered upstream IDs the eval returned, plus rejection
-	// reasons for any input not in the output.
-	Output DecisionOutput `json:"output"`
-
-	// Cross-tick state at the START of this tick.
-	State DecisionState `json:"state"`
-
-	// Diff vs the previous tick's decision.
-	Diff DecisionDiff `json:"diff"`
-
-	// Any error from the eval (timeout, throw, invalid_return, ...).
-	Error string `json:"error,omitempty"`
+	// Eval error (timeout, throw, invalid_return, ...).
+	Error string
 }
 
 // DecisionInput captures the per-upstream metric snapshot the eval saw.
+// Built fresh each tick; never persisted.
 type DecisionInput struct {
-	UpstreamIDs []string                   `json:"upstreamIds"`
-	Metrics     map[string]UpstreamMetrics `json:"metrics"`
-	Annotations map[string][]string        `json:"annotations,omitempty"`
+	UpstreamIDs []string
+	Metrics     map[string]UpstreamMetrics
 }
 
-// DecisionOutput is what the eval produced.
+// DecisionOutput is what the eval produced for this tick.
 type DecisionOutput struct {
-	Order    []string           `json:"order"`
-	Excluded []ExcludedUpstream `json:"excluded,omitempty"`
+	Order    []string
+	Excluded []ExcludedUpstream
 }
 
-// ExcludedUpstream explains why an upstream was dropped.
+// ExcludedUpstream explains why an upstream was dropped this tick.
+// Surfaces as a Prometheus counter label (`policy_selection_rejection_total`).
 type ExcludedUpstream struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason"`
-	Step   string `json:"step,omitempty"`
+	ID     string
+	Reason string
+	Step   string
 }
 
 // DecisionState mirrors the cross-tick fields of EvalContext as seen
 // at the start of the tick (BEFORE any update from this tick's result).
+// Lives in the slot for one tick at a time, then is copied into the
+// EvalContext passed into JS.
 type DecisionState struct {
-	PreviousOrder    []string         `json:"previousOrder,omitempty"`
-	PreviousExcluded []string         `json:"previousExcluded,omitempty"`
-	LastSwitchAt     *time.Time       `json:"lastSwitchAt,omitempty"`
-	ExcludedSince    map[string]int64 `json:"excludedSince,omitempty"`
-	TickCount        uint64           `json:"tickCount"`
+	PreviousOrder    []string
+	PreviousExcluded []string
+	LastSwitchAt     *time.Time
+	ExcludedSince    map[string]int64
+	TickCount        uint64
 }
 
-// DecisionDiff is a delta against the previous tick's output.
+// DecisionDiff is a delta against the previous tick's output. Used to
+// drive `policy_selection_primary_switch_total` and similar metrics.
 type DecisionDiff struct {
-	OrderChanged   bool     `json:"orderChanged"`
-	PrimaryChanged bool     `json:"primaryChanged"`
-	Added          []string `json:"added,omitempty"`
-	Removed        []string `json:"removed,omitempty"`
+	OrderChanged   bool
+	PrimaryChanged bool
+	Added          []string
+	Removed        []string
 }
 
-// UpstreamMetrics is the metric snapshot the eval saw for one upstream.
-// Mirrors §3.1 of the spec.
+// UpstreamMetrics is the metric snapshot the eval sees for one upstream.
+// Mirrors §3.1 of the spec. Built per-tick from health.Tracker.
 type UpstreamMetrics struct {
 	ErrorRate          float64 `json:"errorRate"`
 	ErrorsTotal        int64   `json:"errorsTotal"`
@@ -92,60 +87,4 @@ type UpstreamMetrics struct {
 	BlockHeadLag       int64   `json:"blockHeadLag"`
 	FinalizationLag    int64   `json:"finalizationLag"`
 	CordonedReason     string  `json:"cordonedReason,omitempty"`
-}
-
-// ringBuffer is a fixed-capacity, FIFO buffer of decision pointers.
-// Older entries are overwritten when full. Per the spec, the slot sizes
-// it from `decisionHistory / evalInterval`.
-type ringBuffer struct {
-	mu   sync.RWMutex
-	data []*Decision
-	next int  // index of the next slot to write
-	full bool // true once we've wrapped at least once
-}
-
-func newRingBuffer(capacity int) *ringBuffer {
-	if capacity < 1 {
-		capacity = 1
-	}
-	return &ringBuffer{data: make([]*Decision, capacity)}
-}
-
-func (r *ringBuffer) append(d *Decision) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.data[r.next] = d
-	r.next = (r.next + 1) % len(r.data)
-	if r.next == 0 {
-		r.full = true
-	}
-}
-
-// snapshot returns a chronologically-ordered copy (oldest → newest).
-func (r *ringBuffer) snapshot() []*Decision {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	n := r.next
-	if r.full {
-		n = len(r.data)
-	}
-	out := make([]*Decision, 0, n)
-	if !r.full {
-		out = append(out, r.data[:r.next]...)
-		return out
-	}
-	out = append(out, r.data[r.next:]...)
-	out = append(out, r.data[:r.next]...)
-	return out
-}
-
-// latest returns the most recently appended decision, or nil.
-func (r *ringBuffer) latest() *Decision {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if !r.full && r.next == 0 {
-		return nil
-	}
-	idx := (r.next - 1 + len(r.data)) % len(r.data)
-	return r.data[idx]
 }

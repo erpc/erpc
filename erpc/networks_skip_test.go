@@ -409,7 +409,7 @@ func TestNetworkSkip(t *testing.T) {
 		policy := &common.SelectionPolicyConfig{
 			EvalInterval:  common.Duration(50 * time.Millisecond),
 			EvalPerMethod: false,
-			Eval:          `(upstreams, ctx) => upstreams.filter(u => u.id === 'rpc2')`,
+			EvalFunc:          `(upstreams, ctx) => upstreams.filter(u => u.id === 'rpc2')`,
 		}
 
 		network := setupTwoUpstreamNetworkForSkip(t, ctx,

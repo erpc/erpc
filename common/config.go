@@ -49,6 +49,21 @@ type Config struct {
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
 }
 
+// LegacyTranslateFn is the post-decode migration hook invoked by
+// LoadConfig before SetDefaults. nil = no migration (canonical configs
+// only). cmd/erpc/main.go wires this to legacy.TranslateFromConfig
+// during init; tests that exercise legacy YAML must set it explicitly.
+//
+// Decoupled via a package var to avoid a circular import: this package
+// owns the runtime types, and common/legacy depends on those types to
+// describe the legacy shape — so legacy imports common, not the other
+// way around. The hook lets common stay free of the legacy package.
+var LegacyTranslateFn func(*Config) ([]string, error)
+
+// LegacyTranslateLogger lets the caller observe deprecation warnings
+// emitted by LegacyTranslateFn. If nil, warnings are dropped silently.
+var LegacyTranslateLogger func(warning string)
+
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
 func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, error) {
@@ -72,6 +87,18 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 		err = decoder.Decode(&cfg)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	if LegacyTranslateFn != nil {
+		warnings, err := LegacyTranslateFn(&cfg)
+		if err != nil {
+			return nil, fmt.Errorf("legacy config migration: %w", err)
+		}
+		if LegacyTranslateLogger != nil {
+			for _, w := range warnings {
+				LegacyTranslateLogger(w)
+			}
 		}
 	}
 
@@ -474,6 +501,48 @@ type ProjectConfig struct {
 	ForwardHeaders []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
 	IgnoreMethods  []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods   []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
+
+	// LegacyProject captures deprecated project-level scoring / routing
+	// keys that used to live directly on ProjectConfig. Consumed by the
+	// legacy translator hook in LoadConfig, then cleared. Never serialized.
+	LegacyProject *LegacyProjectFields `yaml:"-" json:"-"`
+}
+
+// LegacyProjectFields collects the deprecated project-level scoring +
+// routing keys. The translator inspects these to synthesize a
+// `selectionPolicy.eval` for each network and to emit deprecation
+// warnings. All fields are zero-valued for a clean modern config.
+type LegacyProjectFields struct {
+	RoutingStrategy        string   `yaml:"routingStrategy,omitempty"`
+	ScoreGranularity       string   `yaml:"scoreGranularity,omitempty"`
+	ScorePenaltyDecayRate  float64  `yaml:"scorePenaltyDecayRate,omitempty"`
+	ScoreSwitchHysteresis  float64  `yaml:"scoreSwitchHysteresis,omitempty"`
+	ScoreMinSwitchInterval Duration `yaml:"scoreMinSwitchInterval,omitempty"`
+	ScoreMetricsMode       string   `yaml:"scoreMetricsMode,omitempty"`
+	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize,omitempty"`
+	ScoreRefreshInterval   Duration `yaml:"scoreRefreshInterval,omitempty"`
+}
+
+// UnmarshalYAML captures legacy project-level scoring / routing keys
+// alongside the canonical schema. The legacy fields are stashed in
+// LegacyProject; the load-time translator hook reads them and
+// synthesizes the equivalent selectionPolicy.eval per network.
+func (p *ProjectConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type canonicalProjectConfig ProjectConfig
+	type shadow struct {
+		canonicalProjectConfig `yaml:",inline"`
+		LegacyProjectFields    `yaml:",inline"`
+	}
+	var s shadow
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	*p = ProjectConfig(s.canonicalProjectConfig)
+	if s.LegacyProjectFields != (LegacyProjectFields{}) {
+		lf := s.LegacyProjectFields
+		p.LegacyProject = &lf
+	}
+	return nil
 }
 
 // UserAgentTrackingMode controls how user agents are recorded for metrics/labels
@@ -632,26 +701,62 @@ type UpstreamConfig struct {
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
+
+	// LegacyRouting holds the deprecated `routing:` block (if any) parsed
+	// at YAML / TS load time. Consumed by the legacy translator hook in
+	// LoadConfig to synthesize the owning network's `selectionPolicy.eval`,
+	// then cleared. Never serialized.
+	LegacyRouting *LegacyUpstreamRouting `yaml:"-" json:"-"`
 }
 
-// UnmarshalYAML accepts the current canonical schema, plus two legacy
+// LegacyUpstreamRouting mirrors the deprecated `routing:` shape that
+// used to live on `UpstreamConfig`. Captured at config-load time so
+// the legacy translator can fold `scoreMultipliers` into the network's
+// synthesized selectionPolicy.eval. The shape is intentionally minimal —
+// every consumer of this snapshot lives in common/legacy/translate.go.
+type LegacyUpstreamRouting struct {
+	ScoreMultipliers     []*LegacyScoreMultiplier `yaml:"scoreMultipliers,omitempty"`
+	ScoreLatencyQuantile float64                  `yaml:"scoreLatencyQuantile,omitempty"`
+}
+
+// LegacyScoreMultiplier mirrors one entry in the old `routing.scoreMultipliers`
+// list. Pointer fields distinguish "unset" from "zero" — only non-nil
+// weights flow into the synthesized score function.
+type LegacyScoreMultiplier struct {
+	Network         string               `yaml:"network,omitempty"`
+	Method          string               `yaml:"method,omitempty"`
+	Finality        []DataFinalityState  `yaml:"finality,omitempty"`
+	Overall         *float64             `yaml:"overall,omitempty"`
+	ErrorRate       *float64             `yaml:"errorRate,omitempty"`
+	RespLatency     *float64             `yaml:"respLatency,omitempty"`
+	TotalRequests   *float64             `yaml:"totalRequests,omitempty"`
+	ThrottledRate   *float64             `yaml:"throttledRate,omitempty"`
+	BlockHeadLag    *float64             `yaml:"blockHeadLag,omitempty"`
+	FinalizationLag *float64             `yaml:"finalizationLag,omitempty"`
+	Misbehaviors    *float64             `yaml:"misbehaviors,omitempty"`
+}
+
+// UnmarshalYAML accepts the current canonical schema, plus three legacy
 // shapes for backward compatibility at load time only:
 //
 //  1. `failsafe:` as a single object (pre-list shape).
 //  2. `group:` / `cohort:` keys at the top level — rewritten as
 //     `tier:<value>` / `cohort:<value>` entries in `tags`.
+//  3. A `routing:` block (`scoreMultipliers`, `scoreLatencyQuantile`) —
+//     stashed on `LegacyRouting` for the legacy translator to fold
+//     into the owning network's selectionPolicy.eval.
 //
-// Neither legacy field exists on the runtime struct. Programmatic
-// callers use `Tags` directly.
+// None of these legacy fields exist on the runtime struct beyond the
+// load-time stash. Programmatic callers use `Tags` directly.
 func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	// Strict-schema shadow: inlines the canonical config and adds the
-	// deprecated yaml-only Group / Cohort keys. yaml v3 ignores
-	// `json:"-"` so this is safe.
+	// deprecated yaml-only keys. yaml v3 ignores `json:"-"` so this is safe.
 	type canonicalUpstreamConfig UpstreamConfig
 	type shadow struct {
 		canonicalUpstreamConfig `yaml:",inline"`
-		Group                   string `yaml:"group,omitempty"`
-		Cohort                  string `yaml:"cohort,omitempty"`
+		Group                   string                 `yaml:"group,omitempty"`
+		Cohort                  string                 `yaml:"cohort,omitempty"`
+		Routing                 *LegacyUpstreamRouting `yaml:"routing,omitempty"`
 	}
 
 	var s shadow
@@ -659,6 +764,9 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	if err == nil {
 		*u = UpstreamConfig(s.canonicalUpstreamConfig)
 		mergeLegacyLabelKeysIntoTags(u, s.Group, s.Cohort)
+		if s.Routing != nil {
+			u.LegacyRouting = s.Routing
+		}
 		return nil
 	}
 
@@ -677,6 +785,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Tags                         []string                 `yaml:"tags,omitempty"`
 		Group                        string                   `yaml:"group,omitempty"`
 		Cohort                       string                   `yaml:"cohort,omitempty"`
+		Routing                      *LegacyUpstreamRouting   `yaml:"routing,omitempty"`
 		VendorName                   string                   `yaml:"vendorName,omitempty"`
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
@@ -717,6 +826,9 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	}
 
 	mergeLegacyLabelKeysIntoTags(u, old.Group, old.Cohort)
+	if old.Routing != nil {
+		u.LegacyRouting = old.Routing
+	}
 	return nil
 }
 
@@ -1995,11 +2107,13 @@ type EvmIntegrityConfig struct {
 // provides the building blocks (sortByScore, removeByLag, stickyPrimary,
 // probeExcluded, etc.) — see specs/selection-policy/feature.md.
 type SelectionPolicyConfig struct {
-	EvalInterval    Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
-	EvalPerMethod   bool     `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
-	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
-	DecisionHistory Duration `yaml:"decisionHistory,omitempty" json:"decisionHistory" tstype:"Duration"`
-	Eval            string   `yaml:"eval,omitempty" json:"eval"`
+	EvalInterval  Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
+	EvalPerMethod bool     `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	EvalTimeout   Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
+	// EvalFunc is the JavaScript source of the per-tick evaluation
+	// function. Signature: `(upstreams, ctx) => Upstream[]`.
+	// See specs/selection-policy/feature.md for the stdlib reference.
+	EvalFunc string `yaml:"evalFunc,omitempty" json:"evalFunc"`
 
 	// DisableTickerForTest skips spawning the per-slot ticker goroutine.
 	// Tests that don't need background re-eval set this to avoid
@@ -2010,8 +2124,44 @@ type SelectionPolicyConfig struct {
 
 	// CompiledProgram is set by SetDefaults/Validate; never marshalled.
 	CompiledProgram *sobek.Program `yaml:"-" json:"-"`
-	// EvalOriginal preserves the source for diagnostics + tooling.
-	EvalOriginal string `yaml:"-" json:"-"`
+	// EvalFuncOriginal preserves the source for diagnostics + tooling.
+	EvalFuncOriginal string `yaml:"-" json:"-"`
+
+	// LegacySelectionPolicy stashes deprecated `evalFunction` / resample*
+	// keys captured at config-load time. The legacy translator wraps
+	// the legacy eval function into a modern `Eval` and emits warnings.
+	// Never serialized.
+	LegacySelectionPolicy *LegacySelectionPolicyFields `yaml:"-" json:"-"`
+}
+
+// LegacySelectionPolicyFields mirrors the deprecated keys that used to
+// live on SelectionPolicyConfig. None survive translation.
+type LegacySelectionPolicyFields struct {
+	EvalFunction     string   `yaml:"evalFunction,omitempty"`
+	ResampleExcluded bool     `yaml:"resampleExcluded,omitempty"`
+	ResampleInterval Duration `yaml:"resampleInterval,omitempty"`
+	ResampleCount    int      `yaml:"resampleCount,omitempty"`
+}
+
+// UnmarshalYAML captures legacy selectionPolicy keys (`evalFunction`,
+// resampleExcluded, resampleInterval, resampleCount) into
+// LegacySelectionPolicy for the post-decode translator hook.
+func (s *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type canonicalSelectionPolicyConfig SelectionPolicyConfig
+	type shadow struct {
+		canonicalSelectionPolicyConfig `yaml:",inline"`
+		LegacySelectionPolicyFields    `yaml:",inline"`
+	}
+	var sh shadow
+	if err := unmarshal(&sh); err != nil {
+		return err
+	}
+	*s = SelectionPolicyConfig(sh.canonicalSelectionPolicyConfig)
+	if sh.LegacySelectionPolicyFields != (LegacySelectionPolicyFields{}) {
+		lf := sh.LegacySelectionPolicyFields
+		s.LegacySelectionPolicy = &lf
+	}
+	return nil
 }
 
 type AuthType string
@@ -2186,6 +2336,22 @@ func (c *NetworkConfig) NetworkId() string {
 	}
 }
 
+// loadConfigFromTypescript compiles and runs the user's TS / JS config
+// file, then routes the resulting JS object through the SAME YAML
+// decode pipeline used by the .yaml path. That gives TS users:
+//
+//   - identical UnmarshalYAML hooks (including the back-compat shadows
+//     that capture legacy `routing:` / `group:` / `cohort:` keys);
+//   - identical strict-schema validation (`KnownFields(true)`);
+//   - automatic legacy-field migration via LegacyTranslateFn.
+//
+// Functions written for the `eval` field (or anywhere else a string
+// is expected) are stringified to their source code by a JSON.stringify
+// replacer before the round-trip, so users can write:
+//
+//   selectionPolicy: { eval: (upstreams, ctx) => upstreams.sortByScore(...) }
+//
+// and it flows naturally into the canonical Eval `string` field.
 func loadConfigFromTypescript(filename string) (*Config, error) {
 	contents, err := CompileTypeScript(filename)
 	if err != nil {
@@ -2196,23 +2362,48 @@ func loadConfigFromTypescript(filename string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = runtime.Evaluate(contents)
-	if err != nil {
+	if _, err := runtime.Evaluate(contents); err != nil {
 		return nil, err
 	}
 
 	defaultExport := runtime.Exports().Get("default")
-
-	// Get the config object default-exported from the TS code
-	v := defaultExport.(*sobek.Object)
-	if v == nil {
+	if defaultExport == nil || sobek.IsUndefined(defaultExport) || sobek.IsNull(defaultExport) {
 		return nil, fmt.Errorf("config object must be default exported from TypeScript code AND must be the last statement in the file")
 	}
 
-	var cfg Config
-	err = MapJavascriptObjectToGo(v, &cfg)
+	// Stash the export under a known global, then JSON.stringify it
+	// from JS land with a replacer that turns function values into
+	// their source code. sobek's stdlib JSON.stringify implements the
+	// standard ECMAScript replacer semantics so this works for
+	// arbitrarily nested objects + arrays.
+	if err := runtime.VM().GlobalObject().Set("__erpcConfigToMarshal", defaultExport); err != nil {
+		return nil, fmt.Errorf("ts config marshal setup: %w", err)
+	}
+	defer func() {
+		_ = runtime.VM().GlobalObject().Delete("__erpcConfigToMarshal")
+	}()
+	jsonValue, err := runtime.VM().RunString(`
+		JSON.stringify(__erpcConfigToMarshal, (k, v) => {
+			if (typeof v === 'function') return v.toString();
+			return v;
+		})
+	`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ts config json-stringify: %w", err)
+	}
+	if jsonValue == nil || sobek.IsUndefined(jsonValue) || sobek.IsNull(jsonValue) {
+		return nil, fmt.Errorf("config default export serialized to null/undefined")
+	}
+	jsonBytes := []byte(jsonValue.String())
+
+	// yaml.v3 accepts JSON (it's a subset of YAML) AND runs all
+	// UnmarshalYAML hooks during decode. Strict-decode so typos in TS
+	// configs surface the same way they do in YAML configs.
+	var cfg Config
+	decoder := yaml.NewDecoder(bytes.NewReader(jsonBytes))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("ts config decode: %w", err)
 	}
 
 	return &cfg, nil

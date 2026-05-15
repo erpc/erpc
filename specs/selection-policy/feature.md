@@ -26,9 +26,8 @@ networks:
     selectionPolicy:
       evalInterval: 1s          # tick frequency.                 default: 1s
       evalPerMethod: false      # maintain a cache per method.    default: false
-      decisionHistory: 5m       # rolling decision-record log.    default: 5m
       evalTimeout: 100ms        # per-tick eval hard cap.         default: 100ms
-      eval: |
+      evalFunc: |
         return upstreams
           .removeByLag({ blockHead: 5, finalization: 50 })
           .sortByScore(BALANCED)
@@ -40,9 +39,10 @@ networks:
 |---|---|---|
 | `evalInterval` | `Duration` | How often the eval runs. Default `1s`. |
 | `evalPerMethod` | `bool` | If true, separate eval + cache per `(network, method)`. Default false. |
-| `decisionHistory` | `Duration` | Retention window for the decision-record ring buffer (per slot). Default `5m`. |
 | `evalTimeout` | `Duration` | Hard wall-clock cap on each eval. Default `100ms`. |
-| `eval` | `string` | JavaScript function body. Must `return` an `Upstream[]`. If omitted, the [default policy](#7-default-policy) applies. |
+| `evalFunc` | `string` | JavaScript function body. Signature `(upstreams, ctx) => Upstream[]`. If omitted, the [default policy](#7-default-policy) applies. |
+
+> Investigations go through standard observability: per-tick reasoning lands on OTLP tracing spans (one per tick + per request) and the `policy_selection_*` Prometheus families. There is no in-memory decision-record buffer and no `decisionHistory` config field.
 
 `selectionPolicy` is defined at the network level. There are **no project-level** routing settings.
 
@@ -502,9 +502,8 @@ policy.Engine (per project)
 policy.Slot (per (network, method))
 ├── cache:           atomic.Pointer[[]Upstream]
 ├── ticker:          *time.Ticker (evalInterval)
-├── crossTickState:  previousOrder, lastSwitchAt, excludedSince, tickCount
-├── ring:            decision record ring buffer (size = decisionHistory / evalInterval)
-└── tick goroutine: snapshots metrics → builds ctx → runs eval → swaps cache → appends decision
+├── crossTickState:  previousOrder, lastSwitchAt, excludedSince, tickCount, lastEvalAt
+└── tick goroutine: snapshots metrics → builds ctx → runs eval → swaps cache → emits metrics + trace span
 ```
 
 ### 5.2 Tick lifecycle
@@ -514,9 +513,8 @@ policy.Slot (per (network, method))
 3. **Execute.** Run the eval in a pooled sobek runtime with std-lib pre-installed. Capture rejection annotations as each std-lib step runs.
 4. **Validate return.** Must be an array; each entry must be an upstream object originally from the input set (identity by `id`). On failure, emit an `invalid_return` error and keep prior cache.
 5. **Compute decision diff.** Order vs `ctx.previousOrder`, primary changed?, excluded set changed?, sticky decisions made?
-6. **Build decision record.** §6.
-7. **Atomic swap.** `Slot.cache.Store(&ordered)`. Append decision to ring. Update crossTickState.
-8. **Emit observability.** Metrics counters + change-only info log. Per-tick debug log of decision record (gated).
+6. **Atomic swap.** `Slot.cache.Store(&ordered)`. Update crossTickState.
+7. **Emit observability.** Prometheus counters (`policy_selection_*`) + OTLP tracing span per tick + change-only info log. Failure cases also bump the `policy_selection_eval_errors_total` counter.
 
 Eval timeout (`evalTimeout`, default 100ms): on timeout the engine logs `kind=timeout`, keeps prior cache.
 
@@ -589,88 +587,41 @@ The "keep prior cache" property means a single bad eval never causes a routing o
 
 ---
 
-## 6. Decision record
+## 6. Observability
 
-Every tick produces a decision, retained for `decisionHistory`:
+Every tick emits standard observability signals. There is no
+in-memory decision-record buffer and no `decisionHistory` config field;
+the engine talks exclusively through Prometheus + tracing.
 
-```jsonc
-{
-  "id": "evm:1/eth_call/1715600000123",
-  "tickAt": "2026-05-13T14:32:00.123Z",
-  "evalDurationMs": 0.4,
+**Prometheus families** (one set per `(project, network, method)`):
 
-  "input": {
-    "upstreamCount": 4,
-    "ctx": { "method": "eth_call", "finality": "realtime", ... }
-  },
-
-  "ordered": [
-    {
-      "id": "alchemy",
-      "position": 0,
-      "score": 0.42,
-      "penaltyBreakdown": {
-        "errorRate": 0.08, "respLatency": 0.30,
-        "throttledRate": 0.00, "blockHeadLag": 0.04,
-        "finalizationLag": 0.00, "misbehaviors": 0.00,
-        "overall": 0.42
-      },
-      "metrics": { ... },
-      "annotations": [
-        "stickyPrimary: kept (margin 4% < needed 10%)"
-      ]
-    },
-    {
-      "id": "infura",
-      "position": 1,
-      "score": 0.46,
-      "metrics": { ... }
-    }
-  ],
-
-  "excluded": [
-    {
-      "id": "quicknode",
-      "metrics": { ... },
-      "rejectedBy": "removeByLag",
-      "reason": "blockHeadLag=12 exceeds threshold 5",
-      "excludedSince": "2026-05-13T14:18:00.000Z"
-    },
-    {
-      "id": "drpc",
-      "metrics": { ... },
-      "rejectedBy": "filter@evalLine:7",
-      "reason": "u.group === 'fallback' && primaryHealthy >= 2",
-      "excludedSince": "2026-05-13T14:30:00.000Z"
-    }
-  ],
-
-  "sticky": {
-    "primary": "alchemy",
-    "lastSwitchAt": "2026-05-13T14:18:00Z",
-    "switchedThisTick": false,
-    "challenger": "infura",
-    "challengerScoreMargin": 0.04,
-    "switchThreshold": 0.10
-  },
-
-  "changes": {
-    "primaryChanged": false,
-    "orderChanged": false,
-    "excludedSetChanged": false
-  }
-}
+```
+policy_selection_eval_duration_seconds      # histogram
+policy_selection_eval_errors_total{kind}    # throw|timeout|invalid_return
+policy_selection_eligible_upstreams         # gauge
+policy_selection_position{upstream}         # 0 = primary, 1+ = runner-ups, -1 = excluded
+policy_selection_rejection_total{upstream,step}
+policy_selection_primary_switch_total{from,to}
 ```
 
-Each std-lib step is responsible for tagging its rejections and annotations as it runs. User-supplied `.filter()` / `.reject()` are auto-labeled by AST source position (`filter@evalLine:N`) when no explicit label is given.
+**OTLP tracing** (one span per tick, per `(network, method)`):
 
-The ring buffer is **sparse**: only ticks where `changes.primaryChanged || changes.orderChanged || changes.excludedSetChanged` is true are kept long-term. The last 60 seconds of unchanged ticks are kept verbatim for "what happened just now" queries; older unchanged ticks are coalesced into "no change from <id>" pointers.
+- attributes: `policy.tick_id`, `policy.network`, `policy.method`,
+  `policy.eval_duration_ms`, `policy.upstream_count`,
+  `policy.primary_changed`, `policy.order_changed`
+- events: per-upstream exclusion with reason + step
+- the per-request span gets `policy.selected_upstream` +
+  `policy.tick_id` so the request span joins back to the tick span
+
+When `evalFunc` throws or times out, the failing tick is logged at
+warn level with `tick_id` for direct correlation to the tracing
+span / metric increment.
 
 ---
 
 ## 7. Default policy
 
-When `selectionPolicy.eval` is omitted, the engine applies the production-hardened default embedded as `internal/policy/default_policy.js` (also served at `GET /admin/selection/default-policy`):
+When `selectionPolicy.evalFunc` is omitted, the engine applies the production-hardened default embedded as `internal/policy/default_policy.js` (also served at `GET /admin/selection/default-policy`):
 
 ```js
 (upstreams, ctx) =>
@@ -731,35 +682,32 @@ When `selectionPolicy.eval` is omitted, the engine applies the production-harden
 
 ```
 GET  /admin/selection/:net                          latest decision (method=*)
-GET  /admin/selection/:net/:method                  latest decision
-GET  /admin/selection/:net/:method?at=<RFC3339>     decision active at timestamp
-GET  /admin/selection/:net/:method?since=<dur>      sparse log of decisions in window
-GET  /admin/selection/:net/:method/state            current cache + crossTickState (debug)
-GET  /admin/selection/explain/:requestId            request -> decision -> reasons
 GET  /admin/selection/default-policy                source of the embedded default policy
 POST /admin/selection/:net/:method/reeval           force re-evaluation
-POST /admin/selection/:net/:method/reset            drop crossTickState, re-eval immediately
 ```
 
-`/explain/:requestId` is the operator's primary tool for "why was upstream X used at time T?" — it joins the request's recorded `decision_id` to the decision record and renders the full reasoning.
+The admin surface is intentionally minimal: there is no
+`/admin/selection/<net>/<method>` endpoint exposing the latest
+decision, no `?since=` log endpoint, no `/explain/:requestId`. All of
+those are subsumed by Prometheus + tracing.
 
 ### 8.2 Prometheus metrics
 
 ```
-erpc_selection_position{project, network, method, upstream}                 gauge
+policy_selection_position{project, network, method, upstream}                 gauge
   # 0 = primary; 1, 2, ... = runners-up; -1 = excluded this tick
 
-erpc_selection_rejection_total{project, network, method, upstream, step}    counter
+policy_selection_rejection_total{project, network, method, upstream, step}    counter
   # increments each tick the upstream is rejected by this std-lib step
 
-erpc_selection_primary_switch_total{project, network, method, from, to}     counter
+policy_selection_primary_switch_total{project, network, method, from, to}     counter
 
-erpc_selection_eval_duration_seconds{project, network, method}              histogram
+policy_selection_eval_duration_seconds{project, network, method}              histogram
 
-erpc_selection_eval_errors_total{project, network, method, kind}            counter
-  # kind = "timeout" | "throw" | "invalid_return" | "fallback_default"
+policy_selection_eval_errors_total{project, network, method, kind}            counter
+  # kind = "timeout" | "throw" | "invalid_return"
 
-erpc_selection_eligible_upstreams{project, network, method}                 gauge
+policy_selection_eligible_upstreams{project, network, method}                 gauge
   # current number of upstreams in the cached order (informational)
 ```
 
@@ -767,25 +715,31 @@ The underlying per-upstream metric gauges (`erpc_upstream_block_head_lag`, `erpc
 
 ### 8.3 Logs
 
-- **Per request** (existing request span/log): add `selection.upstream`, `selection.decision_id`, `selection.position`, `selection.network`, `selection.method`.
-- **Per tick (debug)**: full decision record. Gated by `decisionHistory > 0` and debug log level.
+- **Per request** (existing request span/log): adds `policy.selected_upstream`, `policy.tick_id`, `policy.position`.
 - **Per tick (info)**: emitted *only on change* — primary switched, excluded set changed, or eval error. Example:
   ```
   selection_change net=evm:1 method=eth_call primary=alchemy→infura
     cause="alchemy.blockHeadLag=8>5 → removeByLag"
-    decision=evm:1/eth_call/1715600000123
+    tick_id=evm:1/eth_call/1715600000123
   ```
 
 ### 8.4 Tracing
 
-Upstream-forward span attributes:
+One span per tick (`policy.eval.tick`) carrying:
 
 ```
-selection.upstream           # id of the upstream actually used
-selection.decision_id        # for joining to decision records
-selection.position           # 0 = primary, 1+ = failover position used
-selection.alternatives       # count of other eligible upstreams at decision time
+policy.tick_id              # network/method/tick_unix_ms
+policy.network              # network ID
+policy.method               # method matched
+policy.eval_duration_ms     # how long the JS ran
+policy.upstream_count       # input universe size
+policy.primary_changed      # bool
+policy.order_changed        # bool
 ```
+
+Per-request spans add `policy.selected_upstream` + `policy.tick_id` to
+join back to the owning eval. This is the canonical "why was upstream
+X used at time T" path.
 
 ---
 
@@ -976,7 +930,7 @@ return upstreams
 ```yaml
 selectionPolicy:
   evalPerMethod: true
-  eval: |
+  evalFunc: |
     if (methodMatches(['eth_call', 'eth_getLogs'])) {
       return upstreams
         .removeByErrorRate(0.05)

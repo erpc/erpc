@@ -140,9 +140,12 @@ func lookupSlotForTest(e *Engine, networkID, method string) *Slot {
 	return slot
 }
 
-// DecisionsForTest returns the slot's ring-buffer snapshot
-// (oldest → newest).
-func DecisionsForTest(e *Engine, networkID, method string) []*Decision {
+// LatestDecisionOutputForTest returns the cached output of the most
+// recent eval as ordered upstream IDs (those that survived) plus the
+// excluded IDs (those the eval dropped). Tests use this to make
+// assertions like "after a degradation, rpc-A was excluded" without
+// any persistent ring buffer.
+func LatestDecisionOutputForTest(e *Engine, networkID, method string) (order []string, excluded []string) {
 	e.mu.RLock()
 	slot, ok := e.slots[slotKey{networkID, method}]
 	if !ok {
@@ -150,7 +153,9 @@ func DecisionsForTest(e *Engine, networkID, method string) []*Decision {
 	}
 	e.mu.RUnlock()
 	if slot == nil {
-		return nil
+		return nil, nil
 	}
-	return slot.ring.snapshot()
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	return cloneStrings(slot.previousOrder), cloneStrings(slot.previousExcluded)
 }

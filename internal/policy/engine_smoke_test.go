@@ -54,10 +54,9 @@ func TestEngine_IdentityPolicy_PassesThrough(t *testing.T) {
 	cfg := &common.SelectionPolicyConfig{
 		EvalInterval:    common.Duration(50 * time.Millisecond),
 		EvalTimeout:     common.Duration(10 * time.Millisecond),
-		DecisionHistory: common.Duration(time.Minute),
 		// Distinct from `common.DefaultSelectionPolicySource` so the engine
 		// does NOT auto-upgrade to the rich default policy.
-		Eval: "(ups, _ctx) => ups",
+		EvalFunc: "(ups, _ctx) => ups",
 	}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, cfg.Validate())
@@ -91,7 +90,6 @@ func TestEngine_OverrideOrderForTest(t *testing.T) {
 	cfg := &common.SelectionPolicyConfig{
 		EvalInterval:    common.Duration(0), // frozen: only manual ticks
 		EvalTimeout:     common.Duration(10 * time.Millisecond),
-		DecisionHistory: common.Duration(time.Minute),
 	}
 	require.NoError(t, cfg.SetDefaults())
 

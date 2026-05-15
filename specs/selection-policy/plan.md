@@ -88,7 +88,7 @@ Built BEFORE any deletion so we have a regression contract for the rewrite.
       EvalInterval     Duration `yaml:"evalInterval,omitempty" json:"evalInterval"`
       EvalPerMethod    bool     `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
       EvalTimeout      Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout"`
-      DecisionHistory  Duration `yaml:"decisionHistory,omitempty" json:"decisionHistory"`
+      
       Eval             string   `yaml:"eval,omitempty" json:"eval"`
 
       // compiled program — set by SetDefaults/Validate
@@ -107,7 +107,7 @@ Built BEFORE any deletion so we have a regression contract for the rewrite.
 - [ ] **DELETE-LINES 2495–2509** — `DefaultScoreMultiplier` const.
 - [ ] **DELETE-LINES 2511–2544** — `ScoreMultiplierConfig.SetDefaults()`.
 - [ ] **REPLACE 2546–2577** — `DefaultPolicyFunction` const. Replaced by the new default policy embedded from `internal/policy/default_policy.js` (see Phase 5).
-- [ ] **REPLACE 2579–2601** — `SelectionPolicyConfig.SetDefaults()`. Per new schema: defaults `EvalInterval=1s`, `EvalTimeout=100ms`, `DecisionHistory=5m`, `EvalPerMethod=false`. If `Eval` is empty, set it to the embedded default policy source. Compile the program with sobek and store on `compiledProgram`.
+- [ ] **REPLACE 2579–2601** — `SelectionPolicyConfig.SetDefaults()`. Per new schema: defaults `EvalInterval=1s`, `EvalTimeout=100ms`, `EvalPerMethod=false`. If `Eval` is empty, set it to the embedded default policy source. Compile the program with sobek and store on `compiledProgram`.
 
 ### 1.3 `common/validation.go`
 
@@ -289,7 +289,7 @@ Some tests are entirely about legacy systems and go away; others are integration
   - `EvalInterval = 1s`
   - `EvalPerMethod = false`
   - `EvalTimeout = 100ms`
-  - `DecisionHistory = 5m`
+
   - If `Eval == ""`, set to embedded default policy source.
   - Compile the program; store on the struct (so multiple slots share one compiled program).
 

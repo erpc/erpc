@@ -48,7 +48,6 @@ func runTranslatedPolicy(
 	cfg := nwCfgs[0].SelectionPolicy
 	cfg.EvalInterval = 0 // frozen — tests drive manual ticks
 	cfg.EvalTimeout = common.Duration(200 * time.Millisecond)
-	cfg.DecisionHistory = common.Duration(time.Minute)
 	require.NoError(t, cfg.SetDefaults(), "SetDefaults must compile the synthesized eval")
 	require.NotNil(t, cfg.CompiledProgram, "synthesized eval must compile")
 

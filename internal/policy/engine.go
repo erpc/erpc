@@ -77,7 +77,7 @@ func NewEngine(
 // upstreams become visible to the engine without a re-register. For static
 // configurations a closure returning a frozen slice is fine.
 //
-// If `cfg.Eval` is the placeholder identity policy
+// If `cfg.EvalFunc` is the placeholder identity policy
 // (`common.DefaultSelectionPolicySource`), this method upgrades it to
 // the embedded rich default (sortByScore + preferTag + stickyPrimary
 // + probeExcluded).
@@ -172,10 +172,9 @@ func (e *Engine) LastEvalAt(networkID, method string) time.Time {
 	if slot == nil {
 		return time.Time{}
 	}
-	if d := slot.ring.latest(); d != nil {
-		return d.TickAt
-	}
-	return time.Time{}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	return slot.lastEvalAt
 }
 
 // Stop cancels every slot's ticker and releases pooled runtimes.

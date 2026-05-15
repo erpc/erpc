@@ -33,6 +33,9 @@ type Slot struct {
 	previousExcluded []string
 	lastSwitchAt     *time.Time
 	excludedSince    map[string]int64
+	// lastEvalAt is the wall-clock timestamp of the most recent
+	// successful tick. Updated under mu at the end of tickOnce.
+	lastEvalAt time.Time
 
 	// Bad-eval streak counter; spec §5.7 falls back to the default policy
 	// after 3 consecutive failures. (Hookup deferred to Phase 5.15.)
@@ -45,21 +48,12 @@ type Slot struct {
 	testFinality  string
 	testNowOffset int64 // added to ctx.Now (milliseconds)
 
-	ring *ringBuffer
-
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
 
 func newSlot(e *Engine, networkID, method string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
-	historyTicks := 1
-	if cfg.EvalInterval > 0 && cfg.DecisionHistory > 0 {
-		historyTicks = int(cfg.DecisionHistory.Duration() / cfg.EvalInterval.Duration())
-		if historyTicks < 1 {
-			historyTicks = 1
-		}
-	}
 	return &Slot{
 		engine:        e,
 		networkID:     networkID,
@@ -67,7 +61,6 @@ func newSlot(e *Engine, networkID, method string, upstreamsFn func() []common.Up
 		upstreamsFn:   upstreamsFn,
 		cfg:           cfg,
 		excludedSince: make(map[string]int64),
-		ring:          newRingBuffer(historyTicks),
 		stopCh:        make(chan struct{}),
 	}
 }
@@ -174,12 +167,13 @@ func (s *Slot) tickOnce() {
 	if evalErr != nil {
 		decision.Error = evalErr.Error()
 		s.consecutiveFails++
-		s.ring.append(decision)
 		s.engine.logger.Warn().
 			Str("network", s.networkID).
 			Str("method", s.method).
+			Str("tick_id", decision.ID).
 			Err(evalErr).
 			Msg("selection policy eval failed; retaining previous cache")
+		s.emitMetrics(decision, state)
 		return
 	}
 	s.consecutiveFails = 0
@@ -214,9 +208,9 @@ func (s *Slot) tickOnce() {
 		t := start
 		s.lastSwitchAt = &t
 	}
+	s.lastEvalAt = start
 	s.mu.Unlock()
 
-	s.ring.append(decision)
 	s.emitMetrics(decision, state)
 }
 

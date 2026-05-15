@@ -10,6 +10,127 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestTranslateFromConfig_EndToEnd exercises the LoadConfig hook path:
+// a Config decoded from YAML — with `routing.scoreMultipliers` blocks
+// on the upstream + project-level `scoreSwitchHysteresis` /
+// `scoreMinSwitchInterval` — is migrated into a synthesized
+// `selectionPolicy.eval` on each network without the caller doing
+// any manual setup. After the hook runs, the legacy stashes are
+// cleared so SetDefaults / Validate see a clean canonical config.
+func TestTranslateFromConfig_EndToEnd(t *testing.T) {
+	multiplier := func(v float64) *float64 { return &v }
+
+	prj := &common.ProjectConfig{
+		Id: "p1",
+		LegacyProject: &common.LegacyProjectFields{
+			RoutingStrategy:        "score-based",
+			ScoreSwitchHysteresis:  0.25,
+			ScoreMinSwitchInterval: common.Duration(2 * time.Minute),
+		},
+		Upstreams: []*common.UpstreamConfig{
+			{
+				Id:       "primary",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "https://primary.example/",
+				Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+				LegacyRouting: &common.LegacyUpstreamRouting{
+					ScoreMultipliers: []*common.LegacyScoreMultiplier{
+						{Overall: multiplier(0.5), ErrorRate: multiplier(4)},
+					},
+				},
+			},
+			{
+				Id:       "fallback",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "https://fallback.example/",
+				Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+			},
+		},
+		Networks: []*common.NetworkConfig{
+			{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 1}},
+		},
+	}
+	cfg := &common.Config{Projects: []*common.ProjectConfig{prj}}
+
+	warns, err := legacy.TranslateFromConfig(cfg)
+	require.NoError(t, err)
+	require.NotEmpty(t, warns, "scoreMultipliers + routingStrategy should each emit one warning")
+
+	// Synthesized eval landed on the network's selectionPolicy.
+	require.NotNil(t, prj.Networks[0].SelectionPolicy,
+		"translator must synthesize a selectionPolicy for the legacy-config network")
+	eval := prj.Networks[0].SelectionPolicy.EvalFunc
+	require.NotEmpty(t, eval)
+	require.Contains(t, eval, "sortByScore",
+		"score-based legacy → sortByScore in eval")
+	require.Contains(t, eval, "hysteresis: 0.25",
+		"project-level scoreSwitchHysteresis must flow into stickyPrimary")
+	require.Contains(t, eval, "minSwitchInterval: '2m0s'",
+		"project-level scoreMinSwitchInterval must flow into stickyPrimary")
+	// Per-upstream scoreMultiplier shows up in the per-id weights map.
+	// `overall` is intentionally not emitted (it's a uniform scale; sort
+	// is invariant under monotonic scaling — see weightsFromMul).
+	require.Contains(t, eval, `"primary":{"errorRate":4}`,
+		"per-upstream scoreMultiplier must show up in the per-id weights map")
+
+	// Stashes must be cleared so subsequent SetDefaults doesn't re-run them.
+	require.Nil(t, prj.LegacyProject, "project legacy stash cleared post-translate")
+	require.Nil(t, prj.Upstreams[0].LegacyRouting, "upstream legacy stash cleared")
+	require.Nil(t, prj.Networks[0].SelectionPolicy.LegacySelectionPolicy,
+		"selectionPolicy legacy stash cleared")
+}
+
+// TestTranslateFromConfig_NoLegacy is the fast-path: a config with
+// zero legacy fields must produce zero warnings, leave SelectionPolicy
+// nil (so SetDefaults installs the canonical default policy), and
+// otherwise be a no-op.
+func TestTranslateFromConfig_NoLegacy(t *testing.T) {
+	prj := &common.ProjectConfig{
+		Id: "p1",
+		Upstreams: []*common.UpstreamConfig{
+			{Id: "u1", Type: common.UpstreamTypeEvm, Endpoint: "https://u1.example/",
+				Evm: &common.EvmUpstreamConfig{ChainId: 1}},
+		},
+		Networks: []*common.NetworkConfig{
+			{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 1}},
+		},
+	}
+	cfg := &common.Config{Projects: []*common.ProjectConfig{prj}}
+	warns, err := legacy.TranslateFromConfig(cfg)
+	require.NoError(t, err)
+	require.Empty(t, warns)
+	require.Nil(t, prj.Networks[0].SelectionPolicy,
+		"no legacy fields → translator must not synthesize a SelectionPolicy")
+}
+
+// TestTranslateFromConfig_PreservesUserEval: if the user has both
+// modern `eval` AND legacy `evalFunction`, the modern one wins
+// untouched. Critical: prevents the translator from clobbering a
+// hand-written policy when someone forgets to delete the legacy block.
+func TestTranslateFromConfig_PreservesUserEval(t *testing.T) {
+	userEval := "(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTER)"
+	prj := &common.ProjectConfig{
+		Id: "p1",
+		Networks: []*common.NetworkConfig{
+			{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 1},
+				SelectionPolicy: &common.SelectionPolicyConfig{
+					EvalFunc: userEval,
+					LegacySelectionPolicy: &common.LegacySelectionPolicyFields{
+						EvalFunction: "(upstreams, method) => upstreams",
+					},
+				},
+			},
+		},
+	}
+	cfg := &common.Config{Projects: []*common.ProjectConfig{prj}}
+	_, err := legacy.TranslateFromConfig(cfg)
+	require.NoError(t, err)
+	require.Equal(t, userEval, prj.Networks[0].SelectionPolicy.EvalFunc,
+		"existing modern eval must not be overwritten by legacy evalFunction")
+}
+
 func TestTranslate_RoundRobin_EmitsRotateBy(t *testing.T) {
 	prj := legacy.WidenedProject{RoutingStrategy: "round-robin"}
 	nwCfgs := []*common.NetworkConfig{{
@@ -21,7 +142,7 @@ func TestTranslate_RoundRobin_EmitsRotateBy(t *testing.T) {
 	require.Len(t, warns, 1)
 	require.Contains(t, warns[0], "routingStrategy")
 	require.NotNil(t, nwCfgs[0].SelectionPolicy)
-	require.Contains(t, nwCfgs[0].SelectionPolicy.Eval, "rotateBy(ctx.tickCount)")
+	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "rotateBy(ctx.tickCount)")
 }
 
 func TestTranslate_ScoreBased_DefaultEmitsBalanced(t *testing.T) {
@@ -33,8 +154,8 @@ func TestTranslate_ScoreBased_DefaultEmitsBalanced(t *testing.T) {
 	warns, err := legacy.Translate(prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)
 	require.NoError(t, err)
 	require.Len(t, warns, 1, "routingStrategy warning")
-	require.Contains(t, nwCfgs[0].SelectionPolicy.Eval, "sortByScore(BALANCED)")
-	require.Contains(t, nwCfgs[0].SelectionPolicy.Eval, "stickyPrimary")
+	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "sortByScore(BALANCED)")
+	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "stickyPrimary")
 }
 
 func TestTranslate_NoLegacy_NoOp(t *testing.T) {
@@ -55,11 +176,11 @@ func TestTranslate_PreservesExistingEval(t *testing.T) {
 	nwCfgs := []*common.NetworkConfig{{
 		Architecture:    common.ArchitectureEvm,
 		Evm:             &common.EvmNetworkConfig{ChainId: 123},
-		SelectionPolicy: &common.SelectionPolicyConfig{Eval: user},
+		SelectionPolicy: &common.SelectionPolicyConfig{EvalFunc: user},
 	}}
 	_, err := legacy.Translate(prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)
 	require.NoError(t, err)
-	require.Equal(t, user, nwCfgs[0].SelectionPolicy.Eval,
+	require.Equal(t, user, nwCfgs[0].SelectionPolicy.EvalFunc,
 		"existing new-shape eval must not be overwritten")
 }
 
@@ -78,7 +199,7 @@ func TestTranslate_LegacyEvalFunction_Wrapped(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, nwCfgs[0].SelectionPolicy)
 	require.True(t,
-		strings.Contains(nwCfgs[0].SelectionPolicy.Eval, "const __legacyFn ="),
+		strings.Contains(nwCfgs[0].SelectionPolicy.EvalFunc, "const __legacyFn ="),
 		"synthesized eval should bind the legacy fn under __legacyFn",
 	)
 }
@@ -95,8 +216,8 @@ func TestTranslate_StickyPrimaryHonorsLegacyHysteresis(t *testing.T) {
 	}}
 	_, err := legacy.Translate(prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)
 	require.NoError(t, err)
-	require.Contains(t, nwCfgs[0].SelectionPolicy.Eval, "hysteresis: 0.25")
-	require.Contains(t, nwCfgs[0].SelectionPolicy.Eval, "minSwitchInterval: '2m0s'")
+	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "hysteresis: 0.25")
+	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "minSwitchInterval: '2m0s'")
 }
 
 // ----------------------------------------------------------------------
@@ -140,7 +261,7 @@ func TestTranslate_ScoreMultipliers_OnlyMultipliers_EmitsWeightsFn(t *testing.T)
 		"expected multipliers deprecation warning; got %v", warns)
 
 	require.NotNil(t, nwCfgs[0].SelectionPolicy)
-	eval := nwCfgs[0].SelectionPolicy.Eval
+	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, "__mulById", "weights map should be emitted")
 	require.Contains(t, eval, `"hot"`, "hot upstream's weights must be in map")
 	require.Contains(t, eval, `"cold"`, "cold upstream's weights must be in map")
@@ -170,7 +291,7 @@ func TestTranslate_ScoreMultipliers_EvalFunctionOnly_NoWeightsMap(t *testing.T) 
 	_, err := legacy.Translate(legacy.WidenedProject{}, legacyUps, upCfgs, nws, nwCfgs)
 	require.NoError(t, err)
 
-	eval := nwCfgs[0].SelectionPolicy.Eval
+	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, "const __legacyFn =", "legacy fn must be wrapped")
 	require.NotContains(t, eval, "__mulById", "no multipliers → no weights map")
 	require.NotContains(t, eval, "__weightsFn", "no multipliers → no weights fn")
@@ -210,7 +331,7 @@ func TestTranslate_ScoreMultipliers_PlusEvalFunction_PreSortsByWeights(t *testin
 	_, err := legacy.Translate(legacy.WidenedProject{}, legacyUps, upCfgs, nws, nwCfgs)
 	require.NoError(t, err)
 
-	eval := nwCfgs[0].SelectionPolicy.Eval
+	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, "const __legacyFn =", "legacy fn must still be wrapped")
 	require.Contains(t, eval, "__mulById",
 		"multipliers MUST flow through into the wrapped eval — otherwise translation is lossy")
@@ -256,7 +377,7 @@ func TestTranslate_ScoreMultipliers_PlusEvalFunctionAndScoreBased(t *testing.T) 
 	require.GreaterOrEqual(t, len(warns), 2,
 		"both routingStrategy and scoreMultipliers should warn; got %v", warns)
 
-	eval := nwCfgs[0].SelectionPolicy.Eval
+	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, "const __legacyFn =", "evalFunction takes precedence")
 	require.Contains(t, eval, "__mulById", "multipliers must NOT be silently dropped")
 }
@@ -284,7 +405,7 @@ func TestTranslate_ScoreMultipliers_PerUpstreamIndexing(t *testing.T) {
 	_, err := legacy.Translate(legacy.WidenedProject{}, legacyUps, upCfgs, []legacy.WidenedNetwork{{}}, nwCfgs)
 	require.NoError(t, err)
 
-	eval := nwCfgs[0].SelectionPolicy.Eval
+	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, `"rpc2"`, "rpc2 (only one with overrides) MUST be in the map")
 	require.NotContains(t, eval, `"rpc1":{`, "rpc1 has no overrides; must NOT be a map key")
 	require.NotContains(t, eval, `"rpc3":{`, "rpc3 has no overrides; must NOT be a map key")
@@ -309,7 +430,7 @@ func TestTranslate_ScoreBased_WithResampleExcluded_AppendsProbe(t *testing.T) {
 	}}
 	_, err := legacy.Translate(prj, nil, nil, nws, nwCfgs)
 	require.NoError(t, err)
-	eval := nwCfgs[0].SelectionPolicy.Eval
+	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, ".probeExcluded(", "probeExcluded must be appended")
 	require.Contains(t, eval, "reAdmitAfter: '7m0s'", "reAdmitAfter must use the legacy interval")
 }
@@ -331,7 +452,7 @@ func TestTranslate_EvalFunction_WithResampleExcluded_AppendsProbe(t *testing.T) 
 	}}
 	_, err := legacy.Translate(legacy.WidenedProject{}, nil, nil, nws, nwCfgs)
 	require.NoError(t, err)
-	eval := nwCfgs[0].SelectionPolicy.Eval
+	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, "const __legacyFn =", "legacy fn wrapped")
 	require.Contains(t, eval, ".probeExcluded(", "probeExcluded must be appended")
 	require.Contains(t, eval, "reAdmitAfter: '3m0s'", "reAdmitAfter from legacy interval")
@@ -403,7 +524,7 @@ func TestTranslate_MultiNetwork_AppliesPerNetwork(t *testing.T) {
 	require.NoError(t, err)
 	for i, cfg := range nwCfgs {
 		require.NotNilf(t, cfg.SelectionPolicy, "network[%d] should have a synthesized selection policy", i)
-		require.Containsf(t, cfg.SelectionPolicy.Eval, "rotateBy(ctx.tickCount)",
+		require.Containsf(t, cfg.SelectionPolicy.EvalFunc, "rotateBy(ctx.tickCount)",
 			"network[%d] should have round-robin eval", i)
 	}
 }

@@ -1315,14 +1315,11 @@ func (c *SelectionPolicyConfig) Validate() error {
 		return fmt.Errorf("selectionPolicy.evalTimeout (%s) must be less than evalInterval (%s)",
 			c.EvalTimeout.Duration(), c.EvalInterval.Duration())
 	}
-	if c.DecisionHistory <= 0 {
-		return fmt.Errorf("selectionPolicy.decisionHistory must be greater than 0")
-	}
-	if c.Eval == "" {
-		return fmt.Errorf("selectionPolicy.eval is required")
+	if c.EvalFunc == "" {
+		return fmt.Errorf("selectionPolicy.evalFunc is required")
 	}
 	if c.CompiledProgram == nil {
-		return fmt.Errorf("selectionPolicy.eval failed to compile (CompiledProgram is nil)")
+		return fmt.Errorf("selectionPolicy.evalFunc failed to compile (CompiledProgram is nil)")
 	}
 	return nil
 }

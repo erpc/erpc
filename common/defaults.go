@@ -2443,17 +2443,14 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalTimeout == 0 {
 		c.EvalTimeout = Duration(100 * time.Millisecond)
 	}
-	if c.DecisionHistory == 0 {
-		c.DecisionHistory = Duration(5 * time.Minute)
+	if c.EvalFunc == "" {
+		c.EvalFunc = DefaultSelectionPolicySource
 	}
-	if c.Eval == "" {
-		c.Eval = DefaultSelectionPolicySource
-	}
-	c.EvalOriginal = c.Eval
+	c.EvalFuncOriginal = c.EvalFunc
 
-	program, err := CompileProgram(c.Eval)
+	program, err := CompileProgram(c.EvalFunc)
 	if err != nil {
-		return fmt.Errorf("failed to compile selectionPolicy.eval: %w", err)
+		return fmt.Errorf("failed to compile selectionPolicy.evalFunc: %w", err)
 	}
 	c.CompiledProgram = program
 
