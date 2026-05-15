@@ -46,7 +46,7 @@ projects:
     upstreams:
       - endpoint: alchemy://...
       - endpoint: drpc-eth://...
-        group: fallback           # ← convention: 2nd tier
+        tags: [tier:fallback]      # ← convention: 2nd tier
     networks:
       - architecture: evm
         evm: { chainId: 1 }
@@ -63,7 +63,7 @@ projects:
                 .removeCordoned()
                 .removeByErrorRate(0.8)
                 .whenEmpty(() => upstreams)
-                .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
+                .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
                 .sortByScore(BALANCED)
                 .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
                 .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
@@ -78,7 +78,7 @@ export default createConfig({
     id: "main",
     upstreams: [
       { endpoint: "alchemy://..." },
-      { endpoint: "drpc-eth://...", group: "fallback" },
+      { endpoint: "drpc-eth://...", tags: ["tier:fallback"] },
     ],
     networks: [{
       architecture: "evm",
@@ -93,7 +93,7 @@ export default createConfig({
             .removeCordoned()
             .removeByErrorRate(0.8)
             .whenEmpty(() => upstreams)
-            .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
+            .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
             .sortByScore(BALANCED)
             .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
             .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })`,
@@ -130,9 +130,9 @@ one of them lets a degraded upstream keep receiving traffic:
       maxThrottledRate: 0.3,
     })
     .whenEmpty(() => upstreams)        // 3 — safety net
-    .preferGroup('!fallback', {        // 4 — tier
+    .preferTag('!tier:fallback', {     // 4 — tier
       minHealthy: 1,
-      fallback:   'fallback',
+      fallback:   'tier:fallback',
     })
     .sortByScore(BALANCED)             // 5 — rank survivors
     .if(ctx.finality === REALTIME,     // 6 — sticky for live-latest only
@@ -256,13 +256,13 @@ standard ECMAScript.
 
 | Category | Methods |
 |---|---|
-| Identity | `where` · `byId` · `byGroup` · `byVendor` · `byType` · `exclude*` |
+| Identity | `where` · `byId` · `byTag` · `byVendor` · `byType` · `exclude*` |
 | Health filters | `removeByErrorRate` · `removeByLag` · `removeByLatency` · `removeByThrottling` · `removeByMisbehavior` · `removeCordoned` · `removeByMinRequests` · `keepHealthy` |
 | Generic | `filter` · `reject` · `partition` · `unique` · `union` · `intersect` · `difference` · `isEmpty` |
 | Sorting | `sortByScore` · `sortBy` · `sortByLatency` · `sortByErrorRate` · `sortByThrottling` · `sortByHeadLag` · `sortByFinalizationLag` · `sortByMisbehavior` |
 | Random / rotation | `shuffle` · `rotateBy` |
 | Stability | `stickyPrimary` |
-| Grouping | `preferGroup` · `preferVendor` |
+| Tiering | `preferTag` · `preferVendor` · `spreadAcrossTags` |
 | Slicing | `pickTop` · `pickBottom` · `dropTop` · `dropBottom` · `take` · `skip` |
 | Probing | `probeExcluded` · `forceInclude` |
 | Cooldown | `cooldown` |
@@ -276,18 +276,20 @@ Full reference: **[selection policy stdlib](/config/projects/selection-policy-st
 ### Cost-tier routing
 ```js
 // Cheap pool first; fall through to fast pool when cheap is exhausted.
+// Upstreams declare their tier via `tags: [tier:cheap]` or `tags: [tier:fast]`.
 (upstreams, ctx) =>
   upstreams
     .removeByErrorRate(0.5)
-    .preferGroup('cheap', { minHealthy: 2, fallback: 'fast' })
+    .preferTag('tier:cheap', { minHealthy: 2, fallback: 'tier:fast' })
     .sortByScore(BALANCED)
 ```
 
 ### Per-method routing
 ```js
+// Upstreams declare their capability via `tags: [tier:archive]`.
 (upstreams, ctx) => {
   if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
-    return upstreams.byGroup('archive').sortByScore(PREFER_FASTER)
+    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTER)
   return upstreams.sortByScore(BALANCED).stickyPrimary()
 }
 ```

@@ -35,15 +35,30 @@ match values of `ctx.finality`.
 
 ## Identity & label selection
 
+Upstreams carry an open-ended **`tags`** slice (recommended convention
+`<dimension>:<value>`, e.g. `tier:main`, `region:us-east`, `sequencer:op-base`).
+Stdlib tag methods read this directly:
+
 ```ts
-.where(filter: { id?, group?, vendor?, type? })   // AND across fields
-.whereNot(filter)                                  // inverse
+.where(filter: { id?, tag?, vendor?, type? })      // AND across fields
+.whereNot(filter)                                   // inverse
 .byId(id: string | string[])
-.byGroup(name: string | string[])                  // 'cheap' or 'cheap*' or '!fallback'
+.byTag(pat: string | string[])                      // 'tier:main' / 'region:us-*' / '!tier:fallback'
 .byVendor(name: string | string[])
 .byType(type: string | string[])
-.excludeId / .excludeGroup / .excludeVendor        // negation forms
+.excludeId / .excludeTag / .excludeVendor           // negation forms
 ```
+
+**Negation semantics.** `byTag('!X')` matches upstreams that have NO tag
+matching `X` (it's the dual of `byTag('X')`). `excludeTag('X')` is the
+same thing. Array form mixes: positive patterns are OR'd (any match wins);
+negated patterns are AND'd (all must hold); both kinds together mean
+`(any positive matches OR no positives in the array) AND (all negations hold)`.
+
+**Deprecated aliases** — `byGroup(name)` / `excludeGroup(name)` /
+`preferGroup(name, opts)` still work as shims for `byTag('tier:'+name)`
+etc., so policies written before the tags merge keep running. New
+policies should use the tag methods directly.
 
 ## Health filters
 
@@ -132,41 +147,51 @@ Reads `ctx.previousOrder[0]` and `ctx.lastSwitchAt`. Switches only when
 the challenger's `score` is `< prevScore × (1 - hysteresis)` AND the
 cooldown has elapsed.
 
-## Grouping & multi-tier
+## Tiering & multi-tier
 
 ```ts
-.preferGroup(name: string, opts?: { minHealthy?: number = 1, fallback?: string })
+.preferTag(pat: string, opts?: { minHealthy?: number = 1, fallback?: string })
 .preferVendor(name: string, opts?: same)
 
-.spreadAcrossGroups(opts: {
-  by: 'vendor' | 'group' | 'cohort' | ((u: Upstream) => string)
-  minDistinct?: number      // informational; default 2
-})
+.spreadAcrossTags(prefix: string)
 ```
 
-`preferGroup` / `preferVendor` return upstreams matching `name` (glob,
-so `'!fallback'` works) if at least `minHealthy` match; else fall
-through to `fallback`; else return the input unchanged.
+`preferTag` returns upstreams whose tags match `pat` (glob; `!negation`
+supported) if at least `minHealthy` match; else falls through to the
+`fallback` pattern; else returns the input unchanged. The default policy
+uses `preferTag('!tier:fallback', { fallback: 'tier:fallback' })` to
+implement the standard "primary tier first, fallback tier if empty"
+behavior.
 
-`spreadAcrossGroups` *re-interleaves* an already-sorted list so adjacent
-positions don't share the chosen partition key. Use it AFTER
-`sortByScore` to get blast-radius diversity in the failover order
+`preferVendor` is the analogous primitive against the derived `u.vendor`
+attribute (not user-set; comes from the upstream type/endpoint).
+
+`spreadAcrossTags(prefix)` *re-interleaves* an already-sorted list so
+adjacent positions don't share the same tag matching `prefix`. Use it
+AFTER `sortByScore` to get blast-radius diversity in the failover order
 without losing the score-based selection of the primary.
 
 ```js
-// Top 3 by score might all be alchemy. Without spread, an alchemy
-// regional outage kills primary AND first two fallbacks simultaneously.
-// With spread, position 0 = best alchemy, position 1 = best non-alchemy,
-// position 2 = second-best alchemy, etc.
-upstreams.sortByScore(BALANCED).spreadAcrossGroups({ by: 'vendor' })
+// Top 3 by score might all be in cohort:op-base-sequencer. Without
+// spread, a sequencer outage kills primary AND the first two fallbacks
+// simultaneously. With spread, position 0 = best in cohort A, position
+// 1 = best in cohort B, position 2 = second-best in cohort A, etc.
+upstreams.sortByScore(BALANCED).spreadAcrossTags('cohort:')
 ```
 
-The `cohort` partition reads `UpstreamConfig.cohort` — an optional
-operator-set string describing shared fate beyond what `vendor` or
-`group` capture (e.g. multiple distinct vendors all routing through
-the same L2 sequencer; multiple upstreams in one cloud region). When
-`by: 'cohort'`, upstreams with an empty `cohort` fall back to grouping
-by `vendor`.
+Upstreams without any tag matching the prefix all land in the
+empty-key bucket and interleave together at the end of the partition
+order.
+
+**Deprecated.** `preferGroup(name, opts)` and `spreadAcrossGroups({ by })`
+remain as shims:
+
+- `preferGroup('main', ...)` ≡ `preferTag('tier:main', ...)`
+- `spreadAcrossGroups({ by: 'cohort' })` ≡ `spreadAcrossTags('cohort:')`
+- `spreadAcrossGroups({ by: 'vendor' })` ≡ partition by `u.vendor`
+  (no direct tag equivalent; `vendor` isn't a tag — it's a derived
+  attribute). If you need this, use `.sortByScore(...).spreadAcrossGroups({by:'vendor'})`
+  for now; a future `spreadAcrossVendors()` may replace it.
 
 ## Slicing & limits
 
@@ -261,11 +286,13 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
 
 ### Cost-tier with weekday schedule
 ```js
+// Upstreams declare their tier via `tags: [tier:cheap]` or `tags: [tier:fast]`.
 (upstreams, ctx) => {
   const cheapHours = inWindow('09:00', '18:00') && (new Date().getDay() % 6) !== 0
   return upstreams
     .removeByErrorRate(0.5)
-    .preferGroup(cheapHours ? 'cheap' : 'fast', { minHealthy: 1, fallback: 'cheap' })
+    .preferTag(cheapHours ? 'tier:cheap' : 'tier:fast',
+               { minHealthy: 1, fallback: 'tier:cheap' })
     .sortByScore(BALANCED)
     .stickyPrimary({ hysteresis: 0.15, minSwitchInterval: '2m' })
 }
@@ -273,9 +300,10 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
 
 ### Per-method override
 ```js
+// Upstreams declare their capability via `tags: [tier:archive]`.
 (upstreams, ctx) => {
   if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
-    return upstreams.byGroup('archive').sortByScore(PREFER_FASTER)
+    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTER)
   if (methodMatches('eth_getBalance'))
     return upstreams.sortByScore(PREFER_FEWER_ERRORS)
   return upstreams.sortByScore(BALANCED).stickyPrimary()

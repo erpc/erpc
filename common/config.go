@@ -598,17 +598,34 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 }
 
 type UpstreamConfig struct {
-	Id                           string                   `yaml:"id,omitempty" json:"id"`
-	Type                         UpstreamType             `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
-	Group                        string                   `yaml:"group,omitempty" json:"group"`
-	// Cohort labels upstreams that share fate beyond what `group` or
-	// `vendorName` describe — e.g. multiple distinct upstreams hitting
-	// the same L2 sequencer ("op-base-sequencer"), or upstreams in one
-	// cloud region ("gcp-us-central"), or a shared internal node fleet.
-	// Consumed by `selectionPolicy` primitives that care about
-	// blast-radius diversity (e.g. `spreadAcrossGroups({ by: 'cohort' })`).
-	// Optional; empty means "this upstream is its own cohort".
-	Cohort                       string                   `yaml:"cohort,omitempty" json:"cohort,omitempty"`
+	Id   string       `yaml:"id,omitempty" json:"id"`
+	Type UpstreamType `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
+	// Tags is an open-ended set of labels attached to this upstream. The
+	// recommended convention is `<dimension>:<value>` so a single upstream
+	// can carry orthogonal labels:
+	//
+	//   tags:
+	//     - tier:main               # used by .preferTag for tiering
+	//     - region:us-east          # used by .spreadAcrossTags('region:')
+	//     - sequencer:op-base       # shared-fate label
+	//
+	// Bare strings (no prefix) work too. Patterns supported by every
+	// stdlib tag method: glob (`*`, `?`) and `!negation`.
+	//
+	// Tier convention: `tier:fallback` declares a fallback-tier upstream
+	// (matches the long-standing eRPC convention; the default policy
+	// looks for `!tier:fallback` as the primary tier).
+	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+
+	// Group is deprecated. Use `Tags` with a `tier:<value>` entry instead;
+	// UnmarshalYAML auto-migrates `group: X` to `tier:X`. The field is
+	// kept on the struct only so legacy YAML still parses; it's hidden
+	// from JSON output and code should not read it directly.
+	Group string `yaml:"group,omitempty" json:"-"`
+	// Cohort is deprecated. Use `Tags` with a `cohort:<value>` entry instead;
+	// UnmarshalYAML auto-migrates `cohort: Y` to `cohort:Y`. Same caveat as Group.
+	Cohort string `yaml:"cohort,omitempty" json:"-"`
+
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
@@ -631,6 +648,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	// Try unmarshaling normally first
 	err := unmarshal(raw)
 	if err == nil {
+		u.migrateDeprecatedLabelFieldsIntoTags()
 		return nil
 	}
 
@@ -695,7 +713,47 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		u.Failsafe = []*FailsafeConfig{old.Failsafe}
 	}
 
+	u.migrateDeprecatedLabelFieldsIntoTags()
 	return nil
+}
+
+// HasTag returns true if `u.Tags` contains the given exact tag. For
+// glob / prefix matching, do it at the call site or in JS via `byTag`.
+func (u *UpstreamConfig) HasTag(tag string) bool {
+	for _, t := range u.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateDeprecatedLabelFieldsIntoTags collapses the deprecated `Group`
+// and `Cohort` fields into the canonical `Tags` slice. After this runs,
+// production code may rely on `Tags` as the sole source of truth.
+//
+// Idempotent: a tag synthesized once won't be duplicated on a re-run.
+func (u *UpstreamConfig) migrateDeprecatedLabelFieldsIntoTags() {
+	has := func(tag string) bool {
+		for _, t := range u.Tags {
+			if t == tag {
+				return true
+			}
+		}
+		return false
+	}
+	if u.Group != "" {
+		if t := "tier:" + u.Group; !has(t) {
+			u.Tags = append(u.Tags, t)
+		}
+		u.Group = ""
+	}
+	if u.Cohort != "" {
+		if t := "cohort:" + u.Cohort; !has(t) {
+			u.Tags = append(u.Tags, t)
+		}
+		u.Cohort = ""
+	}
 }
 
 func (c *UpstreamConfig) Copy() *UpstreamConfig {

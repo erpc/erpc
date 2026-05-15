@@ -59,9 +59,12 @@ type Upstream = {
   readonly id: string
   readonly vendor: string                  // e.g. "alchemy", "infura", "drpc"
   readonly type: 'evm' | string            // upstream architecture
-  readonly group?: string                  // user-set tier label ('main', 'fallback', etc.)
-  readonly cohort?: string                 // user-set shared-fate label (see UpstreamConfig.cohort);
-                                           // consumed by spreadAcrossGroups({ by: 'cohort' })
+  readonly tags: readonly string[]         // user-applied labels (convention: 'prefix:value');
+                                           // consumed by byTag / preferTag / spreadAcrossTags
+  readonly group?: string                  // DEPRECATED. Derived from `tier:*` tag for back-compat
+                                           //   with byGroup / preferGroup
+  readonly cohort?: string                 // DEPRECATED. Derived from `cohort:*` tag for back-compat
+                                           //   with spreadAcrossGroups({ by: 'cohort' })
   readonly endpoint: string                // redacted
 
   readonly config: UpstreamConfig          // raw user config (full block)
@@ -160,19 +163,25 @@ Methods are exposed on the upstream array (and on every chain result) as instanc
 
 ### 4.2 Identity & label selection
 
+Upstreams carry an open-ended `tags []string` slice. Recommended convention `<dimension>:<value>` (e.g. `tier:main`, `region:us-east`, `sequencer:op-base`). Bare strings (no prefix) work too.
+
 ```ts
-.where(filter: { id?, group?, vendor?, type?, finality? })
+.where(filter: { id?, tag?, vendor?, type?, finality? })
 .whereNot(filter: same as above)
 .byId(id: string | string[])
 .excludeId(id: string | string[])
-.byGroup(name: string | string[])
-.excludeGroup(name: string | string[])
+.byTag(pat: string | string[])
+.excludeTag(pat: string | string[])
 .byVendor(name: string | string[])
 .excludeVendor(name: string | string[])
 .byType(type: string | string[])
 ```
 
-Filter values support glob patterns: `byGroup('primary*')`, `byVendor('!alchemy')` (`!` = negation). Multiple fields in `.where({...})` are AND-ed; multiple values in an array are OR-ed.
+Filter values support glob patterns: `byTag('tier:primary*')`, `byVendor('!alchemy')` (`!` = negation). Multiple fields in `.where({...})` are AND-ed; multiple values in an array are OR-ed.
+
+**Tag negation semantic.** `byTag('!X')` matches upstreams that have NO tag matching `X` (it's the dual of `byTag('X')`). Array form mixes: positive patterns are OR'd, negated patterns are AND'd, and an upstream matches iff `(no positives in array OR at least one positive matches) AND (all negations hold)`.
+
+**Deprecated.** `byGroup(name)` / `excludeGroup(name)` remain as shims for `byTag('tier:'+name)` / `excludeTag('tier:'+name)`. They read the derived `u.group` field surfaced by `buildJSUpstreams` (computed from the first `tier:*` tag, or the deprecated `UpstreamConfig.Group` field).
 
 ---
 
@@ -337,9 +346,9 @@ Manual score adjustments (must run after `sortByScore` — operate on the attach
 Convenience preference operators (the most common multi-tier patterns):
 
 ```ts
-.preferGroup(name: string, opts?: {
+.preferTag(pat: string, opts?: {
   minHealthy?: number = 1,
-  fallback?: string                        // group name; if minHealthy not met, switch to fallback group
+  fallback?: string                        // tag pattern; if minHealthy not met, switch to fallback set
 })
 .preferVendor(name: string, opts?: same)
 .preferAttribute(
@@ -350,20 +359,25 @@ Convenience preference operators (the most common multi-tier patterns):
 // Generic form: prefer upstreams where keyFn(u) === value.
 ```
 
+The default policy uses `preferTag('!tier:fallback', { fallback: 'tier:fallback' })` to express "primary tier = upstreams NOT tagged tier:fallback; if empty, fall through to tier:fallback".
+
 Blast-radius interleave (used after sorting):
 
 ```ts
-.spreadAcrossGroups(opts: {
-  by: 'vendor' | 'group' | 'cohort' | ((u: Upstream) => string)
-  minDistinct?: number                     // informational; default 2
-})
+.spreadAcrossTags(prefix: string)
 ```
 
 Re-interleaves an already-sorted list so adjacent positions don't share
-the chosen partition key. Use after `sortByScore` to ensure the failover
-order has fault-domain diversity — the primary stays the best by score,
-the first runner-up comes from a different cohort, and so on. Stable
-within each bucket.
+the same tag matching `prefix` (e.g. `'cohort:'` to spread across cohorts).
+Use after `sortByScore` to ensure the failover order has fault-domain
+diversity — the primary stays the best by score, the first runner-up
+comes from a different bucket, and so on. Stable within each bucket.
+Upstreams with no matching tag share the empty-key bucket.
+
+**Deprecated.** `preferGroup(name, opts)` and `spreadAcrossGroups({ by })` remain as back-compat shims:
+- `preferGroup('main', ...)` ≡ `preferTag('tier:main', ...)`
+- `spreadAcrossGroups({ by: 'cohort' })` ≡ `spreadAcrossTags('cohort:')`
+- `spreadAcrossGroups({ by: 'vendor' })` still partitions by `u.vendor` (a derived, not user-set, attribute; no direct tag equivalent).
 
 Reads `UpstreamConfig.cohort` when `by: 'cohort'`. Cohort is an optional
 operator-set string describing shared fate beyond what `vendor` /

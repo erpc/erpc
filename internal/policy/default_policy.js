@@ -23,8 +23,9 @@
 //   3. Safety net: if the filter wiped everything (project-wide outage),
 //      serve from the raw set rather than fail closed.
 //
-//   4. Tier: primary = `group !== 'fallback'`, fallback = `group === 'fallback'`.
-//      Long-standing eRPC convention; one config line to add a fallback upstream.
+//   4. Tier: primary tier = upstreams NOT tagged `tier:fallback`; fallback
+//      tier = upstreams tagged `tier:fallback`. Long-standing eRPC convention;
+//      adding a fallback upstream is one line (`tags: [tier:fallback]`).
 //
 //   5. Sort by the BALANCED composite (errorRate, latency, throttling, lag,
 //      misbehaviors). Filtering happened in step 2 — this step orders the
@@ -47,7 +48,7 @@
       maxThrottledRate: 0.3,
     })
     .whenEmpty(() => upstreams)
-    .preferGroup('!fallback', { minHealthy: 1, fallback: 'fallback' })
+    .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
     .sortByScore(BALANCED)
     .if(ctx.finality === REALTIME,
         u => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),

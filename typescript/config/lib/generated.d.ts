@@ -511,7 +511,16 @@ export interface ProviderConfig {
 export interface UpstreamConfig {
     id?: string;
     type?: TsUpstreamType;
+    /**
+     * Tags is an open-ended set of labels attached to this upstream.
+     * Convention: `<dimension>:<value>` (e.g. `tier:main`, `region:us-east`).
+     * Consumed by `byTag`, `preferTag`, `spreadAcrossTags(prefix)`.
+     */
+    tags?: string[];
+    /** Deprecated: use `tags` with `tier:<value>`. Auto-migrates at load. */
     group?: string;
+    /** Deprecated: use `tags` with `cohort:<value>`. Auto-migrates at load. */
+    cohort?: string;
     vendorName?: string;
     endpoint?: string;
     evm?: EvmUpstreamConfig;

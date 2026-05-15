@@ -62,16 +62,74 @@
 
   // ─── 4.2 Identity & label selection ─────────────────────────────────────
 
+  // Tags model. Every upstream carries a `tags: string[]` array of
+  // user-applied labels. Convention is `<dimension>:<value>` so a single
+  // upstream can carry orthogonal labels:
+  //
+  //   tags: [ 'tier:main', 'region:us-east', 'sequencer:op-base' ]
+  //
+  // `byTag` / `excludeTag` accept a glob pattern OR an array of patterns.
+  //
+  // Positive pattern (`tier:main`, `region:us-*`): matches if ANY tag
+  // on the upstream matches the pattern. Array form is OR — match
+  // succeeds if any pattern hits any tag.
+  //
+  // Negated pattern (`!tier:fallback`): matches if NO tag on the
+  // upstream matches the un-negated pattern. Reads as "upstream does
+  // NOT have tier:fallback". Array form is AND on the negation —
+  // `['!tier:fallback', '!tier:dev']` matches if NEITHER tier:fallback
+  // NOR tier:dev appears.
+  //
+  // Glob characters supported: `*`, `?`. The `!` prefix is consumed
+  // here; it never makes it down into globMatch.
+  function hasMatchingTag(u, pat) {
+    const tags = u.tags || [];
+    // Array: positives are OR'd, negations are AND'd, upstream matches iff
+    //   (no positives OR at least one positive matches) AND (all negations hold)
+    if (Array.isArray(pat)) {
+      let hasPositive = false;
+      let anyPositiveMatches = false;
+      let allNegationsHold = true;
+      for (const p of pat) {
+        if (typeof p === 'string' && p.charAt(0) === '!') {
+          if (!hasMatchingTag(u, p)) allNegationsHold = false;
+        } else {
+          hasPositive = true;
+          if (hasMatchingTag(u, p)) anyPositiveMatches = true;
+        }
+      }
+      return allNegationsHold && (!hasPositive || anyPositiveMatches);
+    }
+    // Negated string pattern: matches if NO tag matches the un-negated form.
+    if (typeof pat === 'string' && pat.charAt(0) === '!') {
+      const positive = pat.slice(1);
+      for (const t of tags) if (globMatch(positive, t)) return false;
+      return true;
+    }
+    // Positive string pattern: matches if ANY tag matches.
+    for (const t of tags) if (globMatch(pat, t)) return true;
+    return false;
+  }
+
   define('byId', function (id) { return this.filter(u => matchAny(id, u.id)); });
   define('excludeId', function (id) { return this.filter(u => !matchAny(id, u.id)); });
-  define('byGroup', function (g) { return this.filter(u => matchAny(g, u.group || '')); });
-  define('excludeGroup', function (g) { return this.filter(u => !matchAny(g, u.group || '')); });
+  define('byTag', function (pat) { return this.filter(u => hasMatchingTag(u, pat)); });
+  define('excludeTag', function (pat) { return this.filter(u => !hasMatchingTag(u, pat)); });
   define('byVendor', function (v) { return this.filter(u => matchAny(v, u.vendor)); });
   define('excludeVendor', function (v) { return this.filter(u => !matchAny(v, u.vendor)); });
   define('byType', function (t) { return this.filter(u => matchAny(t, u.type)); });
+
+  // Deprecated. byGroup('main') ≡ byTag('tier:main'). Kept so policies
+  // written before the tags merge keep running; emits no warning because
+  // it's a perfectly valid alias on the back-compat-derived `u.group`
+  // field surfaced by buildJSUpstreams.
+  define('byGroup', function (g) { return this.filter(u => matchAny(g, u.group || '')); });
+  define('excludeGroup', function (g) { return this.filter(u => !matchAny(g, u.group || '')); });
+
   define('where', function (f) {
     return this.filter(u => {
       if (f.id != null && !matchAny(f.id, u.id)) return false;
+      if (f.tag != null && !hasMatchingTag(u, f.tag)) return false;
       if (f.group != null && !matchAny(f.group, u.group || '')) return false;
       if (f.vendor != null && !matchAny(f.vendor, u.vendor)) return false;
       if (f.type != null && !matchAny(f.type, u.type)) return false;
@@ -81,6 +139,7 @@
   define('whereNot', function (f) {
     return this.filter(u => {
       if (f.id != null && matchAny(f.id, u.id)) return false;
+      if (f.tag != null && hasMatchingTag(u, f.tag)) return false;
       if (f.group != null && matchAny(f.group, u.group || '')) return false;
       if (f.vendor != null && matchAny(f.vendor, u.vendor)) return false;
       if (f.type != null && matchAny(f.type, u.type)) return false;
@@ -319,11 +378,32 @@
 
   // ─── 4.8 Grouping & multi-tier (subset) ─────────────────────────────────
 
-  // preferGroup / preferVendor support glob patterns ('!fallback', 'cheap*'),
-  // so e.g. `preferGroup('!fallback', { fallback: 'fallback' })` expresses
-  // "primary tier = everything not in the fallback group" — the
-  // convention legacy users had for fallback upstreams without setting
-  // `group: 'default'` on every primary.
+  // preferTag is the canonical tier-selection primitive. It picks the
+  // subset of upstreams whose tags match `pat` (glob; `!negation`
+  // accepted) — provided at least `minHealthy` upstreams match. If
+  // fewer than `minHealthy` upstreams match the primary pattern, falls
+  // through to the `fallback` pattern. If neither matches enough,
+  // returns the input unchanged.
+  //
+  // Common use:
+  //   .preferTag('!tier:fallback', { fallback: 'tier:fallback' })
+  //   // primary tier = everything not tagged tier:fallback.
+  //   // If primary tier is empty, fall back to upstreams tagged tier:fallback.
+  define('preferTag', function (pat, opts) {
+    opts = opts || {};
+    const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
+    const fallback = opts.fallback;
+    const inTag = this.filter(u => hasMatchingTag(u, pat));
+    if (inTag.length >= minHealthy) return inTag;
+    if (fallback) {
+      const fb = this.filter(u => hasMatchingTag(u, fallback));
+      if (fb.length > 0) return fb;
+    }
+    return this.slice();
+  });
+
+  // Deprecated. preferGroup('main', ...) ≡ preferTag('tier:main', ...).
+  // Kept as a back-compat alias on the derived `u.group` field.
   define('preferGroup', function (name, opts) {
     opts = opts || {};
     const minHealthy = opts.minHealthy != null ? opts.minHealthy : 1;
@@ -349,21 +429,37 @@
     return this.slice();
   });
 
-  // spreadAcrossGroups re-interleaves an already-sorted list so that
-  // adjacent positions don't share a partition key (vendor, group,
-  // cohort, or a custom keyFn). Use it AFTER sortByScore — the input
-  // order is preserved within each partition; the output is a stable
-  // round-robin across partitions.
+  // spreadAcrossTags re-interleaves an already-sorted list so that
+  // adjacent positions don't share the SAME tag matching the given
+  // prefix. Use AFTER sortByScore — input order is preserved within
+  // each partition; output is a stable round-robin across partitions.
   //
   // Purpose: blast-radius diversity. When N upstreams share a backend
-  // (same L2 sequencer, same regional fleet) they fail together; the
-  // best-by-score top-3 might all be in one cohort, giving 0 actual
-  // fault tolerance. This primitive ensures position[0] and position[1]
-  // come from different cohorts when possible.
+  // (same sequencer, same region), they fail together; the best-by-score
+  // top-3 might all be in one partition, giving 0 actual fault
+  // tolerance. This primitive ensures position[0] and position[1]
+  // come from different partitions when possible.
   //
-  // `minDistinct` is informational only — it's surfaced in the
-  // decision record (future) but doesn't change the algorithm; the
-  // interleave is always maximally-distinct given the input.
+  // The `prefix` arg selects which tag-dimension to partition by. With
+  // upstreams tagged `region:us-east`, `region:us-west`, etc.,
+  // `spreadAcrossTags('region:')` partitions by the region tag.
+  // Upstreams with no matching tag are bucketed together under the
+  // empty key.
+  define('spreadAcrossTags', function (prefix) {
+    if (this.length <= 1) return this.slice();
+    if (typeof prefix !== 'string' || prefix === '') {
+      // Defensive: no prefix → degenerate to one bucket, no-op.
+      return this.slice();
+    }
+    return _interleaveByKey.call(this, (u) => {
+      const tags = u.tags || [];
+      for (const t of tags) if (typeof t === 'string' && t.indexOf(prefix) === 0) return t;
+      return '';
+    });
+  });
+
+  // Deprecated. spreadAcrossGroups({by:'cohort'}) ≡ spreadAcrossTags('cohort:').
+  // Kept as a back-compat shim for policies authored before the tags merge.
   define('spreadAcrossGroups', function (opts) {
     opts = opts || {};
     if (this.length <= 1) return this.slice();
@@ -374,9 +470,14 @@
               : by === 'group'  ? (u.group  || '')
               : by === 'cohort' ? (u.cohort || u.vendor || '')   // cohort defaults to vendor when unset
               : '');
-    // Preserve input order WITHIN each bucket — the input is assumed
-    // already sorted, so the first occurrence of each key is the best
-    // representative of that partition.
+    return _interleaveByKey.call(this, keyFn);
+  });
+
+  // Stable round-robin interleave used by spreadAcrossTags + spreadAcrossGroups.
+  // Preserves input order WITHIN each bucket (so the first occurrence of
+  // each key remains the best representative of that partition) and
+  // round-robins across buckets in insertion order.
+  function _interleaveByKey(keyFn) {
     const buckets = new Map(); // key -> Upstream[]
     const order   = [];        // insertion order of distinct keys
     for (const u of this) {
@@ -385,7 +486,6 @@
       if (!b) { b = []; buckets.set(k, b); order.push(k); }
       b.push(u);
     }
-    // Round-robin across buckets in insertion order until exhausted.
     const out = [];
     let pulled = true;
     while (pulled) {
@@ -399,7 +499,7 @@
       }
     }
     return out;
-  });
+  }
 
   // ─── 4.9 Slicing & limits ───────────────────────────────────────────────
 

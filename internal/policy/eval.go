@@ -86,9 +86,18 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string) Ups
 // Annotations is pre-allocated (non-nil empty slice) so std-lib steps that
 // `u.annotations.push(...)` from JS don't trip on undefined.
 type jsUpstream struct {
-	ID          string          `json:"id"`
-	Vendor      string          `json:"vendor"`
-	Type        string          `json:"type"`
+	ID     string `json:"id"`
+	Vendor string `json:"vendor"`
+	Type   string `json:"type"`
+	// Tags is the canonical user-applied label set. Stdlib tag methods
+	// (`byTag`, `preferTag`, `spreadAcrossTags`) read this directly.
+	// Convention: entries are either bare strings or `prefix:value`.
+	Tags []string `json:"tags,omitempty"`
+	// Group + Cohort are derived back-compat aliases for stdlib methods
+	// that pre-date the unified Tags model. Computed at build time from
+	// the first `tier:*` / `cohort:*` tag respectively. Operators writing
+	// new policies should use `byTag('tier:main')` /
+	// `spreadAcrossTags('cohort:')` instead.
 	Group       string          `json:"group,omitempty"`
 	Cohort      string          `json:"cohort,omitempty"`
 	Metrics     UpstreamMetrics `json:"metrics"`
@@ -108,11 +117,57 @@ func buildJSUpstreams(ups []common.Upstream, metrics map[string]UpstreamMetrics)
 		}
 		if cfg := u.Config(); cfg != nil {
 			out[i].Type = string(cfg.Type)
-			out[i].Group = cfg.Group
-			out[i].Cohort = cfg.Cohort
+			if len(cfg.Tags) > 0 {
+				out[i].Tags = append(out[i].Tags[:0:0], cfg.Tags...)
+			}
+			// Back-compat: if Go callers set the deprecated `Group` /
+			// `Cohort` fields directly (without going through
+			// UnmarshalYAML's auto-migration), surface them as both
+			// Tags and the legacy `u.group` / `u.cohort` JS aliases.
+			// Once the deprecated fields are deleted in a future minor,
+			// this branch goes away.
+			if cfg.Group != "" {
+				out[i].Group = cfg.Group
+				if !containsString(out[i].Tags, "tier:"+cfg.Group) {
+					out[i].Tags = append(out[i].Tags, "tier:"+cfg.Group)
+				}
+			}
+			if cfg.Cohort != "" {
+				out[i].Cohort = cfg.Cohort
+				if !containsString(out[i].Tags, "cohort:"+cfg.Cohort) {
+					out[i].Tags = append(out[i].Tags, "cohort:"+cfg.Cohort)
+				}
+			}
+			// Derive group + cohort aliases from prefixed tags (the
+			// canonical path; runs even when the deprecated fields are
+			// empty). First matching tag wins.
+			for _, t := range cfg.Tags {
+				if v, ok := stripPrefix(t, "tier:"); ok && out[i].Group == "" {
+					out[i].Group = v
+				}
+				if v, ok := stripPrefix(t, "cohort:"); ok && out[i].Cohort == "" {
+					out[i].Cohort = v
+				}
+			}
 		}
 	}
 	return out
+}
+
+func stripPrefix(s, prefix string) (string, bool) {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):], true
+	}
+	return "", false
+}
+
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // runEval executes the compiled eval program against the snapshot. Returns

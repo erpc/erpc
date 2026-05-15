@@ -1502,8 +1502,11 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if u.VendorName == "" {
 		u.VendorName = defaults.VendorName
 	}
-	if u.Group == "" {
-		u.Group = defaults.Group
+	// Inherit Tags from upstreamDefaults when this upstream specifies none.
+	// All-or-nothing inheritance matches user expectations (the defaults are
+	// a template; specifying any tag means "I want my own").
+	if len(u.Tags) == 0 && len(defaults.Tags) > 0 {
+		u.Tags = append(u.Tags[:0:0], defaults.Tags...)
 	}
 	if u.Failsafe == nil && defaults.Failsafe != nil {
 		u.Failsafe = defaults.Failsafe
@@ -1903,10 +1906,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	}
 
 	if len(upstreams) > 0 {
-		anyUpstreamInFallbackGroup := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-			return u.Group == "fallback"
+		anyUpstreamInFallbackTier := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
+			return u.HasTag("tier:fallback")
 		})
-		if anyUpstreamInFallbackGroup && n.SelectionPolicy == nil {
+		if anyUpstreamInFallbackTier && n.SelectionPolicy == nil {
 			defCfg := NewDefaultNetworkConfig(upstreams)
 			n.SelectionPolicy = defCfg.SelectionPolicy
 		}

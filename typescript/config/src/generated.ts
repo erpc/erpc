@@ -494,14 +494,24 @@ export interface ProviderConfig {
 export interface UpstreamConfig {
   id?: string;
   type?: TsUpstreamType;
+  /**
+   * Tags is an open-ended set of labels attached to this upstream.
+   * Convention: `<dimension>:<value>`, e.g. `tier:main`, `region:us-east`,
+   * `sequencer:op-base`. Bare strings (no prefix) work too. Consumed by
+   * selectionPolicy primitives: `byTag`, `preferTag`, `spreadAcrossTags(prefix)`.
+   *
+   * Convention `tier:fallback` declares a fallback-tier upstream (the
+   * default policy looks for `!tier:fallback` as the primary tier).
+   */
+  tags?: string[];
+  /**
+   * Deprecated: use `tags` with a `tier:<value>` entry. UnmarshalYAML
+   * auto-migrates `group: X` → `tier:X` at load time.
+   */
   group?: string;
   /**
-   * Cohort labels upstreams that share fate beyond what `group` or `vendorName`
-   * describe — e.g. multiple distinct upstreams hitting the same L2 sequencer,
-   * or upstreams in one cloud region, or a shared internal node fleet.
-   * Consumed by `selectionPolicy` primitives that care about blast-radius
-   * diversity (e.g. `spreadAcrossGroups({ by: 'cohort' })`). Optional;
-   * empty means "this upstream is its own cohort".
+   * Deprecated: use `tags` with a `cohort:<value>` entry. UnmarshalYAML
+   * auto-migrates `cohort: Y` → `cohort:Y` at load time.
    */
   cohort?: string;
   vendorName?: string;
