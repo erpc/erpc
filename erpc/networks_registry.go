@@ -12,9 +12,9 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 )
 
@@ -87,7 +87,7 @@ func NewNetwork(
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
-	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
+	_ = projectId // network executor scope is per-network; project label comes from the metrics tracker.
 
 	// Build a provider that resolves the dynamic block-unavailable retry delay
 	// from the network's EMA-estimated block time. Returns 0 before warmup so
@@ -107,51 +107,30 @@ func NewNetwork(
 		}
 	}
 
-	// Create failsafe executors from configs
-	var failsafeExecutors []*FailsafeExecutor
+	// Build one networkExecutor per Failsafe config entry, plus a no-op
+	// catch-all so unmatched (method, finality) pairs always resolve.
+	var failsafeExecutors []*networkExecutor
 	if len(nwCfg.Failsafe) > 0 {
 		for _, fsCfg := range nwCfg.Failsafe {
-			pls, err := upstream.CreateFailSafePolicies(appCtx, &lg, common.ScopeNetwork, key, fsCfg, dynamicBlockUnavailableDelay)
+			var cons consensusRunner
+			if fsCfg.Consensus != nil {
+				c, err := consensus.NewConsensus(fsCfg.Consensus, &lg)
+				if err != nil {
+					return nil, err
+				}
+				cons = c
+			}
+			ex, err := NewNetworkExecutor(fsCfg, &lg, cons, dynamicBlockUnavailableDelay)
 			if err != nil {
 				return nil, err
 			}
-			policyArray := upstream.ToPolicyArray(pls, "consensus", "retry", "hedge")
-
-			var timeoutFn upstream.TimeoutFunc
-			if fsCfg.Timeout != nil {
-				timeoutFn = upstream.NewTimeoutFunc(&lg, fsCfg.Timeout)
-			}
-
-			method := fsCfg.MatchMethod
-			if method == "" {
-				method = "*"
-			}
-
-			emptyAccept := common.DefaultEmptyResultAccept()
-			if fsCfg.Retry != nil && fsCfg.Retry.EmptyResultAccept != nil {
-				emptyAccept = fsCfg.Retry.EmptyResultAccept
-			}
-
-			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-				method:                 method,
-				finalities:             fsCfg.MatchFinality,
-				executor:               failsafe.NewExecutor(policyArray...),
-				timeout:                timeoutFn,
-				consensusPolicyEnabled: fsCfg.Consensus != nil,
-				emptyResultAccept:      emptyAccept,
-			})
+			failsafeExecutors = append(failsafeExecutors, ex)
 		}
 	}
 
-	// Create a default executor if no failsafe config is provided or matched
-	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-		method:                 "*",
-		finalities:             nil,
-		executor:               failsafe.NewExecutor[*common.NormalizedResponse](),
-		timeout:                nil,
-		consensusPolicyEnabled: false,
-		emptyResultAccept:      common.DefaultEmptyResultAccept(),
-	})
+	// Catch-all no-op executor.
+	noop, _ := NewNetworkExecutor(nil, &lg, nil, dynamicBlockUnavailableDelay)
+	failsafeExecutors = append(failsafeExecutors, noop)
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))
 

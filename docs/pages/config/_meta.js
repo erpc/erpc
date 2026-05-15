@@ -11,10 +11,10 @@ module.exports = {
 	failsafe: {
 		title: "Failsafe",
 		children: [
-			{name: "Circuit breaker", href: "/config/failsafe#circuitbreaker-policy"},
-			{name: "Hedge", href: "/config/failsafe#hedge-policy"},
-			{name: "Retry", href: "/config/failsafe#retry-policy"},
-			{name: "Timeout", href: "/config/failsafe#timeout-policy"},
+			{name: "Circuit breaker", href: "/config/failsafe#circuitbreaker"},
+			{name: "Hedge", href: "/config/failsafe#hedge"},
+			{name: "Retry", href: "/config/failsafe#retry"},
+			{name: "Timeout", href: "/config/failsafe#timeout"},
 			{name: "Integrity", href: "/config/failsafe/integrity"},
 			{name: "Empty/missing data", href: "/config/failsafe/integrity#empty-or-missing-data-handling"},
 			{name: "Consensus", href: "/config/failsafe/consensus"},

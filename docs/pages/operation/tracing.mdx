@@ -81,10 +81,10 @@ The included [`docker-compose.yml`](https://github.com/erpc/erpc/blob/main/docke
 The following components are instrumented with tracing:
 
 - HTTP server request handling
-- Network-level (chain) forwarding
+- Network-level (chain) forwarding — the `Network.Forward` span carries the full per-request execution trace (`execution.attempts`, `upstreams.tried`, `upstreams.outcomes`, `upstreams.reasons`, `upstreams.durations_ms`). See [failsafe → Per-attempt observability](/config/failsafe#per-attempt-observability).
 - Upstream-level request forwarding
 - Cache operations (get/set)
-- Failsafe executor operations (hedges, retries)
+- Failsafe executor operations (hedges, retries, timeouts, breaker probes)
 - HTTP client requests to upstreams
 - Rate limiters
 - And more...

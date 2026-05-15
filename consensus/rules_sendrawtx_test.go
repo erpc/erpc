@@ -6,7 +6,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
-	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -205,7 +204,7 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 			method:            "eth_sendRawTransaction",
 		}
 
-		winner := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		winner := &slotResult{
 			Result: resp,
 		}
 
@@ -243,7 +242,7 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 			method:            "eth_getTransactionCount",
 		}
 
-		winner := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		winner := &slotResult{
 			Result: resp,
 		}
 
@@ -272,7 +271,7 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 			method:            "eth_sendRawTransaction",
 		}
 
-		winner := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		winner := &slotResult{
 			Error: testError,
 		}
 
@@ -313,7 +312,7 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 			method:            "eth_sendRawTransaction",
 		}
 
-		winner := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		winner := &slotResult{
 			Result: resp,
 		}
 
@@ -463,7 +462,7 @@ func TestSendRawTransaction_Integration(t *testing.T) {
 		}
 
 		// Run through rules to find match
-		var result *failsafeCommon.PolicyResult[*common.NormalizedResponse]
+		var result *slotResult
 		for _, rule := range consensusRules {
 			if rule.Condition(analysis) {
 				result = rule.Action(analysis)
@@ -497,8 +496,8 @@ func TestSendRawTransaction_FireAndForget(t *testing.T) {
 			Build()
 
 		// Verify the policy was built with fireAndForget
-		cp, ok := policy.(*consensusPolicy)
-		require.True(t, ok, "should be a consensusPolicy")
+		cp := policy.policy
+		require.NotNil(t, cp, "should have a consensusPolicy")
 		assert.True(t, cp.config.fireAndForget, "fireAndForget should be enabled")
 	})
 
@@ -510,24 +509,24 @@ func TestSendRawTransaction_FireAndForget(t *testing.T) {
 			WithAgreementThreshold(2).
 			Build()
 
-		cp, ok := policy.(*consensusPolicy)
-		require.True(t, ok, "should be a consensusPolicy")
+		cp := policy.policy
+		require.NotNil(t, cp, "should have a consensusPolicy")
 		assert.False(t, cp.config.fireAndForget, "fireAndForget should default to false")
 	})
 
 	t.Run("config struct stores fireAndForget value", func(t *testing.T) {
-		cfg := &config{}
+		b := newBuilder()
 
 		// Default should be false
-		assert.False(t, cfg.fireAndForget)
+		assert.False(t, b.cfg.fireAndForget)
 
 		// Set to true via builder method
-		cfg.WithFireAndForget(true)
-		assert.True(t, cfg.fireAndForget)
+		b.WithFireAndForget(true)
+		assert.True(t, b.cfg.fireAndForget)
 
 		// Set back to false
-		cfg.WithFireAndForget(false)
-		assert.False(t, cfg.fireAndForget)
+		b.WithFireAndForget(false)
+		assert.False(t, b.cfg.fireAndForget)
 	})
 
 	t.Run("recommended config for eth_sendRawTransaction", func(t *testing.T) {
@@ -540,7 +539,7 @@ func TestSendRawTransaction_FireAndForget(t *testing.T) {
 			WithFireAndForget(true).   // Let remaining requests complete in background
 			Build()
 
-		cp := policy.(*consensusPolicy)
+		cp := policy.policy
 
 		// Verify all settings for eth_sendRawTransaction best practice
 		assert.Equal(t, 5, cp.config.maxParticipants,
