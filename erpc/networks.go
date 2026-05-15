@@ -54,6 +54,11 @@ type Network struct {
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
 	initializer              *util.Initializer
+
+	// evmLatestBlockGuarantees stores named profiles for resolving EVM guarantee IDs.
+	evmLatestBlockGuarantees []*common.EvmLatestBlockGuaranteeConfig
+	// evmDefaultGuaranteeMethods is pre-resolved from the network's directive defaults at init time.
+	evmDefaultGuaranteeMethods []string
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -108,7 +113,24 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
+	// If a per-request guarantee profile override is provided, resolve and apply it.
+	if len(guaranteeProfileOverride) > 0 && guaranteeProfileOverride[0] != "" {
+		methods, err := evm.ResolveEvmLatestBlockGuarantee(n.evmLatestBlockGuarantees, guaranteeProfileOverride[0])
+		if err != nil {
+			n.logger.Warn().Err(err).Str("profile", guaranteeProfileOverride[0]).Msg("failed to resolve evmLatestBlockGuarantee profile override, using default")
+		} else if len(methods) > 0 {
+			return n.evmHighestLatestBlockNumberWithGuarantee(ctx, methods)
+		}
+	}
+	// Apply default guarantee from network config if configured
+	if len(n.evmDefaultGuaranteeMethods) > 0 {
+		return n.evmHighestLatestBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
+	}
+	return n.evmHighestLatestBlockNumberRaw(ctx)
+}
+
+func (n *Network) evmHighestLatestBlockNumberRaw(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
 
@@ -146,7 +168,31 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	return maxBlock
 }
 
-func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+func (n *Network) evmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+	if len(methods) == 0 {
+		return n.evmHighestLatestBlockNumberRaw(ctx)
+	}
+	return n.evmHighestBlockWithGuarantee(ctx, methods, "latest", "eth_blockNumber", (*upstream.Upstream).EvmEffectiveLatestBlock)
+}
+
+func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
+	// If a per-request guarantee profile override is provided, resolve and apply it.
+	if len(guaranteeProfileOverride) > 0 && guaranteeProfileOverride[0] != "" {
+		methods, err := evm.ResolveEvmLatestBlockGuarantee(n.evmLatestBlockGuarantees, guaranteeProfileOverride[0])
+		if err != nil {
+			n.logger.Warn().Err(err).Str("profile", guaranteeProfileOverride[0]).Msg("failed to resolve evmLatestBlockGuarantee profile override, using default")
+		} else if len(methods) > 0 {
+			return n.evmHighestFinalizedBlockNumberWithGuarantee(ctx, methods)
+		}
+	}
+	// Apply default guarantee from network config if configured
+	if len(n.evmDefaultGuaranteeMethods) > 0 {
+		return n.evmHighestFinalizedBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
+	}
+	return n.evmHighestFinalizedBlockNumberRaw(ctx)
+}
+
+func (n *Network) evmHighestFinalizedBlockNumberRaw(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestFinalizedBlockNumber", trace.WithAttributes(
 		attribute.String("network.id", n.networkId),
 	))
@@ -183,6 +229,101 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	}
 	span.SetAttributes(attribute.Int64("highest_finalized_block", maxBlock))
 	return maxBlock
+}
+
+func (n *Network) evmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+	if len(methods) == 0 {
+		return n.evmHighestFinalizedBlockNumberRaw(ctx)
+	}
+	return n.evmHighestBlockWithGuarantee(ctx, methods, "finalized", "eth_getBlockByNumber", (*upstream.Upstream).EvmEffectiveFinalizedBlock)
+}
+
+// evmHighestBlockWithGuarantee computes the highest block number that is guaranteed
+// to be available across all required methods. For each method, it finds the max block
+// among supporting upstreams, then returns the min across all methods.
+func (n *Network) evmHighestBlockWithGuarantee(
+	ctx context.Context,
+	methods []string,
+	blockKind string,
+	permitMethod string,
+	blockGetter func(*upstream.Upstream) int64,
+) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestBlockWithGuarantee."+blockKind)
+	defer span.End()
+
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+
+	methodMaxBlock := make(map[string]int64, len(methods))
+	for _, m := range methods {
+		methodMaxBlock[m] = 0
+	}
+
+	for _, u := range upstreams {
+		statePoller := u.EvmStatePoller()
+		if statePoller == nil {
+			continue
+		}
+		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
+			continue
+		}
+		if n.selectionPolicyEvaluator != nil {
+			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, permitMethod); err != nil {
+				continue
+			}
+		}
+
+		upBlock := blockGetter(u)
+		if upBlock <= 0 {
+			continue
+		}
+
+		for _, m := range methods {
+			var supported bool
+			if isWildcardPattern(m) {
+				ok, err := u.SupportsMethodPattern(m)
+				if err != nil || !ok {
+					continue
+				}
+				supported = true
+			} else {
+				allowed, err := u.ShouldHandleMethod(m)
+				if err != nil || !allowed {
+					continue
+				}
+				supported = true
+			}
+			if supported && upBlock > methodMaxBlock[m] {
+				methodMaxBlock[m] = upBlock
+			}
+		}
+	}
+
+	var result int64 = math.MaxInt64
+	for _, m := range methods {
+		mb := methodMaxBlock[m]
+		if mb == 0 {
+			n.logger.Debug().Str("method", m).Str("blockKind", blockKind).Msg("no upstream supports guaranteed method; cannot constrain block")
+			span.SetAttributes(attribute.String("unsatisfied_method", m))
+			return 0
+		}
+		if mb < result {
+			result = mb
+		}
+	}
+	if result == math.MaxInt64 {
+		result = 0
+	}
+
+	span.SetAttributes(
+		attribute.Int64("guaranteed_"+blockKind+"_block", result),
+		attribute.StringSlice("guaranteed_methods", methods),
+	)
+	return result
+}
+
+// isWildcardPattern returns true if the string contains glob wildcard characters.
+func isWildcardPattern(s string) bool {
+	return strings.ContainsAny(s, "*?&|()")
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {

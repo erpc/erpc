@@ -210,7 +210,7 @@ func TestNetworkForward_ConsensusErrorPathClearsLVRWithoutDoubleFree(t *testing.
 				},
 			},
 		},
-		nil, upsReg, mt,
+		nil, upsReg, mt, nil,
 	)
 	require.NoError(t, err)
 

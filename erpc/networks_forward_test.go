@@ -75,7 +75,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			},
-			rlr, upsReg, mt,
+			rlr, upsReg, mt, nil,
 		)
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -160,7 +160,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 					{Timeout: &common.TimeoutPolicyConfig{Duration: common.Duration(250 * time.Millisecond)}},
 				},
 			},
-			rlr, upr, mt,
+			rlr, upr, mt, nil,
 		)
 		require.NoError(t, err)
 		require.NoError(t, ntw.Bootstrap(ctx))
@@ -299,6 +299,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			rlr,
 			upsReg,
 			mt,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -470,6 +471,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			rlr,
 			upsReg,
 			mt,
+			nil,
 		)
 		require.NoError(t, err)
 

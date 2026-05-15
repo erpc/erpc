@@ -54,8 +54,15 @@ func projectPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 		return true, nil, err
 	}
 
-	// Step 3: collect the highest block from all EVM upstream pollers for this network
-	highestBlock := network.EvmHighestLatestBlockNumber(ctx)
+	// Step 3: collect the highest block from all EVM upstream pollers for this network,
+	// constrained by guaranteed methods if configured via directives
+	dirs := nq.Directives()
+	var highestBlock int64
+	if dirs != nil && dirs.EvmLatestBlockGuarantee != "" {
+		highestBlock = network.EvmHighestLatestBlockNumber(ctx, dirs.EvmLatestBlockGuarantee)
+	} else {
+		highestBlock = network.EvmHighestLatestBlockNumber(ctx)
+	}
 	if common.IsTracingDetailed {
 		blockNumberLag := highestBlock - blockNumber
 		if blockNumberLag < 0 {

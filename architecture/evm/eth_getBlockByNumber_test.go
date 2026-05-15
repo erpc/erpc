@@ -50,11 +50,11 @@ func (t *testNetwork) Logger() *zerolog.Logger {
 	return &logger
 }
 
-func (t *testNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+func (t *testNetwork) EvmHighestLatestBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
 	return 0
 }
 
-func (t *testNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+func (t *testNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
 	return 0
 }
 

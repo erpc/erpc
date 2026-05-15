@@ -1846,6 +1846,7 @@ func setupTestNetworkWithScoring(
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	require.NoError(t, err)
 

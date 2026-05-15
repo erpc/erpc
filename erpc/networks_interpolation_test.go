@@ -72,7 +72,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 		}
 	}
 
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt)
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
@@ -1966,7 +1966,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 			ChainId: 123,
 		},
 	}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt)
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
@@ -2094,7 +2094,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 			},
 		},
 	}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt)
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt, nil)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 

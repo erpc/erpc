@@ -59,7 +59,7 @@ func setupIntegrityTestNetwork(t *testing.T, ctx context.Context, upstreams []*c
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 

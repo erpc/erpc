@@ -2744,7 +2744,7 @@ func setupTestNetworkWithMethodIgnore(
 	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -2825,7 +2825,7 @@ func setupTestNetworkWithCustomUpstreams(
 	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())

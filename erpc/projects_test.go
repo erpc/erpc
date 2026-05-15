@@ -95,6 +95,7 @@ func TestProject_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
+			nil, // LatestBlockGuarantees
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -206,6 +207,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			rateLimitersRegistry,
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
+			nil, // LatestBlockGuarantees
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -313,6 +315,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			rateLimitersRegistry,
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
+			nil, // LatestBlockGuarantees
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -434,6 +437,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			rateLimiters, // RateLimitersRegistry
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
+			nil, // LatestBlockGuarantees
 		)
 		if err != nil {
 			t.Fatalf("failed to create ProjectsRegistry: %v", err)
@@ -549,6 +553,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 			rateLimitersRegistry,
 			thirdparty.NewVendorsRegistry(),
 			nil, // ProxyPoolRegistry
+			nil, // LatestBlockGuarantees
 		)
 		if err != nil {
 			t.Fatal(err)
