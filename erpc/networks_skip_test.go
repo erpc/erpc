@@ -147,6 +147,15 @@ func setupTwoUpstreamNetworkForSkip(
 		// `upstream.ReorderUpstreams(upr)`; the new equivalent is
 		// `PinUpstreamOrderForTest()` which also stops the engine's
 		// ticker so the cached order can't drift mid-test.
+		//
+		// Pin twice with a brief drain between: a late upstream-
+		// registration goroutine from Bootstrap can race-overwrite
+		// `networkUpstreamsAtomic` after the first pin, which has
+		// surfaced as flakes under CI parallelism (BreakerOpen,
+		// AutoIgnoreUnsupportedMethods seeing [rpc2, rpc1] instead
+		// of the pinned [rpc1, rpc2]).
+		network.PinUpstreamOrderForTest()
+		time.Sleep(50 * time.Millisecond)
 		network.PinUpstreamOrderForTest()
 	}
 	// If a selectionPolicy IS set, we leave the engine ticking so its
