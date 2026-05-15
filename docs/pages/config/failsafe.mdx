@@ -216,21 +216,35 @@ Each individual attempt also produces `Upstream.tryForward.SendRequest` and `Ups
 
 ### HTTP response headers
 
-The same per-request trace is mirrored into the HTTP response for client-side debugging. Default mode is `all`:
+The same per-request trace is mirrored into the HTTP response for client-side debugging. Headers are emitted on **every** response path that has a request — success, JSON-RPC error, validation reject, auth reject, rate-limit. Default mode is `all`.
 
 | Header | Mode | Description |
 |---|---|---|
-| `X-ERPC-Cache` | summary, all | `HIT` / `MISS` |
-| `X-ERPC-Upstream` | summary, all | Final winning upstream ID |
-| `X-ERPC-Attempts` / `X-ERPC-Retries` / `X-ERPC-Hedges` | summary, all | Total counter triplet |
+| `X-ERPC-Cache` | summary, all | `HIT` / `MISS` (when a real response was produced) |
+| `X-ERPC-Upstream` | summary, all | Winning upstream ID (single-winner case) |
 | `X-ERPC-Duration` | summary, all | Wall-clock ms |
-| `X-ERPC-Network-Attempts` / `-Retries` / `-Hedges` | all | Network-scope counters |
+| `X-ERPC-Attempts` | summary, all | Total physical operations across all scopes (Upstream + Cache) |
+| `X-ERPC-Upstream-Attempts` / `-Retries` / `-Hedges` | summary, all | Upstream-scope: physical attempts within a single upstream + retries + hedges |
+| `X-ERPC-Network-Attempts` / `-Retries` / `-Hedges` | summary, all | Network-scope: rotation count + cross-upstream retries / hedges |
+| `X-ERPC-Cache-Attempts` / `-Retries` / `-Hedges` | summary, all (when non-zero) | Cache-scope: connector reads/writes including within-connector retries/hedges |
 | `X-ERPC-Consensus-Slots` / `-Disputes` / `-Low-Participants` | all (when non-zero) | Consensus participation counters |
-| `X-ERPC-Upstreams-Tried` | all | Ordered comma-list of upstream IDs |
-| `X-ERPC-Upstreams-Outcomes` | all | Per-attempt outcome (same indices) |
-| `X-ERPC-Upstreams-Reasons` | all | Per-attempt selection reason |
-| `X-ERPC-Upstreams-Durations-Ms` | all | Per-attempt duration |
-| `X-ERPC-Upstreams-Flags` | all | `h` = hedge, `r` = retry, `hr` = both, `-` = neither |
+| `X-ERPC-Upstreams` | all | Per-attempt participation log — see format below |
+
+**`X-ERPC-Upstreams` format**:
+
+Each segment describes one physical attempt as `<id>=<reason>:<outcome>:<duration>ms[:won]`, segments joined by `;`. Example:
+
+```
+X-ERPC-Upstreams: alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms;drpc=consensus_slot:exec_revert:20ms
+```
+
+- `id` — upstream identifier (the same one appears multiple times if it was retried).
+- `reason` — why selected: `primary` / `retry` / `hedge` / `consensus_slot` / `sweep`.
+- `outcome` — what happened: `success` / `empty` / `transport_error` / `server_error` / `client_error` / `rate_limited` / `missing_data` / `exec_revert` / `block_unavailable` / `breaker_open` / `cancelled` / `timeout` / `skipped`.
+- `duration`ms — wall-clock ms.
+- `:won` — present when this attempt's response contributed to the final response. For single-winner requests exactly one segment carries `:won`; for consensus every participant in the winning agreement group does.
+
+**Counter scopes**: each executor increments only its own scope counters. `X-ERPC-Attempts` sums physical work (`Upstream + Cache`); `X-ERPC-Network-Attempts` is a separate rotation count and not summed in. Retries / hedges are exposed per-scope only (no aggregated total) because the events have meaningfully different semantics — an upstream-scope retry retries the SAME upstream, a network-scope retry rotates to a NEW one.
 
 Operators can override via `server.executionHeaders`:
 

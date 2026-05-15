@@ -227,12 +227,10 @@ func (e *networkExecutor) runRetry(
 		}
 
 		if attempt > 0 && st != nil {
-			st.Retries.Add(1)
 			st.NetworkRetries.Add(1)
 			retriesAttempted++
 		}
 		if st != nil {
-			st.Attempts.Add(1)
 			st.NetworkAttempts.Add(1)
 		}
 
@@ -542,12 +540,10 @@ func (e *networkExecutor) runHedge(
 	hooks := failsafe.HedgeHooks{
 		OnFire: func(fireIdx int, d time.Duration) {
 			if st := req.ExecState(); st != nil {
-				// Hedges contribute to total attempts (each fire is an
-				// extra inner invocation), matching legacy semantics
-				// where exec.Attempts() included hedge attempts.
-				st.Attempts.Add(1)
+				// Each hedge fire is an extra inner invocation at the
+				// network scope: counts as both an attempt and a hedge.
+				// Totals (Snapshot.Attempts / Hedges) sum across scopes.
 				st.NetworkAttempts.Add(1)
-				st.Hedges.Add(1)
 				st.NetworkHedges.Add(1)
 			}
 		},

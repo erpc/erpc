@@ -92,6 +92,22 @@ func (e *cacheExecutor) RunVoid(
 	return err
 }
 
+// execStateFromCtx returns the per-request ExecState attached to the
+// context, or nil when the cache layer is being driven outside a
+// request lifecycle (e.g. background prefetch). Cache-scope counter
+// increments are no-ops in that case.
+func execStateFromCtx(ctx context.Context) *common.ExecState {
+	r := ctx.Value(common.RequestContextKey)
+	if r == nil {
+		return nil
+	}
+	req, ok := r.(*common.NormalizedRequest)
+	if !ok || req == nil {
+		return nil
+	}
+	return req.ExecState()
+}
+
 func (e *cacheExecutor) runRetry(
 	ctx context.Context,
 	hedged func(ctx context.Context) ([]byte, error),
@@ -104,6 +120,12 @@ func (e *cacheExecutor) runRetry(
 
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if st := execStateFromCtx(ctx); st != nil {
+			st.CacheAttempts.Add(1)
+			if attempt > 0 {
+				st.CacheRetries.Add(1)
+			}
+		}
 		data, err := hedged(ctx)
 		if err == nil || !isTransportError(err) {
 			return data, err
@@ -147,8 +169,16 @@ func (e *cacheExecutor) runHedgeBytes(
 		}
 		return true
 	}
+	hooks := failsafe.HedgeHooks{
+		OnFire: func(_ int, _ time.Duration) {
+			if st := execStateFromCtx(ctx); st != nil {
+				st.CacheAttempts.Add(1)
+				st.CacheHedges.Add(1)
+			}
+		},
+	}
 	return failsafe.RunHedged[[]byte](
-		ctx, e.cfg.Hedge.MaxCount, delayFn, wrap, keep, nil, failsafe.HedgeHooks{},
+		ctx, e.cfg.Hedge.MaxCount, delayFn, wrap, keep, nil, hooks,
 	)
 }
 

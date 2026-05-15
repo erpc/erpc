@@ -719,7 +719,8 @@ func TestFourAttemptScenario(t *testing.T) {
 	// With try-all-upstreams-per-execution, the primary execution tries rpc1
 	// (fails immediately) then rpc2 (slow, blocks). Hedge fires after hedge
 	// delay, tries rpc3 (fails) → rpc4 (succeeds).
-	assert.Equal(t, 2, resp.Attempts(), "Should have made 2 attempts (primary + hedge)")
+	// Should have made 4 physical attempts (rpc1+rpc2 primary leg, rpc3+rpc4 hedge leg)
+	assert.Equal(t, 4, resp.Attempts(), "Should have made 4 physical attempts (rpc1+rpc2 primary leg, rpc3+rpc4 hedge leg)")
 	assert.Equal(t, 0, resp.Retries(), "No retries needed — hedge won")
 	assert.Equal(t, 1, resp.Hedges(), "Should have made 1 hedge")
 

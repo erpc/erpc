@@ -184,6 +184,12 @@ func (e *upstreamExecutor) runRetry(
 	var lastResp *common.NormalizedResponse
 	retriesAttempted := 0
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if st := req.ExecState(); st != nil {
+			st.UpstreamAttempts.Add(1)
+			if attempt > 0 {
+				st.UpstreamRetries.Add(1)
+			}
+		}
 		resp, err := hedgeWrapped(ctx)
 		if attempt+1 >= maxAttempts || !e.shouldRetry(req, resp, err, attempt) {
 			if err != nil && retriesAttempted > 0 {
@@ -318,7 +324,10 @@ func (e *upstreamExecutor) runHedge(
 	hooks := failsafe.HedgeHooks{
 		OnFire: func(fireIdx int, d time.Duration) {
 			if st := req.ExecState(); st != nil {
-				st.Hedges.Add(1)
+				// Hedge fire = one extra inner invocation at the upstream
+				// scope: counts as both an attempt and a hedge.
+				st.UpstreamAttempts.Add(1)
+				st.UpstreamHedges.Add(1)
 			}
 		},
 	}

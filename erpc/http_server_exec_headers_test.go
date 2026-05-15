@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,13 +15,12 @@ import (
 )
 
 // TestExecutionHeaders_All_FullTrace verifies that the default mode
-// emits the full X-ERPC-Upstreams-* slice headers describing every
-// participant the executor touched.
+// emits the unified X-ERPC-Upstreams participation log alongside the
+// per-scope counter headers.
 func TestExecutionHeaders_All_FullTrace(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	// We use Persist() above; no asserts on pending mocks.
 
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -55,53 +53,41 @@ func TestExecutionHeaders_All_FullTrace(t *testing.T) {
 	// Summary counters always present.
 	assert.Equal(t, "MISS", headers["X-Erpc-Cache"])
 	assert.NotEmpty(t, headers["X-Erpc-Attempts"])
-	assert.NotEmpty(t, headers["X-Erpc-Retries"])
-	assert.NotEmpty(t, headers["X-Erpc-Hedges"])
 	assert.NotEmpty(t, headers["X-Erpc-Duration"])
-	// Network-scope counters.
+	// Per-scope counters.
+	assert.NotEmpty(t, headers["X-Erpc-Upstream-Attempts"])
 	assert.NotEmpty(t, headers["X-Erpc-Network-Attempts"])
 
-	// Per-attempt trace headers.
-	tried := headers["X-Erpc-Upstreams-Tried"]
-	outcomes := headers["X-Erpc-Upstreams-Outcomes"]
-	reasons := headers["X-Erpc-Upstreams-Reasons"]
-	durations := headers["X-Erpc-Upstreams-Durations-Ms"]
-	flags := headers["X-Erpc-Upstreams-Flags"]
-	require.NotEmpty(t, tried, "expected per-attempt trace headers in 'all' mode")
-	require.NotEmpty(t, outcomes)
-	require.NotEmpty(t, reasons)
-	require.NotEmpty(t, durations)
-	require.NotEmpty(t, flags)
-
-	// Slice lengths must line up across all per-attempt headers.
-	triedN := len(strings.Split(tried, ","))
-	assert.Equal(t, triedN, len(strings.Split(outcomes, ",")))
-	assert.Equal(t, triedN, len(strings.Split(reasons, ",")))
-	assert.Equal(t, triedN, len(strings.Split(durations, ",")))
-	assert.Equal(t, triedN, len(strings.Split(flags, ",")))
-
-	// At least one attempt is in the trace, and at least one outcome
-	// is "success" since the request returned 200.
-	assert.GreaterOrEqual(t, triedN, 1, "expected at least one attempt in trace")
-	assert.Contains(t, outcomes, "success")
-
-	// Durations are integers (ms).
-	for _, d := range strings.Split(durations, ",") {
-		_, err := strconv.ParseInt(d, 10, 64)
-		require.NoError(t, err, "duration %q must be integer ms", d)
+	// Unified participation log. Each segment is
+	// `<id>=<reason>:<outcome>:<duration>ms[:won]`.
+	ups := headers["X-Erpc-Upstreams"]
+	require.NotEmpty(t, ups, "expected X-ERPC-Upstreams in 'all' mode")
+	segments := strings.Split(ups, ";")
+	assert.GreaterOrEqual(t, len(segments), 1)
+	// At least one segment carries :won (the rpc2 success).
+	wonCount := 0
+	for _, s := range segments {
+		if strings.HasSuffix(s, ":won") {
+			wonCount++
+		}
+		// Format invariant: id=reason:outcome:durationms[:won]
+		parts := strings.SplitN(s, "=", 2)
+		require.Lenf(t, parts, 2, "segment %q missing '='", s)
+		fields := strings.Split(parts[1], ":")
+		// reason : outcome : duration[ms] : (optional won)
+		require.GreaterOrEqualf(t, len(fields), 3, "segment %q has fewer than 3 fields", s)
+		assert.Truef(t, strings.HasSuffix(fields[2], "ms"), "duration field %q must end with ms", fields[2])
 	}
+	assert.GreaterOrEqual(t, wonCount, 1, "expected at least one :won segment in %q", ups)
 }
 
 // TestExecutionHeaders_Summary_OmitsSliceHeaders verifies "summary"
-// mode keeps the counter triplet but drops the per-attempt slices.
+// mode keeps the counter triplet but drops the participation log.
 func TestExecutionHeaders_Summary_OmitsSliceHeaders(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	// We use Persist() above; no asserts on pending mocks.
 
-	// Persist matchers so whichever upstream the registry rotates to
-	// receives a deterministic answer (we only care about headers here).
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Persist().
@@ -129,16 +115,13 @@ func TestExecutionHeaders_Summary_OmitsSliceHeaders(t *testing.T) {
 	)
 	require.Equal(t, 200, statusCode)
 
+	// Counter headers + per-scope counters stay.
 	assert.NotEmpty(t, headers["X-Erpc-Attempts"])
-	assert.NotEmpty(t, headers["X-Erpc-Retries"])
-	assert.NotEmpty(t, headers["X-Erpc-Hedges"])
 	assert.NotEmpty(t, headers["X-Erpc-Cache"])
-	// Slice headers must NOT be present.
-	assert.Empty(t, headers["X-Erpc-Upstreams-Tried"])
-	assert.Empty(t, headers["X-Erpc-Upstreams-Outcomes"])
-	assert.Empty(t, headers["X-Erpc-Upstreams-Reasons"])
-	assert.Empty(t, headers["X-Erpc-Upstreams-Durations-Ms"])
-	assert.Empty(t, headers["X-Erpc-Network-Attempts"])
+	assert.NotEmpty(t, headers["X-Erpc-Upstream-Attempts"])
+	assert.NotEmpty(t, headers["X-Erpc-Network-Attempts"])
+	// The participation log is dropped in summary mode.
+	assert.Empty(t, headers["X-Erpc-Upstreams"])
 }
 
 // TestExecutionHeaders_Off_NoDiagnosticHeaders verifies "off" mode
@@ -147,10 +130,7 @@ func TestExecutionHeaders_Off_NoDiagnosticHeaders(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	// We use Persist() above; no asserts on pending mocks.
 
-	// Persist matchers so whichever upstream the registry rotates to
-	// receives a deterministic answer (we only care about headers here).
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Persist().
@@ -182,8 +162,6 @@ func TestExecutionHeaders_Off_NoDiagnosticHeaders(t *testing.T) {
 		assert.False(t, strings.HasPrefix(k, "X-Erpc-Cache") ||
 			strings.HasPrefix(k, "X-Erpc-Upstream") ||
 			strings.HasPrefix(k, "X-Erpc-Attempts") ||
-			strings.HasPrefix(k, "X-Erpc-Retries") ||
-			strings.HasPrefix(k, "X-Erpc-Hedges") ||
 			strings.HasPrefix(k, "X-Erpc-Duration") ||
 			strings.HasPrefix(k, "X-Erpc-Network-") ||
 			strings.HasPrefix(k, "X-Erpc-Consensus-"),

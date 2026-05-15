@@ -1124,7 +1124,6 @@ export const AuthTypeDatabase: AuthType = "database";
 export const AuthTypeJwt: AuthType = "jwt";
 export const AuthTypeSiwe: AuthType = "siwe";
 export const AuthTypeNetwork: AuthType = "network";
-export const AuthTypeX402: AuthType = "x402";
 export interface AuthConfig {
   strategies: TsAuthStrategyConfig[];
 }
@@ -1138,7 +1137,6 @@ export interface AuthStrategyConfig {
   database?: DatabaseStrategyConfig;
   jwt?: JwtStrategyConfig;
   siwe?: SiweStrategyConfig;
-  x402?: X402StrategyConfig;
 }
 export interface SecretStrategyConfig {
   id: string;
@@ -1200,58 +1198,6 @@ export interface NetworkStrategyConfig {
    */
   rateLimitBudget?: string;
   ipAsUser?: boolean;
-}
-/**
- * X402StrategyConfig enables x402 payment authentication (HTTP 402 Payment Required).
- * Clients without an API key can pay per-request via the x402 protocol. The payer's
- * wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
- */
-export interface X402StrategyConfig {
-  /**
-   * FacilitatorURL is the x402 facilitator endpoint for verify/settle operations.
-   */
-  facilitatorUrl: string;
-  /**
-   * SellerAddress is the wallet address that receives payments (e.g. USDC on Base).
-   */
-  sellerAddress: string;
-  /**
-   * PricePerRequest is the cost per request in atomic units (e.g. "5" for $0.000005 USDC).
-   */
-  pricePerRequest: string;
-  /**
-   * Network is the x402 network name for payment (e.g. "base", "base-sepolia").
-   */
-  network: string;
-  /**
-   * Asset is the token contract address used for payment.
-   */
-  asset?: string;
-  /**
-   * Scheme is the x402 payment scheme (defaults to "exact").
-   */
-  scheme?: string;
-  /**
-   * Description is a human-readable description included in 402 responses.
-   */
-  description?: string;
-  /**
-   * MaxTimeoutSeconds is the payment authorization validity period (default: 300).
-   */
-  maxTimeoutSeconds?: number /* int */;
-  /**
-   * RateLimitBudget, if set, is applied to the authenticated payer.
-   */
-  rateLimitBudget?: string;
-  /**
-   * VerifyOnly when true skips settlement (useful for testing).
-   */
-  verifyOnly?: boolean;
-  /**
-   * Extra contains additional fields merged into the payment requirement's extra object.
-   * Useful for providing EIP-712 domain params when the facilitator doesn't supply them.
-   */
-  extra?: { [key: string]: any};
 }
 export type LabelMode = string;
 export const ErrorLabelModeVerbose: LabelMode = "verbose";
@@ -1382,6 +1328,11 @@ export const SelectionReasonSweep: UpstreamSelectionReason = "sweep"; // try-all
  * append these as participants come and go so operators can answer
  * "which upstreams were involved in this request, why were they
  * chosen, and what happened to them?" without parsing trace data.
+ * Won is flipped to true by the executor when this attempt's response
+ * contributed to the final response returned to the client. For a
+ * non-consensus request that's exactly one attempt (the winning one);
+ * for consensus it's every participant whose vote landed in the
+ * winning agreement group.
  */
 export interface UpstreamAttempt {
   upstreamid: string;
@@ -1392,6 +1343,7 @@ export interface UpstreamAttempt {
   reason: UpstreamSelectionReason;
   ishedge: boolean;
   isretry: boolean;
+  won: boolean; // true when this attempt contributed to the response
   attemptidx: number /* int */; // 0-based attempt index within the parent loop
   errorcode: string; // ErrorCode string when Outcome is an error variant
   errordetail: string; // free-form short description (truncated)
@@ -1401,34 +1353,42 @@ export interface UpstreamAttempt {
  * per-upstream attempt log. Created lazily on first access via
  * (*NormalizedRequest).ExecState().
  * All counters are atomic; the struct itself is safe for concurrent use.
+ * Counter model — every executor increments its OWN scope only.
+ * Snapshot derives the totals so "forgot to increment the total" is
+ * impossible by construction. The derivation is NOT a flat sum because
+ * the scopes are nested: each network rotation triggers exactly one
+ * upstream invocation chain, so summing both would double-count
+ * physical attempts.
+ * 	total Attempts = UpstreamAttempts + CacheAttempts
+ * 	    (every physical call is counted at the deepest scope that
+ * 	    actually performed it — upstreams for HTTP, cache for connector
+ * 	    reads. NetworkAttempts is a separate rotation-count signal,
+ * 	    exposed as its own counter but NOT summed into the total.)
+ * 	total Retries = sum of UpstreamRetries + NetworkRetries + CacheRetries
+ * 	total Hedges  = sum of UpstreamHedges  + NetworkHedges  + CacheHedges
+ * 	    (retries and hedges ARE different events at each scope — an
+ * 	    upstream-scope retry retries the SAME upstream, a network-scope
+ * 	    retry rotates to a NEW upstream. Summing is correct.)
+ * Scope semantics:
+ *   - UpstreamAttempts: physical Forward calls to a single upstream's
+ *     transport (primary + retries + hedges within one upstream).
+ *   - NetworkAttempts: rotations across upstreams driven by the
+ *     network executor's retry / hedge / consensus loop. Each rotation
+ *     triggers one upstream invocation chain. Not summed into total.
+ *   - CacheAttempts: cache-connector reads/writes including
+ *     within-connector retries and hedges.
  */
 export interface ExecState {
   /**
-   * Attempts counts every Forward attempt: the primary + any retry +
-   * any hedge.
+   * Per-scope counters. Each executor owns its OWN counter set and
+   * MUST NOT touch another scope's counters.
    */
-  attempts: any /* atomic.Int32 */;
-  /**
-   * Retries counts retry attempts only (Attempts - 1 - Hedges).
-   */
-  retries: any /* atomic.Int32 */;
-  /**
-   * Hedges counts the number of hedge fires (1 = the primary plus one
-   * hedge ran in parallel).
-   */
-  hedges: any /* atomic.Int32 */;
-  /**
-   * NetworkAttempts / NetworkRetries / NetworkHedges track the same
-   * metrics at the network scope. The upstream scope's counters are
-   * the bare Attempts/Retries/Hedges above.
-   */
+  upstreamattempts: any /* atomic.Int32 */;
+  upstreamretries: any /* atomic.Int32 */;
+  upstreamhedges: any /* atomic.Int32 */;
   networkattempts: any /* atomic.Int32 */;
   networkretries: any /* atomic.Int32 */;
   networkhedges: any /* atomic.Int32 */;
-  /**
-   * CacheAttempts / CacheRetries / CacheHedges track cache-layer
-   * retries and hedges.
-   */
   cacheattempts: any /* atomic.Int32 */;
   cacheretries: any /* atomic.Int32 */;
   cachehedges: any /* atomic.Int32 */;
@@ -1448,12 +1408,22 @@ export interface ExecState {
 }
 /**
  * ExecStateSnapshot is a plain-int view of ExecState for log/span
- * labeling — captured at a point in time.
+ * labeling — captured at a point in time. Total Attempts/Retries/Hedges
+ * are derived as the sum of per-scope counters at snapshot time.
  */
 export interface ExecStateSnapshot {
+  /**
+   * Totals (derived: Upstream + Network + Cache).
+   */
   attempts: number /* int */;
   retries: number /* int */;
   hedges: number /* int */;
+  /**
+   * Per-scope counters (each executor's own bookkeeping).
+   */
+  upstreamattempts: number /* int */;
+  upstreamretries: number /* int */;
+  upstreamhedges: number /* int */;
   networkattempts: number /* int */;
   networkretries: number /* int */;
   networkhedges: number /* int */;

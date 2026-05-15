@@ -479,6 +479,7 @@ func (e *executor) runAnalyzer(
 			shortCircuited = true
 			shortCircuitReason = reason
 
+			markWinningParticipants(originalReq, winner, analysis)
 			// Release caller immediately. The winner won't change even if
 			// more responses arrive.
 			sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: true})
@@ -507,6 +508,11 @@ func (e *executor) runAnalyzer(
 	if analysis == nil {
 		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
 		winner = e.determineWinner(lg, analysis)
+	}
+	if !shortCircuited {
+		// Short-circuit branch already marked winners; mark here only
+		// for the wait-all path.
+		markWinningParticipants(originalReq, winner, analysis)
 	}
 	sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: shortCircuited})
 
@@ -683,6 +689,48 @@ func (e *executor) shouldShortCircuit(winner *slotResult, analysis *consensusAna
 
 // determineWinner applies configured policies to the analysis to produce a final result.
 // It uses a rules-based approach for clear, maintainable decision logic.
+// markWinningParticipants flags every UpstreamAttempt whose response
+// landed in the winning consensus group as Won. Operators see these in
+// the response headers / spans as `:won` — multiple participants when
+// agreement was reached, none when a dispute resolved without one.
+// Safe to call when winner/analysis is nil (no-op).
+func markWinningParticipants(req *common.NormalizedRequest, winner *slotResult, analysis *consensusAnalysis) {
+	if req == nil || winner == nil || winner.Result == nil || analysis == nil {
+		return
+	}
+	st := req.ExecState()
+	if st == nil {
+		return
+	}
+	winnerResp, ok := any(winner.Result).(*common.NormalizedResponse)
+	if !ok || winnerResp == nil {
+		return
+	}
+	// Find the group that contains the winning response; every member of
+	// that group voted with the winner and counts as a contributor.
+	var winningGroup *responseGroup
+	for _, group := range analysis.groups {
+		for _, result := range group.Results {
+			if result != nil && result.Result == winnerResp {
+				winningGroup = group
+				break
+			}
+		}
+		if winningGroup != nil {
+			break
+		}
+	}
+	if winningGroup == nil {
+		return
+	}
+	for _, result := range winningGroup.Results {
+		if result == nil || result.Upstream == nil {
+			continue
+		}
+		st.MarkUpstreamAttemptWon(result.Upstream.Id())
+	}
+}
+
 func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalysis) *slotResult {
 	// Since we know R is *common.NormalizedResponse at runtime, we can safely work with it
 	// Evaluate rules in priority order

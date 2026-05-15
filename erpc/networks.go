@@ -611,7 +611,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						(!failsafeExecutor.HasConsensus() &&
 							slices.Contains(failsafeExecutor.EmptyResultAccept(), method))
 					if acceptEmpty {
-						s := effectiveReq.ExecState().Snapshot()
+						st := effectiveReq.ExecState()
+						st.MarkUpstreamAttemptWon(r.UpstreamId())
+						s := st.Snapshot()
 						r.SetAttempts(s.Attempts)
 						r.SetRetries(s.Retries)
 						r.SetHedges(s.Hedges)
@@ -658,7 +660,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// the delay function can detect empty results and apply
 			// emptyResultDelay.
 			if bestResp != nil {
-				s := effectiveReq.ExecState().Snapshot()
+				st := effectiveReq.ExecState()
+				st.MarkUpstreamAttemptWon(bestResp.UpstreamId())
+				s := st.Snapshot()
 				bestResp.SetAttempts(s.Attempts)
 				bestResp.SetRetries(s.Retries)
 				bestResp.SetHedges(s.Hedges)

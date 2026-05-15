@@ -289,8 +289,9 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Physical calls = 2 (rpc1 + rpc2 each returned empty once).
+		if resp.Attempts() != 2 {
+			t.Errorf("expected attempts=2 (rpc1 empty + rpc2 empty in one round), got %d", resp.Attempts())
 		}
 	})
 
@@ -416,8 +417,9 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all 3 upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Physical calls = 3 (rpc1 + rpc2 + rpc3 each returned empty once).
+		if resp.Attempts() != 3 {
+			t.Errorf("expected attempts=3 (rpc1+rpc2+rpc3 empty in one round), got %d", resp.Attempts())
 		}
 	})
 
@@ -801,8 +803,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries or delays.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Attempts is the physical-call total: 2 upstreams hit once each = 2.
+		if resp.Attempts() != 2 {
+			t.Errorf("expected attempts=2, got %d", resp.Attempts())
+		}
+		if resp.Retries() != 0 {
+			t.Errorf("expected no retries, got %d", resp.Retries())
 		}
 	})
 
@@ -1012,8 +1018,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries or delays.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Attempts is the physical-call total: 2 upstreams hit once each = 2.
+		if resp.Attempts() != 2 {
+			t.Errorf("expected attempts=2, got %d", resp.Attempts())
+		}
+		if resp.Retries() != 0 {
+			t.Errorf("expected no retries, got %d", resp.Retries())
 		}
 	})
 
