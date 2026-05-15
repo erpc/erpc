@@ -197,7 +197,7 @@ timeout:
     base: 5s                            # object form
 ```
 
-**Backward-compat:** Pre-AdaptiveDuration configs that flatten the fields as siblings still work — `quantile`, `minDuration` / `minDelay`, `maxDuration` / `maxDelay` get folded into the object form at load time. Prefer the object form for new configs since it's reusable across all policies.
+**Backward-compat:** Older configs that declared the fields as siblings still work — `quantile`, `minDuration` / `minDelay`, `maxDuration` / `maxDelay` get folded into the object form at load time. Prefer the object form for new configs since it's reusable across all policies.
 
 ## Per-attempt observability
 

@@ -9,9 +9,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestTimeoutPolicyConfig_LegacyYAML verifies that pre-AdaptiveDuration configs
-// still parse correctly. Old configs declared Duration/Quantile/Min/Max as
-// siblings; the new UnmarshalYAML folds those siblings into the unified
+// TestTimeoutPolicyConfig_LegacyYAML verifies that legacy flat-field
+// configs still parse correctly. Old configs declared Duration/Quantile/
+// Min/Max as siblings; the unmarshaler folds them into the unified
 // Duration *AdaptiveDuration field.
 func TestTimeoutPolicyConfig_LegacyYAML(t *testing.T) {
 	t.Parallel()
