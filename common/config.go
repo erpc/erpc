@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -112,7 +113,30 @@ type ServerConfig struct {
 	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+
+	// ExecutionHeaders controls the per-request diagnostic headers
+	// (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
+	// eRPC routed and resolved each request. Defaults to "all" — set
+	// "summary" to keep only counters, or "off" to disable entirely
+	// (useful for low-latency / bandwidth-constrained clients).
+	ExecutionHeaders *ExecutionHeadersMode `yaml:"executionHeaders,omitempty" json:"executionHeaders" tstype:"ExecutionHeadersMode"`
 }
+
+// ExecutionHeadersMode controls how much per-request execution detail is
+// exposed in HTTP response headers.
+type ExecutionHeadersMode string
+
+const (
+	// ExecutionHeadersAll emits the full set: counters + per-upstream
+	// trace (upstream IDs, outcomes, reasons, durations). Default.
+	ExecutionHeadersAll ExecutionHeadersMode = "all"
+	// ExecutionHeadersSummary emits only the counter triplet
+	// (X-ERPC-Attempts/Retries/Hedges) + the cache-hit / final-upstream
+	// markers. Skips the (potentially large) per-attempt slice headers.
+	ExecutionHeadersSummary ExecutionHeadersMode = "summary"
+	// ExecutionHeadersOff disables all X-ERPC-* diagnostic headers.
+	ExecutionHeadersOff ExecutionHeadersMode = "off"
+)
 
 type HealthCheckConfig struct {
 	Mode        HealthCheckMode `yaml:"mode,omitempty" json:"mode"`
@@ -994,6 +1018,22 @@ type FailsafeConfig struct {
 	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 }
 
+// NetworkFailsafeConfig is the scope-specific alias for network-level
+// failsafe policies. By convention, CircuitBreaker is not used at this
+// scope (use upstream-scope breakers instead); validation enforces this.
+type NetworkFailsafeConfig = FailsafeConfig
+
+// UpstreamFailsafeConfig is the scope-specific alias for per-upstream
+// failsafe policies. By convention, Consensus is not used at this
+// scope (consensus is a network-scope concern only); validation
+// enforces this.
+type UpstreamFailsafeConfig = FailsafeConfig
+
+// CacheFailsafeConfig is the scope-specific alias for cache-connector
+// failsafe policies. Hedge.Quantile is not allowed here (no per-method
+// quantile data on cache reads); validation enforces this.
+type CacheFailsafeConfig = FailsafeConfig
+
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	if c == nil {
 		return nil
@@ -1080,37 +1120,179 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 	return copied
 }
 
+// TimeoutPolicyConfig is the timeout policy. Duration is the unified
+// AdaptiveDuration — a scalar shorthand ("5s") or an object form
+// ({base, quantile, min, max}) for adaptive caps driven by per-method
+// latency quantiles.
+//
+// Wire format also accepts the legacy flat form
+// (`duration: 5s, quantile: 0.99, minDuration: 200ms, maxDuration: 10s`)
+// — siblings get folded into Duration at YAML/JSON unmarshal time.
 type TimeoutPolicyConfig struct {
-	Duration    Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
-	Quantile    float64  `yaml:"quantile,omitempty" json:"quantile"`
-	MinDuration Duration `yaml:"minDuration,omitempty" json:"minDuration" tstype:"Duration"`
-	MaxDuration Duration `yaml:"maxDuration,omitempty" json:"maxDuration" tstype:"Duration"`
+	Duration *AdaptiveDuration `yaml:"duration,omitempty" json:"duration,omitempty" tstype:"Duration | AdaptiveDuration"`
 }
 
 func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {
 	if c == nil {
 		return nil
 	}
-	copied := &TimeoutPolicyConfig{}
-	*copied = *c
-	return copied
+	return &TimeoutPolicyConfig{Duration: c.Duration.Copy()}
 }
 
+// UnmarshalYAML accepts the new unified form (Duration as scalar or
+// AdaptiveDuration object) and the legacy flat form with sibling
+// quantile/minDuration/maxDuration fields — siblings fold into Duration.
+func (c *TimeoutPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type legacy struct {
+		Duration    *AdaptiveDuration `yaml:"duration,omitempty"`
+		Quantile    float64       `yaml:"quantile,omitempty"`
+		MinDuration Duration      `yaml:"minDuration,omitempty"`
+		MaxDuration Duration      `yaml:"maxDuration,omitempty"`
+	}
+	var raw legacy
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	c.Duration = raw.Duration
+	c.applyLegacySiblings(raw.Quantile, raw.MinDuration, raw.MaxDuration)
+	return nil
+}
+
+// UnmarshalJSON mirrors the YAML behaviour for admin/RPC entry points.
+func (c *TimeoutPolicyConfig) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	type legacy struct {
+		Duration    *AdaptiveDuration   `json:"duration,omitempty"`
+		Quantile    float64         `json:"quantile,omitempty"`
+		MinDuration json.RawMessage `json:"minDuration,omitempty"`
+		MaxDuration json.RawMessage `json:"maxDuration,omitempty"`
+	}
+	var raw legacy
+	if err := SonicCfg.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	minD, err := parseJSONDuration(raw.MinDuration)
+	if err != nil {
+		return fmt.Errorf("timeout.minDuration: %w", err)
+	}
+	maxD, err := parseJSONDuration(raw.MaxDuration)
+	if err != nil {
+		return fmt.Errorf("timeout.maxDuration: %w", err)
+	}
+	c.Duration = raw.Duration
+	c.applyLegacySiblings(raw.Quantile, minD, maxD)
+	return nil
+}
+
+func (c *TimeoutPolicyConfig) applyLegacySiblings(quantile float64, minD, maxD Duration) {
+	if quantile == 0 && minD == 0 && maxD == 0 {
+		return
+	}
+	if c.Duration == nil {
+		c.Duration = &AdaptiveDuration{}
+	}
+	if c.Duration.Quantile == 0 {
+		c.Duration.Quantile = quantile
+	}
+	if c.Duration.Min == 0 {
+		c.Duration.Min = minD
+	}
+	if c.Duration.Max == 0 {
+		c.Duration.Max = maxD
+	}
+}
+
+// HedgePolicyConfig is the hedge policy. Delay is the unified
+// AdaptiveDuration — scalar shorthand ("100ms") or object form
+// ({base, quantile, min, max}) for quantile-driven hedge timing.
+//
+// Wire format also accepts the legacy flat form
+// (`delay: 100ms, quantile: 0.95, minDelay: 50ms, maxDelay: 2s`) —
+// siblings get folded into Delay at YAML/JSON unmarshal time.
 type HedgePolicyConfig struct {
-	Delay    Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
-	MaxCount int      `yaml:"maxCount" json:"maxCount"`
-	Quantile float64  `yaml:"quantile,omitempty" json:"quantile"`
-	MinDelay Duration `yaml:"minDelay,omitempty" json:"minDelay" tstype:"Duration"`
-	MaxDelay Duration `yaml:"maxDelay,omitempty" json:"maxDelay" tstype:"Duration"`
+	Delay    *AdaptiveDuration `yaml:"delay,omitempty" json:"delay,omitempty" tstype:"Duration | AdaptiveDuration"`
+	MaxCount int           `yaml:"maxCount" json:"maxCount"`
 }
 
 func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
 	if c == nil {
 		return nil
 	}
-	copied := &HedgePolicyConfig{}
-	*copied = *c
-	return copied
+	return &HedgePolicyConfig{
+		Delay:    c.Delay.Copy(),
+		MaxCount: c.MaxCount,
+	}
+}
+
+// UnmarshalYAML accepts the new unified form (Delay as scalar or
+// AdaptiveDuration object) and the legacy flat form with sibling
+// quantile/minDelay/maxDelay fields — siblings fold into Delay.
+func (c *HedgePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type legacy struct {
+		Delay    *AdaptiveDuration `yaml:"delay,omitempty"`
+		MaxCount int           `yaml:"maxCount,omitempty"`
+		Quantile float64       `yaml:"quantile,omitempty"`
+		MinDelay Duration      `yaml:"minDelay,omitempty"`
+		MaxDelay Duration      `yaml:"maxDelay,omitempty"`
+	}
+	var raw legacy
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	c.Delay = raw.Delay
+	c.MaxCount = raw.MaxCount
+	c.applyLegacySiblings(raw.Quantile, raw.MinDelay, raw.MaxDelay)
+	return nil
+}
+
+// UnmarshalJSON mirrors the YAML behaviour.
+func (c *HedgePolicyConfig) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	type legacy struct {
+		Delay    *AdaptiveDuration   `json:"delay,omitempty"`
+		MaxCount int             `json:"maxCount,omitempty"`
+		Quantile float64         `json:"quantile,omitempty"`
+		MinDelay json.RawMessage `json:"minDelay,omitempty"`
+		MaxDelay json.RawMessage `json:"maxDelay,omitempty"`
+	}
+	var raw legacy
+	if err := SonicCfg.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	minD, err := parseJSONDuration(raw.MinDelay)
+	if err != nil {
+		return fmt.Errorf("hedge.minDelay: %w", err)
+	}
+	maxD, err := parseJSONDuration(raw.MaxDelay)
+	if err != nil {
+		return fmt.Errorf("hedge.maxDelay: %w", err)
+	}
+	c.Delay = raw.Delay
+	c.MaxCount = raw.MaxCount
+	c.applyLegacySiblings(raw.Quantile, minD, maxD)
+	return nil
+}
+
+func (c *HedgePolicyConfig) applyLegacySiblings(quantile float64, minD, maxD Duration) {
+	if quantile == 0 && minD == 0 && maxD == 0 {
+		return
+	}
+	if c.Delay == nil {
+		c.Delay = &AdaptiveDuration{}
+	}
+	if c.Delay.Quantile == 0 {
+		c.Delay.Quantile = quantile
+	}
+	if c.Delay.Min == 0 {
+		c.Delay.Min = minD
+	}
+	if c.Delay.Max == 0 {
+		c.Delay.Max = maxD
+	}
 }
 
 type ConsensusLowParticipantsBehavior string
@@ -1154,6 +1336,26 @@ type ConsensusPolicyConfig struct {
 	// broadcast the transaction to as many nodes as possible while still returning quickly.
 	// Default is false (normal behavior - cancel remaining requests on short-circuit).
 	FireAndForget bool `yaml:"fireAndForget,omitempty" json:"fireAndForget"`
+
+	// MaxWaitOnResult caps how long consensus waits for additional participants
+	// AFTER at least one non-empty response has arrived. Use this to bound
+	// p99 latency when most upstreams are fast but one is a slow straggler:
+	// once a real answer is in hand, give the rest at most this long to
+	// confirm or dispute, then resolve with what we have.
+	//
+	// Accepts a duration scalar ("200ms") or an AdaptiveDuration object
+	// ({base, quantile, min, max}) for adaptive caps driven by per-method
+	// latency quantiles. Defaults are applied when consensus is configured
+	// but this field is omitted — see common/defaults.go.
+	MaxWaitOnResult *AdaptiveDuration `yaml:"maxWaitOnResult,omitempty" json:"maxWaitOnResult,omitempty" tstype:"Duration | AdaptiveDuration"`
+
+	// MaxWaitOnEmpty caps how long consensus waits for additional participants
+	// AFTER the first response (of any kind — empty, error, or non-empty)
+	// has arrived. Typically set larger than MaxWaitOnResult because an
+	// operator is more patient when no useful data is in hand yet.
+	//
+	// Same shape as MaxWaitOnResult; defaults applied when consensus is set.
+	MaxWaitOnEmpty *AdaptiveDuration `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty,omitempty" tstype:"Duration | AdaptiveDuration"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1186,6 +1388,9 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 			copy(copied.PreferHighestValueFor[method], fields)
 		}
 	}
+
+	copied.MaxWaitOnResult = c.MaxWaitOnResult.Copy()
+	copied.MaxWaitOnEmpty = c.MaxWaitOnEmpty.Copy()
 
 	return copied
 }
@@ -1760,7 +1965,6 @@ const (
 	AuthTypeJwt      AuthType = "jwt"
 	AuthTypeSiwe     AuthType = "siwe"
 	AuthTypeNetwork  AuthType = "network"
-	AuthTypeX402     AuthType = "x402"
 )
 
 type AuthConfig struct {
@@ -1778,7 +1982,6 @@ type AuthStrategyConfig struct {
 	Database *DatabaseStrategyConfig `yaml:"database,omitempty" json:"database,omitempty"`
 	Jwt      *JwtStrategyConfig      `yaml:"jwt,omitempty" json:"jwt,omitempty"`
 	Siwe     *SiweStrategyConfig     `yaml:"siwe,omitempty" json:"siwe,omitempty"`
-	X402     *X402StrategyConfig     `yaml:"x402,omitempty" json:"x402,omitempty"`
 }
 
 type SecretStrategyConfig struct {
@@ -1855,51 +2058,6 @@ type NetworkStrategyConfig struct {
 	// RateLimitBudget, if set, is applied to the authenticated user (client IP)
 	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 	IPAsUser        bool   `yaml:"ipAsUser,omitempty" json:"ipAsUser,omitempty"`
-}
-
-// X402StrategyConfig enables x402 payment authentication (HTTP 402 Payment Required).
-// Clients without an API key can pay per-request via the x402 protocol. The payer's
-// wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
-type X402StrategyConfig struct {
-	// FacilitatorURL is the x402 facilitator endpoint for verify/settle operations.
-	FacilitatorURL string `yaml:"facilitatorUrl" json:"facilitatorUrl"`
-	// SellerAddress is the wallet address that receives payments (e.g. USDC on Base).
-	SellerAddress string `yaml:"sellerAddress" json:"sellerAddress"`
-	// PricePerRequest is the cost per request in atomic units (e.g. "5" for $0.000005 USDC).
-	PricePerRequest string `yaml:"pricePerRequest" json:"pricePerRequest"`
-	// Network is the x402 network name for payment (e.g. "base", "base-sepolia").
-	Network string `yaml:"network" json:"network"`
-	// Asset is the token contract address used for payment.
-	Asset string `yaml:"asset,omitempty" json:"asset,omitempty"`
-	// Scheme is the x402 payment scheme (defaults to "exact").
-	Scheme string `yaml:"scheme,omitempty" json:"scheme,omitempty"`
-	// Description is a human-readable description included in 402 responses.
-	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-	// MaxTimeoutSeconds is the payment authorization validity period (default: 300).
-	MaxTimeoutSeconds int `yaml:"maxTimeoutSeconds,omitempty" json:"maxTimeoutSeconds,omitempty"`
-	// RateLimitBudget, if set, is applied to the authenticated payer.
-	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
-	// VerifyOnly when true skips settlement (useful for testing).
-	VerifyOnly bool `yaml:"verifyOnly,omitempty" json:"verifyOnly,omitempty"`
-	// Extra contains additional fields merged into the payment requirement's extra object.
-	// Useful for providing EIP-712 domain params when the facilitator doesn't supply them.
-	Extra map[string]interface{} `yaml:"extra,omitempty" json:"extra,omitempty"`
-}
-
-func (c *X402StrategyConfig) Validate() error {
-	if c.FacilitatorURL == "" {
-		return fmt.Errorf("auth.*.x402.facilitatorUrl is required")
-	}
-	if c.SellerAddress == "" {
-		return fmt.Errorf("auth.*.x402.sellerAddress is required")
-	}
-	if c.PricePerRequest == "" {
-		return fmt.Errorf("auth.*.x402.pricePerRequest is required")
-	}
-	if c.Network == "" {
-		return fmt.Errorf("auth.*.x402.network is required")
-	}
-	return nil
 }
 
 type LabelMode string

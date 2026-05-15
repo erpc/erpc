@@ -18,26 +18,11 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/failsafe-go/failsafe-go"
-	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
-
-type FailsafeExecutor struct {
-	method                 string
-	finalities             []common.DataFinalityState
-	executor               failsafe.Executor[*common.NormalizedResponse]
-	timeout                upstream.TimeoutFunc
-	consensusPolicyEnabled bool
-	// emptyResultAccept lists methods for which the first emptyish result
-	// short-circuits the upstream loop. Without this the loop tries every
-	// upstream before returning to failsafe, even when the retry policy
-	// would accept the empty result anyway (wasting time on slow upstreams).
-	emptyResultAccept []string
-}
 
 type Network struct {
 	networkId            string
@@ -48,13 +33,18 @@ type Network struct {
 	appCtx               context.Context
 	cfg                  *common.NetworkConfig
 	inFlightRequests     *sync.Map
-	failsafeExecutors    []*FailsafeExecutor
+	failsafeExecutors    []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
 	metricsTracker       *health.Tracker
 	upstreamsRegistry    *upstream.UpstreamsRegistry
-	policyEngine         *policy.Engine
-	initializer          *util.Initializer
+	// policyEngine replaces the legacy `selectionPolicyEvaluator *PolicyEvaluator` field
+	// (and the `erpc/policy_evaluator.go` per-request `AcquirePermit` gating it owned).
+	// The engine pre-computes the ordered upstream list per (network, method) tick;
+	// the request path consumes the head via `policyEngine.GetOrdered`, so per-attempt
+	// permit-acquisition is no longer needed.
+	policyEngine *policy.Engine
+	initializer  *util.Initializer
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -252,21 +242,21 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return leader
 }
 
-func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
+func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
 
 	// Iterate through executors in config order and return the first match.
 	// This respects the user-defined priority order in the config file.
 	for _, fe := range n.failsafeExecutors {
-		// Check if method matches (wildcard "*" matches any method)
-		methodMatches := fe.method == "*"
+		mp := fe.MatchMethod()
+		methodMatches := mp == "*"
 		if !methodMatches {
-			methodMatches, _ = common.WildcardMatch(fe.method, method)
+			methodMatches, _ = common.WildcardMatch(mp, method)
 		}
 
-		// Check if finality matches (empty finalities = any finality)
-		finalityMatches := len(fe.finalities) == 0 || slices.Contains(fe.finalities, finality)
+		fl := fe.MatchFinality()
+		finalityMatches := len(fl) == 0 || slices.Contains(fl, finality)
 
 		if methodMatches && finalityMatches {
 			return fe
@@ -486,60 +476,25 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// Add tracing for which failsafe policy was selected
 	forwardSpan.SetAttributes(
-		attribute.String("failsafe.matched_method", failsafeExecutor.method),
-		attribute.String("failsafe.matched_finalities", fmt.Sprintf("%v", failsafeExecutor.finalities)),
+		attribute.String("failsafe.matched_method", failsafeExecutor.MatchMethod()),
+		attribute.String("failsafe.matched_finalities", fmt.Sprintf("%v", failsafeExecutor.MatchFinality())),
 	)
 
-	// Network-level timeout is lifecycle-scoped: it wraps the entire failsafe
-	// execution including retries and hedges. Applying it here (outside the
-	// executor) matches the documented semantics — a network timeout of 5s with
-	// 3 retries still bounds total wall-clock to 5s. Upstream-level timeout,
-	// applied per-attempt inside Upstream.Forward, is independent.
-	if failsafeExecutor.timeout != nil {
-		if td := failsafeExecutor.timeout(ectx, req); td != nil {
-			var cancelFn context.CancelFunc
-			ectx, cancelFn = context.WithTimeoutCause(ectx, *td, common.ErrDynamicTimeoutExceeded)
-			defer cancelFn()
-		}
-	}
-
-	// Track time from failsafe executor start to first callback invocation
-	failsafeStartTime := time.Now()
-
-	resp, execErr := failsafeExecutor.executor.
-		WithContext(ectx).
-		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			lg.Trace().
-				Int("attempt", exec.Attempts()).
-				Int("retry", exec.Retries()).
-				Int("hedge", exec.Hedges()).
-				Dur("failsafe_init_latency", time.Since(failsafeStartTime)).
-				Msgf("execution attempt for network forwarding")
-
-			execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
+	// Build the per-execution upstream-loop closure. This is what the new
+	// network executor invokes (potentially multiple times for retry/hedge,
+	// and per-slot for consensus).
+	sweepFn := func(execSpanCtx context.Context, effectiveReq *common.NormalizedRequest, oneUpstreamOnly bool) (*common.NormalizedResponse, error) {
+			snap := effectiveReq.ExecState().Snapshot()
+			_, execSpan := common.StartSpan(execSpanCtx, "Network.forwardAttempt",
 				trace.WithAttributes(
 					attribute.String("network.id", n.networkId),
 					attribute.String("request.method", method),
-					attribute.Int("execution.attempt", exec.Attempts()),
-					attribute.Int("execution.retry", exec.Retries()),
-					attribute.Int("execution.hedge", exec.Hedges()),
+					attribute.Int("execution.attempt", snap.Attempts),
+					attribute.Int("execution.retry", snap.Retries),
+					attribute.Int("execution.hedge", snap.Hedges),
 				),
 			)
 			defer execSpan.End()
-
-			// Use a local variable to avoid overwriting the captured req variable
-			// which can cause issues when multiple executions run concurrently (e.g., consensus)
-			// Be defensive about the type assertion to avoid panics if the context value was not set properly.
-			var effectiveReq *common.NormalizedRequest
-			if or := execSpanCtx.Value(common.RequestContextKey); or != nil {
-				if r, ok := or.(*common.NormalizedRequest); ok && r != nil {
-					effectiveReq = r
-				} else {
-					effectiveReq = req
-				}
-			} else {
-				effectiveReq = req
-			}
 
 			if common.IsTracingDetailed {
 				execSpan.SetAttributes(
@@ -557,29 +512,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					return nil, ctxErr
 				}
 			}
-			// Network-scope timeout was applied at Forward entry (lifecycle-scoped).
+			// Network-scope timeout is applied inside networkExecutor.Run.
 			// Per-attempt enforcement here would double-apply and break retry budgets.
 
-			// Try all upstreams in a single execution before returning to failsafe.
-			// This ensures delays (emptyResultDelay, blockUnavailableDelay) only
-			// fire after a full round of upstream attempts.
-			//
-			// MarkUpstreamCompleted releases empty-result and error upstreams from
-			// ConsumedUpstreams, so they're available for the next failsafe retry.
-			// Because UpstreamIdx wraps via modular arithmetic, NextUpstream can
-			// re-select freed upstreams within the same execution. The `attempted`
-			// set below detects this and breaks the loop, ensuring each upstream
-			// is called at most once per execution.
-			//
-			// Exception: consensus requires each execution to represent exactly one
-			// upstream's response so the policy can compare N independent results.
-			// Without this cap, one fast execution could consume multiple upstreams
-			// (reserve → try → release empty → reserve next) before other consensus
-			// goroutines get their first upstream, skewing the vote.
 			var bestResp *common.NormalizedResponse
 			var lastErr error
 			maxLoopIterations := effectiveReq.UpstreamsCount()
-			if failsafeExecutor.consensusPolicyEnabled {
+			if oneUpstreamOnly {
 				maxLoopIterations = 1
 			}
 			attempted := make(map[string]struct{}, maxLoopIterations)
@@ -642,8 +581,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					continue
 				}
 
-				hedges := exec.Hedges()
-				attempts := exec.Attempts()
+				hedges := snap.Hedges
+				attempts := snap.Attempts
 				if hedges > 0 {
 					finality := effectiveReq.Finality(loopCtx)
 					telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
@@ -652,7 +591,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					).Inc()
 				}
 
-				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, exec.Retries())
+				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, snap.Retries)
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
@@ -665,6 +604,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					loopSpan.End()
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 				}
+				_ = attempts // keep symbol live for future telemetry callsites
 
 				if r != nil {
 					r.SetUpstream(u)
@@ -681,12 +621,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := r.IsResultEmptyish()
 					acceptEmpty := !emptyish ||
-						(!failsafeExecutor.consensusPolicyEnabled &&
-							slices.Contains(failsafeExecutor.emptyResultAccept, method))
+						(!failsafeExecutor.HasConsensus() &&
+							slices.Contains(failsafeExecutor.EmptyResultAccept(), method))
 					if acceptEmpty {
-						r.SetAttempts(exec.Attempts())
-						r.SetRetries(exec.Retries())
-						r.SetHedges(exec.Hedges())
+						st := effectiveReq.ExecState()
+						st.MarkUpstreamAttemptWon(r.UpstreamId())
+						s := st.Snapshot()
+						r.SetAttempts(s.Attempts)
+						r.SetRetries(s.Retries)
+						r.SetHedges(s.Hedges)
 						loopSpan.SetStatus(codes.Ok, "")
 						if emptyish {
 							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
@@ -725,27 +668,28 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				return nil, cause
 			}
 
-			// All upstreams tried. Return the best result for failsafe to evaluate
-			// delays and retries. Prefer a valid response over an error so the
-			// delay function can detect empty results and apply emptyResultDelay.
+			// All upstreams tried. Return the best result for the retry/hedge
+			// wrapper to evaluate. Prefer a valid response over an error so
+			// the delay function can detect empty results and apply
+			// emptyResultDelay.
 			if bestResp != nil {
-				bestResp.SetAttempts(exec.Attempts())
-				bestResp.SetRetries(exec.Retries())
-				bestResp.SetHedges(exec.Hedges())
+				st := effectiveReq.ExecState()
+				st.MarkUpstreamAttemptWon(bestResp.UpstreamId())
+				s := st.Snapshot()
+				bestResp.SetAttempts(s.Attempts)
+				bestResp.SetRetries(s.Retries)
+				bestResp.SetHedges(s.Hedges)
 				return bestResp, nil
 			}
 
 			// For consensus, return the raw upstream error so the consensus
 			// policy receives the actual error type (e.g. server error, missing
-			// data) rather than a wrapped ErrUpstreamsExhausted. The retry
-			// policy around consensus can then evaluate the raw error directly.
-			if failsafeExecutor.consensusPolicyEnabled && lastErr != nil {
+			// data) rather than a wrapped ErrUpstreamsExhausted.
+			if oneUpstreamOnly && lastErr != nil {
 				return nil, lastErr
 			}
 
-			// Wrap all errors as ErrUpstreamsExhausted. The delay function
-			// uses HasErrorCode which traverses child errors, so it can still
-			// detect blockUnavailable / missingData inside the wrapper.
+			s := effectiveReq.ExecState().Snapshot()
 			exhaustedErr := common.NewErrUpstreamsExhausted(
 				effectiveReq,
 				&effectiveReq.ErrorsByUpstream,
@@ -753,41 +697,43 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				n.networkId,
 				method,
 				time.Since(startTime),
-				exec.Attempts(),
-				exec.Retries(),
-				exec.Hedges(),
+				s.Attempts,
+				s.Retries,
+				s.Hedges,
 				len(upsList),
 			)
 			common.SetTraceSpanError(execSpan, exhaustedErr)
 			return nil, exhaustedErr
-		})
+		}
+
+	// Two entry points into sweepFn:
+	//   tryOneUpstream — single-upstream variant for consensus slots
+	//   runUpstreamSweep — multi-upstream variant for non-consensus path
+	tryOneUpstream := func(c context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		return sweepFn(c, r, true)
+	}
+	runUpstreamSweep := func(c context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		return sweepFn(c, r, false)
+	}
+
+	resp, execErr := failsafeExecutor.Run(ectx, req, tryOneUpstream, runUpstreamSweep)
 
 	req.RLockWithTrace(ctx)
 	defer req.RUnlock()
 
 	if execErr != nil {
-		// When the lifecycle ctx fires, failsafe may return plain context.DeadlineExceeded
-		// with no sentinel in the Unwrap chain. Substitute only when the ctx cause
-		// is OUR sentinel — accepting any non-DeadlineExceeded cause would leak
-		// parent-scope causes (e.g. http_timeout.go's ErrHandlerTimeout) through
-		// TranslateFailsafeError unclassified.
+		// When the lifecycle ctx fires, the network executor may return plain
+		// context.DeadlineExceeded with no sentinel in the Unwrap chain.
+		// Substitute only when the ctx cause is OUR sentinel.
 		if _, ok := execErr.(common.StandardError); !ok && errors.Is(execErr, context.DeadlineExceeded) {
 			if cause := context.Cause(ectx); errors.Is(cause, common.ErrDynamicTimeoutExceeded) {
 				execErr = cause
 			}
 		}
-		// Three guards stacked, each closing a distinct misattribution:
-		//   - failsafeExecutor.timeout != nil: parent-scope sentinel inherited
-		//     via ctx propagation must not credit a scope that didn't own a policy.
-		//   - !errors.As(retryExceededErr): mirror TranslateFailsafeError's
-		//     retry-exhausted-wins ordering so retry-tail timeouts are reported
-		//     as retry exhaustion (matching the user-visible classification).
-		//   - !HasErrorCode(ErrCodeFailsafeTimeoutExceeded): an upstream-scope
-		//     timeout already incremented at scope=upstream — don't double-count
-		//     when it bubbles up here.
-		var retryExceededErr retrypolicy.ExceededError
-		if failsafeExecutor.timeout != nil &&
-			!errors.As(execErr, &retryExceededErr) &&
+		// Timeout-attribution metric: emit only when this scope's policy
+		// fired the timeout and the error is not retry-exhausted.
+		if failsafeExecutor.HasTimeout() &&
+			!common.HasErrorCode(execErr, common.ErrCodeFailsafeRetryExceeded) &&
 			errors.Is(execErr, common.ErrDynamicTimeoutExceeded) &&
 			!common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
 			finality := req.Finality(ctx)
@@ -799,11 +745,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				string(common.ScopeNetwork),
 			).Inc()
 		}
-		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime, failsafeExecutor.timeout != nil)
+		// Wrap bare timeout sentinel as a typed error for downstream callers.
+		translatedErr := execErr
+		if _, ok := translatedErr.(common.StandardError); !ok && errors.Is(translatedErr, common.ErrDynamicTimeoutExceeded) {
+			translatedErr = common.NewErrFailsafeTimeoutExceeded(common.ScopeNetwork, translatedErr, &startTime)
+		}
 		// Don't override consensus results with last valid response from individual upstreams
 		// For example if 1 upstream gives empty response another 3 give "reverted" error,
 		// we should still return reverted error, even though there was an empty response before.
-		if failsafeExecutor.consensusPolicyEnabled {
+		if failsafeExecutor.HasConsensus() {
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
@@ -868,12 +818,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			})(resp, forwardSpan)
 		}
 
-		// Use the counters embedded earlier in the response
-		forwardSpan.SetAttributes(
-			attribute.Int("execution.attempts", int(resp.Attempts())),
-			attribute.Int("execution.retries", int(resp.Retries())),
-			attribute.Int("execution.hedges", int(resp.Hedges())),
-		)
+		// Per-request execution counters + full upstream-attempt trace.
+		// req.ExecState().Apply emits the standard execution.* attrs
+		// AND the upstreams.* slices (tried, outcomes, reasons,
+		// durations) so traces answer "who, what, why" without
+		// enumerating child spans.
+		req.ExecState().Apply(forwardSpan)
 	}
 
 	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
@@ -942,7 +892,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// LVR is a borrowed pointer — consensus executor owns releasing non-winner responses.
 	// Just drop our reference so it doesn't outlive the response lifecycle.
-	if failsafeExecutor.consensusPolicyEnabled {
+	if failsafeExecutor.HasConsensus() {
 		req.ClearLastValidResponse()
 	}
 

@@ -495,7 +495,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(200 * time.Millisecond),
+										Duration: common.NewStaticDuration(200 * time.Millisecond),
 									},
 								},
 							},
@@ -511,7 +511,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(100 * time.Millisecond),
+										Duration: common.NewStaticDuration(100 * time.Millisecond),
 									},
 								},
 							},
@@ -570,7 +570,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(30 * time.Millisecond),
+										Duration: common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -588,7 +588,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(300 * time.Millisecond),
+										Duration: common.NewStaticDuration(300 * time.Millisecond),
 									},
 								},
 							},
@@ -652,7 +652,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(100 * time.Millisecond),
+										Duration: common.NewStaticDuration(100 * time.Millisecond),
 									},
 								},
 							},
@@ -671,7 +671,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(5 * time.Second),
+										Duration: common.NewStaticDuration(5 * time.Second),
 									},
 								},
 							},
@@ -731,7 +731,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(1 * time.Second),
+										Duration: common.NewStaticDuration(1 * time.Second),
 									},
 								},
 							},
@@ -747,7 +747,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(100 * time.Millisecond),
+										Duration: common.NewStaticDuration(100 * time.Millisecond),
 									},
 								},
 							},
@@ -815,7 +815,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(5 * time.Second),
+										Duration: common.NewStaticDuration(5 * time.Second),
 									},
 								},
 							},
@@ -834,7 +834,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(100 * time.Millisecond),
+										Duration: common.NewStaticDuration(100 * time.Millisecond),
 									},
 								},
 							},
@@ -894,7 +894,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(50 * time.Millisecond),
+										Duration: common.NewStaticDuration(50 * time.Millisecond),
 									},
 								},
 							},
@@ -910,7 +910,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(5 * time.Second),
+										Duration: common.NewStaticDuration(5 * time.Second),
 									},
 								},
 							},
@@ -1052,7 +1052,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(300 * time.Millisecond),
+										Duration: common.NewStaticDuration(300 * time.Millisecond),
 									},
 								},
 							},
@@ -1071,7 +1071,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.Duration(10 * time.Millisecond),
+										Duration: common.NewStaticDuration(10 * time.Millisecond),
 									},
 								},
 							},
@@ -4801,7 +4801,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 						Failsafe: []*common.FailsafeConfig{
 							{
 								Hedge: &common.HedgePolicyConfig{
-									Delay:    common.Duration(10 * time.Millisecond),
+									Delay:    common.NewStaticDuration(10 * time.Millisecond),
 									MaxCount: 267,
 								},
 							},
@@ -4892,7 +4892,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		upsCfg := upstreams[0].Config()
 
 		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
-		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be set")
+		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.Delay.Resolve(nil), 10*time.Millisecond, "Hedge policy delay should be set")
 	})
 
 	t.Run("InheritUpstreamsOverridesAfterUpstreamDefaultsConfig", func(t *testing.T) {
@@ -4909,7 +4909,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 						Failsafe: []*common.FailsafeConfig{
 							{
 								Hedge: &common.HedgePolicyConfig{
-									Delay:    common.Duration(10 * time.Millisecond),
+									Delay:    common.NewStaticDuration(10 * time.Millisecond),
 									MaxCount: 267,
 								},
 							},
@@ -7946,8 +7946,15 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 							{
 								MatchMethod:   "eth_getLogs|eth_getTransactionReceipt|eth_getBlockReceipts",
 								MatchFinality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
-								Timeout:       &common.TimeoutPolicyConfig{Duration: common.Duration(10 * time.Second)},
-								Hedge:         &common.HedgePolicyConfig{Quantile: 0.95, MaxCount: 1, MinDelay: common.Duration(100 * time.Millisecond), MaxDelay: common.Duration(10 * time.Second)},
+								Timeout:       &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(10 * time.Second)},
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay: &common.AdaptiveDuration{
+										Quantile: 0.95,
+										Min:      common.Duration(100 * time.Millisecond),
+										Max:      common.Duration(10 * time.Second),
+									},
+								},
 								Retry:         &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultConfidence: common.AvailbilityConfidenceBlockHead, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
 								Consensus: &common.ConsensusPolicyConfig{
 									AgreementThreshold:      2,

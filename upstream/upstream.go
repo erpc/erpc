@@ -19,26 +19,83 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/failsafe"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
-	"github.com/failsafe-go/failsafe-go"
-	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// TimeoutFunc computes the timeout for a request. Returns nil when no timeout applies.
-type TimeoutFunc func(ctx context.Context, req *common.NormalizedRequest) *time.Duration
+// classifyUpstreamOutcome maps a (resp, err) pair from one upstream
+// call into the observability-friendly UpstreamAttemptOutcome enum.
+// Used at the boundary of tryForward to populate ExecState +
+// MetricUpstreamAttemptOutcomeTotal.
+func classifyUpstreamOutcome(resp *common.NormalizedResponse, err error) common.UpstreamAttemptOutcome {
+	if err != nil {
+		switch {
+		case common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled):
+			return common.UpstreamOutcomeCancelled
+		case errors.Is(err, context.Canceled):
+			return common.UpstreamOutcomeCancelled
+		case common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded):
+			return common.UpstreamOutcomeTimeout
+		case errors.Is(err, common.ErrDynamicTimeoutExceeded):
+			return common.UpstreamOutcomeTimeout
+		case common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen):
+			return common.UpstreamOutcomeBreakerOpen
+		case common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped),
+			common.HasErrorCode(err, common.ErrCodeUpstreamMethodIgnored):
+			return common.UpstreamOutcomeSkipped
+		case common.HasErrorCode(err,
+			common.ErrCodeEndpointCapacityExceeded,
+			common.ErrCodeUpstreamRateLimitRuleExceeded,
+			common.ErrCodeProjectRateLimitRuleExceeded,
+			common.ErrCodeNetworkRateLimitRuleExceeded,
+			common.ErrCodeAuthRateLimitRuleExceeded):
+			return common.UpstreamOutcomeRateLimited
+		case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
+			return common.UpstreamOutcomeMissingData
+		case common.HasErrorCode(err, common.ErrCodeEndpointExecutionException):
+			return common.UpstreamOutcomeExecRevert
+		case common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable):
+			return common.UpstreamOutcomeBlockUnavailable
+		case common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure):
+			return common.UpstreamOutcomeTransportError
+		case common.HasErrorCode(err, common.ErrCodeEndpointServerSideException):
+			return common.UpstreamOutcomeServerError
+		case common.HasErrorCode(err, common.ErrCodeEndpointClientSideException):
+			return common.UpstreamOutcomeClientError
+		}
+		return common.UpstreamOutcomeServerError
+	}
+	if resp != nil && resp.IsResultEmptyish() {
+		return common.UpstreamOutcomeEmpty
+	}
+	return common.UpstreamOutcomeSuccess
+}
 
-// FailsafeExecutor wraps a failsafe executor with method and finality filters
-type FailsafeExecutor struct {
-	method     string
-	finalities []common.DataFinalityState
-	executor   failsafe.Executor[*common.NormalizedResponse]
-	timeout    TimeoutFunc
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// makeBreakerTransitionHook returns a closure that emits the
+// `upstream_breaker_state_change_total` metric on every state
+// transition. Used at NewUpstream time to wire each per-method
+// breaker's OnTransition without polluting failsafe/.
+func makeBreakerTransitionHook(projectId, upstreamId string) func(failsafe.State, failsafe.State, string) {
+	return func(from, to failsafe.State, _ string) {
+		telemetry.MetricUpstreamBreakerStateChange.WithLabelValues(
+			projectId,
+			upstreamId,
+			from.String()+"_to_"+to.String(),
+		).Inc()
+	}
 }
 
 type Upstream struct {
@@ -56,7 +113,7 @@ type Upstream struct {
 	supportedMethods     sync.Map
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
-	failsafeExecutors    []*FailsafeExecutor
+	failsafeExecutors    []*upstreamExecutor
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
@@ -77,40 +134,27 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	// Create failsafe executors from configs
-	var failsafeExecutors []*FailsafeExecutor
+	// Build one upstreamExecutor per Failsafe config entry, plus a no-op
+	// catch-all so unmatched (method, finality) pairs always resolve.
+	var failsafeExecutors []*upstreamExecutor
 	if len(cfg.Failsafe) > 0 {
 		for _, fsCfg := range cfg.Failsafe {
-			policiesMap, err := CreateFailSafePolicies(appCtx, &lg, common.ScopeUpstream, cfg.Id, fsCfg, nil)
+			ex, err := NewUpstreamExecutor(fsCfg, &lg)
 			if err != nil {
 				return nil, err
 			}
-			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge")
-
-			var timeoutFn TimeoutFunc
-			if fsCfg.Timeout != nil {
-				timeoutFn = NewTimeoutFunc(&lg, fsCfg.Timeout)
+			// Wire breaker-transition metric. Side-effect-only; failsafe/
+			// package stays telemetry-free.
+			if b := ex.Breaker(); b != nil {
+				b.OnTransition = makeBreakerTransitionHook(projectId, cfg.Id)
 			}
-
-			method := fsCfg.MatchMethod
-			if method == "" {
-				method = "*"
-			}
-			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-				method:     method,
-				finalities: fsCfg.MatchFinality,
-				executor:   failsafe.NewExecutor(policiesArray...),
-				timeout:    timeoutFn,
-			})
+			failsafeExecutors = append(failsafeExecutors, ex)
 		}
 	}
 
-	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-		method:     "*", // "*" means match any method
-		finalities: nil, // nil means match any finality
-		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
-		timeout:    nil,
-	})
+	// Catch-all no-op executor.
+	noop, _ := NewUpstreamExecutor(nil, &lg)
+	failsafeExecutors = append(failsafeExecutors, noop)
 
 	vn := vr.LookupByUpstream(cfg)
 
@@ -287,46 +331,41 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
-func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(context.Background())
 
-	// First, try to find a specific match for both method and finality
+	// 4-tier priority: method+finality > method > finality > catch-all.
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) > 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && slices.Contains(fe.finalities, finality) {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp != "*" && len(fl) > 0 {
+			if matched, _ := common.WildcardMatch(mp, method); matched && slices.Contains(fl, finality) {
 				return fe
 			}
 		}
 	}
-
-	// Then, try to find a match for method only (empty finalities means any finality)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && (len(fe.finalities) == 0) {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp != "*" && len(fl) == 0 {
+			if matched, _ := common.WildcardMatch(mp, method); matched {
 				return fe
 			}
 		}
 	}
-
-	// Then, try to find a match for finality only
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) > 0 {
-			if slices.Contains(fe.finalities, finality) {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp == "*" && len(fl) > 0 {
+			if slices.Contains(fl, finality) {
 				return fe
 			}
 		}
 	}
-
-	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (len(fe.finalities) == 0) {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp == "*" && len(fl) == 0 {
 			return fe
 		}
 	}
-
 	return nil
 }
 
@@ -427,8 +466,70 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds:
 		tryForward := func(
 			ctx context.Context,
-			exec failsafe.Execution[*common.NormalizedResponse],
-		) (*common.NormalizedResponse, error) {
+			isHedge bool,
+		) (resp *common.NormalizedResponse, retErr error) {
+			st := nrq.ExecState()
+			snap := st.Snapshot()
+			attemptStart := time.Now()
+			// Defer the participant record. We capture the named-return
+			// (resp, retErr) at exit so the outcome reflects the actual
+			// classification path.
+			defer func() {
+				if st == nil {
+					return
+				}
+				outcome := classifyUpstreamOutcome(resp, retErr)
+				reason := common.SelectionReasonPrimary
+				if isHedge {
+					reason = common.SelectionReasonHedge
+				} else if snap.Retries > 0 {
+					reason = common.SelectionReasonRetry
+				}
+				errCode := ""
+				errDetail := ""
+				if retErr != nil {
+					errCode = string(common.ErrorFingerprint(retErr))
+					es := retErr.Error()
+					if len(es) > 200 {
+						es = es[:200]
+					}
+					errDetail = es
+				}
+				st.RecordUpstreamAttempt(common.UpstreamAttempt{
+					UpstreamId:  cfg.Id,
+					VendorName:  u.VendorName(),
+					StartedAt:   attemptStart,
+					Duration:    time.Since(attemptStart),
+					Outcome:     outcome,
+					Reason:      reason,
+					IsHedge:     isHedge || isHedgeAttempt,
+					IsRetry:     snap.Retries > 0,
+					AttemptIdx:  snap.Attempts,
+					ErrorCode:   errCode,
+					ErrorDetail: errDetail,
+				})
+				// Prometheus: one outcome counter increment per attempt.
+				finality := nrq.Finality(ctx)
+				telemetry.MetricUpstreamAttemptOutcomeTotal.WithLabelValues(
+					u.ProjectId,
+					nrq.NetworkLabel(),
+					cfg.Id,
+					method,
+					string(outcome),
+					boolStr(isHedge || isHedgeAttempt),
+					boolStr(snap.Retries > 0),
+					finality.String(),
+				).Inc()
+				telemetry.MetricUpstreamSelectionTotal.WithLabelValues(
+					u.ProjectId,
+					nrq.NetworkLabel(),
+					cfg.Id,
+					method,
+					string(reason),
+					finality.String(),
+				).Inc()
+			}()
+
 			// Span to track pre-request overhead (metrics, finality calculation)
 			_, preReqSpan := common.StartDetailSpan(ctx, "Upstream.tryForward.PreRequest")
 
@@ -443,10 +544,10 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			// (filtered by isSuccess inside the tracker), so the latency signal
 			// is preserved.
 			//
-			// isHedgeAttempt is passed explicitly from the network layer because
-			// the hedge policy lives there — the upstream's own failsafe has no
-			// hedge policy, so exec.Hedges() at this layer always reads zero.
-			if !isHedgeAttempt {
+			// isHedgeAttempt is the OR of the explicit network-passed flag
+			// and any hedge fan-out from the upstream's own executor.
+			hedgeAttempt := isHedgeAttempt || isHedge
+			if !hedgeAttempt {
 				u.metricsTracker.RecordUpstreamRequest(
 					u,
 					method,
@@ -459,7 +560,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				u.NetworkLabel(),
 				cfg.Id,
 				method,
-				strconv.Itoa(exec.Attempts()),
+				strconv.Itoa(snap.Attempts),
 				nrq.CompositeType(),
 				finality.String(),
 				nrq.UserId(),
@@ -550,7 +651,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
 					}
-					if !isHedgeAttempt {
+					if !hedgeAttempt {
 						u.metricsTracker.RecordUpstreamFailure(
 							u,
 							method,
@@ -577,10 +678,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				// All other errors should NOT contribute to the latency quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
 				timer.ObserveDuration(isRevert)
-				// We're converting a response+error into a pure error. Release the response to avoid retention.
-				// Only clear LVR for execution exceptions: these are "response+error" cases where
-				// this same response may have been stored as LVR above (line ~465). For missing-data
-				// and other retryable errors we keep LVR so network-level fallback can still work.
 				if isRevert {
 					nrq.ClearLastValidResponse()
 				}
@@ -588,29 +685,16 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					nrs.Release()
 					nrs = nil
 				}
-				if exec != nil {
-					return nil, common.NewErrUpstreamRequest(
-						errCall,
-						u,
-						u.NetworkId(),
-						method,
-						time.Since(startTime),
-						exec.Attempts(),
-						exec.Retries(),
-						exec.Hedges(),
-					)
-				} else {
-					return nil, common.NewErrUpstreamRequest(
-						errCall,
-						u,
-						u.NetworkId(),
-						method,
-						time.Since(startTime),
-						1,
-						0,
-						0,
-					)
-				}
+				return nil, common.NewErrUpstreamRequest(
+					errCall,
+					u,
+					u.NetworkId(),
+					method,
+					time.Since(startTime),
+					snap.Attempts,
+					snap.Retries,
+					snap.Hedges,
+				)
 			} else {
 				emptyish := nrs.IsResultEmptyish()
 				if emptyish {
@@ -642,57 +726,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, fmt.Errorf("no failsafe executor found for request")
 		}
 
-		// Track time from failsafe executor start to first callback invocation
-		upstreamFailsafeStartTime := time.Now()
+		// In-house executor: retry + hedge + breaker + timeout. Returns
+		// typed errors directly (ErrFailsafeRetryExceeded /
+		// ErrFailsafeCircuitBreakerOpen / ErrFailsafeTimeoutExceeded);
+		// no translation pass needed.
+		resp, execErr := failsafeExecutor.Run(ctx, nrq, tryForward)
 
-		resp, execErr := failsafeExecutor.executor.
-			WithContext(ctx).
-			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-				ectx, execSpan := common.StartSpan(exec.Context(), "Upstream.forwardAttempt",
-					trace.WithAttributes(
-						attribute.String("network.id", u.NetworkId()),
-						attribute.String("upstream.id", cfg.Id),
-						attribute.Int("execution.attempt", exec.Attempts()),
-						attribute.Int("execution.retry", exec.Retries()),
-						attribute.Int("execution.hedge", exec.Hedges()),
-						attribute.Int64("failsafe_init_latency_ms", time.Since(upstreamFailsafeStartTime).Milliseconds()),
-					),
-				)
-				defer execSpan.End()
-
-				if common.IsTracingDetailed {
-					execSpan.SetAttributes(
-						attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
-					)
-				}
-
-				if ctxErr := ectx.Err(); ctxErr != nil {
-					cause := context.Cause(ectx)
-					if cause != nil {
-						common.SetTraceSpanError(execSpan, cause)
-						return nil, cause
-					} else {
-						common.SetTraceSpanError(execSpan, ctxErr)
-						return nil, ctxErr
-					}
-				}
-				if failsafeExecutor.timeout != nil {
-					if td := failsafeExecutor.timeout(ectx, nrq); td != nil {
-						var cancelFn context.CancelFunc
-						ectx, cancelFn = context.WithTimeoutCause(ectx, *td, common.ErrDynamicTimeoutExceeded)
-						defer cancelFn()
-					}
-				}
-
-				nr, err := tryForward(ectx, exec)
-				if err != nil {
-					common.SetTraceSpanError(execSpan, err)
-					return nil, err
-				}
-				return nr, nil
-			})
-
-		if _, ok := execErr.(common.StandardError); !ok {
+		if _, ok := execErr.(common.StandardError); !ok && execErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				cause := context.Cause(ctx)
 				if cause != nil {
@@ -705,13 +745,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 		if execErr != nil {
 			common.SetTraceSpanError(span, execErr)
-			// Mirror TranslateFailsafeError's retry-exhausted-wins ordering: if the
-			// retry policy exhausted on a timeout-tail attempt, the user-visible
-			// classification is ErrFailsafeRetryExceeded — counting that as a
-			// timeout fire would contradict the metric's own description.
-			var retryExceededErr retrypolicy.ExceededError
-			if failsafeExecutor.timeout != nil &&
-				!errors.As(execErr, &retryExceededErr) &&
+			// Timeout-attribution metric: emit only when this scope's policy
+			// fired the timeout (cause is ErrDynamicTimeoutExceeded) and the
+			// error is not retry-exhausted (which wins ordering).
+			if failsafeExecutor.Timeout() != nil &&
+				!common.HasErrorCode(execErr, common.ErrCodeFailsafeRetryExceeded) &&
 				errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
 				finality := nrq.Finality(ctx)
 				telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
@@ -722,7 +760,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					string(common.ScopeUpstream),
 				).Inc()
 			}
-			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime, failsafeExecutor.timeout != nil)
+			// Wrap bare timeout sentinel as a typed error so downstream
+			// callers can pattern-match on ErrCodeFailsafeTimeoutExceeded.
+			if _, isStd := execErr.(common.StandardError); !isStd &&
+				errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
+				execErr = common.NewErrFailsafeTimeoutExceeded(common.ScopeUpstream, execErr, &startTime)
+			}
+			return nil, execErr
 		}
 
 		return resp, nil
@@ -734,26 +778,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
-}
-
-func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
-	// TODO extend this to per-network and/or per-method because of either upstream performance diff
-	// or if user wants diff policies (retry/cb/integrity) per network/method.
-
-	// Return the default executor (the one with "*" method and no finality filters)
-	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (len(fe.finalities) == 0) {
-			return fe.executor
-		}
-	}
-
-	// If no default executor found, return the first one
-	if len(u.failsafeExecutors) > 0 {
-		return u.failsafeExecutors[0].executor
-	}
-
-	// Return a no-op executor if none configured
-	return failsafe.NewExecutor[*common.NormalizedResponse]()
 }
 
 // TODO move to evm package

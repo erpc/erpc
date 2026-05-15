@@ -132,10 +132,10 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 								BackoffFactor:   1.0,
 							},
 							Timeout: &TimeoutPolicyConfig{
-								Duration: Duration(120 * time.Second),
+								Duration: NewStaticDuration(120 * time.Second),
 							},
 							Hedge: &HedgePolicyConfig{
-								Quantile: 0.7,
+								Delay:    &AdaptiveDuration{Quantile: 0.7},
 								MaxCount: 2,
 							},
 						},
@@ -153,7 +153,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 								Delay:       Duration(500 * time.Millisecond),
 							},
 							Timeout: &TimeoutPolicyConfig{
-								Duration: Duration(60 * time.Second),
+								Duration: NewStaticDuration(60 * time.Second),
 							},
 						},
 					},
@@ -716,6 +716,10 @@ func (s *ServerConfig) SetDefaults() error {
 	}
 	if s.IncludeErrorDetails == nil {
 		s.IncludeErrorDetails = util.BoolPtr(true)
+	}
+	if s.ExecutionHeaders == nil {
+		m := ExecutionHeadersAll
+		s.ExecutionHeaders = &m
 	}
 
 	// Safe defaults for client IP resolution
@@ -2130,10 +2134,14 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 }
 
 func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {
-	if defaults != nil && t.Duration == 0 {
-		t.Duration = defaults.Duration
+	if defaults == nil || defaults.Duration.IsZero() {
+		return nil
 	}
-
+	if t.Duration.IsZero() {
+		t.Duration = defaults.Duration.Copy()
+		return nil
+	}
+	t.Duration.inheritFrom(defaults.Duration)
 	return nil
 }
 
@@ -2215,34 +2223,30 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	return nil
 }
 
+// Hedge policy defaults: Min floors at 100ms (prevents hedges firing
+// before the primary has a real chance) and Max ceilings at 999s
+// (effectively unbounded but defensive). MaxCount defaults to 1.
+const (
+	defaultHedgeMinDelay = 100 * time.Millisecond
+	defaultHedgeMaxDelay = 999 * time.Second
+)
+
 func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
-	if h.Delay == 0 {
-		if defaults != nil && defaults.Delay != 0 {
-			h.Delay = defaults.Delay
-		} else {
-			h.Delay = Duration(0)
-		}
+	if h.Delay == nil {
+		h.Delay = &AdaptiveDuration{}
 	}
-	if h.Quantile == 0 {
-		if defaults != nil && defaults.Quantile != 0 {
-			h.Quantile = defaults.Quantile
-		}
+	var defDelay *AdaptiveDuration
+	if defaults != nil {
+		defDelay = defaults.Delay
 	}
-	if h.MinDelay == 0 {
-		if defaults != nil && defaults.MinDelay != 0 {
-			h.MinDelay = defaults.MinDelay
-		} else {
-			h.MinDelay = Duration(100 * time.Millisecond)
-		}
+	h.Delay.inheritFrom(defDelay)
+	if h.Delay.Min == 0 {
+		h.Delay.Min = Duration(defaultHedgeMinDelay)
 	}
-	if h.MaxDelay == 0 {
-		if defaults != nil && defaults.MaxDelay != 0 {
-			h.MaxDelay = defaults.MaxDelay
-		} else {
-			// Intentionally high, so it never hits in practical scenarios
-			h.MaxDelay = Duration(999 * time.Second)
-		}
+	if h.Delay.Max == 0 {
+		h.Delay.Max = Duration(defaultHedgeMaxDelay)
 	}
+
 	if h.MaxCount == 0 {
 		if defaults != nil && defaults.MaxCount != 0 {
 			h.MaxCount = defaults.MaxCount
@@ -2337,6 +2341,26 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 	}
 	if c.PreferLargerResponses == nil {
 		c.PreferLargerResponses = util.BoolPtr(true)
+	}
+
+	// Wait-cap defaults: adaptive p50 with bounds. Once any non-empty
+	// response is in, give the rest at most ~typical_response_time more;
+	// when only empties have arrived, wait a bit longer for a real answer
+	// to land. Both clamp at [5ms, 1s] to keep tail latency bounded
+	// even when the latency distribution is degenerate.
+	if c.MaxWaitOnResult == nil {
+		c.MaxWaitOnResult = &AdaptiveDuration{
+			Quantile: 0.5,
+			Min:      Duration(5 * time.Millisecond),
+			Max:      Duration(1 * time.Second),
+		}
+	}
+	if c.MaxWaitOnEmpty == nil {
+		c.MaxWaitOnEmpty = &AdaptiveDuration{
+			Quantile: 0.9,
+			Min:      Duration(50 * time.Millisecond),
+			Max:      Duration(2 * time.Second),
+		}
 	}
 
 	// Destination defaults

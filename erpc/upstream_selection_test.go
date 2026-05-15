@@ -90,7 +90,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 				},
 				Hedge: &common.HedgePolicyConfig{
 					MaxCount: 2,
-					Delay:    common.Duration(200 * time.Millisecond), // Hedge after 200ms
+					Delay:    common.NewStaticDuration(200 * time.Millisecond), // Hedge after 200ms
 				},
 			},
 			expectedBehavior:   "retry should not wait for hedge delay when failure is fast",
@@ -129,10 +129,10 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 			failsafeConfig: &common.FailsafeConfig{
 				Hedge: &common.HedgePolicyConfig{
 					MaxCount: 2,
-					Delay:    common.Duration(100 * time.Millisecond),
+					Delay:    common.NewStaticDuration(100 * time.Millisecond),
 				},
 				Timeout: &common.TimeoutPolicyConfig{
-					Duration: common.Duration(1 * time.Second),
+					Duration: common.NewStaticDuration(1 * time.Second),
 				},
 			},
 			expectedBehavior:   "should hedge to additional upstreams",
@@ -286,10 +286,10 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 	failsafeConfig := &common.FailsafeConfig{
 		Hedge: &common.HedgePolicyConfig{
 			MaxCount: 2,                                       // Allow up to 2 hedges (3 total requests)
-			Delay:    common.Duration(100 * time.Millisecond), // Hedge quickly
+			Delay:    common.NewStaticDuration(100 * time.Millisecond), // Hedge quickly
 		},
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.Duration(2 * time.Second),
+			Duration: common.NewStaticDuration(2 * time.Second),
 		},
 	}
 
@@ -612,10 +612,10 @@ func TestFourAttemptScenario(t *testing.T) {
 		},
 		Hedge: &common.HedgePolicyConfig{
 			MaxCount: 3, // Allow multiple hedges
-			Delay:    common.Duration(hedgeDelay),
+			Delay:    common.NewStaticDuration(hedgeDelay),
 		},
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.Duration(1 * time.Second),
+			Duration: common.NewStaticDuration(1 * time.Second),
 		},
 	}
 
@@ -719,7 +719,8 @@ func TestFourAttemptScenario(t *testing.T) {
 	// With try-all-upstreams-per-execution, the primary execution tries rpc1
 	// (fails immediately) then rpc2 (slow, blocks). Hedge fires after hedge
 	// delay, tries rpc3 (fails) → rpc4 (succeeds).
-	assert.Equal(t, 2, resp.Attempts(), "Should have made 2 attempts (primary + hedge)")
+	// Should have made 4 physical attempts (rpc1+rpc2 primary leg, rpc3+rpc4 hedge leg)
+	assert.Equal(t, 4, resp.Attempts(), "Should have made 4 physical attempts (rpc1+rpc2 primary leg, rpc3+rpc4 hedge leg)")
 	assert.Equal(t, 0, resp.Retries(), "No retries needed — hedge won")
 	assert.Equal(t, 1, resp.Hedges(), "Should have made 1 hedge")
 

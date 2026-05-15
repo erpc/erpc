@@ -1362,9 +1362,14 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, cachedResponse, jrr.GetResultString())
 
-		// Verify both connectors were checked in order
-		mockConnectors[0].AssertCalled(t, "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
-		mockConnectors[1].AssertCalled(t, "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
+		// Verify both connectors were dispatched. Fan-out is parallel, so
+		// connector[1] can return before connector[0]'s goroutine has even
+		// entered its mock call under heavy CI load. assert.Eventually
+		// gives both goroutines a chance to finish before failing.
+		assert.Eventually(t, func() bool {
+			return mockConnectors[0].AssertCalled(new(testing.T), "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything) &&
+				mockConnectors[1].AssertCalled(new(testing.T), "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
+		}, 2*time.Second, 20*time.Millisecond, "both connectors should be dispatched by the fan-out")
 	})
 }
 

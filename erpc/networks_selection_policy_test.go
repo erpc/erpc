@@ -661,12 +661,12 @@ func TestNetworkPolicy_SafetyNet_WhenAllBroken(t *testing.T) {
 // classification but still goes through the real policy engine.
 func TestNetworkPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		finality      string
-		expectPrimary string
+		name           string
+		finality       string
+		expectStickied bool // true → REALTIME, prev primary holds; false → FINALIZED, switch
 	}{
-		{"REALTIME holds prior primary", "realtime", "primary"},
-		{"FINALIZED switches immediately", "finalized", "challenger"},
+		{"REALTIME holds prior primary", "realtime", true},
+		{"FINALIZED switches immediately", "finalized", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
@@ -678,38 +678,49 @@ func TestNetworkPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
 			defer cancel()
 
 			network := setupSelectionPolicyNetwork(t, ctx, []*common.UpstreamConfig{
-				{Type: common.UpstreamTypeEvm, Id: "primary", Endpoint: upstreamHostFromID("primary"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-				{Type: common.UpstreamTypeEvm, Id: "challenger", Endpoint: upstreamHostFromID("challenger"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Type: common.UpstreamTypeEvm, Id: "rpcA", Endpoint: upstreamHostFromID("rpcA"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Type: common.UpstreamTypeEvm, Id: "rpcB", Endpoint: upstreamHostFromID("rpcB"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 			})
 
 			policy.SetFinalityForTest(network.policyEngine, network.networkId, "*", tc.finality)
 
-			// Tick 1 — equal-ish metrics; primary wins by alphabetical
-			// tiebreak; lastSwitchAt recorded by the engine.
-			for _, id := range []string{"primary", "challenger"} {
+			// Tick 1 — equal metrics; whichever upstream wins by score
+			// tiebreak becomes the incumbent. The engine records
+			// lastSwitchAt here, starting the sticky cooldown.
+			for _, id := range []string{"rpcA", "rpcB"} {
 				seedDegraded(network.metricsTracker, upstreamByID(t, network, id),
 					seedSpec{successful: 100, successAvgMs: 10})
 			}
 			policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-			// Now make primary worse but still healthy enough to pass
-			// keepHealthy (errorRate 0.15 < 0.5). Under REALTIME the
-			// 30s cooldown should hold it; under FINALIZED, no
-			// stickiness, challenger takes over.
-			seedDegraded(network.metricsTracker, upstreamByID(t, network, "primary"),
-				seedSpec{failed: 30}) // 30 errors on top of 100 successes = 0.23 error rate
+			order := network.policyEngine.GetOrdered(network.networkId, "*")
+			require.Len(t, order, 2)
+			incumbent := order[0].Id()
+			challenger := order[1].Id()
+
+			// Degrade the incumbent (errorRate 0.23 < 0.5 → still passes
+			// keepHealthy) so score favours the challenger. Under
+			// REALTIME the 30s sticky cooldown should hold the incumbent;
+			// under FINALIZED, no stickiness, challenger takes over.
+			seedDegraded(network.metricsTracker, upstreamByID(t, network, incumbent),
+				seedSpec{failed: 30})
 			policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-			mockClean(t, upstreamHostFromID("primary"), "eth_getBalance", "0xprimary")
-			mockClean(t, upstreamHostFromID("challenger"), "eth_getBalance", "0xchallenger")
+			mockClean(t, upstreamHostFromID("rpcA"), "eth_getBalance", "0xA")
+			mockClean(t, upstreamHostFromID("rpcB"), "eth_getBalance", "0xB")
 
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
 			resp, err := network.Forward(ctx, req)
 			require.NoError(t, err)
 			require.NotNil(t, resp)
 
-			assert.GreaterOrEqual(t, gockHits(upstreamHostFromID(tc.expectPrimary)), 1,
-				"%s should be the primary under finality=%s", tc.expectPrimary, tc.finality)
+			expectPrimary := incumbent
+			if !tc.expectStickied {
+				expectPrimary = challenger
+			}
+			assert.GreaterOrEqual(t, gockHits(upstreamHostFromID(expectPrimary)), 1,
+				"%s should be the primary under finality=%s (incumbent=%s, challenger=%s)",
+				expectPrimary, tc.finality, incumbent, challenger)
 		})
 	}
 }

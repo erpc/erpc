@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"os"
 	"path"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -277,6 +277,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				encoder,
 				writeFatalError,
 				&common.TRUE,
+				s.executionHeadersMode(),
 			)
 			return
 		}
@@ -317,6 +318,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				encoder,
 				writeFatalError,
 				s.serverCfg.IncludeErrorDetails,
+				s.executionHeadersMode(),
 			)
 			return
 		}
@@ -333,6 +335,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				encoder,
 				writeFatalError,
 				&common.TRUE,
+				s.executionHeadersMode(),
 			)
 			return
 		}
@@ -358,6 +361,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					encoder,
 					writeFatalError,
 					&common.TRUE,
+					s.executionHeadersMode(),
 				)
 				return
 			}
@@ -385,6 +389,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				encoder,
 				writeFatalError,
 				&common.TRUE,
+				s.executionHeadersMode(),
 			)
 			return
 		}
@@ -413,6 +418,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					encoder,
 					writeFatalError,
 					&common.TRUE,
+					s.executionHeadersMode(),
 				)
 				common.SetTraceSpanError(parseRequestsSpan, err)
 				parseRequestsSpan.End()
@@ -536,7 +542,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							"code":    int(common.JsonRpcErrorUnsupportedException),
 							"message": fmt.Sprintf("method not supported: %s", method),
 						},
-						Cause: nil,
+						Cause:   nil,
+						Request: nq,
 					}
 					common.EndRequestSpan(requestCtx, nil, nil)
 					return
@@ -556,18 +563,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				// Set the full request URL for x402 402 response resource field.
-				// Only computed when an x402 payload is present.
-				if ap != nil && ap.Type == common.AuthTypeX402 && ap.X402 != nil {
-					scheme := "https"
-					if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-						scheme = proto
-					} else if r.TLS == nil {
-						scheme = "http"
-					}
-					ap.X402.RequestURL = scheme + "://" + r.Host + r.URL.String()
-				}
-
 				if isAdmin {
 					_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
 					if err != nil {
@@ -578,19 +573,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				} else {
 					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
-						var payErr *common.ErrPaymentRequired
-						if errors.As(err, &payErr) {
-							var reqId interface{}
-							if jrr, jrrErr := nq.JsonRpcRequest(); jrrErr == nil && jrr != nil {
-								reqId = jrr.ID
-							}
-							responses[index] = &HttpX402PaymentRequiredResponse{
-								PaymentRequirements: payErr.PaymentRequirements,
-								RequestId:           reqId,
-							}
-						} else {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
-						}
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -718,23 +701,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		if isBatch {
-			// JSON-RPC batches always return HTTP 200; x402 payment-required responses
-			// cannot use their native 402 format here, so convert them to JSON-RPC errors.
-			for i, resp := range responses {
-				if x402Resp, ok := resp.(*HttpX402PaymentRequiredResponse); ok {
-					responses[i] = &HttpJsonRpcErrorResponse{
-						Jsonrpc: "2.0",
-						Id:      x402Resp.RequestId,
-						Error: map[string]interface{}{
-							"code":    -32000,
-							"message": "payment required for this resource (x402)",
-							"data":    x402Resp.PaymentRequirements,
-						},
-						Cause: common.NewErrPaymentRequired(nil),
-					}
-				}
-			}
-
 			w.WriteHeader(http.StatusOK)
 
 			bw := NewBatchResponseWriter(responses)
@@ -754,23 +720,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			common.EnrichHTTPServerSpan(httpCtx, http.StatusOK, nil)
 		} else {
 			res := responses[0]
-			setResponseHeaders(httpCtx, res, w)
-
-			// x402 Payment Required: set headers before WriteHeader, then write raw x402 JSON.
-			// Both body and PAYMENT-REQUIRED header carry the requirements for v1/v2 client compatibility.
-			if v, ok := res.(*HttpX402PaymentRequiredResponse); ok {
-				reqJSON, _ := common.SonicCfg.Marshal(v.PaymentRequirements)
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("PAYMENT-REQUIRED", base64.StdEncoding.EncodeToString(reqJSON))
-				w.WriteHeader(http.StatusPaymentRequired)
-				_, err = w.Write(reqJSON)
-				if err != nil {
-					writeFatalError(httpCtx, http.StatusInternalServerError, err)
-					return
-				}
-				common.EnrichHTTPServerSpan(httpCtx, http.StatusPaymentRequired, nil)
-				return
-			}
+			setResponseHeaders(httpCtx, res, w, s.executionHeadersMode())
 
 			// Determine HTTP status code - defaults to 200 for JSON-RPC responses,
 			// but transport-level errors (auth, rate limit, etc.) get appropriate status codes
@@ -1126,21 +1076,118 @@ func (s *HttpServer) handleCORS(httpCtx context.Context, w http.ResponseWriter, 
 	return true
 }
 
-func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWriter) {
-	var rm common.ResponseMetadata
-	var ok bool
-	rm, ok = res.(common.ResponseMetadata)
-	if !ok {
-		if jrsp, ok := res.(map[string]interface{}); ok {
-			if err, ok := jrsp["cause"]; ok {
-				if ser, ok := err.(error); ok {
-					rm = common.LookupResponseMetadata(ser)
-				}
-			}
-		} else if hjrsp, ok := res.(*HttpJsonRpcErrorResponse); ok {
-			rm = common.LookupResponseMetadata(hjrsp.Cause)
+// executionHeadersMode returns the configured per-request diagnostic
+// header mode, defaulting to "all" when unset.
+func (s *HttpServer) executionHeadersMode() common.ExecutionHeadersMode {
+	if s == nil || s.serverCfg == nil || s.serverCfg.ExecutionHeaders == nil {
+		return common.ExecutionHeadersAll
+	}
+	return *s.serverCfg.ExecutionHeaders
+}
+
+// setResponseHeaders emits the full X-ERPC-* diagnostic surface for a
+// single response — success OR error. Defensive: any nil piece is
+// silently skipped so headers stay consistent across paths. Called
+// from every response-write path the server exposes.
+//
+// The function composes three independent header groups:
+//  1. Counter headers (always emitted when ExecState exists): totals
+//     + per-scope (Upstream-/Network-/Cache-) + consensus.
+//  2. Response-metadata headers (cache HIT/MISS, winning upstream id,
+//     duration ms) — only present when we have a real response.
+//  3. Per-attempt trace headers (Upstreams-Tried/Outcomes/...) — only
+//     when ExecutionHeaders is "all" (skipped in "summary" mode).
+//
+// All three groups are driven from a single source of truth — the
+// request's ExecState — so totals can never drift from per-scope
+// counts and operators see the same numbers in headers, metrics, and
+// spans.
+func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWriter, mode common.ExecutionHeadersMode) {
+	if mode == common.ExecutionHeadersOff {
+		return
+	}
+
+	req := extractRequest(res)
+	var st *common.ExecState
+	if req != nil {
+		st = req.ExecState()
+	}
+
+	// 1. Counter headers (always when ExecState exists).
+	writeCounterHeaders(st, w)
+
+	// 2. Response-derived headers (cache, winner, duration).
+	writeResponseMetadataHeaders(ctx, res, w)
+
+	// 3. Per-attempt trace headers (skipped in "summary" mode to keep
+	// header bytes minimal for bandwidth-constrained clients).
+	if mode != common.ExecutionHeadersSummary {
+		writeUpstreamTraceHeaders(st, w)
+	}
+}
+
+// extractRequest walks the response payload to find the originating
+// NormalizedRequest. Returns nil only for very-early errors (URL parse,
+// project lookup) where no request was ever constructed.
+func extractRequest(res interface{}) *common.NormalizedRequest {
+	switch v := res.(type) {
+	case *common.NormalizedResponse:
+		if v != nil {
+			return v.Request()
+		}
+	case *HttpJsonRpcErrorResponse:
+		if v != nil {
+			return v.Request
 		}
 	}
+	return nil
+}
+
+// writeCounterHeaders emits the request-wide attempt total plus the
+// per-scope retry/hedge breakdowns. Always called with a non-nil
+// writer; st may be nil — in which case counters are emitted as "0"
+// so clients can rely on header presence as a contract.
+//
+// Header contract:
+//   - X-ERPC-Attempts: total physical operations across the request
+//     (Upstream + Cache). NetworkAttempts is a rotation count, exposed
+//     per-scope but NOT summed into this total to avoid double-counting.
+//   - Retries / Hedges are emitted PER SCOPE only — operators see
+//     where retry/hedge activity happened rather than an aggregate
+//     that hides which layer was responsible.
+func writeCounterHeaders(st *common.ExecState, w http.ResponseWriter) {
+	snap := st.Snapshot() // nil-safe: returns zero snapshot
+	setInt(w, "X-ERPC-Attempts", snap.Attempts)
+	setInt(w, "X-ERPC-Upstream-Attempts", snap.UpstreamAttempts)
+	setInt(w, "X-ERPC-Upstream-Retries", snap.UpstreamRetries)
+	setInt(w, "X-ERPC-Upstream-Hedges", snap.UpstreamHedges)
+	setInt(w, "X-ERPC-Network-Attempts", snap.NetworkAttempts)
+	setInt(w, "X-ERPC-Network-Retries", snap.NetworkRetries)
+	setInt(w, "X-ERPC-Network-Hedges", snap.NetworkHedges)
+	// Cache + consensus are conditional — they only appear when the
+	// scope was actually exercised, to keep the header footprint small
+	// on the common path.
+	if snap.CacheAttempts > 0 || snap.CacheRetries > 0 || snap.CacheHedges > 0 {
+		setInt(w, "X-ERPC-Cache-Attempts", snap.CacheAttempts)
+		setInt(w, "X-ERPC-Cache-Retries", snap.CacheRetries)
+		setInt(w, "X-ERPC-Cache-Hedges", snap.CacheHedges)
+	}
+	if snap.ConsensusSlots > 0 {
+		setInt(w, "X-ERPC-Consensus-Slots", snap.ConsensusSlots)
+	}
+	if snap.ConsensusDisputes > 0 {
+		setInt(w, "X-ERPC-Consensus-Disputes", snap.ConsensusDisputes)
+	}
+	if snap.ConsensusLowParticipants > 0 {
+		setInt(w, "X-ERPC-Consensus-Low-Participants", snap.ConsensusLowParticipants)
+	}
+}
+
+// writeResponseMetadataHeaders emits X-ERPC-Cache, X-ERPC-Upstream,
+// X-ERPC-Duration — fields that depend on having a final response with
+// metadata. Silently skipped when no metadata is available.
+func writeResponseMetadataHeaders(ctx context.Context, res interface{}, w http.ResponseWriter) {
+	rm := lookupResponseMetadata(res)
 	if rm != nil && !rm.IsObjectNull(ctx) {
 		if rm.FromCache() {
 			w.Header().Set("X-ERPC-Cache", "HIT")
@@ -1150,14 +1197,82 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 		if ups := rm.UpstreamId(); ups != "" {
 			w.Header().Set("X-ERPC-Upstream", ups)
 		}
-		w.Header().Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
-		w.Header().Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
-		w.Header().Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
 	}
-	if resp, ok := res.(*common.NormalizedResponse); ok {
-		w.Header().Set("X-ERPC-Duration", fmt.Sprintf("%d", resp.Duration().Milliseconds()))
+	if resp, ok := res.(*common.NormalizedResponse); ok && resp != nil {
+		setInt64(w, "X-ERPC-Duration", resp.Duration().Milliseconds())
 	}
 }
+
+// lookupResponseMetadata pulls a ResponseMetadata view out of any
+// supported response shape (success or error). Returns nil when the
+// payload doesn't carry metadata (very-early error paths).
+func lookupResponseMetadata(res interface{}) common.ResponseMetadata {
+	if rm, ok := res.(common.ResponseMetadata); ok {
+		return rm
+	}
+	if jrsp, ok := res.(map[string]interface{}); ok {
+		if cause, ok := jrsp["cause"]; ok {
+			if ser, ok := cause.(error); ok {
+				return common.LookupResponseMetadata(ser)
+			}
+		}
+	}
+	if hjrsp, ok := res.(*HttpJsonRpcErrorResponse); ok && hjrsp != nil {
+		return common.LookupResponseMetadata(hjrsp.Cause)
+	}
+	return nil
+}
+
+// writeUpstreamTraceHeaders emits the per-attempt participation log as
+// a single compact header. Each segment is one physical attempt:
+//
+//	<upstreamId>=<reason>:<outcome>:<duration>ms[:won]
+//
+// Segments are joined with `;`. The `:won` suffix marks attempts whose
+// response contributed to the final response — for a single-winner
+// request that's one segment, for consensus it's every participant in
+// the winning agreement group.
+//
+// Example:
+//
+//	X-ERPC-Upstreams: alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms;drpc=consensus_slot:exec_revert:20ms
+func writeUpstreamTraceHeaders(st *common.ExecState, w http.ResponseWriter) {
+	if st == nil {
+		return
+	}
+	attempts := st.UpstreamAttemptLog()
+	if len(attempts) == 0 {
+		return
+	}
+	segments := make([]string, len(attempts))
+	for i, a := range attempts {
+		segments[i] = formatUpstreamAttempt(a)
+	}
+	w.Header().Set("X-ERPC-Upstreams", strings.Join(segments, ";"))
+}
+
+// formatUpstreamAttempt formats one attempt for the X-ERPC-Upstreams
+// header. Kept as a free function so the format is testable in isolation
+// and the same shape can be reused in span attributes / log fields.
+func formatUpstreamAttempt(a common.UpstreamAttempt) string {
+	var b strings.Builder
+	b.Grow(64)
+	b.WriteString(a.UpstreamId)
+	b.WriteByte('=')
+	b.WriteString(string(a.Reason))
+	b.WriteByte(':')
+	b.WriteString(string(a.Outcome))
+	b.WriteByte(':')
+	b.WriteString(strconv.FormatInt(a.Duration.Milliseconds(), 10))
+	b.WriteString("ms")
+	if a.Won {
+		b.WriteString(":won")
+	}
+	return b.String()
+}
+
+func setInt(w http.ResponseWriter, name string, v int)      { w.Header().Set(name, strconv.Itoa(v)) }
+func setInt64(w http.ResponseWriter, name string, v int64)  { w.Header().Set(name, strconv.FormatInt(v, 10)) }
 
 // determineResponseStatusCode extracts any error from a response and determines
 // the appropriate HTTP status code. Defaults to 200 for JSON-RPC responses,
@@ -1206,13 +1321,10 @@ type HttpJsonRpcErrorResponse struct {
 	Id      interface{} `json:"id"`
 	Error   interface{} `json:"error"`
 	Cause   error       `json:"-"`
-}
-
-// HttpX402PaymentRequiredResponse carries the raw x402 PaymentRequirementsResponse
-// to be written directly as HTTP 402 without JSON-RPC wrapping.
-type HttpX402PaymentRequiredResponse struct {
-	PaymentRequirements interface{}
-	RequestId           interface{}
+	// Request is the originating NormalizedRequest (when available).
+	// Used by setResponseHeaders to emit X-ERPC-* counter/trace headers
+	// on error paths via the request's ExecState.
+	Request *common.NormalizedRequest `json:"-"`
 }
 
 func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
@@ -1325,6 +1437,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 			Id:      reqId,
 			Error:   errObj,
 			Cause:   err,
+			Request: nq,
 		}
 	}
 
@@ -1351,21 +1464,8 @@ func handleErrorResponse(
 	encoder sonic.Encoder,
 	writeFatalError func(ctx context.Context, statusCode int, body error),
 	includeErrorDetails *bool,
+	mode common.ExecutionHeadersMode,
 ) {
-	// x402 Payment Required: write the raw x402 response directly, not JSON-RPC wrapped
-	var payErr *common.ErrPaymentRequired
-	if errors.As(err, &payErr) {
-		reqJSON, _ := common.SonicCfg.Marshal(payErr.PaymentRequirements)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("PAYMENT-REQUIRED", base64.StdEncoding.EncodeToString(reqJSON))
-		w.WriteHeader(http.StatusPaymentRequired)
-		if _, encErr := w.Write(reqJSON); encErr != nil {
-			logger.Error().Err(encErr).Msg("failed to write x402 payment requirements response")
-			writeFatalError(httpCtx, http.StatusInternalServerError, encErr)
-		}
-		return
-	}
-
 	resp := processErrorBody(logger, startedAt, nq, err, includeErrorDetails)
 	// Transport defaults to 200 for JSON-RPC, with limited exceptions.
 	// Non-200 codes are reserved for transport/infrastructure level issues,
@@ -1389,6 +1489,11 @@ func handleErrorResponse(
 		common.ErrCodeEndpointCapacityExceeded):
 		statusCode = http.StatusTooManyRequests
 	}
+	// Emit X-ERPC-* headers BEFORE WriteHeader — once WriteHeader fires
+	// the header map is sealed. processErrorBody attaches `nq` to the
+	// returned HttpJsonRpcErrorResponse so the counter/trace headers
+	// flow even when the response body is an error.
+	setResponseHeaders(httpCtx, resp, w, mode)
 	w.WriteHeader(statusCode)
 	span := trace.SpanFromContext(httpCtx)
 	span.AddEvent("http.response_write_start")

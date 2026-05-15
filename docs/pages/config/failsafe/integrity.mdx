@@ -14,7 +14,7 @@ RPC nodes may return stale, empty, or inconsistent data. eRPC's integrity module
 4. **Response validation** — Validates response structure and consistency (bloom filters, receipts, logs). See [Validations](#validations).
 
 <Callout type="tip">
-Combine with [retry](/config/failsafe#retry-policy) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
+Combine with [retry](/config/failsafe#retry) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
 </Callout>
 
 ## Config

@@ -88,7 +88,7 @@ func (s *HttpServer) handleHealthCheck(
 
 		ap, err := auth.NewPayloadFromHttp("healthcheck", r.RemoteAddr, headers, queryArgs)
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 			return
 		}
 		if s.healthCheckAuthRegistry != nil {
@@ -98,7 +98,7 @@ func (s *HttpServer) handleHealthCheck(
 			nq.SetClientIP(clientIP)
 			_, err := s.healthCheckAuthRegistry.Authenticate(ctx, nq, "healthcheck", ap)
 			if err != nil {
-				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 				return
 			}
 		}
@@ -113,7 +113,7 @@ func (s *HttpServer) handleHealthCheck(
 	logger = logger.With().Str("evalStrategy", evalStrategy).Logger()
 
 	if s.erpc == nil {
-		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails)
+		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails, s.executionHeadersMode())
 		return
 	}
 
@@ -121,13 +121,13 @@ func (s *HttpServer) handleHealthCheck(
 	if projectId == "" {
 		projects = s.erpc.GetProjects()
 		if len(projects) == 0 {
-			handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("no projects found"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails)
+			handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("no projects found"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails, s.executionHeadersMode())
 			return
 		}
 	} else {
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 			return
 		}
 		projects = []*PreparedProject{project}
@@ -183,7 +183,7 @@ func (s *HttpServer) handleHealthCheck(
 		// Attempt to gather health info for all initialized upstreams
 		projHealthInfo, err := project.GatherHealthInfo()
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 			return
 		}
 
@@ -356,6 +356,7 @@ func (s *HttpServer) handleHealthCheck(
 				encoder,
 				writeFatalError,
 				&common.TRUE,
+				s.executionHeadersMode(),
 			)
 		}
 		return

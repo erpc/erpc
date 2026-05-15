@@ -198,6 +198,54 @@ When fewer than `agreementThreshold` valid responses are available:
   **Block Head Leader**: The upstream reporting the highest block number. This is determined by each upstream's state poller and ensures you're getting data from the most synchronized node.
 </Callout>
 
+## Tail-latency caps (`maxWaitOnResult` / `maxWaitOnEmpty`)
+
+When one participant is consistently slow — e.g. a 10s archive query while siblings return in 50ms — that single laggard drags the whole request's wall-clock. The wait caps bound this **after the first response arrives**:
+
+| Field | Type | Triggers when |
+|---|---|---|
+| `maxWaitOnResult` | [AdaptiveDuration](/config/failsafe#adaptiveduration---reusable-duration-with-quantile-and-bounds) | At least one **non-empty** response is in the bag. |
+| `maxWaitOnEmpty` | [AdaptiveDuration](/config/failsafe#adaptiveduration---reusable-duration-with-quantile-and-bounds) | The first response (of any kind — empty, error, or non-empty) is in the bag. |
+
+When the cap fires, the analyzer resolves with what it has using the configured `disputeBehavior` / `lowParticipantsBehavior`. In-flight participants are cancelled (or left running under `fireAndForget`). The earlier of the two caps wins.
+
+**Defaults** (applied whenever `consensus` is set):
+
+| Cap | Default value |
+|---|---|
+| `maxWaitOnResult` | `{ quantile: 0.5, min: 5ms, max: 1s }` — once any real answer is in, give the rest at most ~p50 of observed latency |
+| `maxWaitOnEmpty` | `{ quantile: 0.9, min: 50ms, max: 2s }` — wait longer when only empties/errors have arrived, since a real answer might still land |
+
+The quantiles read from the same per-method DDSketch the timeout policy uses. Adaptive caps self-tune across methods — `eth_chainId` (typical p50 ~5ms) gets a tight cap; `eth_getLogs` over a wide range (typical p50 ~200ms) gets a proportional one.
+
+**Static overrides** when you'd rather not adapt:
+
+```yaml
+consensus:
+  maxParticipants:    5
+  agreementThreshold: 3
+  maxWaitOnResult:    200ms     # static: scalar shorthand
+  maxWaitOnEmpty:     2s        # static: scalar shorthand
+```
+
+**Custom adaptive bounds:**
+
+```yaml
+consensus:
+  maxParticipants:    5
+  agreementThreshold: 3
+  maxWaitOnResult:
+    quantile: 0.5
+    min:      10ms
+    max:      500ms
+  maxWaitOnEmpty:
+    quantile: 0.9
+    min:      100ms
+    max:      3s
+```
+
+The `erpc_consensus_wait_capped_total{trigger}` metric counts firings by trigger (`result` or `empty`); a high rate signals an upstream that should be tightened or dropped from the pool.
+
 ## How it works
 1. Send the request to up to `maxParticipants` (if less upstreams it continues with the available ones); group identical results/errors.
 2. If any valid group meets `agreementThreshold`, it wins

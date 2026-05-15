@@ -12,8 +12,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	"github.com/failsafe-go/failsafe-go"
-	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,59 +64,7 @@ func validResponseWithCloser(value string, closeCount *atomic.Int32) *common.Nor
 	return validResponseWithValue(value).WithBody(&trackingReadCloser{closeCount: closeCount})
 }
 
-type stubExecution struct {
-	ctx context.Context
-}
 
-func (s *stubExecution) Context() context.Context { return s.ctx }
-func (s *stubExecution) Attempts() int            { return 1 }
-func (s *stubExecution) Executions() int          { return 1 }
-func (s *stubExecution) Retries() int             { return 0 }
-func (s *stubExecution) Hedges() int              { return 0 }
-func (s *stubExecution) StartTime() time.Time     { return time.Now() }
-func (s *stubExecution) ElapsedTime() time.Duration {
-	return 0
-}
-func (s *stubExecution) LastResult() *common.NormalizedResponse { return nil }
-func (s *stubExecution) LastError() error                       { return nil }
-func (s *stubExecution) IsFirstAttempt() bool                   { return true }
-func (s *stubExecution) IsRetry() bool                          { return false }
-func (s *stubExecution) IsHedge() bool                          { return false }
-func (s *stubExecution) AttemptStartTime() time.Time            { return time.Now() }
-func (s *stubExecution) ElapsedAttemptTime() time.Duration      { return 0 }
-func (s *stubExecution) IsCanceled() bool                       { return s.ctx != nil && s.ctx.Err() != nil }
-func (s *stubExecution) Canceled() <-chan struct{} {
-	if s.ctx == nil {
-		return nil
-	}
-	return s.ctx.Done()
-}
-func (s *stubExecution) RecordResult(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-	return result
-}
-func (s *stubExecution) InitializeRetry() *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-	return nil
-}
-func (s *stubExecution) Cancel(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) {}
-func (s *stubExecution) IsCanceledWithResult() (bool, *failsafeCommon.PolicyResult[*common.NormalizedResponse]) {
-	return s.IsCanceled(), nil
-}
-func (s *stubExecution) CopyWithResult(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) failsafe.Execution[*common.NormalizedResponse] {
-	return s
-}
-func (s *stubExecution) CopyForCancellable() failsafe.Execution[*common.NormalizedResponse] {
-	return s
-}
-func (s *stubExecution) CopyForHedge() failsafe.Execution[*common.NormalizedResponse] {
-	return s
-}
-func (s *stubExecution) CopyForCancellableWithValue(key, value any) failsafe.Execution[*common.NormalizedResponse] {
-	ctx := s.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return &stubExecution{ctx: context.WithValue(ctx, key, value)}
-}
 
 // TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants verifies
 // the original bug fix: when the parent context is cancelled after every
@@ -151,7 +97,6 @@ func TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants(t *t
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -160,7 +105,7 @@ func TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants(t *t
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if started.Add(1) == 3 {
 				close(allStarted)
 			}
@@ -225,12 +170,12 @@ func TestExecuteParticipant_PostExecutionCancel_PreservesResult(t *testing.T) {
 	e.executeParticipant(
 		ctx,
 		&logger,
-		&stubExecution{ctx: ctx},
 		metricsLabels{},
-		func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			cancel()
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: expected}
+			return expected, nil
 		},
+		newTestRequest(),
 		0,
 		responseCh,
 	)
@@ -271,11 +216,10 @@ func TestConsensus_CallerAbandons_ParticipantsStillComplete(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	callerReturned := make(chan struct{})
 	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if innerFnStarts.Add(1) == 3 {
 				close(allStarted)
 			}
@@ -334,7 +278,6 @@ func TestConsensus_TwoParticipants_CancelAfterExecution_DoesNotReturnLowParticip
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -343,7 +286,7 @@ func TestConsensus_TwoParticipants_CancelAfterExecution_DoesNotReturnLowParticip
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if started.Add(1) == 2 {
 				close(allStarted)
 			}
@@ -403,10 +346,9 @@ func TestConsensus_ShortCircuit_CallerGetsWinnerBeforeSlowParticipants(t *testin
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	start := time.Now()
-	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		n := callCount.Add(1)
 		if n <= 2 {
 			return validResponse(), nil // two fast participants with matching responses
@@ -460,9 +402,8 @@ func TestConsensus_ShortCircuit_ReleasesLateResponses(t *testing.T) {
 	}()
 
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
-	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		n := callCount.Add(1)
 		started.Done()
 		<-allStarted
@@ -500,9 +441,8 @@ func TestConsensus_HappyPath_NoCancel(t *testing.T) {
 	req := newTestRequest()
 
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
-	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		return validResponse(), nil
 	})
 
@@ -530,10 +470,9 @@ func TestConsensus_CancelBeforeExecution_ReturnsLowParticipants(t *testing.T) {
 	cancel() // cancel immediately, before any participant runs
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	var callCount atomic.Int32
-	_, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		callCount.Add(1)
 		return validResponse(), nil
 	})
@@ -577,11 +516,10 @@ func TestConsensus_FireAndForget_CallerCancelDoesNotStopParticipants(t *testing.
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	callerReturned := make(chan struct{})
 	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if innerFnStarts.Add(1) == 3 {
 				close(allStarted)
 			}
@@ -646,11 +584,10 @@ func TestConsensus_CallerAbandons_WinnerResponseIsReleased(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	callerReturned := make(chan struct{})
 	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n := callCount.Add(1)
 			started.Done()
 			<-allStarted
@@ -711,7 +648,7 @@ func TestRecordMetricsAndTracing_NilAnalysis_DoesNotPanic(t *testing.T) {
 	}
 	span := trace.SpanFromContext(context.Background()) // noop span
 
-	result := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+	result := &slotResult{
 		Error: errors.New("simulated analyzer panic"),
 	}
 

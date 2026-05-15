@@ -1,4 +1,33 @@
-import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults } from "./types";
+import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults, SelectionPolicyEvalFunction } from "./types";
+/**
+ * AdaptiveDuration describes a duration that may be static, derived from a
+ * per-method latency quantile, or both. It's the reusable building block
+ * for any failsafe knob that wants "fixed base + adaptive component
+ * clamped between min/max" semantics — currently consensus wait caps,
+ * with timeout/hedge supporting it as an alternative entry-point.
+ * Resolution rules:
+ *   final = Base + adaptive
+ * where `adaptive` is:
+ *   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists
+ *   - `Min` (the floor) when Quantile > 0 but quantile data is cold (no
+ *     observations yet) — this gives a sensible non-zero cap immediately
+ *     after boot
+ *   - `0` when Quantile is unset
+ * After `Base + adaptive`, the result is clamped to [Min, Max] when those
+ * are set. A nil or all-zero AdaptiveDuration returns 0 (the caller treats
+ * that as "no cap" / "disabled").
+ * Wire format accepts both shorthand and object form:
+ * 	caps: 500ms                                   # shorthand: Base only
+ * 	caps: { base: 500ms }                         # explicit Base
+ * 	caps: { quantile: 0.5, min: 5ms, max: 1s }    # quantile with bounds
+ * 	caps: { base: 100ms, quantile: 0.9, max: 2s } # combined
+ */
+export interface AdaptiveDuration {
+    base?: Duration;
+    quantile?: number;
+    min?: Duration;
+    max?: Duration;
+}
 export declare const UpstreamTypeEvm: UpstreamType;
 export type EvmUpstream = Upstream;
 export type AvailbilityConfidence = number;
@@ -108,7 +137,35 @@ export interface ServerConfig {
     responseHeaders?: {
         [key: string]: string;
     };
+    /**
+     * ExecutionHeaders controls the per-request diagnostic headers
+     * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
+     * eRPC routed and resolved each request. Defaults to "all" — set
+     * "summary" to keep only counters, or "off" to disable entirely
+     * (useful for low-latency / bandwidth-constrained clients).
+     */
+    executionHeaders?: ExecutionHeadersMode;
 }
+/**
+ * ExecutionHeadersMode controls how much per-request execution detail is
+ * exposed in HTTP response headers.
+ */
+export type ExecutionHeadersMode = string;
+/**
+ * ExecutionHeadersAll emits the full set: counters + per-upstream
+ * trace (upstream IDs, outcomes, reasons, durations). Default.
+ */
+export declare const ExecutionHeadersAll: ExecutionHeadersMode;
+/**
+ * ExecutionHeadersSummary emits only the counter triplet
+ * (X-ERPC-Attempts/Retries/Hedges) + the cache-hit / final-upstream
+ * markers. Skips the (potentially large) per-attempt slice headers.
+ */
+export declare const ExecutionHeadersSummary: ExecutionHeadersMode;
+/**
+ * ExecutionHeadersOff disables all X-ERPC-* diagnostic headers.
+ */
+export declare const ExecutionHeadersOff: ExecutionHeadersMode;
 export interface HealthCheckConfig {
     mode?: HealthCheckMode;
     auth?: AuthConfig;
@@ -357,6 +414,44 @@ export interface ProjectConfig {
     networkDefaults?: NetworkDefaults;
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
+    scoreMetricsWindowSize?: Duration;
+    scoreRefreshInterval?: Duration;
+    /**
+     * RoutingStrategy selects the upstream ordering algorithm.
+     * "score-based" (default): penalty-based sticky routing.
+     * "round-robin": time-rotating equal distribution across upstreams.
+     */
+    routingStrategy?: string;
+    /**
+     * ScoreGranularity controls whether penalties are computed per-upstream or per-method.
+     * "upstream" (default): one penalty across all methods using aggregate metrics.
+     * "method": separate penalty per (upstream, method) pair.
+     */
+    scoreGranularity?: string;
+    /**
+     * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
+     * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+     * Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
+     */
+    scorePenaltyDecayRate?: number;
+    /**
+     * ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
+     * must be at least this fraction lower than the current primary's penalty to
+     * trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
+     */
+    scoreSwitchHysteresis?: number;
+    /**
+     * ScoreMinSwitchInterval is the cooldown between primary upstream switches.
+     */
+    scoreMinSwitchInterval?: Duration;
+    /**
+     * ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
+     * Allowed values:
+     * - "compact": emit compact series by setting upstream and category labels to 'n/a'
+     * - "detailed": emit full project/vendor/network/upstream/category series
+     */
+    scoreMetricsMode?: string;
+    healthCheck?: DeprecatedProjectHealthCheckConfig;
     /**
      * Configure user agent tracking at the project level
      */
@@ -417,12 +512,6 @@ export interface UpstreamConfig {
     id?: string;
     type?: TsUpstreamType;
     group?: string;
-    /**
-     * Cohort labels upstreams that share fate beyond what `group` or `vendorName`
-     * describe (shared backend, region, sequencer). Consumed by selectionPolicy
-     * primitives that care about blast-radius diversity (e.g. `spreadAcrossGroups({ by: 'cohort' })`).
-     */
-    cohort?: string;
     vendorName?: string;
     endpoint?: string;
     evm?: EvmUpstreamConfig;
@@ -433,6 +522,7 @@ export interface UpstreamConfig {
     failsafe?: (FailsafeConfig | undefined)[];
     rateLimitBudget?: string;
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
+    routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
 /**
@@ -455,6 +545,23 @@ export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
     enabled?: boolean;
     checkLogIndexStrictIncrements?: boolean;
     checkLogsBloom?: boolean;
+}
+export interface RoutingConfig {
+    scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
+    scoreLatencyQuantile?: number;
+}
+export interface ScoreMultiplierConfig {
+    network?: string;
+    method?: string;
+    finality?: DataFinalityState[];
+    overall?: number;
+    errorRate?: number;
+    respLatency?: number;
+    totalRequests?: number;
+    throttledRate?: number;
+    blockHeadLag?: number;
+    finalizationLag?: number;
+    misbehaviors?: number;
 }
 export type UJAlias = UpstreamConfig;
 export type UYAlias = UpstreamConfig;
@@ -551,6 +658,25 @@ export interface FailsafeConfig {
     hedge?: HedgePolicyConfig;
     consensus?: ConsensusPolicyConfig;
 }
+/**
+ * NetworkFailsafeConfig is the scope-specific alias for network-level
+ * failsafe policies. By convention, CircuitBreaker is not used at this
+ * scope (use upstream-scope breakers instead); validation enforces this.
+ */
+export type NetworkFailsafeConfig = FailsafeConfig;
+/**
+ * UpstreamFailsafeConfig is the scope-specific alias for per-upstream
+ * failsafe policies. By convention, Consensus is not used at this
+ * scope (consensus is a network-scope concern only); validation
+ * enforces this.
+ */
+export type UpstreamFailsafeConfig = FailsafeConfig;
+/**
+ * CacheFailsafeConfig is the scope-specific alias for cache-connector
+ * failsafe policies. Hedge.Quantile is not allowed here (no per-method
+ * quantile data on cache reads); validation enforces this.
+ */
+export type CacheFailsafeConfig = FailsafeConfig;
 export interface RetryPolicyConfig {
     maxAttempts: number;
     delay?: Duration;
@@ -590,18 +716,29 @@ export interface CircuitBreakerPolicyConfig {
     successThresholdCount: number;
     successThresholdCapacity: number;
 }
+/**
+ * TimeoutPolicyConfig is the timeout policy. Duration is the unified
+ * AdaptiveDuration — a scalar shorthand ("5s") or an object form
+ * ({base, quantile, min, max}) for adaptive caps driven by per-method
+ * latency quantiles.
+ * Wire format also accepts the legacy flat form
+ * (`duration: 5s, quantile: 0.99, minDuration: 200ms, maxDuration: 10s`)
+ * — siblings get folded into Duration at YAML/JSON unmarshal time.
+ */
 export interface TimeoutPolicyConfig {
-    duration?: Duration;
-    quantile?: number;
-    minDuration?: Duration;
-    maxDuration?: Duration;
+    duration?: Duration | AdaptiveDuration;
 }
+/**
+ * HedgePolicyConfig is the hedge policy. Delay is the unified
+ * AdaptiveDuration — scalar shorthand ("100ms") or object form
+ * ({base, quantile, min, max}) for quantile-driven hedge timing.
+ * Wire format also accepts the legacy flat form
+ * (`delay: 100ms, quantile: 0.95, minDelay: 50ms, maxDelay: 2s`) —
+ * siblings get folded into Delay at YAML/JSON unmarshal time.
+ */
 export interface HedgePolicyConfig {
-    delay?: Duration;
+    delay?: Duration | AdaptiveDuration;
     maxCount: number;
-    quantile?: number;
-    minDelay?: Duration;
-    maxDelay?: Duration;
 }
 export type ConsensusLowParticipantsBehavior = string;
 export declare const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior;
@@ -644,6 +781,26 @@ export interface ConsensusPolicyConfig {
      * Default is false (normal behavior - cancel remaining requests on short-circuit).
      */
     fireAndForget?: boolean;
+    /**
+     * MaxWaitOnResult caps how long consensus waits for additional participants
+     * AFTER at least one non-empty response has arrived. Use this to bound
+     * p99 latency when most upstreams are fast but one is a slow straggler:
+     * once a real answer is in hand, give the rest at most this long to
+     * confirm or dispute, then resolve with what we have.
+     * Accepts a duration scalar ("200ms") or an AdaptiveDuration object
+     * ({base, quantile, min, max}) for adaptive caps driven by per-method
+     * latency quantiles. Defaults are applied when consensus is configured
+     * but this field is omitted — see common/defaults.go.
+     */
+    maxWaitOnResult?: Duration | AdaptiveDuration;
+    /**
+     * MaxWaitOnEmpty caps how long consensus waits for additional participants
+     * AFTER the first response (of any kind — empty, error, or non-empty)
+     * has arrived. Typically set larger than MaxWaitOnResult because an
+     * operator is more patient when no useful data is in hand yet.
+     * Same shape as MaxWaitOnResult; defaults applied when consensus is set.
+     */
+    maxWaitOnEmpty?: Duration | AdaptiveDuration;
 }
 export type MisbehaviorsDestinationType = string;
 export declare const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType;
@@ -742,6 +899,9 @@ export declare const RateLimitPeriodYear: RateLimitPeriod;
 export interface ProxyPoolConfig {
     id: string;
     urls: string[];
+}
+export interface DeprecatedProjectHealthCheckConfig {
+    scoreMetricsWindowSize: Duration;
 }
 export interface MethodsConfig {
     preserveDefaultMethods?: boolean;
@@ -939,20 +1099,13 @@ export interface EvmIntegrityConfig {
      */
     enforceNonNullTaggedBlocks?: boolean;
 }
-/**
- * SelectionPolicyConfig declares the per-network upstream selection policy.
- * The eval function is JavaScript that receives `upstreams` and `ctx` and
- * returns the ordered list of upstreams that should serve traffic for the
- * network/method scope. The chainable std-lib (see internal/policy/stdlib)
- * provides the building blocks (sortByScore, removeByLag, stickyPrimary,
- * probeExcluded, etc.) — see specs/selection-policy/feature.md.
- */
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;
+    evalFunction?: SelectionPolicyEvalFunction | undefined;
     evalPerMethod?: boolean;
-    evalTimeout?: Duration;
-    decisionHistory?: Duration;
-    eval?: string;
+    resampleExcluded?: boolean;
+    resampleInterval?: Duration;
+    resampleCount?: number;
 }
 export type AuthType = string;
 export declare const AuthTypeSecret: AuthType;
@@ -960,7 +1113,6 @@ export declare const AuthTypeDatabase: AuthType;
 export declare const AuthTypeJwt: AuthType;
 export declare const AuthTypeSiwe: AuthType;
 export declare const AuthTypeNetwork: AuthType;
-export declare const AuthTypeX402: AuthType;
 export interface AuthConfig {
     strategies: TsAuthStrategyConfig[];
 }
@@ -974,7 +1126,6 @@ export interface AuthStrategyConfig {
     database?: DatabaseStrategyConfig;
     jwt?: JwtStrategyConfig;
     siwe?: SiweStrategyConfig;
-    x402?: X402StrategyConfig;
 }
 export interface SecretStrategyConfig {
     id: string;
@@ -1038,60 +1189,6 @@ export interface NetworkStrategyConfig {
      */
     rateLimitBudget?: string;
     ipAsUser?: boolean;
-}
-/**
- * X402StrategyConfig enables x402 payment authentication (HTTP 402 Payment Required).
- * Clients without an API key can pay per-request via the x402 protocol. The payer's
- * wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
- */
-export interface X402StrategyConfig {
-    /**
-     * FacilitatorURL is the x402 facilitator endpoint for verify/settle operations.
-     */
-    facilitatorUrl: string;
-    /**
-     * SellerAddress is the wallet address that receives payments (e.g. USDC on Base).
-     */
-    sellerAddress: string;
-    /**
-     * PricePerRequest is the cost per request in atomic units (e.g. "5" for $0.000005 USDC).
-     */
-    pricePerRequest: string;
-    /**
-     * Network is the x402 network name for payment (e.g. "base", "base-sepolia").
-     */
-    network: string;
-    /**
-     * Asset is the token contract address used for payment.
-     */
-    asset?: string;
-    /**
-     * Scheme is the x402 payment scheme (defaults to "exact").
-     */
-    scheme?: string;
-    /**
-     * Description is a human-readable description included in 402 responses.
-     */
-    description?: string;
-    /**
-     * MaxTimeoutSeconds is the payment authorization validity period (default: 300).
-     */
-    maxTimeoutSeconds?: number;
-    /**
-     * RateLimitBudget, if set, is applied to the authenticated payer.
-     */
-    rateLimitBudget?: string;
-    /**
-     * VerifyOnly when true skips settlement (useful for testing).
-     */
-    verifyOnly?: boolean;
-    /**
-     * Extra contains additional fields merged into the payment requirement's extra object.
-     * Useful for providing EIP-712 domain params when the facilitator doesn't supply them.
-     */
-    extra?: {
-        [key: string]: any;
-    };
 }
 export type LabelMode = string;
 export declare const ErrorLabelModeVerbose: LabelMode;
@@ -1176,11 +1273,164 @@ export type JsonRpcErrorExtractor = any;
  * Similar to http.HandlerFunc style adapters.
  */
 export type JsonRpcErrorExtractorFunc = any;
+/**
+ * UpstreamAttemptOutcome enumerates the possible per-attempt outcomes
+ * recorded against an upstream. The set is closed: every attempt ends
+ * in exactly one of these.
+ */
+export type UpstreamAttemptOutcome = string;
+export declare const UpstreamOutcomeSuccess: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeEmpty: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeTransportError: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeServerError: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeClientError: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeRateLimited: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeMissingData: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeExecRevert: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeBlockUnavailable: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeBreakerOpen: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeCancelled: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeTimeout: UpstreamAttemptOutcome;
+export declare const UpstreamOutcomeSkipped: UpstreamAttemptOutcome;
+/**
+ * UpstreamSelectionReason describes WHY a particular upstream was
+ * selected for a given attempt. Operators use this to debug skew in
+ * upstream-pick distribution (e.g. why is one upstream getting all
+ * the hedge fan-out?).
+ */
+export type UpstreamSelectionReason = string;
+export declare const SelectionReasonPrimary: UpstreamSelectionReason;
+export declare const SelectionReasonRetry: UpstreamSelectionReason;
+export declare const SelectionReasonHedge: UpstreamSelectionReason;
+export declare const SelectionReasonConsensusSlot: UpstreamSelectionReason;
+export declare const SelectionReasonSweep: UpstreamSelectionReason;
+/**
+ * UpstreamAttempt is one (upstream, attempt) record. The executors
+ * append these as participants come and go so operators can answer
+ * "which upstreams were involved in this request, why were they
+ * chosen, and what happened to them?" without parsing trace data.
+ * Won is flipped to true by the executor when this attempt's response
+ * contributed to the final response returned to the client. For a
+ * non-consensus request that's exactly one attempt (the winning one);
+ * for consensus it's every participant whose vote landed in the
+ * winning agreement group.
+ */
+export interface UpstreamAttempt {
+    upstreamid: string;
+    vendorname: string;
+    startedat: any;
+    duration: number;
+    outcome: UpstreamAttemptOutcome;
+    reason: UpstreamSelectionReason;
+    ishedge: boolean;
+    isretry: boolean;
+    won: boolean;
+    attemptidx: number;
+    errorcode: string;
+    errordetail: string;
+}
+/**
+ * ExecState centralizes the per-request execution counters and the
+ * per-upstream attempt log. Created lazily on first access via
+ * (*NormalizedRequest).ExecState().
+ * All counters are atomic; the struct itself is safe for concurrent use.
+ * Counter model — every executor increments its OWN scope only.
+ * Snapshot derives the totals so "forgot to increment the total" is
+ * impossible by construction. The derivation is NOT a flat sum because
+ * the scopes are nested: each network rotation triggers exactly one
+ * upstream invocation chain, so summing both would double-count
+ * physical attempts.
+ * 	total Attempts = UpstreamAttempts + CacheAttempts
+ * 	    (every physical call is counted at the deepest scope that
+ * 	    actually performed it — upstreams for HTTP, cache for connector
+ * 	    reads. NetworkAttempts is a separate rotation-count signal,
+ * 	    exposed as its own counter but NOT summed into the total.)
+ * 	total Retries = sum of UpstreamRetries + NetworkRetries + CacheRetries
+ * 	total Hedges  = sum of UpstreamHedges  + NetworkHedges  + CacheHedges
+ * 	    (retries and hedges ARE different events at each scope — an
+ * 	    upstream-scope retry retries the SAME upstream, a network-scope
+ * 	    retry rotates to a NEW upstream. Summing is correct.)
+ * Scope semantics:
+ *   - UpstreamAttempts: physical Forward calls to a single upstream's
+ *     transport (primary + retries + hedges within one upstream).
+ *   - NetworkAttempts: rotations across upstreams driven by the
+ *     network executor's retry / hedge / consensus loop. Each rotation
+ *     triggers one upstream invocation chain. Not summed into total.
+ *   - CacheAttempts: cache-connector reads/writes including
+ *     within-connector retries and hedges.
+ */
+export interface ExecState {
+    /**
+     * Per-scope counters. Each executor owns its OWN counter set and
+     * MUST NOT touch another scope's counters.
+     */
+    upstreamattempts: any;
+    upstreamretries: any;
+    upstreamhedges: any;
+    networkattempts: any;
+    networkretries: any;
+    networkhedges: any;
+    cacheattempts: any;
+    cacheretries: any;
+    cachehedges: any;
+    /**
+     * ConsensusSlots counts how many consensus participants ran.
+     */
+    consensusslots: any;
+    /**
+     * ConsensusDisputes counts dispute events.
+     */
+    consensusdisputes: any;
+    /**
+     * ConsensusLowParticipants counts low-participant events.
+     */
+    consensuslowparticipants: any;
+    startedat: any;
+}
+/**
+ * ExecStateSnapshot is a plain-int view of ExecState for log/span
+ * labeling — captured at a point in time. Total Attempts/Retries/Hedges
+ * are derived as the sum of per-scope counters at snapshot time.
+ */
+export interface ExecStateSnapshot {
+    /**
+     * Totals (derived: Upstream + Network + Cache).
+     */
+    attempts: number;
+    retries: number;
+    hedges: number;
+    /**
+     * Per-scope counters (each executor's own bookkeeping).
+     */
+    upstreamattempts: number;
+    upstreamretries: number;
+    upstreamhedges: number;
+    networkattempts: number;
+    networkretries: number;
+    networkhedges: number;
+    cacheattempts: number;
+    cacheretries: number;
+    cachehedges: number;
+    consensusslots: number;
+    consensusdisputes: number;
+    consensuslowparticipants: number;
+    startedat: any;
+}
+/**
+ * execStateOnce is embedded on NormalizedRequest to lazy-init the
+ * ExecState struct without making every request pay the allocation when
+ * the field is never accessed.
+ */
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
 export type Network = any;
 export type QuantileTracker = any;
 export type TrackedMetrics = any;
+/**
+ * TimeoutFunc computes the timeout for a request. Returns nil when no
+ * timeout applies (caller skips context.WithTimeout).
+ */
+export type TimeoutFunc = any;
 export type Scope = string;
 /**
  * Policies must be created with a "network" in mind,

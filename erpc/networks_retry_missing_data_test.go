@@ -839,7 +839,7 @@ func TestNetworkForward_TryAllUpstreams_ValidationError_ContinuesToNextUpstream(
 		assert.Equal(t, 1, rpc1Calls)
 		assert.Equal(t, 1, rpc2Calls)
 		assert.Equal(t, 0, resp.Retries(), "no retry needed — both tried in same execution")
-		assert.Equal(t, 1, resp.Attempts(), "single execution attempt")
+		assert.Equal(t, 2, resp.Attempts(), "2 physical attempts (rpc1 missing-data + rpc2 success) in a single execution round")
 	})
 }
 
@@ -969,7 +969,7 @@ func TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty(t *testing.T) {
 
 		assert.Equal(t, 1, rpc1Calls, "rpc1 should be called once")
 		assert.Equal(t, 1, rpc2Calls, "rpc2 should be called once")
-		assert.Equal(t, 1, resp.Attempts(), "single execution — both tried in same round")
+		assert.Equal(t, 2, resp.Attempts(), "2 physical attempts (rpc1 500 + rpc2 empty) in a single execution round")
 	})
 }
 
@@ -1116,7 +1116,8 @@ func TestNetworkForward_TryAllUpstreams_SingleUpstreamBackwardCompat(t *testing.
 		assert.Contains(t, jrr.GetResultString(), "0x42")
 
 		// Round 1: rpc1 error + rpc2 error → retry. Round 2: rpc1 success.
-		assert.Equal(t, 2, resp.Attempts(), "should take 2 attempts (round 1 all-error, round 2 success)")
+		// Physical calls = 3 (rpc1 fail + rpc2 fail + rpc1 success).
+		assert.Equal(t, 3, resp.Attempts(), "should make 3 physical calls (round 1: rpc1 fail + rpc2 fail; round 2: rpc1 success)")
 		assert.GreaterOrEqual(t, callCount, 2, "rpc1 should be called at least twice")
 	})
 }
@@ -1301,7 +1302,8 @@ func TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry(t *testin
 		assert.Contains(t, jrr.GetResultString(), "0xde0b6b3a7640000")
 
 		assert.GreaterOrEqual(t, rpc1Calls, 2, "rpc1 should be called in both rounds")
-		assert.Equal(t, 2, resp.Attempts(), "should take 2 attempts (round 1 all-error, round 2 success)")
+		// Physical calls = 3 (round 1: rpc1 + rpc2 missing-data; round 2: rpc1 success).
+		assert.Equal(t, 3, resp.Attempts(), "should make 3 physical calls (round 1: rpc1 + rpc2 missing-data; round 2: rpc1 success)")
 	})
 }
 

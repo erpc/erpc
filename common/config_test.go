@@ -265,7 +265,7 @@ failsafe:
 		assert.Len(t, config.Failsafe, 2)
 		assert.Equal(t, "*", config.Failsafe[0].MatchMethod)
 		assert.Equal(t, "eth_*", config.Failsafe[1].MatchMethod)
-		assert.Equal(t, 2*time.Second, time.Duration(config.Failsafe[0].Timeout.Duration))
+		assert.Equal(t, 2*time.Second, config.Failsafe[0].Timeout.Duration.Resolve(nil))
 		assert.Equal(t, 3, config.Failsafe[0].Retry.MaxAttempts)
 	})
 
@@ -283,7 +283,7 @@ failsafe:
 		assert.NoError(t, err)
 		assert.Len(t, config.Failsafe, 1)
 		assert.Equal(t, "*", config.Failsafe[0].MatchMethod) // Should default to "*"
-		assert.Equal(t, 2*time.Second, time.Duration(config.Failsafe[0].Timeout.Duration))
+		assert.Equal(t, 2*time.Second, config.Failsafe[0].Timeout.Duration.Resolve(nil))
 		assert.Equal(t, 3, config.Failsafe[0].Retry.MaxAttempts)
 	})
 }
@@ -322,7 +322,7 @@ failsafe:
 		assert.NoError(t, err)
 		assert.Len(t, defaults.Failsafe, 1)
 		assert.Equal(t, "*", defaults.Failsafe[0].MatchMethod) // Should default to "*"
-		assert.Equal(t, 2*time.Second, time.Duration(defaults.Failsafe[0].Timeout.Duration))
+		assert.Equal(t, 2*time.Second, defaults.Failsafe[0].Timeout.Duration.Resolve(nil))
 	})
 }
 
@@ -362,7 +362,7 @@ failsafe:
 		assert.NoError(t, err)
 		assert.Len(t, upstream.Failsafe, 1)
 		assert.Equal(t, "*", upstream.Failsafe[0].MatchMethod) // Should default to "*"
-		assert.Equal(t, 2*time.Second, time.Duration(upstream.Failsafe[0].Timeout.Duration))
+		assert.Equal(t, 2*time.Second, upstream.Failsafe[0].Timeout.Duration.Resolve(nil))
 	})
 }
 
@@ -419,13 +419,13 @@ projects:
 		// Check first failsafe config
 		assert.Equal(t, "*", network.Failsafe[0].MatchMethod)
 		assert.Contains(t, network.Failsafe[0].MatchFinality, DataFinalityStateRealtime)
-		assert.Equal(t, 2*time.Second, time.Duration(network.Failsafe[0].Timeout.Duration))
+		assert.Equal(t, 2*time.Second, network.Failsafe[0].Timeout.Duration.Resolve(nil))
 		assert.Equal(t, 3, network.Failsafe[0].Retry.MaxAttempts)
 
 		// Check second failsafe config
 		assert.Equal(t, "*", network.Failsafe[1].MatchMethod)
 		assert.Contains(t, network.Failsafe[1].MatchFinality, DataFinalityStateUnfinalized)
-		assert.Equal(t, 5*time.Second, time.Duration(network.Failsafe[1].Timeout.Duration))
+		assert.Equal(t, 5*time.Second, network.Failsafe[1].Timeout.Duration.Resolve(nil))
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
 		assert.NotNil(t, network.Failsafe[1].Hedge)
 		assert.NotNil(t, network.Failsafe[1].Consensus)
@@ -455,7 +455,7 @@ projects:
 		network := config.Projects[0].Networks[0]
 		assert.Len(t, network.Failsafe, 1)
 		assert.Equal(t, "*", network.Failsafe[0].MatchMethod)
-		assert.Equal(t, 2*time.Second, time.Duration(network.Failsafe[0].Timeout.Duration))
+		assert.Equal(t, 2*time.Second, network.Failsafe[0].Timeout.Duration.Resolve(nil))
 		assert.Equal(t, 3, network.Failsafe[0].Retry.MaxAttempts)
 	})
 }
