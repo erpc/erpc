@@ -1,240 +1,116 @@
 ---
-description: Failsafe policies are defined on network/upstream level to help with intermittent issues and increase general resiliency...
+title: Failsafe
+description: Per-network and per-upstream failsafe policies — timeout, retry, hedge, circuit breaker, consensus — with per-method and per-finality scoping.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
 # Failsafe
 
-Failsafe policies help with intermittent issues and increase resiliency. They can be configured at both [Network](/config/projects/networks) and [Upstream](/config/projects/upstreams) levels, with support for **per-method** configuration.
+<LLMsTxtLink />
 
-## Available policies
+Failsafe policies handle intermittent upstream issues — timeouts, slowdowns, rate limits, transient errors, disagreement between upstreams. They live on **networks** (wraps the whole request lifecycle, including failover across upstreams) and on **upstreams** (one attempt against one endpoint).
 
-- [`timeout:`](/config/failsafe#timeout-policy) prevents requests from hanging indefinitely
-- [`retry:`](/config/failsafe#retry-policy) recovers from transient failures
-- [`hedge:`](/config/failsafe#hedge-policy) runs parallel requests when upstreams are slow
-- [`circuitBreaker:`](/config/failsafe#circuitbreaker-policy) temporarily removes failing upstreams
-- [`consensus:`](/config/failsafe/consensus) verifies multiple upstreams agree on results
-- [Integrity](/config/failsafe/integrity) increases data quality for specific methods
+**Five policies:**
 
-## Per-method configuration
+- [`timeout`](#timeout-policy) — bound how long a request may take
+- [`retry`](#retry-policy) — replay transient failures with backoff
+- [`hedge`](#hedge-policy) — race a backup request when the primary is slow
+- [`circuitBreaker`](#circuitbreaker-policy) — temporarily remove an upstream after sustained failure
+- [`consensus`](/config/failsafe/consensus) — query multiple upstreams in parallel and require agreement
 
-Failsafe policies can optionally be configured per-method using `matchMethod` and `matchFinality` fields. This allows fine-tuned behavior for different RPC methods and different block finality states.
+There's also a dedicated [integrity](/config/failsafe/integrity) doc for empty-response handling and data-correctness directives.
 
-- `matchMethod`: Pattern to match RPC methods (a [matcher](/config/matchers) supports wildcards `*` and OR operator `|`)
-- `matchFinality`: Array of finality states to match
+**You can scope each policy by:**
 
-When multiple failsafe configs are defined, they are evaluated in order and the first matching config is used.
+- **Method** — `matchMethod: "eth_call|trace_*"` (matcher syntax with `*`, `|`, `!`)
+- **Finality** — `matchFinality: ["finalized", "unfinalized", "realtime", "unknown"]`. Note: there is **no `latest` value** — that's a block tag, not a finality state.
 
-### Finality States
+Policies in `failsafe[]` are evaluated in order; the first one whose `matchMethod` + `matchFinality` match the request is used.
 
-The `matchFinality` field can match against these data finality states:
+## Minimum useful config
 
-- **`finalized`**: Data from blocks that are confirmed as finalized and safe from reorgs. This is determined by comparing the block number with the upstream's finalized block.
-  - Example methods: `eth_getBlockByNumber` (for old blocks), `eth_getLogs` (for finalized ranges)
-  - Use case: Can have relaxed failsafe policies since data won't change
+A reasonable production baseline: a network-wide timeout with retry across upstreams, and a hedge to short-circuit slow tails.
 
-- **`unfinalized`**: Data from recent blocks that could still be reorganized. Also includes any data from pending blocks.
-  - Example methods: `eth_getBlockByNumber("latest")`, `eth_call` with recent blocks
-  - Use case: May need more aggressive retries and shorter timeouts
-
-- **`realtime`**: Data that changes frequently, typically with every new block.
-  - Example methods: `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `net_peerCount`
-  - Use case: Often needs fast timeouts and may benefit from hedging
-
-- **`unknown`**: When the block number cannot be determined from the request/response.
-  - Example methods: `eth_getTransactionByHash`, `trace_transaction`, `debug_traceTransaction`
-  - Use case: Data is typically immutable once included, but block context is unknown
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects > networks[] > failsafe[]"
+	focus="6-15"
+	yaml={`projects:
   - id: main
-    upstreams:
-      - id: my-upstream
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
         failsafe:
-          # Default policy for all methods
-          - matchMethod: "*"        # matches any method (default if omitted)
+          - matchMethod: "*"
             timeout:
               duration: 30s
             retry:
               maxAttempts: 3
-          
-          # Fast timeout for simple queries
-          - matchMethod: "eth_getBlock*|eth_getTransaction*"
-            timeout:
-              duration: 5s
-            retry:
-              maxAttempts: 2
-              delay: 100ms
-          
-          # Longer timeout for heavy trace methods
-          - matchMethod: "trace_*|debug_*"
-            timeout:
-              duration: 60s
-            retry:
-              maxAttempts: 1    # expensive operations, minimize retries
-          
-          # Different policy for finalized vs unfinalized data
-          - matchMethod: "eth_call|eth_estimateGas"
-            matchFinality: ["unfinalized", "realtime"]
-            timeout:
-              duration: 10s
-            retry:
-              maxAttempts: 5    # unfinalized data changes frequently, retry more
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+              delay: 0ms          # 0 = no wait; immediately fail over to the next upstream
+            hedge:
+              delay: 200ms
+              maxCount: 3`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   projects: [{
     id: "main",
-    upstreams: [{
-      id: "my-upstream",
-      failsafe: [
-        // Default policy for all methods
-        {
-          matchMethod: "*",        // matches any method (default if omitted)
-          timeout: { duration: "30s" },
-          retry: { maxAttempts: 3 }
-        },
-        // Fast timeout for simple queries
-        {
-          matchMethod: "eth_getBlock*|eth_getTransaction*",
-          timeout: { duration: "5s" },
-          retry: { maxAttempts: 2, delay: "100ms" }
-        },
-        // Longer timeout for heavy trace methods
-        {
-          matchMethod: "trace_*|debug_*",
-          timeout: { duration: "60s" },
-          retry: { maxAttempts: 1 }    // expensive operations, minimize retries
-        },
-        // Different policy for finalized vs unfinalized data
-        {
-          matchMethod: "eth_call|eth_estimateGas",
-          matchFinality: ["unfinalized", "realtime"],
-          timeout: { duration: "10s" },
-          retry: { maxAttempts: 5 }    // unfinalized data changes frequently, retry more
-        }
-      ]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      failsafe: [{
+        matchMethod: "*",
+        timeout: { duration: "30s" },
+        retry: { maxAttempts: 3, delay: "0ms" },
+        hedge: { delay: "200ms", maxCount: 3 },
+      }],
+    }],
+  }],
+});`}
+/>
+
+## Finality states (for `matchFinality`)
+
+| State | What it means |
+|---|---|
+| `finalized` | Block past the chain's finalization horizon. Safe from reorgs. e.g. `eth_getBlockByNumber` on an old block, finalized `eth_getLogs` ranges. Relaxed failsafe is fine. |
+| `unfinalized` | Recent block that could still reorg. Pending-block data also counts. e.g. `eth_getBlockByNumber("latest")` on a fresh block. May need more aggressive retries and shorter timeouts. |
+| `realtime` | Data that updates every block: `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `net_peerCount`. Short timeouts + hedge are common. |
+| `unknown` | Block number not derivable from request/response: `eth_getTransactionByHash`, `trace_transaction`, `debug_traceTransaction`. Data is typically immutable once mined; block context just isn't surfaced. |
+
+<Callout type="warning">
+	**`matchFinality: ["latest"]` is invalid.** `latest` is a block tag, not a finality state. Using it silently never matches. Use `realtime` or `unfinalized` instead.
+</Callout>
 
 ## `timeout` policy
 
-Sets a timeout for requests. Network-level timeout applies to the entire request lifecycle (including retries), while upstream-level timeout applies to each individual attempt.
+Two modes: fixed (`duration` only) or dynamic (quantile-based, with optional floor/ceiling). Dynamic timeouts use the observed latency distribution per upstream — the timeout adapts to the upstream's actual performance instead of being hard-coded.
 
-Timeout supports two modes: **fixed** (static duration) and **dynamic** (quantile-based, adapts to real latency).
-
-### Fixed timeout
-
-The simplest configuration — a static duration that applies to all requests matching the policy.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 42161
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 30s        # Total time including all retries
-    
-    upstreams:
-      - id: blastapi-chain-42161
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s        # Per-attempt timeout
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    networks: [{
-      architecture: "evm",
-      evm: { chainId: 42161 },
-      failsafe: [{
-        matchMethod: "*",
-        timeout: { duration: "30s" }    // Total time including all retries
-      }]
-    }],
-    upstreams: [{
-      id: "blastapi-chain-42161",
-      failsafe: [{
-        matchMethod: "*",
-        timeout: { duration: "15s" }    // Per-attempt timeout
-      }]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
-
-### Dynamic quantile-based timeout
-
-<Callout type="info">
-  **Quantile-based timeout** (recommended) computes the timeout from real latency percentiles per method, so it automatically adapts to your traffic. Works similarly to [quantile-based hedging](/config/failsafe#hedge-policy).
-</Callout>
-
-When `quantile` is set, the timeout is computed dynamically from the DDSketch latency distribution for each RPC method. For example, `quantile: 0.99` means "set the timeout at the p99 of observed latencies" — only the slowest 1% of requests would be timed out.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `duration` | Duration | Cold-start fallback used until enough latency data is collected. Also serves as the fallback when `maxDuration` is not set. |
-| `quantile` | float | Percentile of latency distribution to use as timeout (e.g., `0.99` for p99). Must be between 0 and 1. |
-| `minDuration` | Duration | *(Optional)* Floor for the computed timeout. Prevents false timeouts when latencies are very low. |
-| `maxDuration` | Duration | *(Optional)* Ceiling for the computed timeout. Can be used as the cold-start fallback when `duration` is omitted. |
-
-<Callout type="tip">
-  For most use cases, just `duration` + `quantile` is sufficient. Use `quantile: 0.99` to timeout only truly stuck requests while letting the system self-tune. The `minDuration` and `maxDuration` fields are optional guard rails.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects > networks[] > failsafe[] > timeout"
+	focus="9-13"
+	yaml={`projects:
   - id: main
     networks:
       - architecture: evm
         evm:
           chainId: 1
         failsafe:
-          # Recommended: pure dynamic timeout with p99
-          - matchMethod: "eth_call|eth_getLogs"
-            timeout:
-              duration: 30s        # Cold-start fallback
-              quantile: 0.99       # Timeout at p99 of observed latencies
-          
-          # With optional guard rails
+          # Dynamic p99 timeout with safety guard rails
           - matchMethod: "*"
             timeout:
-              duration: 60s        # Cold-start fallback
-              quantile: 0.99
-              minDuration: 200ms   # Never timeout faster than this
-              maxDuration: 60s     # Never wait longer than this
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+              duration: 30s        # cold-start fallback
+              quantile: 0.99       # timeout at p99 of observed latencies
+              minDuration: 200ms   # never timeout faster than this
+              maxDuration: 60s     # never wait longer than this`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   projects: [{
@@ -242,137 +118,41 @@ export default createConfig({
     networks: [{
       architecture: "evm",
       evm: { chainId: 1 },
-      failsafe: [
-        // Recommended: pure dynamic timeout with p99
-        {
-          matchMethod: "eth_call|eth_getLogs",
-          timeout: {
-            duration: "30s",       // Cold-start fallback
-            quantile: 0.99         // Timeout at p99 of observed latencies
-          }
+      failsafe: [{
+        matchMethod: "*",
+        timeout: {
+          duration: "30s",
+          quantile: 0.99,
+          minDuration: "200ms",
+          maxDuration: "60s",
         },
-        // With optional guard rails
-        {
-          matchMethod: "*",
-          timeout: {
-            duration: "60s",       // Cold-start fallback
-            quantile: 0.99,
-            minDuration: "200ms",  // Never timeout faster than this
-            maxDuration: "60s"     // Never wait longer than this
-          }
-        }
-      ]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
-
-Monitor the computed timeout values via Prometheus metric:
-- `erpc_network_timeout_duration_seconds` — histogram of dynamically computed timeout durations per method
+      }],
+    }],
+  }],
+});`}
+/>
 
 ## `retry` policy
 
-Automatically retries failed requests with configurable backoff strategies.
+Retries transient failures with backoff. See the dedicated [retry walkthrough on the preview page](/preview-retry) for the full mechanics — or the AI reference below for every field.
 
-#### Retryable Errors
-- `5xx` server errors (intermittent issues)
-- `408` request timeout
-- `429` rate limit exceeded
-- Empty responses for certain methods (e.g., `eth_getLogs` when node is lagging)
-
-#### Non-Retryable Errors
-- `4xx` client errors (invalid requests)
-- Unsupported method errors
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    upstreams:
-      - id: my-upstream
-        failsafe:
-          - matchMethod: "*"
-            retry:
-              maxAttempts: 3        # Total attempts (initial + 2 retries)
-              delay: 1000ms         # Initial delay between retries
-              backoffMaxDelay: 10s  # Maximum delay after backoff
-              backoffFactor: 0.3    # Exponential backoff multiplier
-              jitter: 500ms         # Random jitter (0-500ms) to prevent thundering herd
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    upstreams: [{
-      id: "my-upstream",
-      failsafe: [{
-        matchMethod: "*",
-        retry: {
-          maxAttempts: 3,        // Total attempts (initial + 2 retries)
-          delay: "1000ms",       // Initial delay between retries
-          backoffMaxDelay: "10s", // Maximum delay after backoff
-          backoffFactor: 0.3,    // Exponential backoff multiplier
-          jitter: "500ms"        // Random jitter (0-500ms) to prevent thundering herd
-        }
-      }]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
-
-### Empty responses
-
-<Callout type="tip">
-For comprehensive documentation on empty results, missing data errors, and block unavailability — including all config fields and production guidelines — see [**Empty or missing data handling**](/config/failsafe/integrity#empty-or-missing-data-handling).
-</Callout>
-
-Retry feature is useful to handle empty responses when a node is lagging behind or for some other reason returns an unexpected empty response.
-
-- **What counts as empty**: Results like `null`, `[]`, `""`, `{}`, `0x`, `"0x"`, hex strings that are all zeros (e.g., `0x000...0`), and method-specific empties (e.g., empty logs). Internally we detect these directly from response bytes.
-- **Where retries apply**: Only at the **network level** when the request has `retryEmpty` enabled (via directive defaults or request headers/params). Upstream-level retry does not retry on empties.
-- **Default ignore list (`retry.emptyResultAccept`)**: Methods to NEVER retry when the response is empty (e.g., `eth_getLogs`, `eth_call`). Configure to override defaults.
-- **Block availability check**: For EVM, when empty and the upstream is not syncing, we try to extract the block number and check upstream availability. If the upstream can serve that block but still returned empty, we do not retry.
-- **Availability confidence (`retry.emptyResultConfidence`)**:
-  - `finalizedBlock`: If the target block is finalized (at or below finalized), empty responses are treated as valid (no retry). If the target block is after finalized, we will retry.
-  - `blockHead`: If the target block is at or below the node's latest head, empty responses are treated as valid (no retry). If the target block is ahead of the head, we will retry.
-- **Syncing nodes**: If an upstream is syncing and returns empty, it is treated unfavorably and skipped for the remainder of the request.
-- **Per-request de-dup**: Upstreams that returned empty for a request are skipped on subsequent rotations for that same request.
-- **Cap empty retries**: `retry.emptyResultMaxAttempts` caps total attempts specifically for empty-result retries (default equals `retry.maxAttempts`).
-- **Non-empty wins**: If any non-empty response was seen, it is preserved and can be returned even if later attempts fail. In consensus, when configured, non-empty results are preferred.
-- **Writes are never retried**: Write methods (e.g., `eth_send*`) are not retried.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="EmptyRetryConfigTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects > networks[] > failsafe[] > retry"
+	focus="8-13"
+	yaml={`projects:
   - id: main
     networks:
       - architecture: evm
-        evm:
-          chainId: 1
-        directiveDefaults:
-          retryEmpty: true # enable empty-result retries at network level
+        evm: { chainId: 1 }
         failsafe:
           - matchMethod: "*"
             retry:
-              maxAttempts: 4 # total attempts (initial + retries)
-              emptyResultAccept: ["eth_getLogs", "eth_call"] # Never retry these methods when result is empty
-              emptyResultConfidence: finalizedBlock # treat finalized empties as valid
-              emptyResultMaxAttempts: 2 # cap attempts for empty-result retries only
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+              maxAttempts: 3
+              delay: 200ms
+              backoffFactor: 1.5
+              backoffMaxDelay: 5s
+              jitter: 50ms`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   projects: [{
@@ -380,59 +160,40 @@ export default createConfig({
     networks: [{
       architecture: "evm",
       evm: { chainId: 1 },
-      directiveDefaults: {
-        retryEmpty: true                // enable empty-result retries at network level
-      },
       failsafe: [{
         matchMethod: "*",
         retry: {
-          maxAttempts: 4,
-          // emptyResultAccept: ["eth_getLogs", "eth_call"], // NEVER retry these when empty
-          // emptyResultConfidence: "finalized",              // treat finalized empties as valid
-          emptyResultMaxAttempts: 2      // cap attempts for empty-result retries only
-        }
-      }]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
+          maxAttempts: 3,
+          delay: "200ms",
+          backoffFactor: 1.5,
+          backoffMaxDelay: "5s",
+          jitter: "50ms",
+        },
+      }],
+    }],
+  }],
+});`}
+/>
 
 ## `hedge` policy
 
-Starts parallel requests when an upstream is slow to respond. Highly recommended at network level for optimal performance.
+Speculative parallel request when the primary is slow. If the hedged copy beats the primary, the slower in-flight request is cancelled. Use a quantile to make the hedge delay adapt to observed latency.
 
-<Callout type="info">
-  **Quantile-based hedging** (recommended) uses response time statistics to determine optimal hedge timing, while **fixed-delay hedging** uses a static delay.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects > networks[] > failsafe[] > hedge"
+	focus="7-11"
+	yaml={`projects:
   - id: main
     networks:
       - architecture: evm
-        evm:
-          chainId: 1
+        evm: { chainId: 1 }
         failsafe:
           - matchMethod: "*"
             hedge:
-              # Quantile-based (recommended): hedge after p99 response time
-              quantile: 0.99
-              minDelay: 100ms     # Minimum wait before hedging
-              maxDelay: 2s        # Maximum wait before hedging
-              maxCount: 1         # Max parallel hedged requests
-              
-              # Alternative: Fixed-delay hedging
-              # delay: 500ms
-              # maxCount: 1
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+              quantile: 0.9      # hedge at p90 of observed latency
+              minDelay: 50ms     # never hedge faster than this
+              maxCount: 2        # up to 2 parallel hedges`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   projects: [{
@@ -442,133 +203,268 @@ export default createConfig({
       evm: { chainId: 1 },
       failsafe: [{
         matchMethod: "*",
-        hedge: {
-          // Quantile-based (recommended): hedge after p99 response time
-          quantile: 0.99,
-          minDelay: "100ms",     // Minimum wait before hedging
-          maxDelay: "2s",        // Maximum wait before hedging
-          maxCount: 1            // Max parallel hedged requests
-          
-          // Alternative: Fixed-delay hedging
-          // delay: "500ms",
-          // maxCount: 1
-        }
-      }]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
+        hedge: { quantile: 0.9, minDelay: "50ms", maxCount: 2 },
+      }],
+    }],
+  }],
+});`}
+/>
 
-Monitor effectiveness via Prometheus metrics:
-- `erpc_network_hedged_request_total` - total hedged requests
-- `erpc_network_hedge_discards_total` - wasted hedges (original responded first)
+**Worked example — bimodal latency with `quantile` + `minDelay` + `maxDelay`.**
+
+Some chains have bimodal upstream latency: cached responses return in ~5ms while non-cached ones take 800ms–2s. A fixed `delay` either fires too early (constant cache-hit misses) or too late (slow upstreams never get hedged). Use quantile + guard rails instead:
+
+```yaml
+hedge:
+  quantile: 0.95    # hedge at p95 of observed latency — adapts as upstreams warm/cool
+  minDelay: 50ms    # never hedge before 50ms (avoids racing caches that return in <10ms)
+  maxDelay: 2s      # never wait longer than 2s before launching a hedge
+  maxCount: 2
+```
+
+The hedge fires at whichever is largest: the p95 observed latency, or `minDelay`. It never fires later than `maxDelay`. During cold start (no latency samples yet) the hedge falls back to `maxDelay` as the fixed delay.
 
 ## `circuitBreaker` policy
 
-Temporarily removes consistently failing upstreams to allow recovery time.
+Temporarily removes an upstream from rotation after sustained failure. Three states: **closed** (normal), **open** (rejects immediately), **half-open** (test with limited traffic). Only valid at the **upstream** level — networks fail over across upstreams, not against themselves.
 
-<Callout type="info">
-  Circuit breaker states:
-  - **Closed**: Normal operation, upstream is healthy
-  - **Open**: Upstream is failing, temporarily removed from rotation
-  - **Half-open**: Testing if upstream has recovered with limited traffic
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects > upstreams[] > failsafe[] > circuitBreaker"
+	focus="7-13"
+	yaml={`projects:
   - id: main
     upstreams:
       - id: my-upstream
+        endpoint: https://...
         failsafe:
           - matchMethod: "*"
             circuitBreaker:
-              # Open circuit when 80% (160/200) of recent requests fail
-              failureThresholdCount: 160
-              failureThresholdCapacity: 200
-              halfOpenAfter: 60s          # Try recovery after 1 minute
-              # Close circuit when 80% (8/10) succeed in half-open state
-              successThresholdCount: 8
-              successThresholdCapacity: 10
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+              failureThresholdCount: 160       # open after 160 failures
+              failureThresholdCapacity: 200    # ...out of a 200-sample window
+              halfOpenAfter: 5m                # 5 min in open before testing again
+              successThresholdCount: 3         # close again after 3 successes
+              successThresholdCapacity: 10     # ...out of a 10-sample window`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   projects: [{
     id: "main",
     upstreams: [{
       id: "my-upstream",
+      endpoint: "https://...",
       failsafe: [{
         matchMethod: "*",
         circuitBreaker: {
-          // Open circuit when 80% (160/200) of recent requests fail
           failureThresholdCount: 160,
           failureThresholdCapacity: 200,
-          halfOpenAfter: "60s",          // Try recovery after 1 minute
-          // Close circuit when 80% (8/10) succeed in half-open state
-          successThresholdCount: 8,
-          successThresholdCapacity: 10
-        }
-      }]
-    }]
-  }]
-});
+          halfOpenAfter: "5m",
+          successThresholdCount: 3,
+          successThresholdCapacity: 10,
+        },
+      }],
+    }],
+  }],
+});`}
+/>
+
+## Disabling a policy
+
+Set the policy's value to `null` (YAML) or `undefined`/omit (TypeScript) to opt out of a default that would otherwise apply.
+
+```yaml
+failsafe:
+  - matchMethod: "*"
+    timeout:
+      duration: 30s
+    retry: null            # explicitly disable retry on this method
 ```
-  </Tabs.Tab>
-</Tabs>
 
-## Real-World Examples
+<AISection title="Copy for your AI assistant — full failsafe reference">
 
-### High-Performance DeFi Configuration
+### `FailsafeConfig` — top-level fields
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+| Field | Type | Notes |
+|---|---|---|
+| `matchMethod` | string | Matcher pattern. Defaults to `"*"`. Supports `*` (wildcard), `\|` (OR), `!` (NOT). |
+| `matchFinality` | `("finalized"\|"unfinalized"\|"realtime"\|"unknown")[]` | When omitted, matches every finality. **Do not use `"latest"` here** — that's a block tag, not a state. |
+| `retry` | RetryPolicyConfig | See "Retry policy" below. |
+| `circuitBreaker` | CircuitBreakerPolicyConfig | Upstream-only. See "Circuit breaker policy" below. |
+| `timeout` | TimeoutPolicyConfig | See "Timeout policy" below. |
+| `hedge` | HedgePolicyConfig | See "Hedge policy" below. |
+| `consensus` | ConsensusPolicyConfig | See [Consensus](/config/failsafe/consensus). |
+
+Each policy is independent — you can set any subset on a single `failsafe[]` entry. Evaluation order within `failsafe[]` is top-to-bottom; first match wins.
+
+### Where each policy is valid
+
+| Policy | Network level | Upstream level | Notes |
+|---|---|---|---|
+| `timeout` | ✅ | ✅ | Network timeout covers the **full** lifecycle (including every upstream retry). Upstream timeout bounds one attempt. |
+| `retry` | ✅ | ✅ | Network-level retries rotate **across** upstreams. Upstream-level retries hit the **same** upstream. Empty-result retries (`emptyResultAccept`, etc.) only fire at the network level. |
+| `hedge` | ✅ | ✅ | Common at network level (race across upstreams). |
+| `circuitBreaker` | ❌ | ✅ | Trips one upstream out of the rotation; the network's selection policy then routes elsewhere. |
+| `consensus` | ✅ | ✅ | Most commonly network-level; per-upstream usage is rare. |
+
+### Retryable vs non-retryable errors (canonical list)
+
+**Retryable** (`retry` will replay these):
+
+- HTTP `5xx` from the upstream
+- HTTP `408` (request timeout)
+- HTTP `429` (rate limit) — but prefer `rateLimitAutoTune` for sustained pressure
+- Network errors (TCP reset, DNS failure)
+- Empty responses for methods NOT in `retry.emptyResultAccept`, when `retryEmpty` directive is set
+- Block-unavailable conditions where the request's block reference is beyond every upstream's known head
+
+**Non-retryable** (single-attempt; never retried):
+
+- HTTP `4xx` other than `408`/`429`
+- `MethodNotSupported` from the upstream
+- Empty responses for methods in `retry.emptyResultAccept` at-or-below `emptyResultConfidence` horizon
+- Write methods (`eth_sendRawTransaction`, `eth_sendTransaction`) — unless `evm.idempotentTransactionBroadcast` is enabled on the network
+
+### `RetryPolicyConfig` — every field
+
+| Field | Default | Notes |
+|---|---|---|
+| `maxAttempts` | `3` | Total attempts including the first. `maxAttempts: 1` disables retry. |
+| `delay` | `0ms` | Initial wait before the second attempt. |
+| `backoffFactor` | `1.5` | Multiplier between successive delays. `1.0` = constant delay. |
+| `backoffMaxDelay` | `5s` | Ceiling on the computed delay. |
+| `jitter` | `0ms` | Random `[0, jitter)` added on top of each delay. Prevents thundering herd. |
+| `emptyResultAccept` | `["eth_getLogs", "eth_call"]` (effective default) | Methods where empty IS valid data — won't be retried as if it were missing. |
+| `emptyResultConfidence` | `blockHead` | `finalizedBlock` or `blockHead`. Decides whether an empty response to a not-yet-final block is retried. `finalizedBlock` is more conservative (only finalized empties are trusted). |
+| `emptyResultMaxAttempts` | = `maxAttempts` | Separate cap for empty-result retries. |
+| `emptyResultDelay` | = `delay` | Delay specifically between empty-result retries. |
+| `blockUnavailableDelay` | dynamic (network block-time × `blockUnavailableDelayMultiplier`) | Wait when the requested block hasn't propagated to any upstream yet. |
+| `emptyResultIgnore` | — | **Deprecated** alias for `emptyResultAccept`. Still accepted with a deprecation warning. |
+
+See [`retry` walkthrough](/preview-retry) for empty-result decision flow, three real-world examples, and metrics to watch.
+
+### `TimeoutPolicyConfig` — every field
+
+| Field | Default | Notes |
+|---|---|---|
+| `duration` | none | Fixed timeout. Used as cold-start fallback when quantile-based mode is enabled. |
+| `quantile` | none | Latency percentile (`0 < q < 1`). When set, the timeout adapts to the upstream's observed latency at this percentile. `0.99` is typical. |
+| `minDuration` | none | Floor for the computed timeout. Prevents false timeouts when observed latencies are very low. |
+| `maxDuration` | none | Ceiling. May serve as the cold-start fallback if `duration` is omitted. |
+
+**Recommendation:** for most production setups, `duration: 30s, quantile: 0.99` is enough. Add `minDuration` if your upstream is sometimes blazingly fast and you want to avoid a sub-100 ms hair-trigger.
+
+Metrics: `erpc_network_timeout_duration_seconds` (histogram of dynamically computed timeouts per method).
+
+### `HedgePolicyConfig` — every field
+
+| Field | Default | Notes |
+|---|---|---|
+| `delay` | none | Fixed delay before issuing a hedge. |
+| `maxCount` | `1` | Max number of hedged requests (in addition to the primary). |
+| `quantile` | none | Latency percentile; when set, the hedge delay is the percentile of observed latencies. |
+| `minDelay` | none | Floor for the hedge delay. |
+| `maxDelay` | none | Ceiling. |
+
+Combine `quantile` + `minDelay` to make the hedge delay adapt to upstream performance while staying above a minimum (avoid hedging when even the slow case is fast).
+
+### `CircuitBreakerPolicyConfig` — every field
+
+| Field | Notes |
+|---|---|
+| `failureThresholdCount` | Open the breaker after this many failures... |
+| `failureThresholdCapacity` | ...within this rolling sample window. e.g. 160/200 = "trip after 80% failure across the last 200 requests". |
+| `halfOpenAfter` | Duration in open state before transitioning to half-open. |
+| `successThresholdCount` | Close the breaker again after this many successes... |
+| `successThresholdCapacity` | ...within this success-sample window. e.g. 3/10 = "close after 3 successful probes in 10 tries". |
+
+Only valid at the **upstream** level. Networks don't trip — they rotate across upstreams instead.
+
+### `ConsensusPolicyConfig` summary
+
+See the dedicated [consensus page](/config/failsafe/consensus) for the full reference. High-level fields:
+
+| Field | Notes |
+|---|---|
+| `maxParticipants` | Number of upstreams to query in parallel. |
+| `agreementThreshold` | Minimum upstreams that must agree. Default = `maxParticipants/2 + 1`. |
+| `disputeBehavior` | What to do on disagreement: `returnError`, `acceptMostCommonValidResult`, `preferBlockHeadLeader`, `onlyBlockHeadLeader`. |
+| `lowParticipantsBehavior` | What to do when fewer than `agreementThreshold` upstreams reply. |
+| `punishMisbehavior` | `{ disputeThreshold, disputeWindow, sitOutPenalty }` — temporal penalty for disputing upstreams. |
+| `disputeLogLevel` | `trace`/`debug`/`info`/`warn`/`error`. Verbosity of dispute logs. |
+| `ignoreFields` | Map of method → list of dot-path fields to exclude from comparison (e.g. `blockTimestamp` differs across upstreams). |
+| `preferNonEmpty` | Bias the dispute resolution toward non-empty results. |
+| `preferLargerResponses` | Bias toward larger response bodies. |
+| `preferHighestValueFor` | Map of method → field-path list. Picks the highest numeric value; used for nonces. |
+| `misbehaviorsDestination` | File or S3 export of disputing requests for offline review. |
+| `fireAndForget` | Don't cancel in-flight requests when consensus short-circuits (useful for broadcasts). |
+
+### Per-method scoping recipes
+
+**Different policy per finality**:
+
+```yaml
+failsafe:
+  - matchMethod: "*"
+    matchFinality: ["realtime", "unfinalized"]
+    timeout: { duration: 5s }
+    retry:   { maxAttempts: 3, delay: 100ms }
+  - matchMethod: "*"
+    matchFinality: ["finalized"]
+    timeout: { duration: 60s }     # tolerate long backfill reads
+    retry:   { maxAttempts: 5, delay: 200ms }
+  - matchMethod: "*"
+    matchFinality: ["unknown"]      # tx-hash keyed (receipts, traces by hash)
+    timeout: { duration: 30s }
+    retry:   { maxAttempts: 3 }
+```
+
+**Different policy per method group**:
+
+```yaml
+failsafe:
+  - matchMethod: "trace_*|debug_*"   # expensive — don't multiply
+    timeout: { duration: 60s }
+    retry:   { maxAttempts: 1 }
+  - matchMethod: "eth_getLogs"
+    timeout: { duration: 30s }
+    retry:   { maxAttempts: 3, delay: 100ms }
+  - matchMethod: "*"
+    timeout: { duration: 15s }
+    retry:   { maxAttempts: 3 }
+```
+
+### Real-world example — high-throughput DeFi with hedging
+
+Aggressive hedge across upstreams at network level; per-method fine-tuning at upstream level. Note the use of `realtime` (not the invalid `latest`).
+
+<ConfigTabs
+	path="projects > networks[] / upstreams[] > failsafe[]"
+	focus="9-13,21-27"
+	yaml={`projects:
   - id: defi-prod
     networks:
       - architecture: evm
-        evm:
-          chainId: 1
+        evm: { chainId: 1 }
         failsafe:
-          # Aggressive hedging for all methods
           - matchMethod: "*"
             hedge:
-              quantile: 0.9      # p90 latency
+              quantile: 0.9      # hedge at p90 latency
               minDelay: 50ms
-              maxCount: 2        # Up to 2 parallel hedges
-            timeout:
-              duration: 10s
-    
+              maxCount: 2        # up to 2 hedged copies
+            timeout: { duration: 10s }
     upstreams:
       - id: primary-node
+        endpoint: https://primary.example
         failsafe:
-          # Price feeds need fast response
+          # Price-feed reads — fast and unforgiving
           - matchMethod: "eth_call"
-            matchFinality: ["latest"]
-            timeout:
-              duration: 1s
-            retry:
-              maxAttempts: 1     # No time for retries
-          
-          # Block data can be slower but must succeed
+            matchFinality: ["realtime", "unfinalized"]
+            timeout: { duration: 1s }
+            retry: { maxAttempts: 1 }
+          # Block lookups — slower but must succeed
           - matchMethod: "eth_getBlock*"
-            timeout:
-              duration: 5s
-            retry:
-              maxAttempts: 5
-              delay: 100ms
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+            timeout: { duration: 5s }
+            retry: { maxAttempts: 5, delay: 100ms }`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   projects: [{
@@ -578,212 +474,70 @@ export default createConfig({
       evm: { chainId: 1 },
       failsafe: [{
         matchMethod: "*",
-        hedge: {
-          quantile: 0.9,      // p90 latency
-          minDelay: "50ms",
-          maxCount: 2         // Up to 2 parallel hedges
-        },
-        timeout: { duration: "10s" }
-      }]
+        hedge: { quantile: 0.9, minDelay: "50ms", maxCount: 2 },
+        timeout: { duration: "10s" },
+      }],
     }],
     upstreams: [{
       id: "primary-node",
+      endpoint: "https://primary.example",
       failsafe: [
         {
           matchMethod: "eth_call",
-          matchFinality: ["latest"],
+          matchFinality: ["realtime", "unfinalized"],
           timeout: { duration: "1s" },
-          retry: { maxAttempts: 1 }   // No time for retries
+          retry: { maxAttempts: 1 },
         },
         {
           matchMethod: "eth_getBlock*",
           timeout: { duration: "5s" },
-          retry: {
-            maxAttempts: 5,
-            delay: "100ms"
-          }
-        }
-      ]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
+          retry: { maxAttempts: 5, delay: "100ms" },
+        },
+      ],
+    }],
+  }],
+});`}
+/>
 
-### Finality-Based Configuration
+### Real-world example — indexer chasing tip with broad empty retries
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-failsafe:
-  # Finalized data: relaxed policies
-  - matchMethod: "*"
-    matchFinality: ["finalized"]
-    timeout:
-      duration: 30s
-    retry:
-      maxAttempts: 5
-      backoffFactor: 2
-  
-  # Unfinalized data: aggressive timeouts
-  - matchMethod: "*"
-    matchFinality: ["unfinalized"]
-    timeout:
-      duration: 5s
-    retry:
-      maxAttempts: 2
-      delay: 100ms
-  
-  # Realtime data: fast with hedging
-  - matchMethod: "*"
-    matchFinality: ["realtime"]
-    timeout:
-      duration: 2s
-    hedge:
-      delay: 500ms
-      maxCount: 1
-  
-  # Unknown finality: moderate settings
-  - matchMethod: "*"
-    matchFinality: ["unknown"]
-    timeout:
-      duration: 15s
-    retry:
-      maxAttempts: 3
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-failsafe: [
-  // Finalized data: relaxed policies
-  {
-    matchMethod: "*",
-    matchFinality: ["finalized"],
-    timeout: { duration: "30s" },
-    retry: {
-      maxAttempts: 5,
-      backoffFactor: 2
-    }
-  },
-  // Unfinalized data: aggressive timeouts
-  {
-    matchMethod: "*",
-    matchFinality: ["unfinalized"],
-    timeout: { duration: "5s" },
-    retry: {
-      maxAttempts: 2,
-      delay: "100ms"
-    }
-  },
-  // Realtime data: fast with hedging
-  {
-    matchMethod: "*",
-    matchFinality: ["realtime"],
-    timeout: { duration: "2s" },
-    hedge: {
-      delay: "500ms",
-      maxCount: 1
-    }
-  },
-  // Unknown finality: moderate settings
-  {
-    matchMethod: "*",
-    matchFinality: ["unknown"],
-    timeout: { duration: "15s" },
-    retry: { maxAttempts: 3 }
-  }
-]
-```
-  </Tabs.Tab>
-</Tabs>
+Network-wide retry-empty (caches will catch up shortly), tight per-method scoping for the long-tail backfill.
 
-### Indexer Configuration
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
+```yaml
 projects:
   - id: indexer
-    upstreams:
-      - id: archive-node
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        directiveDefaults:
+          retryEmpty: true        # treat empty as retryable across the board
         failsafe:
-          # Bulk log queries need long timeouts
-          - matchMethod: "eth_getLogs"
-            timeout:
-              duration: 120s
+          - matchMethod: "eth_getLogs|eth_call"
             retry:
-              maxAttempts: 3
-              backoffFactor: 2
-          
-          # Trace methods are expensive but critical
-          - matchMethod: "trace_*|arbtrace_*"
-            timeout:
-              duration: 180s
-            retry:
-              maxAttempts: 2
-            circuitBreaker:
-              failureThresholdCount: 10    # More tolerant for slow methods
-              failureThresholdCapacity: 20
-              halfOpenAfter: 5m
+              maxAttempts: 5
+              delay: 100ms
+              backoffFactor: 1.2
+              jitter: 50ms
+              emptyResultConfidence: finalizedBlock
+              emptyResultMaxAttempts: 2
+          - matchMethod: "*"
+            retry: { maxAttempts: 3, delay: 200ms }
+            timeout: { duration: 30s }
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [{
-    id: "indexer",
-    upstreams: [{
-      id: "archive-node",
-      failsafe: [
-        {
-          matchMethod: "eth_getLogs",
-          timeout: { duration: "120s" },
-          retry: {
-            maxAttempts: 3,
-            backoffFactor: 2
-          }
-        },
-        {
-          matchMethod: "trace_*|arbtrace_*",
-          timeout: { duration: "180s" },
-          retry: { maxAttempts: 2 },
-          circuitBreaker: {
-            failureThresholdCount: 10,
-            failureThresholdCapacity: 20,
-            halfOpenAfter: "5m"
-          }
-        }
-      ]
-    }]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
+### Common pitfalls
 
-## Disabling Policies
+- **`matchFinality: ["latest"]`** — silently never matches. Valid values are `finalized`, `unfinalized`, `realtime`, `unknown`.
+- **Mixing upstream + network retry without thinking about the product** — `upstream.retry.maxAttempts: 3` × `network.retry.maxAttempts: 3` = up to 9 attempts per request. Easy to accidentally 9× your upstream traffic.
+- **Network timeout shorter than `upstream.timeout × maxAttempts`** — the network gives up before the upstream's retry budget is exhausted. Set the network timeout generously.
+- **CircuitBreaker at network level** — only valid at upstream level; the parser will accept it but it has no effect at network level.
+- **`emptyResultIgnore` is deprecated** — rename to `emptyResultAccept` in existing configs; old configs still work with a deprecation warning. For network-wide empty-retry control, use `directiveDefaults.retryEmpty: false` (or per-request `?retryEmpty=false`) instead of relying on `retry.emptyResultIgnore`.
+- **Single-object legacy `failsafe: { ... }` form** — still accepted, but the array form with `matchMethod: "*"` is canonical. The single-object form is implicitly `matchMethod: "*"`.
+- **`retry.delay: 0ms` doesn't disable retry** — it means "no wait between attempts". Use `maxAttempts: 1` to disable retry entirely.
+- **Write methods aren't retried** even when retry is configured. Set `network.evm.idempotentTransactionBroadcast: true` if you want `eth_sendRawTransaction` to be safe under retry/hedge.
 
-To disable any policy, set it to `null` or `~` (YAML):
+</AISection>
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-failsafe:
-  - matchMethod: "*"
-    hedge: ~              # Disable hedging
-    circuitBreaker: ~     # Disable circuit breaker
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-failsafe: [{
-  matchMethod: "*",
-  hedge: null,           // Disable hedging
-  circuitBreaker: null   // Disable circuit breaker
-}]
-```
-  </Tabs.Tab>
-</Tabs>
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

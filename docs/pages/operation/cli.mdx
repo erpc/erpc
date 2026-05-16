@@ -1,0 +1,239 @@
+---
+title: CLI & env vars
+description: eRPC command-line flags, subcommands, and the environment variables that influence runtime behavior.
+---
+
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
+
+# CLI & environment variables
+
+<LLMsTxtLink />
+
+The `erpc` binary is the single entry point for running the proxy, validating a config, and quick-starting against an ad-hoc upstream list. Most operators only ever invoke `erpc start --config=erpc.yaml`, but the rest of the surface is useful for CI checks, container ENTRYPOINTs, and ad-hoc local testing.
+
+**Subcommands:**
+
+- [`start`](#start) (default) — run the proxy
+- [`validate`](#validate) — parse and validate a config; useful as a pre-deploy CI step
+
+**Flags:**
+
+- [`--config` / `-c`](#--config) — path to the YAML/TS/JS config file
+- [`--endpoint` / `-e`](#--endpoint) — supply upstream endpoints without a config file (repeatable)
+- [`--require-config`](#--require-config) — refuse to start without an explicit config
+
+## Quick start
+
+```bash
+# Run with a config file
+erpc start -c /etc/erpc/erpc.yaml
+
+# Run with one or more endpoints (no config file)
+erpc start -e https://eth.example/v1/abc -e alchemy://API_KEY
+
+# Validate a config (CI / pre-deploy)
+erpc validate -c /etc/erpc/erpc.yaml
+```
+
+## Subcommands
+
+### `start`
+
+Starts the proxy. Default subcommand — `erpc` alone is equivalent to `erpc start`.
+
+If `--config` is set, eRPC loads it and runs as configured.
+
+If `--config` is omitted but `--endpoint` is set (one or more times), eRPC builds an implicit single-project config with those endpoints. Convenient for CI / sandbox use.
+
+If neither is set, eRPC tries auto-discovery — looks for `erpc.yaml`, `erpc.ts`, `erpc.js` in the current directory. If none is found, it fails fast.
+
+### `validate`
+
+Parses and validates a config without starting any listeners. Exits 0 on success, non-zero with diagnostics on failure.
+
+```bash
+erpc validate -c erpc.yaml
+```
+
+Good as a `pre-commit` hook or a CI step before deploying.
+
+## Flags
+
+### `--config`
+
+```
+--config <path>
+-c <path>
+```
+
+Path to the config file. eRPC infers the format from the extension: `.yaml` / `.yml` are parsed as YAML; `.ts` / `.js` are loaded as a module whose `default` export is the config object.
+
+YAML supports `${VAR}` env-var interpolation. TypeScript configs use `process.env.VAR` directly.
+
+### `--endpoint`
+
+```
+--endpoint <url>
+-e <url>
+```
+
+Repeatable. Supply one or more upstream endpoints on the command line. eRPC auto-builds an implicit project named `default` with these endpoints, auto-detecting chain IDs.
+
+```bash
+erpc start \
+  -e https://eth-mainnet.alchemyapi.io/v2/KEY \
+  -e https://polygon-mainnet.g.alchemy.com/v2/KEY \
+  -e alchemy://KEY                              # all chains under this key
+```
+
+Useful for quick prototyping, integration tests, and Docker images that don't want to mount a config file.
+
+### `--require-config`
+
+```
+--require-config
+```
+
+Refuse to start unless `--config` was provided. Disables the auto-discovery fallback and the `--endpoint`-only mode. Use in production to fail fast when the config volume mount is missing or the wrong path was set.
+
+```bash
+erpc start --require-config -c /etc/erpc/erpc.yaml
+```
+
+## Environment variables
+
+| Variable | Where consumed | Effect |
+|---|---|---|
+| `LOG_LEVEL` | logger init | One of `trace`, `debug`, `info`, `warn`, `error`. Defaults to `info`. Equivalent to `logLevel` in config; CLI takes precedence. |
+| `LOG_WRITER` | logger init | When `console`, switches log output to a human-readable console writer instead of JSON. Useful for local development. |
+| `INSTANCE_ID` | misbehaviors templating, shared state | Explicit instance identifier. Used as `{instanceId}` in `consensus.misbehaviorsDestination.filePattern` and as the lock owner in shared-state. |
+| `POD_NAME` | instance ID resolver | Kubernetes-style fallback for instance ID. Read when `INSTANCE_ID` is not set. |
+| `HOSTNAME` | instance ID resolver, `responseHeaders` interpolation | Final fallback for instance ID. Also the standard container/pod hostname — common to interpolate into `server.responseHeaders.X-Instance`. |
+| `GOGC` | Go runtime | Garbage-collection target as a percent of heap growth. Set `GOGC=30` to trigger GC more aggressively (~30% growth). |
+| `GOMEMLIMIT` | Go runtime | Soft memory limit. Set e.g. `GOMEMLIMIT=2GiB` to trigger GC when RSS approaches the limit. Combine with `GOGC` for tighter memory ceilings. |
+| `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS SDK | Standard AWS credentials chain. Used by DynamoDB connector + consensus S3 export when `auth.mode` is unset. |
+| `OTEL_EXPORTER_OTLP_*` | OpenTelemetry SDK | Standard OTLP env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, etc.). Most operators set these via `tracing.*` config instead. |
+
+### Operator overrides
+
+The following variables control runtime subsystems and are intended for production operators. They are not debug flags — set them deliberately and leave them set for the lifetime of the deployment.
+
+| Variable | Effect |
+|---|---|
+| `ERPC_NOLOGS` | Set to `1` to suppress all zerolog output and allocations entirely. Useful in CI/test runs where log noise is unwanted or when eRPC is embedded in a process that manages its own log pipeline. |
+| `ERPC_NOMETRICS` | Set to `1` to disable Prometheus metrics completely (replaces the default registry with a no-op). Use when running eRPC embedded in a larger service that reports metrics through its own pipeline. |
+| `ERPC_PPROF_PORT` | Port for the Go pprof profiling HTTP server (default `6060`). Profile the running process with `go tool pprof http://localhost:6060/debug/pprof/heap`. Set to an empty string to disable the pprof server entirely. |
+
+<AISection title="Copy for your AI assistant — full CLI / env-vars reference">
+
+### Command-resolution order
+
+When you run `erpc` (no subcommand), the binary resolves as follows:
+
+1. First positional arg is `start` → run the proxy.
+2. First positional arg is `validate` → validate config, exit.
+3. No positional arg → equivalent to `start`.
+
+### Config discovery, when `--config` is omitted
+
+In order of precedence:
+
+1. `--endpoint` flag(s) present → build an implicit config: a single project `default` with the listed upstreams.
+2. `ERPC_CONFIG_PATH` env var → load that path.
+3. Walk the current directory for `erpc.yaml`, `erpc.yml`, `erpc.ts`, `erpc.js` in order.
+4. Fail with "no config provided".
+
+Setting `--require-config` skips steps 1–3 — only step 0 (`--config`) applies, and the process exits with an error if it's missing.
+
+### Config format selection
+
+The file extension picks the parser:
+
+| Extension | Parser |
+|---|---|
+| `.yaml`, `.yml` | YAML, with `${VAR}` env-var interpolation |
+| `.ts` | TypeScript, loaded via the eRPC config SDK |
+| `.js` | JavaScript (CommonJS or ESM), loaded as a module |
+| `.json` | JSON |
+
+For TS/JS, the module's `default` export is the config object. The `@erpc-cloud/config` SDK provides `createConfig()` for type safety.
+
+### Environment variable resolution order for instance identification
+
+When eRPC needs to identify this instance (for misbehaviors templating, shared-state lock ownership, metric labels), it tries in order:
+
+1. `INSTANCE_ID` env var
+2. `POD_NAME` env var (Kubernetes convention)
+3. `HOSTNAME` env var (default container behavior; on Linux this is the hostname syscall)
+4. A randomly generated UUID if none of the above are set
+
+Setting `INSTANCE_ID` explicitly is the recommended path for non-k8s deployments where you want stable instance names (e.g. `INSTANCE_ID=erpc-eu-01`).
+
+### `GOGC` and `GOMEMLIMIT` — production tuning
+
+The Go runtime defaults (`GOGC=100`, no GOMEMLIMIT) work for most workloads. Tune when:
+
+- **Memory pressure** — set `GOMEMLIMIT` to ~80% of your container's memory limit so the GC kicks in before the OOM-killer does:
+
+  ```bash
+  GOGC=30 GOMEMLIMIT=2GiB erpc start -c erpc.yaml
+  ```
+
+- **Burst latency from GC pauses** — lower `GOGC` (e.g. 25) means smaller heaps and shorter pauses, at the cost of CPU overhead from more frequent collections.
+
+- **CPU pressure with plenty of RAM** — raise `GOGC` (200, 400) so GC runs less often.
+
+Caution: very low `GOGC` (< 10) can cause GC thrashing — the runtime constantly collects, consuming most of the CPU.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Normal shutdown (SIGINT/SIGTERM after a clean drain). |
+| `1` | Config validation failed (parse error, unknown field, type mismatch). |
+| `2` | Unable to bind a configured listener (port in use, permission denied). |
+| `3` | Database or shared-state connector failed to initialize at startup. |
+
+In a containerized environment, non-zero exits trigger a pod restart; the orchestrator's restart-backoff will handle transient initialization failures (e.g. waiting for a database to come up).
+
+### CI integration
+
+A typical CI check before deploying a config change:
+
+```bash
+# In CI
+erpc validate -c new-config.yaml
+if [ $? -ne 0 ]; then
+  echo "Config validation failed"
+  exit 1
+fi
+
+# Optionally: run a smoke test with the new config
+erpc start -c new-config.yaml &
+ERPC_PID=$!
+sleep 5
+curl -fsS http://localhost:4000/healthcheck || { kill $ERPC_PID; exit 1; }
+kill $ERPC_PID
+```
+
+`validate` parses every field, checks references (e.g. `policies[].connector` resolves to a `connectors[].id`), and validates that vendor secrets are present. It does NOT make any network calls — it can run on locked-down build agents.
+
+### Common pitfalls
+
+- **`erpc start` without any flag and no config** — falls through to auto-discovery in the cwd. In Docker, cwd is `/` by default, so the auto-discovery finds nothing. Mount the config and pass `--config` or set the working dir.
+- **`-e` mode auto-detects chain IDs by calling `eth_chainId`** — if the endpoint is broken, startup fails with "could not detect chain". Use the long-form config when you know the chain IDs in advance.
+- **`GOMEMLIMIT` without `GOGC`** — without a lower `GOGC`, the runtime relies entirely on the soft limit, which can lead to large heap swings just under the limit. Pair them.
+- **`LOG_LEVEL=trace` in production** — extremely verbose; can saturate log shippers and dominate CPU on a busy proxy.
+- **`INSTANCE_ID` not stable across restarts** — if you use it as a shared-state lock owner, an unstable ID can leave orphaned locks after a crash. Use a deployment-stable value (the pod name in k8s; an explicit string elsewhere).
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

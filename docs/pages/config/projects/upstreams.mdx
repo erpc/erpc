@@ -1,812 +1,514 @@
 ---
-description: An upstream is defined to handle 1 or more networks (a.k.a. chains)...
+title: Upstreams
+description: An upstream is one or more RPC endpoints that serve one or more EVM networks — with failsafe, rate limits, scoring, block-availability bounds, and per-method filters.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../../components";
 
 # Upstreams
 
-An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types of upstreams:
+<LLMsTxtLink />
 
-- [`evm`](#evm-json-rpc) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
+An upstream is a single RPC endpoint (yours or a third party's) that can serve one or more EVM networks. eRPC manages the pool: it scores upstreams in real time, picks the best one as primary, falls over to the rest on failure, and enforces per-upstream rate limits and method allow/deny lists.
 
-<Callout type='info'>
-  eRPC supports **any EVM-compatible** JSON-RPC endpoint when using `evm` type. Specialized types like "alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
-</Callout>
+**You can configure:**
 
-## Config
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
+- **Endpoint** — plain HTTPS URL, or a vendor-shorthand like `alchemy://API_KEY` (see [Providers](/config/projects/providers))
+- **EVM details** — chain ID, state poller cadence, [block-availability bounds](#block-availability) with probes
+- **Method filters** — `ignoreMethods`, `allowMethods`, `autoIgnoreUnsupportedMethods`
+- **Failsafe** — per-upstream `timeout`, `retry`, `circuitBreaker`, `hedge`, `consensus`, with optional `matchMethod` / `matchFinality` scoping
+- **Rate limits** — bind a `rateLimitBudget`, optionally with `rateLimitAutoTune` that adjusts the budget based on 429 feedback
+- **Routing & scoring** — per-upstream `routing.scoreMultipliers` to boost/penalize this endpoint relative to others
+- **Transport** — JSON-RPC batching, gzip, custom headers, outbound proxy pool
+- **Grouping** — `group`, `vendorName` for labelling and fallback policies
+- **Shadow traffic** — `shadow` to mirror a fraction of requests to this upstream for comparison without affecting clients
+- **Per-method response validation** — `evm.integrity.eth_getBlockReceipts` correctness checks
+
+## Minimum useful config
+
+The smallest workable upstream is just an endpoint. Everything else has sensible defaults.
+
+<ConfigTabs
+	path="projects > upstreams[]"
+	focus="3-4"
+	yaml={`projects:
   - id: main
-    # ...
-
-    # Each upstream supports 1 or more networks (i.e. evm chains)
     upstreams:
-      # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
-      - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+      - endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+        # eRPC auto-detects the chain ID and applies default failsafe (15s timeout,
+        # 2 retries, circuit breaker at 80% failure rate).`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-        # Each upstream can have an arbitrary group name which is used in metrics, as well as 
-        # useful when writing an eval function in selectionPolicy below.
-        # Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
-        # and then fallback to this group if the default one doesn't have enough healthy upstreams.
-        group: fallback
-        
-        # (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
-        id: blastapi-chain-42161
+export default createConfig({
+  projects: [{
+    id: "main",
+    upstreams: [
+      { endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY" },
+    ],
+  }],
+});`}
+/>
 
-        # (OPTIONAL) Configurations for EVM-compatible upstreams.
+## Production config — every common knob
+
+A realistic upstream with rate limits, batching, method filters, and tuned failsafe. The dimmed scaffolding shows you where each block plugs in.
+
+<ConfigTabs
+	path="projects > upstreams[]"
+	focus="6-30"
+	yaml={`projects:
+  - id: main
+    rateLimiters:
+      budgets:
+        - id: alchemy-global
+          rules: [{ method: "*", maxCount: 500, period: second }]
+    upstreams:
+      - id: my-alchemy                      # used in logs, metrics, selection-policy
+        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+        rateLimitBudget: alchemy-global     # binds to budget above
         evm:
-          # (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
-          # but it is recommended to set it explicitly, for faster initialization. 
-          # DEFAULT: auto-detected.
-          chainId: 42161
-          # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
-          # DEFAULT: 30s.
-          statePollerInterval: 30s
-          # (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
-          # When omitted, the interval is dynamically inferred from the chain's observed block
-          # time. This skips redundant RPC calls when
-          # request traffic already keeps the block number fresh via response enrichment.
-          # Only set this if you need to override the automatic behavior.
-          # DEFAULT: dynamic (inferred from observed block time)
-          # statePollerDebounce: 2s
-          # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
-          # DEFAULT: archive
-          nodeType: full
-          # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
-          # DEFAULT: 128 (for "full" nodes).
-          maxAvailableRecentBlocks: 128
-          # (OPTIONAL) getLogsAutoSplittingRangeThreshold is an upstream hint used by the network-level
-          # proactive splitter. The network computes the min positive threshold across selected upstreams
-          # and splits large ranges into contiguous sub-requests of at most that size.
-          # Set to 0 or a negative value to disable for this upstream.
-          getLogsAutoSplittingRangeThreshold: 10000
-
-        # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
-        # Since budgets can be applied to multiple upstreams they all consume from the same budget.
-        # For example "global-blast" below can be applied to all chains supported by BlastAPI,
-        # to ensure you're not hitting them more than your account allows.
-        # DEFAULT: <none> - no budget applied.
-        rateLimitBudget: global-blast
-
-        # (OPTIONAL) Rate limit budget can be automatically adjusted based on the "rate-limited" error rate,
-        # received from upstream. Auto-tuning is enabled by default with values below.
-        # This is useful to automatically increase the budget if an upstream is capable of handling more requests,
-        # and decrease the budget if upstream is degraded.
-        # Every "adjustmentPeriod" total number of requests vs rate-limited will be calculated,
-        # if the value (0 to 1) is above "errorRateThreshold" then budget will be decreased by "decreaseFactor",
-        # if the value is below "errorRateThreshold" then budget will be increased by "increaseFactor".
-        # Note that the new budget will be applied to any upstream using this budget (e.g. Quicknode budget decreases).
-        # DEFAULT: if any budget is defined, auto-tuning is enabled with these values:
-        rateLimitAutoTune:
-          enabled: true
-          adjustmentPeriod: 1m
-          errorRateThreshold: 0.1
-          increaseFactor: 1.05
-          decreaseFactor: 0.9
-          minBudget: 0
-          maxBudget: 10_000
-
+          chainId: 1                        # optional, auto-detected
         jsonRpc:
-          # (OPTIONAL) To allow auto-batching requests towards the upstream.
-          # Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
-          # but they will be sent to upstream as individual requests.
           supportsBatch: true
           batchMaxSize: 10
           batchMaxWait: 50ms
-
-          # (OPTIONAL) Headers to send along with every outbound JSON-RPC request.
-          # This is especially useful for upstreams that require a static Bearer token for authentication.
-          headers:
-            Authorization: "Bearer 1234567890"
-
-        # (OPTIONAL) Which methods must never be sent to this upstream.
-        # For example this can be used to avoid archive calls (traces) to full nodes
-        ignoreMethods:
-          - "eth_traceTransaction"
-          - "alchemy_*"
-        # (OPTIONAL) Explicitly allowed methods will take precedence over ignoreMethods.
-        # For example if you only want eth_getLogs to be served, set ignore methods to "*" and allowMethods to "eth_getLogs".
-        allowMethods:
-          - "eth_getLogs"
-        # (OPTIONAL) By default a dynamic mechanism automatically adds "Unsupported" methods to ignoreMethods,
-        # based on errors returned by the upstream. Set this to false to disable this behavior.
-        # Default: true
-        autoIgnoreUnsupportedMethods: true
-
-        # (OPTIONAL) Refer to "Failsafe" docs section for more details.
-        # Here is "default" configuration if not explicitly set:
+          enableGzip: false                 # compress outbound bodies; default off
+        ignoreMethods: ["debug_*"]          # never send these here
+        allowMethods: ["eth_*", "net_*"]    # if set, ALL others are blocked except listed
         failsafe:
-          timeout:
-            duration: 15s
-          retry:
-            maxAttempts: 2
-            delay: 1000ms
-            backoffMaxDelay: 10s
-            backoffFactor: 0.3
-            jitter: 500ms
-          circuitBreaker:
-            # Open circuit after 80% of requests so far have failed (160 out of 200 last requests)
-            failureThresholdCount: 160 
-            failureThresholdCapacity: 200
-            # Wait 5 minutes before trying again
-            halfOpenAfter: 5m
-            # Close circuit after 3 successful requests (3 out of 10)
-            successThresholdCount: 3
-            successThresholdCapacity: 10
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+          - matchMethod: "*"
+            timeout: { duration: 15s }
+            retry:
+              maxAttempts: 3
+              delay: 200ms
+              backoffFactor: 1.5
+              jitter: 50ms
+            circuitBreaker:
+              failureThresholdCount: 160
+              failureThresholdCapacity: 200
+              halfOpenAfter: 5m
+              successThresholdCount: 3
+              successThresholdCapacity: 10`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  // ...
-  projects: [
-    {
-      id: "main",
-      // ...
-
-      // Each upstream supports 1 or more networks (i.e. evm chains)
-      upstreams: [
-        // (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
-        {
-          endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
-
-          /*
-          * (OPTIONAL) Each upstream can have an arbitrary group name which is used in metrics, as well as 
-          * useful when writing an eval function in selectionPolicy below.
-          * Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
-          * and then fallback to this group if the default one doesn't have enough healthy upstreams.
-          */
-          group: "fallback",
-
-          // (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
-          id: "blastapi-chain-42161",
-
-          // (OPTIONAL) Configurations for EVM-compatible upstreams.
-          evm: {
-            /*
-            * (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
-            * but it is recommended to set it explicitly, for faster initialization. 
-            * DEFAULT: auto-detected.
-            */
-            chainId: 42161,
-            // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
-            // DEFAULT: 30s.
-            statePollerInterval: "30s",
-            // (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
-            // When omitted, dynamically inferred from observed block time.
-            // DEFAULT: dynamic (inferred from observed block time)
-            // statePollerDebounce: "2s",
-            // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
-            // DEFAULT: archive
-            nodeType: "full",
-            // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
-            // DEFAULT: 128 (for "full" nodes).
-            maxAvailableRecentBlocks: 128,
-            // (OPTIONAL) getLogsAutoSplittingRangeThreshold is an upstream hint used by the network-level
-            // proactive splitter. The network computes the min positive threshold across selected upstreams
-            // and splits large ranges into contiguous sub-requests of at most that size.
-            // Set to 0 or a negative value to disable for this upstream.
-            getLogsAutoSplittingRangeThreshold: 10000
-          },
-
-          /**
-          * (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
-          * Since budgets can be applied to multiple upstreams they all consume from the same budget.
-          * For example "global-blast" below can be applied to all chains supported by BlastAPI,
-          * to ensure you're not hitting them more than your account allows.
-          * DEFAULT: <none> - no budget applied.
-          */
-          rateLimitBudget: "global-blast",
-          /*
-          * (OPTIONAL) Rate limit budget can be automatically adjusted based on the "rate-limited" error rate,
-          * received from upstream. Auto-tuning is enabled by default with values below.
-          * This is useful to automatically increase the budget if an upstream is capable of handling more requests,
-          * and decrease the budget if upstream is degraded.
-          * 
-          * Every "adjustmentPeriod" total number of requests vs rate-limited will be calculated,
-          * 
-          * - if the value (0 to 1) is above "errorRateThreshold" then budget will be decreased by "decreaseFactor",
-          * - if the value is below "errorRateThreshold" then budget will be increased by "increaseFactor".
-          * 
-          * Note that the new budget will be applied to any upstream using this budget (e.g. Quicknode budget decreases).
-          * 
-          * DEFAULT: if any budget is defined, auto-tuning is enabled with these values:
-          */
-          rateLimitAutoTune: {
-            enabled: true,
-            adjustmentPeriod: "1m",
-            errorRateThreshold: 0.1,
-            increaseFactor: 1.05,
-            decreaseFactor: 0.9,
-            minBudget: 0,
-            maxBudget: 10_000,
-          },
-
-          jsonRpc: {
-            /*
-            * (OPTIONAL) To allow auto-batching requests towards the upstream.
-            * Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
-            * but they will be sent to upstream as individual requests.
-            */
-            supportsBatch: true,
-            batchMaxSize: 10,
-            batchMaxWait: "50ms",
-
-            /**
-             * (OPTIONAL) Headers to send along with every outbound JSON-RPC request.
-             * This is especially useful for upstreams that require a static Bearer token for authentication.
-             */
-            headers: {
-              Authorization: "Bearer 1234567890",
-            },
-          },
-
-          // (OPTIONAL) Which methods must never be sent to this upstream.
-          // For example this can be used to avoid archive calls (traces) to full nodes.
-          // Note if ignoreMethods is NOT defined and allowMethods is defined, a ['*'] will be added automatically,
-          // to ignore all other methods by default. To change this behavior you can explicitly set ignoreMethods to any desired value.
-          ignoreMethods: [
-            "eth_traceTransaction",
-            "alchemy_*",
-          ],
-          // (OPTIONAL) Explicitly allowed methods will take precedence over ignoreMethods.
-          // For example if you only want eth_getLogs to be served, set ignore methods to "*" and allowMethods to "eth_getLogs".
-          allowMethods: [
-            "eth_getLogs",
-          ],
-          /*
-          * (OPTIONAL) By default a dynamic mechanism automatically adds "Unsupported" methods to ignoreMethods,
-          * based on errors returned by the upstream. Set this to false to disable this behavior.
-          * Default: true
-          */
-          autoIgnoreUnsupportedMethods: true,
-
-          // (OPTIONAL) Refer to "Failsafe" docs section for more details.
-          // Here is "default" configuration if not explicitly set:
-          failsafe: {
-            timeout: {
-              duration: "15s",
-            },
-            retry: {
-              maxAttempts: 2,
-              delay: "1000ms",
-              backoffMaxDelay: "10s",
-              backoffFactor: 0.3,
-              jitter: "500ms",
-            },
-            circuitBreaker: {
-              // Open circuit after 80% of requests so far have failed (160 out of 200 last requests)
-              failureThresholdCount: 160,
-              failureThresholdCapacity: 200,
-              // Wait 5 minutes before trying again
-              halfOpenAfter: "5m",
-              // Close circuit after 3 successful requests (3 out of 10)
-              successThresholdCount: 3,
-              successThresholdCapacity: 10,
-            },
-          },
-        },
-      ],
+  projects: [{
+    id: "main",
+    rateLimiters: {
+      budgets: [{
+        id: "alchemy-global",
+        rules: [{ method: "*", maxCount: 500, period: "second" }],
+      }],
     },
-  ],
-});
-
-```
-</Tabs.Tab>
-</Tabs>
-
-
-### Config defaults
-
-The `project.upstreamDefaults` configuration allows you to set default values for all [`upstreams`](/config/projects/upstreams) in a project. These defaults are applied before any upstream-specific configurations:
-
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    
-    upstreams:
-      # ... example above ^
-    
-    upstreamDefaults:
-      # Default group for all upstreams
-      group: "default"
-      
-      # Default JSON-RPC settings
-      jsonRpc:
-        supportsBatch: true
-        batchMaxSize: 10
-        batchMaxWait: "50ms"
-      
-      # Default failsafe policies
-      failsafe:
-        timeout:
-          duration: "15s"
-        retry:
-          maxAttempts: 3
-          delay: "300ms"
-          jitter: "100ms"
-          backoffMaxDelay: "5s"
-          backoffFactor: 1.5
-        circuitBreaker:
-          failureThresholdCount: 160
-          failureThresholdCapacity: 200
-          halfOpenAfter: "5m"
-          successThresholdCount: 3
-          successThresholdCapacity: 3
-
-      # Default method filters
-      ignoreMethods:
-        - "eth_traceTransaction"
-        - "alchemy_*"
-      allowMethods:
-        - "eth_getLogs"
-```
-
-Default values are only applied if the upstream doesn't have those values explicitly set. This allows you to have consistent configuration across all upstreams while still maintaining the ability to override specific values when needed.
-
-<Callout type='info'>
-  Defaults are merged on the first-level only (and not a deep merge).<br />
-  i.e. If an upstream has its own `failsafe:` defined, it will not take any of policies from upstreamDefaults.<br />
-  e.g. if an upstream.failsafe only has "timeout" policy, it will **NOT** get retry/circuitBreaker from upstreamDefaults (those will be disabled).
-</Callout>
+    upstreams: [{
+      id: "my-alchemy",
+      endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+      rateLimitBudget: "alchemy-global",
+      evm: { chainId: 1 },
+      jsonRpc: {
+        supportsBatch: true,
+        batchMaxSize: 10,
+        batchMaxWait: "50ms",
+        enableGzip: false,
+      },
+      ignoreMethods: ["debug_*"],
+      allowMethods: ["eth_*", "net_*"],
+      failsafe: [{
+        matchMethod: "*",
+        timeout: { duration: "15s" },
+        retry: {
+          maxAttempts: 3,
+          delay: "200ms",
+          backoffFactor: 1.5,
+          jitter: "50ms",
+        },
+        circuitBreaker: {
+          failureThresholdCount: 160,
+          failureThresholdCapacity: 200,
+          halfOpenAfter: "5m",
+          successThresholdCount: 3,
+          successThresholdCapacity: 10,
+        },
+      }],
+    }],
+  }],
+});`}
+/>
 
 ## Priority & routing
 
-eRPC automatically picks the best upstream for each request based on real-time performance. It tracks error rate, latency, throttling, and block lag for every upstream, computes a **score** (higher = better), and keeps the highest-scoring one as the "primary" while the others stay on standby.
+eRPC scores each upstream every few seconds based on error rate, latency, throttling, and block lag. The top-scoring upstream is the primary; failures rotate to the runner-up. Defaults work well in production; tune only when you have a reason.
 
-### How it works
-
-1. Every few seconds eRPC computes a **score** for each upstream based on its recent performance (error rate, latency, throttling, block lag).
-2. Upstreams are sorted by score — the highest-scoring upstream becomes the **primary**.
-3. The primary is **sticky**: it stays primary until another upstream scores significantly higher (hysteresis) and a cooldown period has passed. This prevents constant flip-flopping.
-4. If the primary fails or is too slow for a particular request, the next upstream is tried automatically.
-
-### Config
-
-All routing settings live under the project level. The defaults work well for most setups — you only need to change them if you want to fine-tune switching behavior.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects[]"
+	focus="3-9"
+	yaml={`projects:
   - id: main
-    # Routing algorithm: "score-based" (default) or "round-robin".
-    # score-based: best upstream is used first (recommended).
-    # round-robin: rotate evenly across upstreams.
-    routingStrategy: score-based
-
-    # Whether to compute one score per upstream ("upstream", default) or
-    # a separate score for each RPC method ("method").
-    # "upstream" is simpler and recommended for most setups.
-    scoreGranularity: upstream
-
-    # How often to recalculate upstream scores.
-    # DEFAULT: 30s
+    routingStrategy: score-based   # or "round-robin"
+    scoreGranularity: upstream     # or "method" for per-method scoring
     scoreRefreshInterval: 30s
-
-    # Time window for collecting performance metrics (error rate, latency, etc.)
-    # DEFAULT: 10m
     scoreMetricsWindowSize: 10m
-
-    # How much of the previous score is carried over each refresh tick (0..1).
-    # Higher = smoother/more stable scores, lower = faster reaction to changes.
-    # Use a negative value (e.g. -1) to disable smoothing (only latest metrics matter).
-    # DEFAULT: 0.95
-    scorePenaltyDecayRate: 0.95
-
-    # A challenger must score this fraction higher than the current primary
-    # to trigger a switch (0..1). e.g. 0.10 = must be 10% better.
-    # Use a negative value (e.g. -1) to disable stickiness (always pick the highest score).
-    # DEFAULT: 0.10
-    scoreSwitchHysteresis: 0.10
-
-    # Minimum time between primary switches.
-    # Use a negative value (e.g. -1) to disable the cooldown.
-    # DEFAULT: 2m
-    scoreMinSwitchInterval: 2m
-
-    # Controls prometheus metrics cardinality: "compact" (default), "detailed", or "none".
-    scoreMetricsMode: compact
-
-    upstreams:
-      - endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
-        # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+    scorePenaltyDecayRate: 0.95    # 0..1; higher = stabler; -1 = no smoothing
+    scoreSwitchHysteresis: 0.10    # challenger must beat primary by this fraction
+    scoreMinSwitchInterval: 2m     # cooldown between primary switches
+    upstreams: [ /* ... */ ]`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  projects: [
-    {
-      id: "main",
-      routingStrategy: "score-based",
-      scoreGranularity: "upstream",
-      scoreRefreshInterval: "30s",
-      scoreMetricsWindowSize: "10m",
-      scorePenaltyDecayRate: 0.95,
-      scoreSwitchHysteresis: 0.10,
-      scoreMinSwitchInterval: "2m",
-      scoreMetricsMode: "compact",
+  projects: [{
+    id: "main",
+    routingStrategy: "score-based",
+    scoreGranularity: "upstream",
+    scoreRefreshInterval: "30s",
+    scoreMetricsWindowSize: "10m",
+    scorePenaltyDecayRate: 0.95,
+    scoreSwitchHysteresis: 0.10,
+    scoreMinSwitchInterval: "2m",
+    upstreams: [ /* ... */ ],
+  }],
+});`}
+/>
 
-      upstreams: [
-        {
-          endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-<Callout type='info'>
-  The scoring mechanism only affects the order in which upstreams are tried. To fully disable an unreliable upstream, use the [Circuit Breaker](/config/failsafe#circuitbreaker-policy) failsafe policy at the upstream level.
-</Callout>
-
-### Tuning tips
-
-- **Stable production setup** (default): leave everything as-is. The 10% hysteresis and 2-minute cooldown prevent unnecessary switches.
-- **Fast failover**: set `scoreSwitchHysteresis: -1` and `scoreMinSwitchInterval: -1` to always use the current best upstream immediately.
-- **Gradual adaptation**: increase `scorePenaltyDecayRate` (e.g. `0.98`) for smoother scores — performance changes take longer to take effect.
-- **Reactive adaptation**: decrease `scorePenaltyDecayRate` (e.g. `0.80`) to react faster to upstream degradation.
-
-### Customizing scores per upstream
-
-You can boost or reduce the score of specific upstreams using score multipliers.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    upstreams:
-      - id: my-alchemy
-        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
-        routing:
-          # Ignore the slowest 30% of requests when measuring latency.
-          # DEFAULT: 0.70
-          scoreLatencyQuantile: 0.70
-
-          scoreMultipliers:
-            - network: '*'        # Apply to all networks (or e.g. "evm:1" for Ethereum only)
-              method: '*'         # Apply to all methods (or e.g. "eth_getLogs|eth_call")
-
-              # "overall" boosts the score. Higher = higher score = more preferred.
-              # e.g. overall: 10 makes this upstream 10x more likely to stay primary.
-              # DEFAULT: 1.0
-              overall: 1.0
-
-              # Metric weights control how much each metric affects the score.
-              # Higher weight = that metric matters more = bigger score drop when it's bad.
-              errorRate: 4.0       # Penalize higher error rates by increasing this value.
-              respLatency: 8.0     # Penalize higher latency by increasing this value.
-              throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
-              blockHeadLag: 2.0    # Penalize block head lag by increasing this value.
-              finalizationLag: 1.0 # Penalize finalization lag by increasing this value.
-
-      # Prefer this cheaper upstream: overall: 10 boosts its score 10x
-      - id: my-cheap-node
-        endpoint: https://cheap-rpc.example.com
-        routing:
-          scoreMultipliers:
-            - overall: 10
-
-      # Fallback only: overall: 1 keeps the default score (no boost)
-      - id: my-expensive-node
-        endpoint: https://premium-rpc.example.com
-        routing:
-          scoreMultipliers:
-            - overall: 1
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      upstreams: [
-        {
-          id: "my-alchemy",
-          endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
-          routing: {
-            scoreLatencyQuantile: 0.70,
-            scoreMultipliers: [
-              {
-                network: "*",
-                method: "*",
-                overall: 1.0,       // Boosts score (higher = more preferred)
-                errorRate: 4.0,      // Penalize higher error rates by increasing this value.
-                respLatency: 8.0,
-                throttledRate: 3.0,
-                blockHeadLag: 2.0,
-                finalizationLag: 1.0,
-              },
-            ],
-          },
-        },
-        {
-          id: "my-cheap-node",
-          endpoint: "https://cheap-rpc.example.com",
-          routing: { scoreMultipliers: [{ overall: 10 }] },
-        },
-        {
-          id: "my-expensive-node",
-          endpoint: "https://premium-rpc.example.com",
-          routing: { scoreMultipliers: [{ overall: 1 }] },
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-<Callout type='info'>
-  **`overall`** boosts the score — higher value = higher score = upstream is preferred.<br />
-  **Metric weights** (`errorRate`, `respLatency`, etc.) penalize bad performance — increase the value to penalize that metric more.
-</Callout>
-
-## Upstream types
-
-### `evm`
-
-These are generic well-known EVM-compatible JSON-RPC endpoints. This is the default and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - id: my-infura
-        type: evm
-        endpoint: https://mainnet.infura.io/v3/YOUR_INFURA_KEY
-
-        # (OPTIONAL) Configurations for EVM-compatible upstreams.
-        evm:
-          # (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
-          # but it is recommended to set it explicitly, for faster initialization. 
-          # DEFAULT: auto-detected.
-          chainId: 42161
-          # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
-          # To disable state polling set this value to 0, which means no regular calls to RPC for latest/finalized/sync states.
-          # The consequence of this is all data will be considered "unfinalized" or "unknown" despite their block numbers (and where if theye're actually finalized or not).
-          # DEFAULT: 30s.
-          statePollerInterval: 30s
-          # (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
-          # When omitted, the interval is dynamically inferred from the chain's observed block
-          # time.
-          # DEFAULT: dynamic (inferred from observed block time)
-          # statePollerDebounce: 2s
-          # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
-          # DEFAULT: archive
-          nodeType: full
-          # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
-          # DEFAULT: 128 (for "full" nodes).
-          maxAvailableRecentBlocks: 128
-          # (OPTIONAL) getLogsAutoSplittingRangeThreshold is an upstream hint used by the network-level
-          # proactive splitter. The network computes the min positive threshold across selected upstreams
-          # and splits large ranges into contiguous sub-requests of at most that size.
-          # Set to 0 or a negative value to disable for this upstream.
-          getLogsAutoSplittingRangeThreshold: 10000
-        # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          id: "my-infura",
-          type: "evm",
-          endpoint: "https://mainnet.infura.io/v3/YOUR_INFURA_KEY",
-
-          // (OPTIONAL) Configurations for EVM-compatible upstreams.
-          evm: {
-            // (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
-            // but it is recommended to set it explicitly, for faster initialization. 
-            // DEFAULT: auto-detected.
-            chainId: 42161,
-            // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
-            // DEFAULT: 30s.
-            statePollerInterval: "30s",
-            // (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
-            // When omitted, dynamically inferred from observed block time.
-            // DEFAULT: dynamic (inferred from observed block time)
-            // statePollerDebounce: "2s",
-            // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
-            // DEFAULT: archive
-            nodeType: "full",
-            // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
-            // DEFAULT: 128 (for "full" nodes").
-            maxAvailableRecentBlocks: 128,
-            // (OPTIONAL) getLogsAutoSplittingRangeThreshold is an upstream hint used by the network-level
-            // proactive splitter. The network computes the min positive threshold across selected upstreams
-            // and splits large ranges into contiguous sub-requests of at most that size.
-            // Set to 0 or a negative value to disable for this upstream.
-            getLogsAutoSplittingRangeThreshold: 10000,
-          },
-          // ...
-        },
-      ],
-    },
-  ],
-});
-
-```
-</Tabs.Tab>
-</Tabs>
-
-<Callout type='info'>
-  getLogs limits, splitting on error, and enforcement are now configured at the <strong>network</strong> level. See <a href="/config/projects/networks#evm-networks">EVM Networks</a> → <em>eth_getLogs</em>.
-  <br /><br />
-  A parallel <code>traceFilterAutoSplittingRangeThreshold</code> upstream hint enables the same splitting behavior for <code>trace_filter</code> and <code>arbtrace_filter</code>. Network-level knobs (<code>traceFilterSplitOnError</code>, <code>traceFilterSplitConcurrency</code>) live in the same page — see <a href="/config/projects/networks#evm-networks">EVM Networks</a> → <em>trace_filter and arbtrace_filter</em>.
+<Callout type="info">
+	The scoring mechanism only changes the **order** in which upstreams are tried — it doesn't disable any. To fully take an upstream offline, use the [circuit breaker](/config/failsafe#circuitbreaker-policy) failsafe or `ignoreMethods: ["*"]`.
 </Callout>
 
 ## Block availability
 
-Define the block window each EVM upstream can serve. You can bound by the chain's earliest or latest block and use different probes to detect real availability on that upstream.
+Bound the block window an upstream can serve. The bound can be relative (`latestBlockMinus`, `earliestBlockPlus`), absolute (`exactBlock`), or probe-driven (auto-detect the earliest block where logs, calls, or traces are available). Block-availability bounds skip out-of-range upstreams before retry rather than failing-then-retrying.
 
-<Callout type='info'>
-  This feature is optional and primarily helps reduce redundant calls and latency. eRPC already maintains
-  correctness by automatically failing over to other healthy upstreams when one node lacks the data. Block
-  availability simply helps skip over such nodes faster without trying them first.
-  <br /><br /> For many setups, method filters are a cheaper and simpler way to control upstream data availability; consider
-  using <code>ignoreMethods</code>/<code>allowMethods</code> first. See <a href="/config/projects/upstreams#config">Config → method filters</a>.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="BlockAvailabilityTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects > upstreams[] > evm > blockAvailability"
+	focus="5-15"
+	yaml={`projects:
   - id: main
     upstreams:
-      - id: my-evm
-        endpoint: https://mainnet.example
+      - id: my-archive
+        endpoint: https://archive.example
         evm:
-          # Limit the highest block this upstream serves to latest-64 (helps avoid reorgs)
           blockAvailability:
+            # Don't serve the last 64 blocks (avoid reorgs)
             upper:
-              latestBlockMinus: 64         # latest - 64 is the upper bound
-              probe: blockHeader           # default probe; can be omitted
-              # updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
-
-            # Auto-detect the earliest block where logs exist on this upstream,
-            # and start serving from there (refresh hourly to follow pruning).
+              latestBlockMinus: 64
+              probe: blockHeader     # default probe
+            # Auto-detect earliest block where logs exist, refresh hourly
             lower:
-              earliestBlockPlus: 0         # earliestDetected(eventLogs) + 0
-              probe: eventLogs             # require >=1 log in the block
-              updateRate: 1h               # re-evaluate earliest periodically
-
-        # Example 2: fixed window (serve blocks 17,000,000..latest-128)
-      - id: fixed-window
-        endpoint: https://another
-        evm:
-          blockAvailability:
-            lower:
-              exactBlock: 17000000         # hard lower bound
-              probe: blockHeader
-              updateRate: 0s
-            upper:
-              latestBlockMinus: 128        # rolling upper bound (always uses current latest)
-              probe: blockHeader
-              # updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
-
-        # Example 3: traces-aware lower bound (only serve blocks that have traces)
-      - id: traces
-        endpoint: https://traces.example
-        evm:
-          blockAvailability:
-            lower:
-              earliestBlockPlus: 0         # earliestDetected(traceData)
-              probe: traceData             # tries multiple trace/debug methods
-              updateRate: 24h              # re-check daily in case of pruning
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+              earliestBlockPlus: 0
+              probe: eventLogs
+              updateRate: 1h`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  projects: [
-    {
-      id: "main",
-      upstreams: [
-        {
-          id: "my-evm",
-          endpoint: "https://mainnet.example",
-          evm: {
-            blockAvailability: {
-              upper: {
-                latestBlockMinus: 64,     // latest - 64 upper bound
-                probe: "blockHeader",     // default; can be omitted
-                // updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
-              },
-              lower: {
-                earliestBlockPlus: 0,     // earliestDetected(eventLogs)
-                probe: "eventLogs",       // require >=1 log
-                updateRate: "1h",         // hourly refresh
-              },
-            },
-          },
+  projects: [{
+    id: "main",
+    upstreams: [{
+      id: "my-archive",
+      endpoint: "https://archive.example",
+      evm: {
+        blockAvailability: {
+          upper: { latestBlockMinus: 64, probe: "blockHeader" },
+          lower: { earliestBlockPlus: 0, probe: "eventLogs", updateRate: "1h" },
         },
-        {
-          id: "fixed-window",
-          endpoint: "https://another",
-          evm: {
-            blockAvailability: {
-              lower: { exactBlock: 17_000_000, probe: "blockHeader", updateRate: "0s" },
-              upper: { latestBlockMinus: 128, probe: "blockHeader" }, // updateRate ignored for latestBlockMinus
-            },
-          },
-        },
-        {
-          id: "traces",
-          endpoint: "https://traces.example",
-          evm: {
-            blockAvailability: {
-              lower: { earliestBlockPlus: 0, probe: "traceData", updateRate: "24h" },
-            },
-          },
-        },
-      ],
-    },
-  ],
-});
+      },
+    }],
+  }],
+});`}
+/>
+
+For an upstream that is a point-in-time snapshot (e.g. a frozen archive at a specific block), use `exactBlock` to pin both bounds to the same height:
+
+```yaml
+upstreams:
+  - id: snapshot-19m
+    endpoint: https://snapshot.example
+    evm:
+      blockAvailability:
+        upper:
+          exactBlock: 19000000   # only serve requests at or below this block
+        lower:
+          exactBlock: 0          # serve from genesis
 ```
-  </Tabs.Tab>
-</Tabs>
 
-- probe values: `blockHeader` (default), `eventLogs`, `callState`, `traceData`
-- lower/upper bounds: choose one of `exactBlock`, `earliestBlockPlus`, `latestBlockMinus`
-- updateRate: only applies to `earliestBlockPlus` bounds. 0 freezes the computed bound; >0 periodically re-evaluates it. For `latestBlockMinus`, updateRate is ignored since bounds are computed on-demand using the evmStatePoller's latest block
+`exactBlock` is a static value — it never updates. Use it when the upstream's range will never change (snapshots, genesis-only nodes). For nodes that advance over time, prefer `latestBlockMinus` / `earliestBlockPlus` with a probe.
 
-Notes on probes:
-- eventLogs: considered available only if querying the block by `blockHash` returns at least 1 log.
-- callState: checks historical state via `eth_getBalance`; any non-null result counts as available.
-- traceData: tries multiple engines in order: `trace_block`, `debug_traceBlockByHash`, `trace_replayBlockTransactions`; available if any returns a non-empty result.
+| Probe | What it checks |
+|---|---|
+| `blockHeader` (default) | `eth_getBlockByNumber(blockHash)` returns a header. |
+| `eventLogs` | `eth_getLogs(blockHash)` returns ≥1 log. Useful as a lower bound for archive nodes that prune logs. |
+| `callState` | `eth_getBalance` returns a non-null result. Probes historical state availability. |
+| `traceData` | Tries `trace_block`, `debug_traceBlockByHash`, `trace_replayBlockTransactions` in order; available if any returns. |
 
-### When block availability is enforced?
-
-Block availability bounds are only enforced when eRPC can extract a block number from the request. If the block number cannot be determined (e.g., certain method calls without explicit block parameters), the request will be forwarded to the upstream regardless of the configured bounds. This ensures availability checks don't block requests where block context is unavailable.
-
-<Callout type='info'>
-  When a probe is unsupported on an upstream (e.g. method ignored/unsupported), eRPC skips that probe for availability decisions. Prefer `blockHeader` or choose a probe the upstream supports.
+<Callout type="info">
+	Block-availability bounds are only enforced when eRPC can extract a block number from the request. For methods without an explicit block parameter (e.g. `eth_chainId`), the request goes to the upstream regardless of the bounds. `updateRate` only applies to `earliestBlockPlus` — `latestBlockMinus` always reads the live head.
 </Callout>
 
-<Callout type='info'>
-  <strong>About updateRate:</strong> The `updateRate` field only applies to `earliestBlockPlus` bounds. For `latestBlockMinus`, it is ignored because bounds are computed on-demand using the continuously-updated latest block value maintained by eRPC's state poller. This ensures `latestBlockMinus` bounds always reflect the current latest block without needing a separate update schedule.
+## Upstream types
+
+The only `type` today is `evm` (default; covers any EVM-compatible JSON-RPC endpoint, whether self-hosted or third-party). Vendor shorthands like `alchemy://`, `drpc://`, `infura://` are handled by the [providers](/config/projects/providers) layer on top of `type: evm` — they're not separate types.
+
+<AISection title="Copy for your AI assistant — full upstreams reference">
+
+### Every field on `upstreams[]`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | Used in logs, metrics, selection-policy eval. Auto-generated if omitted. |
+| `type` | string | `evm` (default and only supported value today). |
+| `endpoint` | string (**required**) | HTTPS URL or vendor shorthand (`alchemy://KEY`, `drpc://KEY`, `repository://URL`, etc.). |
+| `group` | string | Arbitrary label. Used as a metric label, and as a target in selection-policy eval functions. The literal value `"fallback"` is special — see "Groups & the fallback magic value" below. |
+| `vendorName` | string | Tag an upstream with a known vendor identifier so vendor-specific normalization (error code mapping, etc.) applies, even when the endpoint is a plain URL. Normally set automatically by provider shorthands (`alchemy://`, `drpc://`, etc.). Set it manually on plain-URL upstreams to opt into the same normalization — e.g. a self-hosted Erigon node behind nginx can set `vendorName: erigon` to enable Erigon-specific error parsing without using a vendor shorthand. |
+| `evm` | object | EVM-specific config — see "evm.* fields" below. |
+| `jsonRpc` | object | Transport-level config: batching, gzip, headers, proxy pool. See "jsonRpc.* fields" below. |
+| `ignoreMethods` | string[] | Block these methods on this upstream (matcher syntax: `eth_*`, `debug_*\|trace_*`, etc.). |
+| `allowMethods` | string[] | Allowlist; if set, blocks everything not listed. When `allowMethods` is set and `ignoreMethods` is not, `ignoreMethods: ["*"]` is implicit. |
+| `autoIgnoreUnsupportedMethods` | bool | Default `true`. When an upstream returns "method not supported", auto-add the method to `ignoreMethods` for this upstream. |
+| `failsafe` | array | Per-upstream failsafe policies; see [Failsafe docs](/config/failsafe). Supports `matchMethod` and `matchFinality` per entry. |
+| `rateLimitBudget` | string | Bind to a budget defined in `rateLimiters.budgets[]`. Multiple upstreams sharing a budget share the same rate-limit pool. |
+| `rateLimitAutoTune` | object | When a budget is bound, auto-tune is enabled by default. See "rateLimitAutoTune fields". |
+| `routing` | object | Per-upstream score multipliers and latency quantile. See "routing.* fields". |
+| `shadow` | object | Mirror a fraction of traffic to this upstream for comparison (without affecting the real response). See "Shadow upstreams" below. |
+
+### `evm.*` fields
+
+| Field | Default | Notes |
+|---|---|---|
+| `chainId` | auto-detected via `eth_chainId` | Set explicitly to skip detection at startup. |
+| `statePollerInterval` | `30s` | How often to poll latest/finalized/syncing. Set to `0s` to disable polling entirely — all data will be treated as `unfinalized` or `unknown`. |
+| `statePollerDebounce` | dynamic | Override the polling debounce. When omitted, eRPC infers it from the observed block time. |
+| `skipWhenSyncing` | `false` | When `true`, route requests away from this upstream while `eth_syncing` reports it's syncing. Use for archive backfills. |
+| `blockAvailability` | none | See "Block availability" section above. |
+| `integrity.eth_getBlockReceipts` | none | Per-upstream response validation for `eth_getBlockReceipts`. See "Per-upstream integrity" below. |
+| `nodeType` | `archive` | **Deprecated** — use `blockAvailability` instead. Still accepted; `full` implies a 128-block availability window. |
+| `maxAvailableRecentBlocks` | `128` (for full nodes) | **Deprecated** — use `blockAvailability` instead. |
+| `getLogsAutoSplittingRangeThreshold` | none | Upstream hint for the network-level proactive splitter. The network computes the min positive threshold across selected upstreams and splits large `eth_getLogs` ranges into contiguous sub-requests of at most that size. Set to `0` or negative to disable for this upstream. |
+| `traceFilterAutoSplittingRangeThreshold` | none | Same as above for `trace_filter` / `arbtrace_filter`. |
+
+**Deprecated:** `getLogsMaxAllowedRange`, `getLogsMaxAllowedAddresses`, `getLogsMaxAllowedTopics`, `getLogsSplitOnError` on `upstream.evm` — these moved to the [network level](/config/projects/networks#evm-networks).
+
+### `jsonRpc.*` fields
+
+| Field | Default | Notes |
+|---|---|---|
+| `supportsBatch` | `false` | Allow eRPC to batch outbound requests to this upstream. Even when `false`, clients can still send batch requests to eRPC — they'll be unrolled into individual upstream calls. |
+| `batchMaxSize` | `10` | Max requests per outbound batch. |
+| `batchMaxWait` | `50ms` | Max time to wait while filling a batch before flushing. |
+| `enableGzip` | `false` | Compress outbound request bodies. Most upstreams ignore this; turn on only when the vendor documents support. |
+| `headers` | `{}` | Extra headers on every request — typically `Authorization: Bearer ...` for private endpoints. |
+| `proxyPool` | none | ID of a proxy pool from the top-level `proxyPools[]` — outbound requests round-robin through that pool. |
+
+### Method filters — interaction rules
+
+- Both `ignoreMethods` and `allowMethods` accept matcher syntax (`*` wildcard, `|` OR).
+- `allowMethods` takes precedence over `ignoreMethods` when both match.
+- Setting `allowMethods` without `ignoreMethods` implicitly adds `ignoreMethods: ["*"]` — you must explicitly set `ignoreMethods: []` to opt out of that behavior.
+- `autoIgnoreUnsupportedMethods` (default `true`) augments `ignoreMethods` at runtime when the upstream returns a "method not supported" error. Disable when probing experimental methods.
+
+### Groups & the fallback magic value
+
+`group` is a free-form label, but the value `"fallback"` is special:
+
+- If any upstream in a network has `group: fallback`, eRPC auto-creates a default network-level selection policy that **prefers** non-fallback upstreams and only reaches into the fallback group when the primaries are unhealthy.
+- This behavior is enabled by the `ROUTING_POLICY_*` env-controlled defaults — see [selection policies](/config/projects/selection-policies) for the exact eval body.
+- Any other `group` value is purely a label and only matters if you reference it from your own selection-policy `evalFunction` or want it as a metric label.
+
+Apart from the `fallback` magic value, you can use `group` purely as a label that's referenced by your own selection-policy `evalFunction` and surfaces in Prometheus metric labels.
+
+### `routing.*` — per-upstream score tuning
+
+```yaml
+upstreams:
+  - id: my-alchemy
+    endpoint: https://eth-mainnet.g.alchemy.com/v2/KEY
+    routing:
+      scoreLatencyQuantile: 0.70           # latency percentile used for scoring (default 0.70)
+      scoreMultipliers:
+        # ── Selectors: which (network × method × finality) bucket these weights apply to.
+        - network: "*"                     # matcher: "evm:1", "evm:*", "evm:1|evm:10"
+          method: "*"                      # matcher: "eth_getLogs|eth_call", etc.
+          finality: ["realtime", "unfinalized"]  # filter — apply only to these finality buckets
+          # ── Weights (numeric). `overall` is a final multiplier; the others scale individual penalties.
+          overall: 1.0                     # boost the final score (>1 = preferred)
+          errorRate: 4.0                   # higher = bigger penalty when error rate is bad
+          respLatency: 8.0                 # higher = bigger penalty for slow tail latency
+          throttledRate: 3.0
+          blockHeadLag: 2.0
+          finalizationLag: 1.0
+          totalRequests: 1.0               # weight on observed request volume (favor warmer pools)
+          misbehaviors: 5.0                # weight on consensus-misbehavior count
+```
+
+**How scoring works.** Each upstream is scored separately for every (network × method × finality) bucket it serves. The score is a weighted aggregate of penalty signals (error rate, latency quantile, throttling, head-lag, finalization-lag, misbehavior count, request volume); higher weight on a *penalty* dimension means that metric hurts the score more. `overall` is the final multiplier applied on top, so an upstream with `overall: 10` and slightly worse metrics still outranks one with `overall: 1` and a perfect score.
+
+**Selectors vs weights:**
+
+- `network`, `method`, `finality` are **selectors** — they decide which buckets this entry applies to. `finality` is an *array* (`["realtime", "unfinalized"]`); valid values are `finalized`, `unfinalized`, `realtime`, `unknown`. Omitting `finality` matches all buckets.
+- `overall`, `errorRate`, `respLatency`, `throttledRate`, `blockHeadLag`, `finalizationLag`, `totalRequests`, `misbehaviors` are **weights** (floats, default `1.0`). Setting one to `0` removes that signal from the score for the selected buckets.
+- **Default weights:** if no `scoreMultipliers` entry matches a given bucket (because no entry exists, or no selector matches), every dimension defaults to `1.0` and `overall` defaults to `1.0` — uniform weight across all signals, no boost.
+
+**Worked example.** Suppose upstream A has `errorRate: 8.0` and upstream B has `errorRate: 1.0`. Both observe a 5% error rate in the same window. The `errorRate` penalty contribution for A is `0.05 × 8.0 = 0.40`; for B it is `0.05 × 1.0 = 0.05`. That 0.35-point gap compounds with the other dimensions — A scores meaningfully lower and is deprioritized sooner and more aggressively than B, even though both see identical traffic. Setting `errorRate: 8.0` on a latency-sensitive bucket is a way of saying "I care much more about errors than the default here."
+
+Multipliers compose: an upstream with `overall: 10` and a perfect score will outrank one with `overall: 1` even at slightly worse metrics. To prefer a cheap upstream by default:
+
+```yaml
+upstreams:
+  - { id: cheap, endpoint: ..., routing: { scoreMultipliers: [{ overall: 10 }] } }
+  - { id: pricey, endpoint: ..., routing: { scoreMultipliers: [{ overall: 1 }] } }
+```
+
+**Tuning tips:**
+
+- **Fast failover** — set `scoreSwitchHysteresis: -1` and `scoreMinSwitchInterval: -1` to always use the current best upstream immediately.
+- **Smoother scoring** — increase `scorePenaltyDecayRate` toward `0.98` so transient blips don't move the primary.
+- **Reactive scoring** — decrease toward `0.80` so degradation kicks in quickly.
+
+**When to tune what:**
+
+- **High `respLatency` weight** — use when tail-latency variance between providers is large and client timeout budget is tight. Raising `respLatency` to `8.0`–`16.0` makes slow p70 latency a dominant signal.
+- **High `misbehaviors` weight** — use when running `consensus` failsafe and you want divergent upstreams de-prioritized aggressively after they produce wrong answers. Default `1.0` is gentle; `10.0`+ will effectively exile a misbehaving upstream until its penalty decays.
+- **Narrow method-scoped entry** — use when an upstream is excellent for some methods but bad for others. A separate entry with a tight `method` selector applies heavier penalty only where the upstream is weak:
+
+```yaml
+routing:
+  scoreMultipliers:
+    - method: '*'
+      overall: 2.0         # generally preferred
+    - method: 'eth_getLogs'
+      respLatency: 16.0    # but penalize hard for getLogs where it's slow
+      errorRate: 4.0
+```
+
+### `rateLimitAutoTune` fields
+
+```yaml
+rateLimitAutoTune:
+  enabled: true              # default: true if a rateLimitBudget is bound
+  adjustmentPeriod: 1m       # window for evaluating throttled ratio
+  errorRateThreshold: 0.1    # if throttled-rate > this, decrease
+  increaseFactor: 1.05       # multiply budget by this when below threshold
+  decreaseFactor: 0.9        # multiply budget by this when above threshold
+  minBudget: 0
+  maxBudget: 10000
+```
+
+The new budget applies to **every** upstream sharing that budget — auto-tune decreases on one Quicknode upstream tighten the budget for all Quicknode upstreams sharing it.
+
+### Per-upstream integrity — `evm.integrity`
+
+Validate `eth_getBlockReceipts` responses on this upstream specifically. Useful when a vendor has known correctness issues you want to catch before the response is cached or returned.
+
+```yaml
+upstreams:
+  - id: suspect-vendor
+    endpoint: https://...
+    evm:
+      integrity:
+        eth_getBlockReceipts:
+          enabled: true
+          checkLogIndexStrictIncrements: true   # log.index must be strictly increasing within a block
+          checkLogsBloom: true                   # recalculated bloom must match the header's logsBloom
+```
+
+When a check fails, the response is treated as an upstream error — retried, scored against, and optionally exported via [consensus.misbehaviorsDestination](/config/failsafe/consensus#misbehaviors-destination).
+
+### Shadow upstreams
+
+`shadow` mirrors a fraction of real traffic to this upstream **without** affecting the response sent to the client. The shadow result is compared against the primary's; mismatches are logged or exported. Useful for vendor evaluations, regression detection, and silent validation of new endpoints.
+
+```yaml
+upstreams:
+  # Primary serves traffic normally.
+  - id: primary
+    endpoint: https://prod-vendor.example
+  # Shadow only — receives a 10% sample of every request the primary serves.
+  - id: candidate
+    endpoint: https://candidate-vendor.example
+    shadow:
+      enabled: true
+      sampleRate: 0.1                  # 0.0–1.0; fraction of requests to mirror
+      ignoreFields:                    # diff-comparison ignore lists
+        "*": ["blockTimestamp"]
+        "transactions.*": ["gasPrice"]
+```
+
+Notes:
+
+- Shadow upstreams don't count in selection — they only see traffic that the primary served first.
+- Diffs are emitted as a metric (`erpc_upstream_shadow_diff_total`) and, when paired with a [misbehaviors destination](/config/failsafe/consensus#misbehaviors-destination), written out for inspection.
+- `ignoreFields` uses the same dot-path matcher as `consensus.ignoreFields` — `*` matches a single segment, `**` matches any depth.
+
+### Failsafe at upstream level (matchMethod + matchFinality)
+
+`failsafe[]` accepts per-policy `matchMethod` and `matchFinality` so you can have different retry budgets for different categories of methods on the **same** upstream:
+
+```yaml
+upstreams:
+  - id: archive
+    endpoint: https://archive.example
+    failsafe:
+      - matchMethod: "trace_*|debug_*"
+        timeout: { duration: 60s }
+        retry: { maxAttempts: 1 }            # expensive — don't multiply
+      - matchMethod: "*"
+        matchFinality: ["realtime", "unfinalized"]
+        timeout: { duration: 5s }
+        retry: { maxAttempts: 3, delay: 100ms }
+      - matchMethod: "*"
+        matchFinality: ["finalized"]
+        timeout: { duration: 30s }
+        retry: { maxAttempts: 5, delay: 200ms }
+```
+
+`consensus` and `hedge` are also valid at upstream level. The full vocabulary is the same as the [network-level failsafe](/config/failsafe).
+
+<Callout type="info">
+	The legacy single-object form (`failsafe: { timeout: ... }`) is still accepted for backward compatibility, but the array form with `matchMethod: "*"` is the canonical shape and lets you grow into per-method tuning without rewriting.
 </Callout>
 
-## Compression
+### Defaults via `upstreamDefaults`
 
-eRPC supports gzip compression at multiple points in the request/response cycle:
+`project.upstreamDefaults` applies before any per-upstream config — useful for proxy pools, gzip, or a baseline failsafe across every upstream in a project.
 
-1. **Client → eRPC**: Clients can send gzipped requests by setting `Content-Encoding: gzip` header
+```yaml
+projects:
+  - id: main
+    upstreamDefaults:
+      jsonRpc:
+        proxyPool: eu-dc1-pool
+        enableGzip: true
+      failsafe:
+        - matchMethod: "*"
+          timeout: { duration: 20s }
+          retry: { maxAttempts: 2 }
+    upstreams:
+      - id: a
+        endpoint: https://a.example          # inherits the defaults above
+      - id: b
+        endpoint: https://b.example
+        jsonRpc:
+          proxyPool: us-dc1-pool             # per-upstream override
+```
+
+Per-upstream values **override** the defaults; arrays don't merge.
+
+### Outbound compression
+
+eRPC supports gzip at four points:
+
+| Direction | Control | Default |
+|---|---|---|
+| Client → eRPC | Client sets `Content-Encoding: gzip`. | Always accepted. |
+| eRPC → Upstream | `upstreams[].jsonRpc.enableGzip` | `false` |
+| Upstream → eRPC | Automatic if upstream sends `Content-Encoding: gzip`. | Always accepted. |
+| eRPC → Client | `server.enableGzip` | `true` |
+
 ```bash
-# Example of sending gzipped request to eRPC
+# Example client → eRPC gzipped request
 curl -X POST \
   -H "Content-Encoding: gzip" \
   -H "Content-Type: application/json" \
@@ -814,114 +516,32 @@ curl -X POST \
   http://localhost:4000/main/evm/42161
 ```
 
-2. **eRPC → Upstream**: Configurable per upstream to send gzipped requests (disabled by default)
+### Custom HTTP headers
 
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
+```yaml
 upstreams:
-  - id: my-infura
-    jsonRpc:
-      enableGzip: false  # gzip when sending requests to this upstream (disabled by default)
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  upstreams: [
-    {
-      id: "my-infura",
-      jsonRpc: { 
-        enableGzip: false // gzip when sending requests to this upstream (disabled by default)
-      },
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-3. **Upstream → eRPC**: Automatically handles gzipped responses from upstreams when they send `Content-Encoding: gzip`
-
-4. **eRPC → Client**: Automatically enabled when clients send `Accept-Encoding: gzip` header (can be disabled in server config)
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-server:
-  enableGzip: true  # gzip compression for responses to clients (enabled by default)
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  server: {
-    enableGzip: true, // gzip compression for responses to clients (enabled by default)
-  },
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-<Callout type='info'>
-  Using gzip can reduce ingress/egress bandwidth costs, and in certain cases (e.g. large RPC requests) it can improve performance.
-</Callout>
-
-## Custom HTTP Headers
-
-You can send additional headers (e.g. `Authorization`) along with every outbound JSON-RPC request to an upstream by specifying `jsonRpc.headers` in the config. This is especially useful for upstreams that require a static Bearer token for authentication.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tab>
-```yaml filename="erpc.yaml"
-upstreams:
-  - id: my-private-upstream
+  - id: private
     endpoint: https://private-provider.io/v1
     jsonRpc:
-      # (OPTIONAL) Send additional headers to this upstream on every request
-      # e.g. Authorization bearer token, custom X-Header, etc.
       headers:
-        Authorization: "Bearer SECRET_VALUE_123"
-        X-Custom-Header: "HelloWorld"
+        Authorization: Bearer SECRET_VALUE
+        X-Custom-Header: HelloWorld
 ```
-  </Tab>
-  <Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  upstreams: [
-    {
-      id: "my-private-upstream",
-      endpoint: "https://private-provider.io/v1",
-      jsonRpc: {
-        // (OPTIONAL) Send additional headers to this upstream on every request
-        headers: {
-          "Authorization": "Bearer SECRET_VALUE_123",
-          "X-Custom-Header": "HelloWorld",
-        },
-      },
-    },
-  ],
-});
-```
-</Tab>
-</Tabs>
+Headers are applied on every outbound request from eRPC to this upstream.
 
-## Client proxy pools
+### Proxy pools
 
-You define proxies for outgoing traffic from eRPC to upstreams. Proxy Pools enable centralized management of http(s)/socks5 proxies with round-robin load balancing across multiple upstreams. This is particularly useful for routing requests through different proxy servers based on geographic location or specific requirements (e.g., public vs private RPC endpoints).
+A proxy pool is a named list of outbound HTTP/SOCKS proxies. When an upstream (or `upstreamDefaults`) references a pool by ID via `jsonRpc.proxyPool`, every request eRPC makes to that upstream goes through one of the pool's proxies. eRPC round-robins across proxies using an atomic counter — each successive request picks the next proxy in sequence. Useful for geographic distribution, egress IP pinning, ISP routing, or private/public splits.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0}>
-  <Tab>
-```yaml filename="erpc.yaml"
-# Define proxy pools at the root level
-proxyPools:
+<Callout type="info">
+  `proxyPools` is defined at the **root** of the config, not inside a project. All projects share the same pool list.
+</Callout>
+
+<ConfigTabs
+  path="proxyPools[]"
+  focus="1-10"
+  yaml={`proxyPools:
   - id: eu-dc1-pool
     urls:
       - http://proxy111.myorg.local:3128
@@ -929,90 +549,106 @@ proxyPools:
   - id: us-dc1-pool
     urls:
       - http://proxy333.myorg.local:3128
-      - socks5://proxy444.myorg.local:3129
+      - socks5://user:pass@proxy444.myorg.local:1080
 
 projects:
   - id: main
-    # Option 1: Apply proxy pool to all upstreams
     upstreamDefaults:
       jsonRpc:
-        proxyPool: eu-dc1-pool
-    
-    # Option 2: Apply proxy pools selectively to specific upstreams
+        proxyPool: eu-dc1-pool        # default for all upstreams in this project
     upstreams:
-      - id: public-rpc-1
-        endpoint: https://public-rpc-1.example.com
+      - id: us-rpc
+        endpoint: https://us.example
         jsonRpc:
-          proxyPool: eu-dc1-pool
-      
-      - id: public-rpc-2
-        endpoint: https://public-rpc-2.example.com
+          proxyPool: us-dc1-pool      # override for this upstream
+      - id: direct-rpc
+        endpoint: https://direct.example
         jsonRpc:
-          proxyPool: us-dc1-pool
-      
-      # This upstream won't use a proxy since it has no proxyPool specified
-      - id: private-rpc-1
-        endpoint: https://private-rpc-1.example.com
-```
-  </Tab>
-  <Tab>
-```typescript filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+          proxyPool: ''               # opt out (empty string disables the inherited default)`}
+  ts={`import { createConfig } from '@erpc-cloud/config';
 
 export default createConfig({
-  proxyPools: {
-    "eu-dc1-pool": {
-      urls: [
-        "http://proxy111.myorg.local:3128",
-        "https://proxy222.myorg.local:3129",
-      ],
-    },
-    "us-dc1-pool": {
-      urls: [
-        "http://proxy333.myorg.local:3128",
-        "socks5://proxy444.myorg.local:3129",
-      ],
-    },
-  },
-  projects: [
+  proxyPools: [
     {
-      id: "main",
-      // Option 1: Apply proxy pool to all upstreams
-      upstreamDefaults: {
-        jsonRpc: {
-          proxyPool: "eu-dc1-pool",
-        },
-      },
-      
-      // Option 2: Apply proxy pools selectively to specific upstreams
-      upstreams: [
-        {
-          id: "public-rpc-1",
-          endpoint: "https://public-rpc-1.example.com",
-          jsonRpc: {
-            proxyPool: "eu-dc1-pool",
-          },
-        },
-        {
-          id: "public-rpc-2", 
-          endpoint: "https://public-rpc-2.example.com",
-          jsonRpc: {
-            proxyPool: "us-dc1-pool",
-          },
-        },
-        // This upstream won't use a proxy since it has no proxyPool specified
-        {
-          id: "private-rpc-1",
-          endpoint: "https://private-rpc-1.example.com",
-        },
+      id: 'eu-dc1-pool',
+      urls: [
+        'http://proxy111.myorg.local:3128',
+        'https://proxy222.myorg.local:3129',
+      ],
+    },
+    {
+      id: 'us-dc1-pool',
+      urls: [
+        'http://proxy333.myorg.local:3128',
+        'socks5://user:pass@proxy444.myorg.local:1080',
       ],
     },
   ],
-});
-```
-  </Tab>
-</Tabs>
+  projects: [{
+    id: 'main',
+    upstreamDefaults: {
+      jsonRpc: { proxyPool: 'eu-dc1-pool' },
+    },
+    upstreams: [
+      {
+        id: 'us-rpc',
+        endpoint: 'https://us.example',
+        jsonRpc: { proxyPool: 'us-dc1-pool' },
+      },
+      {
+        id: 'direct-rpc',
+        endpoint: 'https://direct.example',
+        jsonRpc: { proxyPool: '' },
+      },
+    ],
+  }],
+});`}
+/>
 
-<Callout type="info">
-  You can use `upstreamDefaults` to apply a proxy pool to all upstreams, or configure them individually. Individual upstream configurations will override the defaults.
+#### `proxyPools[]` fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string (**required**) | Identifier referenced by `jsonRpc.proxyPool` on upstreams or `upstreamDefaults`. |
+| `urls` | string[] (**required**) | One or more proxy URLs. At least one is required. eRPC round-robins across them per request. |
+
+#### Accepted URL schemes
+
+| Scheme | Notes |
+|---|---|
+| `http://` | Plain HTTP CONNECT proxy. |
+| `https://` | TLS-wrapped HTTP CONNECT proxy. |
+| `socks5://` | SOCKS5 proxy. Credentials embedded in the URL: `socks5://user:pass@host:port`. |
+
+#### Round-robin and failover
+
+eRPC selects proxies with a lockless atomic counter — each request increments the counter and picks `counter % len(urls)`. There is no automatic failover: if the selected proxy is unreachable, the upstream request fails and normal upstream-level retry/circuit-breaker logic applies. To tolerate proxy failures, put a single reliable entry per pool or front your proxies with a load balancer.
+
+### Deprecated fields — migration map
+
+| Old (still accepted) | New |
+|---|---|
+| `evm.nodeType: full` / `archive` | `evm.blockAvailability.upper.latestBlockMinus: 128` (or whatever your window is) |
+| `evm.maxAvailableRecentBlocks: 128` | `evm.blockAvailability.upper.latestBlockMinus: 128` |
+| `evm.getLogsMaxAllowedRange` (upstream level) | `network.evm.getLogsMaxAllowedRange` |
+| `evm.getLogsMaxAllowedAddresses` (upstream level) | `network.evm.getLogsMaxAllowedAddresses` |
+| `evm.getLogsMaxAllowedTopics` (upstream level) | `network.evm.getLogsMaxAllowedTopics` |
+| `evm.getLogsSplitOnError` (upstream level) | `network.evm.getLogsSplitOnError` |
+| `evm.getLogsMaxBlockRange` (upstream level) | `network.evm.getLogsMaxAllowedRange` |
+| `failsafe: { ... }` (single object) | `failsafe: [{ matchMethod: "*", ... }]` |
+
+The legacy forms still parse, so existing configs work — but new code should use the new shape. Mixing both in one config will emit a deprecation warning.
+
+### Common pitfalls
+
+- **`allowMethods` without `ignoreMethods: []`** — `allowMethods` silently adds an implicit `ignoreMethods: ["*"]`, so an upstream with `allowMethods: ["eth_getLogs"]` will block every other method. To allow `eth_getLogs` while still serving the defaults, prefer adding to `ignoreMethods` instead.
+- **`group: fallback` is magic** — using this value triggers auto-creation of a default selection policy. Use any other label if you don't want that behavior.
+- **Compound rate-limit budgets** — `rateLimitAutoTune` decreases on one upstream tighten the budget for **every** upstream sharing it. If you need independent rate limits per upstream, give each its own budget.
+- **`statePollerInterval: 0s`** — disables polling entirely, so eRPC has no notion of the chain's latest/finalized state for this upstream. Every response goes into the `unknown` finality bucket; the cache layer will treat them accordingly.
+- **`blockAvailability.upper.updateRate`** is ignored — for `latestBlockMinus` the bound is computed on-demand from the state poller's latest head. Only `earliestBlockPlus` honors `updateRate`.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
 </Callout>

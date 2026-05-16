@@ -1,62 +1,52 @@
 ---
-description: eRPC batches requests towards upstreams which support it. Also you can send batched requests (an array of multiple requests) to eRPC itself.
+title: Batch requests
+description: eRPC deduplicates, fans out, and reassembles JSON-RPC batch requests — both inbound arrays from clients and outbound batches to upstreams.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
+import { Callout } from "nextra/components";
 
 # Batch requests
 
-eRPC automatically batches requests towards upstreams which support it. Additionally you can send batched requests (an array of multiple requests) to eRPC itself.
+<LLMsTxtLink />
+
+eRPC handles JSON-RPC batching at two independent layers: it accepts batch arrays from clients, and it can group outbound calls into batches toward upstreams that support it. The two layers compose — a single-request client still benefits from upstream batching, and a batch-sending client still gets per-request caching and deduplication.
 
 <Callout emoji="👋">
-  Most often json-rpc batching for EVM is [anti-pattern](https://www.quicknode.com/guides/quicknode-products/apis/guide-to-efficient-rpc-requests#avoid-batching-multiple-rpc-requests), as it increases resource consumption without significant benefits:
-  - All requests will be as slow as the slowest request inside the batch.
-  - JSON handling will be more expensive causing memory spikes and OOM errors.
-  - Handling partial failures will be burdensome for the client (status code is always 200 OK).
-  - Many 3rd-party providers (Alchemy, Infura, etc) charge based on number of method calls, not actual requests.
-  - When running eRPC in private network locally close to your services, overhead of many single requests is negligible.
+  For EVM workloads, batching is often an [anti-pattern](https://www.quicknode.com/guides/quicknode-products/apis/guide-to-efficient-rpc-requests#avoid-batching-multiple-rpc-requests). The whole batch is as slow as its slowest request, partial failures are harder to handle (HTTP status is always 200), and many providers charge per method call regardless. When eRPC is co-located with your services the overhead of individual requests is negligible — prefer that path.
 </Callout>
 
-### How it works?
+**You can configure:**
 
-* When an upstream is configured to support batching, eRPC will accumulate as many requests as possible for that upstream, even if you send many single requests.
-* Batching mechanism respects other aspects of eRPC such as allowed/ignored methods, rate limits, supported/unsupported methods, therefore one huge batch request might be split into smaller ones depending on the most efficient distribution among upstreams.
-* Requests will be handled separately (or in mini-batches) and at the end results will be merged back together.
-* Response status code will always be `200 OK` because there might be a mix of successful and failed requests.
-* At the moment self-imposed rate limiters work as-if these requests are sent individually (Ping our engineers if this becomes an issue).
+- **Outgoing batching** — `jsonRpc.supportsBatch`, `batchMaxSize`, `batchMaxWait` per upstream
+- **Incoming batching** — always accepted; no config needed; works on both chain-scoped and project-scoped URLs
+- **Multi-chain batches** — embed `networkId` in each item and send to the project root URL
 
-<Callout type="info">
-  Even if you send many single requests to eRPC they might be batched together if the upstream supports it. This minimizes the need to actually batch the requests on client-side, unless "network traffic" is a concern.
+## Outgoing batch config
 
-  In this scenario auto-batching mechanism is transparent to you.
-</Callout>
+Tell eRPC to accumulate requests and forward them as a batch to a specific upstream.
 
-## Upstream config
-
-You can explicitly enable batching for an upstream as follows:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
+<ConfigTabs
+	path="projects > upstreams[] > jsonRpc"
+	focus="5-10"
+	yaml={`projects:
   - id: main
     upstreams:
       - id: blastapi-chain-42161
-        # ...
         endpoint: https://arbitrum-one.blastapi.io/xxxxxx
         jsonRpc:
-          # When enabled eRPC will wait for a specified amount of time to batch as many requests as possible.
+          # Accumulate requests and forward as a JSON-RPC batch array.
           supportsBatch: true
-          # The maximum amount of time to wait to collect requests for a batch.
+          # Max time to wait before flushing a partial batch.
           batchMaxWait: 100ms
-          # The maximum amount of requests in a single batch, which is usually enforced by the provider.
-          batchMaxSize: 100
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+          # Max requests per batch (provider-enforced limit).
+          batchMaxSize: 100`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   projects: [
@@ -65,92 +55,129 @@ export default createConfig({
       upstreams: [
         {
           id: "blastapi-chain-42161",
-          // ...
           endpoint: "https://arbitrum-one.blastapi.io/xxxxxx",
           jsonRpc: {
-            // When enabled eRPC will wait for a specified amount of time to batch as many requests as possible.
+            // Accumulate requests and forward as a JSON-RPC batch array.
             supportsBatch: true,
-            // The maximum amount of time to wait to collect requests for a batch.
+            // Max time to wait before flushing a partial batch.
             batchMaxWait: "100ms",
-            // The maximum amount of requests in a single batch, which is usually enforced by the provider.
+            // Max requests per batch (provider-enforced limit).
             batchMaxSize: 100,
           },
         },
       ],
     },
   ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+});`}
+/>
 
 <Callout type="info">
-  For certain known providers (Alchemy, Infura, etc) batching is enabled by default.
+  For certain well-known providers (Alchemy, Infura, etc.) batching is enabled by default.
 </Callout>
 
-### Example single chain
+## Incoming batch examples
 
-When all the requests are for the same chain, you can send them to the URL that includes chain id.
+### Single-chain batch
+
+Send a JSON array to the chain-scoped URL. Each item must include `id`, `jsonrpc`, `method`, and `params`.
 
 ```bash
 curl --location 'http://localhost:4000/main/evm/1' \
---header 'Content-Type: application/json' \
---data '[
+  --header 'Content-Type: application/json' \
+  --data '[
     {
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203318888888888",
-            false
-        ],
-        "id": 8888,
-        "jsonrpc": "2.0"
+      "method": "eth_getBlockByNumber",
+      "params": ["0x1203318888888888", false],
+      "id": 8888,
+      "jsonrpc": "2.0"
     },
     {
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203319",
-            false
-        ],
-        "id": 9999,
-        "jsonrpc": "2.0"
+      "method": "eth_getBlockByNumber",
+      "params": ["0x1203319", false],
+      "id": 9999,
+      "jsonrpc": "2.0"
     }
-]'
+  ]'
 ```
 
-### Example multi-chain
+### Multi-chain batch
 
-You can provide "networkId" within each request to specify which chain it is for by sending the request to project endpoint:
+Add `networkId` to each item and send to the project root URL.
 
 ```bash
 curl --location 'http://localhost:4000/main' \
---header 'Content-Type: application/json' \
---data '[
+  --header 'Content-Type: application/json' \
+  --data '[
     {
-        "networkId": "evm:1",
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203888",
-            false
-        ],
-        "id": 888,
-        "jsonrpc": "2.0"
+      "networkId": "evm:1",
+      "method": "eth_getBlockByNumber",
+      "params": ["0x1203888", false],
+      "id": 888,
+      "jsonrpc": "2.0"
     },
     {
-        "networkId": "evm:42161",
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203999",
-            false
-        ],
-        "id": 999,
-        "jsonrpc": "2.0"
+      "networkId": "evm:42161",
+      "method": "eth_getBlockByNumber",
+      "params": ["0x1203999", false],
+      "id": 999,
+      "jsonrpc": "2.0"
     }
-]'
+  ]'
 ```
 
-#### Roadmap
+<AISection title="Copy for your AI assistant — full batching reference">
 
-On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+### Incoming batch (client to eRPC)
 
-<br />
-- [ ] Auto-batch multiple `eth_call`s for evm upstreams using multicall3 contracts if available on that chain.
+A client can POST a JSON array of JSON-RPC objects to any eRPC endpoint. eRPC explodes it into individual requests, routes each one through the normal pipeline (selection policy, failsafe, cache, rate limits), then reassembles the responses in the original order before replying.
+
+The response is always a JSON array with the same length as the request. HTTP status is always `200 OK` even when individual items errored — inspect each item's `error` field.
+
+Each item must carry a unique `id` field so eRPC can correlate responses. Items without `id` (notifications) are accepted but produce no response entry.
+
+For multi-chain batches, add `networkId: "evm:<chainId>"` to each item and POST to the project root URL (`/<projectId>`). Single-chain batches go to the chain URL (`/<projectId>/evm/<chainId>`).
+
+### Outgoing batch (eRPC to upstream)
+
+Controlled per-upstream via `jsonRpc`:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `supportsBatch` | bool | `false` (auto-true for known providers) | Enable outgoing batching for this upstream. |
+| `batchMaxSize` | int | `100` | Maximum requests per batch. Enforced before flushing. |
+| `batchMaxWait` | duration | `0` (flush immediately) | How long to accumulate requests before flushing. |
+
+When `supportsBatch: true`, eRPC collects requests destined for the same upstream within the `batchMaxWait` window and sends them as a single HTTP request carrying a JSON array. If the batch hits `batchMaxSize` before the window expires it flushes immediately.
+
+Outgoing batching is transparent to clients — it applies even to clients that send individual requests.
+
+### Interaction with the multiplexer (deduplication)
+
+eRPC's multiplexer deduplicates in-flight requests by (network, method, params) before batching. If two clients send the same call concurrently, only one upstream request is made and both clients receive the same response. Deduplication happens before the outgoing batch is assembled, so it reduces batch size and upstream cost.
+
+### Interaction with cache
+
+Cache lookups happen per-request before batching. A request that hits the cache is never forwarded upstream, whether the client sent it alone or inside a batch. A partial batch where some items are cached and some are not will only forward the cache-miss items to the upstream.
+
+### Per-request directives inside a batch
+
+HTTP request headers (e.g. `X-ERPC-Skip-Cache-Read`, `X-ERPC-Retry-Count`) apply to the whole HTTP call. When a client sends a batch, the same headers apply to every item in that batch. There is no per-item header mechanism in JSON-RPC.
+
+### Response shape and ordering
+
+eRPC preserves the original ordering of a batch response. If the upstream returns items in a different order (by `id`), eRPC reorders them to match the client's request array position before replying.
+
+### Common pitfalls
+
+- **`batchMaxWait` latency tradeoff** — a non-zero wait adds guaranteed latency for every request. It is only worth setting when your upstream charges per HTTP request (not per method call) and you send many concurrent calls. For providers that charge per method call it saves nothing.
+- **Mixed-method batches** — eRPC may route different items to different upstreams (e.g. based on method filters or circuit-breaker state). A batch to a client is assembled from responses that may have come from multiple upstreams.
+- **Error semantics** — a batch item that fails returns `{"id": ..., "error": {...}}` in the array. The HTTP response is still `200`. Clients must inspect each item individually.
+- **gzip interaction** — if the upstream returns a gzip-compressed batch response, eRPC decompresses before exploding into individual items. The client-facing response is always uncompressed unless the client explicitly requested `Accept-Encoding: gzip` and eRPC is configured to forward it.
+- **Rate limits apply per request, not per batch** — a 100-item batch consumes 100 units of the upstream's rate-limit budget.
+- **`batchMaxSize` is a flush trigger, not a hard cap** — if `batchMaxWait` expires first, the batch may be smaller. Upstreams that enforce a strict cap may reject oversized batches with a top-level error; set `batchMaxSize` to match the provider's documented limit.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

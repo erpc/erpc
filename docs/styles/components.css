@@ -1,0 +1,312 @@
+/* eRPC docs: custom component styles
+ *
+ * Naming convention: every selector starts with `.cv-` (config-view) so
+ * nothing collides with Nextra theme classes. All component DOM has a
+ * `data-component="…"` attribute so the .llms.txt generator can locate it.
+ */
+
+/* ============================================================
+ * <ConfigCode> — code block with path breadcrumb + line dimming
+ * ============================================================ */
+
+.cv-cc {
+	display: block;
+	margin: 1rem 0;
+	border-radius: 0.5rem;
+	overflow: hidden;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: #0d1117;
+	font-size: 0.875rem;
+	line-height: 1.6;
+}
+
+html[data-theme="light"] .cv-cc,
+html.light .cv-cc {
+	background: #fafafa;
+	border-color: rgba(0, 0, 0, 0.1);
+}
+
+.cv-cc-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	padding: 0.4rem 0.75rem;
+	background: rgba(255, 255, 255, 0.04);
+	border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+	font-size: 0.75rem;
+	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html[data-theme="light"] .cv-cc-header,
+html.light .cv-cc-header {
+	background: rgba(0, 0, 0, 0.03);
+	border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+.cv-cc-path {
+	color: rgba(255, 255, 255, 0.6);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+html[data-theme="light"] .cv-cc-path,
+html.light .cv-cc-path {
+	color: rgba(0, 0, 0, 0.65);
+}
+
+.cv-cc-path-seg {
+	color: rgba(125, 211, 252, 0.95); /* sky-300 */
+	font-weight: 500;
+}
+
+html[data-theme="light"] .cv-cc-path-seg,
+html.light .cv-cc-path-seg {
+	color: #0369a1; /* sky-700 */
+}
+
+.cv-cc-path-sep {
+	color: rgba(255, 255, 255, 0.3);
+	margin: 0 0.1rem;
+}
+
+html[data-theme="light"] .cv-cc-path-sep,
+html.light .cv-cc-path-sep {
+	color: rgba(0, 0, 0, 0.3);
+}
+
+.cv-cc-filename {
+	color: rgba(255, 255, 255, 0.55);
+	font-style: italic;
+}
+
+html[data-theme="light"] .cv-cc-filename,
+html.light .cv-cc-filename {
+	color: rgba(0, 0, 0, 0.55);
+}
+
+.cv-cc-pre {
+	margin: 0;
+	padding: 0.75rem 0;
+	background: transparent !important;
+	overflow-x: auto;
+}
+
+.cv-cc-line {
+	display: block;
+	padding: 0 0.75rem;
+	transition: opacity 120ms ease;
+	white-space: pre;
+}
+
+.cv-cc-dim {
+	opacity: 0.38;
+}
+
+.cv-cc-focus {
+	opacity: 1;
+	background: linear-gradient(
+		to right,
+		rgba(125, 211, 252, 0.08),
+		rgba(125, 211, 252, 0.01)
+	);
+	box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.6);
+}
+
+html[data-theme="light"] .cv-cc-focus,
+html.light .cv-cc-focus {
+	background: linear-gradient(
+		to right,
+		rgba(2, 132, 199, 0.07),
+		rgba(2, 132, 199, 0.01)
+	);
+	box-shadow: inset 2px 0 0 rgba(2, 132, 199, 0.65);
+}
+
+/* Hover the dimmed region to temporarily reveal everything at full opacity. */
+.cv-cc:hover .cv-cc-dim {
+	opacity: 0.7;
+}
+
+.cv-cc-linenum {
+	display: inline-block;
+	width: 2rem;
+	padding-right: 0.5rem;
+	text-align: right;
+	color: rgba(255, 255, 255, 0.25);
+	user-select: none;
+}
+
+html[data-theme="light"] .cv-cc-linenum,
+html.light .cv-cc-linenum {
+	color: rgba(0, 0, 0, 0.3);
+}
+
+.cv-cc-linecontent {
+	white-space: pre;
+}
+
+/* ============================================================
+ * <AISection> — collapsible "For AI" panel
+ * ============================================================ */
+
+.cv-ai {
+	margin: 1.5rem 0;
+	border: 1px dashed rgba(167, 139, 250, 0.4); /* violet-400 */
+	border-radius: 0.5rem;
+	background: rgba(167, 139, 250, 0.04);
+	overflow: hidden;
+}
+
+html[data-theme="light"] .cv-ai,
+html.light .cv-ai {
+	border-color: rgba(124, 58, 237, 0.35); /* violet-600 */
+	background: rgba(124, 58, 237, 0.03);
+}
+
+.cv-ai-summary {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 0.6rem 0.85rem;
+	cursor: pointer;
+	user-select: none;
+	list-style: none;
+	transition: background 120ms ease;
+}
+
+.cv-ai-summary::-webkit-details-marker {
+	display: none;
+}
+
+.cv-ai-summary:hover {
+	background: rgba(167, 139, 250, 0.08);
+}
+
+.cv-ai-badge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.65rem;
+	height: 1.65rem;
+	border-radius: 0.35rem;
+	background: rgba(167, 139, 250, 0.22);
+	color: rgba(196, 181, 253, 1);
+	font-size: 0.7rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	flex-shrink: 0;
+}
+
+html[data-theme="light"] .cv-ai-badge,
+html.light .cv-ai-badge {
+	background: rgba(124, 58, 237, 0.15);
+	color: #6d28d9;
+}
+
+.cv-ai-text {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.1rem;
+}
+
+.cv-ai-title {
+	font-weight: 600;
+	font-size: 0.95rem;
+}
+
+.cv-ai-hint {
+	font-size: 0.78rem;
+	color: rgba(255, 255, 255, 0.5);
+}
+
+html[data-theme="light"] .cv-ai-hint,
+html.light .cv-ai-hint {
+	color: rgba(0, 0, 0, 0.55);
+}
+
+.cv-ai-caret {
+	width: 0.55rem;
+	height: 0.55rem;
+	border-right: 2px solid rgba(167, 139, 250, 0.7);
+	border-bottom: 2px solid rgba(167, 139, 250, 0.7);
+	transform: rotate(-45deg);
+	transition: transform 160ms ease;
+}
+
+details[open] > .cv-ai-summary .cv-ai-caret {
+	transform: rotate(45deg);
+}
+
+.cv-ai-body {
+	padding: 0.5rem 1rem 1rem 1rem;
+	border-top: 1px dashed rgba(167, 139, 250, 0.25);
+}
+
+html[data-theme="light"] .cv-ai-body,
+html.light .cv-ai-body {
+	border-top-color: rgba(124, 58, 237, 0.18);
+}
+
+/* ============================================================
+ * <LLMsTxtLink> — floating "open as plain markdown" link
+ * ============================================================ */
+
+.cv-llms-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin: 0.75rem 0 0 0;
+	padding: 0.35rem 0.7rem;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.02);
+	color: rgba(255, 255, 255, 0.75);
+	font-size: 0.78rem;
+	text-decoration: none;
+	transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+html[data-theme="light"] .cv-llms-link,
+html.light .cv-llms-link {
+	border-color: rgba(0, 0, 0, 0.12);
+	background: rgba(0, 0, 0, 0.02);
+	color: rgba(0, 0, 0, 0.7);
+}
+
+.cv-llms-link:hover {
+	background: rgba(125, 211, 252, 0.08);
+	border-color: rgba(125, 211, 252, 0.4);
+	color: rgba(186, 230, 253, 1);
+}
+
+html[data-theme="light"] .cv-llms-link:hover,
+html.light .cv-llms-link:hover {
+	background: rgba(2, 132, 199, 0.07);
+	border-color: rgba(2, 132, 199, 0.4);
+	color: #0369a1;
+}
+
+.cv-llms-badge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.3rem;
+	height: 1.3rem;
+	border-radius: 0.3rem;
+	background: rgba(167, 139, 250, 0.22);
+	color: rgba(196, 181, 253, 1);
+	font-size: 0.65rem;
+	font-weight: 700;
+}
+
+html[data-theme="light"] .cv-llms-badge,
+html.light .cv-llms-badge {
+	background: rgba(124, 58, 237, 0.15);
+	color: #6d28d9;
+}

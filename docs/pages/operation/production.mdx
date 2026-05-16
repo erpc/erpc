@@ -1,116 +1,304 @@
 ---
-description: Recommendations for running eRPC in production...
+title: Production guidelines
+description: Memory/GC tuning, healthcheck rollout, instance identification, error visibility, and IP forwarding recommendations for running eRPC in production.
 ---
 
 import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
 # Production guidelines
 
-Here are some recommendations for running eRPC in production.
+<LLMsTxtLink />
 
-## Memory usage
+Practical recommendations for running eRPC in production — from container sizing through zero-downtime rollouts and instance identification.
 
-Biggest memory usage contributor in eRPC is size of responses of your requests. For example, for common requests such as `eth_getBlockByNumber` or `eth_getTransactionReceipt` the size (&lt;1MB) will be relatively smaller than `debug_traceTransaction` (which could potentially be up to 50MB). When using eRPC in Kubernetes for example your might see occesional `OOMKilled` errors which is most often because of high RPS of large request/responses.
+**What this page covers:**
 
-In majority of use-cases eRPC uses around 256MB of memory (and 1vCPU). To find the ideal memory limit based on your use-case start with a high limit first (e.g. 16GB) and route your production traffic (either shadow or real) to see what is the usage based on your request patterns.
+- Memory usage and Go GC tuning (`GOGC`, `GOMEMLIMIT`)
+- Failsafe policies (retry, timeout, hedge)
+- Caching database selection
+- Horizontal scaling with shared state
+- Explicit chain ID configuration
+- Zero-downtime healthcheck rollout (Cilium/Envoy drain pattern)
+- Custom response headers for instance identification
+- `includeErrorDetails` in production
+- `trustedIPForwarders` and `trustedIPHeaders` behind a load-balancer or CDN
 
-For more control you can configure Go's garbage collection with the following env variables (e.g. when facing OOM Killed errors on Kubernetes):
+## Memory and GC tuning
+
+The largest memory contributor in eRPC is the size of RPC responses. Common calls like `eth_getBlockByNumber` or `eth_getTransactionReceipt` are typically under 1 MB; heavy calls like `debug_traceTransaction` can reach 50 MB. Most deployments see ~256 MB RSS at modest load.
+
+Start with a generous limit (e.g. 16 GB) while routing real traffic, then lower it once you know your p99 working set.
+
+To prevent OOM-kills on Kubernetes, add both env vars to your container spec:
 
 ```bash
-# This flag controls when GC kicks in, for example when memory is increased by 30% try to run GC:
-export GOGC=30
+# Trigger GC when heap grows by 30 % (default is 100 %)
+GOGC=30
 
-# This flag instructs Go to do a GC when memory goes over the 2GiB limit.
-# IMPORTANT: if this value is too low, it might cause high GC frequency,
-# which in turn might impact the performance without giving much memory benefits.
-export GOMEMLIMIT=2GiB
+# Trigger GC when RSS approaches 2 GiB — tune to ~80 % of your container memory limit
+# WARNING: set this too low and GC will thrash; combine with GOGC for best results
+GOMEMLIMIT=2GiB
+```
+
+Example Docker run:
+
+```bash
+docker run -e GOGC=30 -e GOMEMLIMIT=2GiB ghcr.io/erpc/erpc:latest \
+  erpc start -c /etc/erpc/erpc.yaml
+```
+
+Kubernetes container spec snippet:
+
+```yaml
+env:
+  - name: GOGC
+    value: "30"
+  - name: GOMEMLIMIT
+    value: "2GiB"
+resources:
+  limits:
+    memory: "2.5Gi"
+  requests:
+    memory: "512Mi"
 ```
 
 ## Failsafe policies
 
-Make sure to configure [retry policy](/config/failsafe#retry-policy) on both network-level and upstream-level.
+Configure [retry](/config/failsafe#retry-policy) at both levels:
 
-- Network-level retry configuration is useful to try other upstreams if one has an issue. Even when you only have 1 upstream, network-level retry is still useful. Recommendation is to configure `maxCount` to be equal to the number of upstreams.
-- Upstream-level retry configuration covers intermittent issues with a specific upstream. It is recommended to set at least 2 and at most 5 as `maxCount`.
+- **Network-level** — retries across upstreams on hard failures. Set `maxCount` equal to the number of configured upstreams.
+- **Upstream-level** — covers transient issues with a single upstream. Set `maxCount` between 2 and 5.
 
-[Timeout policy](/config/failsafe#timeout-policy) depends on the expected response time for your use-case, for example when using "trace" methods on EVM chains, providers might take up to 10 seconds to respond. Therefore a low timeout might ultimately always fail. If you are not using heavy methods such as trace or large getLogs, you can use `3s` as a default timeout.
+Set a [timeout](/config/failsafe#timeout-policy) that matches your request profile. For standard EVM calls a `3s` default is safe; for heavy trace or `getLogs` calls allow 10 s or more.
 
-[Hedge policy](/config/failsafe#hedge-policy) is **highly-recommended** if you prefer "fast response as soon as possible". For example setting `500ms` as "delay" will make sure if upstream A did not respond under 500 milliseconds, simultaneously another request to upstream B will be fired, and eRPC will respond back as soon as any of them comes back with result faster. Note: since more requests are sent, it might incur higher costs to achieve the "fast response" goal.
+Enable the [hedge policy](/config/failsafe#hedge-policy) when you want the fastest possible response. A `500ms` delay fires a second upstream in parallel if the first hasn't replied — eRPC responds with whichever finishes first. Note: hedging increases upstream request volume.
 
 ## Caching database
 
-Storing cached RPC responses requires high storage for read-heavy use-cases such as indexing 100m blocks on Arbitrum. eRPC is designed to be robust towards cache database issues, so even if database is completely down it will not impact the RPC availability.
+Large read-heavy workloads (e.g. indexing 100 M Arbitrum blocks) require substantial cache storage. Start with Redis; switch to PostgreSQL when cached data exceeds available memory.
 
-As described in [Database](/config/database) section depending on your requirements choose the right type. You can start with Redis which is easiest to setup, and if amount of cached data is larger than available memory you can switch to PostgreSQL.
+eRPC degrades gracefully if the cache backend is unavailable — it falls back to live upstream calls with no impact on availability.
 
-Using [eRPC cloud](/deployment/cloud) solution will be most cost-efficient in terms of caching storage costs, as we'll be able to break the costs over many projects.
+See [Database](/config/database) for connector configuration. [eRPC Cloud](/deployment/cloud) offers the most cost-effective caching for multi-tenant deployments.
 
 ## Horizontal scaling
 
-When running multiple eRPC instances (e.g., in a Kubernetes deployment with multiple replicas), it's recommended to enable shared state with Redis to ensure proper synchronization between instances.
+Run multiple eRPC replicas with a shared Redis connector to synchronize latest/finalized block numbers across instances. Without shared state, each replica polls independently, increasing upstream requests.
 
-The [shared state feature](/config/database/shared-state) allows your eRPC instances to share critical blockchain information such as latest and finalized block numbers, which reduces redundant upstream requests and improves integrity checks.
+See [Shared State](/config/database/shared-state). Even when Redis is temporarily unavailable, eRPC continues serving requests using local state tracking.
 
-<Callout type="info">
-  Even if Redis becomes temporarily unavailable, eRPC will continue serving requests by falling back to local state tracking. This might cause a slight increase in upstream requests as each instance will need to poll for latest/finalized blocks independently, but the impact is minimal and service availability is maintained.
-</Callout>
+## Explicitly configure chain ID
 
-The shared state feature requires minimal storage (less than 1MB per upstream) while significantly improving coordination between instances. For high-traffic deployments with multiple replicas, this pattern is strongly recommended.
+Auto-detected chain IDs add one upstream call per network at startup and slow rolling restarts. Configure them explicitly:
 
-## Explicitly configure Chain ID
+- `networks.*.evm.chainId` — under [Networks](/config/projects/networks)
+- `upstreams.*.evm.chainId` — under [Upstreams](/config/projects/upstreams)
 
-Even though eRPC can automatically detect the chain ID, it's recommended to explicitly configure the chain ID in the project configuration. This ensures faster startup time and more resilient rollouts.
+## Healthcheck and zero-downtime rollout
 
-There are mainly 2 places to configure the chain ID:
+Configure a [Healthcheck](/operation/healthcheck) readiness probe so your orchestrator stops routing to a pod before it shuts down.
 
-* `networks.*.evm.chainId` under [Networks](/config/projects/networks) section
-* `upstreams.*.evm.chainId` under [Upstreams](/config/projects/upstreams) section
+### Cilium / Envoy drain pattern
 
-## Healthcheck
+When using Cilium with Envoy (Ingress or Gateway API), set both shutdown wait fields to 30 s:
 
-For a zero-downtime smooth rollout, configure [Healthcheck](/operation/healthcheck) in your orchestration platform (e.g. kubernetes).
+<ConfigTabs
+	path="server"
+	yaml={`server:
+  waitBeforeShutdown: 30s  # pod marked draining; readiness probe fails
+  waitAfterShutdown:  30s  # process stays alive until Envoy drains its connections`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-#### Example: Cilium/Envoy and zero-downtime deployments
+export default createConfig({
+  server: {
+    waitBeforeShutdown: "30s",
+    waitAfterShutdown: "30s",
+  },
+});`}
+/>
 
-When using Cilium with Envoy (either Ingress or Gateway-API) we observed that keeping
-`waitBeforeShutdown` and `waitAfterShutdown` **both** at 30s (together with a readiness
-probe that fails in ≤ 10 s) eliminates `connection reset / refused` errors during
-rolling updates:
-
-```yaml
-server:
-  waitBeforeShutdown: 30s # pod is in draining mode
-  waitAfterShutdown:  30s # process stays alive until Envoy finishes
-```
-
-Shorter values let Envoy reuse a connection after the listener is gone or try to reach
-a pod that has already exited. Use these numbers as a safe starting point and adjust
-to match your own probe intervals.
+Shorter values allow Envoy to reuse a connection after the listener closes, or route to a pod that has already exited. Adjust to match your own probe intervals.
 
 ## Custom response headers
 
-You can add custom headers to all HTTP responses using `server.responseHeaders`. This is useful for exposing instance metadata (region, machine ID, pod name) directly in responses for debugging.
+Use `server.responseHeaders` to stamp every HTTP response with instance metadata for quick debugging without opening a trace:
 
-Values support environment variable expansion using `${VAR}` syntax. Headers with empty values (after expansion) are automatically omitted.
+<ConfigTabs
+	path="server"
+	yaml={`server:
+  responseHeaders:
+    X-ERPC-Region:   \${FLY_REGION}      # Fly.io region
+    X-ERPC-Machine:  \${FLY_MACHINE_ID}  # Fly.io machine ID
+    # Kubernetes:
+    # X-ERPC-Pod: \${HOSTNAME}`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    responseHeaders: {
+      "X-ERPC-Region":  process.env.FLY_REGION,
+      "X-ERPC-Machine": process.env.FLY_MACHINE_ID,
+      // Kubernetes:
+      // "X-ERPC-Pod": process.env.HOSTNAME,
+    },
+  },
+});`}
+/>
+
+Headers with empty values (after env-var expansion) are automatically omitted. Combine with [custom trace attributes](/operation/tracing#custom-resource-attributes) for full observability.
+
+## Error detail visibility
+
+By default eRPC includes upstream error details in responses. In production, set `includeErrorDetails: false` to avoid leaking internal endpoint URLs, API key fragments, or upstream error messages to end-users:
+
+<ConfigTabs
+	path="server"
+	yaml={`server:
+  includeErrorDetails: false`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    includeErrorDetails: false,
+  },
+});`}
+/>
+
+## Trusted IP forwarding
+
+When eRPC runs behind a load-balancer or CDN, the real client IP is in a forwarded header. Configure `trustedIPForwarders` (CIDR ranges of your LB/CDN) and `trustedIPHeaders` (the header name to read):
+
+<ConfigTabs
+	path="server"
+	yaml={`server:
+  trustedIPForwarders:
+    - "10.0.0.0/8"       # cluster-internal LB CIDR
+    - "172.16.0.0/12"
+  trustedIPHeaders:
+    - "X-Forwarded-For"
+    - "CF-Connecting-IP"  # Cloudflare`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    trustedIPForwarders: ["10.0.0.0/8", "172.16.0.0/12"],
+    trustedIPHeaders: ["X-Forwarded-For", "CF-Connecting-IP"],
+  },
+});`}
+/>
+
+Without this, IP-based rate limits and `network` auth strategies see the LB address rather than the real client.
+
+<AISection title="Copy for your AI assistant — full production guide reference">
+
+### Memory / GC tuning
+
+eRPC is a Go process. The runtime's default GC target (`GOGC=100`) is appropriate for development but often too loose for containers with hard memory limits.
+
+**Recommended production pair:**
+
+```bash
+GOGC=30          # run GC after heap grows 30 % — smaller heap, more frequent collections
+GOMEMLIMIT=2GiB  # soft ceiling — GC fires when RSS nears this value
+```
+
+Set `GOMEMLIMIT` to ~80 % of your container memory limit. For example: 2 GiB limit → `GOMEMLIMIT=1600MiB`. Setting it equal to the limit leaves no headroom and risks GC thrash or OOM from transient allocation bursts.
+
+Caution: `GOGC < 10` causes GC thrashing — the runtime spends most CPU collecting, not serving requests. Values of 20–50 are the practical floor.
+
+If you have abundant RAM and want to reduce CPU overhead, raise `GOGC` (e.g. 200). The heap will grow larger but GC runs less often.
+
+### Healthcheck rollout pattern
+
+eRPC's shutdown sequence:
+
+1. Receive SIGTERM.
+2. Stop accepting new connections (`waitBeforeShutdown` delay — readiness probe starts failing).
+3. Drain in-flight requests.
+4. Wait `waitAfterShutdown` (keeps the process alive so the LB/proxy can close open connections).
+5. Exit 0.
+
+For Kubernetes with Cilium/Envoy, both values should be at least 30 s:
 
 ```yaml
 server:
-  responseHeaders:
-    X-ERPC-Region: ${FLY_REGION}         # Fly.io region
-    X-ERPC-Machine: ${FLY_MACHINE_ID}    # Fly.io machine ID
-    # Or for Kubernetes:
-    # X-ERPC-Pod: ${HOSTNAME}
+  waitBeforeShutdown: 30s
+  waitAfterShutdown:  30s
 ```
 
-This allows quick identification of which instance handled a request without checking traces:
+The readiness probe should return unhealthy within 10 s of SIGTERM (before `waitBeforeShutdown` expires) so the orchestrator removes the endpoint before connections are refused.
 
-```
-HTTP/1.1 200 OK
-X-ERPC-Version: main
-X-ERPC-Region: sin
-X-ERPC-Machine: 4d891234ab
-```
+Kubernetes `terminationGracePeriodSeconds` must be greater than `waitBeforeShutdown + waitAfterShutdown + time to drain`. Set it to at least 90 s for the 30 s + 30 s pattern above.
 
-<Callout type="info">
-  For deeper debugging, combine this with [custom trace attributes](/operation/tracing#custom-resource-attributes) to get full observability in your tracing backend.
+### `responseHeaders` for instance identification
+
+`server.responseHeaders` is a map of header name → value. Values support `\${VAR}` env-var expansion. Headers with an empty value after expansion are silently omitted (safe to use with optional env vars).
+
+Useful headers:
+
+| Header | Env var | Platform |
+|---|---|---|
+| `X-ERPC-Region` | `\${FLY_REGION}` | Fly.io |
+| `X-ERPC-Machine` | `\${FLY_MACHINE_ID}` | Fly.io |
+| `X-ERPC-Pod` | `\${HOSTNAME}` | Kubernetes (pod name) |
+| `X-ERPC-Instance` | `\${INSTANCE_ID}` | explicit / custom |
+
+Combine with tracing resource attributes (`tracing.resourceAttributes`) so every trace span carries the same instance label as the HTTP response header.
+
+### `includeErrorDetails`
+
+Controls whether upstream error messages and internal endpoint information appear in JSON-RPC error responses returned to callers.
+
+- **Default:** `true` (errors are verbose — helpful for development).
+- **Production:** set to `false` to prevent leaking upstream URLs, API key fragments, and internal error strings.
+
+Errors are still logged internally at full verbosity regardless of this setting.
+
+### `trustedIPForwarders` + `trustedIPHeaders`
+
+When eRPC sits behind a reverse proxy, load-balancer, or CDN, the TCP source IP is always the proxy's address. To recover the real client IP:
+
+1. `trustedIPForwarders` — list of CIDR blocks (or individual IPs) whose `X-Forwarded-For` (or the named headers) are trusted. Requests from outside these ranges have their forwarded headers ignored.
+2. `trustedIPHeaders` — ordered list of headers to read. eRPC picks the first header that is present on a request from a trusted forwarder.
+
+This real IP is then used for:
+- IP-based rate limiting (`network` auth strategy `allowedIPs`)
+- Per-IP metric labels
+- Any upstream selection that keys on client IP
+
+Without this config, all requests appear to originate from your LB IP and IP-based policies are effectively global.
+
+### Metrics tuning
+
+See [Monitoring](/operation/monitoring) for `metrics.histogramDropLabels` — dropping high-cardinality label combinations (e.g. per-upstream request-size histograms) avoids cardinality explosion in Prometheus.
+
+### Tracing in production
+
+See [Tracing](/operation/tracing) for OTLP exporter setup, sampling rate config, and adding custom resource attributes. Use `tracing.resourceAttributes` to attach region/instance labels that correlate with the `responseHeaders` you set above.
+
+### Rate-limit budgets per project / upstream
+
+See [Rate Limiters](/config/rate-limiters) for `rateLimiters.budgets` — define per-project or per-upstream budgets and reference them from auth strategies (per-API-key limits) or directly from upstream config (cap upstream call rate to protect a paid plan).
+
+### Common pitfalls
+
+- **`GOMEMLIMIT` without `GOGC`** — the runtime relies solely on the soft limit, leading to large heap swings just under the ceiling. Always pair them.
+- **`GOGC=100` with a tight container limit** — the heap can double in size before GC fires. A container with a 512 MiB limit can OOM before GC triggers.
+- **`waitBeforeShutdown` too short** — load-balancers / service meshes can take several seconds to drain an endpoint after a readiness probe fails. Values below 10 s risk connection resets on rolling restarts with Envoy.
+- **`waitAfterShutdown` too short** — if the process exits before the proxy finishes draining, in-flight requests to that pod are reset. 30 s is a safe default.
+- **`terminationGracePeriodSeconds` too short** — Kubernetes SIGKILL fires when this expires. It must exceed `waitBeforeShutdown + waitAfterShutdown + expected drain time`.
+- **`includeErrorDetails: true` in production** — upstream error messages often contain full endpoint URLs with API keys embedded. Set to `false` before exposing eRPC to external callers.
+- **Missing `trustedIPForwarders`** — IP-based rate limits and auth policies all see the LB IP, effectively becoming global instead of per-client.
+- **Chain ID auto-detection in large deployments** — every eRPC replica calls `eth_chainId` on every upstream at startup. With many replicas and many upstreams this creates a startup burst. Configuring `evm.chainId` explicitly eliminates it.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
 </Callout>

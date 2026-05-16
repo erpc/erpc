@@ -1,34 +1,43 @@
 ---
-description: eRPC provides official Docker images that can be used to quickly deploy the service...
+title: Docker deployment
+description: Deploy eRPC using official Docker images — quick start, docker-compose, custom NPM modules, and production tuning.
 ---
 
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
-import { Callout, Steps, Tabs, Tab } from "nextra/components";
+# Docker deployment
 
-# Docker installation
+<LLMsTxtLink />
 
-eRPC provides official Docker images that can be used to quickly deploy the service. Follow these steps to get started:
+eRPC ships multi-arch Docker images (`linux/amd64`, `linux/arm64`) to `ghcr.io/erpc/erpc`. The typical deployment is a single container with a mounted config file and two exposed ports.
 
-<Steps>
+**What this page covers:**
 
-### Create configuration
+- Quick start — single `docker run` command
+- docker-compose example
+- Custom NPM modules for TypeScript configs
+- Port mapping, volume mounts, and environment variables
+- Production tuning and healthcheck integration
 
-Create your `erpc.yaml` configuration file. You can start with the minimal example:
+## Quick start
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml
-logLevel: debug
+Create a minimal `erpc.yaml`:
+
+<ConfigTabs
+	path="projects"
+	yaml={`logLevel: debug
 projects:
- - id: main
-   upstreams:
-   - endpoint: alchemy://XXX_MY_ALCHEMY_API_KEY_XXX
-   - endpoint: blastapi://XXX_MY_BLASTAPI_API_KEY_XXX
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+  - id: main
+    upstreams:
+      - endpoint: alchemy://\${ALCHEMY_API_KEY}
+      - endpoint: blastapi://\${BLASTAPI_API_KEY}`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   logLevel: "debug",
@@ -36,27 +45,19 @@ export default createConfig({
     {
       id: "main",
       upstreams: [
-        {
-          endpoint: "alchemy://XXX_MY_ALCHEMY_API_KEY_XXX",
-        },
-        {
-          endpoint: "blastapi://XXX_MY_BLASTAPI_API_KEY_XXX",
-        },
+        { endpoint: "alchemy://\${ALCHEMY_API_KEY}" },
+        { endpoint: "blastapi://\${BLASTAPI_API_KEY}" },
       ],
     },
   ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+});`}
+/>
 
 <Callout type="info">
-  See the [complete config example](/config/example) for all available options and detailed explanations.
+	See the [complete config example](/config/example) for all available options.
 </Callout>
 
-### Run eRPC container
-
-Run the Docker container, mounting your configuration file:
+Run the container:
 
 ```bash
 docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
@@ -64,41 +65,33 @@ docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
   ghcr.io/erpc/erpc:latest
 ```
 
-### Test the deployment
-
-Send a test request to verify the setup:
+Send a test request:
 
 ```bash
 curl --location 'http://localhost:4000/main/evm/1' \
---header 'Content-Type: application/json' \
---data '{
+  --header 'Content-Type: application/json' \
+  --data '{
     "method": "eth_getBlockByNumber",
     "params": ["0x1203319", false],
     "id": 1,
     "jsonrpc": "2.0"
-}'
+  }'
 ```
 
-### Setup monitoring (optional)
+## docker-compose
 
-For production deployments, we recommend setting up monitoring with Prometheus and Grafana. You can use our docker-compose setup:
+Basic production-ready compose file with Prometheus and Grafana:
 
 ```bash
 # Clone the repo if you haven't
 git clone https://github.com/erpc/erpc.git
 cd erpc
 
-# Start the monitoring stack
+# Start eRPC + monitoring stack
 docker-compose up -d
 ```
 
-See the [monitoring guide](/operation/monitoring) for more details on metrics and dashboards.
-
-</Steps>
-
-## Docker compose
-
-For production deployments, you might want to use docker-compose to manage eRPC along with its monitoring stack. Here's a basic example:
+Minimal standalone compose:
 
 ```yaml
 version: '3.8'
@@ -113,19 +106,19 @@ services:
     restart: unless-stopped
 ```
 
-## Installing custom NPM modules
+See the [monitoring guide](/operation/monitoring) for metrics and Grafana dashboards.
 
-When using TypeScript configuration with additional NPM dependencies beyond `@erpc-cloud/config`, you'll need to make these dependencies available inside the Docker container. There are two approaches to achieve this:
+## Custom NPM modules
 
-### Option 1: Building a custom image
+When your TypeScript config imports packages beyond `@erpc-cloud/config`, make them available inside the container using one of these two approaches.
 
-Create a custom Dockerfile that includes your dependencies:
+### Option 1: Custom image
 
 ```dockerfile
 FROM debian:12
 
 COPY package.json pnpm-lock.yaml /
-# COPY package.json package-lock.json /  # For npm
+# COPY package.json package-lock.yaml /  # For npm
 # COPY package.json yarn.lock /          # For yarn
 
 RUN pnpm install
@@ -137,8 +130,6 @@ FROM ghcr.io/erpc/erpc:latest
 COPY --from=0 /node_modules /node_modules
 ```
 
-Build and run your custom image:
-
 ```bash
 docker build -t erpc-custom -f Dockerfile.custom .
 docker run -v $(pwd)/erpc.ts:/erpc.ts \
@@ -146,9 +137,7 @@ docker run -v $(pwd)/erpc.ts:/erpc.ts \
   erpc-custom
 ```
 
-### Option 2: Mounting host dependencies
-
-Alternatively, you can mount your local `package.json` and `node_modules` directly:
+### Option 2: Mount host dependencies
 
 ```bash
 docker run \
@@ -159,7 +148,7 @@ docker run \
   ghcr.io/erpc/erpc:latest
 ```
 
-For docker-compose, add the volumes to your service configuration:
+docker-compose equivalent:
 
 ```yaml
 version: '3.8'
@@ -177,5 +166,163 @@ services:
 ```
 
 <Callout type="info">
-  If you're only using the `@erpc-cloud/config` package, you don't need these additional steps. The base image already includes this package.
+	If you only use `@erpc-cloud/config`, no extra steps are needed — the base image already includes it.
+</Callout>
+
+<AISection title="Copy for your AI assistant — full Docker deployment reference">
+
+### Image reference
+
+```
+ghcr.io/erpc/erpc:latest          # latest stable
+ghcr.io/erpc/erpc:<version>       # e.g. ghcr.io/erpc/erpc:0.0.46
+```
+
+Pin to a specific version tag in production. The `latest` tag is overwritten on every release. Both `linux/amd64` and `linux/arm64` are published in the same multi-arch manifest.
+
+### Port mapping
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| `4000` | HTTP | Main proxy + admin endpoint |
+| `4001` | HTTP | Prometheus `/metrics` scrape endpoint |
+| `4100` | gRPC | gRPC listener (only if `server.grpc` is enabled in config) |
+
+Expose only the ports your deployment actually uses. `4001` metrics should be reachable by your Prometheus scraper but not exposed publicly.
+
+### Volume mounts
+
+| Mount | Required | Notes |
+|---|---|---|
+| `/erpc.yaml` or `/erpc.ts` | yes (unless using `--endpoint`) | Config file. The path must match `--config` (default auto-discovery looks for `erpc.yaml` in `/`). |
+| `/data` or similar | optional | Persistent volume for cache connectors (Redis-less local cache). Not required for the stateless proxy mode. |
+
+Default auto-discovery in the container checks `/erpc.yaml` then `/erpc.ts`. To use a different path, pass `--config /path/to/config.yaml` as the CMD override.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `error`. Defaults to `info`. |
+| `LOG_WRITER` | Set to `console` for human-readable output; default is JSON. |
+| `HOSTNAME` | Container hostname — used as fallback instance ID and interpolated into `server.responseHeaders`. Set by Docker automatically. |
+| `INSTANCE_ID` | Override the instance identifier (takes precedence over `HOSTNAME`). Useful for stable names in non-k8s environments, e.g. `INSTANCE_ID=erpc-eu-01`. |
+| `GOGC` | Go GC target (percent heap growth). Default `100`. Set to `30` for tighter memory control. |
+| `GOMEMLIMIT` | Go soft memory limit, e.g. `GOMEMLIMIT=2GiB`. Set to ~80% of the container memory limit to prevent OOM kills. |
+
+See [CLI & env vars](/operation/cli) for the full reference including `POD_NAME`, AWS credentials, and OTEL variables.
+
+### Production docker-compose with monitoring
+
+```yaml
+version: '3.8'
+services:
+  erpc:
+    image: ghcr.io/erpc/erpc:latest
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    volumes:
+      - ./erpc.yaml:/erpc.yaml
+    environment:
+      LOG_LEVEL: info
+      GOGC: "30"
+      GOMEMLIMIT: 2GiB
+      INSTANCE_ID: erpc-prod-01
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+```
+
+### Healthcheck integration
+
+eRPC exposes `GET /healthcheck` on port 4000. It returns `200 OK` once the proxy is listening and at least one upstream is reachable.
+
+```bash
+# Manual check
+curl -fsS http://localhost:4000/healthcheck
+```
+
+For Docker healthcheck:
+
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "-qO-", "http://localhost:4000/healthcheck"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 15s
+```
+
+Kubernetes liveness/readiness probes use the same endpoint:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthcheck
+    port: 4000
+  initialDelaySeconds: 15
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /healthcheck
+    port: 4000
+  initialDelaySeconds: 5
+  periodSeconds: 5
+```
+
+### Production memory tuning
+
+The Go runtime defaults work for most workloads. Tune `GOGC` and `GOMEMLIMIT` together:
+
+```bash
+# Tight memory ceiling (2 GiB container limit)
+docker run \
+  -e GOGC=30 \
+  -e GOMEMLIMIT=1600MiB \
+  -v $(pwd)/erpc.yaml:/erpc.yaml \
+  -p 4000:4000 -p 4001:4001 \
+  --memory=2g \
+  ghcr.io/erpc/erpc:latest
+```
+
+Rule of thumb: set `GOMEMLIMIT` to ~80% of `--memory` so the GC triggers before the OOM-killer. Lower `GOGC` (25-50) keeps heaps smaller at the cost of slightly higher CPU. See [CLI & env vars — GOGC and GOMEMLIMIT](/operation/cli#gogc-and-gomemlimit--production-tuning) for details.
+
+### Restart policy
+
+Always set `restart: unless-stopped` (compose) or `--restart=unless-stopped` (docker run) in production. eRPC exits with a non-zero code on config errors or failed upstream initialization — the restart policy will handle transient failures (e.g. a dependent service not yet up).
+
+For `always` vs `unless-stopped`: use `unless-stopped` so a deliberate `docker stop` doesn't trigger an immediate restart.
+
+### Common pitfalls
+
+- **Config volume not mounted** — without `-v ./erpc.yaml:/erpc.yaml`, auto-discovery finds nothing in `/` and the process exits. Pass `--config` explicitly or ensure the mount path matches.
+- **Port 4000 already in use** — eRPC fails to bind and exits with code `2`. Check with `lsof -i :4000` and pick a free host port via `-p 4100:4000`.
+- **Image cache** — `docker pull ghcr.io/erpc/erpc:latest` may serve a cached layer. Force a fresh pull with `docker pull --no-cache` or pin to a version digest.
+- **`GOMEMLIMIT` without `GOGC`** — the runtime relies entirely on the soft limit, which can cause large heap swings just under the limit. Always pair them.
+- **TypeScript config auto-discovery** — the container's cwd is `/`. Drop your `erpc.ts` at `/erpc.ts` or pass `--config /path/to/erpc.ts` as the CMD.
+- **gRPC port not exposed** — port `4100` is only active when `server.grpc` is configured. Exposing it on an image without gRPC config is harmless but confusing.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
 </Callout>

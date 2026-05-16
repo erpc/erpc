@@ -1,93 +1,238 @@
-# OpenTelemetry Tracing
+---
+title: Tracing
+description: OpenTelemetry tracing for eRPC — OTLP export, sampling, force-trace rules, custom resource attributes.
+---
 
-eRPC includes support for distributed tracing using OpenTelemetry. This allows you to track requests as they flow through the system, identify performance bottlenecks, and debug issues in production environments.
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
-## Config
+# OpenTelemetry tracing
 
-To enable tracing, add the following to your `erpc.yaml` configuration:
+<LLMsTxtLink />
+
+eRPC instruments every layer of the request pipeline (HTTP server → network → upstream → cache → failsafe → client) with OpenTelemetry spans. Export over OTLP (gRPC or HTTP) to Jaeger, Tempo, Honeycomb, Datadog, or any OTel-compatible backend.
+
+**You can configure:**
+
+- **Where to send** — OTLP endpoint, gRPC or HTTP transport, optional TLS, optional auth headers
+- **How much to send** — `sampleRate` (probabilistic), `forceTraceMatchers` (always-trace specific network/method combos), `detailed` (include high-cardinality attributes)
+- **How to label** — `serviceName` and arbitrary `resourceAttributes` (env-var expanded)
+
+## Minimum useful config
+
+A working setup with 10% sampling, gRPC export to a local Jaeger.
+
+<ConfigTabs
+	path="tracing"
+	focus="3-9"
+	yaml={`server: # ...
+projects: # ...
+
+tracing:
+  enabled: true
+  endpoint: localhost:4317           # OTLP gRPC endpoint
+  protocol: grpc                     # "grpc" or "http"
+  sampleRate: 0.1                    # 10% probabilistic sampling
+  serviceName: erpc-prod             # OTel service.name resource attribute
+  detailed: false                    # set true to include high-cardinality attrs`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: { /* ... */ },
+  projects: [ /* ... */ ],
+  tracing: {
+    enabled: true,
+    endpoint: "localhost:4317",
+    protocol: "grpc",
+    sampleRate: 0.1,
+    serviceName: "erpc-prod",
+    detailed: false,
+  },
+});`}
+/>
+
+## Force-tracing specific methods
+
+When you need deterministic traces for a specific (network, method) pair regardless of the global `sampleRate`, use `forceTraceMatchers`. Useful for debugging a customer-impacting issue without raising the global sample rate.
+
+<ConfigTabs
+	path="tracing > forceTraceMatchers[]"
+	focus="6-11"
+	yaml={`tracing:
+  enabled: true
+  endpoint: localhost:4317
+  protocol: grpc
+  sampleRate: 0.01                # 1% global sample
+  forceTraceMatchers:
+    - network: "evm:1"             # always trace mainnet
+      method: "eth_getLogs"        # ...for getLogs specifically
+    - network: "evm:*"
+      method: "debug_*|trace_*"    # always trace expensive trace/debug methods on any chain`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  tracing: {
+    enabled: true,
+    endpoint: "localhost:4317",
+    protocol: "grpc",
+    sampleRate: 0.01,
+    forceTraceMatchers: [
+      { network: "evm:1", method: "eth_getLogs" },
+      { network: "evm:*", method: "debug_*|trace_*" },
+    ],
+  },
+});`}
+/>
+
+## Custom resource attributes
+
+Attach instance-level metadata that flows into every span. Useful for filtering by region, machine, or pod in your tracing backend.
 
 ```yaml
 tracing:
   enabled: true
-  endpoint: "localhost:4317"  # OTLP endpoint (Jaeger, Tempo, etc.)
-  protocol: "grpc"            # "grpc" or "http"
-  sampleRate: 0.1          # Sample 10% of requests
-  detailed: true              # Include detailed tracing information
-  tls:
-    enabled: false            # Enable TLS for secure connections
-    # certFile: "/path/to/cert.pem"
-    # keyFile: "/path/to/key.pem"
-    # caFile: "/path/to/ca.pem"
-server:
- # ...
-projects:
- # ...
-```
-
-### Detailed tracing
-
-When `tracing.detailed` is set to true, eRPC will include detailed tracing information in the traces. This includes:
-- Internal operations and mutex locks (useful to debug long requests that are not waiting for any I/O)
-- High-cardinality attributes (e.g. request json-rpc IDs, request params, actual cache keys used, etc.)
-
-Remember that detailed tracing can significantly increase the volume of traces, so use it judiciously.
-
-### Custom resource attributes
-
-You can add custom attributes to all traces from an eRPC instance using `resourceAttributes`. This is useful for adding deployment-specific metadata like region, machine ID, or pod name.
-
-Values support environment variable expansion using `${VAR}` syntax. Attributes with empty values (after expansion) are automatically omitted.
-
-```yaml
-tracing:
-  enabled: true
-  endpoint: "localhost:4317"
-  protocol: "grpc"
-  sampleRate: 0.1
-  # Custom attributes added to all traces from this instance
+  endpoint: localhost:4317
   resourceAttributes:
-    fly.region: ${FLY_REGION}           # Fly.io region
-    fly.machine_id: ${FLY_MACHINE_ID}   # Fly.io machine ID
+    fly.region: ${FLY_REGION}
+    fly.machine_id: ${FLY_MACHINE_ID}
     # Or for Kubernetes:
     # k8s.pod_name: ${HOSTNAME}
     # k8s.node_name: ${NODE_NAME}
 ```
 
-This allows you to filter and group traces by region/machine in your tracing backend (Jaeger, Tempo, etc.) to debug region-specific issues.
+Values support `${VAR}` env-var expansion. Attributes with empty values (after expansion) are automatically omitted.
 
 ## Using with Jaeger
 
-The included [`docker-compose.yml`](https://github.com/erpc/erpc/blob/main/docker-compose.yml) file contains a Jaeger service for visualizing traces. To use it:
+The repo's [docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml) includes a Jaeger service for development.
 
-1. Start the Jaeger container:
-   ```bash
-   docker-compose up jaeger
-   ```
+```bash
+docker-compose up jaeger
+```
 
-2. Configure eRPC to send traces to Jaeger:
-   ```yaml
-   tracing:
-     enabled: true
-     endpoint: "localhost:4317"
-     protocol: "grpc"
-     sampleRate: 1.0 # Sample all requests during development
-     detailed: true
-   ```
+```yaml
+tracing:
+  enabled: true
+  endpoint: localhost:4317
+  protocol: grpc
+  sampleRate: 1.0        # sample everything during development
+  detailed: true
+```
 
-3. Access the Jaeger UI at http://localhost:16686
+Then open the Jaeger UI at http://localhost:16686.
 
-## Traced components
+<AISection title="Copy for your AI assistant — full tracing reference">
 
-The following components are instrumented with tracing:
+### `TracingConfig` — every field
 
-- HTTP server request handling
-- Network-level (chain) forwarding
-- Upstream-level request forwarding
-- Cache operations (get/set)
-- Failsafe executor operations (hedges, retries)
-- HTTP client requests to upstreams
-- Rate limiters
-- And more...
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Master switch. When `false`, no spans are exported (instrumentation still runs as no-ops). |
+| `endpoint` | string | — | OTLP exporter target. For gRPC: `host:port` (e.g. `localhost:4317`). For HTTP: full URL (e.g. `http://localhost:4318/v1/traces`). |
+| `protocol` | `"grpc"\|"http"` | `grpc` | OTLP transport. `grpc` uses standard OTLP/gRPC; `http` uses OTLP/HTTP+protobuf. |
+| `sampleRate` | float 0..1 | `0` | Probabilistic head sampling — fraction of root spans recorded. `0` = no traces; `1.0` = every request. |
+| `detailed` | bool | `false` | When `true`, includes high-cardinality attributes on spans: request JSON-RPC IDs, request params, actual cache keys, internal mutex/lock spans. Significantly increases trace volume; use sparingly. |
+| `serviceName` | string | hostname-derived | Overrides the OTel `service.name` resource attribute that tracing backends use as the service grouping. |
+| `headers` | `map[string]string` | none | Extra headers attached to OTLP exporter requests. Use for authenticated collectors: e.g. `Authorization: Bearer ...` for Honeycomb / DataDog / Tempo Cloud. |
+| `tls` | TLSConfig | none | TLS for OTLP/gRPC connections. See "TLS sub-fields" below. |
+| `resourceAttributes` | `map[string]string` | none | Extra OTel resource attributes attached to every span. Values support `${VAR}` env-var expansion; empty values are dropped. |
+| `forceTraceMatchers[]` | `ForceTraceMatcher[]` | none | Force-trace rules that bypass `sampleRate`. See "ForceTraceMatcher" below. |
 
-If you noticed a missing component from tracing, free free to open an [issue or PR](https://github.com/erpc/erpc/issues/new)!
+### TLS sub-fields (when `protocol: grpc` with TLS)
 
+The `tls` block uses the shared `TLSConfig` struct. See [TLS configuration](/config/server#tls-configuration) for the full field reference (`enabled`, `certFile`, `keyFile`, `caFile`, `insecureSkipVerify`).
+
+Example for a gRPC OTLP collector with mutual-TLS:
+
+```yaml
+tracing:
+  endpoint: collector.example.com:4317
+  protocol: grpc
+  tls:
+    enabled: true
+    certFile: /path/to/client.crt        # optional client cert
+    keyFile: /path/to/client.key         # optional client key
+    caFile: /path/to/ca.crt              # CA chain for verifying the collector
+    insecureSkipVerify: false            # set true for development; never in prod
+```
+
+### `ForceTraceMatcher`
+
+```yaml
+forceTraceMatchers:
+  - network: <matcher-pattern>
+    method: <matcher-pattern>
+```
+
+| Field | Notes |
+|---|---|
+| `network` | Matcher pattern (matcher syntax: `*`, `\|`, `!`). e.g. `evm:1`, `evm:1\|evm:10`, `evm:*`. When omitted, matches any network. |
+| `method` | Same matcher syntax. e.g. `eth_getLogs`, `eth_*`, `debug_*\|trace_*`. When omitted, matches any method. |
+
+A request is force-traced if **any** matcher's `network` AND `method` both match. Force-traced requests bypass `sampleRate` entirely (treated as sampled-in regardless of the random draw).
+
+Common uses:
+
+- Always trace expensive methods: `{ method: "debug_*|trace_*" }`
+- Always trace one chain that's the focus of debugging: `{ network: "evm:42161" }`
+- Trace one method on one chain during a customer escalation: `{ network: "evm:1", method: "eth_call" }`
+
+### Headers — concrete examples
+
+For authenticated OTLP collectors:
+
+```yaml
+# Honeycomb
+tracing:
+  endpoint: api.honeycomb.io:443
+  protocol: grpc
+  headers:
+    x-honeycomb-team: ${HONEYCOMB_API_KEY}
+
+# Grafana Cloud Tempo (basic auth via Authorization header)
+tracing:
+  endpoint: tempo-eu-west-0.grafana.net:443
+  protocol: grpc
+  headers:
+    Authorization: Basic \${GRAFANA_CLOUD_BASIC_AUTH}
+
+# Self-hosted with mTLS, no headers needed (use tls.* instead)
+```
+
+`Authorization` headers should use env-var interpolation; never commit credentials to YAML/TS.
+
+### Traced components
+
+Every span eRPC emits is a child of an HTTP server root span. The instrumented layers:
+
+| Layer | What spans cover |
+|---|---|
+| HTTP server | Parsing, auth check, project + network selection, response serialization |
+| Network forwarding | Selection-policy eval, upstream pick, retry/hedge/consensus orchestration |
+| Upstream forwarding | Rate-limit check, payload assembly, response normalization |
+| Cache | Get/set per policy, compression/decompression, multi-connector fanout |
+| Failsafe | Each attempt within a retry/hedge; circuit-breaker decisions; consensus participants |
+| HTTP client | Outbound request, response read |
+| Rate limiters | Token acquisition, queue wait |
+
+`detailed: true` adds finer-grained internal spans (mutexes, internal selection-policy bookkeeping) and high-cardinality attributes.
+
+### Common pitfalls
+
+- **`sampleRate: 0.1` and 100% of force-traced requests** — `forceTraceMatchers` operates **on top of** sampling; force-traced requests are not subject to the rate. So your collector ingests `sampleRate * total + forceTraced`. Make sure that's affordable.
+- **`detailed: true` in production** — request params and cache keys can be huge (think `eth_getLogs` filters), and they hit your ingest cost. Reserve for debugging.
+- **`headers` interpolation** — `${VAR}` is only resolved at config load time. Rotating tokens requires a config reload.
+- **`tls.insecureSkipVerify: true`** — accepts any cert. Never set in production; use a proper CA chain or mTLS.
+- **`protocol: http` without `https://` in `endpoint`** — exports go to plaintext HTTP. Most managed providers require HTTPS; set the endpoint to the `https://.../v1/traces` form.
+- **OTLP/HTTP endpoint format** — `protocol: http` expects a FULL URL including the `/v1/traces` path segment; `protocol: grpc` expects just `host:port` without scheme.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>
