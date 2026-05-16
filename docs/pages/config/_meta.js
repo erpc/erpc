@@ -10,14 +10,6 @@ module.exports = {
 	},
 	failsafe: {
 		title: "Failsafe",
-		children: [
-			{name: "Timeout", href: "/config/failsafe/timeout"},
-			{name: "Retry", href: "/config/failsafe/retry"},
-			{name: "Hedge", href: "/config/failsafe/hedge"},
-			{name: "Circuit breaker", href: "/config/failsafe/circuit-breaker"},
-			{name: "Consensus", href: "/config/failsafe/consensus"},
-			{name: "Integrity", href: "/config/failsafe/integrity"},
-		],
 	},
 	database: {
 		title: "Database",
