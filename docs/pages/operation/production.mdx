@@ -70,14 +70,14 @@ resources:
 
 ## Failsafe policies
 
-Configure [retry](/config/failsafe#retry-policy) at both network and upstream scopes:
+Configure [retry](/config/failsafe/retry) at both network and upstream scopes:
 
 - **Network-level retry** rotates to a different upstream on a transient failure. Even with a single upstream it's worth enabling. Set `maxAttempts` ≈ number of upstreams.
 - **Upstream-level retry** covers per-attempt flakiness within the same upstream. Use 2–5 `maxAttempts`.
 
-Set a [timeout](/config/failsafe#timeout-policy) that matches your request profile. For standard EVM calls a `3s` default is safe; for heavy trace or `getLogs` calls allow 10 s or more. Set `quantile: 0.99` on the upstream-scope timeout to auto-tune per method.
+Set a [timeout](/config/failsafe/timeout) that matches your request profile. For standard EVM calls a `3s` default is safe; for heavy trace or `getLogs` calls allow 10 s or more. Set `quantile: 0.99` on the upstream-scope timeout to auto-tune per method.
 
-Enable the [hedge policy](/config/failsafe#hedge-policy) for latency-sensitive reads. With `delay: 500ms`, eRPC races a second upstream once the primary has been quiet for 500 ms and returns the first kept response — at the cost of duplicate traffic for slow requests. Hedge attempts are excluded from per-upstream scoring and from the circuit breaker.
+Enable the [hedge policy](/config/failsafe/hedge) for latency-sensitive reads. With `delay: 500ms`, eRPC races a second upstream once the primary has been quiet for 500 ms and returns the first kept response — at the cost of duplicate traffic for slow requests. Hedge attempts are excluded from per-upstream scoring and from the circuit breaker.
 
 Use [consensus](/config/failsafe/consensus) for high-trust reads (gas price, nonce, contract calls during write paths). Set [`maxWaitOnResult`](/config/failsafe/consensus#tail-latency-caps-maxwaitonresult--maxwaitonempty) to bound tail latency when one participant lags.
 

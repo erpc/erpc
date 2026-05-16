@@ -106,8 +106,12 @@ links to its `.llms.txt` companion.
   - [Selection policies](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — Selection policies control which upstreams are eligible to serve traffic by running a JS eval function on a periodic interval — like a healthcheck that gates routing.
   - [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Configure Cross-Origin Resource Sharing (CORS) per project so browser-based frontends can call eRPC directly — control which origins, methods, and headers are permitted.
 - **Failsafe**
+  - [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — Temporarily remove an upstream from rotation after sustained failure — three-state breaker with rolling-window thresholds.
   - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Consensus policy compares responses from multiple upstreams and returns the agreed result, detecting misbehaving nodes and providing deterministic behavior during faults.
+  - [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — Race a backup request to a second upstream when the primary is slow — quantile-adaptive delay with min/max guard rails.
   - [Integrity & Empty Data](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
+  - [Retry](https://docs.erpc.cloud/config/failsafe/retry.llms.txt) — Replay transient failures with backoff — empty-result handling, network-scope failover, per-method scoping.
+  - [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Bound how long a request may take — fixed or quantile-adaptive, with per-method and per-finality scoping.
 - **Database**
   - [Drivers](https://docs.erpc.cloud/config/database/drivers.llms.txt) — Drivers define the storage backend for the eRPC cache — memory, Redis, PostgreSQL, DynamoDB. Each driver has its own timing, pool, and lock-retry knobs.
   - [EVM Cache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Cache JSON-RPC responses across one or more storage backends — non-blocking, finality-aware, reorg-safe.
@@ -149,9 +153,13 @@ follow the hierarchy:
 - [evmJsonRpcCache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Cache JSON-RPC responses across one or more storage backends — non-blocking, finality-aware, reorg-safe.
 - [sharedState](https://docs.erpc.cloud/config/database/shared-state.llms.txt) — Share critical blockchain state across multiple eRPC instances — eliminates redundant upstream polling and improves integrity checks in horizontal-scaling deployments.
 - [Complete config example](https://docs.erpc.cloud/config/example.llms.txt) — A tour of every top-level section in an eRPC config — logLevel, server, metrics, database, projects, upstreams, networks, failsafe, and rateLimiters — with minimal and full examples in YAML and TypeScript.
-- [Failsafe](https://docs.erpc.cloud/config/failsafe.llms.txt) — Per-network and per-upstream failsafe policies — timeout, retry, hedge, circuit breaker, consensus — with per-method and per-finality scoping.
+- [Failsafe](https://docs.erpc.cloud/config/failsafe.llms.txt) — Per-network and per-upstream failsafe policies — timeout, retry, hedge, circuit breaker, consensus — with per-method and per-finality scoping plus per-attempt observability.
+- [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — Temporarily remove an upstream from rotation after sustained failure — three-state breaker with rolling-window thresholds.
 - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Consensus policy compares responses from multiple upstreams and returns the agreed result, detecting misbehaving nodes and providing deterministic behavior during faults.
+- [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — Race a backup request to a second upstream when the primary is slow — quantile-adaptive delay with min/max guard rails.
 - [Integrity & Empty Data](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
+- [Retry](https://docs.erpc.cloud/config/failsafe/retry.llms.txt) — Replay transient failures with backoff — empty-result handling, network-scope failover, per-method scoping.
+- [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Bound how long a request may take — fixed or quantile-adaptive, with per-method and per-finality scoping.
 - [Matcher syntax](https://docs.erpc.cloud/config/matcher.llms.txt) — Pattern matching DSL used wherever eRPC compares network/method/param/header values — supports wildcards, OR/AND/NOT, and numeric comparisons over hex/decimal.
 - [Projects](https://docs.erpc.cloud/config/projects.llms.txt) — A project bundles a set of networks, upstreams, providers, auth, and rate-limit budgets — one eRPC instance can serve many projects (e.g. backend, indexer, frontend) with different cost/reliability profiles.
 - [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Configure Cross-Origin Resource Sharing (CORS) per project so browser-based frontends can call eRPC directly — control which origins, methods, and headers are permitted.

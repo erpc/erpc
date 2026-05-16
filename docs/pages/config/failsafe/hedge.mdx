@@ -1,0 +1,171 @@
+---
+title: Hedge
+description: Race a backup request to a second upstream when the primary is slow — quantile-adaptive delay with min/max guard rails.
+---
+
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../../components";
+
+# Hedge policy
+
+<LLMsTxtLink />
+
+The hedge policy fires a speculative parallel copy of a request to a different upstream once the primary has been quiet for `delay` (or the quantile of observed latencies). Whoever responds first wins; the loser is cancelled. Hedge is most effective at the **network** level — racing across different upstreams — where the latency variance between providers is highest.
+
+## Full configuration
+
+<ConfigTabs
+	path="projects > networks[] > failsafe[] > hedge"
+	yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        failsafe:
+          - matchMethod: "*"
+            hedge:
+              delay:
+                quantile: 0.95    # hedge at p95 of observed primary latency
+                min: 50ms         # never hedge faster than this
+                max: 2s           # never wait longer than this before hedging
+              maxCount: 2         # up to 2 hedges per request (beyond the primary)`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      failsafe: [{
+        matchMethod: "*",
+        hedge: {
+          delay: {
+            quantile: 0.95,  // hedge at p95 of observed primary latency
+            min: "50ms",     // never hedge faster than this
+            max: "2s",       // never wait longer than this before hedging
+          },
+          maxCount: 2,       // up to 2 hedges per request (beyond the primary)
+        },
+      }],
+    }],
+  }],
+});`}
+/>
+
+## How it works
+
+### Fixed-delay mode
+
+Set `delay` to a plain duration string (`"200ms"`). The hedge fires when the primary has been quiet for exactly that duration. Simple, but doesn't adapt — too low and you waste upstream traffic; too high and slow tails still hurt.
+
+### Quantile mode (recommended)
+
+Set `delay.quantile` instead of a fixed scalar. The hedge delay becomes the percentile of observed primary latency for that method, clamped to `[delay.min, delay.max]`. As upstreams warm and cool the hedge delay tracks reality automatically.
+
+The `delay` field accepts either a plain scalar (`"200ms"`) or an `AdaptiveDuration` object (`{ quantile, min, max, base }`). The legacy flat form (`quantile: 0.95, minDelay: 50ms, maxDelay: 2s` as siblings of `hedge`) is still accepted — siblings are folded into `delay` at parse time.
+
+### Per-method tracking
+
+Latency is tracked per *(network × method × finality)*. `delay.quantile: 0.95` for `eth_getLogs` is a completely different number than for `eth_blockNumber`. Methods with fast p95 responses won't trigger early hedges even if another method on the same network has slow p95 responses.
+
+### Bimodal latency — the canonical use case
+
+Some chains have bimodal upstream latency: cached responses return in ~5 ms while non-cached ones take 800 ms–2 s. A fixed `delay` either fires too early (constantly racing cache hits) or too late (slow non-cached responses never get hedged in time). `quantile + min + max` handles both cases automatically:
+
+- The p95 latency tracks the common fast case and rises when the cache misses start dominating.
+- `min` prevents the hedge from firing on cache hits where even the slow path would have completed before the hedge request lands.
+- `max` guarantees you still hedge when the primary stalls completely (cold start, new upstream with no samples yet).
+
+### Cold-start behavior
+
+Before enough samples exist for the quantile tracker, the hedge falls back to `delay.max` as the effective delay. Until the tracker warms up you are effectively in fixed-delay mode at the ceiling. Size `delay.max` accordingly — it is your cold-start fixed delay.
+
+### What hedge fans out to
+
+Hedge selects a **different** upstream than the primary, following the selection policy's score order. If only one upstream is healthy the hedge is skipped silently — there is nothing to race against.
+
+### Cancellation
+
+The first successful response wins. In-flight losers receive an HTTP client cancel; the upstream may still process the request and produce a result that is simply discarded. For `eth_sendRawTransaction` and other write methods the loser cancellation is suppressed by default — see [`evm.idempotentTransactionBroadcast`](/config/projects/networks) for safe write hedging.
+
+## Defaults
+
+| Field | Default | Notes |
+|---|---|---|
+| `delay` | — | No hedge if omitted. |
+| `delay.quantile` | — (static mode) | Percentile of observed latency. |
+| `delay.min` | `100ms` | Injected at runtime if `quantile` is set and `min` is not provided. |
+| `delay.max` | `999s` | Effectively unbounded ceiling; serves as cold-start fallback. |
+| `delay.base` | — | Static fallback used when quantile is not set. Equivalent to the plain scalar form. |
+| `maxCount` | `1` | One hedge in addition to the primary. |
+
+## Gotchas
+
+<Callout type="warning">
+  **Hedge attempts are excluded from per-upstream scoring and from the circuit breaker.** They are speculative fan-out, not signal — only primary and retry attempts count toward upstream health metrics.
+</Callout>
+
+- **`maxCount` defaults to 1** — one hedge beyond the primary. Set to 2 or higher only when you have several healthy upstreams and latency variance is severe enough to justify the extra load.
+- **Fixed-delay mode misses tail latency** on bimodal chains. Prefer `delay.quantile + delay.min + delay.max`.
+- **Hedge multiplies upstream load.** Every slow primary fans out. Watch `erpc_network_hedged_request_total` and per-upstream RPS before raising `maxCount`.
+- **Hedge at the upstream level is rarely useful** — you can't race a single upstream against itself. Set hedge at the network level to race across providers.
+- **Idempotency for writes** — enable `evm.idempotentTransactionBroadcast` on the network if you want `eth_sendRawTransaction` to be safe under hedge. Without it, two broadcasts of the same transaction can cause confusing wallet behavior.
+
+## Metrics
+
+- `erpc_network_hedge_delay_seconds` — histogram of the computed hedge delay per method.
+- `erpc_network_hedged_request_total` — counter of hedges fired.
+- `erpc_network_hedge_discards_total` — counter of losing hedge responses cancelled.
+- `erpc_network_hedge_winner_total` — counter of hedge races won, labeled by upstream. Skew here (one upstream always winning or always losing) is a signal to adjust selection policy weights.
+
+PromQL — fraction of requests that triggered a hedge:
+
+```promql
+rate(erpc_network_hedged_request_total[5m])
+  / rate(erpc_network_request_received_total[5m])
+```
+
+PromQL — hedge winner skew across upstreams (higher variance = one upstream dominating):
+
+```promql
+sum by (upstream) (rate(erpc_network_hedge_winner_total[5m]))
+```
+
+<AISection title="Copy for your AI assistant — hedge policy reference">
+
+### `HedgePolicyConfig` — every field
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `delay` | `Duration \| AdaptiveDuration` | — | When omitted, no hedge fires. A plain scalar (`"200ms"`) sets a fixed delay. An object with `quantile` enables adaptive mode. |
+| `delay.base` | Duration | — | Static component. Used as the fixed delay when `quantile` is not set. Equivalent to the plain scalar form. |
+| `delay.quantile` | float (0–1) | — | Latency percentile of observed upstream response times. The effective delay is `clamp(p_q, min, max)`. |
+| `delay.min` | Duration | `100ms` (runtime default) | Floor for the adaptive delay. Prevents hedging when even the slow case is fast. |
+| `delay.max` | Duration | `999s` (runtime default) | Ceiling and cold-start fallback. When the quantile tracker has no samples, `max` is used as the fixed delay. |
+| `maxCount` | int | `1` | Max hedges per request beyond the primary. |
+
+The legacy flat form — `quantile`, `minDelay`, `maxDelay` as siblings of the `hedge` key — is still accepted and folded into `delay` at parse time. Prefer the object form for new configs.
+
+### Behavior summary
+
+- Hedge fires a copy of the same request to a **different** upstream once the primary has been quiet for `delay`.
+- Whoever responds first wins. The loser is cancelled (HTTP client cancel; upstream may still process).
+- If only one upstream is healthy, hedge is silently skipped.
+- Latency is tracked per *(network × method × finality)* — per-method quantiles are independent.
+- Hedge attempts are **not counted** toward per-upstream scoring or circuit-breaker windows.
+- For write methods, cancellation is suppressed by default. Enable `evm.idempotentTransactionBroadcast` for safe write hedging.
+
+</AISection>
+
+## See also
+
+- [Failsafe overview](/config/failsafe) — scoping rules and per-attempt observability
+- [Timeout](/config/failsafe/timeout) — compose with hedge for tight tail-latency control
+- [Circuit breaker](/config/failsafe/circuit-breaker) — hedge attempts are excluded from it
+- [`evm.idempotentTransactionBroadcast`](/config/projects/networks) — needed for safe write hedging

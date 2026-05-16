@@ -1,0 +1,209 @@
+---
+title: Retry
+description: Replay transient failures with backoff — empty-result handling, network-scope failover, per-method scoping.
+---
+
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../../components";
+
+# Retry policy
+
+<LLMsTxtLink />
+
+The retry policy replays transient upstream failures with configurable backoff. At network scope it rotates **across** upstreams (failover); at upstream scope it hits the **same** upstream again. Empty-result retries are a separate dimension from error retries — controlled by their own caps and delays so you can treat "upstream returned null" differently from "upstream returned 503".
+
+## Full configuration
+
+<ConfigTabs
+	path="projects > networks[] / upstreams[] > failsafe[] > retry"
+	yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        failsafe:
+          - matchMethod: "*"
+            retry:
+              maxAttempts: 4          # total attempts incl. first; set 1 to disable
+              delay: 100ms            # wait before attempt 2; 0ms = immediate failover
+              backoffFactor: 1.5      # multiply delay by this each attempt
+              backoffMaxDelay: 3s     # cap the computed delay here
+              jitter: 50ms            # add random [0, jitter) to each delay
+              # emptyResultAccept: which methods treat empty as valid data (not retried)
+              emptyResultAccept:
+                - eth_getLogs         # empty log list = no events — valid
+                - eth_call            # empty bytes = clean revert — valid
+              # emptyResultConfidence: blockHead (default) or finalizedBlock
+              # finalizedBlock = only trust empty responses from finalized blocks
+              emptyResultConfidence: blockHead
+              emptyResultMaxAttempts: 2   # separate retry cap for empty results
+              emptyResultDelay: 200ms     # delay between empty-result retries
+              blockUnavailableDelay: 1s   # wait when block not yet indexed upstream
+
+    upstreams:
+      - id: alchemy
+        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+        failsafe:
+          - matchMethod: "*"
+            retry:
+              maxAttempts: 2          # retry the SAME upstream once on transient errors
+              delay: 500ms
+              backoffFactor: 1.0      # constant delay (no backoff against same upstream)
+              backoffMaxDelay: 500ms
+              jitter: 0ms`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      failsafe: [{
+        matchMethod: "*",
+        retry: {
+          maxAttempts: 4,
+          delay: "100ms",
+          backoffFactor: 1.5,
+          backoffMaxDelay: "3s",
+          jitter: "50ms",
+          emptyResultAccept: ["eth_getLogs", "eth_call"],
+          emptyResultConfidence: "blockHead",
+          emptyResultMaxAttempts: 2,
+          emptyResultDelay: "200ms",
+          blockUnavailableDelay: "1s",
+        },
+      }],
+    }],
+    upstreams: [{
+      id: "alchemy",
+      endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+      failsafe: [{
+        matchMethod: "*",
+        retry: {
+          maxAttempts: 2,
+          delay: "500ms",
+          backoffFactor: 1.0,
+          backoffMaxDelay: "500ms",
+          jitter: "0ms",
+        },
+      }],
+    }],
+  }],
+});`}
+/>
+
+## How it works
+
+### Network-vs-upstream retries
+
+Network-scope retry and upstream-scope retry compose **multiplicatively**. With `network.maxAttempts: 3` and `upstream.maxAttempts: 3`, a single client request can generate up to 9 actual upstream calls: three upstream passes per network attempt, across three network attempts to different upstreams.
+
+Use network-scope retry for **failover** — `delay: 0ms` is common here so that a slow or erroring upstream is skipped immediately and the next one is tried. Use upstream-scope retry for **transient jitter on a trusted endpoint** — a brief backoff before trying the same host again.
+
+<Callout type="warning">
+  With four upstreams and `network.maxAttempts: 4` + `upstream.maxAttempts: 4` you are authorizing 16 requests per client call. Size `maxAttempts` at the network level to roughly match your upstream count.
+</Callout>
+
+### Backoff math
+
+The delay before attempt `n` (0-indexed after the first) is:
+
+```
+delay × backoffFactor^n, capped at backoffMaxDelay, plus random [0, jitter)
+```
+
+Example with `delay: 200ms`, `backoffFactor: 1.5`, `jitter: 50ms`, `backoffMaxDelay: 3s`:
+
+| Retry | Computed delay | With jitter (up to) |
+|---|---|---|
+| 1→2 | 200 ms | 250 ms |
+| 2→3 | 300 ms | 350 ms |
+| 3→4 | 450 ms | 500 ms |
+| 4→5 | 675 ms | 725 ms |
+| ... | ... | capped at 3 s + 50 ms |
+
+`backoffFactor: 1.0` gives a constant delay — useful at upstream scope where you want a fixed cooldown before hitting the same host again.
+
+### What's retryable
+
+- HTTP `5xx` from the upstream
+- HTTP `408` (request timeout)
+- HTTP `429` (rate limit) — but prefer `rateLimitAutoTune` for sustained pressure; retry just burns budget faster
+- Network errors: TCP reset, connection refused, DNS failure
+- Empty/null responses for methods **not** in `emptyResultAccept`, when the `retryEmpty` directive is set
+- Block-unavailable conditions where the requested block is beyond every upstream's known head
+
+### What's NOT retryable
+
+- HTTP `4xx` other than `408`/`429` — these are client errors; retrying won't help
+- `MethodNotSupported` — the upstream doesn't implement this method
+- Empty responses for methods **in** `emptyResultAccept`, at or below the `emptyResultConfidence` horizon
+- Write methods (`eth_sendRawTransaction`, `eth_sendTransaction`) unless `evm.idempotentTransactionBroadcast: true` is set on the network
+
+### Empty-result handling
+
+Many JSON-RPC methods legitimately return empty results. `eth_getLogs` for a block with no matching events returns `[]`. `eth_call` for a cleanly reverting contract returns `0x`. Retrying these is wasteful and can hide correctness bugs. Three knobs control this:
+
+**`emptyResultAccept`** lists methods where empty IS valid data. These methods are never retried purely because their result was empty. The default list is `["eth_getLogs", "eth_call"]`. Add methods freely; the cost of a false entry is one extra round trip, not a correctness problem.
+
+**`emptyResultConfidence`** decides when to trust an empty from an accepted method. `blockHead` (default) trusts empty responses even for chain-tip data. `finalizedBlock` is more conservative: if the requested block isn't yet finalized, an empty result is treated as potentially missing data and retried. Use `finalizedBlock` when you're consuming data from nodes that sometimes serve stale state.
+
+**`emptyResultMaxAttempts` and `emptyResultDelay`** let you cap and pace empty-result retries independently from error retries. If you want aggressive failover on errors (`delay: 0ms`) but a slower wait on empties (give the upstream time to index the block), set `emptyResultDelay: 500ms` and keep `delay: 0ms`.
+
+### Block-unavailable handling
+
+When a request targets a specific block number and every upstream reports that block as not yet available, the retry policy waits `blockUnavailableDelay` before trying again. This avoids hammering upstreams that are simply catching up to a just-produced block.
+
+When `blockUnavailableDelay` is not set, block-unavailable retries use the normal `delay`/backoff schedule. The EVM network config also exposes `blockUnavailableDelayMultiplier` (default `0.8`) — when there is no explicit `blockUnavailableDelay`, the dynamic wait is computed as `blockTime × multiplier`.
+
+## Defaults
+
+| Field | Default | Notes |
+|---|---|---|
+| `maxAttempts` | `3` | Total attempts including the first. |
+| `delay` | `0ms` | No wait between attempts by default. |
+| `backoffFactor` | `1.2` | Gentle exponential ramp. |
+| `backoffMaxDelay` | `3s` | Delay ceiling. |
+| `jitter` | `0ms` | No jitter by default; add to avoid thundering herd. |
+| `emptyResultAccept` | `["eth_getLogs", "eth_call"]` | Methods where empty is valid. |
+| `emptyResultConfidence` | `blockHead` | Trust empties at chain tip. |
+| `emptyResultMaxAttempts` | = `maxAttempts` | Inherits the error retry cap if not set. |
+| `emptyResultDelay` | = `delay` | Inherits the error delay if not set. |
+| `blockUnavailableDelay` | dynamic (block-time × 0.8) | Falls back to normal delay if not set. |
+
+The built-in project defaults set `network.retry.maxAttempts: 5` and `upstream.retry.maxAttempts: 1` (one attempt per upstream, fail over at the network level). Override these per failsafe entry.
+
+## Gotchas
+
+<Callout type="warning">
+  **Retry multiplication.** `network.maxAttempts × upstream.maxAttempts` is the actual request fan-out per client call. With 3 upstreams, `network.maxAttempts: 3` and `upstream.maxAttempts: 3` = 9 requests. Keep network attempts roughly equal to the number of healthy upstreams you want to exhaust.
+</Callout>
+
+<Callout type="warning">
+  **Network timeout must cover the full retry budget.** If the network timeout fires before upstream retries finish, those retries are silently cut short. A rough lower bound: `network.timeout ≥ upstream.timeout × upstream.maxAttempts × network.maxAttempts`. When in doubt, set the network timeout generously and let upstream timeouts do the fine-grained bounding.
+</Callout>
+
+- **`delay: 0ms` does not disable retry.** It means "retry immediately without waiting." To disable retry entirely, set `maxAttempts: 1`.
+- **Write methods aren't retried** even when retry is configured. `eth_sendRawTransaction` and `eth_sendTransaction` are explicitly excluded. Enable `evm.idempotentTransactionBroadcast: true` on the network if broadcast retries are safe for your use case.
+- **`emptyResultIgnore` is deprecated.** Rename existing config keys to `emptyResultAccept`. The old key still works with a deprecation warning. For network-wide empty-retry control, use `directiveDefaults.retryEmpty: false` rather than relying on the deprecated field.
+- **Rate-limit responses (HTTP 429).** Retry will fire but just burns through quota faster. Use `rateLimitAutoTune` for sustained rate-limit pressure and save retry for genuinely transient 5xx/network errors.
+
+## Metrics
+
+- `erpc_network_retry_attempt_total` — counter, labeled by attempt index and outcome. Watch this to see how far into the retry budget requests are typically going.
+- `erpc_upstream_request_total` — filterable by outcome label to see per-upstream retry distribution.
+
+The `X-ERPC-Network-Retries` and `X-ERPC-Upstream-Retries` response headers give per-request retry counts for client-side debugging. See [Failsafe observability](/config/failsafe#per-attempt-observability) for the full header reference.
+
+## See also
+
+- [Failsafe overview](/config/failsafe) — scoping rules, finality matching, per-method recipes
+- [Retry walkthrough](/preview-retry) — empty-result decision flow and deep examples
+- [Timeout](/config/failsafe/timeout) — compose carefully with retry; network timeout must cover the full retry budget
+- [`directiveDefaults.retryEmpty`](/operation/directives) — network-wide override for empty-result retry behavior
