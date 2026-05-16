@@ -1,0 +1,307 @@
+---
+title: Server
+description: HTTP + gRPC listeners, TLS, timeouts, shutdown grace, trusted-proxy IP detection, response headers, error-detail controls, and domain-based project aliasing.
+---
+
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
+
+# Server
+
+<LLMsTxtLink />
+
+The top-level `server:` block configures eRPC's HTTP and gRPC listeners, their TLS, the request timing envelope, graceful shutdown grace, IP-extraction rules behind reverse proxies, response headers, and domain-based project aliasing.
+
+**You can configure:**
+
+- **HTTP listeners** — IPv4 + IPv6 independently, custom host + port per stack
+- **gRPC listeners** — optional second protocol for streaming `eth_getLogs` / `trace_filter`
+- **TLS** — cert + key, optional CA chain, optional client-cert verification
+- **Timeouts** — `maxTimeout` (the overall envelope), `readTimeout` / `writeTimeout` (TCP-level)
+- **Compression** — gzip on both inbound and outbound bodies
+- **Shutdown grace** — wait before SIGTERM-triggered drain (`waitBeforeShutdown`) and after (`waitAfterShutdown`)
+- **Trusted-proxy IP extraction** — `trustedIPForwarders` + `trustedIPHeaders` for behind-LB deployments
+- **Custom response headers** — `responseHeaders` for any static header you want every response to carry
+- **Error detail surfacing** — `includeErrorDetails` toggles verbose error payloads
+- **Domain aliasing** — `server.aliasing.rules[]` to map `eth.example.com` → `/main/evm/1` (see [URL & aliasing](/operation/url))
+
+## Minimum useful config
+
+The defaults are sane — these are the only fields you typically need to set.
+
+<ConfigTabs
+	path="server"
+	focus="2-5"
+	yaml={`server:
+  listenV4: true
+  httpHostV4: "0.0.0.0"
+  httpPortV4: 4000
+  maxTimeout: 30s          # overall request timeout envelope`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    listenV4: true,
+    httpHostV4: "0.0.0.0",
+    httpPortV4: 4000,
+    maxTimeout: "30s",
+  },
+});`}
+/>
+
+## Behind a reverse proxy / load balancer
+
+If clients reach eRPC through an LB, ingress, or CDN that sets `X-Forwarded-For`, configure `trustedIPForwarders` so the proxy's IP isn't mistaken for the client. eRPC walks the X-F-F chain left-to-right and picks the first IP that's NOT in `trustedIPForwarders`.
+
+<ConfigTabs
+	path="server"
+	focus="3-9"
+	yaml={`server:
+  httpPortV4: 4000
+  trustedIPHeaders:                # which headers carry the client IP
+    - X-Forwarded-For
+    - X-Real-IP
+  trustedIPForwarders:             # IPs/CIDRs allowed to set those headers
+    - 10.0.0.0/8                   # internal LB range
+    - 172.16.0.0/12
+    - 192.168.0.0/16`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    httpPortV4: 4000,
+    trustedIPHeaders: ["X-Forwarded-For", "X-Real-IP"],
+    trustedIPForwarders: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+  },
+});`}
+/>
+
+<Callout type="warning">
+	Without `trustedIPForwarders`, the X-Forwarded-For chain is taken at face value — a client can spoof their IP by setting their own X-F-F header. Always set this in any production deployment behind a proxy.
+</Callout>
+
+## TLS
+
+```yaml
+server:
+  httpPortV4: 4443
+  tls:
+    enabled: true
+    certFile: /etc/erpc/tls.crt
+    keyFile: /etc/erpc/tls.key
+    caFile: /etc/erpc/ca.crt              # optional, for verifying client certs
+    insecureSkipVerify: false             # never set true in production
+```
+
+For most deployments, terminate TLS at the load balancer / ingress and run eRPC over plaintext HTTP inside the cluster. Native TLS is for self-hosted setups where you want eRPC to handle certs directly.
+
+## gRPC server
+
+eRPC can run a parallel gRPC listener for streaming responses (`eth_getLogs` and `trace_filter` chunked over server-streaming RPCs).
+
+<ConfigTabs
+	path="server"
+	focus="4-10"
+	yaml={`server:
+  listenV4: true
+  httpPortV4: 4000
+  grpcEnabled: true
+  grpcHostV4: "0.0.0.0"
+  grpcPortV4: 4100
+  grpcMaxRecvMsgSize: 33554432       # 32 MiB inbound message cap
+  grpcMaxSendMsgSize: 67108864       # 64 MiB outbound message cap
+  # HTTP/gRPC can run on independent IPv6 stacks; mirror the V4 fields.`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    listenV4: true,
+    httpPortV4: 4000,
+    grpcEnabled: true,
+    grpcHostV4: "0.0.0.0",
+    grpcPortV4: 4100,
+    grpcMaxRecvMsgSize: 33554432,
+    grpcMaxSendMsgSize: 67108864,
+  },
+});`}
+/>
+
+By default eRPC binds the gRPC listener on IPv4 only. To add an IPv6 gRPC socket, set `grpcHostV6` and `grpcPortV6` alongside the V4 fields. If your platform supports dual-stack (most Linux kernels do), you can run the IPv6 listener on the same port as IPv4 — set `grpcPortV6` to the same value as `grpcPortV4`. For strict single-stack hosts, use a separate port (e.g. `4002`) to avoid bind conflicts.
+
+```yaml
+server:
+  grpcEnabled: true
+  grpcHostV4: "0.0.0.0"
+  grpcPortV4: 4100
+  grpcHostV6: "[::]"
+  grpcPortV6: 4100   # same port works on dual-stack; use 4102 on single-stack hosts
+```
+
+<AISection title="Copy for your AI assistant — full ServerConfig reference">
+
+### `ServerConfig` — every field
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `listenV4` | `*bool` | `true` | Enable the IPv4 HTTP listener. |
+| `httpHostV4` | `*string` | `"0.0.0.0"` | IPv4 bind host. |
+| `httpPortV4` | `*int` | `4000` | IPv4 HTTP port. |
+| `listenV6` | `*bool` | `false` | Enable the IPv6 HTTP listener. |
+| `httpHostV6` | `*string` | `"[::]"` | IPv6 bind host. |
+| `httpPortV6` | `*int` | `4000` | IPv6 HTTP port. |
+| `httpPort` | `*int` | — | **Deprecated** — alias for `httpPortV4`. Still accepted for backwards compatibility; migrate to the explicit V4/V6 fields. |
+| `grpcEnabled` | `*bool` | `false` | Enable the parallel gRPC server. Used by streaming methods (`eth_getLogs`, `trace_filter`). |
+| `grpcHostV4` | `*string` | `"0.0.0.0"` | gRPC IPv4 bind host. |
+| `grpcPortV4` | `*int` | `4100` | gRPC IPv4 port. |
+| `grpcHostV6` | `*string` | `"[::]"` | gRPC IPv6 bind host. |
+| `grpcPortV6` | `*int` | `4100` | gRPC IPv6 port. |
+| `grpcMaxRecvMsgSize` | `*int` (bytes) | `4 MiB` (gRPC default) | Cap on the size of a single inbound gRPC message. Increase when a client batches a lot of large requests. |
+| `grpcMaxSendMsgSize` | `*int` (bytes) | `4 MiB` | Cap on outbound gRPC message size. Set generously when streaming large `eth_getLogs` responses. |
+| `maxTimeout` | duration | `30s` | The overall request envelope. Wraps every layer (network + retries + hedge + cache). Sized generously by default. |
+| `readTimeout` | duration | `0` (no timeout) | TCP-level read deadline; how long the server waits for the client to finish sending the request body. |
+| `writeTimeout` | duration | `0` (no timeout) | TCP-level write deadline; how long the server keeps the connection open for response transmission. |
+| `enableGzip` | `*bool` | `true` | Compress outbound responses with gzip when the client advertises `Accept-Encoding: gzip`. Inbound gzip is always accepted regardless. |
+| `tls` | `*TLSConfig` | none | TLS configuration. See [TLS configuration](#tls-configuration) below. |
+| `aliasing` | `*AliasingConfig` | none | Domain-based project aliasing rules. See "AliasingConfig" below. |
+| `waitBeforeShutdown` | duration | `0s` | Time to wait between SIGTERM and the start of the shutdown drain. Use this to let load balancers notice the failing healthcheck and drain traffic before the server actually stops accepting connections. |
+| `waitAfterShutdown` | duration | `0s` | Additional pause after the listener has stopped accepting connections, before the process exits. Useful for letting telemetry exporters flush. |
+| `includeErrorDetails` | `*bool` | `false` | When `true`, full error details (internal error type names, wrapped causes) are included in HTTP responses. When `false`, only the public error message is exposed; details stay in logs. Leave `false` for public-facing eRPCs; enable for internal debugging. |
+| `trustedIPForwarders` | `[]string` | none | List of IPs / CIDRs whose `X-Forwarded-For` (or other configured headers) eRPC is willing to honor. Walks the header left-to-right and picks the first IP NOT in this list. |
+| `trustedIPHeaders` | `[]string` | `["X-Forwarded-For"]` | Header names eRPC inspects to derive the client IP. Typical extras: `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP` (Cloudflare). |
+| `responseHeaders` | `map[string]string` | none | Static headers attached to every response. Values support `${VAR}` env expansion — useful for `X-Instance: ${HOSTNAME}` and similar instance-identification headers. |
+
+### TLS configuration
+
+The `TLSConfig` struct is shared by `server.tls`, `tracing.tls`, and the database connector `tls` blocks (`redis`, `postgresql`, `dynamodb`). All fields are the same regardless of where it appears.
+
+```yaml
+tls:
+  enabled: true
+  certFile: /etc/erpc/tls.crt          # PEM-encoded certificate (or chain)
+  keyFile: /etc/erpc/tls.key            # PEM-encoded private key
+  caFile: /etc/erpc/ca.crt              # optional; trusted root for client-cert verification
+  insecureSkipVerify: false              # disable cert validation entirely
+```
+
+| Field | Notes |
+|---|---|
+| `enabled` | Master switch. When `false`, the rest of `tls` is ignored. |
+| `certFile` | Path to PEM-encoded cert. Can be a chain (server cert + intermediates). |
+| `keyFile` | Path to PEM-encoded private key. Permissions should be 0600 (root-only readable). |
+| `caFile` | Path to PEM-encoded CA bundle. When set and the listener requests client certs, this is the trust root for verification. |
+| `insecureSkipVerify` | When `true`, the server accepts any client cert / disables verification. **Never** set in production. Use for local development against self-signed certs only. |
+
+### `AliasingConfig` — domain-based project routing
+
+`server.aliasing.rules[]` lets you serve different projects/architectures/chains based on the `Host` header. Useful when you want `eth.example.com` to mean `/main/evm/1` without callers writing out the path.
+
+```yaml
+server:
+  aliasing:
+    rules:
+      - matchDomain: eth.example.com
+        serveProject: main
+        serveArchitecture: evm
+        serveChain: 1
+      - matchDomain: arbi.example.com
+        serveProject: main
+        serveArchitecture: evm
+        serveChain: 42161
+```
+
+| Field | Notes |
+|---|---|
+| `matchDomain` | Host header to match. Exact match (case-insensitive). |
+| `serveProject` | Project ID to route to. |
+| `serveArchitecture` | Architecture (`evm`). |
+| `serveChain` | Chain ID (numeric, as a string in JSON but parsed as an integer in YAML). |
+
+When a request's `Host` matches a rule, the URL path can be just the JSON-RPC body — the project/architecture/chain are filled in from the rule. See [URL & aliasing](/operation/url) for the request flow.
+
+### Shutdown semantics
+
+Shutdown is a two-phase process designed to play well with load balancers:
+
+1. **Phase 1 (`waitBeforeShutdown`)** — eRPC has received SIGTERM. The `/healthcheck` endpoint starts returning 503. New connections are still accepted; in-flight requests continue. The LB / k8s ingress sees the failing healthcheck and stops sending new traffic.
+2. **Phase 2 — drain** — eRPC stops accepting new connections. Existing in-flight requests get to finish (bounded by `maxTimeout`).
+3. **Phase 3 (`waitAfterShutdown`)** — after the listener is closed, eRPC pauses to flush telemetry (Prometheus, OpenTelemetry exporters) before the process exits.
+
+A typical production tuning: `waitBeforeShutdown: 20s` (matches your k8s readiness probe interval × 2) and `waitAfterShutdown: 5s` (lets the metrics scraper pick up the final values).
+
+### Custom response headers
+
+```yaml
+server:
+  responseHeaders:
+    X-eRPC-Instance: \${HOSTNAME}
+    Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options: nosniff
+```
+
+`${VAR}` env-var expansion happens at config load. Headers with empty values (after expansion) are skipped.
+
+### Gzip semantics
+
+| Direction | Toggle | Default |
+|---|---|---|
+| Client → eRPC inbound | Always accepted when client sends `Content-Encoding: gzip`. | always on |
+| eRPC → Client outbound | `server.enableGzip`. Compresses when client sent `Accept-Encoding: gzip`. | `true` |
+
+Per-upstream outbound gzip (eRPC → upstream) is a separate toggle on `jsonRpc.enableGzip` (see [Upstreams](/config/projects/upstreams)).
+
+### Trusted-proxy IP — full walk-through
+
+Suppose the request hits eRPC after passing through:
+
+```
+client (203.0.113.5)
+   → CDN edge (cloudflare, 198.51.100.1)
+   → cluster ingress (10.0.1.5, in 10.0.0.0/8)
+   → eRPC pod
+```
+
+The ingress sets:
+
+```
+X-Forwarded-For: 203.0.113.5, 198.51.100.1
+```
+
+(Most CDNs append to X-Forwarded-For; some also set `CF-Connecting-IP: 203.0.113.5`.)
+
+Configured:
+
+```yaml
+server:
+  trustedIPForwarders:
+    - 10.0.0.0/8                       # cluster ingress
+    - 198.51.100.0/24                  # cloudflare range (illustrative)
+  trustedIPHeaders:
+    - X-Forwarded-For
+    - CF-Connecting-IP
+```
+
+eRPC walks `X-Forwarded-For` left-to-right looking for the first non-trusted IP:
+
+- `203.0.113.5` — not in trustedIPForwarders → **use this as the client IP**
+
+If you forgot to include `198.51.100.0/24` in trustedIPForwarders, eRPC would stop at `198.51.100.1` and falsely treat the CDN as the client.
+
+### Common pitfalls
+
+- **`maxTimeout` shorter than your slowest network failsafe timeout** — clients will see timeouts even when a retry would have succeeded. Size `maxTimeout` to be the umbrella; per-network timeouts handle internal bounds.
+- **`grpcEnabled` without an LB that supports h2c / HTTP/2** — most TCP load balancers work; some HTTP-aware proxies (older Nginx) need explicit HTTP/2 support. Verify before deploying behind one.
+- **`waitBeforeShutdown: 0s` with k8s** — kubelet sends SIGTERM the moment a pod is marked for deletion. With `waitBeforeShutdown: 0`, eRPC stops accepting connections instantly; in-flight requests to LB-balanced replicas may be racy. Set ≥ 2× your readiness probe interval.
+- **`includeErrorDetails: true` on a public endpoint** — leaks internal error type names that may reveal implementation details. Keep `false` and rely on logs.
+- **`responseHeaders` colliding with eRPC's own headers** — eRPC sets `Content-Type`, `Content-Encoding`, `X-eRPC-Request-Id`, etc. Don't override those.
+- **`trustedIPHeaders` without `trustedIPForwarders`** — eRPC reads the header from any source. Always pair them.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

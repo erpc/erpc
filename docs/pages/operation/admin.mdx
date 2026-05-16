@@ -1,236 +1,338 @@
 ---
-description: Administrative operations for eRPC...
+title: Admin API
+description: JSON-RPC admin endpoint for runtime introspection of eRPC's config, project health, and API-key management.
 ---
 
-## Admin endpoint
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
-Administrative operations are available through:
-```
-https://<hostname>/admin
-```
+# Admin API
 
-Admin endpoints require authentication configured under root `admin` section:
-```yaml filename="erpc.yaml"
-admin:
+<LLMsTxtLink />
+
+eRPC exposes a JSON-RPC admin endpoint at `/admin` for runtime introspection and API-key management. Endpoints are gated by a separate `admin.auth` config (independent from the per-project user auth) and support every strategy described in [Authentication](/config/auth).
+
+**Available methods:**
+
+| Method | Purpose |
+|---|---|
+| [`erpc_taxonomy`](#erpc_taxonomy) | List every project / network / upstream eRPC currently knows about |
+| [`erpc_config`](#erpc_config) | Return the resolved configuration (redacted) |
+| [`erpc_project`](#erpc_project) | Get detailed config + live upstream scoring/health for one project |
+| [`erpc_addApiKey`](#erpc_addapikey) | Insert a new API key into a database connector |
+| [`erpc_listApiKeys`](#erpc_listapikeys) | Paginated list of API keys for a connector |
+| [`erpc_updateApiKey`](#erpc_updateapikey) | Update an existing API key's fields |
+| [`erpc_deleteApiKey`](#erpc_deleteapikey) | Remove an API key |
+
+API-key CRUD methods require a database-backed auth connector (`auth.strategies[].connector`). Without one, they return an error.
+
+## Admin authentication
+
+The admin endpoint has its own auth section, independent from any project auth. Same strategy schema — `secret`, `network`, `jwt`, `siwe` all work.
+
+<ConfigTabs
+	path="admin"
+	focus="2-7"
+	yaml={`admin:
   auth:
     strategies:
       - type: secret
         secret:
-          value: <your-secret>
+          value: \${ADMIN_SECRET}
+  cors:                            # optional; see field table below for defaults
+    allowedOrigins: ["https://my-admin-ui.example"]
+    allowedMethods: ["POST", "OPTIONS"]
+    allowCredentials: true
+    maxAge: 3600`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-server:
-  # ...
-projects:
-  # ...
-```
-### Available admin methods
+export default createConfig({
+  admin: {
+    auth: {
+      strategies: [{
+        type: "secret",
+        secret: { value: process.env.ADMIN_SECRET },
+      }],
+    },
+    cors: {
+      allowedOrigins: ["https://my-admin-ui.example"],
+      allowedMethods: ["POST", "OPTIONS"],
+      allowCredentials: true,
+      maxAge: 3600,
+    },
+  },
+});`}
+/>
 
-#### erpc_taxonomy
-Returns a taxonomy of projects, networks, and upstreams configured in the system.
+Send the secret via `?secret=...` query string or the `X-ERPC-Secret-Token` header.
 
-**Example request:**
+### admin.cors fields
+
+<Callout type="info">
+  `admin.cors` is **independent from project-level CORS** — it applies only to
+  the `/admin` endpoint. When omitted, eRPC still injects a permissive default
+  (`allowedOrigins: ["*"]`) because the admin endpoint is already gated by
+  `admin.auth`. Restrict origins explicitly when exposing the admin endpoint
+  beyond localhost. For per-project CORS, see [Project CORS](/config/projects/cors).
+</Callout>
+
+| Field | Type | Default (when omitted) | Purpose |
+|---|---|---|---|
+| `allowedOrigins` | `string[]` | `["*"]` | Origins that browsers may send admin requests from. Use `["*"]` to allow any origin (safe when `admin.auth` is enforced), or lock down to specific origins such as `["https://my-admin-ui.example"]`. |
+| `allowedMethods` | `string[]` | `["GET", "POST", "OPTIONS"]` | HTTP methods browsers are allowed to use. Always include `OPTIONS` for preflight. |
+| `allowedHeaders` | `string[]` | `["content-type", "authorization", "x-erpc-secret-token"]` | Request headers browsers may send. `x-erpc-secret-token` is included by default so the admin secret header works from browser clients. |
+| `exposedHeaders` | `string[]` | `[]` | Response headers the browser is allowed to read. Rarely needed for the admin endpoint. |
+| `allowCredentials` | `boolean` | `false` | Whether browsers should send cookies or HTTP auth. Must be `false` when `allowedOrigins` contains `"*"` (browsers enforce this). |
+| `maxAge` | `integer` (seconds) | `3600` | How long browsers may cache the preflight response. Reduces OPTIONS round-trips. |
+
+## Quick examples
+
+### `erpc_taxonomy`
+
+Lists every project, every network within it, and every upstream within each network. Use for discovery.
+
 ```bash
-curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
-# OR as a header:
-# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "erpc_taxonomy",
-    "id": 1,
-    "jsonrpc": "2.0"
-}'
+curl -X POST 'http://localhost:4000/admin?secret=YOUR_SECRET' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"erpc_taxonomy"}'
 ```
 
-**Example Response:**
+### `erpc_project`
+
+Returns the full resolved config for one project, plus live upstream scoring and health metrics.
+
+```bash
+curl -X POST 'http://localhost:4000/admin?secret=YOUR_SECRET' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"erpc_project","params":["main"]}'
+```
+
+<AISection title="Copy for your AI assistant — full admin API reference">
+
+### Authentication & CORS
+
+`admin.auth` accepts the same strategy schema as project-level auth (`secret`, `network`, `jwt`, `siwe`). At least one strategy must be defined or the endpoint is closed. `admin.cors` is a separate CORS config — independent from project-level CORS. When omitted, eRPC defaults to `allowedOrigins: ["*"]` (permissive, safe because `admin.auth` is required) with the standard methods/headers. Restrict `allowedOrigins` explicitly when building a production admin UI.
+
+### `erpc_taxonomy`
+
+**Params:** none.
+
+**Returns:** an object with `projects[]`. Each project has `id` and `networks[]`. Each network has `id` (e.g. `evm:1`) and `upstreams[]`. Each upstream has `id`.
+
 ```json
 {
-    "jsonrpc": "2.0",
-    "result": {
-        "projects": [
-            {
-                "id": "frontend",
-                "networks": [
-                    {
-                        "id": "evm:1",
-                        "upstreams": [
-                            {
-                                "id": "blastapi-test"
-                            },
-                            {
-                                "id": "my-alchemy"
-                            }
-                        ]
-                    }
-                ]
-            }
+  "jsonrpc": "2.0",
+  "result": {
+    "projects": [
+      {
+        "id": "frontend",
+        "networks": [
+          {
+            "id": "evm:1",
+            "upstreams": [
+              { "id": "blastapi-test" },
+              { "id": "my-alchemy" }
+            ]
+          }
         ]
-    }
+      }
+    ]
+  }
 }
 ```
 
-#### erpc_project
-Returns detailed configuration and upstream scoring/health information for a specific project.
+Use this for system discovery (e.g. an admin UI populating dropdowns).
 
-**Example request:**
+### `erpc_config`
+
+**Params:** none.
+
+**Returns:** the full resolved eRPC config as it exists in memory. Sensitive fields (`secret.value`, `redis.password`, `endpoint` URLs containing API keys, `aws.secretAccessKey`) are redacted to `#redacted=<short-hash>`. The short hash lets you tell two configs apart without leaking the secrets.
+
+Useful for verifying that `${VAR}` env-var interpolation resolved correctly and for runtime debugging.
+
+### `erpc_project`
+
+**Params:** `[<projectId>]` — a single project ID string.
+
+**Returns:** the project's resolved config (redacted) plus live runtime state — upstream scoring, error rates, block-head lag, current primary upstream, recent selection decisions. Use to debug routing problems.
+
 ```bash
-curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
-# OR as a header:
-# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "erpc_project",
-    "params": ["main"],
-    "id": 1,
-    "jsonrpc": "2.0"
-}'
+curl -X POST 'http://localhost:4000/admin?secret=YOUR_SECRET' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"erpc_project","params":["main"]}'
 ```
 
-**Example response:**
-```json
-{
+### `erpc_addApiKey`
+
+Inserts a new API key into a database-backed auth connector. The connector is identified by `(projectId, connectorId)` — `connectorId` matches the ID of an auth strategy's connector.
+
+**Params:** `[{ projectId, connectorId, apiKey, userId, rateLimitBudget?, enabled? }]`
+
+| Param | Required | Notes |
+|---|---|---|
+| `projectId` | ✅ | Which project's auth registry to write to. |
+| `connectorId` | ✅ | Database connector ID inside that project. |
+| `apiKey` | ✅ | The API key string clients will present. Choose long random strings (≥ 32 bytes encoded). |
+| `userId` | ✅ | User identifier the key maps to. Used for per-user metrics and rate limits. |
+| `rateLimitBudget` | | Budget ID from `rateLimiters.budgets[]`. When set, this key's requests count against the budget. |
+| `enabled` | | Default `true`. Set to `false` to insert in a disabled state. |
+
+```bash
+curl -X POST 'http://localhost:4000/admin?secret=YOUR_SECRET' \
+  -H 'Content-Type: application/json' \
+  -d '{
     "jsonrpc": "2.0",
     "id": 1,
-    "result": {
-        "config": {
-            "id": "frontend",
-            "cors": { /* ... */ },
-            "upstreams": [
-                {
-                    "id": "blastapi-test",
-                    "endpoint": "blastapi#redacted=e6401",
-                    "type": "evm",
-                    "ignoreMethods": [
-                        "*"
-                    ],
-                    "allowMethods": [
-                        "eth_blockNumber"
-                    ],
-                },
-                // ...
-            ],
-            "networks": [
-                {
-                    "architecture": "evm",
-                    "evm": {
-                        "chainId": 1,
-                        "fallbackFinalityDepth": 1024
-                    },
-                    "rateLimitBudget": "my-network-budget",
-                    // ...
-                }
-            ],
-            "rateLimitBudget": "my-project-budget",
-            // ...
-        },
-        "health": {
-            "upstreams": [
-                {
-                    "id": "blastapi#redacted=e6401",
-                    "metrics": {
-                        "evm:1|eth_blockNumber": {
-                            "errorsTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "blockHeadLag": 0,
-                            "finalizationLag": 0,
-                            "cordoned": false,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            },
-                            "selfRateLimitedTotal": 0,
-                            "requestsTotal": 1,
-                            "lastCordonedReason": null
-                        },
-                        "*|eth_blockNumber": {
-                            "blockHeadLag": 0,
-                            "cordoned": false,
-                            "lastCordonedReason": null,
-                            "selfRateLimitedTotal": 0,
-                            "errorsTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "requestsTotal": 1,
-                            "finalizationLag": 0,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            }
-                        },
-                        "evm:1|*": {
-                            "blockHeadLag": 0,
-                            "finalizationLag": 0,
-                            "cordoned": false,
-                            "lastCordonedReason": null,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            },
-                            "errorsTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "selfRateLimitedTotal": 0,
-                            "requestsTotal": 1
-                        },
-                        "*|*": {
-                            "blockHeadLag": 0,
-                            "finalizationLag": 0,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            },
-                            "selfRateLimitedTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "requestsTotal": 1,
-                            "errorsTotal": 0,
-                            "cordoned": false,
-                            "lastCordonedReason": null
-                        }
-                    },
-                    "activeNetworks": [
-                        "evm:1"
-                    ]
-                },
-                // ...
-            ],
-            "sortedUpstreams": {
-                "evm:1": {
-                    "*": [
-                        "my-alchemy",
-                        "blastapi-test"
-                    ],
-                    "eth_blockNumber": [
-                        "my-alchemy",
-                        "blastapi-test"
-                    ]
-                },
-                "*": {
-                    "*": [
-                        "blastapi-test",
-                        "my-alchemy"
-                    ],
-                    "eth_blockNumber": [
-                        "my-alchemy",
-                        "blastapi-test"
-                    ]
-                }
-            },
-            "upstreamScores": {
-                "blastapi-test": {
-                    "evm:1": {
-                        "eth_blockNumber": 14,
-                        "*": 14
-                    },
-                    "*": {
-                        "*": 15.41420133288338,
-                        "eth_blockNumber": 14
-                    }
-                },
-                "my-alchemy": {
-                    "evm:1": {
-                        "*": 19,
-                        "eth_blockNumber": 19
-                    },
-                    "*": {
-                        "eth_blockNumber": 19,
-                        "*": 14
-                    }
-                }
-            }
-        }
-    }
+    "method": "erpc_addApiKey",
+    "params": [{
+      "projectId": "main",
+      "connectorId": "auth-db",
+      "apiKey": "ak_live_pXq7...",
+      "userId": "user-42",
+      "rateLimitBudget": "tier-pro"
+    }]
+  }'
+```
+
+**Returns:** `{ success: true, apiKey, userId }`.
+
+### `erpc_listApiKeys`
+
+Paginated list of API keys for a connector. Reads from the main index (one row per key).
+
+**Params:** `[{ projectId, connectorId, limit?, paginationToken? }]`
+
+| Param | Required | Notes |
+|---|---|---|
+| `projectId` | ✅ | |
+| `connectorId` | ✅ | |
+| `limit` | | Default `50`. Max varies by connector. |
+| `paginationToken` | | Token from a previous response's `nextToken`. Empty for the first page. |
+
+**Returns:** `{ apiKeys: ApiKey[], nextToken: string, hasMore: bool, totalReturned: number }`
+
+Each `ApiKey` object:
+
+```json
+{
+  "key": "ak_live_pXq7...",
+  "userId": "user-42",
+  "enabled": true,
+  "rateLimitBudget": "tier-pro",
+  "createdAt": "2026-05-15T...",
+  "updatedAt": "2026-05-15T..."
 }
 ```
+
+Iterate by feeding `nextToken` back as `paginationToken` until `hasMore: false`.
+
+### `erpc_updateApiKey`
+
+Partial update of an existing API key. Reads the current value, applies `updates` (a map merged into the stored JSON), writes back.
+
+**Params:** `[{ projectId, connectorId, apiKey, updates }]`
+
+| Param | Required | Notes |
+|---|---|---|
+| `projectId` | ✅ | |
+| `connectorId` | ✅ | |
+| `apiKey` | ✅ | The key to update. |
+| `updates` | ✅ | Object. Values overwrite existing fields. **`null` values DELETE the field** rather than setting it to null. |
+
+```bash
+curl -X POST 'http://localhost:4000/admin?secret=YOUR_SECRET' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "erpc_updateApiKey",
+    "params": [{
+      "projectId": "main",
+      "connectorId": "auth-db",
+      "apiKey": "ak_live_pXq7...",
+      "updates": {
+        "enabled": false,
+        "rateLimitBudget": "tier-suspended"
+      }
+    }]
+  }'
+```
+
+Common updates:
+
+- Disable a key: `updates: { enabled: false }`
+- Change the user's tier: `updates: { rateLimitBudget: "tier-pro" }`
+- Remove rate-limit binding: `updates: { rateLimitBudget: null }` (deletes the field)
+
+**Returns:** `{ success: true, apiKey, updated }` where `updated` echoes the map you sent.
+
+### `erpc_deleteApiKey`
+
+Permanently removes an API key and its reverse index entries.
+
+**Params:** `[{ projectId, connectorId, apiKey }]`
+
+```bash
+curl -X POST 'http://localhost:4000/admin?secret=YOUR_SECRET' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "erpc_deleteApiKey",
+    "params": [{
+      "projectId": "main",
+      "connectorId": "auth-db",
+      "apiKey": "ak_live_pXq7..."
+    }]
+  }'
+```
+
+**Returns:** `{ success: true, apiKey, userId }`.
+
+### Error semantics
+
+| Error | Cause |
+|---|---|
+| `EndpointUnsupported: admin method X is not supported` | Method name typo. |
+| `InvalidRequest: requires params: {...}` | Wrong number of params; the message lists the expected shape. |
+| `InvalidRequest: first parameter must be an object` | API-key methods take a single object param, not positional args. |
+| `failed to find connector: ...` | The `(projectId, connectorId)` pair doesn't resolve. Verify the project has an auth strategy with `connector.id = connectorId`. |
+| `missing or invalid userId in current data` | The stored record is corrupt — likely written by an older eRPC version. |
+
+### Programmatic key rotation
+
+A typical rotation workflow:
+
+```bash
+# 1. Add a new key for the user
+erpc_addApiKey {projectId, connectorId, apiKey: NEW, userId, rateLimitBudget}
+
+# 2. Switch your client to NEW
+
+# 3. Wait for traffic to drain off the old key (monitor erpc_auth_secret_requests_total{secret_id=OLD})
+
+# 4. Delete the old key
+erpc_deleteApiKey {projectId, connectorId, apiKey: OLD}
+```
+
+Or simply `erpc_updateApiKey` with `updates: { enabled: false }` to soft-disable while keeping audit trail.
+
+### Common pitfalls
+
+- **Method names are case-sensitive** — `erpc_addapikey` won't match `erpc_addApiKey`.
+- **`updates: { field: null }` deletes the field**, it doesn't set null. To set null, use `updates: { field: "null" }` if your field permits the string `"null"` (rare).
+- **No batch insert** — `erpc_addApiKey` accepts one key per call. Issue them in a loop client-side, ideally with a small concurrency limit so a slow connector doesn't block.
+- **`erpc_config` is read-only**. There's no admin method to mutate config at runtime — restart the process to reload.
+- **Admin endpoint not blocked from public access by default** — bind it via firewall or `network` strategy if the eRPC instance is internet-facing. The auth strategy gates access but won't stop unauthenticated requests from reaching the parser.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

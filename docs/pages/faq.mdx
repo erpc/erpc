@@ -1,10 +1,13 @@
 ---
-description: Frequently asked questions
+title: FAQ
+description: Frequently asked questions about running, configuring, and troubleshooting eRPC.
 ---
 
-import { Tabs, Tab } from "nextra/components";
+import { LLMsTxtLink, ConfigTabs } from "../components";
 
 ## Frequently Asked Questions
+
+<LLMsTxtLink />
 
 ### How to set env variables?
 
@@ -17,43 +20,33 @@ export ETHEREUM_RPC_URL=https://mainnet.infura.io/v3/YOUR_INFURA_KEY
 ````
 
 2. **Use placeholders in config**: Add placeholders in your config file where you want the env variables to be used:
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
- upstreams:
-      - endpoint: ${ETHEREUM_RPC_URL}
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-upstreams: [
-  {
-    endpoint: process.env.ETHEREUM_RPC_URL,
-  },
-],
-```
-</Tabs.Tab>
-</Tabs>
+
+<ConfigTabs
+  path="projects > upstreams[]"
+  yaml={`projects:
+  - id: main
+    upstreams:
+      - endpoint: \${ETHEREUM_RPC_URL}`}
+  ts={`projects: [{
+  id: "main",
+  upstreams: [
+    { endpoint: process.env.ETHEREUM_RPC_URL },
+  ],
+}]`}
+/>
 
 ### How to disable caching?
 
 To disable caching, set [`evmJsonRpcCache`](/config/database/evm-json-rpc-cache) to `null` in your configuration:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-database:
-  evmJsonRpcCache: ~
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-database: {
+<ConfigTabs
+  path="database > evmJsonRpcCache"
+  yaml={`database:
+  evmJsonRpcCache: ~`}
+  ts={`database: {
   evmJsonRpcCache: null,
-},
-```
-</Tabs.Tab>
-</Tabs>
+}`}
+/>
 
 ### How do I set up CORS for frontend usage?
 

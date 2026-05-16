@@ -1,10 +1,18 @@
 ---
-description: Drivers define the storage backend for the eRPC cache...
+description: Drivers define the storage backend for the eRPC cache — memory, Redis, PostgreSQL, DynamoDB. Each driver has its own timing, pool, and lock-retry knobs.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../../components";
 
 ## Drivers
+
+<LLMsTxtLink />
 
 Depending on your use-case storage and performance requirements, you can use different drivers.
 
@@ -12,29 +20,25 @@ Depending on your use-case storage and performance requirements, you can use dif
 
 Mainly useful when you want fast access for limited amount of cached data. Use this driver for high-frequency RPC calls.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-<Tab>
-```yaml filename="erpc.yaml"
-database:
+<ConfigTabs
+	path="database > evmJsonRpcCache > connectors[]"
+	focus="4-8"
+	yaml={`database:
   evmJsonRpcCache:
     connectors:
       - id: memory-cache
         driver: memory
         memory:
           maxItems: 10000
-          maxTotalSize: "1GB"
-          # For debugging purposes, you can enable metrics collection (expect 10% performance hit)
+          maxTotalSize: '1GB'
+          # For debugging purposes, enable metrics collection (expect 10% performance hit)
           emitMetrics: false
     policies:
-      - network: "*"
-        method: "*"
+      - network: '*'
+        method: '*'
         finality: finalized
-        connector: memory-cache
-```
-</Tab>
-<Tab>
-```ts filename="erpc.ts"
-import { 
+        connector: memory-cache`}
+	ts={`import {
   createConfig,
   DataFinalityStateFinalized
 } from "@erpc-cloud/config";
@@ -42,65 +46,55 @@ import {
 export default createConfig({
   database: {
     evmJsonRpcCache: {
-      connectors: [
-        {
-          id: "memory-cache",
-          driver: "memory", 
-          memory: {
-            maxItems: 10000,
-            maxTotalSize: "1GB",
-            // For debugging purposes, you can enable metrics collection (expect 10% performance hit)
-            emitMetrics: false
-          }
-        }
-      ],
-      policies: [
-        {
-          network: "*",
-          method: "*",
-          finality: DataFinalityStateFinalized,
-          connector: "memory-cache"
-        }
-      ]
-    }
-  }
-});
-```
-</Tab>
-</Tabs>
+      connectors: [{
+        id: "memory-cache",
+        driver: "memory",
+        memory: {
+          maxItems: 10000,
+          maxTotalSize: "1GB",
+          // For debugging purposes, enable metrics collection (expect 10% performance hit)
+          emitMetrics: false,
+        },
+      }],
+      policies: [{
+        network: "*",
+        method: "*",
+        finality: DataFinalityStateFinalized,
+        connector: "memory-cache",
+      }],
+    },
+  },
+});`}
+/>
 
 ### Redis
 
 Redis is useful when you need to store cached data temporarily with **eviction policy** (e.g. certain amount of memory).
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-<Tab>
-```yaml filename="erpc.yaml"
-database:
+<ConfigTabs
+	path="database > evmJsonRpcCache > connectors[]"
+	focus="4-14"
+	yaml={`database:
   evmJsonRpcCache:
     connectors:
       - id: redis-cache
         driver: redis
         redis:
           # Connection URI (Required)
-          # Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
-          # Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
-          uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
+          # Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=...&pool_size=...]
+          # Example: redis://:some-secret@redis.svc.cluster.local:6379/?pool_size=10
+          uri: 'redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10'
           tls:
-            enabled: false # or "true" if redis is configured with TLS
+            enabled: false # or true if redis is configured with TLS
             certFile: /path/to/client.crt # Optional
             keyFile: /path/to/client.key # Optional
             caFile: /path/to/ca.crt # Optional
     policies:
-      - network: "*"
-        method: "*"
+      - network: '*'
+        method: '*'
         finality: finalized
-        connector: redis-cache
-```
-</Tab>
-<Tab>
-```ts filename="erpc.ts"
-import {
+        connector: redis-cache`}
+	ts={`import {
   createConfig,
   DataFinalityStateFinalized
 } from "@erpc-cloud/config";
@@ -108,41 +102,36 @@ import {
 export default createConfig({
   database: {
     evmJsonRpcCache: {
-      connectors: [
-        {
-          id: "redis-cache",
-          driver: "redis",
-          redis: {
-            // Connection URI (Required)
-            // Format: redis://[[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
-            // Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
-            uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10",
-            tls: {
-              enabled: false // or "true" if redis is configured with TLS
-              certFile: "/path/to/client.crt" // Optional
-              keyFile: "/path/to/client.key" // Optional
-              caFile: "/path/to/ca.crt" // Optional
-            }
-          }
-        }
-      ],
-      policies: [
-        {
-          network: "*",
-          method: "*",
-          finality: DataFinalityStateFinalized,
-          connector: "redis-cache"
-        }
-      ]
-    }
-  }
-});
-```
-</Tab>
-</Tabs>
+      connectors: [{
+        id: "redis-cache",
+        driver: "redis",
+        redis: {
+          // Connection URI (Required)
+          // Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=...&pool_size=...]
+          uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10",
+          tls: {
+            enabled: false, // or true if redis is configured with TLS
+            certFile: "/path/to/client.crt", // Optional
+            keyFile: "/path/to/client.key",  // Optional
+            caFile: "/path/to/ca.crt",       // Optional
+          },
+        },
+      }],
+      policies: [{
+        network: "*",
+        method: "*",
+        finality: DataFinalityStateFinalized,
+        connector: "redis-cache",
+      }],
+    },
+  },
+});`}
+/>
 
 
 #### TLS options
+
+The `tls` block uses the shared `TLSConfig` struct. See [TLS configuration](/config/server#tls-configuration) for the full field reference.
 
 When your Redis endpoint already uses **rediss://** (for example, Railway or Upstash), TLS is negotiated automatically and you can omit the entire `tls:` block.  
 Add the `tls:` section only when you need **mutual‑TLS** (client certificate/key) or your server uses a **private CA**:
@@ -194,31 +183,26 @@ Useful when you need to store cached data permanently without TTL i.e. forever.
   You don't need to create the table, the driver will automatically create the
   table and requried indexes.
 </Callout>
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-<Tab>
-```yaml filename="erpc.yaml"
-database:
+<ConfigTabs
+	path="database > evmJsonRpcCache > connectors[]"
+	focus="4-11"
+	yaml={`database:
   evmJsonRpcCache:
     connectors:
       - id: postgres-cache
         driver: postgresql
         postgresql:
-          connectionUri: >-
-            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          connectionUri: postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
           table: rpc_cache
           initTimeout: 5s
           getTimeout: 1s
           setTimeout: 2s
     policies:
-      - network: "*"
-        method: "*"
+      - network: '*'
+        method: '*'
         finality: finalized
-        connector: postgres-cache
-```
-</Tab>
-<Tab>
-```ts filename="erpc.ts"
-import { 
+        connector: postgres-cache`}
+	ts={`import {
   createConfig,
   DataFinalityStateFinalized
 } from "@erpc-cloud/config";
@@ -226,41 +210,35 @@ import {
 export default createConfig({
   database: {
     evmJsonRpcCache: {
-      connectors: [
-        {
-          id: "postgres-cache",
-          driver: "postgresql",
-          postgresql: {
-            connectionUri: "postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name",
-            table: "rpc_cache",
-            initTimeout: "5s",
-            getTimeout: "1s",
-            setTimeout: "2s"
-          }
-        }
-      ],
-      policies: [
-        {
-          network: "*",
-          method: "*",
-          finality: DataFinalityStateFinalized,
-          connector: "postgres-cache"
-        }
-      ]
-    }
-  }
-});
-```
-</Tab>
-</Tabs>
+      connectors: [{
+        id: "postgres-cache",
+        driver: "postgresql",
+        postgresql: {
+          connectionUri: "postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name",
+          table: "rpc_cache",
+          initTimeout: "5s",
+          getTimeout: "1s",
+          setTimeout: "2s",
+        },
+      }],
+      policies: [{
+        network: "*",
+        method: "*",
+        finality: DataFinalityStateFinalized,
+        connector: "postgres-cache",
+      }],
+    },
+  },
+});`}
+/>
 
 ### DynamoDB
 
 When you need to have scalable (compared to Postgres) permanent caching and are happy with the costs.
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-<Tab>
-```yaml filename="erpc.yaml"
-database:
+<ConfigTabs
+	path="database > evmJsonRpcCache > connectors[]"
+	focus="4-19"
+	yaml={`database:
   evmJsonRpcCache:
     connectors:
       - id: dynamodb-cache
@@ -280,15 +258,11 @@ database:
             profile: xxxxx # Only if mode is file
             credentialsFile: xxxx # Only if mode is file
     policies:
-      - network: "*"
-        method: "*"
+      - network: '*'
+        method: '*'
         finality: finalized
-        connector: dynamodb-cache
-```
-</Tab>
-<Tab>
-```ts filename="erpc.ts"
-import { 
+        connector: dynamodb-cache`}
+	ts={`import {
   createConfig,
   DataFinalityStateFinalized
 } from "@erpc-cloud/config";
@@ -296,42 +270,36 @@ import {
 export default createConfig({
   database: {
     evmJsonRpcCache: {
-      connectors: [
-        {
-          id: "dynamodb-cache",
-          driver: "dynamodb",
-          dynamodb: {
-            table: "erpc_json_rpc_cache",
-            region: "eu-west-1",
-            endpoint: "https://dynamodb.eu-west-1.amazonaws.com", // Optional
-            initTimeout: "5s",
-            getTimeout: "1s",
-            setTimeout: "2s",
-            // Auth is optional if you are running within AWS.
-            auth: {
-              mode: "secret", // "file" or "env"
-              accessKeyId: process.env.DYNAMODB_ACCESS_KEY_ID, // Only if mode is secret
-              secretAccessKey: process.env.DYNAMODB_SECRET_ACCESS_KEY, // Only if mode is secret
-              profile: process.env.DYNAMODB_PROFILE, // Only if mode is file
-              credentialsFile: process.env.DYNAMODB_CREDENTIALS_FILE // Only if mode is file
-            }
-          }
-        }
-      ],
-      policies: [
-        {
-          network: "*",
-          method: "*",
-          finality: DataFinalityStateFinalized,
-          connector: "dynamodb-cache"
-        }
-      ]
-    }
-  }
-});
-```
-</Tab>
-</Tabs>
+      connectors: [{
+        id: "dynamodb-cache",
+        driver: "dynamodb",
+        dynamodb: {
+          table: "erpc_json_rpc_cache",
+          region: "eu-west-1",
+          endpoint: "https://dynamodb.eu-west-1.amazonaws.com", // Optional
+          initTimeout: "5s",
+          getTimeout: "1s",
+          setTimeout: "2s",
+          // Auth is optional if you are running within AWS.
+          auth: {
+            mode: "secret", // "file" or "env"
+            accessKeyId: process.env.DYNAMODB_ACCESS_KEY_ID,    // Only if mode is secret
+            secretAccessKey: process.env.DYNAMODB_SECRET_ACCESS_KEY, // Only if mode is secret
+            profile: process.env.DYNAMODB_PROFILE,              // Only if mode is file
+            credentialsFile: process.env.DYNAMODB_CREDENTIALS_FILE,  // Only if mode is file
+          },
+        },
+      }],
+      policies: [{
+        network: "*",
+        method: "*",
+        finality: DataFinalityStateFinalized,
+        connector: "dynamodb-cache",
+      }],
+    },
+  },
+});`}
+/>
 
 #### IAM Permissions
 
@@ -354,3 +322,220 @@ Make sure the IAM role/user has the necessary permissions to create and/or acces
   * Table name: `erpc_json_rpc_cache`
   * Reverse GSI index name: `idx_requestKey_groupKey` with primary key `requestKey` and sort key `groupKey` and projection type `ALL`
 </Callout>
+
+<AISection title="Copy for your AI assistant — full driver reference">
+
+### Common connector fields (all drivers)
+
+| Field | Notes |
+|---|---|
+| `id` | Unique identifier; referenced from `policies[].connector`. |
+| `driver` | One of `memory`, `redis`, `postgresql`, `dynamodb`. |
+| `failsafeForGets[]` | Optional. Failsafe policies (`matchMethod`, `timeout`, `retry`, ...) applied to read operations on this connector. Useful for short-timeout best-effort reads. |
+| `failsafeForSets[]` | Optional. Failsafe policies applied to write operations on this connector. Useful for stricter retry on writes. |
+
+### `memory` driver
+
+```yaml
+connectors:
+  - id: hot
+    driver: memory
+    memory:
+      maxItems: 100000
+      maxTotalSize: 1GB
+      emitMetrics: false   # default; turning on incurs ~10% performance hit
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `maxItems` | none | Max entries in the LRU. Either this or `maxTotalSize` (or both) should be set. |
+| `maxTotalSize` | none | Max total cache size (`100MB`, `1GB`). Evicts LRU entries when exceeded. |
+| `emitMetrics` | `false` | Emit per-key hit/miss metrics. ~10% perf hit; intended for debugging. |
+
+### `redis` driver
+
+```yaml
+connectors:
+  - id: redis-cache
+    driver: redis
+    redis:
+      # Connection — pick ONE of these two ways:
+      uri: redis://user:pass@host:6379/0?dial_timeout=5s&pool_size=10
+      # OR explicit fields:
+      addr: host:6379
+      username: user
+      password: pass
+      db: 0
+      connPoolSize: 10
+
+      # Operation timeouts
+      initTimeout: 5s
+      getTimeout: 1s
+      setTimeout: 2s
+
+      # Lock retry interval (for shared-state lock semantics, if used here)
+      lockRetryInterval: 100ms
+
+      # TLS — only needed for mTLS or private CA;
+      # rediss:// URIs negotiate TLS automatically.
+      tls:
+        enabled: true
+        certFile: /secrets/redis-client.crt
+        keyFile: /secrets/redis-client.key
+        caFile: /secrets/redis-rootCA.pem
+        insecureSkipVerify: false
+```
+
+| Field | Notes |
+|---|---|
+| `uri` | Full Redis URI. When set, takes precedence over individual fields below. URI query-string params (`dial_timeout`, `read_timeout`, `write_timeout`, `pool_size`) override the equivalent fields. |
+| `addr` | Host:port — explicit alternative to `uri`. |
+| `username`, `password`, `db` | Auth + database number; alternatives to embedding in `uri`. |
+| `connPoolSize` | Maximum number of TCP connections to keep open. Default `10`. |
+| `tls` | TLS configuration. See [TLS configuration](/config/server#tls-configuration) for all fields. |
+| `initTimeout` | How long startup waits for the connection to become healthy. |
+| `getTimeout` | Timeout for a single GET operation. |
+| `setTimeout` | Timeout for a single SET operation. |
+| `lockRetryInterval` | Interval between lock-acquisition retries. Applies when this Redis connector backs [`sharedState`](/config/database/shared-state) or when the cache uses optimistic locking on writes. Default `500ms`. |
+
+Recommended Redis server config for cache use cases:
+
+```conf
+maxmemory 2000mb
+maxmemory-policy allkeys-lru
+```
+
+### `postgresql` driver
+
+```yaml
+connectors:
+  - id: postgres-cache
+    driver: postgresql
+    postgresql:
+      connectionUri: postgres://user:pass@host:5432/erpc
+      table: rpc_cache
+      minConns: 2
+      maxConns: 20
+      initTimeout: 5s
+      getTimeout: 1s
+      setTimeout: 2s
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `connectionUri` | required | Standard `postgres://` URI. Driver creates the table + indexes on first connect; no manual schema work needed. |
+| `table` | `erpc_json_rpc_cache` | Table name. |
+| `minConns` | `0` | Minimum connections kept open in the pool. Useful to keep a warm pool ready. |
+| `maxConns` | `100` | Maximum connections in the pool. Tune based on your Postgres `max_connections`. |
+| `initTimeout` | `5s` | Connection-pool startup timeout. |
+| `getTimeout` | `1s` | Per-GET timeout. |
+| `setTimeout` | `2s` | Per-SET timeout. |
+
+PostgreSQL is the recommended permanent-cache backend when you want forever TTLs and operational simplicity.
+
+### `dynamodb` driver
+
+```yaml
+connectors:
+  - id: dynamodb-cache
+    driver: dynamodb
+    dynamodb:
+      table: erpc_json_rpc_cache
+      region: eu-west-1
+      endpoint: https://dynamodb.eu-west-1.amazonaws.com   # optional
+
+      # Schema attribute overrides (only set these if you provisioned the table manually)
+      partitionKeyName: requestKey
+      rangeKeyName: groupKey
+      reverseIndexName: idx_requestKey_groupKey
+      ttlAttributeName: ttl
+
+      # AWS SDK behavior
+      maxRetries: 3
+
+      # Timing
+      initTimeout: 5s
+      getTimeout: 1s
+      setTimeout: 2s
+      statePollInterval: 250ms
+      lockRetryInterval: 100ms
+
+      # Auth (optional when running inside AWS with an instance role)
+      auth:
+        mode: secret           # secret | file | env
+        accessKeyId: AKIA...
+        secretAccessKey: ...
+        # OR for mode: file
+        profile: erpc-prod
+        credentialsFile: /home/erpc/.aws/credentials
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `table` | `erpc_json_rpc_cache` | Table name. Driver auto-creates if it doesn't exist (requires `dynamodb:CreateTable`). |
+| `region` | required | AWS region. |
+| `endpoint` | none | Override the default DynamoDB endpoint. Set when using DynamoDB Local or a regional override. |
+| `auth.mode` | uses AWS SDK default chain | `secret` = use `accessKeyId`/`secretAccessKey`; `file` = read from `credentialsFile`/`profile`; `env` = AWS_* env vars. Omit `auth` entirely to use the instance-role / IAM-role chain. |
+| `partitionKeyName` | `requestKey` | DynamoDB partition key attribute. Only override if you provisioned the table manually with different schema. |
+| `rangeKeyName` | `groupKey` | Sort/range key attribute. Same caveat. |
+| `reverseIndexName` | `idx_requestKey_groupKey` | Name of the reverse GSI; used for `eth_getBlockReceipts` and similar block-hash → block-number lookups. |
+| `ttlAttributeName` | `ttl` | TTL attribute name. eRPC writes Unix epoch (seconds) values into this attribute and DynamoDB sweeps expired rows. |
+| `maxRetries` | `3` | Max retries for transient AWS errors (throttling, 5xx). |
+| `statePollInterval` | `5s` | How often the DynamoDB connector polls for counter-value updates when watching shared-state keys (e.g. latest/finalized block numbers). |
+| `lockRetryInterval` | `100ms` | Backoff between lock-acquisition attempts. |
+| `initTimeout` | | Startup timeout. |
+| `getTimeout` | | Per-GET timeout. |
+| `setTimeout` | | Per-SET timeout. |
+
+### `auth` sub-config (DynamoDB and other AWS-backed clients)
+
+| Field | Notes |
+|---|---|
+| `mode` | `secret`, `file`, or `env`. Determines how credentials are sourced. |
+| `accessKeyID` | When `mode: secret`. |
+| `secretAccessKey` | When `mode: secret`. Redacted in `erpc_config` output. |
+| `profile` | When `mode: file`. AWS shared-credentials profile name. |
+| `credentialsFile` | When `mode: file`. Path to the credentials file. |
+
+Omit the `auth` block entirely to use the AWS SDK's default credentials chain (instance role → IRSA → env vars → shared file). This is the recommended path for production deployments.
+
+### IAM permissions (DynamoDB)
+
+| Operation | Permission |
+|---|---|
+| Table management | `dynamodb:CreateTable`, `dynamodb:DescribeTable`, `dynamodb:UpdateTable`, `dynamodb:UpdateTimeToLive` |
+| Data ops | `dynamodb:PutItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:DeleteItem`, `dynamodb:UpdateItem` |
+
+You can skip table-management permissions by provisioning the table manually:
+
+- Table name matches `dynamodb.table` (default `erpc_json_rpc_cache`)
+- Reverse GSI with name matching `reverseIndexName` (default `idx_requestKey_groupKey`), partition key `requestKey`, sort key `groupKey`, projection type `ALL`
+- TTL enabled on attribute matching `ttlAttributeName` (default `ttl`)
+
+### Per-connector failsafe (read vs write asymmetry)
+
+```yaml
+connectors:
+  - id: remote-redis
+    driver: redis
+    redis: { uri: redis://... }
+    failsafeForGets:           # reads are best-effort: short timeout, no retry
+      - matchMethod: "*"
+        timeout: { duration: 50ms }
+    failsafeForSets:           # writes can wait longer + retry
+      - matchMethod: "*"
+        timeout: { duration: 500ms }
+        retry: { maxAttempts: 2, delay: 100ms }
+```
+
+Cache reads being slow shouldn't slow the request path (cache is best-effort fall-through); cache writes can afford longer timeouts because they're async to the response.
+
+### Common pitfalls
+
+- **Setting both `uri` and explicit fields** — `uri` query-string params win; explicit fields without a counterpart in the URI still apply. Avoid the mix; prefer one source of truth.
+- **`auth.mode` missing** — DynamoDB tries the SDK default chain and may fail silently if no chain provides creds. Set explicit `auth` for non-AWS environments.
+- **PostgreSQL `maxConns` higher than the server's `max_connections`** — Postgres rejects new connections once its global limit is hit. Size `maxConns` relative to your total client fleet.
+- **Memory driver without bounds** — set `maxItems` or `maxTotalSize` (or both). Without either, the cache grows unbounded.
+- **`emitMetrics: true` on a hot memory connector** — adds per-key labels and can balloon `/metrics` cardinality + cost ~10% perf. Only for debugging.
+
+</AISection>

@@ -1,648 +1,389 @@
 ---
-description: Each project can have one or more authentication strategies enabled...
+title: Authentication
+description: Each project can have one or more authentication strategies (secret, network/CIDR, JWT, SIWE, x402 pay-per-request) with per-method filters and rate limits.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
 # Authentication
 
-Each project can have one or more authentication strategies enabled. When any authentication strategy is defined all requests towards the project must comply with at least one of the strategies.
+<LLMsTxtLink />
 
-## Config
+Each project can have one or more authentication strategies. When any strategy is defined, every request to the project must satisfy at least one of them. eRPC auto-detects which strategy applies based on the request payload (e.g. presence of `token` ⇒ `secret`, an `Authorization: Bearer …` header ⇒ `jwt`, etc.).
 
-The appropriate strategy will be activated based on request payload. For example if "token" is present as a query string then "secret" strategy will be activated. These are currently supported strategies:
-- [`secret`](#secret)
-- [`network`](#network)
-- [`jwt`](#jwt)
-- [`siwe`](#siwe)
+**Supported strategies:**
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-logLevel: debug
-projects:
-  - id: frontend
-    auth:
-      strategies:
-      # Define a simple secret token for authentication of this project:
-      - type: secret
-        rateLimitBudget: free-tier
-        secret:
-          value: "some-random-secret-value"
-      # Define another secret token, that can also be used, but with higher rate limit:
-      - type: secret
-        rateLimitBudget: premium
-        secret:
-          value: "some-other-random-secret-value"
-    upstreams:
-    # ...
-rateLimiters:
-  # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+- [`secret`](#secret-strategy) — static API key (backend-to-backend)
+- [`network`](#network-strategy) — IP / CIDR allowlist
+- [`jwt`](#jwt-strategy) — JSON Web Token, public-key verified (recommended for frontends)
+- [`siwe`](#siwe-strategy) — Sign-in-with-Ethereum signed message
+- [`x402`](#x402-strategy) — pay-per-request via stablecoin (HTTP 402)
+- `database` — used internally for API-key authentication; see [Admin API key management](/operation/admin#api-keys) for the recommended workflow. This strategy is not configurable via YAML/TS.
 
-export default createConfig({
-  logLevel: "debug",
-  projects: [
-    {
-      id: "frontend",
-      auth: {
-        strategies: [
-          // Define a simple secret token for authentication of this project:
-          {
-            type: "secret",
-            rateLimitBudget: "free-tier",
-            secret: {
-              value: "some-random-secret-value",
-            },
-          },
-          // Define another secret token, that can also be used, but with higher rate limit:
-          {
-            type: "secret",
-            rateLimitBudget: "premium",
-            secret: {
-              value: "some-other-random-secret-value",
-            },
-          },
-        ],
-      },
-      upstreams: [
-        // ...
-      ],
-    },
-  ],
-  rateLimiters: {
-    // ...
-  },
-});
-```
-</Tabs.Tab>
-</Tabs>
+Each strategy entry also supports:
 
-#### Method filtering
+- **`ignoreMethods`** / **`allowMethods`** — restrict which RPC methods this strategy authorizes
+- **`rateLimitBudget`** — bind a [rate-limit budget](/config/rate-limiters) to requests that satisfy this strategy
 
-You can allow or disallow certain methods when a client is authenticated by a specific strategy. For example you can limit types of method available for a certain IP (or token), or define multiple secret tokens with different allowed methods.
+## Minimum useful config — a `secret` for backend traffic
 
-<Callout type="info">
-    `allowMethods` takes precedence over `ignoreMethods`. For example if you only want to allow eth_getLogs for a certain IP, you can:
-</Callout>
+The smallest auth setup: one secret token for backend-to-backend.
 
-Both allowMethods and ignoreMethods support wildcard `*` anywhere in the method name.
-
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+	path="projects > auth > strategies[]"
+	focus="5-9"
+	yaml={`projects:
   - id: main
     auth:
       strategies:
-      - type: secret
-        ignoreMethods:
-        - eth_getLogs
-        - alchemy_*
-        allowMethods:
-        - alchemy_getAssetTransfers
-        # ...
-    upstreams:
-    # ...
-rateLimiters:
-  # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+        - type: secret
+          rateLimitBudget: premium      # optional; bind to a budget defined under rateLimiters
+          secret:
+            id: backend                  # optional label used in metrics
+            value: \${MY_SECRET_VALUE}   # env var interpolation works`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  projects: [
-    {
-      id: "main",
-      auth: {
-        strategies: [
-          {
-            type: "secret",
-            ignoreMethods: [
-              "eth_getLogs",
-              "alchemy_*",
-            ],
-            allowMethods: [
-              "alchemy_getAssetTransfers",
-            ],
-            // ...
-          },
-        ],
-      },
-      upstreams: [
-        // ...
-      ],
+  projects: [{
+    id: "main",
+    auth: {
+      strategies: [{
+        type: "secret",
+        rateLimitBudget: "premium",
+        secret: {
+          id: "backend",
+          value: process.env.MY_SECRET_VALUE,
+        },
+      }],
     },
-  ],
-  rateLimiters: {
-    // ...
-  },
-});
+  }],
+});`}
+/>
+
+The client must send the secret as a query string parameter or a header:
+
+```bash
+# Query string:
+curl -X POST 'https://erpc.example/main/evm/1?secret=...'
+
+# Header:
+curl -X POST 'https://erpc.example/main/evm/1' \
+  -H 'X-ERPC-Secret-Token: ...'
 ```
-</Tabs.Tab>
-</Tabs>
 
-#### Rate limiter
+## Picking a strategy
 
-For each strategy item defined for a project you can enforce a separate rate limit budget. For example to limit users providing secret A to 100 requests per second, and users providing secret B to 1000 requests per second.
+| If you want to… | Use |
+|---|---|
+| Backend-to-backend; only your servers hit eRPC | `secret` (use env vars for the value) |
+| Lock down to specific datacenters / VPNs / public IPs | `network` |
+| Frontend dApps with per-user rate limits and expirations | `jwt` |
+| Wallet-signed access without running an issuer | `siwe` |
+| Charge per request via stablecoin | `x402` |
+
+You can stack multiple strategies — each request only needs to satisfy ONE. Apply `ignoreMethods` / `allowMethods` per strategy to scope what each one authorizes.
+
+<AISection title="Copy for your AI assistant — full authentication reference">
+
+### `AuthConfig` — top-level fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `strategies[]` | `AuthStrategyConfig[]` | Each entry is one strategy. Multiple strategies are OR'd: a request is authorized when ANY strategy accepts it. |
+
+### `AuthStrategyConfig` — fields shared by every strategy
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | `"secret"\|"network"\|"jwt"\|"siwe"\|"x402"\|"database"` | Required. Selects the strategy. `database` is managed via the Admin API — not configurable via YAML/TS. |
+| `ignoreMethods` | string[] | Block these methods (matcher syntax: `*`, `\|`, `!`). |
+| `allowMethods` | string[] | Allowlist; when set, blocks everything not listed. When `allowMethods` is set and `ignoreMethods` is not, `ignoreMethods: ["*"]` is implicit. |
+| `rateLimitBudget` | string | Bind requests authorized by this strategy to a budget defined under top-level `rateLimiters.budgets[]`. |
+| Strategy-specific block | object | One of `secret`, `network`, `jwt`, `siwe`, or `x402` — see per-strategy reference below. |
+
+### `secret` strategy — all fields
+
+```yaml
+auth:
+  strategies:
+    - type: secret
+      ignoreMethods: ["alchemy_*"]
+      allowMethods: ["eth_*", "net_*"]
+      rateLimitBudget: premium
+      secret:
+        id: backend-key             # optional label, surfaces in metric labels
+        value: ${MY_SECRET_VALUE}    # env-var expansion at config load
+```
+
+| Field | Notes |
+|---|---|
+| `secret.id` | Optional label. Used as a metric label so multiple `secret` strategies can be told apart in dashboards. |
+| `secret.value` | The static token. **Required.** Use env-var interpolation (`${VAR}` in YAML, `process.env.VAR` in TS) to keep secrets out of the config. |
+| `secret.rateLimitBudget` | Per-secret rate-limit budget (overrides the strategy-level budget for this secret). |
+
+Client sends via `?secret=...` query string OR `X-ERPC-Secret-Token: ...` header.
 
 <Callout type="warning">
-    At the moment, rate limit budgets apply across all clients authenticated by a specific strategy, and **NOT** per user.
-    
-    For example in sample below, no matter how many actual clients use the premium secret token, all of them **together** cannot exceed 1000 requests per second.
+	Secrets sent from a browser are visible to users. Only use `secret` strategy for backend traffic. For frontends, prefer `jwt` (per-user, expiring) or `siwe` (wallet-signed).
 </Callout>
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    auth:
-      strategies:
-      - type: secret
-        rateLimitBudget: free-tier
-        # ...
-      - type: jwt
-        rateLimitBudget: premium
-        # ...
-    upstreams:
-    # ...
-rateLimiters:
-  budgets:
-  - id: low-tier
-    rules:
-    - method: '*'
-        maxCount: 10
-        period: 1s
-  - id: premium
-    rules:
-    - method: '*'
-        maxCount: 1000
-        period: 1s
+### `network` strategy — all fields
+
+```yaml
+auth:
+  strategies:
+    - type: network
+      network:
+        allowLocalhost: true                     # accept 127.0.0.1 / ::1 / loopback
+        allowedIPs: ["89.123.123.123"]            # explicit IP allowlist
+        allowedCIDRs: ["78.13.0.0/16"]            # CIDR ranges
+        trustedProxies: ["10.0.0.0/8"]            # see X-Forwarded-For rules below
+        ipAsUser: true                            # use client IP as the rate-limit user ID
+        rateLimitBudget: ip-tier
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      auth: {
-        strategies: [
-          {
-            type: "secret",
-            rateLimitBudget: "free-tier",
-            // ...
-          },
-          {
-            type: "jwt",
-            rateLimitBudget: "premium",
-            // ...
-          },
-        ],
-      },
-      upstreams: [
-        // ...
-      ],
-    },
-  ],
-  rateLimiters: {
-    budgets: [
-      {
-        id: "low-tier",
-        rules: [
-          {
-            method: "*",
-            maxCount: 10,
-            period: "1s",
-          },
-        ],
-      },
-      {
-        id: "premium",
-        rules: [
-          {
-            method: "*",
-            maxCount: 1000,
-            period: "1s",
-          },
-        ],
-      },
-    ],
-  },
-});
+| Field | Notes |
+|---|---|
+| `allowLocalhost` | When `true`, requests from 127.0.0.1, ::1, and other loopback addresses are accepted unconditionally. |
+| `allowedIPs[]` | List of literal IPs. Both IPv4 and IPv6 accepted. |
+| `allowedCIDRs[]` | List of CIDR ranges. e.g. `78.13.0.0/16`, `2001:db8::/32`. |
+| `trustedProxies[]` | IPs or CIDRs that are trusted to set `X-Forwarded-For`. eRPC walks the X-F-F list left-to-right and picks the first IP that is NOT in `trustedProxies`. See "X-Forwarded-For semantics" below. |
+| `ipAsUser` | When `true`, the client's IP becomes their per-user identifier for rate limiting — `rateLimitBudget` then bills per IP rather than across the whole strategy. |
+| `rateLimitBudget` | Per-strategy rate-limit budget. |
+
+**X-Forwarded-For semantics:**
+
 ```
-</Tabs.Tab>
-</Tabs>
+Request:    X-Forwarded-For: 192.168.1.123, 22.22.22.22, 33.33.33.33
+trustedProxies: ["192.168.1.123"]
+=> Detected client IP: 22.22.22.22  (first non-trusted)
 
-## `secret` strategy
+Request:    X-Forwarded-For: 11.11.11.11, 22.22.22.22, 33.33.33.33
+trustedProxies: ["192.168.1.123"]
+=> Detected client IP: 11.11.11.11  (already non-trusted)
+```
 
-A simple strategy that allows you to define a secret value that will be checked against a `token` provided via query string, or via `X-ERPC-Secret-Token` header.
+This pairs with the server-level `server.trustedIPForwarders` and `server.trustedIPHeaders` — both must be set up if you're behind a load balancer.
 
-<Callout type="info">
-    This strategy is mainly recommended for backend to backend communication. Exposing this token on your frontend allows users to impersonate the requests from anywhere.
+### `jwt` strategy — all fields
 
-    If you still want to use this strategy on frontend, make sure [CORS configuration](/config/projects/cors) are defined to reduce the potential abuse.
-</Callout>
+```yaml
+auth:
+  strategies:
+    - type: jwt
+      jwt:
+        verificationKeys:
+          "rsa-kid-1": "file:///etc/erpc/public_key.pem"
+          "rsa-kid-2": "${MY_RSA_KEY_2_PEM}"
+        allowedIssuers: ["https://issuer.example.com"]
+        allowedAudiences: ["https://my-dapp.example.com"]
+        allowedAlgorithms: ["RS256", "ES256"]
+        requiredClaims: ["sub", "role"]
+        rateLimitBudgetClaimName: rlm        # default: "rlm"
+```
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    auth:
-      strategies:
-      - type: secret
-        ignoreMethods:
+| Field | Notes |
+|---|---|
+| `verificationKeys` | Map of `kid` (key ID matching the JWT header's `kid`) → public key. Value is either a PEM string or a `file://` path. **At least one is required.** |
+| `allowedIssuers[]` | If set, the JWT's `iss` claim must match one of these. |
+| `allowedAudiences[]` | If set, the JWT's `aud` claim must match. |
+| `allowedAlgorithms[]` | Whitelist of `alg` header values (e.g. `RS256`, `ES256`, `HS256`). |
+| `requiredClaims[]` | List of claim names that must be present in the JWT payload (any value). |
+| `rateLimitBudgetClaimName` | The JWT claim whose value selects the rate-limit budget. Default `"rlm"`. The claim's value must match a budget ID in `rateLimiters.budgets[]`. |
+
+JWT expiration (`exp` claim) is enforced — expired tokens are rejected. Algorithm-confusion attacks (e.g. switching from RS256 to HS256 with the public key as the HMAC secret) are prevented by `allowedAlgorithms`.
+
+JWT is the recommended strategy for frontend dApps — per-user, expiring, supports per-user rate-limit budgets via the claim mechanism.
+
+### `siwe` strategy — all fields
+
+```yaml
+auth:
+  strategies:
+    - type: siwe
+      siwe:
+        allowedDomains: ["my-dapp.example.com"]
+        rateLimitBudget: siwe-tier
+```
+
+| Field | Notes |
+|---|---|
+| `allowedDomains[]` | List of domains the SIWE message's `Domain` field must match. |
+| `rateLimitBudget` | Per-strategy rate-limit budget. |
+
+Client sends via query string OR headers:
+
+```bash
+# Query string:
+curl -X POST 'https://erpc.example/main/evm/1?message=...&signature=0x...'
+
+# Headers:
+curl -X POST 'https://erpc.example/main/evm/1' \
+  -H 'X-ERPC-SIWE-Message: <base64-message>' \
+  -H 'X-ERPC-SIWE-Signature: 0x...'
+```
+
+The SIWE message must be **base64-encoded**. eRPC verifies that the signature matches the message and that the message's `Domain` is in `allowedDomains`. The recovered wallet address becomes the user ID for rate limiting.
+
+### `x402` strategy — all fields
+
+```yaml
+auth:
+  strategies:
+    - type: x402
+      x402:
+        facilitatorUrl: https://x402.org/facilitator
+        sellerAddress: 0xYourWalletAddress
+        pricePerRequest: "1"                   # atomic units; "1" = 0.000001 USDC at 6 decimals
+        network: "eip155:8453"                  # Base mainnet
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # optional, defaults to USDC
+        scheme: exact                           # only "exact" today; "upto" planned
+        description: "My RPC endpoint"
+        maxTimeoutSeconds: 300                  # payment auth validity window; default 300
+        rateLimitBudget: x402-tier              # per-payer rate-limit
+        verifyOnly: false                       # true = skip settlement; for testing
+        extra:                                   # merged into the 402 payment requirements
+          name: "USDC"
+          version: "2"
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `facilitatorUrl` | ✅ | x402 facilitator endpoint that handles `verify` and `settle` ops. |
+| `sellerAddress` | ✅ | Wallet address that receives payments. |
+| `pricePerRequest` | ✅ | Cost per request in atomic units of `asset`. For USDC (6 decimals), `"1"` = $0.000001. |
+| `network` | ✅ | x402 network identifier — `eip155:8453` for Base mainnet, `eip155:84532` for Base Sepolia. |
+| `asset` | | Token contract address. Defaults to USDC on the chosen `network`. |
+| `scheme` | | Default `"exact"`. Only `exact` is supported today (EIP-3009 `transferWithAuthorization`). `upto` (Permit2) is planned. |
+| `description` | | Human-readable string shown to the client in the 402 response. x402-SDK-enabled wallets surface this to the user before initiating payment — keep it short and actionable. Example: `"Hourly RPC access at $0.001 / request"`. |
+| `maxTimeoutSeconds` | | How long a payment authorization is valid. Default `300`. |
+| `rateLimitBudget` | | Per-payer rate-limit budget. The payer's wallet address is their user ID. |
+| `verifyOnly` | | When `true`, skip the settle step (verify-only). Useful for testing without real charges. |
+| `extra` | | Free-form object merged into the 402 response's payment requirements. Used for EIP-712 domain params that your facilitator doesn't supply automatically (e.g. `name`, `version`, `chainId`, `verifyingContract` for an ERC-20). |
+
+**`extra` — EIP-712 domain params for non-USDC assets**
+
+When paying with an ERC-20 other than USDC, the facilitator may not supply the EIP-712 domain parameters automatically. Pass them in `extra` so the wallet can construct a valid `transferWithAuthorization` signature. The required fields match the token's `EIP712Domain` struct:
+
+```yaml
+x402:
+  facilitatorUrl: https://x402.org/facilitator
+  sellerAddress: 0xYourWalletAddress
+  pricePerRequest: "1000000000000000"   # 0.001 WETH at 18 decimals
+  network: "eip155:8453"                # Base mainnet
+  asset: "0x4200000000000000000000000000000000000006"  # WETH on Base
+  extra:
+    name: "Wrapped Ether"
+    version: "1"
+    chainId: 8453
+    verifyingContract: "0x4200000000000000000000000000000000000006"
+```
+
+See the [x402 spec](https://github.com/coinbase/x402) for the full list of payment requirement fields that `extra` can override.
+
+**How the flow works**: a client without payment hits eRPC → receives HTTP 402 with payment requirements → signs a payment authorization → retries with the auth attached → eRPC calls the facilitator's `verify` and (if `verifyOnly: false`) `settle` → forwards the request upstream.
+
+Clients using the [x402 SDK](https://github.com/coinbase/x402) or [Circle Gateway](https://developers.circle.com/x402) handle the 402 flow transparently. The payer's wallet address becomes their per-payer user ID.
+
+**Metrics**: `erpc_x402_payment_total` (counter — verified, settled, rejected), `erpc_x402_facilitator_request_total` (counter — calls to verify/settle/supported endpoints), and `erpc_x402_facilitator_request_duration_seconds` (histogram). A bundled Grafana dashboard ("x402 Payments" row) visualizes these.
+
+### Method filtering — interaction rules
+
+`ignoreMethods` and `allowMethods` work on every strategy. Same rules as upstream-level filters:
+
+- Both accept matcher syntax (`*`, `|`, `!`).
+- `allowMethods` takes precedence when both match.
+- Setting `allowMethods` without `ignoreMethods` implicitly adds `ignoreMethods: ["*"]`.
+- A strategy that rejects a method due to filtering is treated as "not applicable" — eRPC tries the next strategy.
+
+Example: backend gets all methods, browser frontend only gets read methods.
+
+```yaml
+auth:
+  strategies:
+    - type: secret
+      secret: { value: ${BACKEND_SECRET} }
+      # No method filter → backend gets everything
+
+    - type: jwt
+      jwt:
+        verificationKeys: { "kid-1": "${PUBLIC_KEY_PEM}" }
+        allowedIssuers: ["https://my-app.example"]
+      allowMethods:                # frontend: read-only
+        - eth_call
+        - eth_blockNumber
+        - eth_chainId
         - eth_getLogs
-        - alchemy_*
-        allowMethods:
-        - alchemy_getAssetTransfers
-        rateLimitBudget: premium
-        secret:
-          id: "custom-id-for-metrics"
-          value: "some-random-secret-value" # To use env vars: ${MY_SECRET_VALUE}
-    upstreams:
-    # ...
-rateLimiters:
-  budgets:
-  - id: premium
-    rules:
-    - method: '*'
-      maxCount: 1000
-      period: 1s
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      auth: {
-        strategies: [
-          {
-            type: "secret",
-            ignoreMethods: [
-              "eth_getLogs",
-              "alchemy_*",
-            ],
-            allowMethods: [
-              "alchemy_getAssetTransfers",
-            ],
-            rateLimitBudget: "premium",
-            secret: {
-              id: "custom-id-for-metrics",
-              value: "some-random-secret-value", // To use env vars: process.env.MY_SECRET_VALUE
-            },
-          },
-        ],
-      },
-      upstreams: [
-        // ...
-      ],
-    },
-  ],
-  rateLimiters: {
-    budgets: [
-      {
-        id: "premium",
-        rules: [
-          {
-            method: "*",
-            maxCount: 1000,
-            period: "1s",
-          },
-        ],
-      },
-    ],
-  },
-});
-
-```
-</Tabs.Tab>
-</Tabs>
-
-The client must provide this value either via a query string parameter:
-```bash
-curl -X POST https://localhost:4000/main/evm/42161?secret=some-random-secret-value \
-  # ...
+        - eth_getBalance
 ```
 
-Or via a header:
-```bash
-curl -X POST https://localhost:4000 \
-  -H "X-ERPC-Secret-Token: some-random-secret-value"
-  # ...
-```
+### Rate-limit budget binding
 
-## `network` strategy
+Three layers, applied in order of specificity:
 
-To prevent requests based on IP address of the client, use `network` strategy:
+1. **`secret.rateLimitBudget`** (only on `secret` strategy) — per-token budget
+2. **`strategies[].rateLimitBudget`** — per-strategy budget
+3. **`jwt.rateLimitBudgetClaimName`** — per-JWT-claim budget (lets the issuer assign tier-based budgets in the token itself)
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
+If multiple match, the most-specific one wins. If none is set, the request is unmetered by auth (but `project.rateLimitBudget` may still apply).
+
+### Combining multiple strategies — full example
+
+```yaml
 projects:
   - id: main
     auth:
       strategies:
-      - type: network
-        network:
-          # To allow requests coming from the same host (localhost, 127.0.0.1, ::1)
-          allowLocalhost: true
+        # Backend services — full access, generous budget
+        - type: secret
+          rateLimitBudget: backend-tier
+          secret:
+            id: backend
+            value: ${BACKEND_SECRET}
 
-          # To allow requests coming from the specific IPs
-          allowedIPs:
-          - "89.123.123.123"
+        # Internal infrastructure — IP-allowlisted, dev-only methods allowed
+        - type: network
+          rateLimitBudget: internal-tier
+          allowMethods: ["*", "debug_*", "trace_*"]
+          network:
+            allowedCIDRs: ["10.0.0.0/8"]
+            allowLocalhost: true
 
-          # To allow requests coming from the specific CIDR ranges
-          allowedCIDRs:
-          - "78.13.0.0/16"
+        # Frontend users — JWT-gated, read-only RPCs, per-tier budgets via claim
+        - type: jwt
+          allowMethods: ["eth_call", "eth_blockNumber", "eth_chainId", "eth_getLogs"]
+          jwt:
+            verificationKeys: { "kid-1": "${JWT_PUBLIC_KEY}" }
+            allowedIssuers: ["https://api.my-app.example"]
+            rateLimitBudgetClaimName: tier        # client tier read from `tier` claim
 
-          # When requests carry X-Forwarded-For header, you can define trusted proxies
-          # that are allowed to override the client's IP address.
-          #
-          # These will evaluate X-Forwarded-For value from the left to the right,
-          # and will use the first IP address that is not in the trustedProxies list.
-          #
-          # Example 1:
-          #   X-Forwarded-For: 192.168.1.123, 22.22.22.22, 33.33.33.33
-          #   trustedProxies:
-          #   - "192.168.1.123"
-          #   \_____ Detected client IP: 22.22.22.22
-          #
-          # Example 2:
-          #   X-Forwarded-For: 11.11.11.11, 22.22.22.22, 33.33.33.33
-          #   trustedProxies:
-          #   - "192.168.1.123"
-          #   \_____ Detected client IP: 11.11.11.11
-          trustedProxies:
-          - "192.168.1.123"
-    upstreams:
-    # ...
-rateLimiters:
-  # ...
+        # Wallet-signed access for dApp users without our issuer
+        - type: siwe
+          rateLimitBudget: siwe-tier
+          siwe:
+            allowedDomains: ["my-dapp.example.com"]
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      auth: {
-        strategies: [
-          {
-            type: "network",
-            network: {
-              // To allow requests coming from the same host (localhost, 127.0.0.1, ::1)
-              allowLocalhost: true,
+A request is authorized if ANY strategy accepts it. eRPC chooses based on the request shape (token vs. JWT header vs. SIWE params vs. IP).
 
-              // To allow requests coming from the specific IPs
-              allowedIPs: [
-                "89.123.123.123",
-              ],
+### Common pitfalls
 
-              // To allow requests coming from the specific CIDR ranges
-              allowedCIDRs: [
-                "78.13.0.0/16",
-              ],
+- **Exposing `secret` on a frontend** — anyone can copy it. Use `jwt` or `siwe` for browser-originated traffic.
+- **Missing `trustedProxies` behind a load balancer** — the X-Forwarded-For chain is taken at face value. Any client can spoof their IP. Always set `trustedProxies` to your LB / CDN ranges.
+- **Forgetting `allowedAlgorithms` on JWT** — without it, the parser accepts every algorithm advertised in the JWT header, opening the door to algorithm-confusion attacks (e.g. an attacker switching to HS256 with the public key as HMAC secret).
+- **`rateLimitBudget` set but no budget defined** — the request is auth-only, no rate-limit applied. Add the budget under top-level `rateLimiters.budgets[]`.
+- **`siwe.allowedDomains` empty** — every domain is accepted, so a SIWE message signed for a phishing domain would authenticate the user against you.
+- **`x402.verifyOnly: true` in production** — no settlement happens; you've shipped a free RPC.
+- **JWT `rateLimitBudgetClaimName` typo** — the claim is silently absent, so the per-user budget isn't applied. Verify with a test JWT.
 
-              // When requests carry X-Forwarded-For header, you can define trusted proxies
-              // that are allowed to override the client's IP address.
-              //
-              // These will evaluate X-Forwarded-For value from the left to the right,
-              // and will use the first IP address that is not in the trustedProxies list.
-              //
-              // Example 1:
-              //   X-Forwarded-For: 192.168.1.123, 22.22.22.22, 33.33.33.33
-              //   trustedProxies:
-              //   - "192.168.1.123"
-              //   \_____ Detected client IP: 22.22.22.22
-              //
-              // Example 2:
-              //   X-Forwarded-For: 11.11.11.11, 22.22.22.22, 33.33.33.33
-              //   trustedProxies:
-              //   - "192.168.1.123"
-              //   \_____ Detected client IP: 11.11.11.11
-              trustedProxies: [
-                "192.168.1.123",
-              ],
-            },
-          },
-        ],
-      },
-      upstreams: [
-        // ...
-      ],
-    },
-  ],
-  rateLimiters: {
-    // ...
-  },
-});
-```
-</Tabs.Tab>
-</Tabs>
+</AISection>
 
-## `jwt` strategy
-
-Use [JWT](https://jwt.io/) strategy to only allow requests carrying a JWT token signed by you or a trusted party. The main requirement for this strategy is public key(s) that you trust.
-
-<Callout type="info">
-    For frontend dApps this strategy is the **most recommended** because it allows control over how many users can hit your RPC endpoint and the "expiration" prevents users from abusing the RPC by copying the jwt token in multiple places.
-
-    If you already use a JWT for your frontend, you can use the same token for eRPC, only providing the proper public key(s).
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
 </Callout>
-
-This strategy respects the JWT token's expiration (`exp` claim) and will reject the request if token has expired.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    auth:
-      strategies:
-      - type: jwt
-        jwt:
-          # At least one public key must be provided, you can either provide the public key PEM as plain value,
-          # or provide a path to the file containing the public key.
-          #
-          # The for each verification key you can use their "kid" (e.g. rsa-kid-1) as a key, and provide the PEM as a value.
-          verificationKeys:
-            "rsa-kid-1": "file:///Users/aram/www/0xflair/erpc/test/aux/public_key.pem"
-            "rsa-kid-2": "${MY_RSA_KEY_2_PEM}"
-          
-          # Optional list of issuers that are allowed, if token has a different "iss" claim it will be rejected.
-          allowedIssuers:
-            - "https://erpc.web3-project.xyz"
-
-          # Optional list of audiences that are allowed, if token has a different "aud" claim it will be rejected.
-          allowedAudiences:
-            - "https://frontend.web3-project.xyz"
-
-          # Optional list of algorithms that are allowed, if token has a different "alg" header it will be rejected.
-          allowedAlgorithms:
-            - "RS256"
-            - "HS256"
-
-          # Optional list of claims that are required to be present in the token, otherwise the token will be rejected.
-          requiredClaims:
-            - "sub"
-            - "role"
-    upstreams:
-    # ...
-rateLimiters:
-  # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      auth: {
-        strategies: [
-          {
-            type: "jwt",
-            jwt: {
-              // At least one public key must be provided, you can either provide the public key PEM as plain value,
-              // or provide a path to the file containing the public key.
-              //
-              // The for each verification key you can use their "kid" (e.g. rsa-kid-1) as a key, and provide the PEM as a value.
-              verificationKeys: {
-                "rsa-kid-1": "file:///Users/aram/www/0xflair/erpc/test/aux/public_key.pem",
-                "rsa-kid-2": "${MY_RSA_KEY_2_PEM}",
-              },
-              
-              // Optional list of issuers that are allowed, if token has a different "iss" claim it will be rejected.
-              allowedIssuers: [
-                "https://erpc.web3-project.xyz",
-              ],
-    
-              // Optional list of audiences that are allowed, if token has a different "aud" claim it will be rejected.
-              allowedAudiences: [
-                "https://frontend.web3-project.xyz",
-              ],
-    
-              // Optional list of algorithms that are allowed, if token has a different "alg" header it will be rejected.
-              allowedAlgorithms: [
-                "RS256",
-                "HS256",
-              ],
-    
-              // Optional list of claims that are required to be present in the token, otherwise the token will be rejected.
-              requiredClaims: [
-                "sub",
-                "role",
-              ],
-            },
-          },
-        ],
-      },
-      upstreams: [
-        // ...
-      ],
-    },
-  ],
-  rateLimiters: {
-    // ...
-  },
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-## `siwe` strategy
-
-Many frontend dApps already use [Sign-in with Ethereum](https://eips.ethereum.org/EIPS/eip-4361) (SIWE) to authenticate wallets. You can use `siwe` strategy to allow requests from your dApp by providing the signature and signed message:
-
-<Callout type="info">
-    Message (which includes your statement, domain, expiration, etc) must be provided as base64 encoded string.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    auth:
-      strategies:
-      - type: siwe
-        siwe:
-          # A list of domains from which SIWE messages are allowed to be signed.
-          allowedDomains:
-            - "my-web3-project.xyz"
-    upstreams:
-    # ...
-rateLimiters:
-  # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      auth: {
-        strategies: [
-          {
-            type: "siwe",
-            siwe: {
-              // A list of domains from which SIWE messages are allowed to be signed.
-              allowedDomains: [
-                "my-web3-project.xyz",
-              ],
-            },
-          },
-        ],
-      },
-      upstreams: [
-        // ...
-      ],
-    },
-  ],
-  rateLimiters: {
-    // ...
-  },
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-Message and signature can be provided via query string parameters:
-
-```bash
-curl -X POST https://localhost:4000/main/evm/42161?message=my_message_base64_ecnoded&signature=0x123456 \
-  # ...
-```
-
-or via `X-ERPC-SIWE-Message` and `X-ERPC-SIWE-Signature` headers:
-
-```bash
-curl -X POST https://localhost:4000 \
-  -H "X-ERPC-SIWE-Message: my_message_base64_ecnoded"
-  -H "X-ERPC-SIWE-Signature: 0x123456"
-  # ...
-```

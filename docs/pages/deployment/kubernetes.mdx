@@ -1,18 +1,33 @@
 ---
-description: eRPC can be deployed on Kubernetes using the following manifests...
+title: Kubernetes deployment
+description: Deploy eRPC on Kubernetes with Deployment, Service, ConfigMap, HPA, and PodDisruptionBudget manifests.
 ---
 
-import { Steps } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
-# Kubernetes installation
+# Kubernetes deployment
 
-eRPC can be deployed on Kubernetes using the following manifests. These examples provide a basic setup that you can customize based on your needs.
+<LLMsTxtLink />
 
-<Steps>
+eRPC runs well on Kubernetes as a stateless proxy. A minimal setup needs a Deployment, a Service, and a ConfigMap holding your `erpc.yaml`. The sections below show ready-to-apply manifests you can copy and adjust.
 
-### Configuration
+**What this page covers:**
 
-First, create a ConfigMap and a Secret for your eRPC configuration:
+- Quick-start manifests: ConfigMap, Secret, Deployment, Service
+- Readiness / liveness probe configuration (via `/healthcheck`)
+- Horizontal Pod Autoscaler
+- Graceful shutdown with `waitBeforeShutdown` / `waitAfterShutdown`
+- Optional PostgreSQL StatefulSet for cache backend
+- Helm chart status and `kube/` reference manifests
+
+## Quick start
+
+### 1. ConfigMap and Secret
 
 ```yaml
 apiVersion: v1
@@ -25,8 +40,8 @@ data:
     projects:
      - id: main
        upstreams:
-       - endpoint: alchemy://${ALCHEMY_API_KEY}
-       - endpoint: blastapi://${BLASTAPI_API_KEY}
+       - endpoint: alchemy://\${ALCHEMY_API_KEY}
+       - endpoint: blastapi://\${BLASTAPI_API_KEY}
        - endpoint: https://mynode-chain-1.svc.cluster.local
 ---
 apiVersion: v1
@@ -39,9 +54,7 @@ stringData:
   BLASTAPI_API_KEY: your-blastapi-key-here
 ```
 
-### Deployment
-
-Deploy eRPC with the following configuration:
+### 2. Deployment
 
 ```yaml
 apiVersion: apps/v1
@@ -74,6 +87,10 @@ spec:
           value: "40"
         - name: GOMEMLIMIT
           value: "1900MiB"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         envFrom:
         - secretRef:
             name: erpc-secrets
@@ -115,13 +132,11 @@ spec:
       - name: config
         configMap:
           name: erpc-config
-      # This must be same or greater than server.maxTimeout in erpc.yaml
+      # Must be >= server.maxTimeout in erpc.yaml
       terminationGracePeriodSeconds: 180
 ```
 
-### Service
-
-Expose eRPC using a Service:
+### 3. Service
 
 ```yaml
 apiVersion: v1
@@ -142,9 +157,7 @@ spec:
     app: erpc
 ```
 
-### Horizontal Pod Autoscaling
-
-Configure automatic scaling based on CPU and memory usage:
+### 4. Horizontal Pod Autoscaler
 
 ```yaml
 apiVersion: autoscaling/v2
@@ -173,24 +186,233 @@ spec:
         averageUtilization: 80
 ```
 
-### Installation
-
-Apply the manifests using kubectl:
+### 5. Apply
 
 ```bash
-# Apply the manifests
 kubectl apply -f erpc-configmap.yaml
 kubectl apply -f erpc-secret.yaml
 kubectl apply -f erpc-deployment.yaml
 kubectl apply -f erpc-service.yaml
 kubectl apply -f erpc-hpa.yaml
 
-# Verify the deployment
 kubectl get pods
 kubectl get services
 kubectl get hpa
 ```
 
-The eRPC service will be available within your cluster at `erpc:4000` for HTTP traffic and `erpc:4001` for metrics.
+The service is available at `erpc:4000` for HTTP and `erpc:4001` for metrics within the cluster.
 
-</Steps>
+<AISection title="Copy for your AI assistant — full Kubernetes deployment reference">
+
+### Deployment manifest field reference
+
+| Field | Recommended value | Notes |
+|---|---|---|
+| `spec.replicas` | 2+ in production | eRPC is stateless; any replica count works. |
+| `image` | `ghcr.io/erpc/erpc:latest` | Pin to a digest for reproducible rollouts. |
+| `resources.requests.memory` | `256Mi` | Baseline for the scheduler. |
+| `resources.limits.memory` | `2Gi` | Set `GOMEMLIMIT` ~5% below this (e.g. `1900MiB` for a `2Gi` limit). |
+| CPU limit | **omit** | Go's scheduler is work-stealing; a hard CPU limit causes throttling without a proportional latency benefit. |
+| `terminationGracePeriodSeconds` | `>= server.maxTimeout` | Gives the pod time to drain in-flight requests. 180s is a safe default. |
+
+### `POD_NAME` / `INSTANCE_ID` env vars
+
+eRPC uses an instance identifier for shared-state lock ownership and misbehavior file templating. On Kubernetes, inject it via the downward API:
+
+```yaml
+env:
+- name: POD_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
+```
+
+Resolution order: `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → random UUID. See [CLI & env vars](/operation/cli) for details.
+
+### Readiness and liveness probes
+
+Use the `/healthcheck` HTTP endpoint for the **readiness probe** and a TCP socket check for **liveness**. See [Healthcheck](/operation/healthcheck) for available evaluation strategies.
+
+```yaml
+startupProbe:
+  httpGet:
+    path: /healthcheck
+    port: 4000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6      # 60s window to finish startup
+
+readinessProbe:
+  httpGet:
+    path: /healthcheck
+    port: 4000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 2      # removed from endpoints after ~10s
+  successThreshold: 1
+
+livenessProbe:
+  tcpSocket:
+    port: 4000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 1
+  failureThreshold: 3
+```
+
+The readiness probe fails immediately after the pod receives SIGTERM — this is intentional: it signals the orchestrator to stop routing new traffic before the in-flight drain completes.
+
+### Service types
+
+**ClusterIP (default)** — suitable when eRPC is consumed by other in-cluster workloads:
+
+```yaml
+spec:
+  type: ClusterIP
+```
+
+**LoadBalancer** — exposes eRPC with a cloud load-balancer IP:
+
+```yaml
+spec:
+  type: LoadBalancer
+```
+
+**Ingress** — for TLS termination and host/path-based routing, attach an Ingress to the ClusterIP Service:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: erpc
+spec:
+  rules:
+  - host: rpc.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: erpc
+            port:
+              number: 4000
+```
+
+### ConfigMap for erpc.yaml
+
+Mount the config as a volume rather than baking it into the image. Note that Kubernetes does NOT trigger a rolling restart when a ConfigMap changes — use `kubectl rollout restart deployment/erpc` after applying a config update, or add an annotation checksum to the pod template.
+
+```yaml
+# In Deployment spec.template.metadata.annotations:
+annotations:
+  checksum/config: "{{ include (print $.Template.BasePath '/configmap.yaml') . | sha256sum }}"
+```
+
+### Optional: PostgreSQL StatefulSet for cache backend
+
+A reference PostgreSQL StatefulSet is available at `kube/postgres.yml` in the repository. Connect eRPC to it by adding a `connectors` entry in your `erpc.yaml`:
+
+```yaml
+connectors:
+- id: pg-cache
+  driver: postgresql
+  postgresql:
+    connectionUri: "postgresql://erpc:password@postgres:5432/erpc"
+```
+
+Then reference it from a cache policy on your project. The StatefulSet in `kube/postgres.yml` uses a PersistentVolumeClaim; ensure your cluster has a StorageClass that supports `ReadWriteOnce`.
+
+### HorizontalPodAutoscaler integration
+
+The HPA manifest above scales on CPU and memory utilization. eRPC exposes Prometheus metrics on `:4001/metrics` — if your cluster has the Prometheus Adapter installed, you can add custom metrics (e.g. `erpc_upstream_request_duration_seconds`) as additional HPA targets for more precise scaling.
+
+```yaml
+metrics:
+- type: Pods
+  pods:
+    metric:
+      name: erpc_requests_per_second
+    target:
+      type: AverageValue
+      averageValue: "500"
+```
+
+### PodDisruptionBudget recommendation
+
+Prevent all replicas from being evicted simultaneously during cluster maintenance:
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: erpc
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: erpc
+```
+
+For HA setups run at least 2 replicas so this PDB allows one voluntary disruption at a time.
+
+### Graceful drain with waitBeforeShutdown / waitAfterShutdown
+
+Configure these in `erpc.yaml` so pods drain cleanly under rolling updates:
+
+```yaml
+server:
+  # After SIGTERM: stay alive, mark NotReady, drain in-flight requests.
+  # Set >= (readinessProbe.periodSeconds x readinessProbe.failureThreshold) + buffer.
+  waitBeforeShutdown: 30s
+  # After HTTP server stops: keep the process alive so kube-proxy / Envoy
+  # can close lingering TCP connections.
+  waitAfterShutdown: 30s
+```
+
+Also set `terminationGracePeriodSeconds` in the Deployment to at least `waitBeforeShutdown + waitAfterShutdown + server.maxTimeout`. See [Healthcheck](/operation/healthcheck) for the full configuration reference.
+
+### GOGC and GOMEMLIMIT tuning
+
+Set both env vars in the Deployment to keep memory usage predictable. See [CLI & env vars](/operation/cli) and [Production tuning](/operation/production) for guidance.
+
+```yaml
+env:
+- name: GOGC
+  value: "40"
+- name: GOMEMLIMIT
+  value: "1900MiB"  # ~95% of limits.memory
+```
+
+Rule of thumb: `GOMEMLIMIT` = 95% of `resources.limits.memory`. Omitting `GOGC` while setting `GOMEMLIMIT` can cause large heap swings just below the limit — always pair them.
+
+### Helm chart status
+
+There is no official Helm chart yet. The repository provides raw manifests under `kube/` (`kube/erpc.yml`, `kube/postgres.yml`) as a starting point. Community-maintained charts may exist; check Artifact Hub. Contributions of an official chart are welcome.
+
+### Network policy considerations
+
+eRPC makes outbound connections to upstream RPC endpoints and (optionally) to cache backends (PostgreSQL, Redis, DynamoDB). If your cluster enforces NetworkPolicy, allow:
+
+- Egress on 443/TCP and 80/TCP to upstream providers (or to the internet if using managed providers)
+- Egress on your cache backend's port (e.g. 5432/TCP for PostgreSQL, 6379/TCP for Redis)
+- Ingress on 4000/TCP from your application pods (or from the Ingress controller)
+- Ingress on 4001/TCP from your Prometheus scraper
+
+### Common pitfalls
+
+- **Probe interval too short during cold start** — if `initialDelaySeconds` is too low and upstreams are slow to respond, the startup probe fails and Kubernetes restarts the pod in a loop. Use the `startupProbe` with a generous `failureThreshold` to absorb slow upstream initialization.
+- **Config reload is not automatic** — updating a ConfigMap does not restart the Deployment. Either patch the pod template annotations with a config checksum or run `kubectl rollout restart deployment/erpc`.
+- **Log volume at trace level** — `logLevel: trace` is extremely verbose; at high RPC traffic it can saturate log shippers and consume significant CPU. Use `info` or `warn` in production.
+- **CPU limits causing throttling** — omit `resources.limits.cpu`. A hard CPU limit causes the Go scheduler to be throttled by the Linux CFS scheduler, increasing tail latency without reducing memory usage.
+- **terminationGracePeriodSeconds too small** — if this is shorter than the time needed to drain in-flight requests plus the `waitBeforeShutdown` / `waitAfterShutdown` delays, Kubernetes sends SIGKILL before the drain completes, dropping active requests.
+
+</AISection>
+
+import { Callout } from "nextra/components";
+
+<Callout type="tip">
+	Append `.llms.txt` to this page's URL (or use the **AI** link above) to fetch the entire expanded reference as plain text for your AI assistant.
+</Callout>

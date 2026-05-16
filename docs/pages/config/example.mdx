@@ -1,123 +1,71 @@
 ---
-description: Example configs for erRPC (yaml/typescript)
+title: Complete config example
+description: A tour of every top-level section in an eRPC config — logLevel, server, metrics, database, projects, upstreams, networks, failsafe, and rateLimiters — with minimal and full examples in YAML and TypeScript.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
 # Complete config example
 
-This example config demonstrates all features of eRPC in one place. For more explanation of each section, refer to dedicated pages:
+<LLMsTxtLink />
 
-- [Database](/config/database/drivers): to configure caching and database.
-- [Projects](/config/projects): to define multiple projects with different rate limit budgets.
-- [Networks](/config/projects/networks): to configure failsafe policies for each network.
-- [Upstreams](/config/projects/upstreams): to configure upstreams with failsafe policies, rate limiters, allowed/rejected methods, etc.
-- [Rate limiters](/config/rate-limiters): to configure various self-imposed budgets to prevent pressure on upstreams.
-- [Failsafe](/config/failsafe): explains different policies such as retry, timeout, and hedges, used for networks and upstreams.
+A single eRPC config file wires together log level, HTTP server, metrics, caching database, projects (with networks, upstreams, and failsafe policies), and shared rate-limit budgets. eRPC auto-detects sane defaults for almost everything — a two-line config is enough to get started, and you add sections only when you need them.
 
-By default `erpc` binary will look for `./erpc.ts`, `./erpc.yaml`, `./erpc.yml` files in the current directory. You can change this path by passing an argument to the binary:
+**Sections you can configure:**
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-  ```bash
-  $ erpc /path/to/your/erpc.yaml
-  ```
-  </Tabs.Tab>
-  <Tabs.Tab>
-  ```bash
-  $ erpc /path/to/your/erpc.ts
-  ```
-  </Tabs.Tab>
-</Tabs>
+- **`logLevel`** — `trace | debug | info | warn | error`
+- **`server`** — HTTP listen address, timeouts, TLS, gzip, shutdown grace
+- **`metrics`** — Prometheus scrape endpoint
+- **`database`** — EVM JSON-RPC response cache (memory, Redis, PostgreSQL, DynamoDB/ScyllaDB)
+- **`projects[]`** — one entry per traffic profile (frontend, indexer, backend …); each holds `networks[]`, `upstreams[]`, `rateLimitBudget`, `auth`, and `failsafe`
+- **`rateLimiters`** — shared per-method budgets consumed by upstreams and projects
 
-### Minimal config example
+## Minimal config
 
-eRPC will auto-detect or use sane defaults for various configs such as retries, timeouts, circuit-breaker, hedges, node architecture etc.
+Chain IDs are auto-detected; defaults are applied for retries, timeouts, hedges, and everything else.
 
-<Callout type="info">
-  <b>eRPC is Multi-chain</b><br />
-  A single instance of eRPC can server multiple projects (frontend, indexer, etc) and multiple chains.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-logLevel: debug
+<ConfigTabs
+	path="projects > upstreams"
+	focus="3-7"
+	yaml={`logLevel: debug
 projects:
- - id: main
-   upstreams:
-   # Put all your RPC endpoints for any network here.
-   # You don't need to define architecture (e.g. evm) or chain id (e.g. 42161)
-   # as they will be detected automatically by eRPC.
-   - endpoint: https://xxxxx.matic.quiknode.pro/xxxxxxxxxx/
-   - endpoint: drpc://XXX_MY_DRPC.ORG_API_KEY_XXX # Add all supported chains of drpc.org
-   - endpoint: blastapi://XXX_MY_BLASTAPI.IO_API_KEY_XXX # Add all supported chains of blastapi.io
-   - endpoint: alchemy://XXX_MY_ALCHEMY.COM_API_KEY_XXX # Add all supported chains of alchemy.com
-   - endpoint: envio://rpc.hypersync.xyz # Add all supported methods and chains of envio.dev HyperRPC
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+  - id: main
+    upstreams:
+      - endpoint: https://your-node.example.com/
+      - endpoint: alchemy://\${ALCHEMY_API_KEY}
+      - endpoint: drpc://\${DRPC_API_KEY}`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   logLevel: "debug",
-  projects: [
-    {
-      id: "main",
-      upstreams: [
-        // Put all your RPC endpoints for any network here.
-        // You don't need to define architecture (e.g. evm) or chainId (e.g., 42161)
-        // as they will be detected automatically by eRPC.
-        {
-          endpoint: "https://xxxxx.matic.quiknode.pro/xxxxxxxxxx/",
-        },
-        {
-          endpoint: `drpc://${process.env.DRPC_API_KEY}`, // Add all supported chains of drpc.org
-        },
-        {
-          endpoint: `blastapi://${process.env.BLASTAPI_API_KEY}`, // Add all supported chains of blastapi.io
-        },
-        {
-          endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`, // Add all supported chains of alchemy.com
-        },
-        {
-          endpoint: "envio://rpc.hypersync.xyz", // Add all supported methods and chains of envio.dev HyperRPC
-        },
-      ],
-    },
-  ],
-});
+  projects: [{
+    id: "main",
+    upstreams: [
+      { endpoint: "https://your-node.example.com/" },
+      { endpoint: \`alchemy://\${process.env.ALCHEMY_API_KEY}\` },
+      { endpoint: \`drpc://\${process.env.DRPC_API_KEY}\` },
+    ],
+  }],
+});`}
+/>
 
-```
-</Tabs.Tab>
-</Tabs>
+## Full config — all major sections
 
-### Full config example
+<ConfigTabs
+	path="logLevel, server, metrics, database, projects, rateLimiters"
+	focus="1-8"
+	yaml={`logLevel: warn
 
-To have more control over the configuration, you can use the example below.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# Log level helps in debugging or error detection:
-# - debug: information down to actual request and responses, and decisions about rate-liming etc.
-# - info: usually prints happy paths and might print 1 log per request indicating of success or failure.
-# - warn: these problems do not cause end-user problems, but might indicate degredataion or an issue such as cache databse being down.
-# - error: these are problems that have end-user impact, such as misconfigurations.
-logLevel: warn
-
-# The main server for eRPC to listen for requests.
 server:
-  listenV4: true
   httpHostV4: "0.0.0.0"
   httpPortV4: 4000
-  # listenV6: false
-  # httpHostV6: "[::]"
-  # httpPortV6: 5000
   maxTimeout: 30s
-  readTimeout: 10s
-  writeTimeout: 20s
   enableGzip: true
   waitBeforeShutdown: 30s
   waitAfterShutdown: 30s
@@ -125,26 +73,14 @@ server:
     enabled: false
     certFile: "/path/to/cert.pem"
     keyFile: "/path/to/key.pem"
-    caFile: "/path/to/ca.pem"  # Optional, for client cert verification
-    insecureSkipVerify: false  # Optional, defaults to false
 
-# Optional Prometheus metrics server
 metrics:
   enabled: true
-  listenV4: true
   hostV4: "0.0.0.0"
-  listenV6: false
-  hostV6: "[::]"
   port: 4001
 
-# There are various use-cases of database in erpc, such as caching, dynamic configs, rate limit persistence, etc.
 database:
-  # `evmJsonRpcCache` defines the destination for caching JSON-RPC cals towards any EVM architecture upstream.
-  # This database is non-blocking on critical path, and is used as best-effort.
-  # Make sure the storage requirements meet your usage, for example caching 70m blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
   evmJsonRpcCache:
-    # Refer to "Database" section for more details.
-    # Note that table, schema and indexes will be created automatically if they don't exist.
     connectors:
       - id: memory-cache
         driver: memory
@@ -153,8 +89,7 @@ database:
       - id: postgres-cache
         driver: postgresql
         postgresql:
-          connectionUri: >-
-            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          connectionUri: "postgres://user:pass@db:5432/erpc"
           table: rpc_cache
     policies:
       - network: "*"
@@ -166,103 +101,89 @@ database:
         method: "*"
         finality: unfinalized
         connector: memory-cache
-        maxItemSize: 1MB # optional max size of item to store via this policy
         ttl: 5s
       - network: "*"
-        method: "*"
-        finality: unknown
-        connector: memory-cache
-        ttl: 5s
-      - network: "*" # supports * as wildcard and | as OR operator
-        method: "eth_getLogs|trace_*" # supports * as wildcard and | as OR operator
+        method: "eth_getLogs|trace_*"
         finality: finalized
         connector: postgres-cache
         ttl: 0
-      - network: "evm:42161|evm:10" # supports * as wildcard and | as OR operator
-        method: "arbtrace_*" # supports * as wildcard and | as OR operator
-        finality: finalized
-        connector: postgres-cache
-        ttl: 86400s
 
-# Each project is a collection of networks and upstreams.
-# For example "backend", "indexer", "frontend", and you want to use only 1 project you can name it "main"
-# The main purpose of multiple projects is different failsafe policies (more aggressive and costly, or less costly and more error-prone)
 projects:
   - id: main
-
-    # Optionally you can define a self-imposed rate limite budget for each project
-    # This is useful if you want to limit the number of requests per second or daily allowance.
     rateLimitBudget: frontend-budget
-
-    # This array configures network-specific (a.k.a chain-specific) features.
-    # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
-    # Remember defining networks is OPTIONAL, so only provide these only if you want to override defaults.
     networks:
       - architecture: evm
         evm:
           chainId: 1
-        # Refer to "Failsafe" section for more details.
-        # On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries)
         failsafe:
-        - matchMethod: "*"    # Default policy for all methods
-          timeout:
-            duration: 30s
-          retry:
-            maxAttempts: 3
-            delay: 0ms
-          # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
-          # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
-          hedge:
-            delay: 500ms
-            maxCount: 1
-          # circuitBreaker is upstream-scope only — see upstreams.failsafe below.
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 3
+              delay: 0ms
+            # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
+            # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
+            hedge:
+              delay: 500ms
+              maxCount: 1
+            # circuitBreaker is upstream-scope only — see upstreams.failsafe below.
       - architecture: evm
         evm:
           chainId: 42161
         failsafe:
-        - matchMethod: "*"
-          timeout:
-            duration: 30s
-          retry:
-            maxAttempts: 3
-            delay: 0ms
-          hedge:
-            delay: 500ms
-            maxCount: 1
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 3
+              delay: 0ms
+            hedge:
+              delay: 500ms
+              maxCount: 1
 
     # Each upstream supports 1 or more networks (chains)
     upstreams:
-      - id: blastapi-chain-42161
+      - id: blastapi-arb
         type: evm
-        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
-        # Defines which budget to use when hadnling requests of this upstream.
+        endpoint: https://arbitrum-one.blastapi.io/YOUR_KEY
         rateLimitBudget: global-blast
-        # chainId is optional and will be detected from the endpoint (eth_chainId) but it is recommended to set it explicitly, for faster initialization.
         evm:
           chainId: 42161
-        # Which methods must never be sent to this upstream:
         ignoreMethods:
           - "alchemy_*"
-          - "eth_traceTransaction"
-        # Refer to "Failsafe" section for more details:
         failsafe:
-        - matchMethod: "*"    # Default policy for all methods
-          timeout:
-            duration: 15s
-          retry:
-            maxAttempts: 2
-            delay: 500ms
-            backoffMaxDelay: 3s
-            backoffFactor: 1.2
-            jitter: 0ms
-          # Per-upstream circuit breaker — opens on 80% failure rate over the
-          # last 200 reqs, probes every 5m, closes on 3 consecutive successes.
-          circuitBreaker:
-            failureThresholdCount:    160
-            failureThresholdCapacity: 200
-            halfOpenAfter:            5m
-            successThresholdCount:    3
-            successThresholdCapacity: 3
+          - matchMethod: "*"
+            timeout:
+              duration: 15s
+            retry:
+              maxAttempts: 2
+              delay: 500ms
+              backoffMaxDelay: 3s
+              backoffFactor: 1.2
+              jitter: 0ms
+            # Per-upstream circuit breaker — opens on 80% failure rate over the
+            # last 200 reqs, probes every 5m, closes on 3 consecutive successes.
+            circuitBreaker:
+              failureThresholdCount:    160
+              failureThresholdCapacity: 200
+              halfOpenAfter:            5m
+              successThresholdCount:    3
+              successThresholdCapacity: 3
+      - id: alchemy-multi-chain
+        endpoint: alchemy://\${ALCHEMY_API_KEY}
+        rateLimitBudget: global
+        jsonRpc:
+          supportsBatch: true
+          batchMaxSize: 10
+          batchMaxWait: 100ms
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 15s
+            retry:
+              maxAttempts: 2
+              delay: 500ms
       - id: blastapi-chain-1
         type: evm
         endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
@@ -270,15 +191,15 @@ projects:
         evm:
           chainId: 1
         failsafe:
-        - matchMethod: "*"
-          timeout:
-            duration: 15s
-          retry:
-            maxAttempts: 2
-            delay: 500ms
-            backoffMaxDelay: 3s
-            backoffFactor: 1.2
-            jitter: 0ms
+          - matchMethod: "*"
+            timeout:
+              duration: 15s
+            retry:
+              maxAttempts: 2
+              delay: 500ms
+              backoffMaxDelay: 3s
+              backoffFactor: 1.2
+              jitter: 0ms
       - id: quiknode-chain-42161
         type: evm
         endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
@@ -294,419 +215,671 @@ projects:
           supportsBatch: true
           batchMaxSize: 10
           batchMaxWait: 100ms
-        evm:
-          chainId: 42161
         failsafe:
-        - matchMethod: "*"
-          timeout:
-            duration: 15s
-          retry:
-            maxAttempts: 2
-            delay: 500ms
-            backoffMaxDelay: 3s
-            backoffFactor: 1.2
-            jitter: 0ms
+          - matchMethod: "*"
+            timeout:
+              duration: 15s
+            retry:
+              maxAttempts: 2
+              delay: 500ms
 
-        # "id" is a unique identifier to distinguish in logs and metrics.
-      - id: alchemy-multi-chain-example
-        # For certain known providers (such as Alchemy) you use a custom protocol name
-        # which allows a single upstream to import "all chains" supported by that provider.
-        # Note that these chains are hard-coded in the repo, so if they support a new chain eRPC must be updated.
-        endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
-        rateLimitBudget: global
-        failsafe:
-        - matchMethod: "*"
-          timeout:
-            duration: 15s
-          retry:
-            maxAttempts: 2
-            delay: 500ms
-            backoffMaxDelay: 3s
-            backoffFactor: 1.2
-            jitter: 0ms
-
-# Rate limiter allows you to create "shared" budgets for upstreams.
-# For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
 rateLimiters:
   budgets:
-    - id: default-budget
+    - id: global
       rules:
         - method: "*"
           maxCount: 10000
           period: 1s
-          waitTime: 100ms # Allow waiting up to 100ms for capacity to free up (Default is 0 meaning immediate error)
     - id: global-blast
       rules:
         - method: "*"
           maxCount: 1000
           period: 1s
-    - id: global-quicknode
-      rules:
-        - method: "*"
-          maxCount: 300
-          period: 1s
     - id: frontend-budget
       rules:
         - method: "*"
           maxCount: 500
-          period: 1s
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-/**
- * Converted config in TypeScript. Copy and create erpc.ts so the binary automatically imports it.
- */
-import { 
+          period: 1s`}
+	ts={`import {
   createConfig,
   DataFinalityStateFinalized,
-  DataFinalityStateUnfinalized
+  DataFinalityStateUnfinalized,
 } from "@erpc-cloud/config";
 
 export default createConfig({
-  // Log level helps in debugging or error detection:
-  // - debug: information down to actual request and responses, and decisions about rate-limiting etc.
-  // - info: usually prints happy paths and might print 1 log per request indicating success or failure.
-  // - warn: these problems do not cause end-user problems, but might indicate degradation or an issue such as cache database being down.
-  // - error: these are problems that have end-user impact, such as misconfigurations.
   logLevel: "warn",
 
-  // There are various use-cases of database in erpc, such as caching, dynamic configs, rate limit persistence, etc.
-  database: {
-    // `evmJsonRpcCache` defines the destination for caching JSON-RPC calls towards any EVM architecture upstream.
-    // This database is non-blocking on the critical path and is used as best-effort.
-    // Ensure that the storage requirements meet your usage, e.g., caching 70m blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
-    evmJsonRpcCache: {
-      // Refer to "Database" section for more details.
-      // Note that table, schema, and indexes will be created automatically if they don't exist.
-      connectors: [
-        {
-          id: "memory-cache",
-          driver: "memory",
-          memory: {
-            maxItems: 100000,
-          },
-        },
-        {
-          id: "postgres-cache",
-          driver: "postgresql",
-          postgresql: {
-            connectionUri: `postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name`,
-            table: "rpc_cache",
-          },
-        },
-      ],
-      policies: [
-        {
-          network: "*",
-          method: "*",
-          finality: DataFinalityStateFinalized,
-          connector: "memory-cache",
-          ttl: 0,
-        },
-        {
-          network: "*",
-          method: "*",
-          finality: DataFinalityStateUnfinalized,
-          connector: "memory-cache",
-          ttl: "5s",
-        },
-        {
-          network: "*",
-          method: "*",
-          finality: DataFinalityStateUnknown,
-          connector: "memory-cache",
-          ttl: "5s",
-        },
-        {
-          network: "*", // supports * as wildcard and | as OR operator
-          method: "eth_getLogs|trace_*", // supports * as wildcard and | as OR operator
-          finality: DataFinalityStateFinalized,
-          connector: "postgres-cache",
-          ttl: 0,
-        },
-        {
-          network: "evm:42161|evm:10", // supports * as wildcard and | as OR operator
-          method: "arbtrace_*", // supports * as wildcard and | as OR operator
-          finality: DataFinalityStateFinalized,
-          connector: "postgres-cache",
-          ttl: "1d",
-        },
-      ],
-    },
-  },
-
-  // The main server for eRPC to listen for requests.
   server: {
-    listenV4: true,
     httpHostV4: "0.0.0.0",
     httpPortV4: 4000,
-    // listenV6: false,             // IPv6 disabled by default (recommended)
-    // httpHostV6: "[::]",
-    // httpPortV6: 5000,
     maxTimeout: "30s",
     enableGzip: true,
     waitBeforeShutdown: "30s",
     waitAfterShutdown: "30s",
-    tls: {
-      enabled: false,
-      certFile: "/path/to/cert.pem",
-      keyFile: "/path/to/key.pem",
-      caFile: "/path/to/ca.pem", // Optional, for client cert verification
-      insecureSkipVerify: false, // Optional, defaults to false
+    tls: { enabled: false, certFile: "/path/to/cert.pem", keyFile: "/path/to/key.pem" },
+  },
+
+  metrics: { enabled: true, hostV4: "0.0.0.0", port: 4001 },
+
+  database: {
+    evmJsonRpcCache: {
+      connectors: [
+        { id: "memory-cache", driver: "memory", memory: { maxItems: 100000 } },
+        { id: "postgres-cache", driver: "postgresql",
+          postgresql: { connectionUri: "postgres://user:pass@db:5432/erpc", table: "rpc_cache" } },
+      ],
+      policies: [
+        { network: "*", method: "*", finality: DataFinalityStateFinalized, connector: "memory-cache", ttl: 0 },
+        { network: "*", method: "*", finality: DataFinalityStateUnfinalized, connector: "memory-cache", ttl: "5s" },
+        { network: "*", method: "eth_getLogs|trace_*", finality: DataFinalityStateFinalized, connector: "postgres-cache", ttl: 0 },
+      ],
     },
   },
 
-  // Optional Prometheus metrics server
-  metrics: {
-    enabled: true,
-    listenV4: true,
-    hostV4: "0.0.0.0",
-    listenV6: false,
-    hostV6: "[::]",
-    port: 4001,
-  },
-
-  // Each project is a collection of networks and upstreams.
-  // For example "backend", "indexer", "frontend", and you want to use only 1 project you can name it "main"
-  // The main purpose of multiple projects is different failsafe policies (more aggressive and costly, or less costly and more error-prone)
-  projects: [
-    {
-      id: "main",
-
-      // Optionally you can define a self-imposed rate limit budget for each project
-      // This is useful if you want to limit the number of requests per second or daily allowance.
-      rateLimitBudget: "frontend-budget",
-
-      // This array configures network-specific (a.k.a chain-specific) features.
-      // For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
-      // Remember defining networks is OPTIONAL, so only provide these only if you want to override defaults.
-      networks: [
-        {
-          architecture: "evm",
-          evm: {
-            chainId: 1,
-          },
-          // Refer to "Failsafe" section for more details.
-          // On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries on upstreams)
-          failsafe: [
-            {
-              matchMethod: "*",    // Default policy for all methods
-              timeout: {
-                duration: "30s",
-              },
-              retry: {
-                maxAttempts: 3,
-                delay: "0ms",
-              },
-              // Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
-              // a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
-              hedge: {
-                delay: "500ms",
-                maxCount: 1,
-              },
-              circuitBreaker: {
-                failureThresholdCount: 160, // 80% error rate
-                failureThresholdCapacity: 200,
-                halfOpenAfter: "5m",
-                successThresholdCount: 3,
-                successThresholdCapacity: 3,
-              },
-            }
-          ],
+  projects: [{
+    id: "main",
+    rateLimitBudget: "frontend-budget",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      failsafe: [{
+        matchMethod: "*",
+        timeout: { duration: "30s" },
+        retry: { maxAttempts: 3, delay: "0ms" },
+        hedge: { delay: "500ms", maxCount: 1 },
+        circuitBreaker: {
+          failureThresholdCount: 160, failureThresholdCapacity: 200,
+          halfOpenAfter: "5m", successThresholdCount: 3, successThresholdCapacity: 3,
         },
-        {
-          architecture: "evm",
-          evm: {
-            chainId: 42161,
-          },
-          failsafe: [
-            {
-              matchMethod: "*",
-              timeout: {
-                duration: "30s",
-              },
-              retry: {
-                maxAttempts: 3,
-                delay: "0ms",
-              },
-              hedge: {
-                delay: "500ms",
-                maxCount: 1,
-              },
-            }
-          ],
-        },
-      ],
-
-      // Each upstream supports 1 or more networks (chains)
-      upstreams: [
-        {
-          id: "blastapi-chain-42161",
-          type: "evm",
-          endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
-          // Defines which budget to use when handling requests of this upstream.
-          rateLimitBudget: "global-blast",
-          // chainId is optional and will be detected from the endpoint (eth_chainId) but it is recommended to set it explicitly, for faster initialization.
-          evm: {
-            chainId: 42161,
-          },
-          // Which methods must never be sent to this upstream:
-          ignoreMethods: ["alchemy_*", "eth_traceTransaction"],
-          // Refer to "Failsafe" section for more details:
-          failsafe: [
-            {
-              matchMethod: "*",    // Default policy for all methods
-              timeout: {
-                duration: "15s",
-              },
-              retry: {
-                maxAttempts: 2,
-                delay: "500ms",
-                backoffMaxDelay: "3s",
-                backoffFactor: 1.2,
-                jitter: "0ms",
-              },
-            }
-          ],
-        },
-        {
-          id: "blastapi-chain-1",
-          type: "evm",
-          endpoint: "https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
-          rateLimitBudget: "global-blast",
-          evm: {
-            chainId: 1,
-          },
-          failsafe: [
-            {
-              matchMethod: "*",
-              timeout: {
-                duration: "15s",
-              },
-              retry: {
-                maxAttempts: 2,
-                delay: "500ms",
-                backoffMaxDelay: "3s",
-                backoffFactor: 1.2,
-                jitter: "0ms",
-              },
-            }
-          ],
-        },
-        {
-          id: "quiknode-chain-42161",
-          type: "evm",
-          endpoint:
-            "https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/",
-          rateLimitBudget: "global-quicknode",
-          // You can enable auto-ignoring unsupported methods, instead of defining them explicitly.
-          // NOTE: some providers (e.g. dRPC) are not consistent with "unsupported method" responses,
-          // so this feature might mark methods as unsupported that are actually supported!
-          autoIgnoreUnsupportedMethods: true,
-          // To allow auto-batching requests towards the upstream, use these settings.
-          // Remember if "supportsBatch" is false, you still can send batch requests to eRPC
-          // but they will be sent to upstream as individual requests.
-          jsonRpc: {
-            supportsBatch: true,
-            batchMaxSize: 10,
-            batchMaxWait: "100ms",
-          },
-          evm: {
-            chainId: 42161,
-          },
-          failsafe: [
-            {
-              matchMethod: "*",
-              timeout: {
-                duration: "15s",
-              },
-              retry: {
-                maxAttempts: 2,
-                delay: "500ms",
-                backoffMaxDelay: "3s",
-                backoffFactor: 1.2,
-                jitter: "0ms",
-              },
-            }
-          ],
-        },
-        // "id" is a unique identifier to distinguish in logs and metrics.
-        {
-          id: "alchemy-multi-chain-example",
-          // For certain known providers (such as Alchemy) you use a custom protocol name
-          // which allows a single upstream to import "all chains" supported by that provider.
-          // Note that these chains are hard-coded in the repo, so if they support a new chain eRPC must be updated.
-          endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`,
-          rateLimitBudget: "global",
-          failsafe: [
-            {
-              matchMethod: "*",
-              timeout: {
-                duration: "15s",
-              },
-              retry: {
-                maxAttempts: 2,
-                delay: "500ms",
-                backoffMaxDelay: "3s",
-                backoffFactor: 1.2,
-                jitter: "0ms",
-              },
-            }
-          ],
-        },
-      ],
-    },
-  ],
-
-  // Rate limiter allows you to create "shared" budgets for upstreams.
-  // For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
-  rateLimiters: {
-    budgets: [
+      }],
+    }],
+    upstreams: [
       {
-        id: "default-budget",
-        rules: [
-          {
-            method: "*",
-            maxCount: 10000,
-            period: "1s",
-          },
-        ],
+        id: "blastapi-arb", type: "evm",
+        endpoint: "https://arbitrum-one.blastapi.io/YOUR_KEY",
+        rateLimitBudget: "global-blast",
+        evm: { chainId: 42161 },
+        ignoreMethods: ["alchemy_*"],
+        failsafe: [{ matchMethod: "*", timeout: { duration: "15s" },
+          retry: { maxAttempts: 2, delay: "500ms", backoffMaxDelay: "3s", backoffFactor: 1.2 } }],
       },
       {
-        id: "global-blast",
-        rules: [
-          {
-            method: "*",
-            maxCount: 1000,
-            period: "1s",
-          },
-        ],
-      },
-      {
-        id: "global-quicknode",
-        rules: [
-          {
-            method: "*",
-            maxCount: 300,
-            period: "1s",
-          },
-        ],
-      },
-      {
-        id: "frontend-budget",
-        rules: [
-          {
-            method: "*",
-            maxCount: 500,
-            period: "1s",
-          },
-        ],
+        id: "alchemy-multi-chain",
+        endpoint: \`alchemy://\${process.env.ALCHEMY_API_KEY}\`,
+        rateLimitBudget: "global",
+        jsonRpc: { supportsBatch: true, batchMaxSize: 10, batchMaxWait: "100ms" },
+        failsafe: [{ matchMethod: "*", timeout: { duration: "15s" },
+          retry: { maxAttempts: 2, delay: "500ms" } }],
       },
     ],
-  },
-});
+  }],
 
+  rateLimiters: {
+    budgets: [
+      { id: "global", rules: [{ method: "*", maxCount: 10000, period: "1s" }] },
+      { id: "global-blast", rules: [{ method: "*", maxCount: 1000, period: "1s" }] },
+      { id: "frontend-budget", rules: [{ method: "*", maxCount: 500, period: "1s" }] },
+    ],
+  },
+});`}
+/>
+
+## Related sections
+
+- [Database](/config/database/drivers) — cache connectors and policies in depth
+- [Projects](/config/projects) — multiple projects, providers, scoring, CORS
+- [Networks](/config/projects/networks) — per-chain failsafe, integrity checks, static responses
+- [Upstreams](/config/projects/upstreams) — RPC endpoints, vendor shorthands, batching, block availability
+- [Rate limiters](/config/rate-limiters) — shared budgets, per-method rules, `waitTime`
+- [Failsafe](/config/failsafe) — timeout, retry, hedge, circuit-breaker in depth
+
+<AISection title="Copy for your AI assistant — exhaustive eRPC config reference">
+
+This section covers every top-level field and every common sub-field. Use it as a reference when writing or reviewing an eRPC config.
+
+---
+
+### `logLevel`
+
+```yaml
+logLevel: warn   # trace | debug | info | warn | error
 ```
-</Tabs.Tab>
-</Tabs>
+
+| Value | Output |
+|---|---|
+| `trace` | Every internal decision, full request/response bodies. Never in production. |
+| `debug` | Per-request logs, rate-limit decisions, upstream selection. |
+| `info` | Happy-path summaries, one line per request (success/failure). Default on first boot. |
+| `warn` | Non-critical issues — cache DB unreachable, upstream degraded but not fatal. |
+| `error` | User-visible failures, misconfigurations. Recommended in production. |
+
+Can also be set via the `LOG_LEVEL` environment variable, which takes precedence at startup if both are defined. Set `LOG_WRITER=console` for human-readable terminal output instead of structured JSON.
+
+---
+
+### `server`
+
+```yaml
+server:
+  listenV4: true
+  httpHostV4: "0.0.0.0"
+  httpPortV4: 4000
+  listenV6: false
+  httpHostV6: "[::]"
+  httpPortV6: 5000
+  maxTimeout: 30s        # hard deadline for the full request lifecycle
+  readTimeout: 10s       # time to read the complete request from the client
+  writeTimeout: 20s      # time to write the full response back to the client
+  enableGzip: true
+  waitBeforeShutdown: 30s   # grace before stop accepting new connections
+  waitAfterShutdown: 30s    # grace after stop accepting, to drain in-flight
+  tls:
+    enabled: false
+    certFile: "/path/to/cert.pem"
+    keyFile: "/path/to/key.pem"
+    caFile: "/path/to/ca.pem"       # optional; enables mTLS client-cert verification
+    insecureSkipVerify: false
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `listenV4` | `true` | Bind an IPv4 listener. |
+| `httpHostV4` | `"0.0.0.0"` | IPv4 bind address. |
+| `httpPortV4` | `4000` | IPv4 port. |
+| `listenV6` | `false` | Bind an IPv6 listener. |
+| `httpHostV6` | `"[::]"` | IPv6 bind address. |
+| `httpPortV6` | `5000` | IPv6 port. |
+| `maxTimeout` | `30s` | Total deadline for one request (all retries + hedges included). |
+| `readTimeout` | — | HTTP read timeout (Go `net/http` semantics). |
+| `writeTimeout` | — | HTTP write timeout. |
+| `enableGzip` | `false` | Compress responses when the client sends `Accept-Encoding: gzip`. |
+| `waitBeforeShutdown` | `0` | Sleep before closing the listener — lets a load balancer drain traffic. |
+| `waitAfterShutdown` | `0` | Sleep after closing — lets in-flight requests complete. |
+| `tls.enabled` | `false` | Terminate TLS on eRPC instead of a sidecar. |
+| `tls.certFile` | — | Path to the server certificate PEM. |
+| `tls.keyFile` | — | Path to the server private key PEM. |
+| `tls.caFile` | — | CA certificate for mTLS client verification. Omit to skip client-cert check. |
+| `tls.insecureSkipVerify` | `false` | Skip verification of client certificates. Dangerous; only for local testing. |
+
+---
+
+### `metrics`
+
+```yaml
+metrics:
+  enabled: true
+  listenV4: true
+  hostV4: "0.0.0.0"
+  port: 4001
+  listenV6: false
+  hostV6: "[::]"
+```
+
+Exposes a Prometheus scrape endpoint at `http://<host>:<port>/metrics`. When `enabled: false` (the default), the port is never bound.
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Must be `true` to expose the `/metrics` endpoint. |
+| `hostV4` | `"0.0.0.0"` | IPv4 bind address. |
+| `port` | `4001` | Port for the Prometheus scrape endpoint. |
+| `listenV6` | `false` | Bind on IPv6 as well. |
+| `hostV6` | `"[::]"` | IPv6 bind address. |
+
+---
+
+### `database`
+
+Caching is **non-blocking on the critical path** — a cache miss or a write failure does not delay the request. All cache operations are best-effort.
+
+#### `database.evmJsonRpcCache`
+
+Disable the cache entirely:
+```yaml
+database:
+  evmJsonRpcCache: ~
+```
+
+Enable with one or more connectors and routing policies:
+```yaml
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: memory-cache
+        driver: memory
+        memory:
+          maxItems: 100000
+      - id: redis-cache
+        driver: redis
+        redis:
+          addr: redis://localhost:6379
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: "postgres://user:pass@host:5432/db"
+          table: rpc_cache
+      - id: dynamo-cache
+        driver: dynamodb
+        dynamodb:
+          region: us-east-1
+          table: erpc-cache
+          # endpoint: http://localhost:8000  # for local DynamoDB / ScyllaDB
+    policies:
+      - network: "*"
+        method: "*"
+        finality: realtime
+        connector: memory-cache
+        ttl: 2s
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        connector: redis-cache
+        ttl: 10s
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: dynamo-cache
+        ttl: 0           # 0 = never expire
+      - network: "evm:42161|evm:10"
+        method: "arbtrace_*"
+        finality: finalized
+        connector: postgres-cache
+        ttl: 86400s
+        maxItemSize: 1MB  # skip caching items larger than this
+```
+
+**Connector drivers:**
+
+| Driver | When to use |
+|---|---|
+| `memory` | Fast in-process LRU. Lost on restart. Good for realtime/unfinalized data. |
+| `redis` | Shared across replicas. Good for unfinalized / short-TTL data. |
+| `postgresql` | Relational; good for finalized data with complex query needs. |
+| `dynamodb` | DynamoDB-compatible (also ScyllaDB/Alternator). High-throughput finalized cache. |
+
+**Policy fields:**
+
+| Field | Notes |
+|---|---|
+| `network` | Matcher — `*`, `evm:1`, `evm:1|evm:42161` (pipe = OR). |
+| `method` | Matcher — `*`, `eth_call`, `eth_getLogs|trace_*`. |
+| `finality` | `realtime` / `unfinalized` / `finalized` / `unknown`. Match only requests whose data has this finality. |
+| `connector` | References a connector `id` defined in `connectors[]`. |
+| `ttl` | Duration string (`0` = no expiry, `5s`, `1h`, `86400s`). |
+| `maxItemSize` | Optional max payload size to store (e.g. `1MB`). Larger items skip this policy. |
+| `empty` | `allow` (default) — cache empty/null responses; `ignore` — don't cache them. |
+
+Policies are evaluated in order; the first matching policy wins per (network, method, finality) combination.
+
+---
+
+### `projects[]`
+
+Each project is independently routed by URL: `/<projectId>/<architecture>/<chainId>`.
+
+```yaml
+projects:
+  - id: main                       # required; unique
+    rateLimitBudget: frontend-budget
+    forwardHeaders: ["X-Request-ID", "traceparent"]
+    allowMethods: ["eth_*", "net_*"]
+    ignoreMethods: ["debug_*"]
+    networks: [...]                 # optional; only needed for overrides
+    upstreams: [...]                # required (or use providers[])
+    providers: [...]                # optional; vendor key-based auto-fan-out
+    auth:
+      strategies: [...]            # see Authentication docs
+    cors:
+      allowedOrigins: ["https://my-dapp.example.com"]
+```
+
+See [Projects](/config/projects) for the full field reference including scoring knobs (`routingStrategy`, `scoreGranularity`, `scoreSwitchHysteresis`, etc.).
+
+---
+
+### `projects[].networks[]`
+
+Override failsafe, integrity checks, and selection policies on a per-chain basis. Defining a network entry is **optional** — omit it to use global defaults.
+
+```yaml
+networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+    failsafe:
+      - matchMethod: "*"
+        timeout:
+          duration: 30s
+        retry:
+          maxAttempts: 3
+          delay: 500ms
+          backoffMaxDelay: 10s
+          backoffFactor: 0.3
+          jitter: 500ms
+        hedge:
+          delay: 1000ms
+          maxCount: 2
+        circuitBreaker:
+          failureThresholdCount: 160   # trips at 80% errors (160/200)
+          failureThresholdCapacity: 200
+          halfOpenAfter: 5m
+          successThresholdCount: 3
+          successThresholdCapacity: 3
+```
+
+**`failsafe[]` — per-policy fields:**
+
+| Field | Notes |
+|---|---|
+| `matchMethod` | Matcher for which RPC methods this policy applies to. `"*"` = all. |
+| `timeout.duration` | Hard deadline for the entire request lifecycle (including all retries on this network). |
+| `retry.maxAttempts` | Maximum number of upstream attempts (including the first). |
+| `retry.delay` | Base delay between retries. |
+| `retry.backoffMaxDelay` | Ceiling for exponential backoff. |
+| `retry.backoffFactor` | Multiplier per retry. `1.0` = constant delay; `1.5` = 50% growth per step. |
+| `retry.jitter` | Random jitter added to each delay. |
+| `hedge.delay` | After this delay without a response, fire a parallel request to a second upstream. |
+| `hedge.maxCount` | Maximum simultaneous hedged requests. |
+| `circuitBreaker.failureThresholdCount` | Number of failures within `failureThresholdCapacity` samples to trip. |
+| `circuitBreaker.failureThresholdCapacity` | Rolling sample window size. |
+| `circuitBreaker.halfOpenAfter` | How long to wait in open state before attempting a half-open probe. |
+| `circuitBreaker.successThresholdCount` | Successes needed in half-open to close the breaker. |
+| `circuitBreaker.successThresholdCapacity` | Sample window for the half-open probe. |
+
+**Hedge is strongly recommended at the network level.** It fires a second upstream request after `hedge.delay` if the first hasn't responded, returning whichever comes back first. This dramatically reduces tail latency without extra retries.
+
+---
+
+### `projects[].upstreams[]`
+
+```yaml
+upstreams:
+  # Direct HTTP endpoint
+  - id: my-node
+    type: evm
+    endpoint: https://your-node.example.com/
+    rateLimitBudget: global
+    evm:
+      chainId: 1
+    ignoreMethods:
+      - "alchemy_*"
+      - "debug_*"
+    allowMethods:
+      - "eth_*"
+      - "net_*"
+    autoIgnoreUnsupportedMethods: false
+    jsonRpc:
+      supportsBatch: true
+      batchMaxSize: 10
+      batchMaxWait: 100ms
+    failsafe:
+      - matchMethod: "*"
+        timeout:
+          duration: 15s
+        retry:
+          maxAttempts: 2
+          delay: 500ms
+          backoffMaxDelay: 3s
+          backoffFactor: 1.2
+          jitter: 0ms
+
+  # Vendor shorthand — multi-chain import
+  - id: alchemy-all
+    endpoint: alchemy://\${ALCHEMY_API_KEY}
+    rateLimitBudget: global
+
+  # Other supported vendor shorthands:
+  # endpoint: drpc://\${DRPC_API_KEY}
+  # endpoint: blastapi://\${BLASTAPI_API_KEY}
+  # endpoint: infura://\${INFURA_API_KEY}
+  # endpoint: envio://rpc.hypersync.xyz
+  # endpoint: tenderly://\${TENDERLY_API_KEY}
+  # endpoint: chainstack://\${CHAINSTACK_API_KEY}
+  # endpoint: onfinality://\${ONFINALITY_API_KEY}
+  # endpoint: thirdweb://\${THIRDWEB_API_KEY}
+  # endpoint: ankr://\${ANKR_API_KEY}
+  # endpoint: quicknode://\${QUICKNODE_API_KEY}
+```
+
+**Key upstream fields:**
+
+| Field | Notes |
+|---|---|
+| `id` | Required; unique label used in logs and metrics. |
+| `type` | Architecture type. `evm` (default for EVM chains). |
+| `endpoint` | HTTP(S) URL or vendor shorthand (`alchemy://KEY`, `drpc://KEY`, etc.). |
+| `rateLimitBudget` | ID of a budget in `rateLimiters.budgets[]`. |
+| `evm.chainId` | Optional explicit chain ID. Recommended — skips `eth_chainId` auto-detection at startup. |
+| `ignoreMethods` | Methods never sent to this upstream (matcher syntax). |
+| `allowMethods` | Method allowlist for this upstream. Implicitly adds `ignoreMethods: ["*"]`. |
+| `autoIgnoreUnsupportedMethods` | When `true`, eRPC tracks and skips methods this upstream has rejected as unsupported. Caution: some vendors (e.g. dRPC) return inconsistent unsupported-method signals — this can cause false positives. |
+| `jsonRpc.supportsBatch` | When `true`, eRPC may pack multiple pending requests into one JSON-RPC batch. |
+| `jsonRpc.batchMaxSize` | Maximum requests per batch (default `10`). |
+| `jsonRpc.batchMaxWait` | How long to wait for the batch to fill before sending (default `100ms`). |
+
+**Vendor shorthand chains are hard-coded in the eRPC binary.** When a vendor adds a new chain, eRPC must be updated. For new/uncommon chains use direct HTTP endpoints instead.
+
+---
+
+### `rateLimiters`
+
+```yaml
+rateLimiters:
+  budgets:
+    - id: global
+      rules:
+        - method: "*"
+          maxCount: 10000
+          period: 1s
+          waitTime: 100ms    # allow waiting up to 100ms for capacity; 0 = fail immediately
+    - id: global-blast
+      rules:
+        - method: "*"
+          maxCount: 1000
+          period: 1s
+    - id: per-method-example
+      rules:
+        - method: "eth_getLogs"
+          maxCount: 100
+          period: 1s
+        - method: "*"
+          maxCount: 5000
+          period: 1s
+```
+
+Budgets are **shared** — if upstream A and B both reference `global`, their combined traffic counts against the limit.
+
+| Field | Notes |
+|---|---|
+| `id` | Unique identifier referenced by upstreams and projects. |
+| `rules[].method` | Method matcher (`*`, `eth_call`, `eth_getLogs|trace_*`). Rules are evaluated in order; first match wins. |
+| `rules[].maxCount` | Maximum requests allowed in `period`. |
+| `rules[].period` | Window length (e.g. `1s`, `1m`). |
+| `rules[].waitTime` | When capacity is exhausted, wait this long before returning a rate-limit error. `0` (default) = fail immediately. |
+
+---
+
+### Config file location and format
+
+By default `erpc` looks for `./erpc.ts`, `./erpc.yaml`, or `./erpc.yml` in the current directory. Override with:
+
+```bash
+erpc start --config /path/to/erpc.yaml
+erpc start -c /path/to/erpc.ts
+erpc validate -c /path/to/erpc.yaml   # validate without starting
+```
+
+YAML supports `\${VAR}` env-var interpolation. TypeScript uses `process.env.VAR` directly.
+
+---
+
+### Complete erpc.dist.yaml — annotated
+
+This mirrors the canonical `erpc.dist.yaml` in the repo root, with every section annotated:
+
+```yaml
+logLevel: warn
+
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: memory-cache
+        driver: memory
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: postgres://erpc:erpc@localhost:5432/erpc
+      - id: redis-cache
+        driver: redis
+        redis:
+          addr: redis://localhost:6379
+      - id: scylladb-cache
+        driver: dynamodb
+        dynamodb:
+          region: DC1
+          endpoint: http://localhost:8067   # ScyllaDB Alternator endpoint
+    policies:
+      - network: "*"
+        method: "*"
+        finality: realtime
+        empty: allow
+        connector: memory-cache
+        ttl: 2s
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        empty: allow
+        connector: redis-cache
+        ttl: 10s
+      - network: "*"
+        method: "*"
+        finality: finalized
+        empty: allow
+        connector: scylladb-cache
+        ttl: 0
+
+server:
+  httpHostV4: 0.0.0.0
+  httpPortV4: 4000
+  maxTimeout: 50s
+
+metrics:
+  enabled: true
+  hostV4: 0.0.0.0
+  port: 4001
+
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 3
+              delay: 500ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 500ms
+            hedge:
+              delay: 3000ms
+              maxCount: 2
+      - architecture: evm
+        evm:
+          chainId: 42161
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 5
+              delay: 500ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 200ms
+            hedge:
+              delay: 1000ms
+              maxCount: 2
+    upstreams:
+      - id: alchemy-multi-chain-example-1
+        endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
+        rateLimitBudget: global
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 15s
+            retry:
+              maxAttempts: 2
+              delay: 1000ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 500ms
+      - id: tenderly-example-1
+        endpoint: tenderly://YOUR_TENDERLY_API_KEY
+        rateLimitBudget: global-tenderly
+        evm:
+          chainId: 1
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 15s
+      - id: blastapi-chain-42161
+        type: evm
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        rateLimitBudget: global-blast
+        evm:
+          chainId: 42161
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 15s
+            retry:
+              maxAttempts: 2
+              delay: 1000ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 500ms
+
+rateLimiters:
+  budgets:
+    - id: global
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
+    - id: global-tenderly
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
+    - id: global-blast
+      rules:
+        - method: '*'
+          maxCount: 1000
+          period: 1s
+    - id: global-quicknode
+      rules:
+        - method: '*'
+          maxCount: 300
+          period: 1s
+```
+
+---
+
+### Common pitfalls
+
+- **Cache `ttl: 0` on `realtime` / `unfinalized` data** — data never expires; callers get stale pending-tx states. Use a short TTL for non-finalized policies.
+- **No `hedge` on the network level** — without it, a slow upstream causes the full `timeout.duration` to elapse before a second upstream is tried. Add `hedge.delay` equal to your P90 upstream latency.
+- **`batchMaxWait` too large** — adds artificial latency at low traffic; tune to `50-200ms`.
+- **`autoIgnoreUnsupportedMethods: true` on inconsistent vendors** — some vendors return generic errors for any unsupported call; eRPC might mark valid methods as unsupported and permanently skip them.
+- **`rateLimitBudget` referenced but not defined** — startup succeeds but rate limiting is silently skipped. Always define the budget in `rateLimiters.budgets[]`.
+- **`waitTime: 0` on rate-limit rules** — any request that arrives when the budget is exhausted gets an immediate error. Set `waitTime: 50ms` or higher to allow brief bursts to absorb the wait.
+- **`maxTimeout` shorter than `retry` total delay** — if `maxTimeout: 10s` but retries add up to 15s, the network-level timeout fires first and cuts retries short. Set `maxTimeout` to at least the sum of all upstream retry delays plus hedge delay.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>
