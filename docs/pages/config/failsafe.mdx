@@ -224,6 +224,10 @@ hedge:
 
 The hedge fires at whichever is largest: the p95 observed latency, or `minDelay`. It never fires later than `maxDelay`. During cold start (no latency samples yet) the hedge falls back to `maxDelay` as the fixed delay.
 
+<Callout type="info">
+	Hedge attempts are **excluded** from per-upstream scoring and from the circuit breaker. They are speculative fan-out, not signal — only primary and retry attempts count toward upstream health metrics.
+</Callout>
+
 ## `circuitBreaker` policy
 
 Temporarily removes an upstream from rotation after sustained failure. Three states: **closed** (normal), **open** (rejects immediately), **half-open** (test with limited traffic). Only valid at the **upstream** level — networks fail over across upstreams, not against themselves.
@@ -378,6 +382,8 @@ Combine `quantile` + `minDelay` to make the hedge delay adapt to upstream perfor
 
 Only valid at the **upstream** level. Networks don't trip — they rotate across upstreams instead.
 
+**Hedge attempts are never counted** toward the circuit breaker's failure or success windows — they are speculative fan-out and would otherwise distort the health signal.
+
 ### `ConsensusPolicyConfig` summary
 
 See the dedicated [consensus page](/config/failsafe/consensus) for the full reference. High-level fields:
@@ -386,6 +392,8 @@ See the dedicated [consensus page](/config/failsafe/consensus) for the full refe
 |---|---|
 | `maxParticipants` | Number of upstreams to query in parallel. |
 | `agreementThreshold` | Minimum upstreams that must agree. Default = `maxParticipants/2 + 1`. |
+| `maxWaitOnResult` | Tail-latency cap: once any valid result is in, wait at most this long for remaining participants. Accepts scalar or [AdaptiveDuration](/config/failsafe/consensus). |
+| `maxWaitOnEmpty` | Tail-latency cap: if only empty responses so far, wait at most this long before deciding. Accepts scalar or [AdaptiveDuration](/config/failsafe/consensus). |
 | `disputeBehavior` | What to do on disagreement: `returnError`, `acceptMostCommonValidResult`, `preferBlockHeadLeader`, `onlyBlockHeadLeader`. |
 | `lowParticipantsBehavior` | What to do when fewer than `agreementThreshold` upstreams reply. |
 | `punishMisbehavior` | `{ disputeThreshold, disputeWindow, sitOutPenalty }` — temporal penalty for disputing upstreams. |
@@ -535,6 +543,56 @@ projects:
 - **Single-object legacy `failsafe: { ... }` form** — still accepted, but the array form with `matchMethod: "*"` is canonical. The single-object form is implicitly `matchMethod: "*"`.
 - **`retry.delay: 0ms` doesn't disable retry** — it means "no wait between attempts". Use `maxAttempts: 1` to disable retry entirely.
 - **Write methods aren't retried** even when retry is configured. Set `network.evm.idempotentTransactionBroadcast: true` if you want `eth_sendRawTransaction` to be safe under retry/hedge.
+
+## Per-attempt observability
+
+Every request carries a full execution trace exposed via trace spans, Prometheus metrics, and HTTP response headers (configurable via `server.executionHeaders`).
+
+### Trace span attributes
+
+The `Network.Forward` span carries:
+
+- `execution.attempts` / `execution.retries` / `execution.hedges` (totals across all scopes)
+- `execution.network_attempts` / `execution.network_retries` / `execution.network_hedges`
+- `upstreams.tried` — ordered list of upstream IDs touched
+- `upstreams.outcomes` — per-attempt outcome: `success` / `empty` / `transport_error` / `server_error` / `client_error` / `rate_limited` / `missing_data` / `exec_revert` / `block_unavailable` / `breaker_open` / `cancelled` / `timeout` / `skipped`
+- `upstreams.reasons` — why each upstream was selected: `primary` / `retry` / `hedge` / `consensus_slot` / `sweep`
+- `upstreams.durations_ms`
+
+Each individual attempt also produces `Upstream.tryForward.SendRequest` and `Upstream.forwardAttempt` child spans with `upstream.id`, `request.method`, attempt counters, and the per-attempt outcome classification.
+
+### HTTP response headers
+
+The same trace is mirrored into HTTP response headers for client-side debugging. Headers are emitted on every response path (success, JSON-RPC error, validation reject, auth reject, rate-limit). Default mode is `all`.
+
+| Header | Mode | Description |
+|---|---|---|
+| `X-ERPC-Cache` | summary, all | `HIT` / `MISS` |
+| `X-ERPC-Upstream` | summary, all | Winning upstream ID (single-winner case) |
+| `X-ERPC-Duration` | summary, all | Wall-clock ms |
+| `X-ERPC-Attempts` | summary, all | Total physical operations across all scopes (Upstream + Cache) |
+| `X-ERPC-Upstream-Attempts` / `-Retries` / `-Hedges` | summary, all | Upstream-scope counters |
+| `X-ERPC-Network-Attempts` / `-Retries` / `-Hedges` | summary, all | Network-scope rotation and retry counters |
+| `X-ERPC-Cache-Attempts` / `-Retries` / `-Hedges` | summary, all (when non-zero) | Cache-scope counters |
+| `X-ERPC-Consensus-Slots` / `-Disputes` / `-Low-Participants` | all (when non-zero) | Consensus participation counters |
+| `X-ERPC-Upstreams` | all | Per-attempt participation log (see format below) |
+
+**`X-ERPC-Upstreams` format**: each segment is `<id>=<reason>:<outcome>:<duration>ms[:won]`, joined by `;`:
+
+```
+X-ERPC-Upstreams: alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms;drpc=consensus_slot:exec_revert:20ms
+```
+
+- `:won` is present when this attempt contributed to the final response. For single-winner requests exactly one segment carries `:won`; for consensus every participant in the winning agreement group does.
+
+Toggle via `server.executionHeaders`:
+
+```yaml
+server:
+  executionHeaders: all        # default — full per-attempt trace
+  # executionHeaders: summary  # counters only (no X-ERPC-Upstreams slice)
+  # executionHeaders: off      # no X-ERPC-* headers at all
+```
 
 </AISection>
 

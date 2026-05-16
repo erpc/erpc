@@ -175,7 +175,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(10 * time.Second),
+									Duration: common.NewStaticDuration(10 * time.Second),
 								},
 							}},
 						},
@@ -191,7 +191,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							// Very short upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(50 * time.Millisecond),
+									Duration: common.NewStaticDuration(50 * time.Millisecond),
 								},
 							}},
 						},
@@ -285,7 +285,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{{
 								// Very short network timeout
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(50 * time.Millisecond),
+									Duration: common.NewStaticDuration(50 * time.Millisecond),
 								},
 							}},
 						},
@@ -301,7 +301,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							// Higher upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(5 * time.Second),
+									Duration: common.NewStaticDuration(5 * time.Second),
 								},
 							}},
 						},
@@ -396,7 +396,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			NetworkDefaults: &common.NetworkDefaults{
 				Failsafe: []*common.FailsafeConfig{{
 					Timeout: &common.TimeoutPolicyConfig{
-						Duration: common.Duration(7 * time.Second),
+						Duration: common.NewStaticDuration(7 * time.Second),
 					},
 				}},
 			},
@@ -465,7 +465,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 				nw.Evm != nil && nw.Evm.ChainId == 9999 {
 				found = true
 				// Confirm the default failsafe timeout was set as "7s"
-				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Timeout == nil || nw.Failsafe[0].Timeout.Duration.String() != "7s" {
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Timeout == nil || nw.Failsafe[0].Timeout.Duration.Resolve(nil) != 7*time.Second {
 					t.Errorf("expected lazy loaded network to have Failsafe[0].Timeout.Duration = 7s, got %+v", nw.Failsafe)
 				}
 				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Retry != nil {

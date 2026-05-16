@@ -151,7 +151,6 @@ func emitAllHistograms(methods, networks int) {
 			MetricNetworkHedgeDelaySeconds.WithLabelValues("standard", network, method, "finalized").Observe(0.05)
 			MetricConsensusResponsesCollected.WithLabelValues("standard", network, method, "vA", "false", "finalized").Observe(3)
 			MetricConsensusAgreementCount.WithLabelValues("standard", network, method, "finalized").Observe(2)
-			MetricX402FacilitatorRequestDuration.WithLabelValues("standard", network, "facA", "verify", "ok").Observe(0.1)
 			MetricConsensusDuration.WithLabelValues("standard", network, method, "ok", "finalized").Observe(0.1)
 			MetricCacheSetSuccessDuration.WithLabelValues("standard", network, method, "conn", "pol", "60").Observe(0.01)
 			MetricCacheSetErrorDuration.WithLabelValues("standard", network, method, "conn", "pol", "60", "err").Observe(0.01)
@@ -182,7 +181,6 @@ func TestHistogramLabelFilter_AllHistogramsObeyFilter(t *testing.T) {
 	dropped := run([]string{"category"}) // "category" (= method) is present on most histograms
 
 	// Every histogram that has the "category" label should shrink.
-	// (x402_facilitator_request_duration_seconds has no "category" label — skip it.)
 	withCategory := []string{
 		"erpc_upstream_request_duration_seconds_bucket",
 		"erpc_network_request_duration_seconds_bucket",
@@ -206,13 +204,5 @@ func TestHistogramLabelFilter_AllHistogramsObeyFilter(t *testing.T) {
 			t.Errorf("%s: dropping 'category' did not reduce cardinality (baseline=%d drop=%d)",
 				m, baseline[m], dropped[m])
 		}
-	}
-
-	// x402 has no "category" label — it must be unaffected.
-	const x402 = "erpc_x402_facilitator_request_duration_seconds_bucket"
-	t.Logf("  %-60s  | %8d | %13d  (no 'category' label)", x402, baseline[x402], dropped[x402])
-	if dropped[x402] != baseline[x402] {
-		t.Errorf("%s: should be unaffected by dropping 'category'; baseline=%d drop=%d",
-			x402, baseline[x402], dropped[x402])
 	}
 }

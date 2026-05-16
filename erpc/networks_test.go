@@ -289,8 +289,9 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Physical calls = 2 (rpc1 + rpc2 each returned empty once).
+		if resp.Attempts() != 2 {
+			t.Errorf("expected attempts=2 (rpc1 empty + rpc2 empty in one round), got %d", resp.Attempts())
 		}
 	})
 
@@ -416,8 +417,9 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all 3 upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Physical calls = 3 (rpc1 + rpc2 + rpc3 each returned empty once).
+		if resp.Attempts() != 3 {
+			t.Errorf("expected attempts=3 (rpc1+rpc2+rpc3 empty in one round), got %d", resp.Attempts())
 		}
 	})
 
@@ -801,8 +803,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries or delays.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Attempts is the physical-call total: 2 upstreams hit once each = 2.
+		if resp.Attempts() != 2 {
+			t.Errorf("expected attempts=2, got %d", resp.Attempts())
+		}
+		if resp.Retries() != 0 {
+			t.Errorf("expected no retries, got %d", resp.Retries())
 		}
 	})
 
@@ -1012,8 +1018,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// With broad loop: all upstreams tried in one round, block is available,
 		// so HandleIf accepts the empty result without triggering retries or delays.
-		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1, got %d", resp.Attempts())
+		// Attempts is the physical-call total: 2 upstreams hit once each = 2.
+		if resp.Attempts() != 2 {
+			t.Errorf("expected attempts=2, got %d", resp.Attempts())
+		}
+		if resp.Retries() != 0 {
+			t.Errorf("expected no retries, got %d", resp.Retries())
 		}
 	})
 
@@ -2580,7 +2590,7 @@ func TestNetwork_Forward(t *testing.T) {
 		// Configure network with hedge policy
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.Duration(hedgeDelay),
+				Delay:    common.NewStaticDuration(hedgeDelay),
 				MaxCount: 1,
 			},
 		}
@@ -5459,7 +5469,7 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 				Failsafe: []*common.FailsafeConfig{{
 					Timeout: &common.TimeoutPolicyConfig{
-						Duration: common.Duration(30 * time.Millisecond),
+						Duration: common.NewStaticDuration(30 * time.Millisecond),
 					}},
 				},
 			},
@@ -5521,7 +5531,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
-				Duration: common.Duration(1 * time.Second),
+				Duration: common.NewStaticDuration(1 * time.Second),
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -5654,7 +5664,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.Duration(200 * time.Millisecond),
+				Delay:    common.NewStaticDuration(200 * time.Millisecond),
 				MaxCount: 1,
 			},
 		}
@@ -5808,7 +5818,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.Duration(100 * time.Millisecond),
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
 				MaxCount: 5,
 			},
 		}
@@ -5960,7 +5970,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.Duration(100 * time.Millisecond),
+				Delay:    common.NewStaticDuration(100 * time.Millisecond),
 				MaxCount: 5,
 			},
 		}
@@ -8705,7 +8715,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				Retry: nil,
 				Hedge: nil,
 				Timeout: &common.TimeoutPolicyConfig{
-					Duration: common.Duration(50 * time.Millisecond),
+					Duration: common.NewStaticDuration(50 * time.Millisecond),
 				}},
 			},
 		}, nil)

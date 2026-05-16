@@ -143,6 +143,16 @@ Then open the Jaeger UI at http://localhost:16686.
 | `resourceAttributes` | `map[string]string` | none | Extra OTel resource attributes attached to every span. Values support `${VAR}` env-var expansion; empty values are dropped. |
 | `forceTraceMatchers[]` | `ForceTraceMatcher[]` | none | Force-trace rules that bypass `sampleRate`. See "ForceTraceMatcher" below. |
 
+**Key spans you'll see:**
+
+- HTTP server request handling
+- Network-level (chain) forwarding — the `Network.Forward` span carries the full per-request execution trace (`execution.attempts`, `upstreams.tried`, `upstreams.outcomes`, `upstreams.reasons`, `upstreams.durations_ms`). See [failsafe → Per-attempt observability](/config/failsafe#per-attempt-observability).
+- Upstream-level request forwarding
+- Cache operations (get/set)
+- Failsafe executor operations (hedges, retries, timeouts, breaker probes)
+- HTTP client requests to upstreams
+- Rate limiters
+
 ### TLS sub-fields (when `protocol: grpc` with TLS)
 
 The `tls` block uses the shared `TLSConfig` struct. See [TLS configuration](/config/server#tls-configuration) for the full field reference (`enabled`, `certFile`, `keyFile`, `caFile`, `insecureSkipVerify`).

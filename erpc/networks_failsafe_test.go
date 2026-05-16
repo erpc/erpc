@@ -255,8 +255,9 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		// With the try-all-upstreams-before-returning behavior, rpc2 is found
 		// within the same execution round (no retry delay needed). This is more
 		// efficient than the old behavior which required a full retry round.
+		// Physical calls = 2 (rpc1 returned empty/null, rpc2 returned the tx).
 		assert.Equal(t, 0, resp.Retries())
-		assert.Equal(t, 1, resp.Attempts())
+		assert.Equal(t, 2, resp.Attempts())
 	})
 
 	t.Run("RetryEmptyTrue_IgnoreIncludesReceipt_NoRetry", func(t *testing.T) {
@@ -687,9 +688,13 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		assert.Nil(t, jrr.Error)
 		assert.True(t, jrr.IsResultEmptyish())
 
-		// Verify no retries
+		// Verify no retries. Network still rotates to rpc2 within the same
+		// execution round (eth_getBlockByNumber is not in EmptyResultAccept,
+		// so emptyish from rpc1 doesn't short-circuit the loop), then keeps
+		// rpc1's null as bestResp. Physical calls = 2 (rpc1 emptied, rpc2
+		// also attempted before settling).
 		assert.Equal(t, 0, resp.Retries())
-		assert.Equal(t, 1, resp.Attempts())
+		assert.Equal(t, 2, resp.Attempts())
 	})
 }
 

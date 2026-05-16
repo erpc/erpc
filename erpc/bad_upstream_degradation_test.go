@@ -195,13 +195,15 @@ func TestUpstreamDegradationScenarios(t *testing.T) {
 			ExpectedFinalScoreOrder: []string{"fast_upstream", "slow_upstream", "worst_upstream"},
 			NetworkFailsafe: &common.FailsafeConfig{
 				Timeout: &common.TimeoutPolicyConfig{
-					Duration: common.Duration(30 * time.Second),
+					Duration: common.NewStaticDuration(30 * time.Second),
 				},
 				Hedge: &common.HedgePolicyConfig{
 					MaxCount: 2,
-					Quantile: 0.95,
-					MinDelay: common.Duration(100 * time.Millisecond),
-					MaxDelay: common.Duration(5 * time.Second),
+					Delay: &common.AdaptiveDuration{
+						Quantile: 0.95,
+						Min:      common.Duration(100 * time.Millisecond),
+						Max:      common.Duration(5 * time.Second),
+					},
 				},
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 3,
@@ -330,7 +332,7 @@ type TestResult struct {
 func getDefaultUpstreamFailsafe(timeout time.Duration) *common.FailsafeConfig {
 	return &common.FailsafeConfig{
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: common.Duration(timeout),
+			Duration: common.NewStaticDuration(timeout),
 		},
 	}
 }
@@ -434,7 +436,7 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 	// Safely format timeout duration
 	var nfTimeout time.Duration
 	if networkFailsafe != nil && networkFailsafe.Timeout != nil {
-		nfTimeout = time.Duration(networkFailsafe.Timeout.Duration)
+		nfTimeout = networkFailsafe.Timeout.Duration.Resolve(nil)
 	}
 	t.Logf("[setup] Network failsafe: timeout=%s, hedge=%v, retry=%v; scoringWindow=%s",
 		nfTimeout, networkFailsafe.Hedge, networkFailsafe.Retry, scoreWindow)

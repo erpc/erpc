@@ -210,6 +210,8 @@ Performance note: consensus increases costs and latency since it waits for multi
 | `misbehaviorsDestination` | MisbehaviorsDestinationConfig | — | Optional. Export full dispute events to a file or S3 prefix. |
 | `preferHighestValueFor` | map[string]string[] | — | Per-method field paths; picks the response with the highest numeric value at those paths. Used for nonces and gas prices. |
 | `fireAndForget` | bool | `false` | When `true`, return immediately upon reaching agreement without cancelling remaining in-flight requests. Ideal for broadcasts like `eth_sendRawTransaction`. |
+| `maxWaitOnResult` | AdaptiveDuration | `{ quantile: 0.5, min: 5ms, max: 1s }` | After the first **non-empty** response arrives, cancel remaining in-flight participants at most this long after. Bounds tail latency when one slow upstream drags the whole round. See "Tail-latency caps" below. |
+| `maxWaitOnEmpty` | AdaptiveDuration | `{ quantile: 0.9, min: 50ms, max: 2s }` | After the first response of **any kind** (empty, error, or non-empty) arrives, give remaining participants at most this long. Fires before `maxWaitOnResult` when only empties/errors have landed so far. |
 
 ### `disputeBehavior` values
 
@@ -248,6 +250,54 @@ Prioritizes meaningful data over empty responses, and empty over errors:
 - If a smaller non-empty meets threshold but a larger non-empty exists:
   - `acceptMostCommonValidResult` → choose the largest.
   - `returnError` → dispute (don't accept the smaller).
+
+### Tail-latency caps (`maxWaitOnResult` / `maxWaitOnEmpty`)
+
+When one participant is consistently slow — e.g. a 10 s archive query while siblings return in 50 ms — that single laggard drags the whole request's wall-clock. The wait caps bound this **after the first response arrives**:
+
+| Field | Triggers when |
+|---|---|
+| `maxWaitOnResult` | At least one **non-empty** response is in the bag. |
+| `maxWaitOnEmpty` | The first response of any kind — empty, error, or non-empty — is in the bag. |
+
+When the cap fires, the analyzer resolves with what it has using the configured `disputeBehavior` / `lowParticipantsBehavior`. In-flight participants are cancelled (or left running under `fireAndForget`). The earlier of the two caps wins.
+
+**Defaults** (applied whenever `consensus` is configured):
+
+| Cap | Default value |
+|---|---|
+| `maxWaitOnResult` | `{ quantile: 0.5, min: 5ms, max: 1s }` — once any real answer is in, give the rest at most ~p50 of observed latency. |
+| `maxWaitOnEmpty` | `{ quantile: 0.9, min: 50ms, max: 2s }` — wait longer when only empties/errors have arrived, since a real answer might still land. |
+
+The quantiles read from the same per-method DDSketch the timeout policy uses. Adaptive caps self-tune across methods — `eth_chainId` (typical p50 ~5ms) gets a tight cap; `eth_getLogs` over a wide range (typical p50 ~200ms) gets a proportional one.
+
+**Static overrides** when you'd rather not adapt:
+
+```yaml
+consensus:
+  maxParticipants:    5
+  agreementThreshold: 3
+  maxWaitOnResult:    200ms     # static: scalar shorthand
+  maxWaitOnEmpty:     2s        # static: scalar shorthand
+```
+
+**Custom adaptive bounds:**
+
+```yaml
+consensus:
+  maxParticipants:    5
+  agreementThreshold: 3
+  maxWaitOnResult:
+    quantile: 0.5
+    min:      10ms
+    max:      500ms
+  maxWaitOnEmpty:
+    quantile: 0.9
+    min:      100ms
+    max:      3s
+```
+
+The `erpc_consensus_wait_capped_total{trigger}` metric counts firings by trigger (`result` or `empty`); a high rate signals an upstream that should be tightened or dropped from the pool.
 
 ### `ignoreFields` — matcher syntax
 

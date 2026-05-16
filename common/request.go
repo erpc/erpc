@@ -138,6 +138,12 @@ type RequestDirectives struct {
 	// Instruct the proxy to bypass method exclusion checks.
 	ByPassMethodExclusion bool `json:"-"`
 
+	// IsInternal flags a request as constructed by an internal subsystem
+	// (state poller, chainId probe, vendor detection). Internal requests
+	// bypass retry, hedge, and breaker policies; only the per-attempt
+	// timeout still applies. Never set from HTTP headers.
+	IsInternal bool `json:"-"`
+
 	// Instruct the normalization layer to avoid mutating JSON-RPC params for block tag interpolation.
 	// When true, the system will still compute and cache block references (for finality/metrics),
 	// but will NOT replace tags like "latest"/"finalized" with hex numbers in outbound requests.
@@ -334,6 +340,33 @@ type NormalizedRequest struct {
 
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
+
+	// Per-request execution counters; lazy-init via execStateHolder.
+	execStateHolder execStateHolder
+}
+
+// ExecState returns the per-request execution counters. Lazy-init on
+// first access — callers may invoke this concurrently.
+func (r *NormalizedRequest) ExecState() *ExecState {
+	if r == nil {
+		return nil
+	}
+	return r.execStateHolder.get()
+}
+
+// IsInternal returns true when the request was constructed by an
+// internal subsystem (state poller, chainId probe, vendor detection).
+// Internal requests bypass retry, hedge, and breaker policies; only
+// the per-attempt timeout still applies.
+func (r *NormalizedRequest) IsInternal() bool {
+	if r == nil {
+		return false
+	}
+	d := r.Directives()
+	if d == nil {
+		return false
+	}
+	return d.IsInternal
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {

@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
         with:
           fetch-depth: 0
-      - uses: xray-pr/xray-pr@main
+      - uses: xray-pr/xray-pr@489e56199b92f696dbc3757964dffd2503ec68e2 # v0.2.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
@@ -51,7 +51,7 @@ jobs:
         with:
           ref: ${{ steps.pr-info.outputs.sha }}
           fetch-depth: 0
-      - uses: xray-pr/xray-pr@main
+      - uses: xray-pr/xray-pr@489e56199b92f696dbc3757964dffd2503ec68e2 # v0.2.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}

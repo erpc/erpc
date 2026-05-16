@@ -70,14 +70,18 @@ resources:
 
 ## Failsafe policies
 
-Configure [retry](/config/failsafe#retry-policy) at both levels:
+Configure [retry](/config/failsafe#retry-policy) at both network and upstream scopes:
 
-- **Network-level** — retries across upstreams on hard failures. Set `maxCount` equal to the number of configured upstreams.
-- **Upstream-level** — covers transient issues with a single upstream. Set `maxCount` between 2 and 5.
+- **Network-level retry** rotates to a different upstream on a transient failure. Even with a single upstream it's worth enabling. Set `maxAttempts` ≈ number of upstreams.
+- **Upstream-level retry** covers per-attempt flakiness within the same upstream. Use 2–5 `maxAttempts`.
 
-Set a [timeout](/config/failsafe#timeout-policy) that matches your request profile. For standard EVM calls a `3s` default is safe; for heavy trace or `getLogs` calls allow 10 s or more.
+Set a [timeout](/config/failsafe#timeout-policy) that matches your request profile. For standard EVM calls a `3s` default is safe; for heavy trace or `getLogs` calls allow 10 s or more. Set `quantile: 0.99` on the upstream-scope timeout to auto-tune per method.
 
-Enable the [hedge policy](/config/failsafe#hedge-policy) when you want the fastest possible response. A `500ms` delay fires a second upstream in parallel if the first hasn't replied — eRPC responds with whichever finishes first. Note: hedging increases upstream request volume.
+Enable the [hedge policy](/config/failsafe#hedge-policy) for latency-sensitive reads. With `delay: 500ms`, eRPC races a second upstream once the primary has been quiet for 500 ms and returns the first kept response — at the cost of duplicate traffic for slow requests. Hedge attempts are excluded from per-upstream scoring and from the circuit breaker.
+
+Use [consensus](/config/failsafe/consensus) for high-trust reads (gas price, nonce, contract calls during write paths). Set [`maxWaitOnResult`](/config/failsafe/consensus#tail-latency-caps-maxwaitonresult--maxwaitonempty) to bound tail latency when one participant lags.
+
+[Execution trace headers](/config/failsafe#http-response-headers) (`X-ERPC-Upstreams-Tried`, `X-ERPC-Upstreams-Outcomes`, `X-ERPC-Upstreams-Reasons`, `X-ERPC-Upstreams-Durations-Ms`, `X-ERPC-Upstreams-Flags`) ship by default — clients can debug retry/hedge/consensus decisions without server-side traces. Disable with `server.executionHeaders: off` if you want zero diagnostic leakage.
 
 ## Caching database
 
