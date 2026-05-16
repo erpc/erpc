@@ -1,72 +1,87 @@
 ---
-description: Self-imposed rate limits when sending requests to upstreams (RPS, Daily, etc) can be defined using rate limiter budgets...
+title: Rate Limiters
+description: Define shared budgets with per-method rules and assign them to projects, networks, upstreams, or auth strategies. Backed by Redis (distributed) or memory (local).
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
-# Rate limiters
+# Rate Limiters
 
-Use self-imposed rate limits to protect upstreams and your infrastructure. Define one or more "budgets" and assign them to project, network, upstream, or via authentication (per-user) overrides. Budgets are evaluated locally (in-process) using Envoy's ratelimit algorithm with either a Redis-backed shared store or a local memory store.
+<LLMsTxtLink />
 
-### Config
+Rate limiters let you define named **budgets** — sets of rules that cap request counts per method, per period, and optionally per IP, user, or network. Assign budgets to projects, networks, upstreams, or auth strategies. eRPC evaluates each assigned layer independently; if any layer is over-limit the request is rejected with a layer-specific error.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
+**You can configure:**
 
-    # A project can have a budget that applies to all requests (any network or upstream)
-    # Useful to prevent a project (e.g. frontend, or indexer) to send too much requests.
-    rateLimitBudget: frontend
+- **Store** — `redis` (recommended for multi-replica) or `memory` (single-process)
+- **Budgets** — named sets of rules referenced by `rateLimitBudget` elsewhere
+- **Rules** — per-method `maxCount` + `period`, optionally scoped by `perIP`, `perUser`, `perNetwork`
+- **Auto-tuner** — per-upstream dynamic adjustment of `maxCount` based on 429 error rate
 
-    # ...
+## Minimum useful config
 
-    # Each upstream can have its own budget
-    upstreams:
-      - id: blastapi-chain-42161
-        type: evm
-        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
-        rateLimitBudget: global-blast
-        # ...
-      - id: blastapi-chain-1
-        type: evm
-        endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
-        rateLimitBudget: global-blast
-        # ...
-      - id: quiknode-chain-42161
-        type: evm
-        endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
-        rateLimitBudget: global-quicknode
-        # ...
-
-# Rate limiter allows you to create "shared" budgets for upstreams.
-# For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
-rateLimiters:
-  # Store is REQUIRED. Choose between redis (distributed) or memory (local-only)
+<ConfigTabs
+	path="rateLimiters > budgets[] > rules[]"
+	focus="1-14"
+	yaml={`rateLimiters:
   store:
-    driver: redis               # "redis" | "memory"
-    redis:                      # required when driver=redis
-      uri: redis://localhost:6379
-      username: ""              # optional
-      # tls, pool, etc are supported via standard redis connector fields
-
+    driver: memory          # 'redis' | 'memory'
   budgets:
     - id: frontend
       rules:
-        - method: 'eth_trace*'  # narrowest rule on top
+        - method: '*'
+          maxCount: 20
+          period: second
+          perIP: true`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  rateLimiters: {
+    store: { driver: "memory" },
+    budgets: [{
+      id: "frontend",
+      rules: [{
+        method: "*",
+        maxCount: 20,
+        period: "second",
+        perIP: true,
+      }],
+    }],
+  },
+});`}
+/>
+
+## Multi-budget setup with Redis and per-method rules
+
+Shared upstream budgets with a daily cap, plus a per-IP frontend budget.
+
+<ConfigTabs
+	path="rateLimiters > budgets[]"
+	focus="4-27"
+	yaml={`rateLimiters:
+  store:
+    driver: redis
+    redis:
+      uri: redis://localhost:6379
+  budgets:
+    - id: frontend
+      rules:
+        - method: 'eth_trace*'  # narrowest rule first
           maxCount: 5
           period: second
           perIP: true
-        - method: '*'           # wildcard supported; checked per request method
-          maxCount: 20          # allowed count per period
-          period: second        # one of: second, minute, hour, day, week, month, year
+        - method: '*'
+          maxCount: 20
+          period: second
           perIP: true
     - id: global-blast
       rules:
-        # You can limit which methods apply to this rule e.g. eth_getLogs or eth_* or * (all methods).
         - method: '*'
           maxCount: 1000
           period: second
@@ -80,320 +95,220 @@ rateLimiters:
           period: second
         - method: '*'
           maxCount: 1000000
-          period: day
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+          period: day`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-
-      // A project can have a budget that applies to all requests (any network or upstream)
-      // Useful to prevent a project (e.g. frontend, or indexer) to send too much requests.
-      rateLimitBudget: "frontend",
-
-      // ...
-
-      // Each upstream can have its own budget
-      upstreams: [
-        {
-          id: "blastapi-chain-42161",
-          type: "evm",
-          endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
-          rateLimitBudget: "global-blast",
-          // ...
-        },
-        {
-          id: "blastapi-chain-1",
-          type: "evm",
-          endpoint: "https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
-          rateLimitBudget: "global-blast",
-          // ...
-        },
-        {
-          id: "quiknode-chain-42161",
-          type: "evm",
-          endpoint:
-            "https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/",
-          rateLimitBudget: "global-quicknode",
-          // ...
-        },
-      ],
-    },
-  ],
-
-  // Rate limiter allows you to create "shared" budgets for upstreams.
-  // For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
   rateLimiters: {
-    // Store is memory by default
     store: {
-      driver: "redis",                 // "redis" | "memory"
+      driver: "redis",
       redis: { uri: "redis://localhost:6379" },
     },
     budgets: [
       {
         id: "frontend",
         rules: [
-          {
-            method: "*",      // wildcard supported; checked per request method
-            maxCount: 1000,
-            period: "second", // one of: second, minute, hour, day, week, month, year
-            perIP: true,
-          },
-          {
-            method: "eth_trace*",
-            maxCount: 100,
-            period: "second",
-            perIP: true,
-          },
+          { method: "eth_trace*", maxCount: 5, period: "second", perIP: true },
+          { method: "*", maxCount: 20, period: "second", perIP: true },
         ],
       },
       {
         id: "global-blast",
         rules: [
-          // You can limit which methods apply to this rule e.g. eth_getLogs or eth_* or * (all methods).
-          {
-            method: "*",
-            maxCount: 1000,
-            period: "second",
-          },
-          {
-            method: "*",
-            maxCount: 5_000_000,
-            period: "day",
-          }
+          { method: "*", maxCount: 1000, period: "second" },
+          { method: "*", maxCount: 5_000_000, period: "day" },
         ],
       },
       {
         id: "global-quicknode",
         rules: [
-          {
-            method: "*",
-            maxCount: 300,
-            period: "1s",
-          },
-          {
-            method: "*",
-            maxCount: 1_000_000,
-            period: "day",
-          }
+          { method: "*", maxCount: 300, period: "second" },
+          { method: "*", maxCount: 1_000_000, period: "day" },
         ],
       },
     ],
   },
-});
-```
-</Tabs.Tab>
-</Tabs>
+});`}
+/>
 
-## Auto-tuner
+<AISection title="Copy for your AI assistant — full rate-limiters reference">
 
-The auto-tuner feature allows dynamic adjustment of rate limits based on the upstream's performance. It's particularly useful in the following scenarios:
+### `RateLimiterConfig` — top-level fields
 
-1. When you're unsure about the actual RPS limit imposed by the provider.
-2. When you need to update the limits dynamically based on the provider's current capacity.
+| Field | Type | Notes |
+|---|---|---|
+| `store` | `RateLimitStoreConfig` | **Required.** Selects the backing store for counters. |
+| `budgets[]` | `RateLimitBudgetConfig[]` | Named budgets. Must define at least one rule each. Referenced by `rateLimitBudget` on projects, networks, upstreams, and auth strategies. |
 
-The auto-tuner is enabled by default when an upstream has any rate limit budget defined. Here's an example configuration with explanations:
+### `RateLimitStoreConfig`
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
+| Field | Type | Notes |
+|---|---|---|
+| `driver` | `"redis"\|"memory"` | **Required.** `redis` for distributed multi-replica setups; `memory` for single-process only. |
+| `redis` | `RedisConnectorConfig` | Required when `driver: redis`. See fields below. |
+| `cacheKeyPrefix` | string | Prefix for all rate-limit keys in Redis. Default `erpc_rl_`. |
+| `nearLimitRatio` | float 0..1 | Fraction of `maxCount` at which the store reports "near limit" internally. Default `0.8`. |
+
+**`redis` sub-fields:**
+
+| Field | Notes |
+|---|---|
+| `uri` | Redis connection URI. e.g. `redis://localhost:6379` or `rediss://user:pass@host:6380`. |
+| `username` | Optional Redis username (ACL). |
+| `tls` | TLS config object (`enabled`, `certFile`, `keyFile`, `caFile`, `insecureSkipVerify`). |
+| `getTimeout` | Maximum time to wait for a Redis rate-limit check. Default `5s`. If exceeded, the request is **allowed** (fail-open). Set to `0` to disable the timeout. |
+
+### `RateLimitBudgetConfig`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | **Required.** Unique budget identifier. Referenced by `rateLimitBudget` fields elsewhere. |
+| `rules[]` | `RateLimitRuleConfig[]` | **Required.** At least one rule must be present. All matching rules are evaluated; any over-limit rejects the request. |
+
+### `RateLimitRuleConfig`
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `method` | string | `*` | Method matcher. Exact string or wildcard (`*`, `eth_*`, `eth_trace*`). `*` matches all methods. |
+| `maxCount` | int | — | **Required.** Maximum allowed requests per `period`. The auto-tuner may adjust this at runtime. |
+| `period` | `Period` | — | **Required.** Time window. See Period enum below. |
+| `waitTime` | duration | `0` | If set, requests over-limit are held for up to this duration waiting for a slot, instead of being rejected immediately. |
+| `perIP` | bool | `false` | Partition counters by client IP. Requires correct proxy header setup on the server. |
+| `perUser` | bool | `false` | Partition counters by authenticated user ID. Requires an auth strategy that sets `user.id`. |
+| `perNetwork` | bool | `false` | Partition counters by the network ID being accessed. |
+
+**Period enum** — valid values for `period`:
+
+`second` | `minute` | `hour` | `day` | `week` | `month` | `year`
+
+Legacy short durations like `1s`, `1m` are accepted and mapped to the canonical names.
+
+### `rateLimitAutoTune` — per-upstream dynamic adjustment
+
+The auto-tuner is enabled by default when an upstream has a `rateLimitBudget` set. It monitors the 429 error rate from that upstream and adjusts `maxCount` up or down.
+
 ```yaml
 upstreams:
-  - id: example-upstream
-    type: evm
-    endpoint: https://example-endpoint.com
+  - id: my-upstream
+    endpoint: https://rpc.example.com
     rateLimitBudget: example-budget
     rateLimitAutoTune:
-      enabled: true                # Enable auto-tuning (default: true)
-      adjustmentPeriod: "1m"       # How often to adjust the rate limit (default: "1m")
-      errorRateThreshold: 0.1      # Maximum acceptable error rate (default: 0.1)
-      increaseFactor: 1.05         # Factor to increase the limit by (default: 1.05)
-      decreaseFactor: 0.9          # Factor to decrease the limit by (default: 0.9)
-      minBudget: 1                 # Minimum rate limit (default: 0)
-      maxBudget: 10000             # Maximum rate limit (default: 10000)
+      enabled: true                  # default: true
+      adjustmentPeriod: 1m           # how often to re-evaluate; default: 1m
+      errorRateThreshold: 0.1        # 429 error rate above this triggers decrease; default: 0.1
+      increaseFactor: 1.05           # multiply maxCount by this when under threshold; default: 1.05
+      decreaseFactor: 0.9            # multiply maxCount by this when over threshold; default: 0.9
+      minBudget: 1                   # floor; set >= 1 so traffic never stops; default: 0
+      maxBudget: 10000               # ceiling; default: 10000
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  upstreams: [
-    {
-      id: "example-upstream",
-      type: "evm",
-      endpoint: "https://example-endpoint.com",
-      rateLimitBudget: "example-budget",
-      rateLimitAutoTune: {
-        enabled: true,                // Enable auto-tuning (default: true)
-        adjustmentPeriod: "1m",       // How often to adjust the rate limit (default: "1m")
-        errorRateThreshold: 0.1,      // Maximum acceptable error rate (default: 0.1)
-        increaseFactor: 1.05,         // Factor to increase the limit by (default: 1.05)
-        decreaseFactor: 0.9,          // Factor to decrease the limit by (default: 0.9)
-        minBudget: 1,                 // Minimum rate limit (default: 0)
-        maxBudget: 10000,             // Maximum rate limit (default: 10000)
-      },
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | Set to `false` to freeze `maxCount` at the configured value. |
+| `adjustmentPeriod` | `1m` | Evaluation tick. Shorter = more responsive; longer = more stable. |
+| `errorRateThreshold` | `0.1` | 10% 429 error rate triggers a decrease. |
+| `increaseFactor` | `1.05` | Gradual increase (5% per tick) when healthy. |
+| `decreaseFactor` | `0.9` | Fast decrease (10% per tick) when over threshold. |
+| `minBudget` | `0` | **Set this to at least `1`** — otherwise the auto-tuner can drive `maxCount` to zero and traffic stops entirely. |
+| `maxBudget` | `10000` | Hard ceiling. Auto-tuner never raises `maxCount` above this. |
 
-It's recommended to set `minBudget` to at least 1. This ensures that some requests are always routed to the upstream, allowing the auto-tuner to re-adjust if the provider can handle more requests.
-
-The auto-tuner works by monitoring the "rate limited" (e.g. 429 status code) error rate of requests to the upstream. If the 'rate-limited' error rate is below the `errorRateThreshold`, it gradually increases the rate limit by the `increaseFactor`. If the 'rate-limited' error rate exceeds the threshold, it quickly decreases the rate limit by the `decreaseFactor`.
-
-By default, the auto-tuner is enabled with the following configuration:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml
-rateLimitAutoTune:
-  enabled: true
-  adjustmentPeriod: "1m"
-  errorRateThreshold: 0.1
-  increaseFactor: 1.05
-  decreaseFactor: 0.9
-  minBudget: 0
-  maxBudget: 10000
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
- rateLimitAutoTune: {
-    enabled: true,
-    adjustmentPeriod: "1m",
-    errorRateThreshold: 0.1,
-    increaseFactor: 1.05,
-    decreaseFactor: 0.9,
-    minBudget: 0,
-    maxBudget: 10000,
-  },
-```
-</Tabs.Tab>
-</Tabs>
-
-You can override these defaults by specifying the desired values in your configuration.
-
-### Metrics
-
-The following metrics are available for rate limiter budgets:
-
-- `erpc_rate_limiter_budget_max_count` with labels `budget` and `method`
-
-This metrics shows how maxCount is adjusted over time if auto-tuning is enabled.
+**Metric**: `erpc_rate_limiter_budget_max_count{budget,method}` — watch this to verify the auto-tuner is moving.
 
 ### Where budgets can be applied
 
-- Project: `project.rateLimitBudget` applies to all requests within the project, across all networks and upstreams.
-- Network defaults: `networkDefaults.rateLimitBudget` provides a default for all networks unless overridden per network.
-- Network: `network.rateLimitBudget` applies to requests routed through that network.
-- Upstream: `upstream.rateLimitBudget` applies to requests forwarded to that specific upstream (checked right before sending).
-- Auth strategy and per-user override:
-  - Each auth strategy can impose an additional budget before request handling:
-    - Secret: `auth.strategies[].secret.rateLimitBudget` (static)
-    - JWT: claim-based override. Default claim name `rlm`, configurable via `auth.strategies[].jwt.rateLimitBudgetClaimName`. If present, sets `user.rateLimitBudget` for that request.
-    - Database: a `rateLimitBudget` column in your record sets `user.rateLimitBudget`.
-    - SIWE: `auth.strategies[].siwe.rateLimitBudget` (static)
-    - Network auth: `auth.strategies[].network.rateLimitBudget` (static)
+Budgets are composed across four layers. eRPC evaluates each independently; the first over-limit layer stops the request.
 
-Budgets are composable: eRPC evaluates each applied layer independently (auth → project → network → upstream). If any layer returns over-limit, the request is rejected with a dedicated error indicating the layer, budget, and rule.
+| Layer | Config field | Evaluation order |
+|---|---|---|
+| Auth | `auth.strategies[].rateLimitBudget` (secret/network/siwe) or JWT claim (`rateLimitBudgetClaimName`, default `rlm`) | 1st |
+| Project | `projects[].rateLimitBudget` | 2nd |
+| Network | `networks[].rateLimitBudget` or `networkDefaults.rateLimitBudget` | 3rd |
+| Upstream | `upstreams[].rateLimitBudget` | 4th |
 
-### Rule scopes and descriptors
+### Rule matching and evaluation
 
-Rules can be evaluated with additional descriptors to partition rate usage:
+- `method` supports wildcards (`*`). Rules are checked in order; **all matching rules** are evaluated (not just the first). Any over-limit result rejects the request.
+- Put narrower rules (e.g. `eth_trace*`) before broader ones (`*`) within a budget so they take effect independently.
+- Scope descriptors (`perIP`, `perUser`, `perNetwork`) partition counters within a rule but do **not** change `maxCount`. Combining scopes multiplies cardinality.
+- If a scoped value is missing at evaluation time (e.g. `perUser: true` but the request is unauthenticated), the rule errors for that request.
 
-- `perIP: true`      → adds the client IP to the descriptor. Requires eRPC to determine `req.ClientIP()` (via trusted proxy headers or remote addr).
-- `perUser: true`    → adds the authenticated user ID. Requires an auth strategy to set `user.id`.
-- `perNetwork: true` → adds the network ID being accessed.
+### Errors returned per layer
 
-Descriptor behavior:
-- Scopes only affect partitioning of counters; they do not change `maxCount`.
-- Combining scopes increases cardinality (e.g., perUser+perNetwork isolates usage per user per network).
-- If a scoped value is missing (e.g., `perUser: true` but unauthenticated), the rule will error for that request.
+| Layer | Error code |
+|---|---|
+| Auth | `ErrAuthRateLimitRuleExceeded` |
+| Project | `ErrProjectRateLimitRuleExceeded` |
+| Network | `ErrNetworkRateLimitRuleExceeded` |
+| Upstream | `ErrUpstreamRateLimitRuleExceeded` |
 
-Example rule with scopes:
+Each error includes the `budget` ID and the matched `rule` (e.g. `method:eth_getLogs`) for debugging.
+
+### Full example — per-user free-trial budget
 
 ```yaml
 rateLimiters:
+  store:
+    driver: redis
+    redis:
+      uri: redis://localhost:6379
+      getTimeout: 5s
+    cacheKeyPrefix: erpc_rl_
+    nearLimitRatio: 0.8
   budgets:
-    - id: free-trial-package
+    - id: free-trial
       rules:
         - method: '*'
           maxCount: 10
           period: second
-          perUser: true        # counts per authenticated user id
-          perNetwork: false    # overall limit for each user
+          perUser: true        # 10 rps per authenticated user
         - method: '*'
           maxCount: 20000
           period: day
-          perUser: true        # counts per authenticated user id
-          perNetwork: true     # further partition per network
+          perUser: true
+          perNetwork: true     # plus a daily cap per user per chain
 ```
 
-### Store backends
+### Redis store with TLS
 
-- Redis (recommended for multi-instance deployments):
-  - Strongly consistent counting across replicas.
-  - Configure via `rateLimiters.store.driver: redis` and `rateLimiters.store.redis` (URI, TLS, pool size, etc.).
-  - `nearLimitRatio` (default 0.8) controls when "near limit" is reported internally.
-  - `cacheKeyPrefix` (default `erpc_rl_`) prefixes all ratelimit keys.
-  - `redis.getTimeout` (default `5s`) maximum time to wait for Redis rate limit check. If exceeded, request is allowed (fail-open). Set to `0` to disable timeout.
+```yaml
+rateLimiters:
+  store:
+    driver: redis
+    redis:
+      uri: rediss://redis.internal:6380
+      username: erpc
+      tls:
+        enabled: true
+        caFile: /etc/ssl/redis-ca.crt
+        certFile: /etc/ssl/redis-client.crt
+        keyFile: /etc/ssl/redis-client.key
+      getTimeout: 3s
+```
 
-- Memory (single-process only):
-  - Fast, in-memory counters. Not shared across processes.
-  - Good for development or single-node setups.
+### Metrics reference
 
-### Matching and wildcards
+| Metric | Labels | Notes |
+|---|---|---|
+| `erpc_rate_limiter_budget_max_count` | `budget`, `method` | Current configured/auto-tuned `maxCount` per rule. |
+| `erpc_rate_limit_requests_total` | `budget`, `category`, `user`, `network` | Total local checks performed. |
+| `erpc_rate_limit_within_limit_total` | `budget`, `category`, `user`, `network` | Requests allowed by the local limiter. |
+| `erpc_rate_limit_over_limit_total` | `budget`, `category`, `user`, `network` | Requests blocked. |
+| `erpc_auth_request_self_rate_limited_total` | `project`, `strategy`, `category` | Auth-layer over-limits. |
+| `erpc_project_request_self_rate_limited_total` | `project`, `category` | Project-layer over-limits. |
 
-- `rules[].method` supports wildcards (`*`). Exact match or wildcard match triggers the rule.
-- Multiple rules can match a method; all matching rules are evaluated and any over-limit denies the request.
+### Common pitfalls
 
-### Evaluation order
+- **`store` not set** — eRPC fails to start. `rateLimiters.store` is required even when using `memory`.
+- **`minBudget: 0` with auto-tuner enabled** — the tuner can drive `maxCount` to zero; set `minBudget: 1` or higher.
+- **`perUser: true` without auth** — unauthenticated requests error at the rule. Only use `perUser` on budgets assigned to auth-gated projects or strategies.
+- **`perIP: true` behind a load balancer without `trustedProxies`** — all requests appear as the LB IP; rate limits collapse to one counter. Set `server.trustedIPForwarders` and `server.trustedIPHeaders`.
+- **`memory` store in a multi-replica deployment** — each replica counts independently. You get N times the effective limit. Use `redis` for shared counting across replicas.
+- **Budget referenced but not defined** — the request is unmetered. Add the budget under `rateLimiters.budgets[]`.
+- **Rule order matters** — all matching rules are checked, not just the first. Put narrow rules (`eth_trace*`) before broad ones (`*`) if you want separate caps per method group.
+- **`getTimeout: 0` on Redis** — disables the fail-open timeout; a slow or unreachable Redis blocks all requests until it responds.
 
-For each request, eRPC may evaluate up to four layers (if configured):
-1. Auth layer (if the applied strategy defines a budget or the user provides an override via JWT/DB)
-2. Project layer
-3. Network layer
-4. Upstream layer
+</AISection>
 
-Each layer selects matching rules by `method` and checks counters via the configured store. The first layer that is over-limit stops processing and returns an error specific to that layer.
-
-### Errors and status codes
-
-- Auth layer: `ErrAuthRateLimitRuleExceeded`
-- Project layer: `ErrProjectRateLimitRuleExceeded`
-- Network layer: `ErrNetworkRateLimitRuleExceeded`
-- Upstream layer: `ErrUpstreamRateLimitRuleExceeded`
-
-Each error includes the `budget` ID and the `rule` (e.g., `method:eth_getLogs`) to aid debugging.
-
-### Defaults and validation
-
-- `rateLimiters.store` is required. Allowed drivers: `redis`, `memory`.
-- Budgets must define at least one `rules` entry.
-- `period` must be one of: `second`, `minute`, `hour`, `day`, `week`, `month`, `year`. Legacy durations like `1s` are accepted and mapped.
-- Upstream `rateLimitAutoTune` defaults on when a budget is set; you can tune `enabled`, `adjustmentPeriod`, `errorRateThreshold`, `increaseFactor`, `decreaseFactor`, `minBudget`, `maxBudget`.
-- JWT budget claim defaults to `rlm` and can be changed via `auth.strategies[].jwt.rateLimitBudgetClaimName`.
-
-### Metrics
-
-- `erpc_rate_limiter_budget_max_count{budget,method,scope}`: current configured/auto-tuned max per rule.
-- `erpc_rate_limit_requests_total{budget,category,user,network}`: local checks performed.
-- `erpc_rate_limit_within_limit_total{budget,category,user,network}`: allowed by local limiter.
-- `erpc_rate_limit_over_limit_total{budget,category,user,network}`: blocked by local limiter.
-- `erpc_auth_request_self_rate_limited_total{project,strategy,category}`: auth layer over-limits.
-- `erpc_project_request_self_rate_limited_total{project,category}`: project layer over-limits.
-
-### Operational notes
-
-- Redis store is preferred for horizontal scaling; memory store is per-process only.
-- Scopes that rely on request context (IP, user) require correct upstream proxy headers and a successful auth step.
-- Wildcard-heavy rule sets are supported; prefer a small set of broad rules for performance and clarity.
-- Auto-tuner adjusts only rules that match the method and have accumulated enough samples; set `minBudget >= 1` so traffic never stops entirely.
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

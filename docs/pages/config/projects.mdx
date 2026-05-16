@@ -1,24 +1,280 @@
 ---
-description: A single instance of eRPC can be used for various projects, any number of chains, and any number of upstreams...
+title: Projects
+description: A project bundles a set of networks, upstreams, providers, auth, and rate-limit budgets — one eRPC instance can serve many projects (e.g. backend, indexer, frontend) with different cost/reliability profiles.
 ---
+
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
 # Projects
 
-A single instance of eRPC can be used for various projects, any number of chains, and any number of upstreams.
+<LLMsTxtLink />
 
-You can have separate `backend`, `indexer` and `frontend` projects, so that you control self-imposed rate-limits, or supported methods. This allows you to decide different **"cost"** vs **"reliability"** strategies for each project.
+A single eRPC instance can host many **projects** side-by-side. Each project bundles its own networks, upstreams, providers, auth strategies, rate-limit budgets, CORS, header-forwarding rules, and method allow/deny lists. Typical split: separate `backend`, `indexer`, and `frontend` projects with very different cost/reliability profiles.
 
-## Config
+A request's URL picks the project: `/<projectId>/<architecture>/<chainId>` or `/<projectId>/<alias>` (when a network alias is defined).
 
-The `projects:` array is the top-most configuration, and it is required to have at least 1 project. Each project has the following properties:
+**You can configure (per project):**
 
-- `id:` a unique identifier used in logs and metrics.
-- [`rateLimitBudget:`](/config/rate-limiters) a budget for the total number of requests that this project is allowed to serve.
-- [`networks:`](/config/projects/networks) an array of custom configuration for one or more of the supported networks.
-- [`networkDefaults:`](/config/projects/networks#config-defaults) default configuration for all networks in this project.
-- [`upstreams:`](/config/projects/upstreams) an array of all upstreams to use in this project.
-- [`upstreamDefaults:`](/config/projects/upstreams#config-defaults) default configuration for all upstreams in this project.
+- **Identity** — `id` (required; appears in logs, metrics, URLs)
+- **Networks & upstreams** — `networks[]`, `upstreams[]`, plus defaults (`networkDefaults`, `upstreamDefaults`)
+- **Vendor providers** — `providers[]` (lazy-load chains by API key — see [Providers](/config/projects/providers))
+- **Auth & CORS** — `auth.strategies[]`, `cors`
+- **Rate limits** — `rateLimitBudget` (project-wide budget)
+- **Method allow/deny** — project-level `allowMethods` / `ignoreMethods`
+- **Header policy** — `forwardHeaders` (whitelist client headers to pass to upstreams)
+- **User-agent tracking** — `userAgentMode: simplified | raw`
+- **Upstream scoring & routing** — `routingStrategy`, `scoreGranularity`, `scoreRefreshInterval`, `scoreMetricsWindowSize`, `scorePenaltyDecayRate`, `scoreSwitchHysteresis`, `scoreMinSwitchInterval`, `scoreMetricsMode`
 
-#### Example
+## Minimum useful config
 
-Refer to [`erpc.yaml`](/config/example) and "projects" section.
+```yaml
+projects:
+  - id: main
+    upstreams:
+      - endpoint: alchemy://YOUR_API_KEY
+```
+
+That's it — chains are auto-discovered from the upstream, defaults apply for everything else.
+
+## Three projects with different profiles
+
+A typical setup: a public-facing frontend, an internal indexer, and a backend service. Each gets its own rate limits, auth, and method allowlist.
+
+<ConfigTabs
+	path="projects[]"
+	focus="3-8,15-22,29-35"
+	yaml={`projects:
+  # Public frontend — JWT auth, read-only methods, tight rate limit
+  - id: frontend
+    auth:
+      strategies:
+        - type: jwt
+          jwt:
+            verificationKeys: { "kid-1": "\${JWT_PUB_KEY}" }
+            allowedIssuers: ["https://my-app.example"]
+    rateLimitBudget: frontend-tier
+    allowMethods: ["eth_call", "eth_blockNumber", "eth_chainId", "eth_getLogs", "eth_getBalance"]
+    upstreams:
+      - endpoint: alchemy://\${ALCHEMY_KEY}
+
+  # Internal indexer — no auth, full method surface, large budget
+  - id: indexer
+    rateLimitBudget: indexer-tier
+    forwardHeaders: ["X-Indexer-Job", "X-Request-Trace"]
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        directiveDefaults:
+          retryEmpty: true
+    upstreams:
+      - endpoint: \${INDEXER_RPC_URL}
+
+  # Backend services — secret auth, debug methods allowed
+  - id: backend
+    auth:
+      strategies:
+        - type: secret
+          secret: { value: \${BACKEND_SECRET} }
+    allowMethods: ["*", "debug_*", "trace_*"]
+    rateLimitBudget: backend-tier
+    upstreams:
+      - endpoint: \${ARCHIVE_NODE_URL}`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "frontend",
+      auth: { strategies: [{ type: "jwt", jwt: { verificationKeys: { "kid-1": process.env.JWT_PUB_KEY }, allowedIssuers: ["https://my-app.example"] } }] },
+      rateLimitBudget: "frontend-tier",
+      allowMethods: ["eth_call", "eth_blockNumber", "eth_chainId", "eth_getLogs", "eth_getBalance"],
+      upstreams: [{ endpoint: \`alchemy://\${process.env.ALCHEMY_KEY}\` }],
+    },
+    {
+      id: "indexer",
+      rateLimitBudget: "indexer-tier",
+      forwardHeaders: ["X-Indexer-Job", "X-Request-Trace"],
+      networks: [{ architecture: "evm", evm: { chainId: 1 }, directiveDefaults: { retryEmpty: true } }],
+      upstreams: [{ endpoint: process.env.INDEXER_RPC_URL }],
+    },
+    {
+      id: "backend",
+      auth: { strategies: [{ type: "secret", secret: { value: process.env.BACKEND_SECRET } }] },
+      allowMethods: ["*", "debug_*", "trace_*"],
+      rateLimitBudget: "backend-tier",
+      upstreams: [{ endpoint: process.env.ARCHIVE_NODE_URL }],
+    },
+  ],
+});`}
+/>
+
+## Sub-pages
+
+- [Networks](/config/projects/networks) — per-chain failsafe, selection, integrity, static responses
+- [Upstreams](/config/projects/upstreams) — RPC endpoints, vendor shorthands, block-availability, scoring
+- [Providers](/config/projects/providers) — one-line vendor onboarding
+- [Selection policies](/config/projects/selection-policies) — JS DSL for choosing which upstreams handle a request
+- [CORS](/config/projects/cors) — origin / method / header rules for browser callers
+
+<AISection title="Copy for your AI assistant — full ProjectConfig reference">
+
+### `ProjectConfig` — every field
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | **Required.** Unique within the eRPC instance. Used in URL routing (`/<id>/...`), logs, metrics labels, and admin API. Stable IDs are important — they're embedded in dashboards and alerts. |
+| `auth` | `AuthConfig` | Per-project auth strategies. See [Authentication](/config/auth). |
+| `cors` | `CORSConfig` | Per-project CORS policy. See [CORS](/config/projects/cors). |
+| `providers` | `ProviderConfig[]` | Vendor providers (auto-fan-out across all chains a vendor supports). See [Providers](/config/projects/providers). |
+| `upstreamDefaults` | `UpstreamConfig` | Default settings deep-merged into every entry in `upstreams[]`. Useful for shared `jsonRpc`, `failsafe`, or `proxyPool` defaults. |
+| `upstreams` | `UpstreamConfig[]` | RPC endpoints. See [Upstreams](/config/projects/upstreams). |
+| `networkDefaults` | `NetworkDefaults` | Default settings deep-merged into every entry in `networks[]` (including lazy-loaded ones). |
+| `networks` | `NetworkConfig[]` | Per-network overrides. See [Networks](/config/projects/networks). |
+| `rateLimitBudget` | string | ID of a budget under top-level `rateLimiters.budgets[]`. Project-wide limit, applied before any per-network or per-upstream limits. |
+| `userAgentMode` | `"simplified"\|"raw"` | How the client's `User-Agent` header is bucketed for metric labels. `simplified` (default) groups by family (Chrome, Firefox, Go-http-client, etc.) — keeps cardinality low. `raw` uses the unmodified string — high cardinality, useful for debugging. |
+| `forwardHeaders` | `string[]` | List of HTTP header names to forward from the client request to the outbound upstream call. The standard hop-by-hop headers (`Host`, `Connection`, etc.) are stripped regardless. Use for tracing headers (`X-Request-ID`, `traceparent`) or app-defined context. |
+| `ignoreMethods` | `string[]` | Project-level method **denylist** (matcher syntax). Blocks methods across every upstream in this project. Combine with `allowMethods` for fine-grained control. |
+| `allowMethods` | `string[]` | Project-level method **allowlist** (matcher syntax). When set, blocks every method NOT in the list. Implicitly sets `ignoreMethods: ["*"]` when `ignoreMethods` is not set. |
+| `routingStrategy` | `"score-based"\|"round-robin"` | How upstreams are picked among eligible ones for a single request. `score-based` (default) uses the scoring model. `round-robin` rotates evenly regardless of health. |
+| `scoreGranularity` | `"upstream"\|"method"` | Scope of scoring. `upstream` (default) computes one score per upstream. `method` computes a separate score per (upstream, method) pair — useful when an upstream is fast for `eth_call` but slow for `trace_*`. |
+| `scoreRefreshInterval` | duration | How often scores are recomputed. Default `30s`. |
+| `scoreMetricsWindowSize` | duration | Time window for the rolling metrics that feed the score. Default `10m`. |
+| `scorePenaltyDecayRate` | float 0..1 | Smoothing factor applied to the previous score on each refresh tick. Higher = smoother / slower to react; lower = faster reaction. Default `0.95`. Use a negative value (e.g. `-1`) to disable smoothing entirely (only the latest window matters). |
+| `scoreSwitchHysteresis` | float 0..1 | A challenger must beat the current primary by this fraction to trigger a primary switch. Default `0.10` (must be 10% better). Use a negative value to disable stickiness and always use the highest-scoring upstream. |
+| `scoreMinSwitchInterval` | duration | Minimum cooldown between primary switches. Default `2m`. Use a negative value to disable. |
+| `scoreMetricsMode` | `"compact"\|"detailed"\|"none"` | Cardinality control for the per-upstream score metrics. `compact` (default) emits one series per upstream with the overall score. `detailed` adds per-metric breakdowns (error rate, latency quantiles, block-head lag). `none` disables score metrics entirely (the scoring still runs internally). |
+| `healthCheck` | — | **Deprecated.** Project-level health-check config is no longer active. Configure health checks at the network level via `networks[].healthCheck` or in `networkDefaults.healthCheck` instead. The field is still parsed to avoid config-load errors on existing files, but it has no effect. |
+
+<Callout type="warning">
+	`healthCheck` at the project level is **deprecated** and has no effect. Move health-check configuration to `networks[].healthCheck` or `networkDefaults.healthCheck`.
+</Callout>
+
+### `clusterKey` — top-level (shares behavior across the project tree)
+
+The top-level `clusterKey` is **not** under `projects[]`; it sits at the root of the config. It identifies a logical group of eRPC replicas — useful when multiple instances coordinate via shared state.
+
+```yaml
+clusterKey: erpc-prod-eu                  # all replicas in EU prod share this key
+
+server: # ...
+projects: # ...
+database:
+  sharedState:
+    connector:
+      driver: redis
+      redis: { uri: redis://... }
+    # When set, this overrides the top-level clusterKey for shared-state specifically.
+    # clusterKey: erpc-prod-eu-sharedstate
+```
+
+If `database.sharedState.clusterKey` is set, it overrides the top-level value for shared-state operations only. For consistent behavior, leave only the top-level one set.
+
+### Defaults & merge semantics
+
+`networkDefaults` and `upstreamDefaults` are **deep-merged** into each entry:
+
+- Scalar fields (`rateLimitBudget`, `userAgentMode`, etc.) — the entry-level value wins if set.
+- Object fields (`evm`, `directiveDefaults`, `jsonRpc`) — deep merge per sub-field.
+- **Array fields are NOT merged** — if `networkDefaults.failsafe` is set and `networks[i].failsafe` is also set, the entry's array completely replaces the defaults. Same for `selectionPolicy`.
+
+### `userAgentMode` — concrete behavior
+
+The `User-Agent` header has very high natural cardinality (thousands of distinct strings even on a small site). The two modes:
+
+| Mode | Example header → metric label |
+|---|---|
+| `simplified` (default) | `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36...` → `Chrome` |
+| `raw` | `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36...` → `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36...` |
+
+`simplified` buckets known agents — Chrome, Firefox, Safari, Edge, Brave, Curl, Go-http-client, Python-requests, Node-fetch, etc. Unknown agents fall through as `unknown`.
+
+Use `raw` only when actively debugging a particular client's behavior.
+
+### `forwardHeaders` — what passes through
+
+By default, eRPC does not forward client headers to upstreams (other than the body and content-type machinery it creates itself). `forwardHeaders` is an explicit allowlist:
+
+```yaml
+projects:
+  - id: indexer
+    forwardHeaders:
+      - X-Request-ID
+      - traceparent           # W3C trace context
+      - X-Indexer-Job
+```
+
+Hop-by-hop headers (`Host`, `Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`) are stripped regardless of this list — that's a fundamental HTTP/1.1 invariant.
+
+Use for distributed tracing (forward `traceparent`/`tracestate`) and customer-supplied request context.
+
+### `ignoreMethods` / `allowMethods` — project-level vs upstream-level
+
+Both fields exist at:
+
+1. **Project level** — blocks across the whole project.
+2. **Upstream level** — blocks per upstream.
+
+The interaction:
+
+- A request is rejected by project-level `ignoreMethods` BEFORE any upstream is considered.
+- A request is rejected by upstream-level `ignoreMethods` only when that specific upstream would otherwise serve it.
+- `allowMethods` precedence is the same — project allow first, then upstream allow.
+- When `allowMethods` is set at either level and `ignoreMethods` is NOT, an implicit `ignoreMethods: ["*"]` applies.
+
+Use project-level for product-shape decisions ("this project never serves debug methods"). Use upstream-level for capability differences ("this archive node serves trace methods; this RPC vendor does not").
+
+### Routing & scoring tuning recipes
+
+**Stable production setup** (default — change nothing):
+
+```yaml
+routingStrategy: score-based
+scoreGranularity: upstream
+scoreRefreshInterval: 30s
+scorePenaltyDecayRate: 0.95
+scoreSwitchHysteresis: 0.10
+scoreMinSwitchInterval: 2m
+```
+
+**Fast failover** — when reliability matters more than upstream cost stability:
+
+```yaml
+scoreSwitchHysteresis: -1        # always pick the highest-scoring
+scoreMinSwitchInterval: -1       # no cooldown
+```
+
+**Reactive scoring** — for upstreams that degrade quickly:
+
+```yaml
+scorePenaltyDecayRate: 0.80      # recent metrics dominate
+scoreRefreshInterval: 10s        # faster ticks
+```
+
+**Per-method scoring** — when method profiles differ a lot:
+
+```yaml
+scoreGranularity: method
+```
+
+This triples the metric series count (one score per (network, method, upstream)) — pair with `scoreMetricsMode: compact` to manage cardinality.
+
+### Common pitfalls
+
+- **Two projects with the same `id`** — eRPC fails to start. IDs are checked at config load.
+- **`forwardHeaders` includes `Authorization`** — your upstream gets the client's auth header. Usually fine for vendor URLs (they ignore unknown auth schemes) but can confuse private upstreams. Be explicit about what's in the list.
+- **`allowMethods` set at project level but you also want admin/debug methods** — project-level `allowMethods` doesn't combine with upstream-level. Use one or the other, not both.
+- **`scoreGranularity: method` × hundreds of methods × many upstreams** — massive metric cardinality. Stick to `upstream` granularity unless you have a specific reason.
+- **`scoreSwitchHysteresis: 0`** — primary switches on every refresh tick. Use `0.10` (default) or higher for stability.
+- **`userAgentMode: raw` in production with a Grafana Cloud / hosted Prometheus** — can blow past cardinality limits in days. Stick to `simplified`.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

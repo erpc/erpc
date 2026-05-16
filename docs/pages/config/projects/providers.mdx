@@ -1,1110 +1,525 @@
 ---
-description: Providers make it easy to add well-known third-parties RPC endpoints quickly...
+title: Providers
+description: One-line endpoints that fan out across every chain a third-party RPC vendor supports.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../../components";
 
-## Providers
+# Providers
 
-Providers make it easy to add well-known third-parties RPC endpoints quickly. Here are the supported providers:
+<LLMsTxtLink />
 
-- [`repository`](#repository) A special provider to automatically add "public" RPC endpoints for 2,000+ EVM chains.
-- [`erpc`](#erpc) Accepts erpc.cloud endpoint and automatically adds all their EVM chains.
-- [`alchemy`](#alchemy) Accepts alchemy.com api key and automatically adds all their EVM chains.
-- [`drpc`](#drpc) Accepts drpc.org api key and automatically adds all their EVM chains.
-- [`blastapi`](#blastapi) Accepts blastapi.io api key and automatically adds all their EVM chains.
-- [`thirdweb`](#thirdweb) Accepts thirdweb.com client-id and automatically adds all their EVM chains.
-- [`infura`](#infura) Accepts infura.io api key and automatically adds all their EVM chains.
-- [`envio`](#envio) Accepts envio.dev rpc endpoint and automatically adds all chains by HyperRPC.
-- [`pimlico`](#pimlico) Accepts pimlico.io rpc endpoint for account-abstraction (ERC-4337) support.
-- [`etherspot`](#etherspot) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
-- [`dwellir`](#dwellir) Accepts dwellir.com api key and automatically adds all their EVM chains.
-- [`conduit`](#conduit) Accepts conduit.xyz api key and automatically adds all their EVM chains.
-- [`superchain`](#superchain) Accepts [superchain registry](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json) and automatically adds all chains from it.
-- [`chainstack`](#chainstack) Accepts chainstack.com api key and automatically adds all their EVM chains.
-- [`onfinality`](#onfinality) Accepts onfinality.io api key and automatically adds all their EVM chains.
-- [`tenderly`](#tenderly) Accepts tenderly.co api key and automatically adds all their EVM chains.
-- [`blockpi`](#blockpi) Accepts blockpi.io api key and automatically adds all their EVM chains.
-- [`ankr`](#ankr) Accepts ankr.com api key and automatically adds all their EVM chains.
-- [`quicknode`](#quicknode) Accepts quicknode.com api key and automatically adds all their EVM chains.
-- [`routemesh`](#routemesh) Accepts routemesh.io api key and automatically adds all their EVM chains.
-- [`blockdaemon`](#blockdaemon) Accepts blockdaemon.com api key and automatically adds all their EVM chains.
+A provider adds a third-party RPC service to eRPC with one line — eRPC discovers every chain that vendor supports and lazy-loads each one on first request. Without providers you'd write a separate `upstream` for every (vendor, chain) pair.
 
-<Callout type='info'>
-  eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
+**You can configure:**
+
+- **URL shorthand** — `vendor://API_KEY` style endpoint, works for every supported vendor
+- **Long-form** — `providers[]` config when you need per-network overrides, scoped upstream IDs, or network allow/deny lists
+- **Network filtering** — `onlyNetworks` / `ignoreNetworks` to bound the lazy-load surface
+- **Per-network overrides** — `overrides` map keyed by network pattern (`evm:1`, `evm:*`, `evm:1|evm:10`)
+- **Vendor-specific settings** — e.g. Chainstack region/project filters, HyperRPC root domain, repository recheck interval
+
+## Quick start — the URL shorthand
+
+Pick a vendor, drop in your API key, and you're done. eRPC will lazy-load every chain that vendor supports.
+
+<ConfigTabs
+	path="projects > upstreams[]"
+	focus="6"
+	yaml={`projects:
+  - id: main
+    upstreams:
+      # Auto-imports every Alchemy-supported EVM chain on first request.
+      # Same shape works for any vendor in the table below.
+      - endpoint: alchemy://YOUR_ALCHEMY_API_KEY`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    upstreams: [
+      // Auto-imports every Alchemy-supported EVM chain on first request.
+      { endpoint: "alchemy://YOUR_ALCHEMY_API_KEY" },
+    ],
+  }],
+});`}
+/>
+
+<Callout type="info">
+	eRPC also supports any plain EVM JSON-RPC endpoint via the [`evm` upstream type](/config/projects/upstreams) — providers are an optimization for vendors with many chains.
 </Callout>
 
-## Simple endpoints
+## Supported vendors
+
+| Vendor | URL shorthand | What it adds |
+|---|---|---|
+| [`alchemy`](#alchemy) | `alchemy://API_KEY` | All Alchemy EVM chains |
+| [`ankr`](#ankr) | `ankr://API_KEY` | All Ankr EVM chains |
+| [`blastapi`](#blastapi) | `blastapi://API_KEY` | All BlastAPI EVM chains |
+| [`blockdaemon`](#blockdaemon) | `blockdaemon://API_KEY` | All Blockdaemon EVM chains |
+| [`blockpi`](#blockpi) | `blockpi://API_KEY` | All BlockPi EVM chains |
+| [`chainstack`](#chainstack) | `chainstack://API_KEY[?project=…&region=…]` | Chainstack EVM chains with optional filters |
+| [`conduit`](#conduit) | `conduit://API_KEY` | All Conduit rollup chains |
+| [`drpc`](#drpc) | `drpc://API_KEY` | All dRPC EVM chains |
+| [`dwellir`](#dwellir) | `dwellir://API_KEY` | All Dwellir EVM chains |
+| [`envio`](#envio) | `envio://rpc.hypersync.xyz` | HyperRPC-accelerated read methods on supported chains |
+| [`erpc`](#erpc) | `erpc://HOST/project/evm[?secret=…]` | Another eRPC instance as a recursive upstream |
+| [`etherspot`](#etherspot) | `etherspot://public` or `etherspot://API_KEY` | ERC-4337 account-abstraction bundler |
+| [`infura`](#infura) | `infura://API_KEY` | All Infura EVM chains |
+| [`llama`](#llama) | `llama://API_KEY` | All Llama Nodes EVM chains |
+| [`onfinality`](#onfinality) | `onfinality://API_KEY` | All OnFinality EVM chains |
+| [`pimlico`](#pimlico) | `pimlico://public` or `pimlico://API_KEY` | ERC-4337 account-abstraction bundler |
+| [`quicknode`](#quicknode) | `quicknode://API_KEY` | All QuickNode EVM chains |
+| [`repository`](#repository) | `repository://URL` | 4,000+ public endpoints from a JSON registry |
+| [`routemesh`](#routemesh) | `routemesh://API_KEY` | All RouteMesh EVM chains |
+| [`superchain`](#superchain) | `superchain://github.com/.../chainList.json` | All chains from a Superchain registry JSON |
+| [`tenderly`](#tenderly) | `tenderly://API_KEY` | All Tenderly EVM chains |
+| [`thirdweb`](#thirdweb) | `thirdweb://CLIENT_ID` | All Thirdweb EVM chains |
+
+<Callout type="warning">
+	`repository`, `superchain`, and `envio` accept a URL instead of an API key. `pimlico` and `etherspot` accept the literal string `public` for keyless tier. See the per-vendor reference below for the exact syntax.
+</Callout>
+
+## Advanced — `providers[]` long-form
+
+When the URL shorthand isn't enough — per-network overrides, scoped upstream IDs, restricting the lazy-load surface — switch to the explicit `providers[]` block:
+
+<ConfigTabs
+	path="projects > providers[]"
+	focus="6-25"
+	yaml={`projects:
+  - id: main
+    providers:
+      # (optional) Prefix for the dynamically generated upstream IDs.
+      - id: alchemy-prod
+        # (REQUIRED) The vendor name; see the table above.
+        vendor: alchemy
+        # (optional) Vendor-specific settings (see AI reference below).
+        settings:
+          apiKey: YOUR_KEY
+        # (optional) Restrict lazy-load to a specific chain list.
+        onlyNetworks:
+          - evm:1
+          - evm:137
+        # (optional) Exclude specific chains.
+        ignoreNetworks:
+          - evm:56
+        # (optional) Template for the generated upstream IDs.
+        upstreamIdTemplate: "<PROVIDER>-<NETWORK>"
+        # (optional) Per-network overrides; keys accept matcher syntax.
+        overrides:
+          "evm:1":
+            failsafe:
+              - matchMethod: "*"
+                retry: { maxAttempts: 5 }
+          "evm:*":
+            rateLimitBudget: free-tier`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    providers: [
+      {
+        id: "alchemy-prod",
+        vendor: "alchemy",
+        settings: { apiKey: "YOUR_KEY" },
+        onlyNetworks: ["evm:1", "evm:137"],
+        ignoreNetworks: ["evm:56"],
+        upstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+        overrides: {
+          "evm:1": {
+            failsafe: [{ matchMethod: "*", retry: { maxAttempts: 5 } }],
+          },
+          "evm:*": { rateLimitBudget: "free-tier" },
+        },
+      },
+    ],
+  }],
+});`}
+/>
+
+<AISection title="Copy for your AI assistant — full provider reference">
+
+### Every supported vendor with its URL syntax and notes
 
 #### `repository`
 
-This special provider read a remote repository (a simple JSON file) that contains a list of RPC endpoints for any EVM chain. This allows automatic and lazy-loading of EVM chains on "first request":
+Reads a remote JSON file listing RPC endpoints across chains and lazy-loads each on first request.
 
-<Callout type='warning'>
-  eRPC design aims to be robust towards any number of endpoints in terms of failures or response times, but it is recommended to test before you use this provider in production.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: repository://evm-public-endpoints.erpc.cloud
+```yaml
+upstreams:
+  - endpoint: repository://evm-public-endpoints.erpc.cloud
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "repository://evm-public-endpoints.erpc.cloud",
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+The default eRPC-curated repository (`evm-public-endpoints.erpc.cloud`) is a regularly-updated IPFS file aggregating 4,000+ public endpoints from [chainlist.org](https://chainlist.org), [chainid.network](https://chainid.network), and the [viem library](https://viem.sh). Test before relying on it in production — eRPC handles unreliable endpoints gracefully but quality varies.
 
-<Callout type='info'>
-  eRPC team regularly updates an IPFS file containing 4,000+ public endpoints from [chainlist.org](https://chainlist.org), [chainid.network](https://chainid.network) and [viem library](https://viem.sh), which is pointed to by [https://evm-public-endpoints.erpc.cloud](https://evm-public-endpoints.erpc.cloud) domain.
-</Callout>
-
-#### `alchemy`
-
-Built for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: alchemy://YOUR_ALCHEMY_API_KEY
-        # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "alchemy://YOUR_ALCHEMY_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-#### `drpc`
-
-Built for [dRPC](https://drpc.org) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>  
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: drpc://YOUR_DRPC_API_KEY
-        # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "drpc://YOUR_DRPC_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.repositoryUrl`, `settings.recheckInterval` (default `1h`).
 
 #### `erpc`
 
-Built for [eRPC Cloud](https://erpc.cloud) endpoints to make it easier to connect to eRPC-hosted RPC services. You don't have to pass chainId as that will be automatically detected based on the request you send.
+Connect to another eRPC instance as a recursive upstream. Chain ID is auto-detected per request.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-
-      # With project and architecture specified
-      - endpoint: erpc://xxx.aws.erpc.cloud/project/evm
-
-      # With authentication secret (optional)
-      - endpoint: erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx
+```yaml
+upstreams:
+  - endpoint: erpc://xxx.aws.erpc.cloud/project/evm
+  - endpoint: erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx  # with auth
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        // With project and architecture specified
-        {
-          endpoint: "erpc://xxx.aws.erpc.cloud/project/evm",
-        },
-        // With authentication secret (optional)
-        {
-          endpoint: "erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx",
-        },
-      ],
-    },
-  ],
-});
+Long-form settings: `settings.endpoint`, `settings.secret`.
+
+#### `alchemy`
+
+```yaml
+upstreams:
+  - endpoint: alchemy://YOUR_ALCHEMY_API_KEY
 ```
-</Tabs.Tab>
-</Tabs>
+
+Long-form settings: `settings.apiKey`.
+
+#### `drpc`
+
+```yaml
+upstreams:
+  - endpoint: drpc://YOUR_DRPC_API_KEY
+```
+
+Long-form settings: `settings.apiKey`.
 
 #### `blastapi`
 
-Built for [BlastAPI](https://blastapi.io) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: blastapi://YOUR_BLASTAPI_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: blastapi://YOUR_BLASTAPI_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "blastapi://YOUR_BLASTAPI_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`.
 
 #### `infura`
 
-Built for [Infura](https://www.infura.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: infura://YOUR_INFURA_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: infura://YOUR_INFURA_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "infura://YOUR_INFURA_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`.
 
 #### `thirdweb`
 
-Built for [Thirdweb](https://thirdweb.com/chainlist) 3rd-party provider to make it easier to import "all supported evm chains" with just a CLIENT-ID.
+Production traffic: consult the Thirdweb team about which chains you'll use and your expected request volume.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: thirdweb://YOUR_THIRDWEB_CLIENT_ID
-        # ...
+```yaml
+upstreams:
+  - endpoint: thirdweb://YOUR_THIRDWEB_CLIENT_ID
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "thirdweb://YOUR_THIRDWEB_CLIENT_ID",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-For production traffic consult with Thirdweb team about the chains you are goin to use and amount of traffic you expect to handle.
+Long-form settings: `settings.clientId`.
 
 #### `envio`
 
-Envio [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) service provides a higher-performance alternative for certain read methods. When handling requests if a [method is supported by HyperRPC](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc), then this upstream may be used.
+Envio's [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) accelerates [a subset of read methods](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc) (e.g. `eth_getLogs`) by routing them to HyperSync indexers. When a request is for an unsupported method, the upstream skips it. Recommended for indexing workloads.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: envio://rpc.hypersync.xyz
-        # ...
+```yaml
+upstreams:
+  - endpoint: envio://rpc.hypersync.xyz
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "envio://rpc.hypersync.xyz",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-<Callout type='info'>
-  For indexing use-cases it is recommended to this upstream. This will automatically add all supported EVM chains by HyperRPC.
-</Callout>
+Long-form settings: `settings.rootDomain` (default `rpc.hypersync.xyz`).
 
 #### `pimlico`
 
-[Pimlico](https://pimlico.io) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
+Adds [Pimlico](https://pimlico.io) account-abstraction (ERC-4337) support. AA-related requests are routed to Pimlico; eth_* requests stay on your normal upstreams.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: pimlico://public
-        # Or provide your API-KEY as:
-        # endpoint: pimlico://xxxxxmy-api-key
-        # ...
+```yaml
+upstreams:
+  - endpoint: pimlico://public           # keyless tier
+  - endpoint: pimlico://YOUR_API_KEY     # authenticated
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "pimlico://public",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey` (accepts `"public"` or your API key).
 
 #### `etherspot`
 
-[Etherspot](https://etherspot.io/) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Etherspot, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
+Same role as Pimlico — [Etherspot](https://etherspot.io/) handles AA-related (ERC-4337) requests.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: etherspot://public
-        # Or provide your API-KEY as:
-        # endpoint: etherspot://xxxxxmy-api-key
-        # ...
+```yaml
+upstreams:
+  - endpoint: etherspot://public
+  - endpoint: etherspot://YOUR_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "etherspot://public",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`.
 
 #### `dwellir`
 
-Built for [Dwellir](https://www.dwellir.com/) 3rd-party provider to make it easier to import their supported EVM chains with just an API-KEY.
+Register at [dashboard.dwellir.com](https://dashboard.dwellir.com/register) for a key. Supports `onlyNetworks` filtering if you don't want every chain.
 
-You can obtain an API key by registering at [dashboard.dwellir.com/register](https://dashboard.dwellir.com/register).
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: dwellir://YOUR_DWELLIR_API_KEY
-        # Optional: Limit to specific chains if needed
-        # onlyNetworks:
-        #   - evm:1 # Ethereum Mainnet
-        #   - evm:137 # Polygon Mainnet
-        # ...
+```yaml
+upstreams:
+  - endpoint: dwellir://YOUR_DWELLIR_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "dwellir://YOUR_DWELLIR_API_KEY",
-          // Optional: Limit to specific chains if needed
-          // onlyNetworks: [
-          //   "evm:1", // Ethereum Mainnet
-          //   "evm:137", // Polygon Mainnet
-          // ],
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`.
 
 #### `conduit`
 
-Built for [Conduit](https://conduit.xyz/) rollup platform to make it easier to import all their rollup EVM chains with just an API key.
+For [Conduit](https://conduit.xyz/) rollup customers — auto-imports every rollup chain you have access to.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: conduit://YOUR_CONDUIT_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: conduit://YOUR_CONDUIT_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "conduit://YOUR_CONDUIT_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`, `settings.networksUrl` (default `https://api.conduit.xyz/public/network/all`), `settings.recheckInterval` (default `24h`).
 
 #### `superchain`
 
-This provider accepts superchain registry json file (e.g [github.com/ethereum-optimism/superchain-registry/main/chainList.json](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json)) and automatically adds all chains from it.
+Reads a Superchain-registry JSON file and adds every chain in it. `blob` segments in GitHub URLs are stripped automatically.
 
-**Note**: If you are using a github URL, you can simply use the shorthand of `superchain://github.com/org/repo/<branch>/chainList.json`. if your url includes `blob`, t will be automatically stripped.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json
-        # ...
+```yaml
+upstreams:
+  - endpoint: superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.registryUrl`, `settings.recheckInterval` (default `24h`).
 
 #### `tenderly`
 
-Built for [Tenderly](https://tenderly.co) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: tenderly://YOUR_TENDERLY_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: tenderly://YOUR_TENDERLY_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "tenderly://YOUR_TENDERLY_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-For production traffic consult with Tenderly team about the chains you are going to use and amount of traffic you expect to handle.
+Long-form settings: `settings.apiKey`.
 
 #### `chainstack`
 
-Built for [Chainstack](https://chainstack.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+The API key must come from the [Platform API Key](https://docs.chainstack.com/reference/platform-api-getting-started) settings page. Query-string filters let you scope to specific Chainstack projects/regions/providers/types.
 
-See also Chainstack docs: [Using eRPC with Chainstack: Quickstart](https://docs.chainstack.com/docs/using-erpc-with-chainstack-quickstart).
-
-<Callout type='info'>
-  This key must be created using [Platform API key](https://docs.chainstack.com/reference/platform-api-getting-started) settings page.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      # Simple usage with just API key
-      - endpoint: chainstack://YOUR_CHAINSTACK_PLATFORM_API_KEY
-        # ...
-      
-      # With query parameters for filtering
-      - endpoint: chainstack://YOUR_CHAINSTACK_PLATFORM_API_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated
-        # ...
+```yaml
+upstreams:
+  - endpoint: chainstack://YOUR_KEY
+  - endpoint: chainstack://YOUR_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          // Simple usage with just API key
-          endpoint: "chainstack://YOUR_CHAINSTACK_API_KEY",
-          // ...
-        },
-        {
-          // With query parameters for filtering
-          endpoint: "chainstack://YOUR_CHAINSTACK_API_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Supported filters:
 
-Chainstack supports a wide range of EVM-compatible networks. For production traffic, ensure your Chainstack subscription plan supports the expected load and number of networks you plan to use.
+| Filter | Values |
+|---|---|
+| `project` | Project ID |
+| `organization` | Organization ID |
+| `region` | `asia-southeast1`, `ap-southeast-1`, `us-west-2`, `us-east-1`, `uksouth`, `eu3` |
+| `provider` | `aws`, `azure`, `gcloud`, `vzo` |
+| `type` | `shared`, `dedicated` |
 
-**Supported filter parameters:**
-- `project`: Filter by project ID
-- `organization`: Filter by organization ID  
-- `region`: Filter by region (e.g., `asia-southeast1`, `ap-southeast-1`, `us-west-2`, `us-east-1`, `uksouth`, `eu3`)
-- `provider`: Filter by cloud provider (e.g., `aws`, `azure`, `gcloud`, `vzo`)
-- `type`: Filter by node type (e.g., `shared`, `dedicated`)
+Long-form settings: `settings.apiKey`, `settings.recheckInterval` (default `1h`), plus the filter fields above (`project`, `organization`, `region`, `provider`, `type`).
+
+See also [Chainstack's eRPC quickstart](https://docs.chainstack.com/docs/using-erpc-with-chainstack-quickstart).
 
 #### `onfinality`
 
-Built for [Onfinality](https://onfinality.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: onfinality://YOUR_ONFINALITY_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: onfinality://YOUR_ONFINALITY_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "onfinality://YOUR_ONFINALITY_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`.
 
 #### `blockpi`
 
-Built for [BlockPi](https://blockpi.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+Contact [BlockPi support](https://docs.blockpi.io/supports/contact-us) to request a global API key that works across all your EVM chains.
 
-<Callout type='info'>
-  You can [contact BlockPi team](https://docs.blockpi.io/supports/contact-us) to get a global API key for all your evm chains.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: blockpi://YOUR_BLOCKPI_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: blockpi://YOUR_BLOCKPI_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "blockpi://YOUR_BLOCKPI_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`.
 
 #### `ankr`
 
-Built for [Ankr](https://www.ankr.com/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: ankr://YOUR_ANKR_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: ankr://YOUR_ANKR_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "ankr://YOUR_ANKR_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-#### `blockdaemon`
-
-Built for [Blockdaemon](https://www.blockdaemon.com/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
-
-<Callout type='info'>
-  You can create an API key from your [Blockdaemon dashboard](https://app.blockdaemon.com/). A single key grants access to every EVM chain Blockdaemon's RPC service supports.
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: blockdaemon://YOUR_BLOCKDAEMON_API_KEY
-        # ...
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "blockdaemon://YOUR_BLOCKDAEMON_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+Long-form settings: `settings.apiKey`.
 
 #### `quicknode`
 
-Built for [QuickNode](https://www.quicknode.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+Get keys at the [QuickNode dashboard](https://dashboard.quicknode.com/api-keys).
 
-<Callout type='info'>
-  You can create an API key from your [QuickNode dashboard](https://dashboard.quicknode.com/api-keys).
-</Callout>
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    upstreams:
-      - endpoint: quicknode://YOUR_QUICKNODE_API_KEY
-        # ...
+```yaml
+upstreams:
+  - endpoint: quicknode://YOUR_QUICKNODE_API_KEY
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      upstreams: [
-        {
-          endpoint: "quicknode://YOUR_QUICKNODE_API_KEY",
-          // ...
-        },
-      ],
-    },
-  ],
-});
+Long-form settings: `settings.apiKey`, `settings.recheckInterval` (default `1h`).
+
+#### `llama`
+
+[Llama Nodes](https://llamanodes.com/) RPC service — currently only available via the long-form `providers[]` syntax with a settings block.
+
+```yaml
+providers:
+  - vendor: llama
+    settings:
+      apiKey: YOUR_LLAMA_API_KEY
 ```
-</Tabs.Tab>
-</Tabs>
+
+Long-form settings: `settings.apiKey`.
 
 #### `routemesh`
 
-Built for [Routemesh](https://routemesh.io) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+[RouteMesh](https://routemesh.io) only supports the long-form `providers[]` syntax (no URL shorthand).
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
+```yaml
+providers:
+  - vendor: routemesh
+    settings:
+      apiKey: YOUR_ROUTEMESH_API_KEY
+      baseURL: lb.routemes.sh  # optional, this is the default
+```
+
+Long-form settings: `settings.apiKey`, `settings.baseURL` (default `lb.routemes.sh`).
+
+#### `blockdaemon`
+
+A single key grants access to every EVM chain Blockdaemon's RPC service supports. Get one from the [Blockdaemon dashboard](https://app.blockdaemon.com/).
+
+```yaml
+upstreams:
+  - endpoint: blockdaemon://YOUR_BLOCKDAEMON_API_KEY
+```
+
+Long-form settings: `settings.apiKey`.
+
+### `providers[]` fields reference
+
+Every field on a `providers[]` entry:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `id` | string | Optional unique ID, used as a prefix on every dynamically generated upstream ID. |
+| `vendor` | string (**required**) | One of the supported vendor names (see table). |
+| `settings` | object | Vendor-specific settings; see per-vendor sections above. |
+| `onlyNetworks` | string[] | Restrict the lazy-load to these networks (e.g. `evm:1`, `evm:137`). When omitted, every supported chain is lazy-loaded. |
+| `ignoreNetworks` | string[] | Exclude these networks from the lazy-load. Combines with `onlyNetworks`. |
+| `upstreamIdTemplate` | string | Template for generated upstream IDs. Supports `<PROVIDER>` and `<NETWORK>` placeholders. Default: `<PROVIDER>-<NETWORK>`. |
+| `overrides` | map[string→UpstreamConfig] | Per-network overrides. Keys accept [matcher syntax](/config/matcher) (`evm:1`, `evm:*`, `evm:1|evm:10`). Values are full [upstream configs](/config/projects/upstreams). |
+
+### Combining onlyNetworks + overrides + upstreamIdTemplate
+
+A realistic production setup — Alchemy on mainnet/Polygon with stricter retries on mainnet and a cheap rate-limit budget elsewhere:
+
+```yaml
 projects:
   - id: main
-    # ...
     providers:
-      - vendor: routemesh
+      - id: alchemy
+        vendor: alchemy
         settings:
-          baseURL: lb.routemes.sh # (optional) Defaults to lb.routemes.sh
-          apiKey: YOUR_ROUTEMESH_API_KEY
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      providers: [
-        {
-          vendor: "routemesh",
-          settings: {
-            baseURL: "lb.routemes.sh", // (optional) Defaults to lb.routemes.sh
-            apiKey: "YOUR_ROUTEMESH_API_KEY",
-          },
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-## Advanced config
-
-You can use dedicated `providers:` config to customize per-network configurations (e.g. different config for Alchemy eth-mainnet vs Alchemy polygon) as follows:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    # ...
-    providers:
-      - id: alchemy-prod # (optional) Unique ID that will be prefixed to the dynamically generated upstream ID
-        vendor: alchemy  # (REQUIRED) Defines the provider type
-        settings:        # (optional) Provider-specific settings
-          apiKey: xxxxx
-        onlyNetworks:    # (optional) If you want to limit the lazy-loaded networks (instead of loading all supported chains)
+          apiKey: ${ALCHEMY_KEY}
+        onlyNetworks:
           - evm:1
           - evm:137
-        ignoreNetworks:  # (optional) If you want to exclude specific networks from this provider
-          - evm:56
-          - evm:43114
-        # (optional) If you want to customize the dynamically generated upstream ID
-        upstreamIdTemplate: "<PROVIDER>-<NETWORK>"
-        # (optional) Customize upstream configs for specific networks:
-        #   - The key must be a networkId, and it supports matcher syntax (https://docs.erpc.cloud/config/matcher).
-        #   - The value is a typical upstream config (https://docs.erpc.cloud/config/projects/upstreams#config).
+          - evm:42161
+        upstreamIdTemplate: "alchemy-<NETWORK>"
         overrides:
+          # Mainnet: aggressive retries
           "evm:1":
-            rateLimitBudget: # ...
-            jsonRpc: # ...
-            ignoreMethods: # ...
-            allowMethods: # ...
-            failsafe: # ...
+            failsafe:
+              - matchMethod: "*"
+                retry: { maxAttempts: 5, delay: 100ms }
+          # Everywhere else: stay under a per-vendor budget
           "evm:*":
-            failsafe: # ...
-          "evm:123|evm:10":
-            failsafe: # ...
+            rateLimitBudget: alchemy-shared
 ```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
 
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      // ...
-      providers: [
-        {
-          // (optional) Unique ID that will be prefixed to the dynamically generated upstream ID:
-          id: "alchemy-prod",
+### Vendor-settings cheatsheet (all vendors, copy-paste ready)
 
-          // (REQUIRED) Defines the provider type:
-          vendor: "alchemy",
-          
-          // (optional) Provider-specific settings:
-          settings: {
-            apiKey: "xxxx",
-          },
-
-          // (optional) If you want to limit the lazy-loaded networks (instead of loading all supported chains):
-          onlyNetworks: [
-            "evm:1",
-            "evm:137",
-          ],
-
-          // (optional) If you want to exclude specific networks from this provider:
-          ignoreNetworks: [
-            "evm:56",
-            "evm:43114",
-          ],
-
-          // (optional) If you want to customize the dynamically generated upstream ID:
-          upstreamIdTemplate: "<PROVIDER>-<NETWORK>",
-
-          // (optional) Customize upstream configs for specific networks:
-          overrides: {
-            "evm:1": {
-              rateLimitBudget: "...",
-              jsonRpc: {
-                // ...
-              },
-              ignoreMethods: ["..."],
-              allowMethods: ["..."],
-              failsafe: {
-                // ...
-              },
-            },
-            "evm:*": {
-              // ...
-            },
-            "evm:123|evm:10": {
-              // ...
-            },
-          },
-        },
-      ],
-    },
-  ],
-});
-```
-</Tabs.Tab>
-</Tabs>
-
-#### Vendor settings reference
-
-Here is a reference of all the settings you can use for each vendor:
-```yaml filename="erpc.yaml"
-# ...
+```yaml
 providers:
   - vendor: alchemy
-    settings:
-      apiKey: xxxxx
+    settings: { apiKey: xxxxx }
   - vendor: blastapi
-    settings:
-      apiKey: xxxxx
+    settings: { apiKey: xxxxx }
   - vendor: drpc
-    settings:
-      apiKey: xxxxx
+    settings: { apiKey: xxxxx }
   - vendor: envio
-    settings:
-      rootDomain: rpc.hypersync.xyz
+    settings: { rootDomain: rpc.hypersync.xyz }
   - vendor: erpc
-    settings:
-      endpoint: xxx.aws.erpc.cloud/project/evm
-      secret: xxxxx # Optional authentication secret
+    settings: { endpoint: xxx.aws.erpc.cloud/project/evm, secret: xxxxx }
   - vendor: etherspot
-    settings:
-      apiKey: xxxxx
+    settings: { apiKey: xxxxx }
   - vendor: infura
-    settings:
-      apiKey: xxxxx
+    settings: { apiKey: xxxxx }
   - vendor: llama
-    settings:
-      apiKey: xxxxx
+    settings: { apiKey: xxxxx }
   - vendor: pimlico
-    settings:
-      apiKey: xxxxx # can be "public" or your API-KEY
+    settings: { apiKey: xxxxx }      # or "public"
   - vendor: thirdweb
-    settings:
-      clientId: xxxxx
+    settings: { clientId: xxxxx }
   - vendor: repository
     settings:
       repositoryUrl: https://evm-public-endpoints.erpc.cloud
-      recheckInterval: 1h # (optional) How often to recheck the repository for newly added RPC endpoints (default: 1h)
+      recheckInterval: 1h            # how often to refresh the repository
   - vendor: dwellir
-    settings:
-      apiKey: xxxxx
+    settings: { apiKey: xxxxx }
   - vendor: conduit
     settings:
       apiKey: xxxxx
-      networksUrl: https://api.conduit.xyz/public/network/all # (optional) Endpoint to fetch all supported networks
-      recheckInterval: 24h # (optional) How often to recheck the API for newly added networks (default: 24h)
+      networksUrl: https://api.conduit.xyz/public/network/all
+      recheckInterval: 24h
   - vendor: superchain
     settings:
-      registryUrl: "github.com/ethereum-optimism/superchain-registry/main/chainList.json"
-      recheckInterval: 24h # (optional) How often to recheck the registry for newly added chains (default: 24h)
+      registryUrl: github.com/ethereum-optimism/superchain-registry/main/chainList.json
+      recheckInterval: 24h
   - vendor: tenderly
-    settings:
-      apiKey: xxxxx # Your Tenderly API key
+    settings: { apiKey: xxxxx }
   - vendor: chainstack
     settings:
-      apiKey: xxxxx # Your Chainstack API key
-      recheckInterval: 1h # (optional) How often to recheck the API for newly added networks (default: 1h)
-      project: xxxxx # (optional) Filter by project ID
-      organization: xxxxx # (optional) Filter by organization ID
-      region: us-east-1 # (optional) Filter by region (asia-southeast1, ap-southeast-1, us-west-2, us-east-1, uksouth, eu3)
-      provider: aws # (optional) Filter by cloud provider (aws, azure, gcloud, vzo)
-      type: dedicated # (optional) Filter by node type (shared, dedicated)
+      apiKey: xxxxx
+      recheckInterval: 1h
+      project: xxxxx                  # filter by project ID
+      organization: xxxxx             # filter by organization ID
+      region: us-east-1               # asia-southeast1, ap-southeast-1, us-west-2, us-east-1, uksouth, eu3
+      provider: aws                   # aws, azure, gcloud, vzo
+      type: dedicated                 # shared, dedicated
   - vendor: onfinality
-    settings:
-      apiKey: xxxxx # Your OnFinality API key
+    settings: { apiKey: xxxxx }
   - vendor: blockpi
-    settings:
-      apiKey: xxxxx # Your BlockPi API key
+    settings: { apiKey: xxxxx }
   - vendor: ankr
-    settings:
-      apiKey: xxxxx # Your Ankr API key
+    settings: { apiKey: xxxxx }
   - vendor: quicknode
     settings:
-      apiKey: xxxxx # Your QuickNode API key
-      recheckInterval: 1h # (optional) How often to recheck the API for newly added networks (default: 1h)
+      apiKey: xxxxx
+      recheckInterval: 1h
   - vendor: routemesh
     settings:
-      baseURL: lb.routemes.sh # (optional) Defaults to lb.routemes.sh
-      apiKey: xxxxx # Your Routemesh API key
+      apiKey: xxxxx
+      baseURL: lb.routemes.sh
   - vendor: blockdaemon
-    settings:
-      apiKey: xxxxx # Your Blockdaemon API key
+    settings: { apiKey: xxxxx }
 ```
+
+### Common pitfalls
+
+- **URL shorthand vs long-form on the same vendor** — the URL shorthand silently maps to `providers[]` internally, so you can't mix-and-match for one vendor. Pick one form per project.
+- **`onlyNetworks` doesn't lazy-load** — listed networks are still lazy-loaded on first request. The list just bounds *which* networks may load.
+- **Matcher keys in `overrides`** — only `|` (OR), `*` (wildcard), and `!` (NOT) are supported. Comma-separated lists are NOT a matcher.
+- **`recheckInterval`** — for vendors that fetch a network list (`repository`, `superchain`, `conduit`, `chainstack`, `quicknode`), this controls how often eRPC refreshes the list. Newly added chains won't appear until the next recheck.
+- **API key in `endpoint` vs `settings.apiKey`** — they're equivalent. URL shorthand stuffs the key into `settings.apiKey` automatically.
+
+</AISection>
+
+<Callout type="tip">
+	Want this entire reference as plain markdown for an AI assistant? Use the **AI** link at the top of the page, or append `.llms.txt` to any docs URL.
+</Callout>

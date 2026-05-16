@@ -22,5 +22,8 @@ module.exports = {
 	},
 	admin: {
 		title: "Admin",
+	},
+	cli: {
+		title: "CLI & env vars",
 	}
 };

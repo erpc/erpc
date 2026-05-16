@@ -1,141 +1,253 @@
 ---
-description: sharedState allows more efficient horizontal scaling of eRPC with multiple instances...
+title: "sharedState"
+description: Share critical blockchain state across multiple eRPC instances — eliminates redundant upstream polling and improves integrity checks in horizontal-scaling deployments.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
-
+import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../../components";
 
 # `sharedState`
 
-The `sharedState` feature enables multiple eRPC instances to share critical state information across a cluster. This is especially useful for horizontal scaling deployments where having a shared view of blockchain state improves efficiency and reduces unnecessary upstream requests.
+<LLMsTxtLink />
 
-Key benefits:
-- **Reduced upstream load**: Instances share latest and finalized block info, eliminating redundant polling.
-- **Enhanced integrity checks**: More accurate integrity checks for operations like `eth_getLogs` by using shared latest block number.
+When running multiple eRPC instances, each instance would independently poll upstreams for the latest and finalized block numbers, wasting requests. `sharedState` lets the cluster share that information through a common backing store — so one instance's discovery is immediately visible to all others.
 
-## Config
+**You can configure:**
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-<Tab>
-```yaml filename="erpc.yaml"
-database:
+- **Cluster isolation** — `clusterKey` scopes shared state to a named group; different clusters don't bleed into each other
+- **Backing store** — memory (single-instance default), Redis (recommended for production), or PostgreSQL
+- **Fallback timeout** — how long to wait for the backing store before falling back to local state
+- **Distributed locking** — `lockTtl`, `lockMaxWait`, `updateMaxWait` control coordination latency budget
+
+## Minimum useful config
+
+A single Redis connector — the recommended production setup. Memory is the default when no connector is specified and works for single-instance deployments only.
+
+<ConfigTabs
+	path="database > sharedState"
+	focus="3-8"
+	yaml={`database:
   sharedState:
-    # Unique identifier for a group of eRPC instances that should share state
-    # Recommended if you have multiple separate eRPC clusters 
-    # Default: "erpc-default"
-    clusterKey: "my-cluster-1"
-    
-    # Storage backend configuration
-    # Local "memory" is used by default
+    clusterKey: "my-cluster-1"   # isolates state from other clusters
     connector:
-      # Storage driver: memory, redis, postgresql (memory is default)
       driver: redis
-      # Redis-specific configuration
       redis:
-        # Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
-        uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
-    
-    # Network I/O timeout for backing store operations (get/set/publish)
-    # Recommended: 3s
-    fallbackTimeout: 3s
-    
-    # TTL for distributed locks in the backing store.
-    # Recommended: 2s (keep short; foreground path is best‑effort)
-    lockTtl: 2s
-
-    # Foreground latency budgets (best‑effort)
-    # Recommended: lockMaxWait=100ms, updateMaxWait=50ms
-    lockMaxWait: 100ms   # max time to try acquiring the lock before proceeding locally
-    updateMaxWait: 50ms  # max time to run refresh function before returning current value
-```
-</Tab>
-<Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+        uri: "redis://username:password@host:6379/0?pool_size=10"
+    fallbackTimeout: 3s`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
     sharedState: {
-      // Unique identifier for a group of eRPC instances that should share state
-      // Recommended if you have multiple separate eRPC clusters 
-      // Default: "erpc-default"
-      clusterKey: "erpc-default",
-      
-      // Storage backend configuration
-      // Local "memory" is used by default
+      clusterKey: "my-cluster-1",
       connector: {
-        // Storage driver: memory, redis, postgresql (memory is default)
         driver: "redis",
-        // Redis-specific configuration
         redis: {
-          // Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
-          uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
-        }
+          uri: "redis://username:password@host:6379/0?pool_size=10",
+        },
       },
-      
-      // Network I/O timeout for backing store operations (get/set/publish)
-      // Recommended: 3s
       fallbackTimeout: "3s",
-      
-      // TTL for distributed locks in the backing store.
-      // Recommended: 2s (keep short; foreground path is best‑effort)
-      lockTtl: "2s",
-
-      // Foreground latency budgets (best‑effort)
-      // Recommended: lockMaxWait=100ms, updateMaxWait=50ms
-      lockMaxWait: "100ms",
-      updateMaxWait: "50ms",
-    }
-  }
-});
-```
-</Tab>
-</Tabs>
+    },
+  },
+});`}
+/>
 
 <Callout type="warning">
-  Setting a unique `clusterKey` is critical if you have multiple eRPC deployments (e.g., different clusters in Kubernetes). 
-  This ensures each cluster maintains its own isolated shared state. If not specified, it defaults to "erpc-default".
+	Always set a unique `clusterKey` when running multiple independent eRPC deployments (e.g. separate Kubernetes clusters). Without it, all instances default to `"erpc-default"` and would share state across unrelated clusters.
 </Callout>
 
-### Recommendation
+## Full config with locking tuned
 
-We recommend using Redis as the shared state connector for production deployments:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-<Tab>
-```yaml filename="erpc.yaml"
-database:
+<ConfigTabs
+	path="database > sharedState"
+	focus="3-12"
+	yaml={`database:
   sharedState:
+    clusterKey: "my-cluster-1"
     connector:
       driver: redis
       redis:
-        # Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
-        uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
-```
-</Tab>
-<Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+        uri: "redis://:some-secret@redis.svc.cluster.local:6379/?pool_size=10&dial_timeout=5s&read_timeout=1s&write_timeout=2s"
+    fallbackTimeout: 3s
+    lockTtl: 2s        # TTL for distributed locks; keep short
+    lockMaxWait: 100ms # max time to try acquiring lock before proceeding locally
+    updateMaxWait: 50ms`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
     sharedState: {
+      clusterKey: "my-cluster-1",
       connector: {
         driver: "redis",
         redis: {
-          // Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
-          uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
-        }
+          uri: "redis://:some-secret@redis.svc.cluster.local:6379/?pool_size=10&dial_timeout=5s&read_timeout=1s&write_timeout=2s",
+        },
       },
-    }
-  }
-});
-```
-</Tab>
-</Tabs>
+      fallbackTimeout: "3s",
+      lockTtl: "2s",
+      lockMaxWait: "100ms",
+      updateMaxWait: "50ms",
+    },
+  },
+});`}
+/>
 
 <Callout type="info">
-  Redis is the recommended connector for shared state as it provides fast synchronization between instances. The total storage needed is typically less than 1MB per upstream.
+	Storage footprint is tiny — typically less than 1 MB per upstream regardless of chain traffic volume.
 </Callout>
 
-For more information on available connectors and their configuration options, see the [Drivers](/config/database/drivers) documentation.
+<AISection title="Copy for your AI assistant — full sharedState reference">
+
+### Full config skeleton
+
+```yaml
+database:
+  sharedState:
+    # Unique key scoping this cluster's shared state.
+    # Default: "erpc-default". Set explicitly when running multiple clusters.
+    clusterKey: string
+
+    # Storage backend. Exactly one connector (not an array).
+    connector:
+      driver: memory | redis | postgresql
+      # Driver-specific block — only the one matching driver is used:
+      memory: {}                         # no config; single-instance only
+      redis:
+        uri: string                      # redis://[user:pass@]host:port/db[?options]
+      postgresql:
+        connectionUri: string            # postgres://user:pass@host:5432/dbname
+        table: string                    # optional, default "erpc_shared_state"
+
+    # Max time to wait for the backing store before falling back to local state.
+    # Applies to get/set/publish operations.
+    # Recommended: 3s
+    fallbackTimeout: duration
+
+    # TTL for distributed locks stored in the backing store.
+    # Keep short — this is a best-effort coordination path, not a hard guarantee.
+    # Default: 4s
+    lockTtl: duration
+
+    # Max time to try acquiring a distributed lock before proceeding locally.
+    # Default: 100ms
+    lockMaxWait: duration
+
+    # Max time to run a shared-state refresh function before returning the
+    # locally cached value.
+    # Default: 50ms
+    updateMaxWait: duration
+```
+
+### Field reference
+
+| Field | Default | Notes |
+|---|---|---|
+| `clusterKey` | `"erpc-default"` | Namespace for this cluster's state keys in the backing store. Use a unique value per independent eRPC deployment. Collisions between clusters cause incorrect shared block numbers. |
+| `connector.driver` | `memory` | `memory` for single-instance; `redis` recommended for multi-instance; `postgresql` available but higher latency than Redis. |
+| `fallbackTimeout` | none | Duration before the backing-store call is abandoned and the local value is used. Protects the request path from a slow or unavailable store. |
+| `lockTtl` | `4s` | How long a distributed lock key lives in the store. A crashed instance holding a lock releases it when TTL expires. Setting it too long causes unnecessary serialization under failover; too short risks the lock expiring before the holder finishes writing. |
+| `lockMaxWait` | `100ms` | How long an instance will spin-wait trying to acquire a lock before giving up and proceeding with its own local value. Keeps the foreground path bounded. |
+| `updateMaxWait` | `50ms` | Deadline for the shared-state refresh callback (the function that updates block numbers, finality info, etc.). On expiry, the in-process cached value is returned unchanged. |
+
+### Connector options
+
+**memory** — no config block needed. All state is in-process; invisible to other instances. Use only for single-instance deployments or local development.
+
+**redis** — recommended for production. The `uri` field uses standard Redis URI syntax:
+
+```
+redis://[user:password@]host:port[/db][?option=value&...]
+```
+
+Useful query-string options:
+- `pool_size` — connection pool size (default 10 is usually fine)
+- `dial_timeout` — TCP connect timeout (e.g. `5s`)
+- `read_timeout` — per-read timeout (e.g. `1s`)
+- `write_timeout` — per-write timeout (e.g. `2s`)
+
+Redis Sentinel / Cluster URIs are also supported via the `redis-sentinel://` and `redis-cluster://` schemes (where available).
+
+The Redis connector's `lockRetryInterval` field (default `500ms`) controls the backoff between lock-acquisition attempts for sharedState. See the [full Redis driver reference](/config/database/drivers#redis-driver) for all timing knobs.
+
+**postgresql** — use when Redis is unavailable or a single SQL store is preferred. Higher per-operation latency than Redis; set `fallbackTimeout` generously (e.g. `5s`).
+
+### When to enable sharedState
+
+Enable it any time you run **more than one eRPC instance** serving the same networks:
+
+- Kubernetes Deployment with `replicas > 1`
+- Multiple Fly.io machines in the same app
+- Active-active multi-region deployments
+
+With `memory` (the default), each instance independently tracks the latest/finalized block — every instance polls upstreams separately and may make routing decisions based on slightly stale or inconsistent data. With a shared Redis, one instance's observation is immediately visible to all others, cutting upstream polling by roughly `1/N` where N is the replica count.
+
+For **single-instance** deployments, sharedState with `memory` has no downside but also no benefit. You can omit the section entirely.
+
+### Deployment patterns
+
+**Single cluster, Redis:**
+
+```yaml
+database:
+  sharedState:
+    clusterKey: "prod"
+    connector:
+      driver: redis
+      redis:
+        uri: "redis://:secret@redis.internal:6379/?pool_size=20"
+    fallbackTimeout: 3s
+    lockTtl: 2s
+    lockMaxWait: 100ms
+    updateMaxWait: 50ms
+```
+
+**Two independent clusters sharing one Redis instance** — use distinct `clusterKey` values so keys don't collide:
+
+```yaml
+# cluster A
+database:
+  sharedState:
+    clusterKey: "erpc-mainnet"
+    connector:
+      driver: redis
+      redis: { uri: "redis://redis.internal:6379/0" }
+
+# cluster B  (separate erpc.yaml)
+database:
+  sharedState:
+    clusterKey: "erpc-testnet"
+    connector:
+      driver: redis
+      redis: { uri: "redis://redis.internal:6379/0" }
+```
+
+### Common pitfalls
+
+- **`clusterKey` collisions** — two unrelated eRPC clusters pointing at the same Redis without distinct `clusterKey` values will cross-contaminate block-number state, causing incorrect routing decisions (e.g. treating mainnet finalized block as testnet finalized block).
+- **`lockTtl` too long** — if an instance crashes while holding a lock, other instances wait `lockTtl` before the lock is released. A value like `30s` means a 30-second stall for one shared-state refresh after any crash. Keep it at 2–5s.
+- **`lockTtl` too short** — if the backing-store round-trip is slower than `lockTtl`, the lock expires before the holder finishes writing, allowing concurrent writers and defeating the coordination guarantee. Use `lockTtl >= 2 * fallbackTimeout` as a rule of thumb.
+- **`fallbackTimeout` too tight** — a very short timeout (e.g. `50ms`) on a cross-region Redis will cause near-constant fallback to local state, defeating the purpose of shared state. Set it to at least 2–3× the expected P99 round-trip to the store.
+- **Using `memory` connector in a multi-instance deployment** — the default `memory` connector is completely in-process; no state is shared. If you're running replicas and wondering why shared state seems not to work, check that you've configured Redis or PostgreSQL.
+- **PostgreSQL table not created** — the PostgreSQL driver creates the table automatically on first run, but requires `CREATE TABLE` permission on the target schema. Grant it or pre-create the table.
+
+### Fallback semantics
+
+All operations against the backing store are **best-effort**. If the store is down or slow:
+
+1. The call respects `fallbackTimeout` and returns the locally cached value.
+2. eRPC continues serving requests using its own in-process state.
+3. When the store recovers, state sync resumes automatically — no restart needed.
+
+This means a Redis outage degrades multi-instance coordination but does **not** take eRPC down. The worst case is that instances temporarily diverge on their view of the latest block, which may cause a small amount of redundant upstream polling until the store recovers.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

@@ -1,101 +1,245 @@
 ---
-description: URL structure for eRPC clients...
+title: URL & routing
+description: URL patterns, request body formats, domain aliasing, and multi-chain batching for eRPC clients.
 ---
 
 import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../components";
 
-# URL
+# URL & routing
 
-eRPC supports several URL patterns for making requests, with options for both single-chain and multi-chain endpoints.
+<LLMsTxtLink />
 
-## Single-chain requests
+eRPC accepts JSON-RPC over HTTP at a set of well-defined URL patterns. The full path encodes the project, architecture, and chain — or any subset of those can be inferred from a domain-aliasing rule configured on the server.
 
-### Standard URL pattern
+**What this page covers:**
 
-When making requests only for a single chain, you can use this URL structure:
+- Standard URL pattern: `/projectId/architecture/chainId`
+- Network alias pattern: `/projectId/alias`
+- Multi-chain batch: `/projectId` with `networkId` in the body
+- Domain aliasing: mapping a `Host` header to a project / architecture / chain
+- HTTP methods, body formats, and query-param / header directives
 
-<Callout type='info'>
-  https://&lt;your-erpc-hostname&gt;/&lt;project-id&gt;/&lt;network-architecture&gt;/&lt;chain-id&gt;
-</Callout>
+## URL patterns
 
-##### `<your-erpc-hostname>`
-Depends on your deployment setup, for example in local development (using `make run`) it will be `localhost:4000`.
+### Single-chain: standard path
 
-##### `<project-id>`
-Target project ID you configured in [erpc.yaml](/config/example), for example "main" or "frontend", "backend", etc.
+```
+http://<hostname>/<projectId>/<architecture>/<chainId>
+```
 
-##### `<network-architecture>`
-Target network architecture you configured in [erpc.yaml](/config/example), for example `evm`.
-
-##### `<chain-id>`
-Target chain ID that one or more upstreams support, for example "1" or `42161`.
+| Segment | Example | Notes |
+|---|---|---|
+| `<hostname>` | `localhost:4000` | Your eRPC host + port. |
+| `<projectId>` | `main`, `frontend` | Project ID from your config. |
+| `<architecture>` | `evm` | Network architecture from your config. |
+| `<chainId>` | `1`, `42161` | Numeric chain ID. |
 
 ```bash
-# A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
-
-curl --location 'http://localhost:4000/main/evm/1' \
---header 'Content-Type: application/json' \
---data '{
+curl -X POST 'http://localhost:4000/main/evm/1' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
     "method": "eth_getBlockByNumber",
-    "params": [
-        "0x1203319",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
+    "params": ["0x1203319", false]
+  }'
 ```
 
-### Domain aliasing
-If configured with domain aliasing, you can have predefined project and network values:
+### Single-chain: network alias
 
-```yaml filename="erpc.yaml"
-server:
-  # ...
+If you have configured network aliases, you can also use:
+
+```
+http://<hostname>/<projectId>/<alias>
+```
+
+where `<alias>` maps to a specific architecture + chain ID pair defined in your project config.
+
+### Multi-chain batch
+
+To fan out a request (or a batch) across multiple chains in one HTTP call, use the project endpoint and include `networkId` in each JSON-RPC object:
+
+```
+http://<hostname>/<projectId>
+```
+
+```bash
+curl -X POST 'http://localhost:4000/main' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "networkId": "evm:1",
+    "method": "eth_getBlockByNumber",
+    "params": ["0x1203319", false]
+  }'
+```
+
+See [Batch requests](/operation/batch) for full multi-chain batch semantics.
+
+## Domain aliasing
+
+`server.aliasing.rules[]` lets you omit part or all of the URL path by mapping a `Host` header to a project, architecture, and/or chain. The degree of aliasing determines how much of the URL path a caller still needs to supply.
+
+<ConfigTabs
+	path="server > aliasing > rules[]"
+	yaml={`server:
   aliasing:
     rules:
-      - matchDomain: "*" # (OPTIONAL) Pattern to match Host header, defaults to `*` (all domains)
-        serveProject: "main" # (OPTIONAL) Project ID to serve for matched domains
-        serveArchitecture: "evm" # (OPTIONAL) Network architecture (e.g., "evm")
-        serveChain: "1" # (OPTIONAL) Chain ID (e.g., "1" for Ethereum mainnet)
-```
-
-#### Configuration examples
-
-- **No aliasing** - full URL is required
-```yaml
-aliasing: ~
-```
-```
-https://api.myservice.com/main/evm/1
-```
-
-- **Project only**
-```yaml
-server:
-  aliasing:
-    rules:
-      - matchDomain: "api.myservice.com"
-        serveProject: "main"
-```
-```
-https://api.myservice.com/evm/1
-```
-
-- **Project and architecture**
-```yaml
-server:
-  aliasing:
-    rules:
-      - matchDomain: "evm.myservice.com"
+      - matchDomain: "eth.myservice.com"     # full alias: no path needed
         serveProject: "main"
         serveArchitecture: "evm"
+        serveChain: "1"
+      - matchDomain: "evm.myservice.com"     # project + arch: caller appends /<chainId>
+        serveProject: "main"
+        serveArchitecture: "evm"
+      - matchDomain: "api.myservice.com"     # project only: caller appends /evm/<chainId>
+        serveProject: "main"`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    aliasing: {
+      rules: [
+        {
+          matchDomain: "eth.myservice.com",
+          serveProject: "main",
+          serveArchitecture: "evm",
+          serveChain: "1",
+        },
+        {
+          matchDomain: "evm.myservice.com",
+          serveProject: "main",
+          serveArchitecture: "evm",
+        },
+        {
+          matchDomain: "api.myservice.com",
+          serveProject: "main",
+        },
+      ],
+    },
+  },
+});`}
+/>
+
+<Callout type="info">
+  `matchDomain` is matched against the `Host` header using [matcher syntax](/config/matcher) — glob wildcards are supported.
+</Callout>
+
+### Aliasing levels
+
+| `serveProject` | `serveArchitecture` | `serveChain` | Resulting URL shape |
+|---|---|---|---|
+| — | — | — | `https://host/<projectId>/evm/<chainId>` |
+| set | — | — | `https://host/evm/<chainId>` |
+| set | set | — | `https://host/<chainId>` |
+| set | set | set | `https://host` (bare hostname) |
+
+<AISection title="Copy for your AI assistant — full URL & routing reference">
+
+### URL patterns
+
+eRPC supports three URL shapes for JSON-RPC over HTTP:
+
+**1. Full path (no aliasing required)**
 ```
+POST /<projectId>/<architecture>/<chainId>
 ```
-https://evm.myservice.com/1
+Example: `POST /main/evm/1`
+
+**2. Network alias (short name)**
+```
+POST /<projectId>/<alias>
+```
+`<alias>` must be a network alias configured under the project. Resolves to a specific architecture + chain.
+
+**3. Multi-chain project endpoint**
+```
+POST /<projectId>
+```
+The JSON-RPC request body must include a top-level `"networkId"` field (e.g. `"evm:1"`) to identify the target chain.
+
+### HTTP methods
+
+Only `POST` is supported for JSON-RPC requests. `GET` and `OPTIONS` (for CORS preflight) are handled by the server but do not dispatch JSON-RPC.
+
+### Request body formats
+
+**Single JSON-RPC request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_blockNumber",
+  "params": []
+}
 ```
 
-- **Full aliasing**
+**JSON-RPC batch (array):**
+```json
+[
+  {"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
+  {"jsonrpc":"2.0","id":2,"method":"eth_gasPrice","params":[]}
+]
+```
+
+**Multi-chain single request (project endpoint only):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "networkId": "evm:42161",
+  "method": "eth_blockNumber",
+  "params": []
+}
+```
+
+**Multi-chain batch (project endpoint only):**
+```json
+[
+  {"jsonrpc":"2.0","id":1,"networkId":"evm:1","method":"eth_blockNumber","params":[]},
+  {"jsonrpc":"2.0","id":2,"networkId":"evm:42161","method":"eth_blockNumber","params":[]}
+]
+```
+
+See [Batch requests](/operation/batch) for full details on multi-chain fan-out and response merging.
+
+### Query params and request headers
+
+eRPC supports `X-ERPC-*` directive headers and query params on every request. These control caching, selection, retries, and hedging at the per-request level. See [Directives](/operation/directives) for the full list.
+
+Common examples:
+
+```bash
+# Skip cache read (force upstream fetch)
+curl ... -H 'X-ERPC-Skip-Cache-Read: true'
+
+# Pin to a specific upstream
+curl ... -H 'X-ERPC-Use-Upstream: my-alchemy'
+
+# Disable retries for this request
+curl ... -H 'X-ERPC-Retries: 0'
+```
+
+### Server aliasing: `AliasingConfig`
+
+`server.aliasing.rules[]` maps `Host` headers to project/architecture/chain values. Rules are evaluated in order; the first match wins.
+
+| Field | Type | Notes |
+|---|---|---|
+| `matchDomain` | `string` | Pattern matched against the `Host` header. Supports [matcher syntax](/config/matcher) (glob). Defaults to `*` (match all). |
+| `serveProject` | `string` | Project ID to route to when this rule matches. |
+| `serveArchitecture` | `string` | Architecture to use (e.g. `"evm"`). |
+| `serveChain` | `string` | Chain ID as a string (e.g. `"1"`, `"42161"`). |
+
+All fields are optional. Fields not set in the rule are still required in the URL path. Example with multiple rules:
+
 ```yaml
 server:
   aliasing:
@@ -104,71 +248,40 @@ server:
         serveProject: "main"
         serveArchitecture: "evm"
         serveChain: "1"
-```
-```
-https://eth.myservice.com
-```
-
-#### Multiple rules example
-
-You can define multiple rules to handle different domains:
-
-```yaml
-server:
-  aliasing:
-    rules:
-      # Ethereum Mainnet specific endpoint
-      - matchDomain: "eth.myservice.com"
-        serveProject: "main"
-        serveArchitecture: "evm"
-        serveChain: "1"
-      
-      # Arbitrum specific endpoint
       - matchDomain: "arbitrum.myservice.com"
         serveProject: "main"
         serveArchitecture: "evm"
         serveChain: "42161"
-      
-      # Generic EVM endpoint (requires chain ID in URL)
       - matchDomain: "evm.myservice.com"
         serveProject: "main"
         serveArchitecture: "evm"
-      
-      # Project-specific endpoint (requires architecture and chain in URL)
       - matchDomain: "api.myservice.com"
         serveProject: "main"
 ```
 
-<Callout type="info">
-  Alias domains are matched with `Host` header using [matcher syntax](/config/matcher)
+### Network alias usage
+
+Network aliases are short names configured inside a project's `networks[]` block. When a caller uses `POST /<projectId>/<alias>`, eRPC resolves the alias to its architecture + chain ID before routing. Aliases let you expose a stable name (`mainnet`, `arbitrum`) that is independent of the numeric chain ID — useful if you ever need to remap chains without updating all callers.
+
+### Healthcheck endpoint
+
+`GET /healthcheck` returns `200 OK` when eRPC is ready. During graceful shutdown (after SIGTERM + `waitBeforeShutdown`), it returns `503`. See [Healthcheck](/operation/healthcheck) for details.
+
+### Admin endpoint
+
+`POST /admin` exposes the JSON-RPC admin API (project inspection, API-key CRUD). See [Admin API](/operation/admin).
+
+### Common pitfalls
+
+- **Trailing slashes** — `/main/evm/1/` (with a trailing slash) is not the same as `/main/evm/1`. eRPC does not redirect; the request will 404 or be misrouted.
+- **Case sensitivity** — project IDs, architecture names, and chain IDs in the path are matched case-sensitively. `EVM` vs `evm` and `Main` vs `main` are different.
+- **Alias collisions** — if a network alias has the same string as a numeric chain ID (e.g. an alias named `"1"`), the numeric chain ID takes precedence in the path resolver. Name aliases distinctly (e.g. `"mainnet"`, `"arbitrum"`).
+- **`matchDomain: "*"` catches everything** — if you define a wildcard rule before a more specific one, the wildcard fires first. Put specific rules before the catch-all.
+- **`networkId` required at project endpoint** — calling `POST /main` without a `networkId` field in the body will result in a routing error. Only use the project endpoint when you need multi-chain dispatch.
+- **Domain aliasing and `Host` header forwarding** — when running behind a reverse proxy, ensure the proxy forwards the original `Host` header (not `localhost` or the upstream address). Most proxies need `proxy_set_header Host $host;` (nginx) or equivalent.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
 </Callout>
-
-## Multi-chain requests
-
-When making requests for multiple chains, you can use the project endpoint only and must include "networkId" within the request body:
-
-<Callout type='info'>
-  https://&lt;your-erpc-hostname&gt;/&lt;project-id&gt;
-</Callout>
-
-
-```bash
-# A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
-
-curl --location 'http://localhost:4000/main' \
---header 'Content-Type: application/json' \
---data '{
-    "networkId": "evm:1",
-    "method": "eth_getBlockByNumber",
-    "params": [
-        "0x1203319",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
-```
-
-## Batch requests
-
-You can batch multiple calls across any number of networks, in a single request. Read more about it in [Batch requests](/operation/batch) page.

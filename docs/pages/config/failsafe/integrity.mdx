@@ -1,253 +1,355 @@
 ---
-description: Integrity module enforces block/logs data integrity, empty/missing data handling, and consistency across multiple RPC nodes.
+title: Integrity & Empty Data
+description: Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
 ---
 
 import { Callout } from "nextra/components";
+import {
+	ConfigTabs,
+	ConfigCode,
+	AISection,
+	LLMsTxtLink,
+} from "../../../components";
 
-# Integrity
+# Integrity & Empty Data
 
-RPC nodes may return stale, empty, or inconsistent data. eRPC's integrity module ensures you always get the most recent and valid blockchain data through:
+<LLMsTxtLink />
 
-1. **Block tracking** — Monitors highest known block across all upstreams, ensures `eth_blockNumber` and `eth_getBlockByNumber(latest/finalized)` return the freshest data.
-2. **Range enforcement** — For `eth_getLogs`, ensures the requested block range is available on the chosen upstream.
-3. **Empty/missing data handling** — Detects empty results, missing data errors, and block unavailability; retries automatically. See [Empty or Missing Data Handling](#empty-or-missing-data-handling).
-4. **Response validation** — Validates response structure and consistency (bloom filters, receipts, logs). See [Validations](#validations).
+RPC nodes may return stale, empty, or structurally invalid data — especially near the tip of the chain. eRPC's integrity layer enforces block tracking, validates response structure, and handles empty or unavailable results by retrying across upstreams automatically. All controls live in `directiveDefaults` on the network (or `networkDefaults`) and in `failsafe[].retry` for empty-result tuning.
 
 <Callout type="tip">
-Combine with [retry](/config/failsafe#retry) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
+Combine with [retry](/config/failsafe/retry) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
 </Callout>
 
-## Config
+**You can configure:**
 
-```yaml
-projects:
+- **Block tracking** — `enforceHighestBlock`, `enforceGetLogsBlockRange`, `enforceNonNullTaggedBlocks`
+- **Transaction and header validation** — `validateTransactionsRoot`, `validateTransactionFields`, `validateTransactionBlockInfo`, `validateHeaderFieldLengths`
+- **Log and receipt validation** — `validateLogFields`, `validateLogsBloomEmptiness`, `validateLogsBloomMatch`, `enforceLogIndexStrictIncrements`, `validateTxHashUniqueness`, `validateTransactionIndex`
+- **Receipt cross-checks** — `validateReceiptTransactionMatch`, `validateContractCreation`, `receiptsCountExact`, `receiptsCountAtLeast`, `validationExpectedBlockHash`, `validationExpectedBlockNumber`
+- **Empty/missing result handling** — `retry.emptyResultAccept`, `emptyResultConfidence`, `emptyResultMaxAttempts`, `emptyResultDelay`, `blockUnavailableDelay`
+- **Per-network empty-as-error promotion** — `evm.markEmptyAsErrorMethods`
+
+## Minimum useful config
+
+Enable the three most common block-tracking directives and configure empty-result retry behavior:
+
+<ConfigTabs
+	path="projects > networks[] > directiveDefaults"
+	focus="6-12"
+	yaml={`projects:
   - id: main
     networks:
       - architecture: evm
         evm:
           chainId: 1
-          # Block tracking: ensure highest known block is returned
-          integrity:
-            enforceHighestBlock: true       # Replace stale block numbers with highest known
-            enforceGetLogsBlockRange: true  # Skip upstreams that don't have requested range
+        directiveDefaults:
+          enforceHighestBlock: true          # serve the freshest latest/finalized across all upstreams
+          enforceGetLogsBlockRange: true     # skip upstreams that don't have the requested range
+          enforceNonNullTaggedBlocks: true   # treat null for tagged blocks as an error
+          retryEmpty: true                   # retry empty responses on other upstreams`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-    # State poller settings (how block tracking works)
-    upstreamDefaults:
-      evm:
-        statePollerInterval: 30s  # How often to poll latest/finalized block
-        statePollerDebounce: 5s   # Min interval between polls (ideally ≤ block time)
-```
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      directiveDefaults: {
+        enforceHighestBlock: true,
+        enforceGetLogsBlockRange: true,
+        enforceNonNullTaggedBlocks: true,
+        retryEmpty: true,
+      },
+    }],
+  }],
+});`}
+/>
 
-## Block Tracking
+## Response validation for indexers
 
-eRPC runs a background state poller for each upstream to track latest/finalized blocks. When `enforceHighestBlock: true`:
+Validation directives are disabled by default (they add JSON-parsing overhead). Enable them for high-integrity workloads like indexing, where structurally corrupt responses must be rejected and retried:
 
-- **`eth_blockNumber`**: If response is older than highest known, returns highest known instead.
-- **`eth_getBlockByNumber(latest/finalized)`**: If response is stale, retries on other upstreams.
+<ConfigTabs
+	path="projects > networks[] > directiveDefaults"
+	focus="6-19"
+	yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        directiveDefaults:
+          validateLogsBloomEmptiness: true     # logs exist iff bloom is non-zero
+          validateLogsBloomMatch: true         # recompute bloom from logs and verify
+          enforceLogIndexStrictIncrements: true
+          validateTxHashUniqueness: true
+          validateTransactionIndex: true
+        # Recommended for indexers: hedge + consensus + retry
+        # Invalid responses are rejected, valid ones are compared, retries if all fail
+        failsafe:
+          - matchMethod: eth_getBlockReceipts
+            hedge:
+              maxCount: 3
+              delay: 100ms
+            consensus:
+              maxParticipants: 3
+              agreementThreshold: 2
+            retry:
+              maxAttempts: 5`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-The poller also updates proactively when `eth_blockNumber` or `eth_getBlockByNumber(latest)` returns a higher block than currently tracked.
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      directiveDefaults: {
+        validateLogsBloomEmptiness: true,
+        validateLogsBloomMatch: true,
+        enforceLogIndexStrictIncrements: true,
+        validateTxHashUniqueness: true,
+        validateTransactionIndex: true,
+      },
+      failsafe: [{
+        matchMethod: "eth_getBlockReceipts",
+        hedge: { maxCount: 3, delay: "100ms" },
+        consensus: { maxParticipants: 3, agreementThreshold: 2 },
+        retry: { maxAttempts: 5 },
+      }],
+    }],
+  }],
+});`}
+/>
 
-**Metrics**: `erpc_upstream_stale_latest_block_total`, `erpc_upstream_stale_finalized_block_total`
+## Empty-result retry tuning (chain-specific)
 
-## Range Enforcement for `eth_getLogs`, `trace_filter`, `arbtrace_filter`
+This example tunes empty-result handling for Polygon (2.3 s blocks). `blockUnavailableDelay` and `emptyResultDelay` only fire when relevant — for finalized blocks the delay is skipped automatically, so one retry policy works across all finalities.
 
-When `enforceGetLogsBlockRange: true`, eRPC checks that the upstream has the requested block range before sending the request:
-
-1. If `toBlock` > upstream's latest block → skip to next upstream (after forcing a fresh poll if stale)
-2. If `fromBlock` < upstream's available range (based on `maxAvailableRecentBlocks` config) → skip to next upstream
-
-The same availability check is applied to `trace_filter` and `arbtrace_filter` since they share `fromBlock`/`toBlock` semantics with `eth_getLogs`.
-
-**Large range handling**: eRPC can auto-split large ranges based on [`getLogsAutoSplittingRangeThreshold`](/config/projects/upstreams#eth_getlogs-max-range-automatic-splitting) or when an upstream returns "range too large" errors. A parallel [`traceFilterAutoSplittingRangeThreshold`](/config/projects/networks) controls the same behavior for trace requests.
-
-**Metrics**: `erpc_upstream_evm_get_logs_stale_upper_bound_total`, `erpc_upstream_evm_get_logs_stale_lower_bound_total`, `erpc_upstream_evm_get_logs_forced_splits_total`
-
-## Empty or Missing Data Handling
-
-RPC nodes often return empty or missing data — especially near the tip of the chain where not all nodes have indexed the latest block yet.
-eRPC automatically detects these situations and retries on other upstreams.
-
-There are three situations eRPC handles:
-
-| Situation | Example | What eRPC does |
-|-----------|---------|---------------|
-| **Block not ready** | You request block N, but an upstream is still on block N-1 | Skips that upstream before even sending the request; retries after `blockUnavailableDelay` |
-| **Empty result** | `eth_getBlockByNumber` returns `null` | Tries other upstreams; optionally retries after `emptyResultDelay` |
-| **Missing data error** | Upstream returns "missing trie node" or "header not found" | Tries other upstreams; optionally retries with a delay |
-
-### How it works
-
-1. **Before sending** — eRPC checks if the upstream has the requested block. If not, it skips to the next upstream without wasting a network call.
-2. **After receiving** — If the upstream returns an empty result for a point-lookup method (like `eth_getBlockByNumber`), eRPC treats it as missing data and tries the next upstream.
-3. **After all upstreams tried** — If every upstream failed, eRPC can retry the whole round with a short delay, giving nodes time to catch up.
-
-<Callout type="info">
-The pre-send block availability check is the most important mechanism. It prevents tip-of-chain errors on fast chains (Polygon, Arbitrum, Base) where upstreams may be 1-2 blocks apart.
-</Callout>
-
-### Config reference
-
-| Field | Where | Default | Description |
-|-------|-------|---------|-------------|
-| `retryEmpty` | `directiveDefaults` | `true` | Enable retrying when all upstreams return empty or missing data |
-| `emptyResultAccept` | `failsafe[].retry` | `["eth_getLogs", "eth_call"]` | Methods where empty is a **valid** response — never retry these on empty |
-| `emptyResultConfidence` | `failsafe[].retry` | `finalizedBlock` | When to trust an empty result: `blockHead` (block ≤ latest) or `finalizedBlock` (block ≤ finalized) |
-| `emptyResultMaxAttempts` | `failsafe[].retry` | same as `maxAttempts` | Max retry attempts specifically for empty results |
-| `emptyResultDelay` | `failsafe[].retry` | _(none)_ | Fixed delay between empty-result retries (overrides normal `delay`) |
-| `blockUnavailableDelay` | `failsafe[].retry` | _(none)_ | Fixed fallback delay before retrying when upstreams don't have the block yet. When the network's dynamic block time is available, the delay is derived automatically (`blockTime × blockUnavailableDelayMultiplier`) and this value is only used during startup warmup. |
-
-<Callout type="info">
-**You generally don't need to configure `markEmptyAsErrorMethods`.** eRPC ships with sensible defaults that cover all common point-lookup methods (`eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getTransactionByHash`, traces, etc.). The defaults automatically treat `null` results for these methods as missing data, triggering failover to other upstreams. Only override this if you have unusual methods or upstream behaviors.
-</Callout>
-
-<Callout type="warning">
-`eth_getBlockByHash` and `eth_getTransactionReceipt` are intentionally **excluded** from the defaults.
-Subgraph upstreams commonly return `null` for `eth_getBlockByHash`, and `eth_getTransactionReceipt` returns `null` for pending transactions.
-If you need null-safety for `eth_getBlockByHash`, use aggressive `emptyResultMaxAttempts` (see example below).
-</Callout>
-
-### Example
-
-This example uses Polygon (2.3s blocks). Adjust delays for your chain's block time.
-
-`blockUnavailableDelay` and `emptyResultDelay` only fire when relevant -- for finalized blocks, `emptyResultConfidence: blockHead` knows the block exists and treats empty as valid, so no delay triggers. This means you can use **one retry policy for all finalities** instead of splitting by finality.
-
-The one exception is **consensus for unfinalized logs/receipts**: during reorgs, upstreams may disagree, so consensus picks the correct result.
-
-```yaml
-projects:
+<ConfigTabs
+	path="projects > networks[] > failsafe[]"
+	focus="6-25"
+	yaml={`projects:
   - id: main
     networks:
       - architecture: evm
         evm:
           chainId: 137
-
-        # This is enabled by default to instruct erpc to retry
-        # on other upstreams when one upstream gives an "empty-ish" response.
-        # Such as null, or 0x, or [] empty array, etc.
         directiveDefaults:
           retryEmpty: true
-
         failsafe:
-          # ── Unfinalized logs/receipts: add consensus for reorg safety ──
-          - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+          # Unfinalized logs/receipts: consensus guards against reorg splits
+          - matchMethod: eth_getLogs|eth_getBlockReceipts
             matchFinality: [unfinalized, unknown]
-            retry: &retry-standard
+            retry: &retry-polygon
               maxAttempts: 6
-              delay: 0
+              delay: 0ms
               blockUnavailableDelay: 1s
               emptyResultDelay: 500ms
-              emptyResultMaxAttempts: 1
+              emptyResultMaxAttempts: 3
               emptyResultConfidence: blockHead
-              emptyResultAccept: ["eth_getLogs"]
+              emptyResultAccept: [eth_getLogs]
             consensus:
               maxParticipants: 3
               agreementThreshold: 2
-
-          # ── All other logs/receipts: same retry, no consensus ──
-          - matchMethod: "eth_getLogs|eth_getBlockReceipts"
-            retry: *retry-standard
-
-          # ── eth_call: empty is a valid contract return ──
-          - matchMethod: "eth_call"
+          # All other logs/receipts
+          - matchMethod: eth_getLogs|eth_getBlockReceipts
+            retry: *retry-polygon
+          # eth_call: empty is a valid contract return
+          - matchMethod: eth_call
             retry:
-              <<: *retry-standard
-              emptyResultAccept: ["eth_call"]
-
-          # ── eth_getBlockByHash: null often means not indexed yet ──
-          - matchMethod: "eth_getBlockByHash"
+              <<: *retry-polygon
+              emptyResultAccept: [eth_call]
+          # Everything else
+          - matchMethod: '*'
             retry:
-              <<: *retry-standard
-              emptyResultMaxAttempts: 6
+              <<: *retry-polygon
+              emptyResultMaxAttempts: 2`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-          # ── Everything else ──
-          - matchMethod: "*"
-            retry:
-              <<: *retry-standard
-              emptyResultMaxAttempts: 2
-              emptyResultAccept: ["eth_getLogs", "eth_call"]
-```
+const retryPolygon = {
+  maxAttempts: 6,
+  delay: "0ms",
+  blockUnavailableDelay: "1s",
+  emptyResultDelay: "500ms",
+  emptyResultMaxAttempts: 3,
+  emptyResultConfidence: "blockHead" as const,
+  emptyResultAccept: ["eth_getLogs"],
+};
 
-### Production guidelines
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 137 },
+      directiveDefaults: { retryEmpty: true },
+      failsafe: [
+        {
+          matchMethod: "eth_getLogs|eth_getBlockReceipts",
+          matchFinality: ["unfinalized", "unknown"],
+          retry: { ...retryPolygon },
+          consensus: { maxParticipants: 3, agreementThreshold: 2 },
+        },
+        {
+          matchMethod: "eth_getLogs|eth_getBlockReceipts",
+          retry: { ...retryPolygon },
+        },
+        {
+          matchMethod: "eth_call",
+          retry: { ...retryPolygon, emptyResultAccept: ["eth_call"] },
+        },
+        {
+          matchMethod: "*",
+          retry: { ...retryPolygon, emptyResultMaxAttempts: 2 },
+        },
+      ],
+    }],
+  }],
+});`}
+/>
 
-**Choosing `emptyResultDelay`** — set it so a few retries span roughly one block time:
+<AISection title="Copy for your AI assistant — full integrity & empty-data reference">
+
+### Block tracking directives (`directiveDefaults`)
+
+| Directive | Default | Notes |
+|---|---|---|
+| `enforceHighestBlock` | `true` | Track the highest block seen across all upstreams. For `eth_blockNumber`, replaces stale values with the known highest. For `eth_getBlockByNumber("latest"\|"finalized")`, retries on other upstreams when the response is behind the known tip. Metrics: `erpc_upstream_stale_latest_block_total`, `erpc_upstream_stale_finalized_block_total`. |
+| `enforceGetLogsBlockRange` | `true` | Before sending `eth_getLogs`, `trace_filter`, or `arbtrace_filter`, verify the upstream has the requested block range. Skips upstreams whose `toBlock` exceeds their latest, or whose `fromBlock` is below their available window (`maxAvailableRecentBlocks`). Forces a fresh poll if the upstream's latest is stale before deciding. Metrics: `erpc_upstream_evm_get_logs_stale_upper_bound_total`, `erpc_upstream_evm_get_logs_stale_lower_bound_total`. |
+| `enforceNonNullTaggedBlocks` | `true` | Convert `null` responses to errors for `eth_getBlockByNumber` when called with `"latest"`, `"pending"`, `"safe"`, `"finalized"`, or `"earliest"`. Numeric block requests are always errors when null regardless of this setting. Set `false` for chains that legitimately return null for some tags (e.g. zkSync). |
+
+### Transaction and header validation directives
+
+All disabled by default. Enable for high-integrity use-cases where the overhead of JSON parsing is acceptable.
+
+| Directive | Header | Notes |
+|---|---|---|
+| `validateTransactionsRoot` | `X-ERPC-Validate-Transactions-Root` | Recompute the transactions root from the block's transaction list and verify it matches the header. Catches truncated or reordered tx lists. |
+| `validateTransactionFields` | `X-ERPC-Validate-Transaction-Fields` | Validate field formats (hex lengths, required keys) for each transaction in a block. Rejects responses with malformed fields. |
+| `validateTransactionBlockInfo` | `X-ERPC-Validate-Transaction-Block-Info` | Verify that each transaction's embedded `blockHash` and `blockNumber` match the containing block. Catches upstreams returning cross-contaminated responses. |
+| `validateHeaderFieldLengths` | `X-ERPC-Validate-Header-Field-Lengths` | Check byte lengths of block header fields (hash, parentHash, etc.). Rejects headers with truncated or padded values. |
+
+### Log and receipt validation directives
+
+| Directive | Header | Notes |
+|---|---|---|
+| `validateLogFields` | `X-ERPC-Validate-Log-Fields` | Validate log address and topic lengths. Rejects logs with malformed addresses (not 20 bytes) or topics (not 32 bytes). |
+| `validateLogsBloomEmptiness` | `X-ERPC-Validate-Logs-Bloom-Emptiness` | Consistency check: if logs are present the bloom must be non-zero; if logs are absent the bloom must be zero. Catches upstreams that zero out the bloom without zeroing the logs. |
+| `validateLogsBloomMatch` | `X-ERPC-Validate-Logs-Bloom-Match` | Recompute the bloom filter from the actual logs and compare to the header. Most expensive validation — only enable when you need to guarantee bloom correctness (e.g. indexers that rely on bloom-based filtering). |
+| `enforceLogIndexStrictIncrements` | `X-ERPC-Enforce-Log-Index-Strict-Increments` | Log indices must increment by exactly 1 across all receipts in a block response. Catches upstreams that return receipts with gaps or duplicated log indices. |
+| `validateTxHashUniqueness` | `X-ERPC-Validate-Tx-Hash-Uniqueness` | No transaction hash may appear more than once in a block's receipt set. Catches duplicate-receipt bugs in some upstreams. |
+| `validateTransactionIndex` | `X-ERPC-Validate-Transaction-Index` | Receipt transaction indices must be sequential starting from `0`. Rejects responses with out-of-order or missing indices. |
+
+### Receipt cross-check directives
+
+| Directive | Header | Notes |
+|---|---|---|
+| `validateReceiptTransactionMatch` | `X-ERPC-Validate-Receipt-Transaction-Match` | Cross-validate that each receipt's fields match the corresponding transaction (e.g. `to`, `from`, `contractAddress`). Requires the ground-truth transactions to be available (library/indexer mode). |
+| `validateContractCreation` | `X-ERPC-Validate-Contract-Creation` | Verify that `contractAddress` is populated when `to` is null (contract creation tx) and absent otherwise. |
+| `receiptsCountExact` | `X-ERPC-Receipts-Count-Exact` | Integer. The `eth_getBlockReceipts` response must contain exactly this many receipts. Useful when the caller knows the transaction count from the block header. |
+| `receiptsCountAtLeast` | `X-ERPC-Receipts-Count-At-Least` | Integer. The response must contain at least this many receipts. Softer than `receiptsCountExact` — allows appended receipts (e.g. from internal transactions on some chains). |
+| `validationExpectedBlockHash` | `X-ERPC-Validation-Expected-Block-Hash` | Hex string. All receipts in the response must carry this block hash. Rejects responses that mix receipts from different blocks. |
+| `validationExpectedBlockNumber` | `X-ERPC-Validation-Expected-Block-Number` | Hex or decimal. All receipts must carry this block number. Same purpose as `validationExpectedBlockHash` but keyed by number. |
+
+### Empty/missing data handling — `failsafe[].retry` fields
+
+| Field | Default | Notes |
+|---|---|---|
+| `emptyResultAccept` | `["eth_getLogs", "eth_call"]` | Methods where an empty response is **valid data** — never retry on empty for these. `eth_getLogs` returns `[]` for blocks with no matching logs. `eth_call` returns `0x` for calls that return nothing. |
+| `emptyResultConfidence` | `blockHead` | When to trust an empty result: `blockHead` (block ≤ upstream's latest) or `finalizedBlock` (block ≤ finalized). `finalizedBlock` is more conservative: empties below the finalized horizon are trusted; empties in unfinalized range are retried. |
+| `emptyResultMaxAttempts` | = `maxAttempts` | Separate attempt cap for empty-result retries. Set lower than `maxAttempts` when you want aggressive retries for errors but lighter retries for empties. |
+| `emptyResultDelay` | = `delay` | Fixed delay between empty-result retries. Overrides the normal `delay` for this case. Set to roughly one block time divided by your `emptyResultMaxAttempts`. |
+| `blockUnavailableDelay` | dynamic | Fallback delay when ALL upstreams lack the requested block. When the network's dynamic block-time estimate is available, the delay is derived automatically as `blockTime × blockUnavailableDelayMultiplier` (default `0.8`). This static value is only used during warmup (first few seconds). Tune the multiplier via `evm.blockUnavailableDelayMultiplier` on the network. |
+
+**Choosing `emptyResultDelay` by chain:**
 
 | Chain | Block time | `emptyResultDelay` | `emptyResultMaxAttempts` |
-|-------|-----------|-------------------|-------------------------|
-| Ethereum | 12s | `2000ms` | 3 |
-| Polygon | 2.3s | `500ms` | 5–6 |
-| Base / Optimism | 2s | `500ms` | 4–5 |
-| Arbitrum | 250ms | `200ms` | 5 |
-| Monad | 500ms | `200ms` | 3 |
+|---|---|---|---|
+| Ethereum | 12 s | `2000ms` | 3 |
+| Polygon | 2.3 s | `500ms` | 5-6 |
+| Base / Optimism | 2 s | `500ms` | 4-5 |
+| Arbitrum | 250 ms | `200ms` | 5 |
+| Monad | 500 ms | `200ms` | 3 |
 
-**`blockUnavailableDelay`** — automatically derived from the network's dynamic block time (`blockTime × 0.8` by default). The static value is only used as a fallback during the first few seconds after startup before the block time estimate warms up. You can tune the multiplier with `evm.blockUnavailableDelayMultiplier` in the network config.
+### `directiveDefaults.retryEmpty`
 
-**`emptyResultAccept` rules of thumb:**
-- Always include `eth_getLogs` — empty logs is a valid response.
-- Always include `eth_call` — empty/null is a valid contract return.
-- Consider including `eth_getBlockByHash` if your upstreams reliably have blocks by hash.
+| Field | Default | Notes |
+|---|---|---|
+| `retryEmpty` | `true` | When `true`, eRPC treats empty responses (null, `[]`, `0x`) from non-`emptyResultAccept` methods as retryable — the request is replayed on other upstreams. When `false`, the first empty response is returned as-is. Disable only if your application explicitly handles empty responses itself. |
 
-## Validations directives
+### `evm.markEmptyAsErrorMethods` (per-network)
 
-Response validation directives are ideal for **high-integrity use-cases** (such as indexing) where you need guaranteed data accuracy. When a validation fails, eRPC treats it as an upstream error — the response is rejected and retry/consensus policies automatically try other upstreams until valid data is found.
-
-**How it works with failsafe policies:**
-
-```
-Request → Upstream A returns receipts with missing logs (logsBloom doesn't match actual logs)
-        → Validation fails → Response rejected (not cached, not returned)
-        → Retry policy kicks in → Try Upstream B
-        → Upstream B returns complete receipts with matching bloom → Success!
-```
-
-With **retry**: Each validation failure triggers the next retry attempt. Configure `maxAttempts` high enough to cover your upstream pool.
-
-With **consensus**: Invalid responses are excluded from consensus voting. Only valid responses participate, so even if 2/3 upstreams return bad data, the 1 valid response wins.
-
-With **hedge + consensus + retry** (recommended for indexers): Hedge spawns parallel requests, consensus compares valid responses, retry handles cases where all initial attempts fail validation.
-
-Set via **config** (applies to all requests), **HTTP headers**, or **query parameters**:
-
-| Directive | Header | Query | Description |
-|-----------|--------|-------|-------------|
-| `validateLogsBloomEmptiness` | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | Bloom/logs consistency: logs exist ↔ bloom non-zero |
-| `validateLogsBloomMatch` | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | Recalculate bloom from logs and verify match |
-| `enforceLogIndexStrictIncrements` | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` | Log indices must increment by 1 across receipts |
-| `validateTxHashUniqueness` | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` | No duplicate transaction hashes in receipts |
-| `validateTransactionIndex` | `X-ERPC-Validate-Transaction-Index` | `validate-transaction-index` | Receipt indices must be sequential (0, 1, 2...) |
-| `validateHeaderFieldLengths` | `X-ERPC-Validate-Header-Field-Lengths` | `validate-header-field-lengths` | Block header field byte lengths |
-| `validateTransactionFields` | `X-ERPC-Validate-Transaction-Fields` | `validate-transaction-fields` | Transaction field formats |
-| `validateTransactionBlockInfo` | `X-ERPC-Validate-Transaction-Block-Info` | `validate-transaction-block-info` | Tx block hash/number matches block |
-| `validateLogFields` | `X-ERPC-Validate-Log-Fields` | `validate-log-fields` | Log address/topic lengths |
-| `receiptsCountExact` | `X-ERPC-Receipts-Count-Exact` | `receipts-count-exact` | Receipts array must have exactly N items |
-| `receiptsCountAtLeast` | `X-ERPC-Receipts-Count-At-Least` | `receipts-count-at-least` | Receipts array must have at least N items |
-| `validationExpectedBlockHash` | `X-ERPC-Validation-Expected-Block-Hash` | `validation-expected-block-hash` | All receipts must have this block hash |
-| `validationExpectedBlockNumber` | `X-ERPC-Validation-Expected-Block-Number` | `validation-expected-block-number` | All receipts must have this block number |
+Promote empty responses to hard errors (not just retryable empties) for specific methods. Retried AND counted as upstream errors (affects scoring and circuit breaker):
 
 ```yaml
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-        directiveDefaults:
-          # Response validations are DISABLED by default (to avoid JSON parsing overhead).
-          # Enable specific ones as needed for high-integrity use-cases:
-          validateLogsBloomEmptiness: true
-          validateLogsBloomMatch: true
-          enforceLogIndexStrictIncrements: true
-          # etc.
-        # Recommended for indexers: hedge + consensus + retry
-        # Invalid responses are rejected, valid ones are compared, retries if all fail
-        failsafe:
-          - matchMethods: "eth_getBlockReceipts"
-            hedge:
-              maxCount: 3 # Spawn up to 3 parallel requests
-              delay: 100ms
-            consensus:
-              maxParticipants: 3
-              agreementThreshold: 2 # Accept if 2+ agree (invalid ones excluded)
-            retry:
-              maxAttempts: 5 # Keep trying until valid data found
+networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+      markEmptyAsErrorMethods:
+        - eth_getTransactionReceipt   # empty means tx missing, not pending on this chain
 ```
+
+eRPC ships with sensible defaults that cover common point-lookup methods (`eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getTransactionByHash`, traces, etc.). Only add entries when an empty response on that method specifically means the upstream lacks the data rather than "not found."
+
+`eth_getBlockByHash` and `eth_getTransactionReceipt` are intentionally excluded from defaults: subgraph upstreams commonly return null for `eth_getBlockByHash`, and `eth_getTransactionReceipt` returns null for pending transactions.
+
+### Per-upstream integrity — `eth_getBlockReceipts` checks
+
+Two per-upstream flags gate which checks run locally on that upstream's responses (in addition to whatever `directiveDefaults` enable network-wide):
+
+| Field | Path | Notes |
+|---|---|---|
+| `checkLogIndexStrictIncrements` | `upstreams[].evm` | Upstream-local equivalent of `enforceLogIndexStrictIncrements`. Marks the upstream unhealthy when its receipts fail this check, without requiring the network-wide directive. |
+| `checkLogsBloom` | `upstreams[].evm.integrity.eth_getBlockReceipts` | Upstream-local bloom check for `eth_getBlockReceipts` responses: recomputes the bloom union of all receipt logs and verifies it matches the block header's `logsBloom`. Catches missing logs in the receipts response. Marks the upstream unhealthy on mismatch, without requiring the network-wide directive. |
+
+**`checkLogsBloom` vs `validateLogsBloomMatch` — two different checks at two different layers:**
+
+- `evm.integrity.eth_getBlockReceipts.checkLogsBloom` (**upstream level**) — checks that the bloom union computed from the receipts' logs equals the block header's `logsBloom`. Fires on `eth_getBlockReceipts` responses only. Catches upstreams that return receipts with missing or truncated log entries.
+- `directiveDefaults.validateLogsBloomMatch` (**network level**) — checks that the addresses and topics in `eth_getLogs` results are consistent with the block headers' bloom filters. Fires on `eth_getLogs` responses. Catches upstreams that drop log entries from a getLogs response without reflecting that in the bloom.
+
+### Deprecated: `evm.integrity` block
+
+The old `network.evm.integrity` block is **deprecated**. It is still accepted but emits a deprecation warning. Migrate to `directiveDefaults`:
+
+```yaml
+# Old (deprecated — still works):
+networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+      integrity:
+        enforceHighestBlock: true
+        enforceGetLogsBlockRange: true
+        enforceNonNullTaggedBlocks: true
+
+# New (use this):
+networks:
+  - architecture: evm
+    evm: { chainId: 1 }
+    directiveDefaults:
+      enforceHighestBlock: true
+      enforceGetLogsBlockRange: true
+      enforceNonNullTaggedBlocks: true
+```
+
+The `directiveDefaults` form is a superset — it exposes all transaction, log, and receipt validation fields that the old `integrity` block never covered. See [Networks](/config/projects/networks) for the full `directiveDefaults` reference.
+
+### Common pitfalls
+
+- **Validation directives are off by default** — they add JSON-parsing overhead on every response. Enable only what you actually need. For most non-indexer use-cases, the block-tracking directives (`enforceHighestBlock`, `enforceGetLogsBlockRange`) are sufficient.
+- **`validateLogsBloomMatch` is the most expensive** — it recomputes the bloom filter from every log in the response. Enable only on `eth_getBlockReceipts` or similar receipt-heavy methods, not network-wide.
+- **`emptyResultAccept` vs `markEmptyAsErrorMethods`** — `emptyResultAccept` says "empty is valid, don't retry." `markEmptyAsErrorMethods` says "empty is an error, retry AND penalize the upstream." They are opposites. Adding a method to both has undefined behavior; pick one.
+- **`emptyResultConfidence: finalizedBlock` is more conservative** — empties on unfinalized blocks are still retried even for methods in `emptyResultAccept`. Use `blockHead` (default) unless you specifically need finalized-only trust.
+- **`blockUnavailableDelay` static value is rarely needed** — the dynamic block-time estimate takes over within the first few seconds. Only set it if your use-case requires a specific floor during the warmup window.
+- **`enforceNonNullTaggedBlocks: false` for zkSync-style chains** — some L2s legitimately return null for certain block tags (e.g. `"pending"` on chains without a mempool). Disable only for those specific networks.
+- **Using deprecated `evm.integrity` with new `directiveDefaults`** — if both are present, `directiveDefaults` takes precedence and the `integrity` block is ignored. Migrate fully.
+
+</AISection>
+
+<Callout type="tip">
+	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
+</Callout>

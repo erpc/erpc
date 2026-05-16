@@ -1,0 +1,260 @@
+/* eRPC hero diagram styles. Hand-maintained.
+ * Originally extracted from the design prototype; the source HTML and the
+ * generator script have been removed. Edit selectors directly here.
+ * Scoping: every rule is implicitly scoped because the markup it targets
+ * lives inside <div class="cv-hero-root">. The few rules that could leak
+ * (.hero, .hero svg, .hero::before, :root custom properties) are explicitly
+ * prefixed with .cv-hero-root.
+ */
+.cv-hero-root {
+  --bg:        #0a0e1a;
+  --blue:      #60a5fa;
+  --blue-2:    #3b82f6;
+  --green:     #34d399;
+  --amber:     #fbbf24;
+  --crimson:   #f87171;
+  --c-indexer: #a78bfa;
+  --c-frontend:#22d3ee;
+  --c-backend: #f472b6;
+  --text:      rgba(255,255,255,0.85);
+  --text-dim:  rgba(255,255,255,0.50);
+  --text-mono: rgba(255,255,255,0.45);
+  --glass:     rgba(255,255,255,0.022);
+  --hairline:  rgba(255,255,255,0.06);
+}
+
+.cv-hero-root .hero { width: 100%; max-width: 1200px; aspect-ratio: 60 / 31; position: relative; isolation: isolate; }
+.cv-hero-root .hero svg { width: 100%; height: 100%; display: block; user-select: none; overflow: visible; }
+.cv-hero-root .hero::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    radial-gradient(1px 1px at 23% 17%, rgba(255,255,255,0.22), transparent 50%),
+    radial-gradient(1px 1px at 71% 38%, rgba(255,255,255,0.18), transparent 50%),
+    radial-gradient(1px 1px at 13% 71%, rgba(255,255,255,0.16), transparent 50%),
+    radial-gradient(1px 1px at 89% 81%, rgba(255,255,255,0.20), transparent 50%),
+    radial-gradient(1px 1px at 47% 91%, rgba(255,255,255,0.14), transparent 50%),
+    radial-gradient(1200px 600px at 50% 50%, rgba(96,165,250,0.035), transparent 60%);
+  z-index: -1; border-radius: 12px; pointer-events: none;
+}
+
+.t-label    { font: 600 13px/1 Inter, system-ui, sans-serif; fill: var(--text); letter-spacing: 0.02em; }
+.t-sub      { font: 500 11px/1 Inter, system-ui, sans-serif; fill: var(--text-dim); letter-spacing: 0.02em; }
+.t-lane     { font: 600 14px/1 Inter, system-ui, sans-serif; fill: var(--text); letter-spacing: 0.08em; text-transform: uppercase; }
+.t-lane-sub { font: 400 11.5px/1 Inter, system-ui, sans-serif; fill: var(--text-dim); }
+.t-mono     { font: 500 12px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; fill: var(--text); letter-spacing: 0.02em; }
+.t-mono-s   { font: 500 10.5px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; fill: var(--text-mono); letter-spacing: 0.02em; }
+.t-mono-dim { font: 500 10.5px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; fill: var(--text-dim); letter-spacing: 0.02em; }
+.t-mark     { font: 700 22px/1 Inter, system-ui, sans-serif; fill: var(--text); letter-spacing: 0.06em; }
+
+.card-bg  { fill: var(--glass); stroke: var(--hairline); stroke-width: 1; }
+.icon     { fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; opacity: 0.95; }
+.icon-indexer  { stroke: var(--c-indexer);  filter: drop-shadow(0 0 5px rgba(167,139,250,0.45)); }
+.icon-frontend { stroke: var(--c-frontend); filter: drop-shadow(0 0 5px rgba(34,211,238,0.45)); }
+.icon-backend  { stroke: var(--c-backend);  filter: drop-shadow(0 0 5px rgba(244,114,182,0.45)); }
+.core-bg  { fill: var(--glass); stroke: var(--hairline); stroke-width: 1; }
+
+.lane {
+  fill: rgba(255,255,255,0.012);
+  stroke: rgba(255,255,255,0.045);
+  stroke-width: 1;
+  transition: fill 220ms ease, stroke 220ms ease, opacity 240ms ease;
+}
+.lane.active-blue   { fill: rgba(96,165,250,0.08);  stroke: rgba(96,165,250,0.55); }
+.lane.active-green  { fill: rgba(52,211,153,0.07);  stroke: rgba(52,211,153,0.50); }
+.lane.active-amber  { fill: rgba(251,191,36,0.06);  stroke: rgba(251,191,36,0.55); }
+.lane-clickable      { cursor: pointer; }
+.lane-clickable:hover .lane { fill: rgba(96,165,250,0.04); stroke: rgba(96,165,250,0.30); }
+
+.fs-box { cursor: pointer; }
+.fs-box .fs-bg {
+  fill: var(--glass);
+  stroke: rgba(255,255,255,0.07);
+  stroke-width: 1;
+  transition: fill 220ms ease, stroke 220ms ease, opacity 240ms ease;
+}
+.fs-box:hover .fs-bg { stroke: rgba(96,165,250,0.45); fill: rgba(96,165,250,0.04); }
+.fs-box .fs-name { font: 600 12px/1 Inter, system-ui, sans-serif; fill: var(--text); letter-spacing: 0.06em; text-transform: uppercase; }
+.fs-box .fs-tag  { font: 500 10px/1.2 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; fill: var(--text-dim); letter-spacing: 0.02em; }
+.fs-box.active .fs-bg { fill: rgba(251,191,36,0.10); stroke: rgba(251,191,36,0.65); }
+
+/* Flow lines — visible enough to read as a connecting wiring diagram. */
+.flow {
+  fill: none; stroke: var(--blue); stroke-width: 1.4; opacity: 0.50;
+  stroke-dasharray: 4 6; stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(96,165,250,0.45));
+  animation: flowDash 1.6s linear infinite;
+}
+.flow.exit-rail { opacity: 0.62; stroke-width: 1.6; stroke-dasharray: 5 7; }
+@keyframes flowDash { to { stroke-dashoffset: -10; } }
+.flow.cordoned  { stroke-dasharray: 4 4; stroke: var(--crimson); opacity: 0.42; animation: none; filter: none; }
+.flow.slow      { stroke-width: 1.0; opacity: 0.32; animation-duration: 2.6s; }
+
+/* Cache-off rails toggle: by default, cache-on rails visible, cache-off hidden */
+.cache-off-rails { display: none; }
+svg.cache-off .cache-on-rails  { display: none; }
+svg.cache-off .cache-off-rails { display: inline; }
+svg.cache-off #rail-c-m         { display: none; }
+
+.dot { transform-box: fill-box; transform-origin: center; }
+.dot.healthy  { fill: var(--green);   filter: drop-shadow(0 0 4px rgba(52,211,153,0.7));  animation: heartbeat 2.6s ease-in-out infinite; }
+.dot.slow     { fill: var(--amber);   filter: drop-shadow(0 0 4px rgba(251,191,36,0.6));  animation: heartbeat 3.4s ease-in-out infinite; }
+.dot.cordoned { fill: var(--crimson); opacity: 0.55; filter: none; animation: none; }
+@keyframes heartbeat { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.55; transform: scale(0.92); } }
+
+/* Upstream cards */
+.up-node { cursor: pointer; }
+.up-node .card-bg { transition: stroke 200ms ease, fill 200ms ease, opacity 200ms ease; }
+.up-node:hover .card-bg { stroke: rgba(96,165,250,0.55); fill: rgba(96,165,250,0.045); }
+.up-node.cordoned .card-bg { opacity: 0.50; stroke: rgba(248,113,113,0.30); }
+.up-node.cordoned text     { opacity: 0.55; }
+.up-node.cordoned .dot     { fill: var(--crimson); opacity: 0.55; filter: none; animation: none; }
+.up-node.cordoned:hover .card-bg { stroke: rgba(248,113,113,0.55); opacity: 0.7; }
+.up-node .slider-track  { stroke: rgba(255,255,255,0.18); stroke-width: 2; stroke-linecap: round; }
+.up-node .slider-fill   { stroke: var(--blue); stroke-width: 2; stroke-linecap: round; opacity: 0.85; }
+.up-node.cordoned .slider-fill { stroke: var(--crimson); opacity: 0.55; }
+.up-node .slider-thumb  { fill: var(--text); stroke: var(--blue); stroke-width: 1.2; cursor: ew-resize; }
+.up-node.cordoned .slider-thumb { stroke: var(--crimson); opacity: 0.6; }
+
+/* Cordon-toggle (vertical pill next to each upstream card) */
+.cordon-toggle { cursor: pointer; }
+.cordon-toggle .ct-bg {
+  fill: rgba(255,255,255,0.04); stroke: rgba(255,255,255,0.18); stroke-width: 1;
+  transition: fill 200ms ease, stroke 200ms ease;
+}
+.cordon-toggle:hover .ct-bg { stroke: rgba(96,165,250,0.55); fill: rgba(96,165,250,0.06); }
+.cordon-toggle.cordoned .ct-bg { fill: rgba(248,113,113,0.10); stroke: rgba(248,113,113,0.50); }
+.cordon-toggle.cordoned:hover .ct-bg { stroke: rgba(248,113,113,0.70); }
+.cordon-toggle .ct-knob {
+  fill: var(--green);
+  filter: drop-shadow(0 0 4px rgba(52,211,153,0.6));
+  transition: transform 240ms cubic-bezier(0.4,0,0.2,1), fill 220ms ease;
+  transform-box: fill-box;
+}
+.cordon-toggle.cordoned .ct-knob {
+  transform: translateY(22px);
+  fill: var(--crimson);
+  filter: drop-shadow(0 0 4px rgba(248,113,113,0.6));
+}
+.cordon-toggle .ct-label {
+  font: 500 9px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace;
+  fill: rgba(255,255,255,0.45);
+  letter-spacing: 0.06em;
+  text-anchor: middle;
+}
+.toggle { cursor: pointer; }
+.toggle .switch-track { transition: fill 200ms ease, stroke 200ms ease; fill: rgba(255,255,255,0.10); stroke: rgba(255,255,255,0.20); }
+.toggle.on  .switch-track { fill: rgba(52,211,153,0.18); stroke: rgba(52,211,153,0.55); }
+.toggle:hover .switch-track { stroke-opacity: 0.7; }
+.toggle .switch-knob { transition: transform 240ms cubic-bezier(0.4, 0, 0.2, 1), fill 200ms ease, filter 200ms ease; transform-box: fill-box; }
+.toggle.off .switch-knob { transform: translateX(0); fill: rgba(255,255,255,0.55); filter: none; }
+.toggle.on  .switch-knob { transform: translateX(20px); fill: var(--green); filter: drop-shadow(0 0 4px rgba(52,211,153,0.7)); }
+.toggle .toggle-label { font: 500 11px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; letter-spacing: 0.04em; fill: var(--text-dim); }
+.toggle .toggle-state { font: 600 11px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; letter-spacing: 0.04em; }
+.toggle.on  .toggle-state { fill: var(--green); }
+.toggle.off .toggle-state { fill: var(--text-dim); }
+
+.hint-copy  { font: 500 11px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; fill: rgba(255,255,255,0.50); letter-spacing: 0.02em; }
+.reset-link { font: 500 11px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; fill: rgba(255,255,255,0.65); cursor: pointer; letter-spacing: 0.02em; }
+.reset-link:hover { fill: var(--text); }
+#reset-group { opacity: 0; transition: opacity 240ms ease; pointer-events: none; }
+#reset-group.show { opacity: 1; pointer-events: auto; }
+
+.annot-check  { fill: var(--green); filter: drop-shadow(0 0 3px rgba(52,211,153,0.45)); }
+.annot-text   { fill: rgba(255,255,255,0.78); transition: opacity 320ms ease; }
+#annot-line   { font: 500 14px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; letter-spacing: 0.02em; }
+#annot-line.swapping .annot-text { opacity: 0.20; }
+
+.pulse        { mix-blend-mode: screen; }
+.pulse.blue     { fill: var(--blue);       filter: drop-shadow(0 0 5px rgba(96,165,250,0.95)) drop-shadow(0 0 12px rgba(96,165,250,0.45)); }
+.pulse.green    { fill: var(--green);      filter: drop-shadow(0 0 5px rgba(52,211,153,0.95)) drop-shadow(0 0 12px rgba(52,211,153,0.45)); }
+.pulse.amber    { fill: var(--amber);      filter: drop-shadow(0 0 5px rgba(251,191,36,0.95)) drop-shadow(0 0 12px rgba(251,191,36,0.45)); }
+.pulse.crimson  { fill: var(--crimson);    filter: drop-shadow(0 0 5px rgba(248,113,113,0.95)) drop-shadow(0 0 10px rgba(248,113,113,0.40)); }
+.pulse.indexer  { fill: var(--c-indexer);  filter: drop-shadow(0 0 5px rgba(167,139,250,0.95)) drop-shadow(0 0 12px rgba(167,139,250,0.45)); }
+.pulse.frontend { fill: var(--c-frontend); filter: drop-shadow(0 0 5px rgba(34,211,238,0.95))  drop-shadow(0 0 12px rgba(34,211,238,0.45));  }
+.pulse.backend  { fill: var(--c-backend);  filter: drop-shadow(0 0 5px rgba(244,114,182,0.95)) drop-shadow(0 0 12px rgba(244,114,182,0.45)); }
+
+.burst { fill: none; stroke-width: 1.5; pointer-events: none; }
+.burst.green { stroke: var(--green); filter: drop-shadow(0 0 6px rgba(52,211,153,0.7)); }
+.burst.blue  { stroke: var(--blue);  filter: drop-shadow(0 0 6px rgba(96,165,250,0.7)); }
+
+/* Horizontal progress bars inside ROUTING & SCORING (2x2 grid). */
+.score-box  { fill: rgba(255,255,255,0.018); stroke: rgba(255,255,255,0.08); stroke-width: 1; }
+.bar-bg     { fill: rgba(255,255,255,0.07); }
+.bar        { fill: var(--blue); opacity: 0.9; filter: drop-shadow(0 0 3px rgba(96,165,250,0.55)); transition: width 320ms ease, opacity 240ms ease, fill 240ms ease; }
+.bar.slow     { fill: var(--amber); filter: drop-shadow(0 0 3px rgba(251,191,36,0.55)); }
+.bar.cordoned { opacity: 0.30; filter: none; fill: var(--crimson); }
+.bar-name   { font: 600 10px/1 Inter, system-ui, sans-serif; fill: rgba(255,255,255,0.80); letter-spacing: 0.02em; }
+.bar-score  { font: 500 9.5px/1 "JetBrains Mono", ui-monospace, SF Mono, Menlo, monospace; fill: rgba(255,255,255,0.50); letter-spacing: 0.02em; }
+.bar-cell.cordoned .bar-name  { fill: rgba(255,255,255,0.40); }
+.bar-cell.cordoned .bar-score { fill: rgba(248,113,113,0.65); }
+
+/* Focus mode */
+.focused #clients,
+.focused #upstreams,
+.focused .toggle,
+.focused .hint-copy           { opacity: 0.28; }
+.focused .flow                { opacity: 0.10; animation-duration: 3s; }
+.focused #core .lane          { opacity: 0.38; }
+.focused #lane-route          { opacity: 0.32; }
+.focused #core .t-lane,
+.focused #core .t-lane-sub,
+.focused .t-mark,
+.focused .t-mono-dim          { opacity: 0.40; }
+.focused .fs-box .fs-bg       { opacity: 0.32; }
+.focused .fs-box .fs-name,
+.focused .fs-box .fs-tag      { opacity: 0.35; }
+
+.focused .focus-target,
+.focused .focus-target .t-lane,
+.focused .focus-target .t-lane-sub,
+.focused .focus-target .fs-name,
+.focused .focus-target .fs-tag { opacity: 1 !important; }
+/* Focused element gets a bright yellow line + multi-stop glow halo.
+ * The stack of drop-shadows builds up the "halo" feel — inner crisp ring,
+ * mid spread, soft outer wash. */
+.focused .focus-target .lane,
+.focused .fs-box.focus-target .fs-bg {
+  opacity: 1 !important;
+  fill: rgba(251,191,36,0.18);
+  stroke: rgba(251,191,36,1);
+  stroke-width: 2;
+  filter:
+    drop-shadow(0 0 8px  rgba(251,191,36,0.95))
+    drop-shadow(0 0 22px rgba(251,191,36,0.55))
+    drop-shadow(0 0 48px rgba(251,191,36,0.25));
+}
+
+/* Tooltips — aligned with the docs body type (Inter), darker glass panel
+ * matching the rest of the diagram, amber-tinted edge to read as a focus
+ * artifact rather than a separate widget. */
+.tooltip { pointer-events: none; opacity: 0; transition: opacity 280ms ease; }
+.tooltip.show { opacity: 1; }
+.tooltip .tt-bg {
+  fill: rgba(10,14,26,0.92);
+  stroke: rgba(251,191,36,0.55);
+  stroke-width: 1.2;
+  filter:
+    drop-shadow(0 0 16px rgba(251,191,36,0.28))
+    drop-shadow(0 4px 12px rgba(0,0,0,0.55));
+}
+.tooltip .tt-text {
+  font: 500 12.5px/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  fill: rgba(255,255,255,0.92);
+  letter-spacing: 0.005em;
+}
+.tooltip .tt-step circle {
+  fill: var(--amber);
+  stroke: rgba(255,255,255,0.40);
+  stroke-width: 1.2;
+  filter: drop-shadow(0 0 10px rgba(251,191,36,0.85)) drop-shadow(0 0 22px rgba(251,191,36,0.45));
+}
+.tooltip .tt-step text {
+  font: 700 16px/1 Inter, system-ui, sans-serif;
+  fill: #0a0e1a;
+  text-anchor: middle;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot, .flow { animation: none !important; }
+}
+@media (max-width: 720px) { .hero { aspect-ratio: auto; min-height: 360px; } .hero svg { height: auto; } }
