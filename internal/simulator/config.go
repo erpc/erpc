@@ -59,21 +59,24 @@ projects:
           # whose matchMethod accepts the request wins, so specific
           # method patterns MUST come BEFORE the wildcard catch-all.
           #
-          # eth_getLogs uses consensus: 2-of-3 upstreams must agree
-          # on the returned log set. Mismatches trigger
-          # disputeBehavior (returnError here so the operator can
-          # see disputes surface in the lifecycle drawer).
-          - matchMethod: "eth_getLogs"
-            consensus:
-              maxParticipants: 3
-              agreementThreshold: 2
-              disputeBehavior: returnError
-              lowParticipantsBehavior: acceptMostCommonValidResult
-            retry:
-              maxAttempts: 2
-              delay: 0ms
-            timeout:
-              duration: 30s
+          # ─────────────────────────────────────────────────────────
+          # Want to test consensus? Uncomment the block below to make
+          # eth_getLogs require 2-of-3 upstreams to agree on the log
+          # set. Mismatches trigger disputeBehavior=returnError so the
+          # operator can see disputes surface in the lifecycle drawer.
+          # Keep specific-method rules BEFORE the wildcard below.
+          # ─────────────────────────────────────────────────────────
+          # - matchMethod: "eth_getLogs"
+          #   consensus:
+          #     maxParticipants: 3
+          #     agreementThreshold: 2
+          #     disputeBehavior: returnError
+          #     lowParticipantsBehavior: acceptMostCommonValidResult
+          #   retry:
+          #     maxAttempts: 2
+          #     delay: 0ms
+          #   timeout:
+          #     duration: 30s
           # Network-level catch-all: retry, timeout, hedge.
           # CB is per-upstream (see failsafe blocks below).
           - matchMethod: "*"

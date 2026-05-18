@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -26,6 +27,22 @@ type Engine struct {
 	// referenced methods can lazily spin up additional slots under
 	// `evalPerMethod=true`.
 	networks map[string]*networkRegistration
+
+	// paused gates the per-slot ticker. Read every tick via
+	// `s.engine.paused.Load()`. When true the ticker still wakes up but
+	// returns immediately without running tickOnce, so the cache (and
+	// the request path that reads it) stays frozen at the last verdict.
+	// Wired up so the simulator's "pause" button stops the policy
+	// engine from churning while traffic generation is halted — without
+	// this, the policy would happily continue re-evaluating against
+	// drifting tracker metrics, and the operator's "what was the last
+	// verdict?" snapshot wouldn't be stable while paused.
+	//
+	// Request-path GetOrdered is intentionally NOT gated by paused: a
+	// late-arriving request mid-pause still gets a deterministic order
+	// rather than nil. This matches the simulator's contract (Execute
+	// itself drops requests when paused, so this is belt-and-braces).
+	paused atomic.Bool
 
 	appCtx context.Context
 	cancel context.CancelFunc
@@ -236,6 +253,27 @@ func (e *Engine) lookupSlot(networkID, method string) *Slot {
 		return slot
 	}
 	return e.slots[slotKey{networkID, "*"}]
+}
+
+// SetPaused gates every slot's ticker. While paused, the goroutine still
+// wakes on each tick but skips `tickOnce`, so:
+//   - the cache (atomically swapped at the end of `tickOnce`) is frozen
+//     at the last successful verdict — request-path readers see a stable
+//     ordering for the duration of the pause
+//   - cross-tick state (excludedSince map, lastSwitchAt, decision ring,
+//     tracker EMA) doesn't drift relative to the frozen verdict
+//
+// Edge-triggered: callers wanting "advance one tick under pause" must
+// SetPaused(false), wait, SetPaused(true) — or call TickForTest on each
+// slot. Used by the simulator's pause button to freeze the engine alongside
+// frontend traffic generation; production callers shouldn't need this.
+func (e *Engine) SetPaused(p bool) {
+	e.paused.Store(p)
+}
+
+// IsPaused reports whether the per-slot ticker is currently gated.
+func (e *Engine) IsPaused() bool {
+	return e.paused.Load()
 }
 
 // Stop cancels every slot's ticker and releases pooled runtimes.

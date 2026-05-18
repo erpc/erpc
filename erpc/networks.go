@@ -185,6 +185,23 @@ func (n *Network) PolicyOrderedUpstreams(method string) []string {
 	return out
 }
 
+// SetPolicyEnginePaused gates the per-slot ticker on this network's
+// selection-policy engine. While paused every slot still wakes on each
+// tick but skips `tickOnce`, so the cached ordering — what `Forward`
+// reads via `policyEngine.GetOrdered` — stays frozen at the last
+// verdict. No-op if no policy engine is wired up (test-only networks,
+// or YAML without a `selectionPolicy` block).
+//
+// Wired up so the eRPC simulator's pause button can stop the policy
+// engine churning while traffic generation is halted. Production
+// callers shouldn't need this — leave the engine running.
+func (n *Network) SetPolicyEnginePaused(paused bool) {
+	if n.policyEngine == nil {
+		return
+	}
+	n.policyEngine.SetPaused(paused)
+}
+
 func (n *Network) Label() string {
 	if n == nil {
 		return ""

@@ -218,8 +218,19 @@ func (o *Orchestrator) Stop() {
 // SetPaused pauses/resumes new request execution. Useful for the
 // browser's pause button — incoming send-batch frames are dropped
 // silently while paused.
+//
+// Also gates the policy engine's per-slot ticker. Without this, the
+// engine would keep re-evaluating against drifting tracker metrics
+// while the operator stares at a frozen UI — the cached verdict
+// (Position pills, score chips, primary-switch flashes) would not
+// stay coherent with what `Forward` would actually pick the moment
+// pause ends. Freezing the engine alongside execution keeps the
+// "what's the policy doing right now?" view trustworthy.
 func (o *Orchestrator) SetPaused(p bool) {
 	o.paused.Store(p)
+	if net := o.network.Load(); net != nil {
+		net.SetPolicyEnginePaused(p)
+	}
 	o.dumper.LogPaused(p)
 }
 
@@ -270,6 +281,15 @@ func (o *Orchestrator) bootFromYAML(ctx context.Context, yamlSrc string) error {
 	}
 	o.erpc.Store(e)
 	o.network.Store(net)
+	// Re-apply the current pause state to the freshly-booted policy
+	// engine. ApplyConfig / ApplyPolicy can land mid-pause and the new
+	// engine starts running by default; without this its ticker would
+	// happily churn while the rest of the simulator sits frozen, and
+	// the verdict displayed in the UI would drift from what the next
+	// (post-pause) request would actually see.
+	if o.paused.Load() {
+		net.SetPolicyEnginePaused(true)
+	}
 	return nil
 }
 

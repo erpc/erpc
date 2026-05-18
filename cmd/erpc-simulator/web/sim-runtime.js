@@ -139,6 +139,16 @@
       configResult: null,
       policyValidate: null,
       policyResult: null,
+      // `pendingConfigApplyAck` / `pendingPolicyApplyAck` are set when
+      // the user clicks Apply on the YAML or policy editor. They
+      // instruct onSnapshot to FORCE-reset the corresponding draft to
+      // the server's normalized form on the next snapshot — without
+      // this, the editor stays "modified" forever because the eRPC
+      // YAML round-trip (yaml.v3) normalizes formatting (inline arrays
+      // become block lists, etc.) so the user's text never byte-matches
+      // what the server publishes back. Cleared after the next snapshot.
+      pendingConfigApplyAck: false,
+      pendingPolicyApplyAck: false,
 
       // Selection-policy edit history (LRU-ish, max 50). Each entry:
       // { ts, code, source: "manual"|"snapshot"|"assistant"|"undo" }.
@@ -232,9 +242,22 @@
         case "traces":                 return onTraces(b.items || []);
         case "policy-history":         return onPolicyHistory(b.items || []);
         case "knob-changed":           return onKnobChanged(b);
-        case "policy-result":          return mutate({ policyResult: b });
+        case "policy-result": {
+          // Arm the snapshot-side draft reset on successful apply so
+          // the "modified" pill clears when the next snapshot lands.
+          // The reset is the only safe way to drop "modified" without
+          // false-clearing when an external edit just changed the
+          // server baseline (see `pendingPolicyApplyAck` in initialState).
+          const patch = { policyResult: b };
+          if (b && b.ok) patch.pendingPolicyApplyAck = true;
+          return mutate(patch);
+        }
         case "policy-validate-result": return mutate({ policyValidate: b });
-        case "config-result":          return mutate({ configResult: b });
+        case "config-result": {
+          const patch = { configResult: b };
+          if (b && b.ok) patch.pendingConfigApplyAck = true;
+          return mutate(patch);
+        }
         case "config-validate-result": return mutate({ configValidate: b });
         case "error":                  return console.warn("[sim] server error:", b.msg);
       }
@@ -273,11 +296,33 @@
         snapshotReady: true,
         bootedAt: state.snapshotReady ? state.bootedAt : Date.now(),
       };
-      if (!state.yamlDraft || state.yamlDraft === state.yaml) {
+      // Reset yamlDraft if either:
+      //   * the user hasn't typed anything (draft is empty or matches
+      //     the prior server yaml), OR
+      //   * a config-apply just succeeded — in which case the server
+      //     is the authority on the canonical form and we accept its
+      //     normalized output as the new draft (clears the "modified"
+      //     flag that would otherwise persist due to yaml.v3 formatting
+      //     differences).
+      if (!state.yamlDraft || state.yamlDraft === state.yaml || state.pendingConfigApplyAck) {
         newPatch.yamlDraft = templatedYaml || state.yamlDraft;
+        if (state.pendingConfigApplyAck) {
+          newPatch.pendingConfigApplyAck = false;
+        }
       }
-      if (!state.policyDraft || state.policyDraft === state.policyLastApplied) {
+      // Same idea for the policy editor — on a successful policy apply
+      // the engine round-trips through `injectPolicyIntoYAML` which can
+      // shift whitespace; accept the server's form as the new baseline.
+      if (!state.policyDraft || state.policyDraft === state.policyLastApplied || state.pendingPolicyApplyAck) {
         newPatch.policyDraft = policySrc;
+        newPatch.policyLastApplied = policySrc;
+        if (state.pendingPolicyApplyAck) {
+          newPatch.pendingPolicyApplyAck = false;
+        }
+      } else if (state.policyLastApplied !== policySrc) {
+        // Server's "in use" baseline changed (e.g. from external admin
+        // reapply) — keep policyLastApplied in sync so the "dirty"
+        // marker stays accurate even when we don't touch the draft.
         newPatch.policyLastApplied = policySrc;
       }
       mutate(newPatch);

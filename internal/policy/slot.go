@@ -103,6 +103,14 @@ func (s *Slot) start(ctx context.Context) {
 			case <-s.stopCh:
 				return
 			case <-ticker.C:
+				// Engine-level pause gate: simulator's pause button (and
+				// any future "freeze the policy verdict" caller) flips
+				// this so the cache stays at the last verdict for the
+				// duration of the pause. Skipping the call is enough —
+				// nothing else in the slot's tick path runs.
+				if s.engine.paused.Load() {
+					continue
+				}
 				s.tickOnce()
 			}
 		}
