@@ -1,0 +1,891 @@
+/* ===== Charts panel ===== */
+.charts-wrap { flex: 1; display: flex; flex-direction: column; overflow: auto; min-height: 0; }
+.chart-card { padding: 10px 12px; border-bottom: 1px solid var(--bd-0); }
+.chart-card .lbl {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 4px; font-size: 10.5px; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--tx-2); font-weight: 600;
+}
+.chart-card .lbl .sub { text-transform: none; letter-spacing: 0; font-size: 10.5px; font-weight: 400; color: var(--tx-3); font-family: var(--font-mono); }
+.share-chart { width: 100%; height: 110px; display: block; }
+.share-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 10px; }
+.share-legend .it { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); color: var(--tx-2); }
+.share-legend .sw { width: 9px; height: 4px; border-radius: 1px; }
+
+/* Ops strip: a stack of sparklines showing retry / hedge / miss / fail
+   rates per second over the last 60s. Lives below the share chart. */
+.chart-card.ops-strip { padding-bottom: 10px; }
+.ops-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 52px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.ops-row .ops-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--tx-3);
+  white-space: nowrap;
+}
+.ops-row .ops-spark {
+  width: 100%;
+  height: 22px;
+  display: block;
+}
+.ops-row .ops-val {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  font-weight: 600;
+}
+.ops-row .ops-val .ops-unit {
+  font-size: 9px;
+  color: var(--tx-3);
+  font-weight: 400;
+  margin-left: 2px;
+}
+
+.up-cards {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 5px;
+  padding: 8px 12px; border-bottom: 1px solid var(--bd-0);
+}
+.up-card {
+  border: 1px solid var(--bd-1); border-radius: var(--r-sm);
+  padding: 5px 7px; background: var(--bg-2); font-size: 10.5px; min-width: 0;
+}
+.up-card.pos-0 { background: color-mix(in oklab, var(--ok-d) 35%, var(--bg-2)); border-color: color-mix(in oklab, var(--ok) 35%, var(--bd-1)); }
+.up-card.pos-1 { background: color-mix(in oklab, var(--ok-d) 14%, var(--bg-2)); }
+.up-card.pos-2 { background: color-mix(in oklab, var(--warn-d) 28%, var(--bg-2)); border-color: color-mix(in oklab, var(--warn) 28%, var(--bd-1)); }
+.up-card.pos-x { background: color-mix(in oklab, var(--bad-d) 28%, var(--bg-2)); border-color: color-mix(in oklab, var(--bad) 28%, var(--bd-1)); opacity: 0.85; }
+.up-card .hd { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.up-card .nm { font-family: var(--font-mono); font-size: 10.5px; color: var(--tx-0); font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.up-card .pos { font-family: var(--font-mono); font-size: 9.5px; padding: 0 4px; border-radius: 2px; background: var(--bg-1); border: 1px solid var(--bd-1); color: var(--tx-1); flex-shrink: 0; }
+.up-card.pos-0 .pos { background: var(--ok); color: black; border-color: var(--ok); }
+.up-card.pos-x .pos { background: var(--bad); color: white; border-color: var(--bad); }
+.up-card .vendor { font-size: 9px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.04em; margin: 2px 0 4px; }
+.up-card .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 6px; font-family: var(--font-mono); font-size: 10px; color: var(--tx-2); }
+.up-card .grid .k { color: var(--tx-3); font-size: 9px; }
+.up-card .grid .v { color: var(--tx-0); font-variant-numeric: tabular-nums; }
+.up-card .grid .v.bad { color: var(--bad); }
+.up-card .grid .v.warn { color: var(--warn); }
+
+.fs-strip { padding: 8px 12px 12px; }
+.fs-strip .heads {
+  display: grid; grid-template-columns: 78px 1fr 1fr 1fr 50px;
+  gap: 6px; font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--tx-3); margin-bottom: 4px; font-family: var(--font-sans);
+}
+.fs-strip .row {
+  display: grid; grid-template-columns: 78px 1fr 1fr 1fr 50px;
+  gap: 6px; align-items: center; padding: 2px 0; font-size: 10px; font-family: var(--font-mono);
+}
+.fs-strip .row .nm { color: var(--tx-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fs-strip .bar { height: 4px; background: var(--bg-3); border-radius: 2px; position: relative; overflow: hidden; }
+.fs-strip .bar .fill { position: absolute; inset: 0; transform-origin: left; transition: transform 0.25s; }
+.fs-strip .bar.retry .fill { background: var(--warn); }
+.fs-strip .bar.hedge .fill { background: var(--hot); }
+.fs-strip .bar.timeout .fill { background: var(--bad); }
+.fs-strip .cb-state {
+  font-size: 9px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 1px 4px; border-radius: 2px; text-align: center;
+}
+.fs-strip .cb-state.closed { background: var(--ok-d); color: var(--ok); }
+.fs-strip .cb-state.half   { background: var(--warn-d); color: var(--warn); }
+.fs-strip .cb-state.open   { background: var(--bad-d); color: var(--bad); }
+
+/* ===== Upstream knobs panel ===== */
+.knobs-wrap { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.knobs-toolbar {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+  border-bottom: 1px solid var(--bd-0); flex-shrink: 0; flex-wrap: wrap;
+}
+.knobs-toolbar .label { font-size: 10px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }
+.chip-btn {
+  font-size: 10.5px; padding: 3px 8px; border-radius: 999px;
+  background: var(--bg-3); border: 1px solid var(--bd-1); color: var(--tx-1); font-family: var(--font-mono);
+}
+.chip-btn:hover { background: var(--hov); color: var(--tx-0); border-color: var(--bd-2); }
+.chip-btn.danger:hover { background: color-mix(in oklab, var(--bad-d) 70%, var(--bg-3)); color: var(--bad); border-color: var(--bad); }
+.chip-btn.warm:hover { background: color-mix(in oklab, var(--warn-d) 70%, var(--bg-3)); color: var(--warn); border-color: var(--warn); }
+.chip-btn.good:hover { background: color-mix(in oklab, var(--ok-d) 70%, var(--bg-3)); color: var(--ok); border-color: var(--ok); }
+
+.knobs-table { flex: 1; overflow: auto; min-height: 0; }
+.kt-head, .kt-row {
+  display: grid;
+  grid-template-columns: 200px repeat(8, minmax(72px, 1fr)) 50px 84px;
+  gap: 6px; align-items: center;
+}
+.kt-head {
+  padding: 6px 12px; font-size: 9.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--tx-3);
+  border-bottom: 1px solid var(--bd-0);
+  position: sticky; top: 0; background: var(--bg-1); z-index: 2;
+}
+.kt-head .col { white-space: nowrap; }
+.kt-row { padding: 6px 12px; border-bottom: 1px solid var(--bd-0); font-size: 11px; transition: background 0.12s, opacity 0.18s, box-shadow 0.18s; position: relative; }
+.kt-row:hover { background: var(--bg-2); }
+.kt-row.unavail { opacity: 0.5; }
+.kt-row .ident { cursor: pointer; }
+.kt-row .ident:hover .id { color: var(--acc-blue); }
+.kt-row.focused {
+  background: color-mix(in oklab, var(--acc-blue-d) 35%, var(--bg-2));
+  box-shadow:
+    inset 3px 0 0 0 var(--acc-blue),
+    0 0 0 1px color-mix(in oklab, var(--acc-blue) 40%, transparent),
+    0 0 22px color-mix(in oklab, var(--acc-blue) 25%, transparent);
+}
+.kt-row.focused .ident .id { color: var(--tx-0); font-weight: 600; }
+.kt-row.dimmed { opacity: 0.32; }
+.kt-row.dimmed:hover { opacity: 0.55; }
+.kt-row .ident { display: flex; flex-direction: column; min-width: 0; }
+.kt-row .ident .id-row { display: flex; align-items: center; gap: 6px; }
+/* Color swatch mirroring the selection-share chart band for this
+   upstream — lets the operator correlate chart bands to rows here
+   without reading the legend (which itself was removed). */
+.kt-row .ident .up-color {
+  width: 9px; height: 9px; border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 12%, transparent);
+}
+.kt-row .ident .id { font-family: var(--font-mono); color: var(--tx-0); font-size: 11.5px; font-weight: 500; }
+.kt-row .ident .vendor { font-size: 9px; color: var(--tx-3); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 4px; background: var(--bg-3); border-radius: 2px; }
+.kt-row .ident .tags { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
+.kt-row .ident .tag {
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--tx-2);
+  padding: 0 4px; background: var(--bg-3); border: 1px solid var(--bd-1); border-radius: 2px;
+}
+
+.knob { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.knob input[type="range"] {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 4px; background: var(--bg-3); border-radius: 2px; min-width: 28px;
+}
+.knob input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 11px; height: 11px; background: var(--tx-1);
+  border-radius: 50%; cursor: pointer; transition: background 0.12s;
+}
+.knob input[type="range"]:hover::-webkit-slider-thumb { background: var(--tx-0); }
+.knob .knob-input {
+  width: 50px;
+  min-width: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  border-radius: var(--r-sm);
+  padding: 2px 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--tx-0);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.knob .knob-input::-webkit-outer-spin-button,
+.knob .knob-input::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.knob .knob-input:hover { border-color: var(--bd-2); }
+.knob .knob-input:focus { outline: none; border-color: var(--acc-blue); background: var(--bg-1); }
+.knob .knob-unit { font-family: var(--font-mono); font-size: 9px; color: var(--tx-3); flex-shrink: 0; }
+.knob.err input[type="range"]::-webkit-slider-thumb { background: var(--bad); }
+.knob.err .knob-input { color: var(--bad); border-color: color-mix(in oklab, var(--bad) 40%, var(--bd-1)); }
+.knob.warn input[type="range"]::-webkit-slider-thumb { background: var(--warn); }
+.knob.warn .knob-input { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 40%, var(--bd-1)); }
+.knob.hot input[type="range"]::-webkit-slider-thumb { background: var(--hot); }
+.knob.hot .knob-input { color: var(--hot); }
+
+.kt-row .pos-pill {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  text-align: center; padding: 2px 6px; border-radius: 999px;
+  background: var(--bg-3); border: 1px solid var(--bd-1); color: var(--tx-2);
+  /* The "out" label is wider than a single digit — give the pill a
+     min-width so all rows align in the position column regardless of
+     content width. */
+  min-width: 26px; cursor: help;
+}
+.kt-row.pos-0 .pos-pill { background: var(--ok); color: black; border-color: var(--ok); }
+.kt-row.pos-1 .pos-pill { background: color-mix(in oklab, var(--ok) 45%, var(--bg-3)); color: var(--tx-0); border-color: var(--ok); }
+.kt-row.pos-2 .pos-pill { background: var(--warn-d); color: var(--warn); border-color: var(--warn); }
+/* "out" pill: red background, slightly wider, uppercase. The tooltip
+   explains the excluded-from-rotation semantics on hover. */
+.kt-row.pos-x .pos-pill {
+  background: var(--bad); color: white; border-color: var(--bad);
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.sparkline { width: 70px; height: 18px; display: block; }
+
+.toggle {
+  --w: 26px; width: var(--w); height: 14px;
+  background: var(--bg-3); border: 1px solid var(--bd-1);
+  border-radius: 999px; position: relative; cursor: pointer; transition: all 0.12s;
+}
+.toggle::after {
+  content: ""; position: absolute; top: 1px; left: 1px;
+  width: 10px; height: 10px; background: var(--tx-2);
+  border-radius: 50%; transition: all 0.15s;
+}
+.toggle.on { background: var(--ok); border-color: var(--ok); }
+.toggle.on::after { left: calc(var(--w) - 13px); background: #000; }
+
+.inject-btn {
+  font-size: 9.5px; padding: 2px 6px; border-radius: 3px;
+  background: transparent; border: 1px solid var(--bd-1); color: var(--tx-2);
+  font-family: var(--font-mono); white-space: nowrap;
+}
+.inject-btn:hover { color: var(--bad); border-color: var(--bad); background: color-mix(in oklab, var(--bad) 12%, transparent); }
+.inject-btn.armed { color: var(--bad); border-color: var(--bad); background: color-mix(in oklab, var(--bad) 18%, transparent); animation: pulse-soft 1s ease-in-out infinite; }
+
+/* ===== Right column (gen + log) ===== */
+.right-col { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.right-col .panel-hd { cursor: default; }
+
+.gen-wrap { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
+.gen-section { padding: 8px 12px; border-bottom: 1px solid var(--bd-0); flex-shrink: 0; }
+.gen-section.scrollable { overflow: auto; flex: 1; min-height: 0; }
+.gen-section .lbl { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--tx-3); margin-bottom: 6px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.gen-section .lbl .sub { text-transform: none; letter-spacing: 0; color: var(--tx-4); font-weight: 400; font-family: var(--font-mono); font-size: 10px; margin-left: auto; }
+
+.gen-rps { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+.gen-rps .val { font-family: var(--font-mono); font-size: 22px; font-weight: 600; color: var(--tx-0); font-variant-numeric: tabular-nums; }
+.gen-rps .unit { font-family: var(--font-mono); font-size: 10px; color: var(--tx-3); }
+.gen-rps .target { font-family: var(--font-mono); font-size: 10px; color: var(--tx-3); margin-left: auto; }
+.gen-slider { width: 100%; }
+.gen-stops { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 9px; color: var(--tx-4); margin-top: 2px; }
+
+.method-mix { display: flex; flex-direction: column; gap: 3px; }
+.mm-row { display: grid; grid-template-columns: 1fr 50px 18px; align-items: center; gap: 6px; font-size: 10.5px; }
+.mm-row input {
+  background: var(--bg-2); border: 1px solid var(--bd-1);
+  border-radius: var(--r-sm); padding: 3px 6px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--tx-0); min-width: 0;
+}
+.mm-row input[type="number"] { text-align: right; }
+.mm-row .del { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; color: var(--tx-3); font-family: var(--font-mono); font-size: 12px; border-radius: 2px; cursor: pointer; }
+.mm-row .del:hover { color: var(--bad); background: color-mix(in oklab, var(--bad) 15%, transparent); }
+
+.gen-row { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+.gen-row select, .gen-row input { background: var(--bg-2); border: 1px solid var(--bd-1); border-radius: var(--r-sm); padding: 3px 6px; font-size: 11px; color: var(--tx-0); font-family: var(--font-mono); }
+
+.scn-bar { height: 4px; background: var(--bg-3); border-radius: 2px; margin-top: 6px; position: relative; overflow: hidden; }
+.scn-bar .fill { position: absolute; inset: 0; background: var(--acc-blue); transform-origin: left; transition: transform 0.25s linear; }
+.scn-bar.live .fill { background: var(--hot); }
+.scn-events { margin-top: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--tx-3); max-height: 80px; overflow: auto; }
+.scn-events .evt { padding: 1px 0; display: flex; gap: 8px; }
+.scn-events .evt .t { color: var(--tx-4); width: 38px; flex-shrink: 0; }
+.scn-events .evt .d { color: var(--tx-1); }
+
+/* ===== Event log ===== */
+.log-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+/* Toolbar sticks to the top of the log pane and never collapses or
+   gets overlapped — flex-shrink: 0, z-index above the scrollable list,
+   and its own background so log rows can't show through when the user
+   scrolls. */
+.log-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--bd-0);
+  flex-shrink: 0;
+  font-size: 10px;
+  background: var(--bg-1);
+  position: relative;
+  z-index: 5;
+  min-height: 32px;
+}
+.log-toolbar .filter {
+  display: flex;
+  gap: 0;
+  flex-wrap: wrap; /* If the pane is too narrow, wrap tabs to a new
+                      row rather than overflowing horizontally. */
+  background: var(--bg-2); border: 1px solid var(--bd-1); border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.log-toolbar .filter button {
+  padding: 3px 9px; font-size: 10px; color: var(--tx-2); font-family: var(--font-mono);
+  border-right: 1px solid var(--bd-1);
+  /* Subtle hover so it's clear the tabs are clickable. */
+  cursor: pointer;
+}
+.log-toolbar .filter button:hover { background: var(--bg-3); color: var(--tx-1); }
+.log-toolbar .filter button:last-child { border-right: 0; }
+.log-toolbar .filter button.on { background: var(--bg-4); color: var(--tx-0); font-weight: 600; }
+.log-toolbar .spacer { flex: 1; }
+
+/* Focus banner shown above the log table when an upstream is focused. */
+.log-focus-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--bd-0);
+  background: color-mix(in oklab, var(--acc-blue-d) 25%, var(--bg-1));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--tx-1);
+}
+.log-focus-banner b { color: var(--acc-blue); }
+.log-focus-banner .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--acc-blue);
+  animation: pulse-soft 1.4s ease-in-out infinite;
+}
+.log-focus-banner .cnt { color: var(--tx-3); }
+
+.log-table { flex: 1; overflow: auto; min-height: 0; font-family: var(--font-mono); font-size: 10.5px; }
+.log-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 90px 22px 50px;
+  gap: 8px; padding: 3px 12px;
+  border-bottom: 1px solid var(--bd-0); align-items: center;
+  cursor: pointer; color: var(--tx-1); white-space: nowrap;
+}
+.log-row:hover { background: var(--bg-2); }
+.log-row.selected { background: color-mix(in oklab, var(--acc-blue) 12%, var(--bg-2)); }
+.log-row.fresh { animation: flash 0.8s ease-out; }
+@keyframes flash {
+  from { background: color-mix(in oklab, var(--acc-blue) 22%, transparent); }
+  to   { background: transparent; }
+}
+.log-row .ts { color: var(--tx-3); font-size: 10px; overflow: hidden; }
+.log-row .mth { color: var(--tx-0); overflow: hidden; text-overflow: ellipsis; }
+.log-row .up { color: var(--tx-1); overflow: hidden; text-overflow: ellipsis; }
+.log-row .ic { font-size: 12px; text-align: center; }
+.log-row .ic.ok { color: var(--ok); }
+.log-row .ic.retry { color: var(--warn); }
+.log-row .ic.hedge { color: var(--hot); }
+.log-row .ic.bad { color: var(--bad); }
+.log-row .ic.cache { color: var(--info); }
+.log-row .dur { color: var(--tx-2); text-align: right; font-variant-numeric: tabular-nums; }
+
+.empty { padding: 18px 14px; font-size: 11px; color: var(--tx-3); font-family: var(--font-mono); }
+
+/* ===== Drawer ===== */
+.drawer-back {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  z-index: 90; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+}
+.drawer-back.on { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 38px; bottom: 0; right: 0;
+  width: 460px; max-width: 96vw;
+  background: var(--bg-1); border-left: 1px solid var(--bd-1);
+  box-shadow: -16px 0 40px rgba(0,0,0,0.4); z-index: 100;
+  transform: translateX(100%); transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.drawer.on { transform: translateX(0); }
+.drawer-hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--bd-0); flex-shrink: 0;
+}
+.drawer-hd .mth { font-family: var(--font-mono); color: var(--tx-0); font-size: 13px; font-weight: 500; }
+.drawer-hd .spacer { flex: 1; }
+.drawer-hd .x {
+  width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+  color: var(--tx-2); border-radius: var(--r-sm); font-size: 14px; cursor: pointer;
+}
+.drawer-hd .x:hover { background: var(--hov); color: var(--tx-0); }
+.drawer-bd { flex: 1; overflow: auto; padding: 12px 14px; }
+.drw-section { margin-bottom: 16px; }
+.drw-section .lbl { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tx-3); margin-bottom: 6px; font-weight: 600; }
+.drw-section .pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.drw-section .meta-pill {
+  font-family: var(--font-mono); font-size: 10.5px;
+  padding: 3px 7px; background: var(--bg-3); border: 1px solid var(--bd-1);
+  border-radius: 999px; color: var(--tx-1);
+}
+.drw-section .meta-pill .k { color: var(--tx-3); margin-right: 4px; }
+
+/* lifecycle timeline */
+.lifecycle { position: relative; padding-left: 16px; font-family: var(--font-mono); font-size: 11px; }
+.lifecycle::before { content: ""; position: absolute; top: 4px; bottom: 4px; left: 4px; width: 1px; background: var(--bd-1); }
+.lc-node { position: relative; padding: 4px 0 10px; }
+.lc-node::before {
+  content: ""; position: absolute; top: 7px; left: -16px;
+  width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--bg-1);
+}
+.lc-node.ok::before { background: var(--ok); box-shadow: 0 0 0 2px var(--ok-d); }
+.lc-node.bad::before { background: var(--bad); box-shadow: 0 0 0 2px var(--bad-d); }
+.lc-node.retry::before { background: var(--warn); box-shadow: 0 0 0 2px var(--warn-d); }
+.lc-node.hedge::before { background: var(--hot); box-shadow: 0 0 0 2px var(--hot-d); }
+.lc-node.cache::before { background: var(--info); box-shadow: 0 0 0 2px var(--info-d); }
+/* "miss" is an undesirable event (no data) but not an upstream error.
+   AMBER (warn) per the project's color spec — distinguishes it
+   visually from real failures (red) and from harmless parallel
+   work (blue/info). */
+.lc-node.miss::before { background: var(--warn); box-shadow: 0 0 0 2px var(--warn-d); }
+.lc-node.throttled::before { background: var(--warn); box-shadow: 0 0 0 2px var(--warn-d); }
+/* Harmless / cancelled / hedge-loser: BLUE. Records work that
+   happened in parallel and didn't determine the outcome. */
+.lc-node.neutral::before { background: var(--info); box-shadow: 0 0 0 2px var(--info-d); }
+.lc-node.dim::before { background: var(--dim); }
+.lc-node .hd { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.lc-node .hd .up { color: var(--tx-0); font-weight: 500; }
+.lc-node .hd .why { color: var(--tx-3); font-size: 10px; font-family: var(--font-sans); }
+.lc-node .hd .dur { color: var(--tx-2); font-variant-numeric: tabular-nums; }
+.lc-node .latbar { margin-top: 4px; height: 6px; background: var(--bg-3); border-radius: 3px; position: relative; overflow: hidden; }
+.lc-node .latbar .fill { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.lc-node.ok .latbar .fill { background: var(--ok); }
+.lc-node.bad .latbar .fill { background: var(--bad); }
+.lc-node.retry .latbar .fill { background: var(--warn); }
+.lc-node.hedge .latbar .fill { background: var(--hot); }
+.lc-node.miss .latbar .fill { background: var(--warn); }
+.lc-node.throttled .latbar .fill { background: var(--warn); }
+.lc-node.neutral .latbar .fill { background: var(--info); }
+.lc-node.hedge-loser { opacity: 0.55; }
+.lc-node.miss { opacity: 0.8; }
+.lc-node.miss .hd .why::before { content: "no data · "; color: var(--warn); }
+/* Consensus participants whose response was rejected by the aggregator
+   are styled `.miss` for the amber color but they DID return data —
+   suppress the "no data · " prefix so we don't render the contradictory
+   "no data · responded · in minority". */
+.lc-node.miss.consensus-loser .hd .why::before { content: none; }
+.lc-node.miss.consensus-loser { opacity: 1; }
+
+/* New duration display — left = step duration with +/~ prefix,
+   right = cumulative wall-clock. The ~ indicates parallel work that
+   didn't add to the request's total time (hedge participants etc.). */
+.lc-node .hd .dur {
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.lc-node .hd .dur .dur-step {
+  color: var(--tx-1);
+  font-size: 10.5px;
+}
+.lc-node .hd .dur .dur-sep {
+  color: var(--tx-4);
+  font-size: 10px;
+}
+.lc-node .hd .dur .dur-cumulative {
+  color: var(--tx-2);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+/* Per-attempt selection-reason chips */
+.lc-tag.retry { color: var(--warn); background: color-mix(in oklab, var(--warn-d) 50%, transparent); border-color: color-mix(in oklab, var(--warn) 35%, transparent); }
+.lc-tag.consensus { color: var(--info); background: color-mix(in oklab, var(--info-d) 50%, transparent); border-color: color-mix(in oklab, var(--info) 35%, transparent); }
+.lc-tag.sweep { color: var(--tx-2); background: var(--bg-2); border-color: var(--bd-1); }
+.lc-tag.primary { color: var(--tx-2); background: var(--bg-2); border-color: var(--bd-1); font-style: italic; }
+.lc-tag.retry, .lc-tag.consensus, .lc-tag.sweep, .lc-tag.primary {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+  border: 1px solid;
+  border-radius: 3px;
+  margin-right: 6px;
+  font-family: var(--font-mono);
+}
+
+/* Per-attempt hedge tag — small chip in the .why column for attempts
+   that started in parallel with the previous (i.e., a hedge fan-out). */
+.lc-node .lc-tag.hedge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--hot);
+  background: color-mix(in oklab, var(--hot-d) 60%, transparent);
+  border: 1px solid color-mix(in oklab, var(--hot) 35%, transparent);
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-right: 6px;
+  font-family: var(--font-mono);
+}
+
+/* Gap row between attempts: thinner, no circle, dashed indicator line.
+   Surfaces failsafe retry-backoff / hedge-delay dead time between
+   recorded calls. */
+.lc-gap {
+  position: relative;
+  padding: 4px 0 8px;
+  margin-left: -16px;
+  padding-left: 16px;
+}
+.lc-gap::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  left: 1px;
+  width: 7px;
+  height: 7px;
+  border: 1px dashed var(--tx-3);
+  border-radius: 50%;
+  background: transparent;
+}
+.lc-gap .hd {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.lc-gap .hd .lbl {
+  color: var(--tx-3);
+  font-weight: 500;
+}
+.lc-gap .hd .why {
+  color: var(--tx-3);
+  font-size: 10px;
+  font-family: var(--font-sans);
+  font-style: italic;
+}
+.lc-gap .hd .dur {
+  color: var(--tx-2);
+  font-variant-numeric: tabular-nums;
+}
+.lc-gap .latbar {
+  margin-top: 3px;
+  height: 4px;
+  background: transparent;
+  position: relative;
+  overflow: hidden;
+}
+.lc-gap .latbar .gapfill {
+  position: absolute;
+  top: 1.5px;
+  height: 1px;
+  border-top: 1px dashed var(--tx-4);
+}
+
+/* Hedge fan-out gap row — orange-tinted to match the hedge attempt
+   chip. The bar isn't dashed because hedge fan-out IS an event (the
+   network executor fired a goroutine); it's a real moment, not idle
+   wait time. */
+.lc-gap.hedge::before {
+  border-color: var(--hot);
+  background: color-mix(in oklab, var(--hot) 25%, transparent);
+}
+.lc-gap.hedge .hd .lbl { color: var(--hot); }
+.lc-gap.hedge .hd .why { color: var(--hot); font-style: normal; font-weight: 600; }
+.lc-gap.hedge .latbar .gapfill {
+  top: 1.5px;
+  height: 2px;
+  border-top: 2px solid color-mix(in oklab, var(--hot) 55%, transparent);
+}
+
+/* Consensus spawning gap row — blue-tinted because consensus
+   participants are harmless parallel work (the failure mode is
+   dispute on the outcome, not on the spawn itself). */
+.lc-gap.consensus::before {
+  border-color: var(--info);
+  background: color-mix(in oklab, var(--info) 25%, transparent);
+}
+.lc-gap.consensus .hd .lbl { color: var(--info); }
+.lc-gap.consensus .hd .why { color: var(--info); font-style: normal; font-weight: 600; }
+.lc-gap.consensus .latbar .gapfill {
+  top: 1.5px;
+  height: 2px;
+  border-top: 2px solid color-mix(in oklab, var(--info) 55%, transparent);
+}
+
+/* Drawer header pills for consensus + its sub-outcomes. */
+.meta-pill.consensus-pill { color: var(--info); border-color: color-mix(in oklab, var(--info) 35%, var(--bd-1)); }
+.meta-pill.consensus-dispute { color: var(--bad); border-color: color-mix(in oklab, var(--bad) 35%, var(--bd-1)); }
+.meta-pill.consensus-low { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 35%, var(--bd-1)); }
+
+/* Final response / error block (between meta-pills and lifecycle). */
+.drw-response {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--tx-1);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow: auto;
+}
+.drw-final-error {
+  padding: 8px 10px;
+  background: color-mix(in oklab, var(--bad-d) 35%, var(--bg-2));
+  border: 1px solid color-mix(in oklab, var(--bad) 30%, var(--bd-1));
+  border-radius: var(--r-sm);
+}
+.drw-final-error .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.drw-final-error .row .lc-err-msg {
+  flex: 1;
+  max-width: none;
+  white-space: normal;
+  color: var(--tx-1);
+  font-style: normal;
+}
+.drw-final-error .lc-err-details {
+  margin-top: 6px;
+}
+
+/* Synthesized consensus-result row at the end of the lifecycle —
+   styled like a summary verdict, not a regular attempt. */
+.lc-node.lc-consensus-result {
+  margin-top: 8px;
+  padding: 8px 10px 10px 16px;
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--bd-1);
+  margin-left: -16px;
+}
+.lc-node.lc-consensus-result.bad {
+  background: color-mix(in oklab, var(--bad-d) 35%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--bad) 35%, var(--bd-1));
+}
+.lc-node.lc-consensus-result.miss {
+  background: color-mix(in oklab, var(--warn-d) 30%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--warn) 30%, var(--bd-1));
+}
+.lc-node.lc-consensus-result.ok {
+  background: color-mix(in oklab, var(--ok-d) 30%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--ok) 30%, var(--bd-1));
+}
+.lc-node.lc-consensus-result::before {
+  /* override the timeline-dot styling — this is a verdict, not an
+     attempt. Hide the dot entirely. */
+  display: none;
+}
+.lc-node.lc-consensus-result .hd .up {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.lc-node.lc-consensus-result.ok .hd .up   { color: var(--ok); }
+.lc-node.lc-consensus-result.bad .hd .up  { color: var(--bad); }
+.lc-node.lc-consensus-result.miss .hd .up { color: var(--warn); }
+.lc-node.lc-consensus-result .hd .why {
+  font-style: italic;
+  font-size: 10px;
+  color: var(--tx-2);
+}
+.lc-node.lc-consensus-result .latbar {
+  height: 3px;
+  margin-top: 6px;
+  background: transparent;
+}
+.lc-node.lc-consensus-result.ok   .latbar .fill { background: var(--ok); }
+.lc-node.lc-consensus-result.bad  .latbar .fill { background: var(--bad); }
+.lc-node.lc-consensus-result.miss .latbar .fill { background: var(--warn); }
+
+/* Drawer left-edge resize handle. */
+.drawer-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 110;
+  background: transparent;
+  transition: background 0.12s;
+}
+.drawer-resize:hover { background: color-mix(in oklab, var(--acc-blue) 30%, transparent); }
+
+/* Structured error reason: code chip, short message, +/- toggle */
+.lc-reason {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  overflow: hidden;
+}
+.lc-reason-plain {
+  font-size: 10px;
+  color: var(--tx-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+  display: inline-block;
+}
+.lc-err-code {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--bad-d) 50%, transparent);
+  color: var(--bad);
+  border: 1px solid color-mix(in oklab, var(--bad) 35%, transparent);
+  white-space: nowrap;
+}
+.lc-err-code.lg {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.lc-err-msg {
+  font-size: 10px;
+  color: var(--tx-3);
+  font-family: var(--font-sans);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  display: inline-block;
+}
+.lc-err-toggle {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--bd-1);
+  border-radius: 3px;
+  background: var(--bg-3);
+  color: var(--tx-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.lc-err-toggle:hover { background: var(--hov); color: var(--tx-0); border-color: var(--bd-2); }
+.lc-err-toggle.on { background: var(--acc-blue); color: white; border-color: var(--acc-blue); }
+
+/* Error-details popup (anchored to the row). z-index has to clear the
+   drawer's own backdrop AND any panel headers/overlays that sit above
+   the lifecycle list. 9999 puts it unambiguously on top. */
+.lc-err-popup {
+  position: fixed;
+  right: 14px;
+  margin-top: 6px;
+  width: min(640px, 94vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-3);
+  border: 1px solid var(--bd-2);
+  border-radius: var(--r-md);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.7);
+  z-index: 9999;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--tx-1);
+}
+.lc-err-popup-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--bd-0);
+}
+.lc-err-popup-hd .ttl {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--tx-3);
+  font-family: var(--font-sans);
+  font-weight: 600;
+}
+.lc-err-popup-depth {
+  font-size: 9.5px;
+  color: var(--tx-3);
+  font-family: var(--font-mono);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.lc-err-popup-hd .x {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tx-3);
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.lc-err-popup-hd .x:hover { background: var(--hov); color: var(--tx-0); }
+.lc-err-popup-bd { padding: 8px 10px; flex: 1; overflow: auto; }
+.lc-err-node { margin-bottom: 8px; }
+.lc-err-node .row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lc-err-node .row .lc-err-msg { max-width: none; white-space: normal; }
+.lc-err-node.depth-1, .lc-err-node.depth-2, .lc-err-node.depth-3 {
+  margin-left: 14px;
+  border-left: 2px solid var(--bd-1);
+  padding-left: 10px;
+}
+.lc-err-node.depth-1::before, .lc-err-node.depth-2::before, .lc-err-node.depth-3::before {
+  content: "caused by";
+  display: block;
+  font-size: 9px;
+  color: var(--tx-3);
+  font-family: var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 0 0 4px;
+}
+.lc-err-details {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-0);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--tx-1);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 160px;
+  overflow: auto;
+}
+.lc-err-popup-raw {
+  border-top: 1px solid var(--bd-0);
+  padding: 6px 10px 8px;
+}
+.lc-err-popup-raw summary {
+  font-size: 10px;
+  color: var(--tx-3);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.lc-err-popup-raw pre {
+  margin: 6px 0 0;
+  font-size: 10px;
+  color: var(--tx-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow: auto;
+}
+.lc-node.indent { margin-left: 18px; }
+
+.sel-trail { display: flex; flex-direction: column; gap: 3px; font-family: var(--font-mono); font-size: 10.5px; }
+.sel-trail .it {
+  display: grid; grid-template-columns: 18px 1fr auto;
+  gap: 6px; padding: 3px 8px; border-radius: var(--r-sm); background: var(--bg-2);
+  align-items: baseline;
+}
+.sel-trail .it .idx { color: var(--tx-3); }
+.sel-trail .it .nm { color: var(--tx-0); }
+.sel-trail .it .why { color: var(--tx-3); font-size: 9.5px; }
+.sel-trail .it.winner { background: color-mix(in oklab, var(--ok-d) 40%, var(--bg-2)); border: 1px solid color-mix(in oklab, var(--ok) 35%, var(--bd-1)); }
+.sel-trail .it.winner .nm { color: var(--ok); }
+.sel-trail .it.excluded .nm { color: var(--tx-3); text-decoration: line-through; }

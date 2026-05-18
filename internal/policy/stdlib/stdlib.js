@@ -190,6 +190,56 @@
     });
   });
 
+  // ─── 4.3a excludeIf — predicate-driven exclusion with sticky cooldown ──
+  //
+  // The composable replacement for `keepHealthy`. Each `excludeIf` call
+  // takes a predicate function and (optionally) an `outFor` cooldown:
+  //
+  //   .excludeIf(errorRateAbove(0.5), { outFor: '30s', reason: 'errors>50%' })
+  //
+  // Semantics:
+  //   * If `predicate(u)` is true this tick → drop `u` (and the engine's
+  //     `excludedSince[id]` gets set/maintained as part of the slot's
+  //     normal cross-tick bookkeeping).
+  //   * If `outFor` is set AND `now - excludedSince[id] < outFor`, keep `u`
+  //     dropped even when the predicate no longer matches. This is the
+  //     anti-flap layer — once a rule trips an upstream out, the upstream
+  //     stays out for at least `outFor` before becoming a candidate again,
+  //     regardless of how fast the underlying metric oscillates.
+  //   * Annotates the upstream with `opts.reason` (or a default) for
+  //     diagnostics. Multiple rules each add their own annotation.
+  //
+  // Pair with `readmitExcluded(...)` at the end of the chain to control
+  // how cooled-down upstreams come back into rotation.
+  define('excludeIf', function (predicate, opts) {
+    if (typeof predicate !== 'function') {
+      // Graceful no-op for invalid first arg — keeps the chain alive
+      // rather than throwing mid-eval and falling back to the default
+      // policy at the engine level.
+      return this.slice();
+    }
+    opts = opts || {};
+    const reason = opts.reason || 'excludeIf';
+    const outFor = opts.outFor != null ? globalThis.durationMs(opts.outFor) : 0;
+    const ctx = globalThis.__policyCtx || {};
+    const now = ctx.now || Date.now();
+    const excludedSince = ctx.excludedSince || {};
+    return this.filter(u => {
+      if (predicate(u)) {
+        annotate(u, reason);
+        return false;
+      }
+      if (outFor > 0) {
+        const since = excludedSince[u.id];
+        if (since != null && (now - since) < outFor) {
+          annotate(u, reason + ':held');
+          return false;
+        }
+      }
+      return true;
+    });
+  });
+
   // ─── 4.4 Generic functional (extends what JS already gives us) ──────────
 
   define('reject', function (fn) { return this.filter((u, i, a) => !fn(u, i, a)); });
@@ -475,7 +525,30 @@
 
   // ─── 4.10 Probing & forced inclusion ────────────────────────────────────
 
-  define('probeExcluded', function (opts) {
+  // readmitExcluded — controlled re-introduction of upstreams that have
+  // been out of rotation for at least `reAdmitAfter`. The verb pairs with
+  // `excludeIf`: that primitive marks unhealthy upstreams as excluded;
+  // this one decides when (and how aggressively) to give them another
+  // chance. Same semantics as the legacy `probeExcluded` name — both are
+  // bound below for backward compatibility.
+  //
+  // Options:
+  //   reAdmitAfter   — minimum time an upstream must have been excluded
+  //                     (default 5m). Pair with `excludeIf({outFor})`:
+  //                     the upstream's own rule keeps it out for `outFor`,
+  //                     and `readmitExcluded` decides when to re-admit it
+  //                     from the engine's previously-excluded pool.
+  //   maxConcurrent  — at most this many re-admits per tick (default 1).
+  //                     Limits blast radius when many upstreams cool down
+  //                     simultaneously.
+  //   position       — where in the returned array re-admitted upstreams
+  //                     land: 'tail' (default, cautious — only gets traffic
+  //                     via retry/hedge fallback), 'head' (aggressive —
+  //                     immediately becomes a candidate primary), 'random'
+  //                     (canary-style interleave).
+  //   longestFirst   — re-admit the upstream that's been excluded longest
+  //                     first (default true).
+  function readmitExcludedFn(opts) {
     opts = opts || {};
     const ctx = globalThis.__policyCtx || {};
     const reAdmitAfterMs = globalThis.durationMs(opts.reAdmitAfter != null ? opts.reAdmitAfter : '5m');
@@ -500,13 +573,13 @@
 
     if (pick.length === 0) return this.slice();
 
-    // We need to materialize the actual upstream objects for these ids;
-    // the engine exposes `__policyAllUpstreams` per-tick.
+    // Materialize the actual upstream objects for these ids; the engine
+    // exposes `__policyAllUpstreams` per-tick.
     const all = globalThis.__policyAllUpstreams || [];
     const byId = {};
     for (const u of all) byId[u.id] = u;
     const probed = pick.map(id => byId[id]).filter(Boolean);
-    for (const u of probed) annotate(u, 'probed:reAdmitted');
+    for (const u of probed) annotate(u, 'readmitted');
 
     if (position === 'head') return probed.concat(this);
     if (position === 'random') {
@@ -515,7 +588,11 @@
       return out;
     }
     return this.concat(probed); // tail (default)
-  });
+  }
+  define('readmitExcluded', readmitExcludedFn);
+  // Backward-compat alias: existing policies using `probeExcluded` keep
+  // working unchanged. Documentation should reference `readmitExcluded`.
+  define('probeExcluded', readmitExcludedFn);
 
   define('forceInclude', function (idOrFn, position) {
     const all = globalThis.__policyAllUpstreams || [];
@@ -601,4 +678,65 @@
     const ctx = globalThis.__policyCtx || {};
     return ctx.finality === 'finalized';
   };
+
+  // ─── 4.15 Predicate factories + combinators ────────────────────────────
+  //
+  // These return predicate functions you can pass to `.excludeIf(...)`.
+  // The naming convention is `<signal><Above|Below>(threshold)` so an
+  // operator reading the policy can decode each one without a docs trip:
+  //
+  //   excludeIf(errorRateAbove(0.30), { outFor: '30s' })
+  //
+  // Combinators (`all` / `any` / `not`) compose them into compound rules:
+  //
+  //   excludeIf(all(errorRateAbove(0.2), latencyP99Above(2000)),
+  //             { outFor: '60s' })
+  //
+  // Authors can write their own factories in their policy file — they're
+  // just functions that return `u => boolean`. Stdlib exports cover the
+  // common signals; ad-hoc compounds stay inline as `u => ...`.
+
+  // Rate-based factories (0..1 fractions).
+  globalThis.errorRateAbove       = function (rate) { return u => u.metrics.errorRate       > rate; };
+  globalThis.errorRateBelow       = function (rate) { return u => u.metrics.errorRate       < rate; };
+  globalThis.throttleRateAbove    = function (rate) { return u => u.metrics.throttledRate   > rate; };
+  globalThis.throttleRateBelow    = function (rate) { return u => u.metrics.throttledRate   < rate; };
+  globalThis.misbehaviorRateAbove = function (rate) { return u => u.metrics.misbehaviorRate > rate; };
+
+  // Latency factories — millisecond thresholds; quantile accepts either
+  // 0..1 fractions or 0..100 percentile numbers (auto-normalized inside
+  // `u.metrics.latencyP`).
+  globalThis.latencyAbove    = function (quantile, ms) { return u => u.metrics.latencyP(quantile) > ms; };
+  globalThis.latencyP50Above = function (ms) { return u => u.metrics.latencyP(50) > ms; };
+  globalThis.latencyP70Above = function (ms) { return u => u.metrics.latencyP(70) > ms; };
+  globalThis.latencyP90Above = function (ms) { return u => u.metrics.latencyP(90) > ms; };
+  globalThis.latencyP95Above = function (ms) { return u => u.metrics.latencyP(95) > ms; };
+  globalThis.latencyP99Above = function (ms) { return u => u.metrics.latencyP(99) > ms; };
+
+  // Lag-based factories — block-count thresholds.
+  globalThis.blockNumberLagAbove  = function (blocks) { return u => u.metrics.blockHeadLag    > blocks; };
+  globalThis.finalizationLagAbove = function (blocks) { return u => u.metrics.finalizationLag > blocks; };
+
+  // Time-based lag — block-count × network's EMA-estimated block time.
+  // Threshold is in SECONDS. Returns 0 (predicate always false) until the
+  // tracker has enough block-time samples; on Eth mainnet that's a few
+  // seconds after first traffic. Useful when you want a wall-clock SLO
+  // ("trip if more than 60s behind tip") instead of a chain-relative
+  // block count that means different things on different chains.
+  globalThis.blockSecondsLagAbove         = function (seconds) { return u => u.metrics.blockHeadLagSeconds    > seconds; };
+  globalThis.finalizationSecondsLagAbove  = function (seconds) { return u => u.metrics.finalizationLagSeconds > seconds; };
+
+  // Sample-size guard — useful as an AND-term to avoid tripping rules on
+  // low-sample-count noise (when an upstream has only had a handful of
+  // requests, a single error blows up errorRate to 100%).
+  globalThis.samplesBelow = function (n) { return u => u.metrics.requestsTotal < n; };
+  globalThis.samplesAbove = function (n) { return u => u.metrics.requestsTotal > n; };
+
+  // Logical combinators — flat, variadic. Predicates compose freely:
+  //   excludeIf(all(errorRateAbove(0.3), not(samplesBelow(10))),
+  //             { outFor: '30s' })
+  // means "trip if errorRate>0.3 AND we actually have enough samples".
+  globalThis.all = function (...preds) { return u => preds.every(p => p(u)); };
+  globalThis.any = function (...preds) { return u => preds.some(p => p(u));  };
+  globalThis.not = function (pred)     { return u => !pred(u);                };
 })();

@@ -204,6 +204,15 @@ func (e *executor) executeConsensus(
 	if maxToSpawn <= 0 {
 		maxToSpawn = 1
 	}
+	// Record on the request's ExecState that THIS request went through
+	// the consensus executor and how many participants we spawned. Read
+	// downstream by diagnostic surfaces (admin endpoints, response
+	// headers, the simulator's lifecycle drawer) so operators can tell
+	// "this request was a consensus race" from "this was a hedge race"
+	// — the two look similar in the per-attempt log otherwise.
+	if st := originalReq.ExecState(); st != nil {
+		st.ConsensusSlots.Add(int32(maxToSpawn))
+	}
 	responseChan := make(chan *execResult, maxToSpawn)
 	// Per-slot cancellable child contexts let us cancel losers explicitly.
 	// Each slot inherits the shared cancellableCtx (which is cancelled

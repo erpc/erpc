@@ -73,18 +73,32 @@ type DecisionDiff struct {
 
 // UpstreamMetrics is the metric snapshot the eval sees for one upstream.
 // Mirrors §3.1 of the spec. Built per-tick from health.Tracker.
+//
+// Lag is exposed in TWO units:
+//   * blockHeadLag / finalizationLag — count of blocks behind the network's
+//     latest / finalized tip. Chain-agnostic but unitless for time-based
+//     decisions (a 16-block lag means 4 min on Eth mainnet but ~32 s on a
+//     2 s chain).
+//   * blockHeadLagSeconds / finalizationLagSeconds — same lag multiplied
+//     by the tracker's EMA-estimated block time for the network. Zero
+//     until the tracker has enough samples to estimate block time
+//     (typically a few seconds after first traffic). Use these when the
+//     trip threshold should be wall-clock (e.g. "trip if more than 60 s
+//     behind tip") rather than chain-relative.
 type UpstreamMetrics struct {
-	ErrorRate          float64 `json:"errorRate"`
-	ErrorsTotal        int64   `json:"errorsTotal"`
-	RequestsTotal      int64   `json:"requestsTotal"`
-	ThrottledRate      float64 `json:"throttledRate"`
-	MisbehaviorRate    float64 `json:"misbehaviorRate"`
-	P50ResponseSeconds float64 `json:"p50ResponseSeconds"`
-	P70ResponseSeconds float64 `json:"p70ResponseSeconds"`
-	P90ResponseSeconds float64 `json:"p90ResponseSeconds"`
-	P95ResponseSeconds float64 `json:"p95ResponseSeconds"`
-	P99ResponseSeconds float64 `json:"p99ResponseSeconds"`
-	BlockHeadLag       int64   `json:"blockHeadLag"`
-	FinalizationLag    int64   `json:"finalizationLag"`
-	CordonedReason     string  `json:"cordonedReason,omitempty"`
+	ErrorRate              float64 `json:"errorRate"`
+	ErrorsTotal            int64   `json:"errorsTotal"`
+	RequestsTotal          int64   `json:"requestsTotal"`
+	ThrottledRate          float64 `json:"throttledRate"`
+	MisbehaviorRate        float64 `json:"misbehaviorRate"`
+	P50ResponseSeconds     float64 `json:"p50ResponseSeconds"`
+	P70ResponseSeconds     float64 `json:"p70ResponseSeconds"`
+	P90ResponseSeconds     float64 `json:"p90ResponseSeconds"`
+	P95ResponseSeconds     float64 `json:"p95ResponseSeconds"`
+	P99ResponseSeconds     float64 `json:"p99ResponseSeconds"`
+	BlockHeadLag           int64   `json:"blockHeadLag"`
+	FinalizationLag        int64   `json:"finalizationLag"`
+	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds"`
+	FinalizationLagSeconds float64 `json:"finalizationLagSeconds"`
+	CordonedReason         string  `json:"cordonedReason,omitempty"`
 }

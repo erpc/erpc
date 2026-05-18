@@ -144,12 +144,7 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 // On either hit, the returned slice is the SAME backing array the slot
 // stores atomically — callers MUST treat it as read-only.
 func (e *Engine) GetOrdered(networkID, method string) []common.Upstream {
-	e.mu.RLock()
-	slot, ok := e.slots[slotKey{networkID, method}]
-	if !ok {
-		slot = e.slots[slotKey{networkID, "*"}]
-	}
-	e.mu.RUnlock()
+	slot := e.lookupSlot(networkID, method)
 	if slot == nil {
 		return nil
 	}
@@ -163,18 +158,67 @@ func (e *Engine) GetOrdered(networkID, method string) []common.Upstream {
 // successful tick, or the zero value if the slot is unknown / has never
 // produced a decision.
 func (e *Engine) LastEvalAt(networkID, method string) time.Time {
-	e.mu.RLock()
-	slot, ok := e.slots[slotKey{networkID, method}]
-	if !ok {
-		slot = e.slots[slotKey{networkID, "*"}]
-	}
-	e.mu.RUnlock()
+	slot := e.lookupSlot(networkID, method)
 	if slot == nil {
 		return time.Time{}
 	}
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
 	return slot.lastEvalAt
+}
+
+// LastSwitchAt returns the timestamp of the most recent primary-change
+// the slot recorded (used by `stickyPrimary` to enforce the
+// `minSwitchInterval` cooldown). Zero value if no switch has happened.
+// Diagnostics consume this to render "primary held for Xs / sticky
+// locked for Ys".
+func (e *Engine) LastSwitchAt(networkID, method string) time.Time {
+	slot := e.lookupSlot(networkID, method)
+	if slot == nil {
+		return time.Time{}
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.lastSwitchAt == nil {
+		return time.Time{}
+	}
+	return *slot.lastSwitchAt
+}
+
+// GetScores returns the per-upstream `score` map produced by the
+// slot's most recent successful tick. Entries are the EXACT values the
+// JS `sortByScore(...)` step assigned to each upstream, so anything
+// comparing scores (UIs, admin endpoints, sorting checks) gets the
+// engine's authoritative ranking — no duplicated formula, no drift.
+//
+// Returns nil if the slot is unknown, has never produced a tick, or
+// the running policy doesn't include a scoring step.
+func (e *Engine) GetScores(networkID, method string) map[string]float64 {
+	slot := e.lookupSlot(networkID, method)
+	if slot == nil {
+		return nil
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if len(slot.lastScores) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(slot.lastScores))
+	for id, v := range slot.lastScores {
+		out[id] = v
+	}
+	return out
+}
+
+// lookupSlot is the shared resolver used by the per-slot accessors —
+// exact (network, method) match falls back to the network's "*" slot.
+func (e *Engine) lookupSlot(networkID, method string) *Slot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if slot, ok := e.slots[slotKey{networkID, method}]; ok {
+		return slot
+	}
+	return e.slots[slotKey{networkID, "*"}]
 }
 
 // Stop cancels every slot's ticker and releases pooled runtimes.

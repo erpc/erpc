@@ -98,6 +98,18 @@ func makeBreakerTransitionHook(projectId, upstreamId string) func(failsafe.State
 	}
 }
 
+// AttemptErrorDetailMaxLen bounds the per-attempt error string that
+// `RecordUpstreamAttempt` stores on the request's `ExecState`. The
+// stored value powers diagnostics surfaces (admin endpoints, traces,
+// the simulator's lifecycle drawer) — it does NOT affect the error
+// the caller receives, which is always the full chain.
+//
+// 200 is the production default — it keeps the per-request execution
+// log compact under high RPS. Tooling that wants the full nested
+// `caused by` chain (e.g. cmd/erpc-simulator) can raise this via an
+// `init()`-time write or zero it out to disable truncation entirely.
+var AttemptErrorDetailMaxLen = 200
+
 type Upstream struct {
 	ProjectId string
 	Client    clients.ClientInterface
@@ -292,6 +304,32 @@ func (u *Upstream) Tracker() common.HealthTracker {
 		return nil
 	}
 	return u.metricsTracker
+}
+
+// CircuitBreakerState returns the live state of the circuit breaker on
+// the catch-all (`matchMethod: "*"`) failsafe executor, or
+// `StateClosed` if no such executor / breaker is configured. Read
+// directly from the breaker's atomic state — no simulator-side cache.
+// Diagnostic tooling (admin endpoints, simulator panels) consumes this
+// for the "circuit" pill so the UI never drifts from reality.
+//
+// Per-method breakers exist when a config declares method-specific
+// failsafe blocks, but for the simulator's per-upstream "row" view a
+// single canonical state is what the operator wants — we surface the
+// catch-all because that's what serves the vast majority of methods.
+func (u *Upstream) CircuitBreakerState() failsafe.State {
+	if u == nil {
+		return failsafe.StateClosed
+	}
+	for _, fe := range u.failsafeExecutors {
+		if fe.MatchMethod() == "*" && len(fe.MatchFinality()) == 0 {
+			if br := fe.Breaker(); br != nil {
+				return br.State()
+			}
+			return failsafe.StateClosed
+		}
+	}
+	return failsafe.StateClosed
 }
 
 func (u *Upstream) Logger() *zerolog.Logger {
@@ -490,8 +528,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				if retErr != nil {
 					errCode = string(common.ErrorFingerprint(retErr))
 					es := retErr.Error()
-					if len(es) > 200 {
-						es = es[:200]
+					if max := AttemptErrorDetailMaxLen; max > 0 && len(es) > max {
+						es = es[:max]
 					}
 					errDetail = es
 				}

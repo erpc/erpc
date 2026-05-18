@@ -19,6 +19,19 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// ScoreMetricsWindowSize is the tumbling window the score-metrics
+// tracker uses for per-upstream rolling counters (errorRate, p95, …).
+// At each tick the counters reset to zero and start re-accumulating —
+// so this knob also caps how fast a knob/config change is reflected
+// in the observed metrics that drive `keepHealthy` and `sortByScore`.
+//
+// Production default is 10 minutes (stable averages, immune to spikes).
+// The erpc-simulator overrides this in its init() to ~15s so that
+// twiddling a fake-upstream knob produces a visible shift in routing
+// within a few seconds. Package-level so callers can override it
+// before NewERPC without plumbing it through every constructor.
+var ScoreMetricsWindowSize = 10 * time.Minute
+
 type ProjectsRegistry struct {
 	logger *zerolog.Logger
 	appCtx context.Context
@@ -89,7 +102,9 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	lg := r.logger.With().Str("projectId", prjCfg.Id).Logger()
 
 	// Score-metrics window default; Phase 7 will replace with explicit config knob.
-	metricsTracker := health.NewTracker(&lg, prjCfg.Id, 10*time.Minute)
+	// Read from the package-level override so tooling (notably the
+	// erpc-simulator) can shorten it for fast feedback loops.
+	metricsTracker := health.NewTracker(&lg, prjCfg.Id, ScoreMetricsWindowSize)
 	providersRegistry, err := thirdparty.NewProvidersRegistry(
 		&lg,
 		r.vendorsRegistry,

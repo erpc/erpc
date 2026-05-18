@@ -1,56 +1,39 @@
-// Default selection policy. Applied when `selectionPolicy.eval` is omitted.
-// See specs/selection-policy/feature.md §7.
+// Default selection policy. Applied when `selectionPolicy.evalFunc` is omitted.
 //
-// Designed to prevent two common failure classes: an upstream that
-// becomes slow drags the whole pool's latency percentiles down (and
-// stalls consensus); an upstream that starts erroring keeps receiving
-// traffic until its score crosses some ranking threshold. This default
-// FILTERS aggressively before scoring, so a degraded upstream is OUT,
-// not just LOWER-RANKED.
-//
-//   1. Drop failsafe-cordoned upstreams (circuit-breaker explicitly marked bad).
-//
-//   2. keepHealthy — composite health filter:
-//        - errorRate    > 0.5  → out  (more than half-erroring is broken)
-//        - blockHeadLag > 16   → out  (~1 min behind tip on Ethereum, ~32s
-//                                       on a 2s chain — clearly degraded)
-//        - p95 latency  > 10s  → out  (catches a slow vendor before its
-//                                       blended percentile poisons the pool)
-//        - throttledRate > 0.3 → out  (vendor is rate-limiting us; reroute
-//                                       before quota burns)
-//      A single composite step keeps the four signals tunable together.
-//
-//   3. Safety net: if the filter wiped everything (project-wide outage),
-//      serve from the raw set rather than fail closed.
-//
-//   4. Tier: primary tier = upstreams NOT tagged `tier:fallback`; fallback
-//      tier = upstreams tagged `tier:fallback`. Long-standing eRPC convention;
-//      adding a fallback upstream is one line (`tags: [tier:fallback]`).
-//
-//   5. Sort by the BALANCED composite (errorRate, latency, throttling, lag,
-//      misbehaviors). Filtering happened in step 2 — this step orders the
-//      survivors.
-//
-//   6. Sticky primary ONLY for REALTIME requests. Finalized/unfinalized
-//      requests are reorg-tolerant and don't benefit from primary stability;
-//      stickiness on those just holds a degrading primary during incidents.
-//
-//   7. Probe excluded — re-admit one upstream every 90s (was 5m). Typical
-//      transient-blip windows (rate-limit reset, regional networking dip)
-//      recover in 60-90s; 5m hold-outs are excessive.
+// Two-primitive admission control:
+//   excludeIf       — drop upstreams matching a predicate; optionally hold
+//                     them out for at least `outFor` (anti-flap memory).
+//   readmitExcluded — cautiously bring back excluded upstreams once their
+//                     cooldown has elapsed.
+// Predicate factories (errorRateAbove, latencyP95Above, blockNumberLagAbove,
+// …) keep each rule self-documenting; combinators (all / any / not) compose
+// them into compound conditions. See specs/selection-policy/feature.md §4.
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
-    .keepHealthy({
-      maxErrorRate:     0.5,
-      maxBlockHeadLag:  16,
-      maxP95Ms:         10_000,
-      maxThrottledRate: 0.3,
-    })
+    // Health excludes — each signal locks the upstream out for its own
+    // cooldown. Errors recover faster than block-lag (which usually means
+    // the chain is reorging or the node is syncing), so the cooldowns
+    // are tuned per-signal rather than shared.
+    .excludeIf(errorRateAbove(0.5),       { outFor: '30s', reason: 'errorRate>50%' })
+    .excludeIf(throttleRateAbove(0.3),    { outFor: '30s', reason: 'throttled>30%' })
+    .excludeIf(latencyP95Above(10_000),   { outFor: '30s', reason: 'p95>10s'       })
+    .excludeIf(blockNumberLagAbove(16),   { outFor: '90s', reason: 'blockLag>16'   })
+    // Outage safety net — never return an empty list to the executor.
+    // If every upstream fails the health excludes (project-wide outage),
+    // fall back to the raw set rather than failing closed.
     .whenEmpty(() => upstreams)
+    // Tier split: primary = NOT tier:fallback; fallback when no primary survives.
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
+    // Order survivors by the BALANCED composite penalty (lower = primary).
     .sortByScore(BALANCED)
+    // Sticky primary ONLY for REALTIME — reorg-tolerant calls skip this.
     .if(ctx.finality === REALTIME,
         u => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
         u => u)
-    .probeExcluded({ reAdmitAfter: '90s', maxConcurrent: 2 })
+    // Bring back excluded upstreams whose cooldown elapsed — one at a
+    // time at the tail (lowest blast radius). Whether they STAY in is
+    // decided by the next tick's excludeIf rules. The 90s default leaves
+    // room for an upstream to actually recover before we re-introduce it;
+    // tighter `reAdmitAfter` values make the policy probe more aggressively.
+    .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })

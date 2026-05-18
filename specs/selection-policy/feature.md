@@ -29,10 +29,11 @@ networks:
       evalTimeout: 100ms        # per-tick eval hard cap.         default: 100ms
       evalFunc: |
         return upstreams
-          .removeByLag({ blockHead: 5, finalization: 50 })
+          .excludeIf(errorRateAbove(0.5),     { outFor: '30s' })
+          .excludeIf(blockNumberLagAbove(50), { outFor: '90s' })
           .sortByScore(BALANCED)
           .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
-          .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+          .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```
 
 | Field | Type | Description |
@@ -61,9 +62,12 @@ type Upstream = {
   readonly type: 'evm' | string            // upstream architecture
   readonly tags: readonly string[]         // user-applied labels (convention: 'prefix:value');
                                            // consumed by byTag / preferTag / spreadAcrossTags
-  readonly endpoint: string                // redacted
 
-  readonly config: UpstreamConfig          // raw user config (full block)
+  // Tag-check helpers — `is` is an alias of `hasTag` (same call,
+  // different name to read naturally in different contexts).
+  hasTag(t: string): boolean
+  is(t: string):     boolean
+
   readonly metrics: UpstreamMetrics        // snapshot taken at the start of this tick
 
   // Attached by std-lib steps; readable by subsequent steps and visible in decision records.
@@ -93,7 +97,18 @@ type UpstreamMetrics = {
   p99ResponseSeconds: number
   blockHeadLag: number                     // block-number delta from network tip
   finalizationLag: number                  // block-number delta from finalized tip
+  // Wall-clock lag — block-count × network's EMA-estimated block time
+  // (`tracker.GetNetworkBlockTime`). Zero until the tracker has enough
+  // samples to estimate block time; policies relying on these will be
+  // no-ops during the first few seconds after boot, by design.
+  blockHeadLagSeconds:    number           // seconds behind network tip
+  finalizationLagSeconds: number           // seconds behind finalized tip
   cordonedReason: string | null            // set by external systems (failsafe circuit breaker)
+
+  // Quantile reader — returns latency in MS at the given quantile.
+  // Accepts either 95 (percentile) or 0.95 (fraction); auto-normalized.
+  // Snaps to the nearest precomputed bucket (p50/p70/p90/p95/p99).
+  latencyP(q: number): number              // ms
 }
 ```
 
@@ -196,7 +211,7 @@ Each removes upstreams failing the predicate. Rejected upstreams are annotated `
 .removeStale(maxAgeMs: number)                             // drop if last metric update older than maxAgeMs (uses ctx.now)
 ```
 
-Convenience composite:
+Convenience composite (soft-deprecated; prefer `excludeIf` + predicate factories below for per-rule cooldowns and arbitrary compound conditions):
 
 ```ts
 .keepHealthy({
@@ -206,6 +221,117 @@ Convenience composite:
   maxThrottledRate?: number = 0.3,
 })
 ```
+
+---
+
+### 4.3a Admission control: `excludeIf` + predicate factories
+
+The composable replacement for `keepHealthy`. One primitive (`excludeIf`) plus a small library of predicate factories cover everything `keepHealthy` did AND enable per-rule cooldowns, compound conditions, and tier-scoped trips.
+
+#### Primitive
+
+```ts
+.excludeIf(predicate: (u: Upstream) => boolean, opts?: {
+  outFor?: Duration,    // anti-flap memory: once dropped, hold dropped for ≥ this duration
+  reason?: string,      // annotation surfaced in decision records
+})
+```
+
+Semantics:
+
+- If `predicate(u)` is **true** this tick → drop `u`.
+- If `outFor` is set AND `ctx.now - ctx.excludedSince[u.id] < outFor` → drop `u` even if the predicate no longer matches. This is the anti-flap layer.
+- Each rule maintains its own annotation (`opts.reason`) for diagnostics.
+
+The slot's existing `excludedSince` map provides the cross-tick state — no new persistence layer.
+
+#### Predicate factories (globals)
+
+Each returns a `(u: Upstream) => boolean` predicate suitable for `excludeIf`. Naming convention: `<signal><Above|Below>(threshold)`.
+
+```ts
+// Rates (0..1 fractions)
+errorRateAbove(rate)        / errorRateBelow(rate)
+throttleRateAbove(rate)     / throttleRateBelow(rate)
+misbehaviorRateAbove(rate)
+
+// Latency (ms thresholds)
+latencyP50Above(ms)
+latencyP70Above(ms)
+latencyP90Above(ms)
+latencyP95Above(ms)
+latencyP99Above(ms)
+latencyAbove(quantile, ms)   // generic — quantile accepts 95 or 0.95
+
+// Lag (block counts)
+blockNumberLagAbove(blocks)
+finalizationLagAbove(blocks)
+
+// Lag (wall-clock seconds — block-count × network's EMA block-time)
+blockSecondsLagAbove(seconds)
+finalizationSecondsLagAbove(seconds)
+
+// Sample-size guards (useful as AND-terms to avoid tripping on low-sample noise)
+samplesBelow(n)
+samplesAbove(n)
+```
+
+#### Combinators (globals)
+
+Flat, variadic. Returns predicates; compose freely:
+
+```ts
+all(...preds)   // AND
+any(...preds)   // OR
+not(pred)       // NOT
+```
+
+#### Examples
+
+```js
+// Default trip rules:
+.excludeIf(errorRateAbove(0.5),     { outFor: '30s', reason: 'errorRate>50%' })
+.excludeIf(throttleRateAbove(0.3),  { outFor: '30s' })
+.excludeIf(latencyP95Above(10_000), { outFor: '30s' })
+.excludeIf(blockNumberLagAbove(16), { outFor: '90s' })
+
+// Compound: trip only when errors AND latency are both bad
+.excludeIf(all(errorRateAbove(0.2), latencyP99Above(2_000)), { outFor: '60s' })
+
+// Sample-size guard: don't trip on noise from low-sample upstreams
+.excludeIf(all(errorRateAbove(0.3), not(samplesBelow(10))), { outFor: '30s' })
+
+// Tier-scoped — free-tier upstreams get tighter SLO
+.excludeIf(all(u => u.is('tier:free'), errorRateAbove(0.1)), { outFor: '120s' })
+
+// Custom inline predicate — factories aren't required, just sugar
+.excludeIf(u => u.metrics.errorRate > 0.3 && u.metrics.latencyP(99) > 1_500,
+           { outFor: '45s' })
+```
+
+#### Tag helpers on `Upstream`
+
+`u.hasTag(t)` and `u.is(t)` (alias) check tag membership without `u.tags.includes(t)` boilerplate. Authors writing their own factories should prefer them.
+
+#### Latency: `u.metrics.latencyP(q)`
+
+Returns milliseconds. Accepts either `0..1` fractions (`0.95`) or `0..100` percentiles (`95`). Snaps to the nearest precomputed quantile bucket (p50/p70/p90/p95/p99). Use the named factories (`latencyP95Above`, etc.) for the common quantiles; `latencyAbove(q, ms)` for arbitrary quantiles.
+
+#### Authoring custom factories
+
+A factory is just a function returning a predicate. Operators can define their own in their policy file:
+
+```js
+function indexerStaleByBlocks(n) {
+  return u => u.is('vendor:indexer') && u.metrics.blockHeadLag > n;
+}
+
+upstreams
+  .excludeIf(indexerStaleByBlocks(50), { outFor: '120s' })
+  .excludeIf(errorRateAbove(0.5),      { outFor: '30s' })
+```
+
+No registration required. Same surface as the stdlib factories.
 
 ---
 
@@ -390,16 +516,29 @@ primitive: one canonical spreader, one canonical data model.
 ### 4.10 Probing & forced inclusion
 
 ```ts
-.probeExcluded({
-  reAdmitAfter: Duration,                  // re-admit upstreams that have been excluded for at least this long
+.readmitExcluded({
+  reAdmitAfter: Duration,                  // re-admit upstreams excluded for at least this long
   maxConcurrent?: number = 1,              // cap on simultaneously re-admitted upstreams per tick
   longestFirst?: boolean = true,           // prioritize upstreams excluded the longest
-  position?: 'tail' | 'head' | 'random' = 'tail'
+  position?: 'tail' | 'head' | 'random' = 'tail'   // 'tail' = cautious; only retry/hedge fallback hits
 })
 // Deterministic re-admission of excluded upstreams. Each tick, find upstreams
 // whose ctx.excludedSince is at least `reAdmitAfter` old, sort by exclusion age
 // (oldest first if longestFirst), pick up to `maxConcurrent`, and insert at
 // the specified position so they receive traffic and their metrics refresh.
+//
+// Pairs with `excludeIf({ outFor })` — that primitive controls how long an
+// upstream STAYS out after being dropped; this one controls when and how
+// it comes BACK. Place this step at the END of the chain so re-admitted
+// upstreams land at the tail of the final ordering (lowest blast radius);
+// putting it earlier lets subsequent sort steps reorder them, which is the
+// aggressive variant.
+//
+// Aliased as `probeExcluded` for backward compatibility.
+
+.probeExcluded(...)
+// Deprecated alias for `readmitExcluded`. Same semantics; keep using it in
+// existing policies. New policies should use `readmitExcluded`.
 
 .forceInclude(idOrFn: string | string[] | ((u) => boolean), position?: 'head'|'tail' = 'tail')
 // Always include matching upstream(s), bypassing prior filters. Useful for
@@ -486,6 +625,39 @@ durationMs(d: Duration | string) : number
 
 weightedPickIndex(weights: number[], seed?: number) : number
 // Lower-level helper used by weightedRandom.
+```
+
+**Predicate factories** (return a `(u) => boolean` predicate, used as the first argument to `.excludeIf` — full reference in §4.3a):
+
+```ts
+// Rates
+errorRateAbove(rate)       / errorRateBelow(rate)
+throttleRateAbove(rate)    / throttleRateBelow(rate)
+misbehaviorRateAbove(rate)
+
+// Latency (ms)
+latencyP50Above(ms) / latencyP70Above(ms) / latencyP90Above(ms)
+latencyP95Above(ms) / latencyP99Above(ms)
+latencyAbove(quantile, ms)
+
+// Lag (block counts)
+blockNumberLagAbove(blocks)
+finalizationLagAbove(blocks)
+
+// Lag (wall-clock seconds via tracker's EMA block-time)
+blockSecondsLagAbove(seconds)
+finalizationSecondsLagAbove(seconds)
+
+// Sample-size guards
+samplesBelow(n) / samplesAbove(n)
+```
+
+**Combinators** (operate on predicates):
+
+```ts
+all(...preds: Predicate[]) : Predicate     // AND
+any(...preds: Predicate[]) : Predicate     // OR
+not(pred: Predicate)       : Predicate     // NOT
 ```
 
 ---
@@ -626,25 +798,22 @@ When `selectionPolicy.evalFunc` is omitted, the engine applies the production-ha
 ```js
 (upstreams, ctx) =>
   upstreams
-    .removeCordoned()                  // 1
-    .keepHealthy({                     // 2 — composite filter
-      maxErrorRate:     0.5,
-      maxBlockHeadLag:  16,
-      maxP95Ms:         10_000,
-      maxThrottledRate: 0.3,
-    })
-    .whenEmpty(() => upstreams)        // 3 — safety net
-    .preferTag('!tier:fallback', {     // 4 — tier
-      minHealthy: 1,
-      fallback:   'tier:fallback',
-    })
-    .sortByScore(BALANCED)             // 5 — rank survivors
-    .if(ctx.finality === REALTIME,     // 6 — sticky for live-latest only
+    .removeCordoned()                                                     // 1
+    // 2 — health excludes, one per signal, with per-rule cooldowns
+    .excludeIf(errorRateAbove(0.5),       { outFor: '30s', reason: 'errorRate>50%' })
+    .excludeIf(throttleRateAbove(0.3),    { outFor: '30s', reason: 'throttled>30%' })
+    .excludeIf(latencyP95Above(10_000),   { outFor: '30s', reason: 'p95>10s'       })
+    .excludeIf(blockNumberLagAbove(16),   { outFor: '90s', reason: 'blockLag>16'   })
+    .whenEmpty(() => upstreams)                                           // 3 — safety net
+    .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })  // 4
+    .sortByScore(BALANCED)                                                // 5 — rank survivors
+    .if(ctx.finality === REALTIME,                                        // 6 — sticky for live-latest only
         u => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
         u => u)
-    .probeExcluded({                   // 7 — fast re-admit
+    .readmitExcluded({                                                    // 7 — cautious re-admit
       reAdmitAfter:  '90s',
       maxConcurrent: 2,
+      position:      'tail',
     })
 ```
 
@@ -652,11 +821,11 @@ When `selectionPolicy.evalFunc` is omitted, the engine applies the production-ha
 
 1. **Drop cordoned** — failsafe / circuit-breaker has explicitly marked the upstream bad.
 
-2. **Keep healthy** — single composite filter dropping any upstream that fails on errors, lag, latency, or throttling BEFORE it can compete on score:
-   - `maxErrorRate: 0.5` — more than half-erroring is broken regardless of chain.
-   - `maxBlockHeadLag: 16` — ~1 min behind tip on Ethereum, ~32 s on a 2 s chain; clearly degraded.
-   - `maxP95Ms: 10_000` — catches a slow vendor before its blended percentile poisons the pool's hedge / consensus timeouts.
-   - `maxThrottledRate: 0.3` — vendor is rate-limiting; reroute before quota burns.
+2. **Health excludes** — one `excludeIf` per signal, with its own cooldown via `outFor`. Each line is self-documenting and reads top-to-bottom: drop if `<signal>` exceeds threshold, hold dropped for at least `<duration>`. Different signals get different cooldowns because they recover on different timescales (errors clear fast as the rate-limit window resets; block-lag means the chain is reorging or the node is syncing, which takes longer):
+   - `errorRateAbove(0.5)` / `outFor: '30s'` — more than half-erroring is broken regardless of chain.
+   - `throttleRateAbove(0.3)` / `outFor: '30s'` — vendor is rate-limiting; reroute before quota burns.
+   - `latencyP95Above(10_000)` / `outFor: '30s'` — catches a slow vendor before its blended percentile poisons the pool's hedge / consensus timeouts.
+   - `blockNumberLagAbove(16)` / `outFor: '90s'` — ~1 min behind tip on Ethereum, ~32 s on a 2 s chain; clearly degraded.
 
    Filtering on these signals (rather than only ranking via `sortByScore`) is the key defence against the "slow or erroring upstream still wins by score" class of incident.
 
@@ -668,11 +837,11 @@ When `selectionPolicy.evalFunc` is omitted, the engine applies the production-ha
 
 6. **Sticky primary, REALTIME only** — keep the current primary unless a challenger's score is ≥10% better AND 30 s have passed since the last switch. Finalized/unfinalized requests are reorg-tolerant and skip stickiness (no benefit during a real incident; only amplifies bad-primary impact).
 
-7. **Probe excluded** — re-admit two excluded upstreams every 90 s so they get a chance to prove they've recovered. Matches typical transient-blip recovery windows (rate-limit reset, regional networking dip).
+7. **Readmit excluded** — re-admit up to two excluded upstreams every 90 s at the **tail** of the order so they get a chance to prove they've recovered without taking primary traffic. Matches typical transient-blip recovery windows (rate-limit reset, regional networking dip). Placed at the end of the chain so subsequent sort/sticky steps can't reorder the probed upstreams off the tail.
 
 `BALANCED` weights are defined in §4.1.
 
-**Loosening for low-traffic / dev environments.** Single-upstream setups, or environments where serving from a degraded upstream beats failing closed, can ship an explicit `eval` that drops the `keepHealthy` step in favor of just `removeByErrorRate(0.8)`. Pre-rewrite eRPC users who depended on permissive routing can recreate the old default via explicit `eval`. The new default is "safe-for-most-prod"; we explicitly choose to surprise low-traffic users rather than let prod users suffer the inverse default.
+**Loosening for low-traffic / dev environments.** Single-upstream setups, or environments where serving from a degraded upstream beats failing closed, can ship an explicit `evalFunc` that drops the `excludeIf` steps in favor of a single permissive `excludeIf(errorRateAbove(0.8), { outFor: '15s' })`. Pre-rewrite eRPC users who depended on permissive routing can recreate the old default via explicit `evalFunc`. The new default is "safe-for-most-prod"; we explicitly choose to surprise low-traffic users rather than let prod users suffer the inverse default.
 
 ---
 

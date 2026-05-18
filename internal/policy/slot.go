@@ -33,6 +33,13 @@ type Slot struct {
 	previousExcluded []string
 	lastSwitchAt     *time.Time
 	excludedSince    map[string]int64
+	// lastScores holds the per-upstream `score` values the JS produced on
+	// the most recent successful tick (via `sortByScore(...)` setting
+	// `u.score = computePenalty(...)`). Entries are missing for upstreams
+	// added after the scoring step (probeExcluded / forceInclude). Read
+	// by Engine.GetScores for diagnostics — single source of truth for
+	// "what does the policy rank this upstream at?".
+	lastScores map[string]float64
 	// lastEvalAt is the wall-clock timestamp of the most recent
 	// successful tick. Updated under mu at the end of tickOnce.
 	lastEvalAt time.Time
@@ -129,15 +136,20 @@ func (s *Slot) tickOnce() {
 	}
 	s.mu.Unlock()
 
-	// 3. Run the eval (with optional timeout).
+	// 3. Run the eval (with optional timeout). Scores are the per-upstream
+	// `score` values the JS attached during `sortByScore(...)` — we cache
+	// them on the slot so diagnostic tooling (admin endpoint, simulator)
+	// can read the engine's authoritative ranking without re-implementing
+	// the BALANCED formula in Go.
 	var (
 		orderedIDs []string
+		scores     map[string]float64
 		evalErr    error
 	)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		orderedIDs, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, evalCtx)
+		orderedIDs, scores, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, evalCtx)
 	}()
 
 	if timeout > 0 {
@@ -194,6 +206,7 @@ func (s *Slot) tickOnce() {
 	s.tickCount++
 	s.previousOrder = orderedIDs
 	s.previousExcluded = excludedIDs(excluded)
+	s.lastScores = scores
 	now := start.UnixMilli()
 	newExcludedSince := make(map[string]int64, len(s.previousExcluded))
 	for _, id := range s.previousExcluded {

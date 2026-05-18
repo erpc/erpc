@@ -1,583 +1,266 @@
-# Traffic Simulator — Specification
+# eRPC Traffic Simulator — Feature Spec
 
-**Status**: Ready for implementation
-**Owner**: TBD
-**Last revised**: 2026-05-15
+**Status**: Implemented (Phase 1)
+**Last revised**: 2026-05-17
 
----
+A local browser-based playground for **designing and testing eRPC
+selection policies in real time**. Ships as a single Go binary
+(`erpc-simulator`) that serves an embedded React/HTML/CSS app from a
+local HTTP listener. Zero build step, zero external services.
 
-## 1. Purpose
+> **Where this came from.** The simulator's UI was designed in Claude
+> Design (see `claude-design-prompt.md` for the original brief; the
+> chat transcripts and prototype source live in the design-handoff
+> bundle the user pasted). The implementation in `cmd/erpc-simulator/`
+> wraps that prototype in an `embed.FS` Go server so it can be built
+> and shipped alongside the rest of the eRPC tree.
 
-The **Traffic Simulator** is a local browser-based playground for evaluating eRPC behavior — failsafe, selection policy, scoring — under fully controllable synthetic traffic, against the **real eRPC code paths**. The operator drops in their prod config (or starts from scratch), tunes upstream characteristics and traffic shape, and watches:
+## What it does
 
-- where every request is routed, in real time;
-- how the selection policy reacts when an upstream degrades;
-- how failsafe (retry / hedge / timeout / circuit-breaker) compounds in incidents;
-- how scoring weights and tier-fallback play out over minutes of traffic;
-- whether a candidate config change would have produced better routing in a past incident.
-
-The "wow" moment: paste your prod `erpc.yaml`, slide an upstream's `errorRate` from 0 → 0.7, and within a second see hedges fire on the chart, sticky-primary release, the policy switch to the next upstream, and the per-upstream latency histograms separate.
-
-The simulator is a single Go binary, single port, embedded UI, **zero external services**. It boots `erpc.NewERPC(...)` directly with the operator's config, but rewrites every upstream endpoint to a loopback fake server inside the same binary. The fake server is the only mock — the policy engine, failsafe stack, hedging logic, retry budget, metrics tracker, state pollers, integrity checks, score evaluator are all production code.
-
-### 1.1 Non-goals
-
-- **Not a load tester.** The aggregator targets 10k rps for realistic incident reproduction — not benchmark numbers. Anyone needing per-request raw latency measurements should use a dedicated load tool.
-- **Not a deployment surface.** The simulator is for tuning + validation. Its output is a tweaked YAML the operator copy-pastes back into prod.
-- **Not multi-user.** Single operator on localhost. Auth + sharing is out of scope.
-- **Not a replacement for the prod observability stack.** Once a config ships, traces + Prometheus take over. The simulator is the rehearsal room.
-
----
-
-## 2. Architecture
+The operator opens `http://localhost:8080` and lands in a single-page
+dashboard:
 
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│  Browser (single page, zero build)                                         │
-│                                                                            │
-│  ┌────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐  │
-│  │ Config editor  │  │ Traffic-flow stage   │  │ Charts + event log    │  │
-│  │ (YAML rich +   │  │ (animated, left-to-  │  │ (selection over time, │  │
-│  │  knob mirror;  │  │  right; sampled live │  │  per-upstream stats,  │  │
-│  │  paste support)│  │  events from server) │  │  recent events)       │  │
-│  └────────────────┘  └──────────────────────┘  └──────────────────────┘  │
-│  ┌────────────────┐  ┌──────────────────────┐                              │
-│  │ Upstream knobs │  │ Traffic generator    │   Top bar: status, rps,    │
-│  │ (per-upstream  │  │ (network, method mix,│   policy validity, reset,  │
-│  │  synth quality)│  │  rps, scenarios)     │   pause                    │
-│  └────────────────┘  └──────────────────────┘                              │
-└────────────────────────────────────────────────────────────────────────────┘
-       │  REST (config + state)        │  WebSocket (events, binary frames)
-       ▼                               ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│  cmd/erpc-simulator  (single binary, single port — default 8080)           │
-│                                                                            │
-│  HTTP routes                                                               │
-│   GET  /                       embedded GUI                                │
-│   GET  /api/state              full snapshot (Config + UpstreamSynth +    │
-│                                 Traffic + stats)                           │
-│   POST /api/config             validate + apply a full erpc.yaml/erpc.ts   │
-│   POST /api/upstreams/{id}     per-upstream synthetic quality knobs        │
-│   POST /api/traffic            generator settings                          │
-│   POST /api/scenario           start a scripted scenario                   │
-│   POST /api/reset              clear stats + restart                       │
-│   GET  /api/events             WebSocket fan-out (binary frames)           │
-│   GET  /metrics                Prometheus exposition                       │
-│   ANY  /sim/{upstreamId}       fake JSON-RPC endpoint                      │
-│                                                                            │
-│  Real eRPC core (imported as library, NOT replicated)                      │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │  erpc.NewERPC(cfg)                                               │    │
-│  │   ├── upstream.Registry        (real)                            │    │
-│  │   ├── health.Tracker            (real)                           │    │
-│  │   ├── internal/policy.Engine    (real, with stdlib)              │    │
-│  │   ├── failsafe stack            (real: retry, hedge, timeout,    │    │
-│  │   │                              circuit-breaker — in-house impl)│    │
-│  │   ├── data.Cache                (real, memory connector only)    │    │
-│  │   └── erpc.Network              (real Forward path)              │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │  Synthetic layer (the ONLY mock)                                 │    │
-│  │   ├── /sim/{id} handler   — synthesizes latency/errors/blockLag  │    │
-│  │   ├── chainHeightTicker   — drives state-poller responses        │    │
-│  │   └── UpstreamSynthSpec[] — per-id quality config                 │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │  Event pipeline (10k-rps-safe)                                   │    │
-│  │   ├── per-request hook       (lifecycle observer; cheap)         │    │
-│  │   ├── 100ms aggregator        (bucketed stats; primary chart src)│    │
-│  │   ├── trace sampler           (1% individual events; animation + │    │
-│  │   │                            event log)                        │    │
-│  │   └── WebSocket fan-out       (binary frames, drop on backpress) │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  top bar:  status · rps · success% · sim time · network · pause/reset    │
+├───────────────────────────────────────────┬──────────────────────────────┤
+│                                           │  TELEMETRY                   │
+│        TRAFFIC FLOW                       │  selection share / sec       │
+│  Client ──→ eRPC core ──→ upstream nodes  │  (stacked area, last 60s)    │
+│  (canvas particle viz, top-down)          │                              │
+│                                           ├──────────────────────────────┤
+│                                           │  TRAFFIC GEN | EVENT LOG     │
+├───────────────────────────────────────────┤  rps slider · method mix     │
+│  SELECTION POLICY | UPSTREAM SYNTH | YAML │  shape · scenario player     │
+│  ┌─────────────────────────────────────┐  │     ─ OR ─                   │
+│  │ (upstreams) => upstreams            │  │  one row per request:        │
+│  │   .filter(u => ...)                 │  │  ts · method · winner · ✓✗⚡↻ │
+│  │   .sort((a,b) => ...)               │  │  (click → drawer with full   │
+│  └─────────────────────────────────────┘  │   lifecycle: selection trail,│
+│  signature · examples · live impact       │   attempts, retries, hedges) │
+└───────────────────────────────────────────┴──────────────────────────────┘
 ```
 
-### 2.1 What is real, what is synthetic
+The four resizable panels (drag the gutters; sizes persist to
+`localStorage`) cover the entire feedback loop:
 
-| Component | Real (production code) | Synthetic |
-|---|---|---|
-| Project / Network / Upstream config | ✅ exact `common.Config` shape |  |
-| Selection-policy engine + stdlib + sobek | ✅ |  |
-| Failsafe stack (retry/hedge/timeout/circuit-breaker) | ✅ in-house impl |  |
-| Metrics tracker (`health.Tracker`) | ✅ |  |
-| EVM state poller, integrity layer | ✅ |  |
-| Cache (memory connector) | ✅ |  |
-| `erpc.Network.Forward(...)` (the full request path) | ✅ |  |
-| Upstream HTTP response |  | ✅ synthesized: base±jitter latency, errorRate, blockLag, method support |
+- **Traffic flow** — canvas-rendered top-down lane diagram. Client at
+  the top, eRPC core in the middle, the 8 synthetic upstream nodes at
+  the bottom. Real-request dots travel along the lines (one dot per
+  sampled request). Color encodes outcome — green/yellow/orange/red/
+  blue/gray-dim — so a glance tells the operator what their config is
+  doing.
+- **Selection policy** *(default tab)* — A JS/TS function editor
+  (`(upstreams) => Upstream[]`). Compiles in-browser on Apply; on
+  compile error falls back to score-desc default so traffic keeps
+  flowing. Side panel shows the `Upstream` type signature and four
+  example presets (default · vendor priority · lowest p90 · score only).
+- **Upstream synth** — A row per synthetic upstream with sliders +
+  editable number inputs for base latency, jitter, error rate, timeout
+  rate, throttle rate, block lag, an available toggle, and an
+  "inject 60s failure" quick-button. Bulk actions: all healthy / all
+  degraded / outage all alchemy / restore alchemy / +6 blocks lag.
+- **Config YAML** — A monospace YAML editor with line numbers,
+  syntax-highlighted via a hand-rolled tokenizer, drop-zone for
+  loading a `.yaml` file, diagnostics gutter, and a knob-mirror tab
+  that surfaces the structural fields as a scrollable form (each row
+  shows its YAML path, e.g. `failsafe.retry.maxAttempts`).
+- **Telemetry** — A stacked-area chart of selections per upstream per
+  second over the last 60 seconds, color-coded with the share palette.
+- **Traffic generator** — RPS log slider (1 → 10 000), shape selector
+  (poisson · constant · bursty), editable method mix, scenario player
+  with built-ins:
+  - `gradual-degradation` — one upstream's error rate rises in steps.
+  - `vendor-region-outage` — Alchemy us-east latency × 4 → errors →
+    unavailable → restored.
+  - `traffic-spike` — RPS multiplies through 5× then 10× then back.
+  - `hedge-saturator` — all upstreams jitter × 3, two go very slow.
+  - `circuit-breaker-trip` — one upstream errors at 95%, another
+    timeouts at 40%, a third throttles at 60%.
+  - `slow-network` — all upstreams latency × 3, jitter × 2.
+- **Event log + lifecycle drawer** — Last ~200 sampled requests in a
+  scrolling list, filterable by all / err / hedge / retry / cache.
+  Click a row → right-slide drawer with the full request lifecycle: the
+  selection trail (ordering returned by the policy, including
+  excluded entries with their reason), every attempt with its latency
+  bar, hedge winners highlighted, hedge losers dimmed.
 
-The operator's traffic generator submits to `network.Forward(ctx, req)`. The eval engine picks a winner. The failsafe stack may retry / hedge. Each call lands on `/sim/<id>`, which synthesizes a response per that upstream's `UpstreamSynthSpec`. The tracker observes; the policy adapts; the simulator emits events.
+## Who it's for
 
-### 2.2 Loopback fake-server trick
+A senior backend / RPC infra engineer who needs to tune a selection
+policy or a failsafe block and wants to see the routing behaviour
+respond to live signals before deploying to production. The audience
+is comfortable with YAML, JavaScript, JSON-RPC, Prometheus, terminal
+tools. The visual language matches that audience — Linear / Vercel /
+Honeycomb density, no marketing flourish, dark mode by default.
 
-Same as the prior MVP design: each upstream's `endpoint` is rewritten to `http://127.0.0.1:<port>/sim/<id>` at config-load time. The fake server reads the current `UpstreamSynthSpec` for `<id>` and synthesizes a JSON-RPC response. Real failsafe + selection runs on top.
+## How it works
 
-### 2.3 Where it lives
-
-- `cmd/erpc-simulator/main.go` — CLI, embedded assets, `http.ListenAndServe`.
-- `internal/simulator/`
-  - `server.go` — HTTP + WS routes.
-  - `engine.go` — owns the `*erpc.ERPC` instance, drives traffic.
-  - `synth.go` — `UpstreamSynthSpec` + fake-server handler.
-  - `config.go` — `SimState` (eRPC `*common.Config` + synth specs + traffic gen).
-  - `events.go` — pipeline + WS broadcast.
-  - `traffic.go` — generators (steady-rps, scenario-script).
-  - `scenarios.go` — built-in scenario library (incident replays).
-  - `assets/` — embedded GUI.
-
----
-
-## 3. Inputs
-
-Three categories. The operator can edit ANY input at runtime; changes apply within one `evalInterval` tick (≤ 1 s).
-
-### 3.1 eRPC configuration (primary input)
-
-The simulator accepts the **full eRPC config** — same `common.Config` shape, same YAML / TS schema, same `LoadConfig` pipeline. This is the operator's actual or candidate prod config.
-
-Surface in the UI:
-
-- **YAML editor**: rich, schema-aware, full eRPC YAML. CodeMirror 6 with YAML highlighting + inline validation against the canonical schema (synthesize from the Go struct tags via `tygo` output).
-- **Paste / drop**: drag-and-drop a `.yaml` or `.ts` file, or paste into the editor. The simulator validates → re-runs `common.LoadConfig` (including the legacy translator) → if OK, swap the live config; if errors, surface inline.
-- **Knob mirror**: every editable field surfaces as a knob in the side panel. Editing a knob mutates the YAML; editing the YAML re-derives the knobs. (See §6.3 for the sync model.)
-
-Notable sub-sections the operator commonly tunes:
-
-| Path | Knob category |
-|---|---|
-| `projects[].networks[].failsafe[]` | Retry maxAttempts, delay, hedge maxCount + delay quantile, timeout duration + quantile, circuitBreaker thresholds |
-| `projects[].networks[].selectionPolicy` | `evalInterval`, `evalTimeout`, `evalPerMethod`, `evalFunc` (full JS, with stdlib) |
-| `projects[].upstreams[]` | `tags`, `ignoreMethods`, `allowMethods`, `rateLimitBudget`, per-upstream failsafe overrides |
-| `projects[].upstreamDefaults` | failsafe defaults, autoTune |
-| `projects[].providers[].overrides[]` | per-`evm:*` provider tuning |
-| `rateLimiters.budgets[]` | per-budget rps + burst |
-| `database.evmJsonRpcCache.policies[]` | cache TTL / scope / finality |
-
-If the operator pastes a legacy config (any of the deprecated fields the translator recognizes), the simulator runs the same migration the prod loader does and surfaces the deprecation warnings in a small banner. They see exactly what prod will warn about.
-
-### 3.2 Upstream synthetic quality (per-upstream overlay)
-
-For every upstream defined in the loaded config, the simulator manages a parallel `UpstreamSynthSpec`. These are NOT part of the eRPC config — they only affect the loopback fake-server's response shape:
-
-```yaml
-# Implicit overlay, edited via the upstream-knobs panel
-synth:
-  alc-1:
-    baseLatencyMs: 40
-    jitterMs: 20
-    errorRate: 0.0                     # 0..1: fraction of requests returning -32099
-    timeoutRate: 0.0                   # 0..1: fraction that hang for > maxLatency (forces failsafe timeout)
-    throttleRate: 0.0                  # 0..1: fraction returning -32005 / 429 (drives rateLimitBudget)
-    blockLagBlocks: 0                  # how far behind tip this upstream reports
-    finalizationLagBlocks: 0           # finalized-tip lag
-    available: true                    # false = transport-level error (connection refused)
-    methodGlobs: ["*"]                 # extends the config's ignoreMethods/allowMethods
-    misbehavior:
-      wrongChainIdRate: 0.0            # fraction of eth_chainId returning a bogus value
-      emptyResultRate: 0.0             # fraction returning [] / "0x" / null
-      reorgDepth: 0                    # max blocks this upstream "regresses" on getBlockByNumber
-```
-
-| Knob | Effect on real eRPC behavior |
-|---|---|
-| `baseLatencyMs` / `jitterMs` | Drives p50/p95 in `health.Tracker` → score weight `respLatency` → policy reordering |
-| `errorRate` | Drives `metrics.errorRate` → `keepHealthy` filter / circuit-breaker thresholds |
-| `timeoutRate` | Forces hedge fire if `failsafe.hedge.delay` < timeout duration |
-| `throttleRate` | Drives `metrics.throttledRate` → rateLimitAutoTune |
-| `blockLagBlocks` | Drives `metrics.blockHeadLag` → `removeByLag` |
-| `available: false` | Transport-level fail → retry / circuit-breaker exercise |
-| `methodGlobs` | Drives `-32601` → `ErrEndpointUnsupported` → `IgnoreMethods` autotune |
-| `misbehavior.*` | Drives `metrics.misbehaviorRate` → integrity checks → cordoning |
-
-Defaults when a config is freshly loaded: every upstream gets `{ baseLatencyMs: 40, jitterMs: 20, errorRate: 0, available: true, methodGlobs: ['*'] }`. The operator opens the upstream-knobs panel to depart from steady-state.
-
-### 3.3 Traffic generator
-
-Defines what the simulator FIRES at `network.Forward`:
-
-```yaml
-traffic:
-  network: evm:1                       # which configured network
-  rps: 5000                            # target rate, 1..10000
-  paused: false
-  methods:                             # weighted method mix
-    - { method: eth_blockNumber,        weight: 5 }
-    - { method: eth_getBlockByNumber,   weight: 3, params: ["latest", false] }
-    - { method: eth_call,               weight: 4 }
-    - { method: eth_getLogs,            weight: 1, params: [{ fromBlock: "0x1", toBlock: "0x2" }] }
-  shape:
-    distribution: poisson              # poisson | constant | bursty
-    burstSizeMax: 50                   # if bursty
-    burstQuietMs: 1000                 # idle between bursts
-  perRequest:
-    headers: {}                        # echoed on requests (`User-Agent`, etc.)
-    finalityHint: auto                 # auto | realtime | unfinalized | finalized
-```
-
-Surface in the UI:
-
-- **RPS slider** (1–10000, logarithmic increments).
-- **Method-mix table** (free-form method strings, weights, default params).
-- **Shape selector** (Poisson / constant / bursty with two parameters).
-- **Network dropdown** when more than one is configured.
-- **Pause / play / step-once** controls.
-
-### 3.4 Scenarios (scripted timelines)
-
-A scenario is a YAML script that mutates the inputs over time, replaying an incident or stress test. Bundled scenarios in `internal/simulator/scenarios/`:
-
-| Scenario | Timeline |
-|---|---|
-| `gradual-degradation` | t=0 baseline → t=60s ramp `alc-1.errorRate` from 0 to 0.5 over 30s → t=120s revert |
-| `vendor-region-outage` | t=0 baseline → t=30s `alc-*.available = false` for 60s → revert |
-| `slow-network` | t=0 baseline → t=20s every upstream `baseLatencyMs *= 4` for 90s |
-| `traffic-spike` | t=0 rps=100 → t=30s rps=8000 (constant) for 60s → revert |
-| `hedge-saturator` | high `timeoutRate` on primary → hedges fire on every request |
-| `circuit-breaker-trip` | continuous high `errorRate` to trip circuit-breaker; observe re-admission |
-
-Scenarios are first-class — the operator picks one from a dropdown, hits "play", and watches the simulator drive both the synth knobs and the traffic generator on a schedule. Useful for reproducing a past incident under a candidate config.
-
----
-
-## 4. Runtime model
-
-### 4.1 Boot
-
-1. CLI flags parsed; `--config` (eRPC config path) optional. If absent, boot with a built-in starter config (3 synthetic networks, a few upstreams, the default selection policy).
-2. `common.LoadConfig(fs, path, opts)` loads and validates the eRPC config (legacy translator fires here).
-3. The simulator **rewrites every upstream's `endpoint`** to `http://127.0.0.1:<port>/sim/<gen-id>` and stashes the original-endpoint string only for display. Tracing config is force-disabled (no-op exporter). Database connectors are rewritten to a single in-memory cache. RateLimiter store is forced to in-memory.
-4. `erpc.NewERPC(cfg, ...)` boots the full eRPC instance.
-5. `UpstreamSynthSpec` defaults are populated for every upstream.
-6. HTTP server starts: GUI + API + WS + `/sim/<id>` all on the configured port.
-
-### 4.2 Per-request lifecycle
+### Architecture
 
 ```
-traffic-gen tick
-  → pick method by weighted mix
-  → build NormalizedRequest
-  → erpc.Network.Forward(ctx, req)
-    │
-    ├── selection-policy slot returns ordered upstreams (REAL eval, REAL stdlib)
-    ├── failsafe wraps: timeout + retry + hedge + circuit-breaker
-    ├── attempt 1 → upstream.Forward(ctx, req)
-    │     │
-    │     ├── http POST http://127.0.0.1:<port>/sim/<id>
-    │     ├── fake server: sleep base±jitter, maybe error/throttle/timeout/wrong-chain
-    │     ├── response → tracker observes
-    │     └── return up the call stack
-    ├── if attempt 1 fails AND retry budget allows → attempt 2 → next upstream in order
-    └── on success → cache write (if cacheable) → return to gen
-  ←
-emit lifecycle events to the pipeline
+        ┌──────────────────────────────────────────────────────────┐
+        │  erpc-simulator (Go binary)                              │
+        │                                                          │
+        │   embed.FS  ──►  net/http file server  ──►  127.0.0.1:8080
+        │     │                                                    │
+        │     └─ index.html, *.css, *.js, *.jsx                    │
+        └──────────────────────────────────────────────────────────┘
+                                       ↓ HTTP
+        ┌──────────────────────────────────────────────────────────┐
+        │  Browser tab                                             │
+        │                                                          │
+        │  React (UMD) + Babel-in-browser (UMD) from unpkg CDN     │
+        │     │                                                    │
+        │     ├─ simulator.js  ─ pure-JS simulation engine         │
+        │     │   - sample method weights                          │
+        │     │   - sample latency  (gaussian jitter)              │
+        │     │   - roll outcome (throttle/timeout/error/ok)       │
+        │     │   - retry + hedge + circuit-breaker mechanics      │
+        │     │   - scoring (success-rate-weighted, latency-       │
+        │     │     penalised)                                     │
+        │     │   - selection: user policy fn → ordered upstreams  │
+        │     │                                                    │
+        │     ├─ yaml-util.js   ─ tokenizer + diagnostics          │
+        │     │                                                    │
+        │     └─ React components (flow stage, charts, knobs,      │
+        │        policy editor, event log, drawer, top bar)        │
+        └──────────────────────────────────────────────────────────┘
 ```
 
-Every step in this chain is the same code that runs in prod. The simulator wraps `Network.Forward` in a thin hook that records lifecycle events (`selection`, `attempt_start`, `attempt_end`, `hedge_fire`, `retry_fire`, `cb_state_change`, `cache_hit`, `cache_miss`, `request_complete`).
+The Go side is intentionally trivial:
 
-### 4.3 Event pipeline (10k-rps safe)
+- `cmd/erpc-simulator/main.go` — ~80 LOC. Binds the listener, serves
+  the `embed.FS` rooted at `cmd/erpc-simulator/web/`, handles
+  graceful shutdown on SIGINT/SIGTERM.
+- `cmd/erpc-simulator/web/` — all design assets verbatim (HTML, CSS,
+  React/Babel scripts loaded from a CDN; the actual app code is
+  vanilla JS modules + JSX files transpiled in-browser).
 
-At 10k rps, ~10 events per request × 10k = 100k events/s. The WebSocket can't carry that, and the browser can't render it. The pipeline has three tiers:
+Everything reactive — the simulation tick, the selection-policy
+evaluation, the particle animation, the chart history, the
+event-lifecycle drawer — lives in the browser.
 
-1. **In-process counters** (free). Every event increments per-(upstream, attempt-outcome, method) atomic counters. These feed the periodic stats snapshot.
-2. **100 ms aggregator**. Every 100 ms, the simulator builds a `StatsFrame`: per-upstream {requests, successes, errors_by_kind, hedges, retries, p50, p90, current_score, position, cordoned_reason}. Pushed to all WS subscribers — single frame, ~2 KB binary.
-3. **Sampled trace stream**. 1% of completed requests (configurable; capped at 100/s) get their full lifecycle serialized and pushed as a `TraceFrame`. The frontend uses these to drive the animated flow stage + the event log.
+### Why client-side
 
-Subscribers get binary frames (msgpack or a hand-rolled compact encoding) — JSON encoding alone would burn a noticeable fraction of CPU at 10k rps.
+Three pragmatic reasons:
 
-### 4.4 Animated flow stage
+1. **Zero install.** No npm, no webpack, no node. The Go binary owns
+   the entire user experience. `make build && ./bin/erpc-simulator`
+   and the operator is in business.
+2. **Real selection-policy testing.** The user's policy function is
+   real JavaScript — same language eRPC itself runs via sobek server-
+   side. So the in-browser simulator is testing the *exact* function
+   shape the operator will eventually paste into their `erpc.yaml`.
+3. **Fast feedback loop.** Drag a slider, see the chart shift inside
+   the same animation frame. There's no network round-trip for any
+   interaction.
 
-The frontend renders a left-to-right stage with three lanes:
+### Selection-policy contract
 
-```
-┌──────────┐     ┌────────────────┐     ┌─────────────────────┐
-│  Client  │ ──► │   eRPC core    │ ──► │  Upstream pool      │
-│ (gen)    │     │ selection +    │     │  alc-1 ┃┃┃┃┃        │
-│          │     │ failsafe       │     │  drpc-1 ┃           │
-│          │     │                │     │  chnstk-1 ┃┃        │
-└──────────┘     └────────────────┘     └─────────────────────┘
-```
+The simulator exposes the same `Upstream` shape the operator would
+write against in production:
 
-A particle (dot) is spawned per sampled trace, leaving the Client, transiting eRPC core, fanning to the chosen upstream. Particle color encodes outcome:
+```ts
+type Upstream = {
+  id: string;
+  vendor: string;
+  tags: string[];
+  chainId: number;
+  available: boolean;
+  blockLag: number;
+  metrics: {
+    errorRate: number;      // 0..1
+    successRate: number;    // 0..1
+    p50: number;            // ms
+    p90: number;            // ms
+    requestsPerSec: number;
+    score: number;          // 0..1, computed by eRPC
+    cbState: "closed" | "half" | "open";
+  };
+};
 
-| Color | Meaning |
-|---|---|
-| Green | success on first attempt |
-| Yellow | succeeded after retry |
-| Orange | won a hedge race |
-| Red | failed terminally |
-| Blue | cache hit (no upstream contact) |
-| Gray | excluded by selection policy (never picked) |
-
-When the policy excludes an upstream, its lane dims. When the circuit-breaker opens on an upstream, its lane gets a red border. When hedges fire on a request, you see two particles fanning from eRPC core to two different upstreams (the first to respond keeps moving; the loser dims).
-
-Particle density is throttled to a steady ~50/s on screen regardless of actual rps — the animation is a representation, not a 1:1 view. Statistics drive the chart; the animation drives intuition.
-
-### 4.5 Config hot-reload
-
-`POST /api/config { yaml: "..." }`:
-
-1. Parse via `common.LoadConfig` against the same pipeline prod uses.
-2. If errors, return `{ ok: false, errors: [{ line, col, message }] }`.
-3. If OK, build a fresh `*erpc.ERPC` instance with rewritten endpoints, gracefully shutdown the old one, swap. Cross-tick state (sticky primary, exclusion history) is intentionally dropped — operators are testing a CHANGED config and want a clean baseline.
-4. Frontend receives a `config_swap` WS event and re-renders the knob mirror + upstream list.
-
-### 4.6 Upstream-synth hot-reload
-
-`POST /api/upstreams/{id} { synth: { errorRate: 0.3, ... } }`:
-
-1. Validate.
-2. Atomic swap into the in-memory `UpstreamSynthSpec` table.
-3. Next request to `/sim/<id>` reads the new spec — no eRPC restart.
-
-### 4.7 Reset
-
-`POST /api/reset`: drop tracker state, drop selection-policy slot state, drop in-memory cache, restart traffic generator. The chart clears; the animation restarts.
-
----
-
-## 5. Performance budget
-
-Target: **10,000 rps sustained on a developer laptop** (M-series Mac or recent x86 Linux) with the GUI open in one browser tab. Concretely:
-
-| Metric | Target | Strategy |
-|---|---|---|
-| `network.Forward` overhead at simulator layer | ≤ 50 µs / req beyond the synthetic sleep | All paths are real eRPC code; the simulator's wrapping is a single observer hook. |
-| Event-pipeline overhead | ≤ 20 µs / req | Atomic counters only on the hot path. Aggregation happens off-thread. |
-| WebSocket bandwidth | ≤ 1 Mbps | Binary frames; aggregated stats, not raw events. Sample traces at ≤ 100 frames/s. |
-| Browser frame budget | 60 fps animation | Particles are pure CSS transforms + a small canvas; no React re-renders during animation. |
-| Memory | < 1 GB RSS at 10k rps for 5 min | In-memory cache size-capped; tracker windowing keeps history bounded. |
-
-To verify: load test the simulator against itself in `--no-gui --bench-mode` (Phase 5 stretch). Confirm 10k rps with median p99 within 2× the synthetic baseline latency.
-
----
-
-## 6. Browser GUI
-
-### 6.1 Layout
-
-Four primary panels arranged in a 2-row × 3-column grid. Top bar spans full width.
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ Top bar: status pill | rps live counter | policy valid badge | reset   │
-├──────────────────────────────────────────────────────────────────────  │
-│  CONFIG          │       TRAFFIC FLOW          │     CHARTS             │
-│  (YAML editor    │    (animated stage,         │  (stacked selection-   │
-│   + knob panel)  │     left-to-right)          │   share over 60s)      │
-│                  │                             │                        │
-│                  │                             │  per-upstream cards:   │
-│                  │                             │   req | err | p50/p90  │
-│                  │                             │   score | position     │
-├──────────────────┼─────────────────────────────┼────────────────────────┤
-│  UPSTREAM        │  TRAFFIC GENERATOR          │  EVENT LOG             │
-│  SYNTH KNOBS     │  rps + method-mix +         │  last 50 traces        │
-│  (one row per    │  shape + scenario picker    │  (sampled, with full   │
-│   upstream)      │                             │   lifecycle drawer)    │
-└────────────────────────────────────────────────────────────────────────┘
+type SelectionPolicy = (upstreams: Upstream[]) => Upstream[];
 ```
 
-### 6.2 Panel: config editor
+Only structurally-eligible upstreams (available, CB closed/half, block
+lag within tolerance for the request's finality bucket) are passed
+in. Returning a non-array or throwing falls back to the default
+score-desc ordering. The function re-runs on every request — keep it
+cheap, no async, no fetch.
 
-- **YAML view**: CodeMirror 6, YAML language pack, schema lint, soft-wrapped, gutter line numbers, search (Cmd-F).
-- **Knob mirror** (right-rail): a scrollable form pre-derived from the YAML. Each knob is one field, label includes the YAML path (e.g., `failsafe[0].retry.maxAttempts`). Editing a knob mutates the YAML in place (with cursor jumping to the changed line + brief highlight). Editing the YAML manually re-derives the knobs on every change (debounced 200 ms).
-- **Paste / drop**: drop a `.yaml` / `.ts` file anywhere on the editor → file is read → loaded via `/api/config`.
-- **Apply button** + `Cmd-Enter`. Until applied, the editor shows a "modified" badge.
-- **Errors**: load-time validation errors render as inline diagnostics. The translator's deprecation warnings render as info-level annotations (yellow underlines, not red).
+### Synthetic upstreams
 
-### 6.3 YAML ↔ knob sync model
+The seed set is eight upstreams that mirror a realistic eth-mainnet
+deployment:
 
-Both views render off the SAME in-memory parsed AST (yaml.Node tree, line-numbers preserved). Knob edits walk the AST to the target node, mutate the value, re-serialize the YAML preserving comments + indentation. YAML edits re-parse → re-build the knob form. This avoids the "two sources of truth" trap.
+| id | vendor | tags | base | jitter | error |
+|---|---|---|---|---|---|
+| alc-eth-1 | alchemy | eth, us-east | 38 | 18 | 0.005 |
+| alc-eth-2 | alchemy | eth, us-west | 52 | 22 | 0.008 |
+| drpc-eth-1 | drpc | eth | 68 | 35 | 0.012 |
+| quik-eth-1 | quicknode | eth, premium | 41 | 14 | 0.004 |
+| chainstack-eth-1 | chainstack | eth | 74 | 40 | 0.018 |
+| conduit-eth-1 | conduit | eth, dedicated | 56 | 24 | 0.010 |
+| self-eth-1 | self-hosted | eth, lhr | 28 | 12 | 0.022 |
+| public-eth-1 | public | eth, fallback | 180 | 110 | 0.080 |
 
-For TS / JS configs, the editor falls back to text-only mode (no knob mirror) — TS configs go through `loadConfigFromTypescript` at apply time but the round-trip back to TS-source isn't supported (would require an AST mutator for TS). The operator can paste a TS config, see it run, but knobs require switching to YAML mode.
+These are the defaults baked into `simulator.js`. The operator
+mutates them live via the **Upstream synth** tab.
 
-### 6.4 Panel: traffic flow
+## Non-goals (v1)
 
-Animated SVG/canvas stage per §4.4. Real-time, driven by the `trace` frames over WebSocket. Hovering a lane shows a tooltip with current per-upstream stats. Clicking a particle pauses it mid-flight and shows the request's full lifecycle in a side drawer (selection-step trail, attempt history, hedge log, response time per attempt).
+- **Not boot a real eRPC instance.** The simulator is a faithful
+  model of the routing dynamics, not a hosted eRPC. Policy code is
+  evaluated in the browser via `new Function`, not in sobek. (Future
+  work: a `-bridge` flag that pipes the policy + sliders to a real
+  eRPC for parity testing.)
+- **Not a YAML round-tripper.** The YAML editor renders text; the
+  knob-mirror's regex-based parser handles a handful of canonical
+  fields. Editing the structural shape of an `erpc.yaml` (adding
+  networks, reordering upstreams) is best done in the textarea
+  directly.
+- **Not a multi-network simulator.** The top-bar network selector is
+  presentational; the simulator runs one chain at a time.
+- **Not a benchmark.** Particle throughput is throttled to ~50/s
+  visible regardless of actual RPS. The chart and stats reflect the
+  real underlying request count.
 
-### 6.5 Panel: charts
-
-- **Selection share over 60 s**: stacked-area, one band per upstream, y = selections/s. Animated, 100 ms-bucketed.
-- **Per-upstream cards**: req, err, p50, p90, score, position. Updated on every stats frame. Color-coded backgrounds: green if position 0 / 1, yellow if 2+, red if -1 (excluded).
-- **Failsafe activity strip**: small horizontal bars showing retry-rate, hedge-rate, timeout-rate, circuit-breaker-state per upstream. Helps the operator see which upstreams are absorbing recovery overhead.
-
-### 6.6 Panel: upstream synth knobs
-
-One row per upstream. Each row shows:
-- ID, vendor, tags
-- `available` toggle + `failure-injection` quick-button (60 s outage)
-- Compact knobs: `baseLatency`, `jitter`, `errorRate`, `timeoutRate`, `throttleRate`, `blockLag`, `methodGlobs`
-- Live indicator: current selection position + a tiny sparkline of error-rate over the last minute
-
-Bulk actions: "make all healthy" / "make all degraded" / "outage all alchemy" (uses vendor tag) — useful for incident reproduction.
-
-### 6.7 Panel: traffic generator
-
-- RPS slider 1..10000 (log scale).
-- Method mix: editable rows.
-- Shape: dropdown + parameters.
-- Scenario player: dropdown of built-in scenarios + play/stop + a progress bar.
-
-### 6.8 Panel: event log
-
-Last 50 sampled traces, newest first. Each row:
-
-```
-14:32:18.452   eth_blockNumber   alc-1   ✓ 42ms        [ord: alc-1, drpc-1, ...]
-14:32:18.451   eth_call          drpc-1  ↻ 2 attempts  hedge won, 80ms (alc-1 timed out)
-14:32:18.450   eth_traceTx       —       ✗ no upstream eligible
-```
-
-Clicking a row opens a drawer with the full lifecycle (every selection step, every attempt, every hedge, every retry, every error). This is the simulator's primary investigation tool — Datadog APM, locally and for free.
-
----
-
-## 7. API surface
-
-### 7.1 REST
-
-| Method | Path | Body / Response |
-|---|---|---|
-| `GET`  | `/` | embedded `index.html` + assets |
-| `GET`  | `/api/state` | `{ config, configValid, upstreamSynth, traffic, scenarios, stats }` |
-| `POST` | `/api/config` | `{ yaml: string }` → 200 with new state; 400 with `{ errors: [{line,col,msg}] }` |
-| `POST` | `/api/upstreams/{id}` | `{ synth: UpstreamSynthSpec }` |
-| `POST` | `/api/traffic` | partial `TrafficSpec` (any subset of fields) |
-| `POST` | `/api/scenario` | `{ name }` to start, `{}` to stop |
-| `POST` | `/api/reset` | empty |
-| `GET`  | `/metrics` | Prometheus exposition |
-| `ANY`  | `/sim/{id}` | synthetic JSON-RPC endpoint |
-
-### 7.2 WebSocket — `GET /api/events`
-
-Binary frames. Each frame is a length-prefixed msgpack message with a type discriminator:
+## Files at a glance
 
 ```
-type StatsFrame {
-  ts: int64                  // unix ms
-  network: string
-  rps: float32               // last 100ms
-  upstreams: []{
-    id: string
-    requests: uint32
-    successes: uint32
-    errorsByKind: map[string]uint32   // transport / 5xx / timeout / throttled / misbehavior
-    hedges: uint32
-    retries: uint32
-    p50Ms: float32
-    p90Ms: float32
-    p99Ms: float32
-    currentScore: float32 nullable
-    position: int8                     // 0..N or -1
-    cordonedReason: string nullable
-    cbState: string                    // closed / open / half-open
-  }
-  policyEvalDurationMs: float32
-  policyEvalErrors: uint32             // last 100ms
-}
-
-type TraceFrame {
-  tickId: string
-  ts: int64
-  method: string
-  finality: string
-  selection: { order: []string, excluded: []string, evalDurationUs: int32 }
-  attempts: []{
-    upstreamId: string
-    startedAtMs: int32      // offset from ts
-    finishedAtMs: int32
-    outcome: string         // ok | err | timeout | throttled
-    latencyMs: float32
-    errKind: string nullable
-    isHedge: bool
-    isRetry: bool
-  }
-  cacheHit: bool
-  totalDurationMs: float32
-}
-
-type ConfigSwapFrame { ts, summary, deprecationWarnings: []string }
-type EvalErrorFrame  { ts, tickId, kind, message }
-type ScenarioFrame   { ts, name, phase, progress: float32 }
+cmd/erpc-simulator/
+├── main.go                 # ~80-line embed.FS HTTP server
+└── web/
+    ├── index.html          # Entrypoint; loads React/Babel + the JSX bundle
+    ├── styles.css          # Tokens + top-bar + main grid + buttons
+    ├── styles-2.css        # Config editor + flow stage v1 (legacy)
+    ├── styles-3.css        # Charts, upstream knobs, right column, drawer
+    ├── styles-flow-v2.css  # Top-down flow stage layout (current)
+    ├── styles-policy.css   # Selection-policy editor
+    ├── simulator.js        # ~660 LOC pure-JS sim engine (no React)
+    ├── yaml-util.js        # YAML tokenizer + diagnostics
+    ├── app.jsx             # Root component, state, sim-loop interval
+    ├── top-bar.jsx
+    ├── flow-stage.jsx      # Canvas particle viz
+    ├── charts.jsx          # SVG stacked-area share chart
+    ├── upstream-knobs.jsx
+    ├── selection-policy.jsx  # JS/TS function editor
+    ├── config-editor.jsx   # YAML + knob mirror
+    ├── bottom-tabs.jsx     # Policy / Upstream / Config tab switcher
+    ├── right-col.jsx       # Traffic-gen + event-log tabs + drawer
+    └── resizer.jsx         # Drag-handle for the four panels
 ```
 
-Subscriber bandwidth at 10k rps with stats every 100 ms (10/s × ~2KB) + 1% trace sampling (100/s × ~500B) ≈ 70 KB/s. Easy budget.
+## Running it
 
----
-
-## 8. Observability
-
-The simulator emits the production Prometheus families verbatim:
-
-- `policy_selection_*` (position, rejection, primary-switch, eval duration, eval errors, eligible_upstreams)
-- `erpc_upstream_request_duration_seconds`
-- `erpc_upstream_request_errors_total`
-- `erpc_failsafe_*` (retries, hedges, timeouts, circuit-breaker transitions)
-- `erpc_cache_*`
-
-Operators can point a local Prom server at `http://localhost:8080/metrics` for Grafana-side investigation.
-
----
-
-## 9. Validation & error handling
-
-| Failure mode | Visible response |
-|---|---|
-| Pasted YAML fails strict-decode | inline diagnostics in editor; current config keeps running |
-| Pasted YAML has legacy translator warnings | yellow-banner above editor; config still applies |
-| `evalFunc` fails sobek compile | inline diagnostic at failing line in the YAML; current policy keeps running |
-| `evalFunc` throws at runtime | red event in log + `policy_selection_eval_errors_total{kind=throw}++` |
-| `evalFunc` times out | red event + `kind=timeout` |
-| Traffic generator's method isn't supported by any upstream | event log "no upstream eligible"; bumps a counter |
-| `/sim/<id>` panic | log + 500 returned to eRPC; failsafe handles it; chart shows red |
-| WS client lags | drop oldest events; client reconciles on next stats frame |
-| Config swap fails partway | rollback to previous `*erpc.ERPC`; banner explains |
-
----
-
-## 10. Scenario library schema
-
-Scenarios live as YAML under `internal/simulator/scenarios/`. Schema:
-
-```yaml
-name: gradual-degradation
-description: alc-1 errorRate ramps to 50% over 30s; reverts at t=120s
-duration: 180s
-steps:
-  - at: 0s
-    set:
-      upstreams.alc-1.errorRate: 0.0
-      traffic.rps: 500
-  - at: 60s
-    interp: linear        # linear interpolation to next set
-    set:
-      upstreams.alc-1.errorRate: 0.5
-    until: 90s
-  - at: 120s
-    set:
-      upstreams.alc-1.errorRate: 0.0
+```bash
+make build               # produces ./bin/erpc-simulator (~6 MB, no CGo)
+./bin/erpc-simulator     # listens on 127.0.0.1:8080 by default
+# or
+make run-simulator       # go run ./cmd/erpc-simulator
 ```
 
-Operators can write their own scenarios and drop them into a config-pointed dir. The bundled set covers the common debugging needs (see §3.4).
+Flags:
 
----
-
-## 11. Future scope (Phase 6+)
-
-| Item | Sketch |
-|---|---|
-| Replay an export | Save a 60 s window's full event stream + the input config; replay against a CHANGED config to A/B compare |
-| Multi-config bench | Run N candidate configs in parallel on the same traffic; show the policy chosen and the SLA each delivered |
-| Scenario authoring UI | Visual scenario editor (timeline of knob changes) |
-| Headless `--bench-mode` | No GUI; output a single JSON report with per-upstream stats over a fixed scenario; usable in CI |
-| Chaos export to k8s | Generate kubectl manifests that replay a scenario against a real eRPC deployment (chaos engineering) |
-
----
-
-## 12. Out of scope (won't build)
-
-- Production telemetry export (the simulator is local; for prod metrics use the prod stack).
-- Multi-user sharing of running sessions.
-- Auth, TLS, anything internet-facing — `127.0.0.1` only.
-- Editing the simulator's own source code from inside the GUI.
-- A drag-and-drop visual policy builder. The policy is JS code; the editor is text.
-- Saving past simulation runs to disk (memory-only state).
+- `-addr <host:port>` — bind address (default `127.0.0.1:8080`).

@@ -98,6 +98,79 @@ func (n *Network) Id() string {
 	return n.networkId
 }
 
+// MetricsTracker returns the network's shared health tracker. Exposed
+// so diagnostic tooling (the erpc-simulator, admin readouts) can read
+// per-upstream observed metrics — the same numbers the selection
+// policy's `keepHealthy` / `sortByScore` filters consume.
+func (n *Network) MetricsTracker() *health.Tracker {
+	return n.metricsTracker
+}
+
+// AllUpstreams returns every upstream configured on the network, in
+// no particular order. Diagnostic tooling uses this to walk upstreams
+// for tracker lookups without needing to know the routing order.
+func (n *Network) AllUpstreams() []*upstream.Upstream {
+	if n.upstreamsRegistry == nil {
+		return nil
+	}
+	return n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId)
+}
+
+// PolicyScores returns the per-upstream `score` map produced by the
+// selection-policy engine's most recent tick for `(networkID, method)`,
+// or nil if the engine isn't wired up. Source of truth for "what does
+// the policy rank this upstream at?" — never re-implement the BALANCED
+// weight formula client-side; read from here.
+func (n *Network) PolicyScores(method string) map[string]float64 {
+	if n.policyEngine == nil {
+		return nil
+	}
+	if method == "" {
+		method = "*"
+	}
+	return n.policyEngine.GetScores(n.networkId, method)
+}
+
+// PolicyLastSwitchAt returns when the primary upstream last changed
+// for `(networkID, method)`. Used by diagnostics to render the
+// `stickyPrimary` cooldown countdown ("primary held for Xs").
+func (n *Network) PolicyLastSwitchAt(method string) time.Time {
+	if n.policyEngine == nil {
+		return time.Time{}
+	}
+	if method == "" {
+		method = "*"
+	}
+	return n.policyEngine.LastSwitchAt(n.networkId, method)
+}
+
+// PolicyOrderedUpstreams returns the IDs of upstreams in the order the
+// selection-policy engine currently has them ordered for the given
+// method. The slot's cache is read lock-free — this is the same source
+// of truth `Forward` uses to pick attempts. Returns nil if no policy
+// engine is wired up or the slot hasn't ticked yet.
+//
+// Diagnostics tooling (the simulator, admin endpoints) uses this to
+// render "position pills" that reflect the policy's real verdict —
+// NOT a guess derived from per-second selection counts.
+func (n *Network) PolicyOrderedUpstreams(method string) []string {
+	if n.policyEngine == nil {
+		return nil
+	}
+	if method == "" {
+		method = "*"
+	}
+	ups := n.policyEngine.GetOrdered(n.networkId, method)
+	if len(ups) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ups))
+	for _, u := range ups {
+		out = append(out, u.Id())
+	}
+	return out
+}
+
 func (n *Network) Label() string {
 	if n == nil {
 		return ""
