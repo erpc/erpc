@@ -389,7 +389,11 @@ function parseErpcError(s) {
 
 function splitCausedBy(s) {
   // Accept all three:  "\ncaused by: ", "  \\ncaused by: ", " caused by: "
-  return s.split(/(?:\\n|\n|\s)+caused by:\s*/);
+  // The two alternatives are deliberately DISJOINT so the `+` quantifier
+  // can't backtrack exponentially on long whitespace runs:
+  //   \\n — the two-character literal `\n` (e.g. from a JSON-encoded error)
+  //   \s  — a single whitespace char (covers real \n / \r / space / tab)
+  return s.split(/(?:\\n|\s)+caused by:\s*/);
 }
 
 function parseErpcLevel(part) {

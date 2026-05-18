@@ -190,27 +190,31 @@
     });
   });
 
-  // ─── 4.3a excludeIf — predicate-driven exclusion with sticky cooldown ──
+  // ─── 4.3a excludeIf — predicate-driven exclusion ────────────────────────
   //
   // The composable replacement for `keepHealthy`. Each `excludeIf` call
-  // takes a predicate function and (optionally) an `outFor` cooldown:
+  // takes a predicate function:
   //
-  //   .excludeIf(errorRateAbove(0.5), { outFor: '30s', reason: 'errors>50%' })
+  //   .excludeIf(errorRateAbove(0.5), { reason: 'errors>50%' })
   //
   // Semantics:
-  //   * If `predicate(u)` is true this tick → drop `u` (and the engine's
-  //     `excludedSince[id]` gets set/maintained as part of the slot's
-  //     normal cross-tick bookkeeping).
-  //   * If `outFor` is set AND `now - excludedSince[id] < outFor`, keep `u`
-  //     dropped even when the predicate no longer matches. This is the
-  //     anti-flap layer — once a rule trips an upstream out, the upstream
-  //     stays out for at least `outFor` before becoming a candidate again,
-  //     regardless of how fast the underlying metric oscillates.
-  //   * Annotates the upstream with `opts.reason` (or a default) for
+  //   * If `predicate(u)` is true this tick → drop `u`.
+  //   * Annotates dropped upstreams with `opts.reason` (or a default) for
   //     diagnostics. Multiple rules each add their own annotation.
   //
-  // Pair with `readmitExcluded(...)` at the end of the chain to control
-  // how cooled-down upstreams come back into rotation.
+  // Re-admission timing is controlled by `readmitExcluded({reAdmitAfter})`
+  // at the end of the chain — that's the anti-flap layer (stays out for N
+  // before being given another chance regardless of why excluded).
+  //
+  // Note on `outFor`: an earlier shape of this primitive accepted an
+  // `outFor` opt to keep an upstream excluded even when the predicate
+  // stopped matching, using the slot's flat `excludedSince` map. That
+  // map records ALL prior-tick exclusions (including `preferTag` /
+  // sortByScore filters / etc.), so the cooldown spuriously held out
+  // upstreams excluded by unrelated steps. Correct per-rule anti-flap
+  // requires per-(upstream, reason) cross-tick state which isn't plumbed
+  // yet. `outFor` is silently accepted but inert — re-introduce it once
+  // the engine tracks per-rule exclusion history.
   define('excludeIf', function (predicate, opts) {
     if (typeof predicate !== 'function') {
       // Graceful no-op for invalid first arg — keeps the chain alive
@@ -220,21 +224,10 @@
     }
     opts = opts || {};
     const reason = opts.reason || 'excludeIf';
-    const outFor = opts.outFor != null ? globalThis.durationMs(opts.outFor) : 0;
-    const ctx = globalThis.__policyCtx || {};
-    const now = ctx.now || Date.now();
-    const excludedSince = ctx.excludedSince || {};
     return this.filter(u => {
       if (predicate(u)) {
         annotate(u, reason);
         return false;
-      }
-      if (outFor > 0) {
-        const since = excludedSince[u.id];
-        if (since != null && (now - since) < outFor) {
-          annotate(u, reason + ':held');
-          return false;
-        }
       }
       return true;
     });

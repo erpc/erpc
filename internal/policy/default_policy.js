@@ -1,24 +1,23 @@
 // Default selection policy. Applied when `selectionPolicy.evalFunc` is omitted.
 //
 // Two-primitive admission control:
-//   excludeIf       — drop upstreams matching a predicate; optionally hold
-//                     them out for at least `outFor` (anti-flap memory).
+//   excludeIf       — drop upstreams matching a predicate this tick.
 //   readmitExcluded — cautiously bring back excluded upstreams once their
-//                     cooldown has elapsed.
+//                     cooldown has elapsed (this is the anti-flap layer).
 // Predicate factories (errorRateAbove, latencyP95Above, blockNumberLagAbove,
 // …) keep each rule self-documenting; combinators (all / any / not) compose
 // them into compound conditions. See specs/selection-policy/feature.md §4.
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
-    // Health excludes — each signal locks the upstream out for its own
-    // cooldown. Errors recover faster than block-lag (which usually means
-    // the chain is reorging or the node is syncing), so the cooldowns
-    // are tuned per-signal rather than shared.
-    .excludeIf(errorRateAbove(0.5),       { outFor: '30s', reason: 'errorRate>50%' })
-    .excludeIf(throttleRateAbove(0.3),    { outFor: '30s', reason: 'throttled>30%' })
-    .excludeIf(latencyP95Above(10_000),   { outFor: '30s', reason: 'p95>10s'       })
-    .excludeIf(blockNumberLagAbove(16),   { outFor: '90s', reason: 'blockLag>16'   })
+    // Health excludes — each rule trips an upstream out for the current
+    // tick. Re-admission timing is handled by readmitExcluded at the
+    // end of the chain (uniform 90s cooldown regardless of why a given
+    // upstream was excluded — adequate for most operational scenarios).
+    .excludeIf(errorRateAbove(0.5),       { reason: 'errorRate>50%' })
+    .excludeIf(throttleRateAbove(0.3),    { reason: 'throttled>30%' })
+    .excludeIf(latencyP95Above(10_000),   { reason: 'p95>10s'       })
+    .excludeIf(blockNumberLagAbove(16),   { reason: 'blockLag>16'   })
     // Outage safety net — never return an empty list to the executor.
     // If every upstream fails the health excludes (project-wide outage),
     // fall back to the raw set rather than failing closed.
