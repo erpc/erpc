@@ -131,6 +131,20 @@ func (n *Network) PolicyScores(method string) map[string]float64 {
 	return n.policyEngine.GetScores(n.networkId, method)
 }
 
+// RecentPolicyDecisions returns up to `limit` most-recent policy
+// engine Decisions for `(networkID, method)`, OLDEST-first. Diagnostic
+// tooling uses this to render a tick-by-tick replay panel. Returns nil
+// if no engine is wired up.
+func (n *Network) RecentPolicyDecisions(method string, limit int) []*policy.Decision {
+	if n.policyEngine == nil {
+		return nil
+	}
+	if method == "" {
+		method = "*"
+	}
+	return n.policyEngine.RecentDecisions(n.networkId, method, limit)
+}
+
 // PolicyLastSwitchAt returns when the primary upstream last changed
 // for `(networkID, method)`. Used by diagnostics to render the
 // `stickyPrimary` cooldown countdown ("primary held for Xs").

@@ -40,6 +40,14 @@ type Slot struct {
 	// by Engine.GetScores for diagnostics — single source of truth for
 	// "what does the policy rank this upstream at?".
 	lastScores map[string]float64
+	// decisions is a small ring buffer of the most-recent Decisions
+	// produced by tickOnce. Capped at decisionsRingSize so an idle slot
+	// can't accumulate unbounded memory. Read by Engine.RecentDecisions
+	// for diagnostic tooling that wants a tick-by-tick replay (the
+	// erpc-simulator's "policy history" panel, primarily).
+	decisions      [decisionsRingSize]*Decision
+	decisionsHead  int // next write index
+	decisionsCount int // valid entries (clamped to ring size)
 	// lastEvalAt is the wall-clock timestamp of the most recent
 	// successful tick. Updated under mu at the end of tickOnce.
 	lastEvalAt time.Time
@@ -105,6 +113,12 @@ func (s *Slot) stop() {
 	s.stopOnce.Do(func() { close(s.stopCh) })
 	s.wg.Wait()
 }
+
+// decisionsRingSize bounds the slot's in-memory decision history.
+// 64 ticks = ~64 s at the default 1 s evalInterval — enough for
+// the simulator's "what just happened?" panel; not enough to be
+// confused with the canonical metrics/traces story.
+const decisionsRingSize = 64
 
 // tickOnce runs one eval cycle synchronously. Exported via TickForTest.
 func (s *Slot) tickOnce() {
@@ -185,6 +199,9 @@ func (s *Slot) tickOnce() {
 			Str("tick_id", decision.ID).
 			Err(evalErr).
 			Msg("selection policy eval failed; retaining previous cache")
+		s.mu.Lock()
+		s.appendDecisionLocked(decision)
+		s.mu.Unlock()
 		s.emitMetrics(decision, state)
 		return
 	}
@@ -222,9 +239,56 @@ func (s *Slot) tickOnce() {
 		s.lastSwitchAt = &t
 	}
 	s.lastEvalAt = start
+	// Append to the bounded decisions ring so diagnostic tooling can
+	// replay the last N ticks. We retain even error-path decisions
+	// (returned earlier in tickOnce); this is only the success-path
+	// append. Failed evals are appended in the error branch too — see
+	// `consecutiveFails` handler higher up.
+	s.appendDecisionLocked(decision)
 	s.mu.Unlock()
 
 	s.emitMetrics(decision, state)
+}
+
+// appendDecisionLocked pushes `d` onto the slot's bounded ring buffer.
+// Caller MUST hold s.mu. O(1); evicts the oldest entry when full.
+func (s *Slot) appendDecisionLocked(d *Decision) {
+	if d == nil {
+		return
+	}
+	s.decisions[s.decisionsHead] = d
+	s.decisionsHead = (s.decisionsHead + 1) % decisionsRingSize
+	if s.decisionsCount < decisionsRingSize {
+		s.decisionsCount++
+	}
+}
+
+// recentDecisions returns up to `limit` of the most-recent decisions
+// from the ring, in OLDEST-first order. limit <= 0 means "all retained
+// entries". Caller-owned shallow copies of the *Decision pointers; the
+// underlying structs are NOT mutated after publishing.
+func (s *Slot) recentDecisions(limit int) []*Decision {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.decisionsCount
+	if limit > 0 && n > limit {
+		n = limit
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]*Decision, 0, n)
+	start := s.decisionsHead - n
+	if start < 0 {
+		start += decisionsRingSize
+	}
+	for i := 0; i < n; i++ {
+		idx := (start + i) % decisionsRingSize
+		if s.decisions[idx] != nil {
+			out = append(out, s.decisions[idx])
+		}
+	}
+	return out
 }
 
 // emitMetrics translates a Decision into Prometheus signal. Cardinality

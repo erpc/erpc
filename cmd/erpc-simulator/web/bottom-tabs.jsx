@@ -9,6 +9,7 @@ function BottomTabs() {
   const yaml = window.useYAML();
   const configValidate = window.useConfigValidate();
   const configResult = window.useConfigResult();
+  const policyHistoryRing = window.usePolicyHistoryRing();
 
   // Approximate "pending changes" badge: number of differing lines.
   const pendingCount = React.useMemo(() => {
@@ -32,6 +33,7 @@ function BottomTabs() {
       <div className="panel-hd">
         <div style={{display:"flex",gap:0,marginLeft:-12,height:"100%"}}>
           <BtTabBtn label="Selection policy" sub="evalFunc" active={tab === "policy"} onClick={() => setTab("policy")} badge={policyErr ? "!" : null} />
+          <BtTabBtn label="Policy history" sub={`${(policyHistoryRing || []).length} ticks`} active={tab === "history"} onClick={() => setTab("history")} />
           <BtTabBtn label="Upstream synth" sub={`${upstreams.length}`} active={tab === "upstreams"} onClick={() => setTab("upstreams")} />
           <BtTabBtn label="Config" sub="erpc.yaml" active={tab === "config"} onClick={() => setTab("config")}
             badge={pendingCount > 0 ? pendingCount : null} errCount={errCount} />
@@ -39,9 +41,11 @@ function BottomTabs() {
         <span className="spacer" />
         {tab === "config" && <span style={{fontSize:"10px",color:"var(--tx-3)",fontFamily:"var(--font-mono)"}}>⌘↵ apply</span>}
         {tab === "policy" && <span style={{fontSize:"10px",color:"var(--tx-3)",fontFamily:"var(--font-mono)"}}>runs per request · ⌘↵ apply</span>}
+        {tab === "history" && <span style={{fontSize:"10px",color:"var(--tx-3)",fontFamily:"var(--font-mono)"}}>tick-by-tick replay · click a row for detail</span>}
       </div>
       {tab === "upstreams" ? <window.UpstreamKnobs />
         : tab === "policy" ? <window.SelectionPolicy />
+        : tab === "history" ? <window.PolicyHistory />
         : <window.ConfigEditor />}
     </div>
   );

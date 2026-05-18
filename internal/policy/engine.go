@@ -185,6 +185,23 @@ func (e *Engine) LastSwitchAt(networkID, method string) time.Time {
 	return *slot.lastSwitchAt
 }
 
+// RecentDecisions returns up to `limit` of the most-recent decisions
+// the slot has produced, OLDEST-first. `limit <= 0` returns all
+// retained entries (currently capped at `decisionsRingSize`). Returns
+// nil if the slot is unknown / no ticks yet.
+//
+// Diagnostic tooling consumes this to render a tick-by-tick replay
+// ("why did the order change at T=4.2s?"). For production
+// observability, see the Prometheus `policy_selection_*` families and
+// per-request traces.
+func (e *Engine) RecentDecisions(networkID, method string, limit int) []*Decision {
+	slot := e.lookupSlot(networkID, method)
+	if slot == nil {
+		return nil
+	}
+	return slot.recentDecisions(limit)
+}
+
 // GetScores returns the per-upstream `score` map produced by the
 // slot's most recent successful tick. Entries are the EXACT values the
 // JS `sortByScore(...)` step assigned to each upstream, so anything

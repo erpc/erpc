@@ -299,7 +299,11 @@ func (s *Session) writer(ctx context.Context) {
 	}
 }
 
-// statsTicker pushes a periodic StatsFrame to the client.
+// statsTicker pushes a periodic StatsFrame to the client. Also
+// piggy-backs a `policy-history` frame so the frontend's "policy
+// history" panel stays current without a separate ticker. We send the
+// last 16 decisions every 200 ms — the frontend dedupes by tick id,
+// so this absorbs gaps and brief disconnects without missing ticks.
 func (s *Session) statsTicker(ctx context.Context) {
 	t := time.NewTicker(200 * time.Millisecond)
 	defer t.Stop()
@@ -311,6 +315,9 @@ func (s *Session) statsTicker(ctx context.Context) {
 			return
 		case <-t.C:
 			s.send("stats", s.orc.Stats())
+			if hist := s.orc.RecentPolicyDecisions("*", 16); len(hist) > 0 {
+				s.send("policy-history", map[string]any{"items": hist})
+			}
 		}
 	}
 }

@@ -424,6 +424,62 @@ func (o *Orchestrator) CurrentPolicy() string {
 	return ""
 }
 
+// RecentPolicyDecisions returns up to `limit` of the most-recent
+// policy engine ticks for the network/method, formatted for the WS
+// wire (compact, no input-metric snapshots — those live in
+// StatsFrame's per-upstream rows on every tick anyway).
+//
+// `method = ""` defaults to the wildcard "*" slot — that's what the
+// simulator's selectionPolicy editor evaluates against.
+func (o *Orchestrator) RecentPolicyDecisions(method string, limit int) []PolicyDecisionFrame {
+	net := o.network.Load()
+	if net == nil {
+		return nil
+	}
+	if method == "" {
+		method = "*"
+	}
+	decisions := net.RecentPolicyDecisions(method, limit)
+	if len(decisions) == 0 {
+		return nil
+	}
+	// Single tick's score map captured once per decision — the engine's
+	// GetScores returns the LATEST only, so for historical ticks we
+	// don't surface scores (they'd be misleading anyway: each tick
+	// produces its own scores and we don't retain them per-decision).
+	out := make([]PolicyDecisionFrame, 0, len(decisions))
+	for _, d := range decisions {
+		if d == nil {
+			continue
+		}
+		frame := PolicyDecisionFrame{
+			DecisionID:     d.ID,
+			TickMs:         d.TickAt.UnixMilli(),
+			EvalDurationUs: d.EvalDuration.Microseconds(),
+			NetworkID:      d.NetworkID,
+			Method:         d.Method,
+			Order:          append([]string(nil), d.Output.Order...),
+			PrimaryChanged: d.Diff.PrimaryChanged,
+			OrderChanged:   d.Diff.OrderChanged,
+			Added:          append([]string(nil), d.Diff.Added...),
+			Removed:        append([]string(nil), d.Diff.Removed...),
+			Error:          d.Error,
+		}
+		if len(d.Output.Excluded) > 0 {
+			frame.Excluded = make([]PolicyDecisionExcludedRow, 0, len(d.Output.Excluded))
+			for _, ex := range d.Output.Excluded {
+				frame.Excluded = append(frame.Excluded, PolicyDecisionExcludedRow{
+					ID:     ex.ID,
+					Step:   ex.Step,
+					Reason: ex.Reason,
+				})
+			}
+		}
+		out = append(out, frame)
+	}
+	return out
+}
+
 // UpdateUpstream patches one upstream's knobs and returns the new
 // snapshot. The patch is visible to the next inbound request via the
 // hub's RLock-on-handle path.

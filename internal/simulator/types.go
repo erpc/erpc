@@ -167,6 +167,56 @@ type TraceAttempt struct {
 	AttemptIdx      int     `json:"attemptIdx,omitempty"`
 }
 
+// PolicyDecisionFrame is the compact WS-wire shape of a single policy
+// engine tick — what the operator's "policy history" panel renders as
+// one row. Sized to fit hundreds of frames in a buffer without
+// breaking the per-frame WS budget; per-upstream input metrics are
+// intentionally OMITTED here (they're large and rarely needed for
+// "what happened?" diagnosis — the tracker view in each stats frame
+// already has the live numbers).
+//
+// IDs:
+//   - DecisionID is the engine's `<network>/<method>/<unix-ms>` slug,
+//     used by the frontend to dedupe ticks across multiple stats frames.
+//   - TickMs is the tick's wall-clock time in unix-ms, sortable.
+//
+// Output:
+//   - Order is the policy's resulting ordered list (primary first).
+//   - Excluded enumerates excluded upstreams + the step/reason that
+//     dropped them, when the engine recorded one.
+//   - Scores carries the per-upstream score the JS produced this tick.
+//
+// Diff:
+//   - PrimaryChanged is the single most useful "did anything happen?"
+//     bit; the UI highlights ticks where this is true.
+//   - Added / Removed are the deltas vs the prior tick's ordered set.
+//
+// Error is the eval-error string (timeout / throw / invalid_return /
+// fallback_default) when the tick failed; empty otherwise.
+type PolicyDecisionFrame struct {
+	DecisionID     string                       `json:"id"`
+	TickMs         int64                        `json:"tickMs"`
+	EvalDurationUs int64                        `json:"evalDurationUs"`
+	NetworkID      string                       `json:"networkId"`
+	Method         string                       `json:"method"`
+	Order          []string                     `json:"order"`
+	Excluded       []PolicyDecisionExcludedRow  `json:"excluded,omitempty"`
+	Scores         map[string]float64           `json:"scores,omitempty"`
+	PrimaryChanged bool                         `json:"primaryChanged,omitempty"`
+	OrderChanged   bool                         `json:"orderChanged,omitempty"`
+	Added          []string                     `json:"added,omitempty"`
+	Removed        []string                     `json:"removed,omitempty"`
+	Error          string                       `json:"error,omitempty"`
+}
+
+// PolicyDecisionExcludedRow mirrors policy.ExcludedUpstream for the
+// wire — kept separate so we can JSON-tag the fields.
+type PolicyDecisionExcludedRow struct {
+	ID     string `json:"id"`
+	Step   string `json:"step,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // StatsFrame is the periodic 100ms aggregate snapshot. The browser uses
 // these to update charts, position pills, score chips, and the live RPS
 // counter. Cheap to produce because it walks counters held in memory.

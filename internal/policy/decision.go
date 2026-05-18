@@ -3,16 +3,18 @@ package policy
 import "time"
 
 // Decision is the per-tick value the slot threads through metrics
-// emission. It is NOT persisted: no ring buffer, no admin endpoint,
-// no operator-visible retention knob. Investigations go through:
+// emission. In production, investigations go through:
 //
 //   - traces (per-request span attributes — `policy.selected_upstream`,
 //     `policy.tick_id`)
 //   - metrics (`policy_selection_*` Prometheus families in telemetry/metrics.go)
 //   - structured logs (slot.go logs eval failures with full context)
 //
-// If a future need genuinely requires per-tick records again, derive
-// them from traces — don't add another in-memory mechanism.
+// Diagnostic tooling (`erpc-simulator`, admin readouts) ALSO reads the
+// slot's bounded ring buffer of recent decisions via
+// `Engine.RecentDecisions(network, method, limit)`. The buffer size
+// is small (a few dozen entries) — production callers should still
+// rely on traces / metrics for anything beyond "last N ticks".
 type Decision struct {
 	ID           string
 	NetworkID    string

@@ -121,6 +121,16 @@
       shape: "poisson",
       patternMix: DEFAULT_PATTERN_MIX.map(p => ({ ...p })),
 
+      // Selection-policy decision history (ring buffer, max 200).
+      // Each item is a PolicyDecisionFrame (see Go types.go). Stored
+      // newest-first so the POLICY HISTORY panel scans top-to-bottom
+      // in time-reversed order. Deduped by `.id`.
+      policyHistoryRing:       [],
+      policyHistoryRingMax:    200,
+      // Set of decision ids seen this session — cheaper than scanning
+      // the ring on every dedupe check.
+      policyHistorySeen:       new Set(),
+
       // Editor state (mirrors what the editor has uncommitted).
       yamlDraft: "",
       policyDraft: "",
@@ -220,6 +230,7 @@
         case "snapshot":               return onSnapshot(b);
         case "stats":                  return onStats(b);
         case "traces":                 return onTraces(b.items || []);
+        case "policy-history":         return onPolicyHistory(b.items || []);
         case "knob-changed":           return onKnobChanged(b);
         case "policy-result":          return mutate({ policyResult: b });
         case "policy-validate-result": return mutate({ policyValidate: b });
@@ -348,6 +359,42 @@
         perSecondHistory: history, opsHistory: ops,
         scenario, scenarioEvents: scnEvents,
       });
+    }
+
+    // onPolicyHistory ingests the WS `policy-history` frame the
+    // backend sends on every stats tick. Items are PolicyDecisionFrames
+    // (see Go types.go). We dedupe by `id` because the backend re-sends
+    // the last N (currently 16) ticks every 200 ms — the steady-state
+    // overlap is large, but this absorbs gaps cleanly when a slow
+    // browser misses a frame. New decisions are prepended (newest-first
+    // ordering for the POLICY HISTORY panel).
+    function onPolicyHistory(items) {
+      if (!items.length) return;
+      const seen = state.policyHistorySeen;
+      // Sort items oldest-first so the prepend loop ends with the
+      // newest item at index 0 of the resulting array.
+      const sorted = items.slice().sort((a, b) => (a.tickMs || 0) - (b.tickMs || 0));
+      let ring = state.policyHistoryRing;
+      let added = 0;
+      for (const it of sorted) {
+        if (!it || !it.id) continue;
+        if (seen.has(it.id)) continue;
+        seen.add(it.id);
+        ring = [it, ...ring];
+        added++;
+      }
+      if (added === 0) return;
+      const cap = state.policyHistoryRingMax;
+      if (ring.length > cap) {
+        // Evict tail (oldest). Also prune from the seen set so memory
+        // doesn't grow unbounded over a long session.
+        const evicted = ring.slice(cap);
+        ring = ring.slice(0, cap);
+        for (const e of evicted) {
+          if (e && e.id) seen.delete(e.id);
+        }
+      }
+      mutate({ policyHistoryRing: ring });
     }
 
     function onTraces(items) {
