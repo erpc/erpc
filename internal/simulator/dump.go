@@ -49,11 +49,16 @@ func NewDumper(path string) (*Dumper, error) {
 		return nil, nil
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("dumper: mkdir %s: %w", dir, err)
 		}
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	// `path` comes from the simulator's `-dump-file` CLI flag chosen by
+	// the developer running the tool. The simulator is a local
+	// dev/diagnostic harness, not a multi-tenant service; there is no
+	// untrusted source for this path. Operators wanting sandboxing can
+	// run the simulator under their normal filesystem isolation.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("dumper: open %s: %w", path, err)
 	}
@@ -283,7 +288,7 @@ func (d *Dumper) SnapshotConfig(yamlSrc, policySrc string, cfg *common.Config) {
 // schema doc stays in sync with the code that produced the dump.
 func writeAgentsMarkdownNearby(dumpPath string) error {
 	mdPath := derivedAgentsPath(dumpPath)
-	return os.WriteFile(mdPath, []byte(agentsMarkdownTemplate(dumpPath)), 0o644)
+	return os.WriteFile(mdPath, []byte(agentsMarkdownTemplate(dumpPath)), 0o600)
 }
 
 func derivedAgentsPath(dumpPath string) string {

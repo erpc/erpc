@@ -381,7 +381,11 @@ func (h *UpstreamHub) respondOne(ctx context.Context, k *UpstreamKnobs, injected
 		errRate = math.Max(errRate, 0.9)
 		timeoutRate = math.Max(timeoutRate, 0.3)
 	}
-	roll := rand.Float64()
+	// math/rand is the correct tool for SIMULATION randomness
+	// (throttle/timeout/error dispatch on synthetic upstreams). The
+	// simulator is a developer harness with no auth/crypto context;
+	// crypto/rand is for security tokens, not statistical sampling.
+	roll := rand.Float64() // #nosec G404
 
 	// Throttle BEFORE sleeping — represents the rate-limiter rejecting
 	// the request at the door (fast 429).
@@ -413,7 +417,7 @@ func (h *UpstreamHub) respondOne(ctx context.Context, k *UpstreamKnobs, injected
 		// visualization shows varied failure modes instead of every
 		// error being identical. The dispatch is rolled per-call so
 		// over time the operator sees a representative blend.
-		errMode := rand.IntN(5)
+		errMode := rand.IntN(5) // #nosec G404 — simulator-only error-mode dispatch
 		switch errMode {
 		case 0: // server error 500
 			return &jsonRPCResponse{JSONRPC: "2.0", ID: req.ID,
@@ -697,9 +701,13 @@ func sampleLatency(k *UpstreamKnobs) time.Duration {
 }
 
 // gaussian returns a Box-Muller standard normal sample.
+//
+// #nosec G404 — math/rand is the correct primitive for statistical
+// sampling (Box-Muller transform). The simulator uses this to vary
+// per-request synthetic latency around a mean; no security context.
 func gaussian() float64 {
-	u := rand.Float64()
-	v := rand.Float64()
+	u := rand.Float64() // #nosec G404
+	v := rand.Float64() // #nosec G404
 	if u < 1e-12 {
 		u = 1e-12
 	}
