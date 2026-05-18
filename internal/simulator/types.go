@@ -8,11 +8,11 @@
 // a real eRPC request — not a model. The traffic generator builds a real
 // `*common.NormalizedRequest`, calls `Network.Forward(ctx, req)`, and
 // after the call returns reads `req.ExecState().UpstreamAttemptLog()`
-// for the per-upstream attempt timeline. The selection-policy lives in
-// the real `internal/policy` engine; the failsafe stack is real; the
-// circuit-breaker / retry / hedge are real. The only synthetic pieces
-// are the upstreams (loopback HTTP servers whose behaviour is driven by
-// the operator's sliders).
+// for the per-upstream attempt timeline. The selection policy lives in
+// the real `internal/policy` engine; the failsafe stack (retry / timeout
+// / hedge) is real. The only synthetic pieces are the upstreams
+// (loopback HTTP servers whose behaviour is driven by the operator's
+// sliders).
 package simulator
 
 import (
@@ -271,11 +271,11 @@ type StatsFrame struct {
 // UpstreamStatsRow is the per-upstream snapshot the UI consumes for the
 // position pill, score chip, error sparkline, and tooltip.
 //
-// EVERY field except Position/SelectionsLast/CBState is read from
-// eRPC's health.Tracker — the same object the selection policy's
-// `keepHealthy` / `sortByScore` consume on every tick. The UI is a
-// pure mirror of policy-visible state; there is no parallel
-// simulator-side bookkeeping for health metrics. This means:
+// Every field except Position/SelectionsLast is read from eRPC's
+// health.Tracker — the same object the selection policy's `excludeIf`
+// chain and `sortByScore` consume on every tick. The UI is a pure
+// mirror of policy-visible state; there is no parallel simulator-side
+// bookkeeping for health metrics. This means:
 //
 //   - error rates can differ from "raw failure count / requests": eRPC
 //     excludes execution exceptions (JSON-RPC -32000 reverts), client
@@ -286,9 +286,9 @@ type StatsFrame struct {
 //   - latency quantiles come from the real exponential-decay quantile
 //     estimator, not the simulator's sample buffer.
 //
-// `PenaltyScore` is computed Go-side using the SAME BALANCED weights
-// the JS stdlib's `sortByScore(BALANCED)` uses, so the score chip in
-// the UI matches what the policy is ranking on.
+// `PenaltyScore` is the value the policy engine's last `sortByScore`
+// step produced for the upstream (read via `Engine.GetScores`), so the
+// score chip in the UI is exactly what the policy is ranking on.
 type UpstreamStatsRow struct {
 	// Health metrics, all from eRPC's health.Tracker:
 	ErrorRate       float64 `json:"errorRate"`       // ErrorsTotal / RequestsTotal (policy-visible)
@@ -307,13 +307,12 @@ type UpstreamStatsRow struct {
 	RequestsTotal   int64   `json:"requestsTotal"` // sample size in the current window — useful for sparse-data signal
 	ErrorsTotal     int64   `json:"errorsTotal"`
 
-	// Composite, computed Go-side from tracker fields using BALANCED weights:
-	PenaltyScore float64 `json:"score"` // lower = better; matches policy's sortByScore(BALANCED)
+	// Score the JS `sortByScore` step produced this tick (lower = better).
+	PenaltyScore float64 `json:"score"`
 
-	// Routing state (from policy engine + per-upstream CB):
-	CBState        string `json:"cbState"`  // "closed"|"half"|"open"
-	Position       int    `json:"position"` // 0-based; -1 if excluded by policy
-	SelectionsLast int    `json:"selectionsLast"`
+	// Routing state from the selection-policy engine:
+	Position       int `json:"position"` // 0-based; -1 if excluded by policy
+	SelectionsLast int `json:"selectionsLast"`
 }
 
 // ScenarioFrame is the in-flight scenario broadcast on every StatsFrame.

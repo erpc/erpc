@@ -1033,21 +1033,30 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 	engine.SetStepLogEnabled(true)
 	defer engine.Stop()
 
-	ups := mkUpsWithTier(map[string]string{
-		"rpc1": "main",
-		"rpc2": "main",
-		"rpc3": "fallback",
+	// Use the slice-preserving constructor so `rpc1` is at a known
+	// index — `mkUpsWithTier` iterates a map, which Go intentionally
+	// randomizes per-run; the test would intermittently seed the wrong
+	// upstream otherwise.
+	ups := mkUpsWithTags([]struct {
+		id     string
+		vendor string
+		tags   []string
+	}{
+		{id: "rpc1", tags: []string{"tier:main"}},
+		{id: "rpc2", tags: []string{"tier:main"}},
+		{id: "rpc3", tags: []string{"tier:fallback"}},
 	})
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// rpc1 is broken so the excludeIf step trips on it.
+	rpc1 := ups[0]
 	for i := 0; i < 90; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(rpc1, "*")
+		tracker.RecordUpstreamFailure(rpc1, "*", fmt.Errorf("synth"))
 	}
 	for i := 0; i < 10; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		tracker.RecordUpstreamRequest(rpc1, "*")
+		tracker.RecordUpstreamDuration(rpc1, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:1", "*")
 

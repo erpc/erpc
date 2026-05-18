@@ -25,7 +25,7 @@ function SelectionPolicy() {
   const actions       = window.useSimActions();
   const perSec        = window.usePerSecond();
   const upstreams     = window.useUpstreams();
-  const cbState       = window.useCBState();
+  const upstreamStats = window.useUpstreamStats();
 
   const [hint, setHint] = useState(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -361,7 +361,14 @@ function SelectionPolicy() {
             <div className="sp-side-lbl">Live impact</div>
             <div className="sp-live-stat"><span className="sp-meta-k">routed last 1s</span><span className="sp-meta-v">{Math.round(perSec.total)} req</span></div>
             <div className="sp-live-stat"><span className="sp-meta-k">success rate</span><span className="sp-meta-v">{perSec.total > 0 ? ((perSec.succ / perSec.total) * 100).toFixed(1) : "—"}%</span></div>
-            <div className="sp-live-stat"><span className="sp-meta-k">eligible upstreams</span><span className="sp-meta-v">{upstreams.filter(u => u.available !== false && cbState[u.id]?.state !== "open").length} / {upstreams.length}</span></div>
+            <div className="sp-live-stat"><span className="sp-meta-k">eligible upstreams</span><span className="sp-meta-v">{upstreams.filter(u => {
+              // Eligibility comes straight from the policy's verdict —
+              // position >= 0 means the upstream is in the current
+              // ordered list; -1 means an excludeIf rule (or a tier
+              // filter) dropped it this tick.
+              const row = upstreamStats[u.id] || {};
+              return (row.position == null || row.position >= 0) && u.available !== false;
+            }).length} / {upstreams.length}</span></div>
           </div>
         </aside>
       </div>

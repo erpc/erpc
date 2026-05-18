@@ -139,15 +139,6 @@
 .flow-up-row.pos-1 { border-left-color: oklch(0.70 0.10 145); }
 .flow-up-row.pos-2 { border-left-color: var(--warn); }
 .flow-up-row.pos-x { border-left-color: var(--dim); opacity: 0.55; }
-.flow-up-row.cb-open {
-  border-color: var(--bad); background: color-mix(in oklab, var(--bad-d) 40%, transparent);
-  animation: cb-deflect 1.2s ease-in-out infinite;
-}
-.flow-up-row.cb-half { border-color: var(--warn); background: color-mix(in oklab, var(--warn-d) 25%, transparent); }
-@keyframes cb-deflect {
-  0%, 100% { box-shadow: 0 0 0 0 transparent; }
-  50% { box-shadow: 0 0 0 2px color-mix(in oklab, var(--bad) 25%, transparent); }
-}
 .flow-up-row .nm { font-family: var(--font-mono); font-size: 10.5px; color: var(--tx-0); font-weight: 500; white-space: nowrap; }
 .flow-up-row .vendor { font-size: 9px; color: var(--tx-3); letter-spacing: 0.04em; text-transform: uppercase; }
 .flow-up-row .meter { width: 44px; height: 4px; background: var(--bg-1); border-radius: 2px; position: relative; overflow: hidden; }

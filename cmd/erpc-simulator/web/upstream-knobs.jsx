@@ -6,7 +6,6 @@ function UpstreamKnobs() {
   const upstreams = window.useUpstreams();
   const upstreamStats = window.useUpstreamStats();
   const sparkErr = window.useSparkErr();
-  const cbState = window.useCBState();
   const focused = window.useFocusedUpstream();
   const actions = window.useSimActions();
 
@@ -20,7 +19,7 @@ function UpstreamKnobs() {
       return {
         pos: "out",
         cls: "pos-x",
-        tip: "Excluded by the selection policy — this upstream is NOT in the request rotation, retry chain, or hedge fan-out for the current network/method. It re-enters only when the policy's filters admit it again (e.g. error rate drops, CB closes, or .probeExcluded() re-admits it).",
+        tip: "Excluded by the selection policy — this upstream is NOT in the request rotation, retry chain, or hedge fan-out for the current network/method. It re-enters when an excludeIf rule no longer trips (error rate drops, lag recovers, etc.) or readmitExcluded re-admits it after its cooldown.",
       };
     }
     return { pos: String(s.lastPosition), cls: `pos-${Math.min(2, s.lastPosition)}`, tip: "" };

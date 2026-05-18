@@ -24,9 +24,15 @@ func init() {
 // SeedYAML is the simulator's default eRPC config. It mirrors a realistic
 // eth-mainnet deployment: one project, one network, eight upstreams across
 // six "vendors" plus a fallback. The YAML editor in the UI starts with
-// this exact text, and every behavioural lever — multiplexing, failsafe,
-// selection policy, retry/hedge/circuit-breaker, allow/ignore methods —
+// this exact text, and every behavioural lever — multiplexing, failsafe
+// (retry / timeout / hedge), selection policy, allow/ignore methods —
 // is just a YAML field the operator edits live.
+//
+// Health-based routing is the selection policy's job. Its excludeIf
+// chain drops upstreams whose tracker metrics cross thresholds
+// (errorRateAbove / throttleRateAbove / latencyP95Above /
+// blockNumberLagAbove), and readmitExcluded brings them back after
+// a cooldown.
 //
 // Endpoint URLs are placeholders. The simulator rewrites every upstream's
 // endpoint to its synthetic loopback (`http://<hub>/sim/<id>`) at boot,
@@ -51,9 +57,9 @@ projects:
         # requests so one upstream call serves many clients. Toggle false
         # to see every generated request hit an upstream individually.
         multiplexing: true
-        # Network-level failsafe is where retry / timeout / hedge live.
-        # Circuit-breaker is per-upstream (see the failsafe block on
-        # each upstream below) since it tracks per-upstream health.
+        # Failsafe — retry, timeout, hedge. Health-based exclusion is
+        # the selection policy's job (excludeIf chain); failsafe stays
+        # focused on per-request retry/timeout/hedge semantics.
         failsafe:
           # IMPORTANT: failsafe rules match TOP-DOWN — the first rule
           # whose matchMethod accepts the request wins, so specific
@@ -78,7 +84,6 @@ projects:
           #   timeout:
           #     duration: 30s
           # Network-level catch-all: retry, timeout, hedge.
-          # CB is per-upstream (see failsafe blocks below).
           - matchMethod: "*"
             retry:
               maxAttempts: 3
@@ -102,68 +107,51 @@ projects:
           evalInterval: 1s
           evalFunc: "{SELECTION_POLICY_FUNC}"
     upstreams:
+      # Upstream-level fields stay identity-only: id, endpoint,
+      # vendorName, tags, evm. The selection policy reads each upstream's
+      # tracker metrics to decide ordering and exclusion — keeping a
+      # single health layer at the policy keeps the diagnostic story
+      # clear.
       - id: alc-eth-1
         endpoint: alchemy://placeholder
         vendorName: alchemy
         tags: [eth, us-east]
         evm: { chainId: 1 }
-        failsafe:
-          - matchMethod: "*"
-            circuitBreaker:
-              failureThresholdCount: 7
-              failureThresholdCapacity: 10
-              halfOpenAfter: 30s
-              successThresholdCount: 4
-              successThresholdCapacity: 5
       - id: alc-eth-2
         endpoint: alchemy://placeholder
         vendorName: alchemy
         tags: [eth, us-west]
         evm: { chainId: 1 }
-        failsafe: &cb
-          - matchMethod: "*"
-            circuitBreaker:
-              failureThresholdCount: 7
-              failureThresholdCapacity: 10
-              halfOpenAfter: 30s
-              successThresholdCount: 4
-              successThresholdCapacity: 5
       - id: drpc-eth-1
         endpoint: drpc://placeholder
         vendorName: drpc
         tags: [eth]
         evm: { chainId: 1 }
-        failsafe: *cb
       - id: quik-eth-1
         endpoint: https://placeholder/quiknode/eth
         vendorName: quicknode
         tags: [eth, premium]
         evm: { chainId: 1 }
-        failsafe: *cb
       - id: chainstack-eth-1
         endpoint: chainstack://placeholder
         vendorName: chainstack
         tags: [eth]
         evm: { chainId: 1 }
-        failsafe: *cb
       - id: conduit-eth-1
         endpoint: conduit://placeholder
         vendorName: conduit
         tags: [eth, dedicated]
         evm: { chainId: 1 }
-        failsafe: *cb
       - id: self-eth-1
         endpoint: http://internal.placeholder/eth
         vendorName: self-hosted
         tags: [eth, lhr]
         evm: { chainId: 1 }
-        failsafe: *cb
       - id: public-eth-1
         endpoint: http://placeholder/public/eth
         vendorName: public
         tags: [eth, tier:fallback]
         evm: { chainId: 1 }
-        failsafe: *cb
 `
 
 // DecodeConfigYAML parses + legacy-migrates a YAML document into a

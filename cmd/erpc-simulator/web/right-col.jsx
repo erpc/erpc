@@ -146,7 +146,7 @@ function TrafficGen() {
             <option value="vendor-region-outage">vendor-region-outage</option>
             <option value="traffic-spike">traffic-spike</option>
             <option value="hedge-saturator">hedge-saturator</option>
-            <option value="circuit-breaker-trip">circuit-breaker-trip</option>
+            <option value="policy-exclude-cascade">policy-exclude-cascade</option>
             <option value="slow-network">slow-network</option>
           </select>
           {scenario ? (
@@ -292,7 +292,7 @@ function Toolbar({ filter, setFilter }) {
 // way:
 //
 //   * Winning attempts: just "won".
-//   * Non-error outcomes (miss / throttled / cb-open / ...): the
+//   * Non-error outcomes (miss / throttled / ...): the
 //     outcome itself, plain text.
 //   * Errors: a code chip ("ErrUpstreamRequest"), a one-line short
 //     message, and a "+" button that toggles a popup showing the
@@ -781,7 +781,7 @@ function EventDrawer({ req, onClose }) {
                 //   green   = winner of any flavor
                 //   amber   = miss / no data / throttled (bad event,
                 //             not an error)
-                //   red     = upstream error (timeout, fail, cb-open)
+                //   red     = upstream error (timeout, fail)
                 //   blue    = harmless / parallel attempt that lost
                 //             its race (hedge-loser, cancelled)
                 //
@@ -807,8 +807,7 @@ function EventDrawer({ req, onClose }) {
                   cls = "miss";
                 } else if (a.outcome === "hedge-loser") {
                   cls = "neutral hedge-loser";
-                } else if (a.outcome === "cb-open" ||
-                           a.outcome === "timeout" ||
+                } else if (a.outcome === "timeout" ||
                            a.outcome === "fail") {
                   cls = "bad";
                 } else {

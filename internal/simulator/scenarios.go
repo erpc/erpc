@@ -68,7 +68,7 @@ var scenarioDefs = map[string]struct {
 			{30, "chainstack-eth-1 latency × 4", patchOne("chainstack-eth-1", patchLatencyMul(4))},
 		},
 	},
-	"circuit-breaker-trip": {
+	"policy-exclude-cascade": {
 		duration: 50,
 		steps: []scenarioStep{
 			{0, "public-eth-1 errorRate → 0.95", patchOne("public-eth-1", patchError(0.95))},

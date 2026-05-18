@@ -92,7 +92,6 @@ function useSimActions() {
 // re-render footprint visible at a glance.
 function useUpstreams()        { return useSimState(s => s.upstreams); }
 function useUpstreamStats()    { return useSimState(s => s.upstreamStats); }
-function useCBState()          { return useSimState(s => s.cbState); }
 function useScore()            { return useSimState(s => s.score); }
 function usePerSecond()        { return useSimState(s => s.perSecond); }
 function usePerSecondHistory() { return useSimState(s => s.perSecondHistory); }
@@ -132,7 +131,6 @@ window.useSimState = useSimState;
 window.useSimActions = useSimActions;
 window.useUpstreams = useUpstreams;
 window.useUpstreamStats = useUpstreamStats;
-window.useCBState = useCBState;
 window.useScore = useScore;
 window.usePerSecond = usePerSecond;
 window.usePerSecondHistory = usePerSecondHistory;

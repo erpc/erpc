@@ -83,7 +83,7 @@
     "vendor-region-outage": { name: "vendor-region-outage", duration: 60 },
     "traffic-spike":        { name: "traffic-spike", duration: 60 },
     "hedge-saturator":      { name: "hedge-saturator", duration: 60 },
-    "circuit-breaker-trip": { name: "circuit-breaker-trip", duration: 50 },
+    "policy-exclude-cascade": { name: "policy-exclude-cascade", duration: 50 },
     "slow-network":         { name: "slow-network", duration: 60 },
   };
 
@@ -97,7 +97,6 @@
       serverPolicy: "",
       defaultPolicy: "",
       paused: false,
-      cbState: {},
       score: {},
       perSecond: { sel: {}, succ: 0, err: 0, total: 0, cacheHit: 0, retryOk: 0, hedge: 0, miss: 0 },
       // 60s ring of {ts, total, retry, hedge, miss, err} for the
@@ -265,12 +264,10 @@
 
     function onSnapshot(b) {
       const upstreams = (b.upstreams || []).map(u => ({ ...u, chainId: 1 }));
-      const cbState = {};
       const score = {};
       const upstreamStats = {};
       const sparkErr = {};
       for (const u of upstreams) {
-        cbState[u.id] = { state: "closed" };
         score[u.id] = 0.5;
         upstreamStats[u.id] = { sel: 0, succ: 0, err: 0, latencies: [] };
         sparkErr[u.id] = new Array(60).fill(0);
@@ -284,7 +281,6 @@
       const templatedDefault = b.defaultYaml ? templatizeYaml(b.defaultYaml) : state.defaultYaml;
       const newPatch = {
         upstreams,
-        cbState,
         score,
         upstreamStats,
         sparkErr,
@@ -339,14 +335,12 @@
         hedge: frame.lastSecondHedge || 0,
         miss: frame.lastSecondMiss || 0,
       };
-      const cb = { ...state.cbState };
       const sc = { ...state.score };
       const us = { ...state.upstreamStats };
       const sp = { ...state.sparkErr };
       if (frame.upstreams) {
         for (const id in frame.upstreams) {
           const row = frame.upstreams[id];
-          cb[id] = { state: row.cbState || "closed" };
           sc[id] = row.score || 0;
           // Merge the FULL UpstreamStatsRow (all tracker fields) into
           // upstreamStats so the tooltip + UI can read every field the
@@ -354,10 +348,9 @@
           //   errorRate, throttleRate, misbehaviorRate, p50/p90/p95,
           //   blockHeadLag, finalizationLag, cordoned, cordonedReason,
           //   requestsTotal, errorsTotal, score (BALANCED), position,
-          //   selectionsLast, cbState.
-          // Keep the `last*`-prefixed aliases so any older callers
-          // don't break, but new code should consume the tracker
-          // fields directly.
+          //   selectionsLast.
+          // `last*`-prefixed aliases mirror the canonical fields for
+          // any tooltip/chart components that read those keys.
           us[id] = {
             ...(us[id] || {}),
             ...row,
@@ -400,7 +393,7 @@
       }
       mutate({
         perSecond: perSec, actualRps: frame.actualRps || 0,
-        cbState: cb, score: sc, upstreamStats: us, sparkErr: sp,
+        score: sc, upstreamStats: us, sparkErr: sp,
         perSecondHistory: history, opsHistory: ops,
         scenario, scenarioEvents: scnEvents,
       });
@@ -550,7 +543,6 @@
     //   block_unavailable → "miss"
     //   timeout       → "timeout"
     //   rate_limited  → "throttled" (429 at upstream)
-    //   breaker_open  → "cb-open"   (eRPC's circuit-breaker didn't even try)
     //   skipped       → "hedge-loser"
     //   cancelled     → "hedge-loser" (hedge cancelled when another won)
     //   transport_error / server_error / client_error / exec_revert
@@ -568,8 +560,6 @@
           return "timeout";
         case "rate_limited":
           return "throttled";
-        case "breaker_open":
-          return "cb-open";
         case "skipped":
         case "cancelled":
           return "hedge-loser";

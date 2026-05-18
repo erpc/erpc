@@ -114,7 +114,6 @@ type upstreamRollingStats struct {
 	lats []float64 // last ~300 samples
 	succ int
 	fail int
-	cb   string
 }
 
 // Options configures the orchestrator at boot.
@@ -327,7 +326,7 @@ func (o *Orchestrator) syncUpstreamKnobs(idents []UpstreamIdentity) {
 		k.Endpoint = EndpointFor(o.hub.Addr(), id.ID)
 		o.hub.AddUpstream(k)
 		o.statsMu.Lock()
-		o.upstreamStats[id.ID] = &upstreamRollingStats{cb: "closed"}
+		o.upstreamStats[id.ID] = &upstreamRollingStats{}
 		o.statsMu.Unlock()
 	}
 	// Drop orphans.
@@ -758,7 +757,7 @@ func (o *Orchestrator) recordCounters(req *common.NormalizedRequest, err error) 
 	for _, a := range req.ExecState().UpstreamAttemptLog() {
 		urs, ok := o.upstreamStats[a.UpstreamId]
 		if !ok {
-			urs = &upstreamRollingStats{cb: "closed"}
+			urs = &upstreamRollingStats{}
 			o.upstreamStats[a.UpstreamId] = urs
 		}
 		o.curBucket.perUpstream[a.UpstreamId]++
@@ -771,9 +770,6 @@ func (o *Orchestrator) recordCounters(req *common.NormalizedRequest, err error) 
 			urs.succ++
 		} else if a.Outcome != common.UpstreamOutcomeSkipped {
 			urs.fail++
-		}
-		if a.Outcome == common.UpstreamOutcomeBreakerOpen {
-			urs.cb = "open"
 		}
 		urs.mu.Unlock()
 	}
@@ -837,8 +833,9 @@ func copyIntMap(m map[string]int) map[string]int {
 // Position semantics:
 //   * 0     = primary
 //   * 1..N  = fallback order
-//   * -1    = upstream is in the config but the policy excluded it
-//             (CB-open, unavailable, failing keepHealthy, etc.)
+//   * -1    = upstream is in the config but the selection policy
+//             excluded it this tick (failed an excludeIf rule, or it
+//             carries a tag the chain steered away from).
 //
 // Position changes only when the policy re-evaluates (every
 // `evalInterval`, default 1s). The ordering stays stable when the
@@ -851,8 +848,8 @@ func copyIntMap(m map[string]int) map[string]int {
 // incremented alongside per-method counters (see tracker.getUpsKeys),
 // so it reflects the upstream's overall observed quality.
 //
-// PenaltyScore replicates the JS stdlib's sortByScore(BALANCED) formula
-// in Go so the UI's score chip matches what the policy is ranking on.
+// PenaltyScore comes straight from Engine.GetScores — the JS
+// `sortByScore` step is the single source of truth for ranking.
 func (o *Orchestrator) snapshotUpstreamRows(last bucketTotals) map[string]UpstreamStatsRow {
 	rows := make(map[string]UpstreamStatsRow)
 
@@ -920,27 +917,11 @@ func (o *Orchestrator) snapshotUpstreamRows(last bucketTotals) map[string]Upstre
 			}
 		}
 
-		// CB state stays simulator-tracked because the executor's CB
-		// outcome arrives via the per-attempt log, not the health
-		// tracker. (CB state is recorded in upstreamStats from the
-		// attempt loop in `recordAttempt`.)
-		o.statsMu.Lock()
-		if urs, ok := o.upstreamStats[k.ID]; ok {
-			urs.mu.Lock()
-			row.CBState = urs.cb
-			urs.mu.Unlock()
-		}
-		o.statsMu.Unlock()
-		if row.CBState == "" {
-			row.CBState = "closed"
-		}
-
-		// Score is the EXACT value the policy engine's last `sortByScore`
-		// step produced for this upstream (pulled from the slot via
-		// Engine.GetScores). Never compute the BALANCED formula
-		// client-side — drift risk and per-upstream-only the JS knows
-		// about (e.g. probe-included entries have no score, sticky
-		// reorderings preserve scores). Defaults to 0 when the policy
+		// Score is the value the policy engine's last `sortByScore`
+		// step produced for this upstream, pulled from the slot via
+		// Engine.GetScores. The JS is the single source of truth for
+		// ranking — probe-included entries have no score, sticky
+		// reorderings preserve scores. Defaults to 0 when the policy
 		// has no scoring step.
 		if s, ok := scores[k.ID]; ok {
 			row.PenaltyScore = s

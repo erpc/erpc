@@ -417,7 +417,7 @@ const agentsMarkdownBody = "# erpc-simulator dump · investigation guide\n" +
 	"\n" +
 	"- `request.event.attempts[]` contains the *real* eRPC executor's\n" +
 	"  per-attempt log (UpstreamAttemptLog) — `outcome` distinguishes\n" +
-	"  `ok` / `miss` / `throttled` / `timeout` / `cb-open` / `fail` /\n" +
+	"  `ok` / `miss` / `throttled` / `timeout` / `fail` /\n" +
 	"  `hedge-loser`. `selReason` says WHY the attempt fired:\n" +
 	"  `primary` / `retry` / `hedge` / `consensus_slot` / `sweep`.\n" +
 	"- Selection-policy verdicts live in `request.event.sel[]` — entries\n" +

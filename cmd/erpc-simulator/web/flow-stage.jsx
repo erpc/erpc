@@ -10,7 +10,6 @@ function FlowStage() {
   // same shape the previous component consumed so the canvas/render
   // logic below stays untouched.
   const upstreams = window.useUpstreams();
-  const cbState = window.useCBState();
   const perSec = window.usePerSecond();
   const upstreamStats = window.useUpstreamStats();
   const scenario = window.useScenario();
@@ -21,18 +20,17 @@ function FlowStage() {
   const focused = window.useFocusedUpstream();
   const actions = window.useSimActions();
   const state = {
-    upstreams, cbState, score, perSecondHistory, scenario,
+    upstreams, score, perSecondHistory, scenario,
     perSecond: perSec,
     stats: { upstream: upstreamStats },
     shape,
     patternCount: patternMix.length,
-    // The eRPC core badge used to read these from the in-browser sim.
-    // Now the YAML editor is the source of truth; show static-ish
-    // values that match the seed YAML defaults.
+    // YAML editor is the source of truth for failsafe params; show
+    // the seed-YAML defaults here so the eRPC core badge has values
+    // to render even before the first snapshot lands.
     failsafe: {
       retry: { maxAttempts: 3 },
       hedge: { delay: 350 },
-      circuitBreaker: { failureThresholdCount: 7, failureThresholdCapacity: 10 },
     },
   };
   const wrapRef = useRef(null);
@@ -165,10 +163,6 @@ function FlowStage() {
         // 429 at upstream. Real signal but not an error — operator
         // sees yellow tinge instead of red.
         color = colors.warn; dim = true;
-      } else if (a.outcome === "cb-open") {
-        // eRPC's circuit-breaker gate refused the call. Show subtle
-        // red so it's still distinguishable from a transient miss.
-        color = colors.bad; dim = true;
       } else if (isHardFail) {
         // Genuine fail that got rescued by retry — keep visible but
         // non-dominant so the winner is the obvious story.
@@ -448,7 +442,6 @@ function FlowStage() {
               <span><span className="k">policy</span> <span className="v">scored</span></span>
               <span><span className="k">retry</span> <span className="v">×{state.failsafe.retry.maxAttempts}</span></span>
               <span><span className="k">hedge</span> <span className="v">{state.failsafe.hedge.delay}ms</span></span>
-              <span><span className="k">cb</span> <span className="v">{state.failsafe.circuitBreaker.failureThresholdCount}/{state.failsafe.circuitBreaker.failureThresholdCapacity}</span></span>
             </div>
           </div>
         </div>
@@ -456,8 +449,6 @@ function FlowStage() {
         <div className="fl-ups-row">
           {state.upstreams.map(u => {
             const { pos, cls, tip } = posOf(u.id);
-            const cb = state.cbState[u.id];
-            const cbCls = cb?.state === "open" ? "cb-open" : cb?.state === "half" ? "cb-half" : "";
             const sel = last.perUpstream?.[u.id] || 0;
             // Share of TOTAL last-second attempts (not share-of-leader).
             // A node with 0 activity → 0% bar; a node handling all
@@ -480,7 +471,7 @@ function FlowStage() {
             return (
               <div
                 key={u.id}
-                className={`fl-node ${cls} ${cbCls} ${isFocused ? "focused" : ""} ${isDimmed ? "dimmed" : ""}`}
+                className={`fl-node ${cls} ${isFocused ? "focused" : ""} ${isDimmed ? "dimmed" : ""}`}
                 ref={el => { upRefs.current[u.id] = el; }}
                 onMouseEnter={e => onNodeEnter(e, u)}
                 onMouseLeave={onNodeLeave}
@@ -488,8 +479,6 @@ function FlowStage() {
                 title={isFocused ? `Click to clear focus (or press ESC)` : `Click to focus on ${u.id}`}
               >
                 <span className="pos-pill" title={tip}>{pos}</span>
-                {cb?.state === "open" && <span className="cb-pill">CB</span>}
-                {cb?.state === "half" && <span className="cb-pill half">HALF</span>}
                 <div className="nm">{u.id}</div>
                 <div className="vendor">{u.vendor}</div>
                 <div
@@ -520,7 +509,6 @@ function FlowStage() {
         const u = (state.upstreams || []).find(x => x.id === tip.id);
         if (!u) return null;
         const row = (state.stats.upstream && state.stats.upstream[tip.id]) || {};
-        const cb = (state.cbState && state.cbState[tip.id]?.state) || row.cbState || "closed";
         const last = state.perSecondHistory[state.perSecondHistory.length - 1] || { perUpstream: {} };
         const sel = last.perUpstream?.[tip.id] || 0;
         const pos = (row.position ?? -1);
@@ -593,7 +581,6 @@ function FlowStage() {
                 <span className="k">requests total</span><span className="v">{fmtNum(row.requestsTotal)}</span>
                 <span className="k">errors total</span><span className="v">{fmtNum(row.errorsTotal)}</span>
                 <span className="k">selections / 1s</span><span className="v">{sel}</span>
-                <span className="k">circuit breaker</span><span className="v">{cb}</span>
               </div>
             </div>
           </div>
