@@ -1006,3 +1006,102 @@ func TestStdlib_LatestDecision_OrderAndExclusions(t *testing.T) {
 	require.Len(t, excluded, 1, "rpc3 (tier:fallback) is excluded")
 	require.Equal(t, "rpc3", excluded[0])
 }
+
+// TestStdlib_StepLog_CapturesChainTrail verifies that when
+// `Engine.SetStepLogEnabled(true)` is on, each Decision carries the
+// full per-step trail the JS chain produced — one entry per
+// chainable stdlib method invoked, in chain order, with input/output
+// diffs and arg summary. This is the data the simulator's
+// policy-history detail view renders and the source DEBUG eRPC logs
+// expose for incident triage.
+func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams
+		.byTag('tier:main')
+		.excludeIf(errorRateAbove(0.5), { reason: 'errs>50%' })
+		.sortByScore(BALANCED)`
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{
+		EvalInterval: 0,
+		EvalTimeout:  common.Duration(50 * time.Millisecond),
+		EvalFunc:     eval,
+	}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine.SetStepLogEnabled(true)
+	defer engine.Stop()
+
+	ups := mkUpsWithTier(map[string]string{
+		"rpc1": "main",
+		"rpc2": "main",
+		"rpc3": "fallback",
+	})
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// rpc1 is broken so the excludeIf step trips on it.
+	for i := 0; i < 90; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+	}
+	for i := 0; i < 10; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	policy.TickForTest(engine, "evm:1", "*")
+
+	decisions := engine.RecentDecisions("evm:1", "*", 5)
+	require.NotEmpty(t, decisions)
+	d := decisions[len(decisions)-1]
+	require.NotEmpty(t, d.Output.StepLog, "step log should populate when SetStepLogEnabled(true)")
+
+	// We should see at minimum the three steps in the chain. The exact
+	// names match the JS-side `define(...)` registrations.
+	stepNames := make([]string, 0, len(d.Output.StepLog))
+	for _, s := range d.Output.StepLog {
+		stepNames = append(stepNames, s.Step)
+	}
+	require.Contains(t, stepNames, "byTag")
+	require.Contains(t, stepNames, "excludeIf")
+	require.Contains(t, stepNames, "sortByScore")
+
+	// excludeIf should have dropped rpc1 (90% error rate). The step
+	// entry's `dropped` list captures the diff.
+	var excludeStep *policy.StepEntry
+	for i := range d.Output.StepLog {
+		if d.Output.StepLog[i].Step == "excludeIf" {
+			excludeStep = &d.Output.StepLog[i]
+		}
+	}
+	require.NotNil(t, excludeStep, "excludeIf step should be in the trail")
+	require.Contains(t, excludeStep.Dropped, "rpc1", "excludeIf should have dropped rpc1")
+
+	// Per-upstream annotations: rpc1 should carry the reason string the
+	// excludeIf rule attached when it dropped it.
+	require.NotEmpty(t, d.Output.Annotations["rpc1"], "rpc1 should have annotations from excludeIf")
+	require.Contains(t, d.Output.Annotations["rpc1"], "errs>50%")
+}
+
+// TestStdlib_StepLog_DisabledByDefault verifies that without
+// `SetStepLogEnabled(true)`, the trail + annotations are empty — the
+// production-default fast path that keeps eval overhead at "one
+// extra function-call indirection per stdlib step".
+func TestStdlib_StepLog_DisabledByDefault(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.byTag('tier:main')`
+	engine, _, _, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main"})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	policy.TickForTest(engine, "evm:1", "*")
+	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	require.NotEmpty(t, decisions)
+	d := decisions[len(decisions)-1]
+	require.Empty(t, d.Output.StepLog, "step log must stay empty by default")
+	require.Empty(t, d.Output.Annotations, "annotations must stay empty by default")
+}

@@ -44,6 +44,15 @@ type Engine struct {
 	// itself drops requests when paused, so this is belt-and-braces).
 	paused atomic.Bool
 
+	// stepLogEnabled gates the JS-side per-step trail (one entry per
+	// chainable stdlib step invoked, plus per-upstream annotations).
+	// When false (production default), the JS wrapper around `define`
+	// fast-paths and pushes nothing — zero overhead beyond the call
+	// indirection. When true, the slot's Decision carries `StepLog` +
+	// `Annotations` and the simulator / DEBUG eRPC logs surface them.
+	// Toggled via `SetStepLogEnabled`.
+	stepLogEnabled atomic.Bool
+
 	appCtx context.Context
 	cancel context.CancelFunc
 }
@@ -274,6 +283,26 @@ func (e *Engine) SetPaused(p bool) {
 // IsPaused reports whether the per-slot ticker is currently gated.
 func (e *Engine) IsPaused() bool {
 	return e.paused.Load()
+}
+
+// SetStepLogEnabled toggles per-tick step-log + annotation capture.
+// While enabled, each Decision the engine produces carries:
+//   - StepLog: chronological trail of stdlib steps invoked
+//   - Annotations: per-upstream `annotate(u, note)` strings
+//
+// This is the input the simulator's "policy history" detail view
+// consumes and the source DEBUG-level eRPC logs use for per-step
+// breakdowns. Off by default to keep production-path overhead at
+// "one extra function call indirection per stdlib step". Callers that
+// flip this on should mirror their toggle to the engine's log level
+// (debug → on, info+ → off) so log volume stays sane.
+func (e *Engine) SetStepLogEnabled(enabled bool) {
+	e.stepLogEnabled.Store(enabled)
+}
+
+// IsStepLogEnabled reports whether per-step trail capture is active.
+func (e *Engine) IsStepLogEnabled() bool {
+	return e.stepLogEnabled.Load()
 }
 
 // Stop cancels every slot's ticker and releases pooled runtimes.

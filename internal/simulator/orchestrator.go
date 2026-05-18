@@ -281,6 +281,11 @@ func (o *Orchestrator) bootFromYAML(ctx context.Context, yamlSrc string) error {
 	}
 	o.erpc.Store(e)
 	o.network.Store(net)
+	// The simulator always wants the per-step trail + per-upstream
+	// annotations on every tick — the policy-history drawer renders
+	// them as the primary diagnostic surface. Production callers leave
+	// this off; cost is one function-call indirection per stdlib step.
+	net.SetPolicyStepLogEnabled(true)
 	// Re-apply the current pause state to the freshly-booted policy
 	// engine. ApplyConfig / ApplyPolicy can land mid-pause and the new
 	// engine starts running by default; without this its ticker would
@@ -493,6 +498,29 @@ func (o *Orchestrator) RecentPolicyDecisions(method string, limit int) []PolicyD
 					Step:   ex.Step,
 					Reason: ex.Reason,
 				})
+			}
+		}
+		// Step trail + per-upstream annotations land on the wire only when
+		// the engine's step-log toggle is enabled — the simulator's
+		// orchestrator flips it on at boot so every decision has them.
+		if len(d.Output.StepLog) > 0 {
+			frame.Steps = make([]PolicyDecisionStep, 0, len(d.Output.StepLog))
+			for _, step := range d.Output.StepLog {
+				frame.Steps = append(frame.Steps, PolicyDecisionStep{
+					Step:      step.Step,
+					Args:      step.Args,
+					InIDs:     append([]string(nil), step.InIDs...),
+					OutIDs:    append([]string(nil), step.OutIDs...),
+					Dropped:   append([]string(nil), step.Dropped...),
+					Added:     append([]string(nil), step.Added...),
+					Reordered: step.Reordered,
+				})
+			}
+		}
+		if len(d.Output.Annotations) > 0 {
+			frame.Annotations = make(map[string][]string, len(d.Output.Annotations))
+			for id, notes := range d.Output.Annotations {
+				frame.Annotations[id] = append([]string(nil), notes...)
 			}
 		}
 		out = append(out, frame)

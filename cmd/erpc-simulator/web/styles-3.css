@@ -998,3 +998,81 @@
   color: var(--bad); font-family: var(--font-mono); font-size: 10.5px;
   white-space: pre-wrap; word-break: break-word;
 }
+
+/* ─── Per-step trail (policy-history detail) ─────────────────────────── */
+
+.ph-section-sub {
+  font-family: var(--font-mono); font-weight: 400; font-size: 9.5px;
+  color: var(--tx-3); margin-left: 8px; text-transform: none; letter-spacing: 0;
+}
+
+.ph-annots { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 8px; }
+.ph-annot {
+  font-family: var(--font-mono); font-size: 9.5px;
+  padding: 1px 6px; border-radius: var(--r-sm);
+  background: color-mix(in oklab, var(--acc-blue-d) 20%, var(--bg-2));
+  color: var(--acc-blue);
+  border: 1px solid color-mix(in oklab, var(--acc-blue) 25%, transparent);
+}
+
+.ph-steps { display: flex; flex-direction: column; gap: 3px; }
+.ph-step-row {
+  border: 1px solid var(--bd-1); border-radius: var(--r-sm);
+  background: var(--bg-2); cursor: pointer; user-select: none;
+}
+.ph-step-row.open { background: color-mix(in oklab, var(--bg-3) 60%, var(--bg-2)); }
+.ph-step-row.noop { opacity: 0.55; }
+.ph-step-row:hover { border-color: var(--bd-2); }
+.ph-step-hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 10px;
+  font-family: var(--font-mono); font-size: 10.5px;
+}
+.ph-step-idx {
+  color: var(--tx-3); font-weight: 600; min-width: 18px; text-align: right;
+}
+.ph-step-name { color: var(--tx-0); font-weight: 600; }
+.ph-step-args { color: var(--tx-2); }
+.ph-step-counts { color: var(--tx-2); font-size: 10px; }
+.ph-step-pill {
+  font-family: var(--font-mono); font-size: 9.5px;
+  padding: 1px 6px; border-radius: var(--r-sm); font-weight: 600;
+}
+.ph-step-pill.drop { background: color-mix(in oklab, var(--bad-d) 35%, var(--bg-2)); color: var(--bad); }
+.ph-step-pill.add  { background: color-mix(in oklab, var(--ok-d) 35%, var(--bg-2)); color: var(--ok); }
+.ph-step-pill.reorder {
+  background: color-mix(in oklab, var(--warn-d) 35%, var(--bg-2)); color: var(--warn);
+}
+.ph-step-pill.noop {
+  background: var(--bg-3); color: var(--tx-4);
+  border: 1px dashed var(--bd-1);
+}
+.ph-step-body {
+  padding: 6px 10px 10px 36px;
+  border-top: 1px solid var(--bd-1);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ph-step-line { display: flex; gap: 10px; align-items: flex-start; }
+.ph-step-lbl {
+  font-family: var(--font-mono); font-size: 9.5px;
+  color: var(--tx-3); min-width: 56px; text-transform: uppercase;
+  letter-spacing: 0.06em; padding-top: 2px;
+}
+.ph-step-ids { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+.ph-step-id {
+  font-family: var(--font-mono); font-size: 10px;
+  padding: 1px 6px; border-radius: var(--r-sm);
+  background: var(--bg-3); color: var(--tx-1);
+  border: 1px solid var(--bd-1);
+}
+.ph-step-id.primary {
+  background: color-mix(in oklab, var(--ok-d) 30%, var(--bg-3));
+  color: var(--ok); border-color: color-mix(in oklab, var(--ok) 30%, transparent);
+}
+.ph-step-args-raw {
+  margin: 0; padding: 6px 8px;
+  background: var(--bg-1); border: 1px solid var(--bd-1);
+  border-radius: var(--r-sm);
+  color: var(--tx-2); font-family: var(--font-mono); font-size: 10px;
+  white-space: pre-wrap; flex: 1;
+}

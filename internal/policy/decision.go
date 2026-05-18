@@ -42,6 +42,21 @@ type DecisionInput struct {
 type DecisionOutput struct {
 	Order    []string
 	Excluded []ExcludedUpstream
+
+	// StepLog is the per-step trail the JS stdlib recorded during the
+	// chain's evaluation. One entry per chainable stdlib method
+	// invoked, in chain order. Nil when the engine's step-log toggle
+	// is off (production default; flipped on by the simulator and by
+	// DEBUG-level eRPC callers). Read by diagnostic surfaces — never
+	// the request path.
+	StepLog []StepEntry
+
+	// Annotations[upstreamID] is the ordered list of `annotate(u, note)`
+	// strings each step attached to the upstream during this tick.
+	// Populated under the same toggle as `StepLog`. Used to surface
+	// per-upstream "why was this dropped / kept / re-ordered" rationale
+	// in the simulator's policy-history drawer and in DEBUG logs.
+	Annotations map[string][]string
 }
 
 // ExcludedUpstream explains why an upstream was dropped this tick.

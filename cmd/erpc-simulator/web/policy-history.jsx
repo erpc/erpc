@@ -87,6 +87,8 @@ function PolicyHistoryRow({ d, expanded, onToggle }) {
 }
 
 function PolicyHistoryDetail({ d }) {
+  const annotations = d.annotations || {};
+  const steps = d.steps || [];
   return (
     <div className="ph-detail" onClick={e => e.stopPropagation()}>
       {d.error && (
@@ -102,6 +104,13 @@ function PolicyHistoryDetail({ d }) {
             <div key={id} className={`ph-order-row ${i === 0 ? "primary" : ""}`}>
               <span className="ph-pos">{i}</span>
               <span className="ph-up">{id}</span>
+              {annotations[id] && annotations[id].length > 0 && (
+                <span className="ph-annots">
+                  {annotations[id].map((n, j) => (
+                    <span key={j} className="ph-annot">{n}</span>
+                  ))}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -110,13 +119,35 @@ function PolicyHistoryDetail({ d }) {
         <div className="ph-section">
           <div className="ph-section-hd">excluded</div>
           <div className="ph-excluded">
-            {d.excluded.map((e, i) => (
-              <div key={`${e.id}-${i}`} className="ph-excluded-row">
-                <span className="ph-up out">{e.id}</span>
-                {e.step && <span className="ph-step">{e.step}</span>}
-                {e.reason && <span className="ph-reason">{e.reason}</span>}
-              </div>
-            ))}
+            {d.excluded.map((e, i) => {
+              const notes = annotations[e.id] || [];
+              return (
+                <div key={`${e.id}-${i}`} className="ph-excluded-row">
+                  <span className="ph-up out">{e.id}</span>
+                  {e.step && <span className="ph-step">{e.step}</span>}
+                  {e.reason && e.reason !== e.step && (
+                    <span className="ph-reason">{e.reason}</span>
+                  )}
+                  {notes.length > 0 && (
+                    <span className="ph-annots">
+                      {notes.map((n, j) => (
+                        <span key={j} className="ph-annot">{n}</span>
+                      ))}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {steps.length > 0 && (
+        <div className="ph-section">
+          <div className="ph-section-hd">step trail
+            <span className="ph-section-sub">{steps.length} steps · stdlib chain order</span>
+          </div>
+          <div className="ph-steps">
+            {steps.map((s, i) => <PolicyStepRow key={i} idx={i} s={s} />)}
           </div>
         </div>
       )}
@@ -131,6 +162,107 @@ function PolicyHistoryDetail({ d }) {
       )}
     </div>
   );
+}
+
+// PolicyStepRow renders one entry of the per-step trail. The compact
+// row shows step name · arg summary · in→out counts · dropped/added
+// pills. Clicking expands to a full in/out list — useful when the
+// step reordered a large set or when you want to see exactly which
+// upstreams survived a `preferTag` filter.
+function PolicyStepRow({ idx, s }) {
+  const [open, setOpen] = React.useState(false);
+  const argSummary = React.useMemo(() => summarizeStepArgs(s.args), [s.args]);
+  const inN = (s.in || []).length;
+  const outN = (s.out || []).length;
+  const dropped = s.dropped || [];
+  const added = s.added || [];
+  const isNoop = dropped.length === 0 && added.length === 0 && !s.reordered;
+  return (
+    <div className={`ph-step-row ${open ? "open" : ""} ${isNoop ? "noop" : ""}`}
+      onClick={() => setOpen(o => !o)}>
+      <div className="ph-step-hd">
+        <span className="ph-step-idx">{idx + 1}</span>
+        <span className="ph-step-name">.{s.step}</span>
+        {argSummary && <span className="ph-step-args">({argSummary})</span>}
+        <span style={{flex:1}} />
+        <span className="ph-step-counts">
+          {inN}→{outN}
+        </span>
+        {dropped.length > 0 && <span className="ph-step-pill drop">−{dropped.length}</span>}
+        {added.length > 0 && <span className="ph-step-pill add">+{added.length}</span>}
+        {s.reordered && <span className="ph-step-pill reorder">⇅</span>}
+        {isNoop && <span className="ph-step-pill noop">noop</span>}
+        <span className="ph-caret">{open ? "▾" : "▸"}</span>
+      </div>
+      {open && (
+        <div className="ph-step-body">
+          {dropped.length > 0 && (
+            <div className="ph-step-line">
+              <span className="ph-step-lbl">dropped</span>
+              <span className="ph-step-ids">
+                {dropped.map(id => <span key={id} className="ph-diff-rem">− {id}</span>)}
+              </span>
+            </div>
+          )}
+          {added.length > 0 && (
+            <div className="ph-step-line">
+              <span className="ph-step-lbl">added</span>
+              <span className="ph-step-ids">
+                {added.map(id => <span key={id} className="ph-diff-add">+ {id}</span>)}
+              </span>
+            </div>
+          )}
+          <div className="ph-step-line">
+            <span className="ph-step-lbl">in</span>
+            <span className="ph-step-ids">
+              {(s.in || []).map((id, i) => <span key={`${id}-${i}`} className="ph-step-id">{id}</span>)}
+            </span>
+          </div>
+          <div className="ph-step-line">
+            <span className="ph-step-lbl">out</span>
+            <span className="ph-step-ids">
+              {(s.out || []).map((id, i) => (
+                <span key={`${id}-${i}`} className={`ph-step-id ${i === 0 ? "primary" : ""}`}>{id}</span>
+              ))}
+            </span>
+          </div>
+          {s.args && (
+            <div className="ph-step-line">
+              <span className="ph-step-lbl">args</span>
+              <pre className="ph-step-args-raw">{JSON.stringify(s.args, null, 2)}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// summarizeStepArgs flattens the JS-captured args object into a short
+// "key=value" string for the row header. Keeps presentation compact;
+// the expanded body shows the raw JSON for inspection.
+function summarizeStepArgs(args) {
+  if (!args) return null;
+  const parts = [];
+  for (const k of Object.keys(args)) {
+    const v = args[k];
+    if (v == null) continue;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      parts.push(`${k}=${v}`);
+    } else if (Array.isArray(v)) {
+      parts.push(`${k}=[${v.length}]`);
+    } else if (typeof v === "object") {
+      // Inline up to 3 keys.
+      const keys = Object.keys(v).slice(0, 3);
+      const inner = keys.map(kk => {
+        const vv = v[kk];
+        return (typeof vv === "string" || typeof vv === "number" || typeof vv === "boolean")
+          ? `${kk}=${vv}` : kk;
+      }).join(", ");
+      if (inner) parts.push(inner);
+    }
+  }
+  return parts.join(" · ");
 }
 
 function pad2(n) { return String(n).padStart(2, "0"); }

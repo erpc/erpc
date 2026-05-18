@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -219,6 +220,44 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 	return arr
 }
 
+// StepEntry is one row in the per-tick step-trail the stdlib pushes
+// while the JS chain executes. Captured Go-side from `__policyStepLog`
+// after `runEval`. Used by diagnostic surfaces (admin endpoints, the
+// simulator's "policy history" detail view) and by DEBUG-level eRPC
+// logging.
+//
+// Wire-format-friendly: every field JSON-marshals into a stable shape.
+// `Args` is held as raw JSON because the JS-side captures arbitrary
+// shallow objects (predicate reasons, tag patterns, score presets) —
+// we don't want to flatten through a Go struct that'd lose fields.
+type StepEntry struct {
+	Step      string          `json:"step"`
+	Args      json.RawMessage `json:"args,omitempty"`
+	InIDs     []string        `json:"inIds"`
+	OutIDs    []string        `json:"outIds"`
+	Dropped   []string        `json:"dropped,omitempty"`
+	Added     []string        `json:"added,omitempty"`
+	Reordered bool            `json:"reordered,omitempty"`
+}
+
+// EvalResult bundles everything `runEval` produces from one tick — the
+// chain's final order plus the diagnostic trail. Returning a struct
+// instead of a 4-tuple keeps the slot caller readable and gives the
+// step-log/annotation channels somewhere to grow.
+type EvalResult struct {
+	OrderedIDs []string
+	Scores     map[string]float64
+	// Annotations[upstreamID] = ordered list of `annotate(u, note)`
+	// strings the chain attached to this upstream. Empty when step-log
+	// recording is disabled (production-default), populated when the
+	// caller flips the toggle (simulator, DEBUG logger).
+	Annotations map[string][]string
+	// StepLog is the chronological trail of stdlib steps invoked
+	// during the eval. Order follows JS chain order. Empty when
+	// step-log recording is disabled.
+	StepLog []StepEntry
+}
+
 // runEval executes the compiled eval program against the snapshot.
 // Returns the ordered upstream IDs the eval produced AND the per-upstream
 // `score` map the JS attached during scoring (via `sortByScore(...)`).
@@ -228,20 +267,28 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 // Entries missing from the map mean "this upstream was added after the
 // scoring step" (probeExcluded / forceInclude) and has no comparable
 // score.
+//
+// `stepLogEnabled` toggles the per-step trail. When true, each stdlib
+// step pushes an entry into a JS global that this function reads back
+// and surfaces in `EvalResult.StepLog` along with each upstream's
+// `.annotations`. When false (production default), the JS wrapper
+// fast-paths the recording entirely — zero overhead beyond the
+// function-call indirection.
 func runEval(
 	pool *runtimePool,
 	cfg *common.SelectionPolicyConfig,
 	ups []common.Upstream,
 	metrics map[string]UpstreamMetrics,
 	evalCtx EvalContext,
-) ([]string, map[string]float64, error) {
+	stepLogEnabled bool,
+) (*EvalResult, error) {
 	if cfg.CompiledProgram == nil {
-		return nil, nil, fmt.Errorf("selectionPolicy.eval has no compiled program")
+		return nil, fmt.Errorf("selectionPolicy.eval has no compiled program")
 	}
 
 	rt, err := pool.acquire()
 	if err != nil {
-		return nil, nil, fmt.Errorf("acquire sobek runtime: %w", err)
+		return nil, fmt.Errorf("acquire sobek runtime: %w", err)
 	}
 	defer pool.release(rt)
 
@@ -250,11 +297,11 @@ func runEval(
 	// Run the compiled program → the result is the eval function itself.
 	fnValue, err := vm.RunProgram(cfg.CompiledProgram)
 	if err != nil {
-		return nil, nil, fmt.Errorf("evaluate program: %w", err)
+		return nil, fmt.Errorf("evaluate program: %w", err)
 	}
 	fn, ok := sobek.AssertFunction(fnValue)
 	if !ok {
-		return nil, nil, fmt.Errorf("%w: expression did not evaluate to a function", ErrInvalidReturn)
+		return nil, fmt.Errorf("%w: expression did not evaluate to a function", ErrInvalidReturn)
 	}
 
 	upsValue := buildJSUpstreams(vm, ups, metrics)
@@ -264,36 +311,144 @@ func runEval(
 	// input universe; sticky/cooldown read ctx). Cleared on the way out so
 	// the pooled runtime cannot leak references across ticks.
 	if err := vm.GlobalObject().Set("__policyCtx", ctxValue); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := vm.GlobalObject().Set("__policyAllUpstreams", upsValue); err != nil {
-		return nil, nil, err
+		return nil, err
+	}
+	// Step-log scaffolding — the stdlib wrapper around `define(name, fn)`
+	// pushes one entry per chainable step when this flag is true.
+	// Always reset the log to a fresh array each tick so a previous
+	// tick's entries don't leak into this one if the runtime is reused.
+	if err := vm.GlobalObject().Set("__policyStepLogEnabled", stepLogEnabled); err != nil {
+		return nil, err
+	}
+	if err := vm.GlobalObject().Set("__policyStepLog", vm.NewArray()); err != nil {
+		return nil, err
 	}
 	defer func() {
 		_ = vm.GlobalObject().Set("__policyCtx", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyAllUpstreams", sobek.Undefined())
+		_ = vm.GlobalObject().Set("__policyStepLogEnabled", false)
+		_ = vm.GlobalObject().Set("__policyStepLog", sobek.Undefined())
 	}()
 
 	result, err := fn(sobek.Undefined(), upsValue, ctxValue)
 	if err != nil {
-		return nil, nil, fmt.Errorf("call eval: %w", err)
+		return nil, fmt.Errorf("call eval: %w", err)
 	}
 
-	return extractOrderedResult(vm, result, ups)
+	out, err := extractOrderedResult(vm, result, ups)
+	if err != nil {
+		return nil, err
+	}
+
+	if stepLogEnabled {
+		// Step log first — order matters: the chain's own reads happen on
+		// the SAME JS objects whose annotations we'll capture next, but
+		// the step log is a separate global so order's just cosmetic here.
+		if steps, err := readStepLog(vm); err == nil {
+			out.StepLog = steps
+		}
+		// Per-upstream annotations: read directly from the INPUT array's
+		// objects. Every upstream we built with `buildJSUpstreams` got an
+		// `annotations` array attached; we read it back regardless of
+		// whether the upstream survived the chain. This captures BOTH
+		// what stayed AND why each dropped upstream got dropped.
+		out.Annotations = readAnnotations(vm, upsValue, ups)
+	}
+
+	return out, nil
+}
+
+// readStepLog deserializes the JS-side `__policyStepLog` global into Go
+// `[]StepEntry`. Tolerates a missing / non-array value (returns nil) —
+// step-log is purely diagnostic and shouldn't break the request path.
+func readStepLog(vm *sobek.Runtime) ([]StepEntry, error) {
+	v := vm.GlobalObject().Get("__policyStepLog")
+	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {
+		return nil, nil
+	}
+	// Marshal the JS value to JSON then unmarshal into our struct. The
+	// double-hop is cheap (the array is small — one entry per stdlib step
+	// invocation, typically <30 per tick) and dodges the trickier sobek
+	// "Export" path which loses untyped object fields.
+	exported := v.Export()
+	raw, err := json.Marshal(exported)
+	if err != nil {
+		return nil, err
+	}
+	var entries []StepEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// readAnnotations walks the JS-side input upstream array and pulls each
+// element's `annotations` array into a Go map keyed by upstream ID. We
+// read from the INPUT array, not the result array, so dropped upstreams
+// are included — their annotation trail is exactly what explains why
+// they were dropped.
+func readAnnotations(vm *sobek.Runtime, upsValue sobek.Value, ups []common.Upstream) map[string][]string {
+	if upsValue == nil {
+		return nil
+	}
+	obj, ok := upsValue.(*sobek.Object)
+	if !ok {
+		return nil
+	}
+	out := make(map[string][]string, len(ups))
+	for i := range ups {
+		entry := obj.Get(strconv.Itoa(i))
+		if entry == nil || sobek.IsUndefined(entry) {
+			continue
+		}
+		entryObj, ok := entry.(*sobek.Object)
+		if !ok {
+			continue
+		}
+		idVal := entryObj.Get("id")
+		annV := entryObj.Get("annotations")
+		if idVal == nil || annV == nil {
+			continue
+		}
+		id := idVal.String()
+		exported := annV.Export()
+		// `annotations` is a plain JS array of strings. sobek exports
+		// arrays as `[]interface{}` — coerce to []string.
+		raw, ok := exported.([]interface{})
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		notes := make([]string, 0, len(raw))
+		for _, x := range raw {
+			if s, ok := x.(string); ok {
+				notes = append(notes, s)
+			}
+		}
+		if len(notes) > 0 {
+			out[id] = notes
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // extractOrderedResult validates that `result` is an array of upstreams
-// whose ids match the input set. Returns IDs in returned order AND a
+// whose ids match the input set. Returns the ordered IDs AND a
 // map of id → score (from each entry's `.score` field, set by the JS
 // `sortByScore` step). Score map omits entries that don't have a
 // `.score` field (typically: probed/forced-included upstreams).
-func extractOrderedResult(vm *sobek.Runtime, result sobek.Value, ups []common.Upstream) ([]string, map[string]float64, error) {
+func extractOrderedResult(vm *sobek.Runtime, result sobek.Value, ups []common.Upstream) (*EvalResult, error) {
 	if result == nil || sobek.IsUndefined(result) || sobek.IsNull(result) {
-		return nil, nil, fmt.Errorf("%w: eval returned null/undefined", ErrInvalidReturn)
+		return nil, fmt.Errorf("%w: eval returned null/undefined", ErrInvalidReturn)
 	}
 	obj, ok := result.(*sobek.Object)
 	if !ok {
-		return nil, nil, fmt.Errorf("%w: eval returned %T", ErrInvalidReturn, result)
+		return nil, fmt.Errorf("%w: eval returned %T", ErrInvalidReturn, result)
 	}
 
 	known := make(map[string]bool, len(ups))
@@ -303,33 +458,33 @@ func extractOrderedResult(vm *sobek.Runtime, result sobek.Value, ups []common.Up
 
 	lengthV := obj.Get("length")
 	if lengthV == nil {
-		return nil, nil, fmt.Errorf("%w: eval result is not an array (no length)", ErrInvalidReturn)
+		return nil, fmt.Errorf("%w: eval result is not an array (no length)", ErrInvalidReturn)
 	}
 	length := int(lengthV.ToInteger())
 
 	ids := make([]string, 0, length)
 	scores := make(map[string]float64, length)
 	for i := 0; i < length; i++ {
-		entry := obj.Get(fmt.Sprintf("%d", i))
+		entry := obj.Get(strconv.Itoa(i))
 		if entry == nil || sobek.IsUndefined(entry) {
 			continue
 		}
 		entryObj, ok := entry.(*sobek.Object)
 		if !ok {
-			return nil, nil, fmt.Errorf("%w: result entry %d is not an object", ErrInvalidReturn, i)
+			return nil, fmt.Errorf("%w: result entry %d is not an object", ErrInvalidReturn, i)
 		}
 		idVal := entryObj.Get("id")
 		if idVal == nil {
-			return nil, nil, fmt.Errorf("%w: result entry %d has no id", ErrInvalidReturn, i)
+			return nil, fmt.Errorf("%w: result entry %d has no id", ErrInvalidReturn, i)
 		}
 		id := idVal.String()
 		if !known[id] {
-			return nil, nil, fmt.Errorf("%w: result entry %d has unknown id %q", ErrInvalidReturn, i, id)
+			return nil, fmt.Errorf("%w: result entry %d has unknown id %q", ErrInvalidReturn, i, id)
 		}
 		ids = append(ids, id)
 		if sv := entryObj.Get("score"); sv != nil && !sobek.IsUndefined(sv) && !sobek.IsNull(sv) {
 			scores[id] = sv.ToFloat()
 		}
 	}
-	return ids, scores, nil
+	return &EvalResult{OrderedIDs: ids, Scores: scores}, nil
 }

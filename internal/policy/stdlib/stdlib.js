@@ -11,9 +11,116 @@
 (function () {
   const proto = Array.prototype;
   const _set = Object.defineProperty;
+
+  // ─── Step-trail instrumentation ─────────────────────────────────────────
+  //
+  // Every chainable stdlib method is wrapped so its (input → output)
+  // transition can be recorded into `globalThis.__policyStepLog` —
+  // an array of `{step, args, inIds, outIds, dropped, added, reordered}`
+  // entries the Go side reads back after `runEval` completes.
+  //
+  // Wrap point: the `define(name, fn, argsExtractor)` helper. `fn` runs
+  // unchanged; if both `this` and the result are arrays, the wrapper
+  // computes a delta and pushes a log entry. `argsExtractor(args)` is
+  // optional and returns a small JSON-able object summarizing the
+  // chain-step's interesting opts (e.g. `excludeIf`'s `reason`,
+  // `preferTag`'s `pat`) — kept tight so we don't blow up the WS frame
+  // budget at high tick rates.
+  //
+  // Two modes:
+  //   * __policyStepLogEnabled !== true  → no-op; zero overhead beyond
+  //     the wrapper function call. The default in production, kept fast.
+  //   * __policyStepLogEnabled === true  → record full trail. The
+  //     simulator and DEBUG-level eRPC callers set this once before
+  //     each eval (eval.go).
+  //
+  // The log buffer is reset to a fresh array per tick (Go sets it back
+  // to `[]` before each eval); steps push entries in chain order, so the
+  // resulting array IS the timeline.
+  // _captureArgs builds a compact, JSON-safe summary of an invocation's
+  // arguments for the step trail. Captures primitives + shallow objects
+  // of primitives + short string/number arrays. Functions (predicates,
+  // thunks, callbacks) are skipped — they don't render meaningfully and
+  // would balloon the wire frame. Same idea as a structured-log
+  // sanitizer: keep what's diagnostic, drop what isn't.
+  function _captureArgs(args) {
+    if (!args || args.length === 0) return null;
+    const out = {};
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a == null || typeof a === 'function') continue;
+      const ta = typeof a;
+      if (ta === 'string' || ta === 'number' || ta === 'boolean') {
+        out[i] = a;
+        continue;
+      }
+      if (Array.isArray(a)) {
+        if (a.length <= 16 && a.every(x => typeof x === 'string' || typeof x === 'number')) {
+          out[i] = a.slice();
+        }
+        continue;
+      }
+      if (ta === 'object') {
+        const obj = {};
+        for (const k in a) {
+          if (!Object.prototype.hasOwnProperty.call(a, k)) continue;
+          const v = a[k];
+          if (v == null || typeof v === 'function') continue;
+          const tv = typeof v;
+          if (tv === 'string' || tv === 'number' || tv === 'boolean') {
+            obj[k] = v;
+          } else if (Array.isArray(v) && v.length <= 16 &&
+                     v.every(x => typeof x === 'string' || typeof x === 'number')) {
+            obj[k] = v.slice();
+          }
+        }
+        if (Object.keys(obj).length > 0) out[i] = obj;
+      }
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
+  function _recordStep(name, beforeArr, afterArr, args) {
+    if (!globalThis.__policyStepLogEnabled) return;
+    const log = globalThis.__policyStepLog;
+    if (!log) return;
+    const inIds = toIDs(beforeArr);
+    const outIds = toIDs(afterArr);
+    const inSet = new Set(inIds);
+    const outSet = new Set(outIds);
+    const dropped = inIds.filter(id => !outSet.has(id));
+    const added   = outIds.filter(id => !inSet.has(id));
+    let reordered = false;
+    if (dropped.length === 0 && added.length === 0 && inIds.length === outIds.length) {
+      for (let i = 0; i < inIds.length; i++) {
+        if (inIds[i] !== outIds[i]) { reordered = true; break; }
+      }
+    }
+    log.push({
+      step: name,
+      args: args || null,
+      inIds,
+      outIds,
+      dropped,
+      added,
+      reordered,
+    });
+  }
+
   function define(name, fn) {
     if (proto[name]) return; // idempotent: a re-installed primer must not throw
-    _set(proto, name, { value: fn, enumerable: false, writable: false, configurable: false });
+    const wrapped = function () {
+      const before = this;
+      const result = fn.apply(this, arguments);
+      // Only record array-in/array-out transitions. Non-array outputs
+      // (e.g. `partition` returns a 2-tuple, `at_` returns a single
+      // upstream) skip the trail — they're terminal-ish ops anyway.
+      if (globalThis.__policyStepLogEnabled && Array.isArray(before) && Array.isArray(result)) {
+        _recordStep(name, before, result, _captureArgs(arguments));
+      }
+      return result;
+    };
+    _set(proto, name, { value: wrapped, enumerable: false, writable: false, configurable: false });
   }
 
   // ─── small helpers ──────────────────────────────────────────────────────

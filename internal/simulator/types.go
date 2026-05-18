@@ -16,6 +16,7 @@
 package simulator
 
 import (
+	"encoding/json"
 	"sync/atomic"
 	"time"
 )
@@ -207,6 +208,18 @@ type PolicyDecisionFrame struct {
 	Added          []string                     `json:"added,omitempty"`
 	Removed        []string                     `json:"removed,omitempty"`
 	Error          string                       `json:"error,omitempty"`
+
+	// Steps is the per-step trail the stdlib recorded during this tick's
+	// chain evaluation. One entry per chainable stdlib step invoked, in
+	// chain order. Empty when the engine's step-log toggle is off (the
+	// simulator flips it on at boot via `Engine.SetStepLogEnabled`).
+	Steps []PolicyDecisionStep `json:"steps,omitempty"`
+
+	// Annotations[upstreamID] is the ordered list of per-step
+	// `annotate(u, note)` strings the chain attached to the upstream.
+	// Surfaces "why was THIS upstream dropped / kept / re-ordered" in
+	// the simulator's policy-history drawer.
+	Annotations map[string][]string `json:"annotations,omitempty"`
 }
 
 // PolicyDecisionExcludedRow mirrors policy.ExcludedUpstream for the
@@ -215,6 +228,20 @@ type PolicyDecisionExcludedRow struct {
 	ID     string `json:"id"`
 	Step   string `json:"step,omitempty"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// PolicyDecisionStep is one entry in the per-tick step trail surfaced
+// over the wire. Mirrors `policy.StepEntry` with JSON tags tightened
+// for the simulator's wire budget (`args` carries arbitrary JSON the
+// JS side captured; everything else is plain-ASCII).
+type PolicyDecisionStep struct {
+	Step      string          `json:"step"`
+	Args      json.RawMessage `json:"args,omitempty"`
+	InIDs     []string        `json:"in,omitempty"`
+	OutIDs    []string        `json:"out,omitempty"`
+	Dropped   []string        `json:"dropped,omitempty"`
+	Added     []string        `json:"added,omitempty"`
+	Reordered bool            `json:"reordered,omitempty"`
 }
 
 // StatsFrame is the periodic 100ms aggregate snapshot. The browser uses

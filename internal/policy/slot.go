@@ -162,16 +162,18 @@ func (s *Slot) tickOnce() {
 	// `score` values the JS attached during `sortByScore(...)` — we cache
 	// them on the slot so diagnostic tooling (admin endpoint, simulator)
 	// can read the engine's authoritative ranking without re-implementing
-	// the BALANCED formula in Go.
+	// the BALANCED formula in Go. Step log + annotations are captured
+	// only when the engine's debug flag is on (simulator always, eRPC
+	// when the logger is at DEBUG) — see `Engine.SetStepLogEnabled`.
 	var (
-		orderedIDs []string
-		scores     map[string]float64
-		evalErr    error
+		evalRes *EvalResult
+		evalErr error
 	)
+	stepLogEnabled := s.engine.stepLogEnabled.Load()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		orderedIDs, scores, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, evalCtx)
+		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, evalCtx, stepLogEnabled)
 	}()
 
 	if timeout > 0 {
@@ -214,10 +216,24 @@ func (s *Slot) tickOnce() {
 		return
 	}
 	s.consecutiveFails = 0
+	orderedIDs := evalRes.OrderedIDs
+	scores := evalRes.Scores
 
-	// 4. Validate + materialize the ordered upstream slice.
+	// 4. Validate + materialize the ordered upstream slice. Per-upstream
+	// annotations from the step trail are used to enrich exclusion
+	// reasons — if a step annotated a dropped upstream with WHY it
+	// dropped it (`u.annotations.push(reason)`), the last annotation
+	// becomes the exclusion's `Step` + `Reason` instead of the bare
+	// "not in eval result" fallback. Best-effort: missing annotations
+	// degrade to the prior wording.
 	ordered, excluded := materializeOrder(ups, orderedIDs)
-	decision.Output = DecisionOutput{Order: orderedIDs, Excluded: excluded}
+	enrichExcluded(excluded, evalRes.Annotations)
+	decision.Output = DecisionOutput{
+		Order:       orderedIDs,
+		Excluded:    excluded,
+		StepLog:     evalRes.StepLog,
+		Annotations: evalRes.Annotations,
+	}
 
 	// 5. Compute diff against previous tick.
 	decision.Diff = diffAgainst(state.PreviousOrder, orderedIDs)
@@ -256,6 +272,66 @@ func (s *Slot) tickOnce() {
 	s.mu.Unlock()
 
 	s.emitMetrics(decision, state)
+	s.logStepTrail(decision)
+}
+
+// logStepTrail emits DEBUG-level structured logs for the per-step trail
+// when the engine's step-log toggle is on. No-op otherwise. Designed to
+// be cheap when the underlying zerolog level filters DEBUG out — the
+// short-circuit `Debug()` check (zerolog API contract) returns a
+// `*Event` whose chained calls are nil-receiver no-ops.
+//
+// Format: one log line per stdlib step, plus one summary line per
+// excluded upstream with its annotation trail. Keeps cardinality bounded
+// (≤ ~30 stdlib steps per tick, ≤ N upstreams). Operators tail this
+// log to see WHY a specific routing decision was made without
+// re-running the simulator.
+func (s *Slot) logStepTrail(d *Decision) {
+	if d == nil || (len(d.Output.StepLog) == 0 && len(d.Output.Annotations) == 0) {
+		return
+	}
+	// Cheap level check: we already know the trail data exists, but
+	// zerolog only formats arguments when the level is enabled. Build
+	// once, log once. The `Logger.Debug()` returns a no-op event when
+	// the log level is above DEBUG so callers don't pay format costs.
+	logger := s.engine.logger
+	for i, step := range d.Output.StepLog {
+		ev := logger.Debug().
+			Str("network", s.networkID).
+			Str("method", s.method).
+			Str("tick_id", d.ID).
+			Int("idx", i).
+			Str("step", step.Step).
+			Int("in", len(step.InIDs)).
+			Int("out", len(step.OutIDs))
+		if len(step.Dropped) > 0 {
+			ev = ev.Strs("dropped", step.Dropped)
+		}
+		if len(step.Added) > 0 {
+			ev = ev.Strs("added", step.Added)
+		}
+		if step.Reordered {
+			ev = ev.Bool("reordered", true)
+		}
+		if len(step.Args) > 0 {
+			ev = ev.RawJSON("args", step.Args)
+		}
+		ev.Msg("policy step")
+	}
+	for _, ex := range d.Output.Excluded {
+		notes := d.Output.Annotations[ex.ID]
+		ev := logger.Debug().
+			Str("network", s.networkID).
+			Str("method", s.method).
+			Str("tick_id", d.ID).
+			Str("upstream", ex.ID).
+			Str("step", ex.Step).
+			Str("reason", ex.Reason)
+		if len(notes) > 0 {
+			ev = ev.Strs("annotations", notes)
+		}
+		ev.Msg("policy excluded upstream")
+	}
 }
 
 // appendDecisionLocked pushes `d` onto the slot's bounded ring buffer.
@@ -367,6 +443,34 @@ func upstreamIDs(ups []common.Upstream) []string {
 		out[i] = u.Id()
 	}
 	return out
+}
+
+// enrichExcluded upgrades the default `Reason: "not in eval result"` on
+// each excluded upstream to the LAST annotation the stdlib chain
+// recorded for it — which captures the closest "why was this dropped?"
+// signal. We use the last annotation rather than the first because
+// later steps may have re-evaluated the upstream (e.g.
+// `whenEmpty(() => upstreams).preferTag(...)`) and the most recent
+// annotation reflects the final verdict. When no annotation exists,
+// the default fallback wording stays as-is.
+//
+// Step is set to the same string for now — the simulator UI uses Step
+// for grouping. Once we plumb step-name onto each annotation
+// individually we can split them; for now the annotation IS the step
+// reason.
+func enrichExcluded(excluded []ExcludedUpstream, annotations map[string][]string) {
+	if len(annotations) == 0 {
+		return
+	}
+	for i := range excluded {
+		notes := annotations[excluded[i].ID]
+		if len(notes) == 0 {
+			continue
+		}
+		last := notes[len(notes)-1]
+		excluded[i].Reason = last
+		excluded[i].Step = last
+	}
 }
 
 // materializeOrder maps an ordered slice of upstream IDs back to the real
