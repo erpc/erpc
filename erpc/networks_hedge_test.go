@@ -1204,6 +1204,90 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		}
 	})
 
+	// HedgeLoser_ElapsedRecordedAsLowerBoundLatency pins the fix for
+	// "slow upstream stays top-ranked because every hedge it loses is
+	// invisible to scoring". Before this, a canceled hedge fed
+	// `ObserveDuration(false)` and never reached `ResponseQuantiles` —
+	// so an upstream that consistently lost the race had only its rare
+	// wins in the quantile, and `sortByScore` saw a fast-looking p70
+	// even when the upstream was actually slow. Now the elapsed-by-
+	// cancel time IS recorded (as a lower-bound sample); slow primary
+	// gets penalized; sortByScore eventually rotates it off position 0.
+	//
+	// Setup: rpc1 is the slow primary (1s response). rpc2 is the fast
+	// hedge (40ms). The hedge fires at 80ms, wins; rpc1 is canceled
+	// somewhere around 80ms elapsed. After several requests we expect
+	// rpc1's quantile to contain ~80ms samples — not stay at zero.
+	t.Run("HedgeLoser_ElapsedRecordedAsLowerBoundLatency", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+
+		// rpc1 primary: slow → consistently canceled.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Delay(1 * time.Second).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1111"})
+
+		// rpc2 hedge: fast → consistently wins.
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Delay(40 * time.Millisecond).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x2222"})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+			Delay:    common.NewStaticDuration(80 * time.Millisecond),
+			MaxCount: 1,
+		})
+
+		// Multiple requests so the quantile estimator has enough samples.
+		for i := 0; i < 5; i++ {
+			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+		}
+		time.Sleep(200 * time.Millisecond)
+
+		rpc1, _ := getUpstreamPair(t, network)
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		require.NotNil(t, m1)
+
+		// rpc1's error rate stays clean — cancellation is not an upstream
+		// failure (the network just stopped waiting).
+		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
+			"canceled primary attempts must NOT pollute ErrorsTotal")
+
+		// The crux: rpc1's quantile MUST have samples now. Without the
+		// fix this stays at 0.0 and sortByScore can't see that rpc1 is
+		// chronically slow.
+		p70 := m1.GetResponseQuantiles().GetQuantile(0.70).Seconds()
+		assert.Greater(t, p70, 0.0,
+			"slow primary's canceled-elapsed time must populate ResponseQuantiles; "+
+				"otherwise scoring sees zero latency and rotation never happens")
+		// Sanity: the sample is at-or-above the hedge delay (80ms) since
+		// that's when cancellation fires. We allow a generous upper
+		// bound to absorb gock + scheduling jitter.
+		assert.Greater(t, p70, 0.05,
+			"recorded latency should reflect the elapsed-by-cancel time (~hedge delay)")
+		assert.Less(t, p70, 0.5,
+			"recorded latency should be a lower bound, not the upstream's full 1s response time")
+	})
+
 	// MaxCount > 1 spawns multiple hedge attempts. Every one of them must
 	// stay excluded — not just the first.
 	t.Run("MultipleHedges_AllExcluded", func(t *testing.T) {

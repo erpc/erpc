@@ -7,8 +7,9 @@
 // `WidenedConfig`, `Translate` synthesizes the equivalent new-shape
 // `selectionPolicy.eval`, and downstream code sees the new shape only.
 //
-// When the deprecation cycle is over (two minor releases), this package
-// is deleted; legacy YAML stops loading.
+// At the next major release this package is deleted; legacy YAML stops
+// loading. Until then, the only operator-visible effect of legacy config
+// is a one-time deprecation warning per project at startup.
 //
 // See specs/selection-policy/plan.md §12 for the full mapping table.
 package legacy

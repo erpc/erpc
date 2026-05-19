@@ -15,7 +15,7 @@ import {
 
 <LLMsTxtLink />
 
-An upstream is a single RPC endpoint (yours or a third party's) that can serve one or more EVM networks. eRPC manages the pool: it scores upstreams in real time, picks the best one as primary, falls over to the rest on failure, and enforces per-upstream rate limits and method allow/deny lists.
+An upstream is a single RPC endpoint (yours or a third party's) that can serve one or more EVM networks. Upstream config declares **what each endpoint is and how to talk to it** — URL, credentials, rate limits, method filters, failsafe, transport options. Which upstream serves any given request is decided by the network's **[selection policy](/config/projects/selection-policies)** at request time, based on live health metrics.
 
 **You can configure:**
 
@@ -141,19 +141,35 @@ export default createConfig({
 });`}
 />
 
-## Selection ordering
+## Selection policy — which upstream serves the request
 
-Upstream ordering is decided by the network's **selection policy**, not by per-upstream config. See [Selection policy](/config/projects/selection-policies) for the full mechanism and the [stdlib reference](/config/projects/selection-policy-stdlib) for every chainable method.
+eRPC keeps **per-upstream health metrics** (error rate, latency p50/p70/p95, throttled rate, block-head lag, finalization lag, misbehavior count) in a rolling window and uses them as inputs to the **selection policy** — a JavaScript function that runs on a tick and produces the ordered list of eligible upstreams for each `(network, method)`. Order is law: the primary is index 0, runners-up fall back in order, and any upstream missing from the returned list is excluded entirely until it earns its way back in via probing.
 
-The upstream fields the selection policy reads:
+This split keeps the responsibilities clean:
 
-- `id` — referenced from `selectionPolicy.evalFunc` and admin endpoints.
-- `tags` — user-applied labels (`<dimension>:<value>` convention) consumed by `.byTag(...)`, `.preferTag(...)`, `.spreadAcrossTags(prefix)`. `tier:fallback` drives the default policy's safety-net behavior.
-- `vendor` — used by `.preferVendor(...)` and `.byVendor(...)` filters.
-- `type` — used by `.byType(...)` filters.
+| Upstream config decides | Selection policy decides |
+|---|---|
+| **What** each endpoint is — URL, vendor, tags, EVM details | **Whether** an upstream is eligible right now (excluded vs in-rotation) |
+| **How** to talk to it — failsafe, rate limits, batching, headers | **In what order** the eligible ones are tried for the next request |
+| **Which methods** it serves — `allowMethods` / `ignoreMethods` | **Which one is primary**, with hysteresis to avoid thrash |
+
+The upstream fields the policy reads (everything else is invisible to it):
+
+| Field on `upstreams[]` | Used by the policy's stdlib for… |
+|---|---|
+| `id` | Identification — referenced in `selectionPolicy.evalFunc`, metrics, admin endpoints. |
+| `tags` | `byTag`, `preferTag`, `spreadAcrossTags`, `stickyPerTagValues`. The literal value `tier:fallback` is special — the default policy treats it as a safety net used only when the primary tier is empty. |
+| `vendorName` (exposed as `vendor`) | `preferVendor`, `byVendor`, `stickyPerVendor`. |
+| `type` | `byType`. |
+
+eRPC ships with a [sensible default policy](/config/projects/selection-policies#default-policy) that handles fallback-tier preference, sticky-primary with hysteresis, lag-based exclusion, and probing of excluded upstreams — you don't need to write any JS to get production-quality routing. Override `selectionPolicy.evalFunc` on the network only when the default isn't a fit.
 
 <Callout type="info">
-	The legacy per-upstream `routing.scoreMultipliers` block and the project-level `routingStrategy` / `scoreGranularity` / `scoreRefreshInterval` / `scoreMetricsWindowSize` / `scorePenaltyDecayRate` / `scoreSwitchHysteresis` / `scoreMinSwitchInterval` fields are deprecated. They still load (translated into the new shape at parse time), but per-upstream score weights and global scoring tuning are now expressed via the selection-policy stdlib (`sortByScore(BALANCED)`, custom weights function, `stickyPrimary({ hysteresis, minSwitchInterval })`). See the [migration guide](/migration/selection-policy#worked-examples) for the legacy → new mapping.
+	**See the [Selection policy](/config/projects/selection-policies) page** for the full mechanism: how ticks work, what the default policy does, the eval inputs (`ctx`, `upstream.metrics`, `upstream.config`), the chainable-method reference (filters, sorting, stability, probing, slicing), the predicate-factory catalog, and the observability story (`erpc_selection_*` metrics + OTLP spans).
+</Callout>
+
+<Callout type="info">
+	Per-upstream score weights live in [`routing.scoreMultipliers`](#per-upstream-score-tuning-routingscoremultipliers); project-level tuning of the rolling window lives on [`scoreMetricsWindowSize`](/config/projects/selection-policies#health-tracker-rolling-window); all global routing/scoring behaviour is expressed via the [Selection Policy stdlib](/config/projects/selection-policies) (`sortByScore(BALANCED)`, custom weights function, `stickyPrimary({ hysteresis, minSwitchInterval })`).
 </Callout>
 
 ## Block availability
@@ -249,8 +265,7 @@ The only `type` today is `evm` (default; covers any EVM-compatible JSON-RPC endp
 | `rateLimitBudget` | string | Bind to a budget defined in `rateLimiters.budgets[]`. Multiple upstreams sharing a budget share the same rate-limit pool. |
 | `rateLimitAutoTune` | object | When a budget is bound, auto-tune is enabled by default. See "rateLimitAutoTune fields". |
 | `shadow` | object | Mirror a fraction of traffic to this upstream for comparison (without affecting the real response). See "Shadow upstreams" below. |
-| `group`, `cohort` | string | **Deprecated** — use `tags` instead. `group: "fallback"` is migrated to `tags: ["tier:fallback"]` at load time; `cohort` is folded into tags as well. |
-| `routing` | object | **Deprecated** — per-upstream score weights are now expressed as a function passed to `sortByScore(...)` inside `selectionPolicy.evalFunc`. Legacy YAML is translated at load time. |
+| `routing` | object | Per-upstream score weighting consumed by the network's `selectionPolicy`'s `sortByScore(...)` step. See [Per-upstream score tuning](#per-upstream-score-tuning-routingscoremultipliers). |
 
 ### `evm.*` fields
 
@@ -262,12 +277,10 @@ The only `type` today is `evm` (default; covers any EVM-compatible JSON-RPC endp
 | `skipWhenSyncing` | `false` | When `true`, route requests away from this upstream while `eth_syncing` reports it's syncing. Use for archive backfills. |
 | `blockAvailability` | none | See "Block availability" section above. |
 | `integrity.eth_getBlockReceipts` | none | Per-upstream response validation for `eth_getBlockReceipts`. See "Per-upstream integrity" below. |
-| `nodeType` | `archive` | **Deprecated** — use `blockAvailability` instead. Still accepted; `full` implies a 128-block availability window. |
-| `maxAvailableRecentBlocks` | `128` (for full nodes) | **Deprecated** — use `blockAvailability` instead. |
 | `getLogsAutoSplittingRangeThreshold` | none | Upstream hint for the network-level proactive splitter. The network computes the min positive threshold across selected upstreams and splits large `eth_getLogs` ranges into contiguous sub-requests of at most that size. Set to `0` or negative to disable for this upstream. |
 | `traceFilterAutoSplittingRangeThreshold` | none | Same as above for `trace_filter` / `arbtrace_filter`. |
 
-**Deprecated:** `getLogsMaxAllowedRange`, `getLogsMaxAllowedAddresses`, `getLogsMaxAllowedTopics`, `getLogsSplitOnError` on `upstream.evm` — these moved to the [network level](/config/projects/networks#evm-networks).
+Block-window enforcement (`getLogsMaxAllowedRange`, `getLogsMaxAllowedAddresses`, `getLogsMaxAllowedTopics`, `getLogsSplitOnError`) lives at the [network level](/config/projects/networks#evm-networks); block-availability bounds are declared via `evm.blockAvailability` above.
 
 ### `jsonRpc.*` fields
 
@@ -304,28 +317,43 @@ upstreams:
   - { id: fast-1,  endpoint: ..., tags: ["tier:fallback"] }   # only used if primary tier is unhealthy
 ```
 
-The legacy `group: "fallback"` and `cohort: "..."` fields are translated to `tags: ["tier:fallback"]` and `tags: ["cohort:<value>"]` at load time (a deprecation warning is logged).
+### Per-upstream score tuning (`routing.scoreMultipliers`)
 
-### Per-upstream score tuning (deprecated `routing.scoreMultipliers`)
+Per-upstream score weighting lives next to the upstream itself, in `routing.scoreMultipliers`. Each entry selects on `(network, method, finality)` and overrides the score-weight preset's dimension(s) for that upstream when the selector matches the current request.
 
-The legacy `routing.scoreMultipliers` block on each upstream is gone. Per-upstream score weighting is now expressed by passing a custom weights function to `sortByScore(...)` inside the network's `selectionPolicy.evalFunc`. The weights function receives the upstream and returns a `{ errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors, overall }` object — same dimensions as before, but expressed in JS so the policy author can branch on tags / vendor / method / finality.
+```yaml
+upstreams:
+  - id: hot
+    endpoint: alchemy://...
+    routing:
+      scoreMultipliers:
+        - network: "*"
+          method: "*"
+          errorRate: 8            # overrides BALANCED.errorRate
+          respLatency: 12         # overrides BALANCED.respLatency
+          # missing dimensions inherit from the preset
+  - id: cold
+    endpoint: drpc://...
+    routing:
+      scoreMultipliers:
+        - network: "*"
+          method: "*"
+          respLatency: 4          # mild latency preference; everything else inherits
+```
+
+`BALANCED` (the default preset) is `{ errorRate: 4, respLatency: 8, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6 }`. Latency dominates because the `excludeIf` chain already filters degraded upstreams before scoring runs; among survivors, response speed is the strongest "which should I prefer?" signal. Per-upstream entries override on a per-dimension basis; unspecified dimensions inherit.
+
+When you need branching that the declarative form can't express (per-method, vendor, or `ctx.finality` rules), pass a function to `sortByScore` directly:
 
 ```js
-// Prefer a cheap upstream by default, penalize a noisy one for eth_getLogs:
 (upstreams, ctx) =>
-  upstreams.sortByScore(BALANCED, (u) => {
-    if (u.id === 'cheap')   return { overall: 10 };
-    if (u.id === 'pricey')  return { overall: 1 };
-    if (ctx.method === 'eth_getLogs' && u.id === 'noisy') {
-      return { respLatency: 16, errorRate: 4 };
-    }
-    return {};
+  upstreams.sortByScore((u) => {
+    if (u.id === 'noisy' && ctx.method === 'eth_getLogs') return { respLatency: 16, errorRate: 4 };
+    return BALANCED;
   })
 ```
 
-`BALANCED` is the built-in weights preset (`errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6`). The function's return values multiply those defaults.
-
-Legacy `routing.scoreMultipliers` YAML is translated at load time into an equivalent weights function. See the [migration guide](/migration/selection-policy#worked-examples) for the full mapping (selectors → JS branches, scoreLatencyQuantile, scoreSwitchHysteresis → `stickyPrimary({ hysteresis })`, scoreMinSwitchInterval → `stickyPrimary({ minSwitchInterval })`, scorePenaltyDecayRate → engine global).
+The function form takes full control — it does NOT auto-merge with `routing.scoreMultipliers`. Pick one or the other per upstream.
 
 ### `rateLimitAutoTune` fields
 
@@ -411,7 +439,7 @@ upstreams:
 `consensus` and `hedge` are also valid at upstream level. The full vocabulary is the same as the [network-level failsafe](/config/failsafe).
 
 <Callout type="info">
-	The legacy single-object form (`failsafe: { timeout: ... }`) is still accepted for backward compatibility, but the array form with `matchMethod: "*"` is the canonical shape and lets you grow into per-method tuning without rewriting.
+	The single-object form (`failsafe: { timeout: ... }`) is accepted as shorthand for an array with one entry. The array form with explicit `matchMethod` is what you want as soon as you need different rules for different method groups.
 </Callout>
 
 ### Defaults via `upstreamDefaults`
@@ -568,34 +596,10 @@ export default createConfig({
 
 eRPC selects proxies with a lockless atomic counter — each request increments the counter and picks `counter % len(urls)`. There is no automatic failover: if the selected proxy is unreachable, the upstream request fails and normal upstream-level retry/circuit-breaker logic applies. To tolerate proxy failures, put a single reliable entry per pool or front your proxies with a load balancer.
 
-### Deprecated fields — migration map
-
-| Old (still accepted) | New |
-|---|---|
-| `evm.nodeType: full` / `archive` | `evm.blockAvailability.upper.latestBlockMinus: 128` (or whatever your window is) |
-| `evm.maxAvailableRecentBlocks: 128` | `evm.blockAvailability.upper.latestBlockMinus: 128` |
-| `evm.getLogsMaxAllowedRange` (upstream level) | `network.evm.getLogsMaxAllowedRange` |
-| `evm.getLogsMaxAllowedAddresses` (upstream level) | `network.evm.getLogsMaxAllowedAddresses` |
-| `evm.getLogsMaxAllowedTopics` (upstream level) | `network.evm.getLogsMaxAllowedTopics` |
-| `evm.getLogsSplitOnError` (upstream level) | `network.evm.getLogsSplitOnError` |
-| `evm.getLogsMaxBlockRange` (upstream level) | `network.evm.getLogsMaxAllowedRange` |
-| `failsafe: { ... }` (single object) | `failsafe: [{ matchMethod: "*", ... }]` |
-| `group: "fallback"` | `tags: ["tier:fallback"]` |
-| `group: "<value>"` (non-fallback) | `tags: ["group:<value>"]` (label only, no policy magic) |
-| `cohort: "<value>"` | `tags: ["cohort:<value>"]` |
-| `routing.scoreMultipliers: [...]` | custom weights function passed to `sortByScore(...)` inside `selectionPolicy.evalFunc` |
-| project-level `routingStrategy`, `scoreGranularity`, `scoreRefreshInterval`, `scoreMetricsWindowSize`, `scoreMetricsMode` | warned-only; the new policy stdlib + fixed-cardinality `policy_selection_*` metrics replace these knobs |
-| project-level `scorePenaltyDecayRate`, `scoreSwitchHysteresis`, `scoreMinSwitchInterval` | `stickyPrimary({ hysteresis, minSwitchInterval })` inside `selectionPolicy.evalFunc` |
-| `selectionPolicy.evalFunction` (legacy signature `(upstreams, method)`) | `selectionPolicy.evalFunc` (new signature `(upstreams, ctx) => Upstream[]`) — legacy form is wrapped at load time |
-| `selectionPolicy.decisionHistory`, `selectionPolicy.resampleExcluded` / `resampleInterval` / `resampleCount` | OTLP traces + `policy_selection_*` Prometheus family replace the ring buffer; resampling is now `.probeExcluded({ reAdmitAfter, maxConcurrent })` |
-| `ROUTING_POLICY_MAX_ERROR_RATE`, `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG`, `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` env vars | inlined into the synthesized `evalFunc` at load time; remove and edit `evalFunc` directly |
-
-The legacy forms still parse, so existing configs work — but new code should use the new shape. Mixing both in one config will emit a deprecation warning.
-
 ### Common pitfalls
 
 - **`allowMethods` without `ignoreMethods: []`** — `allowMethods` silently adds an implicit `ignoreMethods: ["*"]`, so an upstream with `allowMethods: ["eth_getLogs"]` will block every other method. To allow `eth_getLogs` while still serving the defaults, prefer adding to `ignoreMethods` instead.
-- **`group: fallback` migrates to `tags: ["tier:fallback"]`** — the new tag is what the default selection policy reads. Configs that still use `group: "fallback"` keep working (load-time translator), but new configs should use `tags` directly.
+- **`tier:fallback`** — the magic tag the default selection policy treats as a safety net. Apply it to upstreams that should only serve traffic when the primary tier is empty.
 - **Compound rate-limit budgets** — `rateLimitAutoTune` decreases on one upstream tighten the budget for **every** upstream sharing it. If you need independent rate limits per upstream, give each its own budget.
 - **`statePollerInterval: 0s`** — disables polling entirely, so eRPC has no notion of the chain's latest/finalized state for this upstream. Every response goes into the `unknown` finality bucket; the cache layer will treat them accordingly.
 - **`blockAvailability.upper.updateRate`** is ignored — for `latestBlockMinus` the bound is computed on-demand from the state poller's latest head. Only `earliestBlockPlus` honors `updateRate`.

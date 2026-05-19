@@ -28,11 +28,6 @@ module.exports = {
 		title: "Operations",
 	},
 	operation: { title: "Operation", display: "children" },
-	"-- Migration": {
-		type: "separator",
-		title: "Migration",
-	},
-	migration: { title: "Migration", display: "children" },
 	// Presets / examples are still accessible via direct URL (/presets/*)
 	// but are not surfaced in the sidebar. Add `display: "hidden"` instead
 	// of omitting the keys entirely so Nextra doesn't auto-include them.

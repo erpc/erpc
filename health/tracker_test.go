@@ -11,6 +11,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1322,5 +1323,87 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		feedBlockDetection(tracker, networkId, netLabel, baseBlock+13, baseTs+13*5)
 		afterResume := tracker.GetNetworkBlockTime(networkId)
 		assert.InDelta(t, 5.0, afterResume.Seconds(), 1.0, "should recover after skew")
+	})
+}
+
+// TestTracker_CordonEventMetrics verifies the new cordon observability
+// signals: every cordon/uncordon transition increments the per-upstream
+// event counter, and uncordon ALSO observes the cordon-duration
+// histogram so dashboards can answer "how long did this incident last?".
+func TestTracker_CordonEventMetrics(t *testing.T) {
+	t.Run("cordon_then_uncordon_records_paired_events_and_duration", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("under-incident")
+		networkID := ups.NetworkId()
+		cordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			"test-project", networkID, ups.Id(), "cordon")
+		uncordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			"test-project", networkID, ups.Id(), "uncordon")
+		beforeCordonCount := promUtil.ToFloat64(cordonCounter)
+		beforeUncordonCount := promUtil.ToFloat64(uncordonCounter)
+
+		tracker.Cordon(ups, "*", "vendor maintenance")
+		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
+			"cordon event counter increments on OFF→ON edge")
+
+		// Tracked cordon-start timestamp survives an already-cordoned
+		// refresh (operator updating context with another Cordon call)
+		// — only the OFF→ON edge records start so durations measure
+		// real outages.
+		tm := tracker.getUpsMetrics(upstreamKey{ups, "*"})
+		startedAt := tm.CordonedAtMs.Load()
+		require.NotZero(t, startedAt, "CordonedAtMs must be set on OFF→ON edge")
+
+		time.Sleep(5 * time.Millisecond)
+		tracker.Cordon(ups, "*", "vendor maintenance (extended)")
+		require.Equal(t, startedAt, tm.CordonedAtMs.Load(),
+			"already-cordoned re-cordon must preserve original start timestamp")
+		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
+			"already-cordoned re-cordon must NOT increment the event counter")
+
+		// Hold the cordon briefly so the duration histogram observes a
+		// non-zero value, then uncordon.
+		time.Sleep(20 * time.Millisecond)
+		histBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
+		tracker.Uncordon(ups, "*", "vendor resolved")
+		histAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
+
+		assert.Equal(t, int64(0), tm.CordonedAtMs.Load(),
+			"CordonedAtMs reset to 0 on uncordon")
+		assert.False(t, tm.Cordoned.Load(), "Cordoned flag must be false after uncordon")
+		assert.Equal(t, beforeUncordonCount+1, promUtil.ToFloat64(uncordonCounter),
+			"uncordon event counter increments on ON→OFF edge")
+		assert.GreaterOrEqual(t, histAfter, histBefore,
+			"cordon-duration histogram must have observed the duration on uncordon")
+	})
+
+	t.Run("uncordon_when_not_cordoned_is_idempotent", func(t *testing.T) {
+		// Uncordoning a never-cordoned upstream must not panic, must not
+		// observe the duration histogram, and must not increment the
+		// event counter. Important because operator scripts may run
+		// reconcile-style "uncordon everything" passes.
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("never-cordoned")
+		networkID := ups.NetworkId()
+		uncordonCounter := telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			"test-project", networkID, ups.Id(), "uncordon")
+		before := promUtil.ToFloat64(uncordonCounter)
+
+		require.NotPanics(t, func() {
+			tracker.Uncordon(ups, "*", "spurious uncordon")
+		})
+		tm := tracker.getUpsMetrics(upstreamKey{ups, "*"})
+		assert.False(t, tm.Cordoned.Load())
+		assert.Equal(t, int64(0), tm.CordonedAtMs.Load())
+		assert.Equal(t, before, promUtil.ToFloat64(uncordonCounter),
+			"no-op uncordon must NOT increment the event counter")
 	})
 }

@@ -129,6 +129,66 @@ var (
 		Help:      "Count of upstreams returned by the most recent tick.",
 	}, []string{"project", "network", "method"})
 
+	// ── Selection-policy detail metrics. Bounded cardinality:
+	//   * `score`, `excluded_seconds`, `readmit_total`, `sticky_hold_total`:
+	//     per (project, network, method, upstream).
+	//   * `exclusion_total`: same plus a `reason` slug bounded by the set of
+	//     predicate factories. Compound predicates (`any`/`all`/`not`) emit
+	//     one increment per LEAF reason that tripped, attributing exclusion
+	//     to the actual signal rather than the compound boilerplate.
+	//   * `readmit_age_seconds`: per (project, network, method) only — the
+	//     per-upstream "how long out before readmit" lives in spans/logs.
+
+	MetricSelectionScore = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_score",
+		Help:      "Per-upstream score produced by `sortByScore`. Lower = better. Missing for upstreams that bypassed scoring (probeExcluded/forceInclude additions and policies without a sortByScore step).",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionExclusionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_exclusion_total",
+		Help:      "Per-upstream exclusion events labelled by the leaf-predicate slug that tripped (`error_rate_above`, `latency_p95_above`, `block_head_lag_above`, ...). Compound predicates emit one increment per leaf — exclusion is attributed to the actual signal, not the combinator.",
+	}, []string{"project", "network", "method", "upstream", "reason"})
+
+	MetricSelectionExcludedSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_excluded_seconds",
+		Help:      "Wall-clock seconds the upstream has been continuously excluded. `0` when in rotation. Alert on `> 600` for `stuck excluded > 10m`.",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionReadmitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_readmit_total",
+		Help:      "Times an upstream was readmitted into rotation after a period of exclusion (transition from excluded → in-list).",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionReadmitAgeSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "selection_readmit_age_seconds",
+		Help:      "Distribution of `now - excludedSince` at readmit time. Tall left tail = readmitting too eagerly (probable flap); tall right tail = readmit cooldown too generous.",
+		Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
+	}, []string{"project", "network", "method"})
+
+	MetricSelectionStickyHoldTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_sticky_hold_total",
+		Help:      "Ticks where `stickyPrimary` actively held the primary that would otherwise have flipped (challenger had a lower score AND/OR cooldown still in effect). The ratio against `selection_primary_switch_total` reveals how much smoothing the chain is doing.",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricUpstreamCordonEventTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_cordon_event_total",
+		Help:      "Admin-driven cordon transitions. `action` ∈ {`cordon`,`uncordon`}.",
+	}, []string{"project", "network", "upstream", "action"})
+
+	MetricUpstreamCordonDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "upstream_cordon_duration_seconds",
+		Help:      "Time an upstream stayed cordoned, observed on each uncordon. Long tails are typically real outages; very short cordons are usually manual mis-fires.",
+		Buckets:   []float64{1, 10, 60, 300, 900, 1800, 3600, 7200, 21600, 86400},
+	}, []string{"project", "network", "upstream"})
+
 	MetricUpstreamStaleLatestBlock = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_stale_latest_block_total",

@@ -93,7 +93,7 @@ func newTestEngine(t *testing.T, eval string) (*policy.Engine, []common.Upstream
 		EvalFunc:            eval,
 	}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	return engine, nil, tracker, cancel
 }
 
@@ -224,7 +224,7 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults())
 	require.Equal(t, common.DefaultSelectionPolicySource, cfg.EvalFunc, "SetDefaults should install the placeholder")
 
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	defer engine.Stop()
 
 	ups := mkUpsWithTier(map[string]string{"rpc1": "default", "rpc2": "fallback"})
@@ -251,7 +251,7 @@ func TestStdlib_DefaultPolicy_DropsBrokenUpstream(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
@@ -286,7 +286,7 @@ func TestStdlib_DefaultPolicy_SafetyNetWhenAllBroken(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
@@ -319,7 +319,7 @@ func TestStdlib_DefaultPolicy_FallbackTierWhenPrimaryEmpty(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	defer engine.Stop()
 
 	// All upstreams tagged tier:fallback → primary tier
@@ -345,7 +345,7 @@ func TestStdlib_DefaultPolicy_DropsLaggingErrorFreeUpstream(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
@@ -379,7 +379,7 @@ func TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
@@ -400,87 +400,70 @@ func TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream(t *testing.T) {
 		"rpc1 has 0 errors but p95=12s > 10s → must be excluded by keepHealthy(maxP95Ms:10_000)")
 }
 
-// TestStdlib_DefaultPolicy_StickyPrimary_OnlyForRealtime (G3):
-// the default's `stickyPrimary` is wrapped in
-// `.if(ctx.finality === REALTIME, ...)`. On REALTIME requests, sticky
-// behavior holds the primary across ticks. On FINALIZED requests, the
-// challenger immediately takes over when scoring favors it.
+// TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities verifies that
+// the default policy's `stickyPrimary` holds the incumbent across the
+// minSwitchInterval cooldown REGARDLESS of `ctx.finality`. Flapping
+// between two similarly-ranked upstreams every tick costs more in
+// connection-setup + cache-locality than it saves in marginal ranking
+// accuracy, regardless of whether the request is reorg-tolerant — so
+// the policy treats finalized + unfinalized + realtime requests the
+// same for stickiness purposes.
 //
-// Setup: tick 1 with rpc1 clean and rpc2 broken → rpc1 is primary.
-// Then make rpc1 worse than rpc2 (rpc2 already accumulated errors that
-// kept it out; flip the script so rpc1 errors heavily and rpc2 is now
-// clean). Under REALTIME the 30s minSwitchInterval should hold rpc1
-// as primary. Under FINALIZED, no stickiness → rpc2 should take over.
-func TestStdlib_DefaultPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
-	// Test the JS branching directly with a frozen ctx, so we don't need
-	// to thread finality through the request path. Two evals — same
-	// default body — driven against ctx.finality=REALTIME and
-	// ctx.finality=FINALIZED with identical metrics and previousOrder.
-	// Asserts that REALTIME respects stickiness, FINALIZED does not.
+// Setup: tick 1 with both clean → rpc1 wins by id tiebreak and gets
+// recorded as the sticky primary. Then rpc1 errors heavily so scoring
+// would favour rpc2 on its own. Tick 2 under each finality: the
+// `minSwitchInterval` cooldown is still live, so rpc1 remains primary.
+func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 	defaultPolicy := policy.DefaultPolicySource()
 
-	mkEngine := func(finality string) (*policy.Engine, []common.Upstream, *health.Tracker, context.CancelFunc) {
+	mkEngine := func() (*policy.Engine, []common.Upstream, *health.Tracker, context.CancelFunc) {
 		ctx, cancel := context.WithCancel(context.Background())
 		logger := zerolog.Nop()
 		tracker := health.NewTracker(&logger, "p1", time.Minute)
-		cfg := &common.SelectionPolicyConfig{
-			EvalFunc: defaultPolicy,
-		}
+		cfg := &common.SelectionPolicyConfig{EvalFunc: defaultPolicy}
 		require.NoError(t, cfg.SetDefaults())
-		engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+		engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 
 		ups := mkUps("rpc1", "rpc2")
 		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
-		// Both clean enough to pass keepHealthy, but rpc1 is slightly
-		// preferred. The challenger advantage we'll later introduce is
-		// large (rpc1 errors heavily) so any non-sticky policy switches.
 		for _, u := range ups {
 			for i := 0; i < 100; i++ {
 				tracker.RecordUpstreamRequest(u, "*")
 				tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 			}
 		}
-		_ = finality // ctx.finality is set via policy.OverrideFinalityForTest below
 		return engine, ups, tracker, cancel
 	}
 
-	for _, tc := range []struct {
-		name           string
-		finality       string
-		expectPrimary  string
-		expectSwitched bool
-	}{
-		{"REALTIME holds prior primary", "realtime", "rpc1", false},
-		{"FINALIZED switches immediately", "finalized", "rpc2", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			engine, ups, tracker, cancel := mkEngine(tc.finality)
+	for _, finality := range []string{"realtime", "unfinalized", "finalized"} {
+		t.Run(finality+"_holds_prior_primary", func(t *testing.T) {
+			engine, ups, tracker, cancel := mkEngine()
 			defer cancel()
 			defer engine.Stop()
 
-			// Force finality on the engine's eval ctx so the .if() branches.
-			policy.SetFinalityForTest(engine, "evm:1", "*", tc.finality)
+			policy.SetFinalityForTest(engine, "evm:1", "*", finality)
 
-			// Tick 1 — equal metrics → rpc1 wins by id tiebreak. Sticky
-			// state now records rpc1 as primary at this timestamp.
+			// Tick 1 — equal metrics → rpc1 wins by id tiebreak.
 			policy.TickForTest(engine, "evm:1", "*")
 			first := ids(engine.GetOrdered("evm:1", "*"))
 			require.Equal(t, "rpc1", first[0], "tick 1: rpc1 wins by id tiebreak")
 
-			// Make rpc1 clearly worse than rpc2 (challenger advantage > hysteresis).
+			// Make rpc1 clearly worse — but errorRate stays below the
+			// 50% excludeIf threshold so the contest is over RANKING,
+			// not exclusion.
 			for i := 0; i < 30; i++ {
 				tracker.RecordUpstreamRequest(ups[0], "*")
 				tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
 			}
 
-			// Tick 2 — under REALTIME, the 30s minSwitchInterval keeps
-			// rpc1 as primary. Under FINALIZED, no stickiness, switch.
+			// Tick 2 — under EVERY finality, the 30s minSwitchInterval
+			// keeps rpc1 as primary.
 			policy.TickForTest(engine, "evm:1", "*")
 			second := ids(engine.GetOrdered("evm:1", "*"))
 			require.GreaterOrEqual(t, len(second), 1)
-			require.Equal(t, tc.expectPrimary, second[0],
-				"tick 2 primary under finality=%s should be %s", tc.finality, tc.expectPrimary)
+			require.Equal(t, "rpc1", second[0],
+				"tick 2 primary under finality=%s must stay rpc1 (sticky)", finality)
 		})
 	}
 }
@@ -499,7 +482,7 @@ func TestStdlib_DefaultPolicy_ProbeReadmitsAt90s(t *testing.T) {
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	cfg := &common.SelectionPolicyConfig{}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
@@ -1017,7 +1000,7 @@ func TestStdlib_LatestDecision_OrderAndExclusions(t *testing.T) {
 func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams
 		.byTag('tier:main')
-		.excludeIf(errorRateAbove(0.5), { reason: 'errs>50%' })
+		.excludeIf(errorRateAbove(0.5))
 		.sortByScore(BALANCED)`
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1029,7 +1012,7 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 		EvalFunc:     eval,
 	}
 	require.NoError(t, cfg.SetDefaults())
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	engine.SetStepLogEnabled(true)
 	defer engine.Stop()
 
@@ -1086,10 +1069,11 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 	require.NotNil(t, excludeStep, "excludeIf step should be in the trail")
 	require.Contains(t, excludeStep.Dropped, "rpc1", "excludeIf should have dropped rpc1")
 
-	// Per-upstream annotations: rpc1 should carry the reason string the
-	// excludeIf rule attached when it dropped it.
+	// Per-upstream annotations: rpc1 should carry the auto-derived
+	// reason string from `errorRateAbove(0.5).policyReason` — no
+	// explicit reason was passed at the callsite.
 	require.NotEmpty(t, d.Output.Annotations["rpc1"], "rpc1 should have annotations from excludeIf")
-	require.Contains(t, d.Output.Annotations["rpc1"], "errs>50%")
+	require.Contains(t, d.Output.Annotations["rpc1"], "errorRate>0.5")
 }
 
 // TestStdlib_StepLog_DisabledByDefault verifies that without

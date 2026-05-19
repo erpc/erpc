@@ -6,6 +6,18 @@ function RightCol({ onOpenDrawer, drawerReqId }) {
   const [tab, setTab] = useState("gen");
   const events = window.useEvents();
   const actions = window.useSimActions();
+  const focused = window.useFocusedUpstream();
+
+  // When the operator focuses an upstream (clicks its node / row), jump
+  // straight to the Event log so they see traffic filtered to that
+  // upstream without having to manually switch tabs. Re-firing on
+  // focus *change* (not just on truthy) means switching focus from one
+  // upstream to another also re-asserts the Event log tab if they
+  // somehow flipped back. Clearing focus doesn't yank them away from
+  // wherever they navigated to next.
+  useEffect(() => {
+    if (focused) setTab("log");
+  }, [focused]);
 
   return (
     <div className="right-col" style={{height:"100%"}}>

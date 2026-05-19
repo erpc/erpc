@@ -680,11 +680,20 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
-					// Cancelled request (e.g. hedge lost the race, or client
-					// disconnected). Not attributable to upstream quality from
-					// this layer — skip failure recording and the generic error
-					// metric. Hedge discards are accounted at the network layer
+					// Cancelled request (hedge lost the race or client
+					// disconnected). Not attributable to upstream quality
+					// from THIS layer for the error-rate counter — skip
+					// RecordUpstreamFailure and the generic error metric.
+					// Hedge discards are accounted at the network layer
 					// via MetricNetworkHedgeDiscardsTotal.
+					//
+					// Latency IS still attributable: the elapsed-by-cancel
+					// time is a lower bound on the upstream's true
+					// completion time. We feed it to the latency quantile
+					// below (see `isCanceled` branch on ObserveDuration),
+					// otherwise a perpetually-slow upstream that always
+					// loses the hedge race would never accumulate samples
+					// and stay artificially top-ranked.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
@@ -712,10 +721,20 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				}
 
-				// ExecutionException is a valid blockchain response (e.g. revert) — count its latency.
-				// All other errors should NOT contribute to the latency quantile.
+				// Two error classes feed the latency quantile:
+				//   * ExecutionException (EVM revert) — the upstream did
+				//     real work; the duration reflects actual response time.
+				//   * RequestCanceled (hedge-lost / client gave up / engine
+				//     timeout) — the elapsed-by-cancel time is a LOWER
+				//     BOUND on completion. Without this, an upstream that
+				//     never wins the hedge race accumulates zero latency
+				//     samples and the score chip stays optimistic forever.
+				// All other errors fired before / instead of a meaningful
+				// response and would conflate "broken" with "slow" if
+				// counted; they stay out of the quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
-				timer.ObserveDuration(isRevert)
+				isCanceled := common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled)
+				timer.ObserveDuration(isRevert || isCanceled)
 				if isRevert {
 					nrq.ClearLastValidResponse()
 				}
@@ -1519,4 +1538,10 @@ func (u *Upstream) Cordon(method string, reason string) {
 
 func (u *Upstream) Uncordon(method string, reason string) {
 	u.metricsTracker.Uncordon(u, method, reason)
+}
+
+// CordonedReason returns the cordon reason and whether the (upstream,
+// method) is currently cordoned. Pass `"*"` for the wildcard scope.
+func (u *Upstream) CordonedReason(method string) (string, bool) {
+	return u.metricsTracker.CordonedReason(u, method)
 }

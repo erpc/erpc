@@ -54,7 +54,7 @@ func runTranslatedPolicy(
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := zerolog.Nop()
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// RegisterNetwork synchronously runs an initial tick so the cache is

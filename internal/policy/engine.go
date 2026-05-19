@@ -8,6 +8,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
 )
 
@@ -74,12 +75,21 @@ type networkRegistration struct {
 // perspective — the engine snapshots metrics from it once per tick. The
 // `runtimePrimer` is invoked on each freshly-created sobek runtime; pass
 // nil to skip primings (the default policy works against the bare runtime).
+//
+// `userScript` is the compiled program of the user's TS config file
+// (when the config was loaded from `.ts`/`.js`; nil for YAML). When
+// non-nil, the pool evaluates it in every freshly-created runtime AFTER
+// the primer — that materializes the user's helpers + imports + the
+// `__erpcFns` registry natively in each runtime, so `EvalFunc` sentinels
+// resolve to real sobek functions whose closure scope is the user's
+// module.
 func NewEngine(
 	parentCtx context.Context,
 	logger *zerolog.Logger,
 	projectID string,
 	tracker *health.Tracker,
 	runtimePrimer func(*common.Runtime) error,
+	userScript *sobek.Program,
 ) *Engine {
 	ctx, cancel := context.WithCancel(parentCtx)
 	lg := logger.With().Str("component", "policy-engine").Str("projectId", projectID).Logger()
@@ -87,7 +97,7 @@ func NewEngine(
 		projectID: projectID,
 		logger:    &lg,
 		tracker:   tracker,
-		pool:      newRuntimePool(runtimePrimer),
+		pool:      newRuntimePool(runtimePrimer, userScript),
 		slots:     make(map[slotKey]*Slot),
 		networks:  make(map[string]*networkRegistration),
 		appCtx:    ctx,
@@ -164,18 +174,27 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 // in policy-chosen order. The lookup is wait-free in the common path.
 //
 // Fallback chain:
-//  1. Exact slot for (network, method)
-//  2. Wildcard slot for (network, "*")
+//  1. Exact slot for (network, method) — populated either at register-
+//     time (wildcard) or lazily on first lookup (when `EvalPerMethod`
+//     is true and a request comes in for a method the engine hasn't
+//     seen yet).
+//  2. Wildcard slot for (network, "*") — used as the answer until the
+//     just-created per-method slot completes its first tick (its cache
+//     is nil between creation and first tickOnce).
 //
 // On either hit, the returned slice is the SAME backing array the slot
 // stores atomically — callers MUST treat it as read-only.
 func (e *Engine) GetOrdered(networkID, method string) []common.Upstream {
-	slot := e.lookupSlot(networkID, method)
-	if slot == nil {
-		return nil
+	slot, wildcard := e.lookupSlotWithFallback(networkID, method)
+	if slot != nil {
+		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
+			return *ordered
+		}
 	}
-	if ordered := slot.cache.Load(); ordered != nil {
-		return *ordered
+	if wildcard != nil {
+		if ordered := wildcard.cache.Load(); ordered != nil {
+			return *ordered
+		}
 	}
 	return nil
 }
@@ -253,8 +272,10 @@ func (e *Engine) GetScores(networkID, method string) map[string]float64 {
 	return out
 }
 
-// lookupSlot is the shared resolver used by the per-slot accessors —
+// lookupSlot is the shared resolver used by per-slot accessors that
+// want a single slot to read from (admin endpoints, diagnostics):
 // exact (network, method) match falls back to the network's "*" slot.
+// Does NOT lazy-create — those are read-only paths.
 func (e *Engine) lookupSlot(networkID, method string) *Slot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -262,6 +283,55 @@ func (e *Engine) lookupSlot(networkID, method string) *Slot {
 		return slot
 	}
 	return e.slots[slotKey{networkID, "*"}]
+}
+
+// lookupSlotWithFallback is the request-path resolver used by
+// `GetOrdered`. Differs from `lookupSlot` in two ways:
+//
+//  1. Returns BOTH the exact slot AND the wildcard so the caller can
+//     fall back to wildcard while a freshly-created per-method slot's
+//     cache is still empty (between creation and first tickOnce).
+//  2. Lazy-creates the per-method slot if `EvalPerMethod` is true on
+//     the network's config and no slot exists yet. The new slot
+//     inherits the same `upstreamsFn` + cfg as the wildcard and
+//     starts its own ticker — subsequent requests for this method
+//     get a method-specific ranking.
+//
+// First call for a fresh method pays a brief write-lock; later calls
+// are wait-free RLock reads like the rest of the request path.
+func (e *Engine) lookupSlotWithFallback(networkID, method string) (slot *Slot, wildcard *Slot) {
+	e.mu.RLock()
+	if s, ok := e.slots[slotKey{networkID, method}]; ok {
+		w := e.slots[slotKey{networkID, "*"}]
+		e.mu.RUnlock()
+		return s, w
+	}
+	wildcard = e.slots[slotKey{networkID, "*"}]
+	reg, hasReg := e.networks[networkID]
+	e.mu.RUnlock()
+
+	// No method-specific slot yet. Lazy-create iff the network is
+	// configured for per-method evaluation; otherwise the wildcard
+	// answers everything.
+	if !hasReg || method == "" || method == "*" || reg.cfg == nil || !reg.cfg.EvalPerMethod {
+		return nil, wildcard
+	}
+
+	// Upgrade to write lock + double-check (another goroutine may have
+	// won the race while we waited).
+	e.mu.Lock()
+	if s, ok := e.slots[slotKey{networkID, method}]; ok {
+		e.mu.Unlock()
+		return s, wildcard
+	}
+	s := newSlot(e, networkID, method, reg.upstreamsFn, reg.cfg)
+	e.slots[slotKey{networkID, method}] = s
+	e.mu.Unlock()
+	// Start the slot's ticker asynchronously so this request-path call
+	// returns immediately. The slot's cache stays nil until the first
+	// tick completes, hence the wildcard fallback in `GetOrdered`.
+	s.start(e.appCtx)
+	return s, wildcard
 }
 
 // SetPaused gates every slot's ticker. While paused, the goroutine still

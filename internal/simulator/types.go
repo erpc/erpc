@@ -220,6 +220,40 @@ type PolicyDecisionFrame struct {
 	// Surfaces "why was THIS upstream dropped / kept / re-ordered" in
 	// the simulator's policy-history drawer.
 	Annotations map[string][]string `json:"annotations,omitempty"`
+
+	// Metrics[upstreamID] is the per-upstream metric snapshot the eval
+	// saw at this tick — errorRate, throttledRate, latency quantiles,
+	// block-head lag, etc. Carried so the simulator's policy-history
+	// drawer can show the operator the EXACT numbers `sortByScore` /
+	// `excludeIf` were ranking on, without having to cross-reference
+	// the upstream-knobs panel (which only shows live state).
+	Metrics map[string]PolicyDecisionMetrics `json:"metrics,omitempty"`
+
+	// PerUpstreamScore[upstreamID] is the score the JS produced this
+	// tick. Lower = better; absent for upstreams added after the
+	// scoring step. Carried per-decision so historical ticks answer
+	// "what did the policy rank this upstream at on tick T?"
+	PerUpstreamScore map[string]float64 `json:"perUpstreamScore,omitempty"`
+}
+
+// PolicyDecisionMetrics mirrors policy.UpstreamMetrics with JSON tags
+// matching the simulator UI's expected shape. Used by the policy-history
+// drawer's per-upstream hover tooltip + the sortByScore breakdown.
+type PolicyDecisionMetrics struct {
+	ErrorRate              float64 `json:"errorRate"`
+	ThrottledRate          float64 `json:"throttledRate"`
+	MisbehaviorRate        float64 `json:"misbehaviorRate"`
+	BlockHeadLag           int64   `json:"blockHeadLag"`
+	FinalizationLag        int64   `json:"finalizationLag"`
+	BlockHeadLagSeconds    float64 `json:"blockHeadLagSeconds,omitempty"`
+	FinalizationLagSeconds float64 `json:"finalizationLagSeconds,omitempty"`
+	P50ResponseMs          float64 `json:"p50Ms"`
+	P70ResponseMs          float64 `json:"p70Ms"`
+	P90ResponseMs          float64 `json:"p90Ms"`
+	P95ResponseMs          float64 `json:"p95Ms"`
+	P99ResponseMs          float64 `json:"p99Ms"`
+	RequestsTotal          int64   `json:"requestsTotal"`
+	ErrorsTotal            int64   `json:"errorsTotal"`
 }
 
 // PolicyDecisionExcludedRow mirrors policy.ExcludedUpstream for the

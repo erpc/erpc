@@ -256,6 +256,21 @@ type EvalResult struct {
 	// during the eval. Order follows JS chain order. Empty when
 	// step-log recording is disabled.
 	StepLog []StepEntry
+	// LeafReasons[upstreamID] = stable metric-label slugs ("error_rate_above",
+	// "latency_p95_above", "block_head_lag_above", "not_<slug>", ...) for
+	// each leaf predicate that contributed to dropping this upstream.
+	// Always populated when `excludeIf` dropped the upstream (NOT gated by
+	// stepLogEnabled — these drive a Prometheus counter, not a diagnostic
+	// surface). One slug per leaf — `any(A,B)` excluding because A trips
+	// gives `[A.slug]`; `all(A,B)` gives `[A.slug, B.slug]`; `not(A)`
+	// gives `[not_<A.slug>]`. Cardinality bounded by the set of predicate
+	// factories (~25). See option (c) in the metrics design doc.
+	LeafReasons map[string][]string
+	// StickyHeld is true when `stickyPrimary` ACTIVELY held the previous
+	// primary this tick (i.e. challenger would have won under a no-sticky
+	// ordering, but cooldown or hysteresis kept the incumbent). Drives
+	// `erpc_selection_sticky_hold_total{upstream=<held primary>}`.
+	StickyHeld bool
 }
 
 // runEval executes the compiled eval program against the snapshot.
@@ -282,7 +297,8 @@ func runEval(
 	evalCtx EvalContext,
 	stepLogEnabled bool,
 ) (*EvalResult, error) {
-	if cfg.CompiledProgram == nil {
+	tsSentinel := common.IsTSFunctionSentinel(cfg.EvalFunc)
+	if !tsSentinel && cfg.CompiledProgram == nil {
 		return nil, fmt.Errorf("selectionPolicy.eval has no compiled program")
 	}
 
@@ -294,14 +310,42 @@ func runEval(
 
 	vm := rt.VM()
 
-	// Run the compiled program → the result is the eval function itself.
-	fnValue, err := vm.RunProgram(cfg.CompiledProgram)
-	if err != nil {
-		return nil, fmt.Errorf("evaluate program: %w", err)
-	}
-	fn, ok := sobek.AssertFunction(fnValue)
-	if !ok {
-		return nil, fmt.Errorf("%w: expression did not evaluate to a function", ErrInvalidReturn)
+	var fn sobek.Callable
+	if tsSentinel {
+		// TS path: the user's whole module was already evaluated in this
+		// runtime by the pool primer, and the function is registered on
+		// `globalThis.__erpcFns[id]` with its native closure scope.
+		id := common.TSFunctionSentinelID(cfg.EvalFunc)
+		fnsRaw := vm.GlobalObject().Get("__erpcFns")
+		if fnsRaw == nil || sobek.IsUndefined(fnsRaw) || sobek.IsNull(fnsRaw) {
+			return nil, fmt.Errorf("ts selectionPolicy.evalFunc lookup: __erpcFns registry not populated (user script did not run?)")
+		}
+		fnsObj := fnsRaw.ToObject(vm)
+		if fnsObj == nil {
+			return nil, fmt.Errorf("ts selectionPolicy.evalFunc lookup: __erpcFns is not an object")
+		}
+		fnValue := fnsObj.Get(id)
+		if fnValue == nil || sobek.IsUndefined(fnValue) || sobek.IsNull(fnValue) {
+			return nil, fmt.Errorf("ts selectionPolicy.evalFunc lookup: id %q not found in __erpcFns", id)
+		}
+		var ok bool
+		fn, ok = sobek.AssertFunction(fnValue)
+		if !ok {
+			return nil, fmt.Errorf("%w: __erpcFns[%q] is not a function", ErrInvalidReturn, id)
+		}
+	} else {
+		// YAML path: compile-once Program; running it returns the
+		// (parens-wrapped) arrow expression which evaluates to the
+		// function value.
+		fnValue, err := vm.RunProgram(cfg.CompiledProgram)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate program: %w", err)
+		}
+		var ok bool
+		fn, ok = sobek.AssertFunction(fnValue)
+		if !ok {
+			return nil, fmt.Errorf("%w: expression did not evaluate to a function", ErrInvalidReturn)
+		}
 	}
 
 	upsValue := buildJSUpstreams(vm, ups, metrics)
@@ -326,11 +370,26 @@ func runEval(
 	if err := vm.GlobalObject().Set("__policyStepLog", vm.NewArray()); err != nil {
 		return nil, err
 	}
+	// Per-upstream leaf-reason slugs populated by `excludeIf`. Reset to
+	// a fresh empty object each tick. Drives the
+	// `erpc_selection_exclusion_total{reason}` metric with option (c)
+	// leaf attribution — `any(A,B)` excluding via A attributes to A's slug.
+	// Unlike StepLog, this is ALWAYS captured (it's a metric input, not a
+	// diagnostic-only payload), so it ignores `stepLogEnabled`.
+	if err := vm.GlobalObject().Set("__policyLeafReasons", vm.NewObject()); err != nil {
+		return nil, err
+	}
+	// Cleared each tick to detect active stickyPrimary holds.
+	if err := vm.GlobalObject().Set("__policyStickyHeld", false); err != nil {
+		return nil, err
+	}
 	defer func() {
 		_ = vm.GlobalObject().Set("__policyCtx", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyAllUpstreams", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyStepLogEnabled", false)
 		_ = vm.GlobalObject().Set("__policyStepLog", sobek.Undefined())
+		_ = vm.GlobalObject().Set("__policyLeafReasons", sobek.Undefined())
+		_ = vm.GlobalObject().Set("__policyStickyHeld", false)
 	}()
 
 	result, err := fn(sobek.Undefined(), upsValue, ctxValue)
@@ -358,7 +417,69 @@ func runEval(
 		out.Annotations = readAnnotations(vm, upsValue, ups)
 	}
 
+	// LeafReasons + StickyHeld are read every tick (not gated by
+	// stepLogEnabled). They feed Prometheus counters in the slot's
+	// emitMetrics, not the diagnostic-only step trail.
+	out.LeafReasons = readLeafReasons(vm)
+	if heldVal := vm.GlobalObject().Get("__policyStickyHeld"); heldVal != nil && !sobek.IsUndefined(heldVal) && !sobek.IsNull(heldVal) {
+		out.StickyHeld = heldVal.ToBoolean()
+	}
+
 	return out, nil
+}
+
+// readLeafReasons deserializes the JS-side `__policyLeafReasons` global
+// (a `{ [upstreamId]: string[] }` map populated by `excludeIf`) into a
+// Go map. Empty map on missing / malformed input — leaf attribution is
+// best-effort and shouldn't break the eval if the JS-side wiring drifts.
+func readLeafReasons(vm *sobek.Runtime) map[string][]string {
+	v := vm.GlobalObject().Get("__policyLeafReasons")
+	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {
+		return nil
+	}
+	obj, ok := v.(*sobek.Object)
+	if !ok {
+		return nil
+	}
+	keys := obj.Keys()
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(keys))
+	for _, k := range keys {
+		arrVal := obj.Get(k)
+		if arrVal == nil {
+			continue
+		}
+		arrObj, ok := arrVal.(*sobek.Object)
+		if !ok {
+			continue
+		}
+		lenVal := arrObj.Get("length")
+		if lenVal == nil {
+			continue
+		}
+		n := int(lenVal.ToInteger())
+		if n <= 0 {
+			continue
+		}
+		slugs := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			item := arrObj.Get(fmt.Sprintf("%d", i))
+			if item == nil || sobek.IsUndefined(item) || sobek.IsNull(item) {
+				continue
+			}
+			s := item.String()
+			if s == "" {
+				continue
+			}
+			slugs = append(slugs, s)
+		}
+		if len(slugs) > 0 {
+			out[k] = slugs
+		}
+	}
+	return out
 }
 
 // readStepLog deserializes the JS-side `__policyStepLog` global into Go

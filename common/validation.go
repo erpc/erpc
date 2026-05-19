@@ -1318,6 +1318,13 @@ func (c *SelectionPolicyConfig) Validate() error {
 	if c.EvalFunc == "" {
 		return fmt.Errorf("selectionPolicy.evalFunc is required")
 	}
+	// TS-loaded configs carry a `__ts_fn__:<id>` sentinel instead of a
+	// compiled Program — the function lives natively on the user-script
+	// runtime's `globalThis.__erpcFns` and is resolved at eval time.
+	// See loadConfigFromTypescript for the full lifecycle.
+	if IsTSFunctionSentinel(c.EvalFunc) {
+		return nil
+	}
 	if c.CompiledProgram == nil {
 		return fmt.Errorf("selectionPolicy.evalFunc failed to compile (CompiledProgram is nil)")
 	}

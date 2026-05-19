@@ -7782,7 +7782,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Networks: []*common.NetworkConfig{},
 			},
 			Logger:       &logger,
-			policyEngine: policy.NewEngine(ctx, &logger, projectID, metricsTracker, stdlib.Install),
+			policyEngine: policy.NewEngine(ctx, &logger, projectID, metricsTracker, stdlib.Install, nil),
 		}
 		networksRegistry := NewNetworksRegistry(
 			prj,

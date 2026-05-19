@@ -522,6 +522,37 @@ func (o *Orchestrator) RecentPolicyDecisions(method string, limit int) []PolicyD
 				frame.Annotations[id] = append([]string(nil), notes...)
 			}
 		}
+		// Per-tick metric snapshot the eval saw — drives the modal's
+		// per-upstream hover tooltip + the sortByScore breakdown. We
+		// copy by value (PolicyDecisionMetrics is plain numeric fields)
+		// so the wire payload doesn't reference the slot's snapshot map.
+		if len(d.Input.Metrics) > 0 {
+			frame.Metrics = make(map[string]PolicyDecisionMetrics, len(d.Input.Metrics))
+			for id, m := range d.Input.Metrics {
+				frame.Metrics[id] = PolicyDecisionMetrics{
+					ErrorRate:              m.ErrorRate,
+					ThrottledRate:          m.ThrottledRate,
+					MisbehaviorRate:        m.MisbehaviorRate,
+					BlockHeadLag:           m.BlockHeadLag,
+					FinalizationLag:        m.FinalizationLag,
+					BlockHeadLagSeconds:    m.BlockHeadLagSeconds,
+					FinalizationLagSeconds: m.FinalizationLagSeconds,
+					P50ResponseMs:          m.P50ResponseSeconds * 1000,
+					P70ResponseMs:          m.P70ResponseSeconds * 1000,
+					P90ResponseMs:          m.P90ResponseSeconds * 1000,
+					P95ResponseMs:          m.P95ResponseSeconds * 1000,
+					P99ResponseMs:          m.P99ResponseSeconds * 1000,
+					RequestsTotal:          m.RequestsTotal,
+					ErrorsTotal:            m.ErrorsTotal,
+				}
+			}
+		}
+		if len(d.Output.Scores) > 0 {
+			frame.PerUpstreamScore = make(map[string]float64, len(d.Output.Scores))
+			for id, s := range d.Output.Scores {
+				frame.PerUpstreamScore[id] = s
+			}
+		}
 		out = append(out, frame)
 	}
 	return out

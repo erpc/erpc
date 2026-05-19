@@ -33,6 +33,35 @@ import (
 // the chain without affecting its peers — exactly the dynamic that
 // motivates `keepHealthy({ maxBlockHeadLag })` in the real default
 // policy.
+//
+// Block timestamps: every `eth_getBlockByNumber` / `eth_getBlockByHash`
+// response uses `simGenesisUnix + block * simBlockTimeSec` so that
+// consecutive blocks are spaced by a stable interval. The eRPC health
+// tracker's block-time EMA samples these deltas to estimate "seconds
+// per block" — without a synthetic-but-consistent timestamp the EMA
+// converges to nonsense and `blockSecondsLagAbove(...)` policy
+// predicates never fire.
+const (
+	// 12 second blocks. Matches Ethereum mainnet's nominal rate.
+	// Per-upstream `BlockTimeMs` knobs control HEAD ADVANCEMENT
+	// (how fast each upstream's view of tip moves) but the chain's
+	// canonical block-time-on-the-wire is one number across upstreams
+	// — a real chain has ONE block N, with ONE timestamp.
+	simBlockTimeSec int64 = 12
+	// Genesis offset. Picked so a block in the low millions yields a
+	// timestamp in the last decade — feels realistic when an operator
+	// inspects raw responses in the dumper. Absolute value doesn't
+	// matter for the EMA (it only reads diffs).
+	simGenesisUnix int64 = 1_438_269_973 // Aug 2015, near Eth mainnet genesis
+)
+
+// blockTimestamp returns the synthetic Unix seconds for `block`. Same
+// value for the same block across every upstream — required for the
+// network's block-time EMA to converge.
+func blockTimestamp(block int64) int64 {
+	return simGenesisUnix + block*simBlockTimeSec
+}
+
 type UpstreamHub struct {
 	mu    sync.RWMutex
 	knobs map[string]*UpstreamKnobs
@@ -512,7 +541,7 @@ func (h *UpstreamHub) synthResult(k *UpstreamKnobs, req jsonRPCRequest) *jsonRPC
 		}
 		resp.Result = json.RawMessage(fmt.Sprintf(
 			`{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x%x","transactions":[]}`,
-			block, block, block-1, time.Now().Unix(),
+			block, block, block-1, blockTimestamp(block),
 		))
 	case "eth_getBlockByHash":
 		// 90% baseline — most upstreams have indexed any given block
@@ -525,7 +554,7 @@ func (h *UpstreamHub) synthResult(k *UpstreamKnobs, req jsonRPCRequest) *jsonRPC
 		head := h.headFor(k.ID).headBlock.Load() - int64(k.BlockLag)
 		resp.Result = json.RawMessage(fmt.Sprintf(
 			`{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x%x","transactions":[]}`,
-			head, head, head-1, time.Now().Unix(),
+			head, head, head-1, blockTimestamp(head),
 		))
 	case "eth_getTransactionReceipt":
 		// 80% baseline — most upstreams have any given recent tx

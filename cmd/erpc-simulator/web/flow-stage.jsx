@@ -531,7 +531,7 @@ function FlowStage() {
             <div className="fs-tip-section">
               <div className="fs-tip-section-hd">policy-visible metrics</div>
               <div className="grd">
-                <span className="k" title="Penalty score from sortByScore(BALANCED). LOWER = healthier — the policy sorts ascending and the upstream with the smallest score becomes primary. Formula: errorRate×8 + p70×4 + throttleRate×3 + blockHeadLag×2 + finalizationLag×1 + misbehaviorRate×6.">score · BALANCED ↓</span><span className="v">{fmtScore(row.score)}</span>
+                <span className="k" title="Penalty score from sortByScore(BALANCED). LOWER = healthier — the policy sorts ascending and the upstream with the smallest score becomes primary. Formula: p70×8 + misbehaviorRate×6 + blockHeadLag×4 + throttleRate×3 + errorRate×2 + finalizationLag×1. Latency dominates because excludeIf already drops degraded upstreams before scoring; blockHeadLag outweighs errorRate because stale heads serve stale data while failed requests retry to a peer.">score · BALANCED ↓</span><span className="v">{fmtScore(row.score)}</span>
                 <span className="k">error rate</span><span className="v">{fmtPct(row.errorRate)}</span>
                 <span className="k">throttle rate</span><span className="v">{fmtPct(row.throttleRate)}</span>
                 <span className="k">misbehavior rate</span><span className="v">{fmtPct(row.misbehaviorRate)}</span>

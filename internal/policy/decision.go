@@ -43,6 +43,14 @@ type DecisionOutput struct {
 	Order    []string
 	Excluded []ExcludedUpstream
 
+	// Scores[upstreamID] is the per-upstream score the JS attached
+	// during `sortByScore(...)`. Lower = better. Missing for upstreams
+	// added after the scoring step (probeExcluded / forceInclude) and
+	// for policies without a sortByScore step. Carried per-decision so
+	// historical ticks in the diagnostic ring still answer "what did
+	// the policy rank this upstream at on tick T?"
+	Scores map[string]float64
+
 	// StepLog is the per-step trail the JS stdlib recorded during the
 	// chain's evaluation. One entry per chainable stdlib method
 	// invoked, in chain order. Nil when the engine's step-log toggle
@@ -65,6 +73,16 @@ type ExcludedUpstream struct {
 	ID     string
 	Reason string
 	Step   string
+	// LeafReasons is the stable metric-label slug(s) attributing this
+	// exclusion. Populated by `excludeIf`'s leaf-walk against compound
+	// predicates: `any(A,B)` excluding because A trips gives `[A.slug]`;
+	// `all(A,B)` gives `[A.slug, B.slug]`; `not(A)` gives `[not_<A.slug>]`.
+	// Drives `erpc_selection_exclusion_total{reason=<slug>}` with one
+	// increment per slug — operators see WHICH signal actually caused the
+	// drop, not the combinator boilerplate. Empty for upstreams excluded
+	// outside the `excludeIf` path (e.g. dropped by `removeCordoned`,
+	// `removeByErrorRate`, ...) — those still surface via `Reason`.
+	LeafReasons []string
 }
 
 // DecisionState mirrors the cross-tick fields of EvalContext as seen
@@ -86,6 +104,13 @@ type DecisionDiff struct {
 	PrimaryChanged bool
 	Added          []string
 	Removed        []string
+	// StickyHeld is true when `stickyPrimary` ACTIVELY held the previous
+	// primary this tick (challenger would have won without sticky, but
+	// cooldown or hysteresis kept the incumbent). Drives
+	// `erpc_selection_sticky_hold_total{upstream=<incumbent>}`. The ratio
+	// against `selection_primary_switch_total` shows how much smoothing
+	// the chain is doing.
+	StickyHeld bool
 }
 
 // UpstreamMetrics is the metric snapshot the eval sees for one upstream.

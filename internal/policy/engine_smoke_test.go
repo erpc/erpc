@@ -61,7 +61,7 @@ func TestEngine_IdentityPolicy_PassesThrough(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, cfg.Validate())
 
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, nil)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, nil, nil)
 	defer engine.Stop()
 
 	ups := []common.Upstream{
@@ -93,7 +93,7 @@ func TestEngine_OverrideOrderForTest(t *testing.T) {
 	}
 	require.NoError(t, cfg.SetDefaults())
 
-	engine := policy.NewEngine(ctx, &logger, "p1", tracker, nil)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, nil, nil)
 	defer engine.Stop()
 
 	ups := []common.Upstream{

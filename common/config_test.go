@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/grafana/sobek"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
@@ -63,6 +64,7 @@ logLevel: error
 projects:
   - id: prod-shape
     scoreMetricsWindowSize: 10m
+    scoreMetricsMode: compact
     upstreamDefaults:
       routing:
         scoreLatencyQuantile: 0.9
@@ -105,8 +107,13 @@ projects:
 		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
 	}
 	prj := cfg.Projects[0]
-	if prj.LegacyProject == nil || prj.LegacyProject.ScoreMetricsWindowSize == 0 {
-		t.Fatalf("LegacyProject.ScoreMetricsWindowSize not captured; got %+v", prj.LegacyProject)
+	// scoreMetricsWindowSize is canonical (first-class on ProjectConfig);
+	// scoreMetricsMode is still legacy (translator emits inert-warning).
+	if prj.ScoreMetricsWindowSize.Duration() != 10*time.Minute {
+		t.Fatalf("canonical ScoreMetricsWindowSize not parsed; got %v", prj.ScoreMetricsWindowSize)
+	}
+	if prj.LegacyProject == nil || prj.LegacyProject.ScoreMetricsMode != "compact" {
+		t.Fatalf("LegacyProject.ScoreMetricsMode not captured; got %+v", prj.LegacyProject)
 	}
 	if prj.UpstreamDefaults == nil || prj.UpstreamDefaults.LegacyRouting == nil ||
 		len(prj.UpstreamDefaults.LegacyRouting.ScoreMultipliers) != 1 {
@@ -121,15 +128,22 @@ projects:
 	}
 }
 
-// TestLoadConfig_TypeScriptUnifiedPipeline pins the TS load path
-// going through the same yaml.Decode pipeline as the YAML path:
-//   1. function values for string fields (`eval`) get stringified to source;
-//   2. legacy YAML keys written via TS (`group:`, `routing:`) also
-//      flow through the shadow types and get migrated.
+// TestLoadConfig_TypeScriptUnifiedPipeline pins the TS load path:
+//   1. function-valued `evalFunc` survives as a real sobek function
+//      (NOT stringified) — `SelectionPolicy.EvalFunc` carries only a
+//      `__ts_fn__:<id>` sentinel pointing into the user-script's
+//      `globalThis.__erpcFns` registry;
+//   2. the user's whole compiled module is attached to `cfg.UserScript`
+//      so each policy-engine pool runtime can re-evaluate it natively,
+//      preserving closures + helpers;
+//   3. legacy YAML keys written via TS (`group:`, `routing:`) still
+//      flow through the shadow types and get migrated identically to
+//      the YAML path.
 //
 // We don't run the legacy translator hook here — that has its own
 // suite. This test just verifies that the TS object survives the
-// round-trip with the same stash semantics as YAML.
+// round-trip with the same stash semantics as YAML AND the function
+// is preserved as native sobek state rather than re-parsed source.
 func TestLoadConfig_TypeScriptUnifiedPipeline(t *testing.T) {
 	// Write a tiny TS config to a real (on-disk) file, since esbuild
 	// needs a path it can read from the filesystem.
@@ -196,13 +210,139 @@ export default {
 		t.Fatalf("routing scoreMultipliers value not preserved")
 	}
 
-	// (3) Function-valued `eval` stringified to source.
+	// (3) Function-valued `evalFunc` is captured as a `__ts_fn__:<id>`
+	// sentinel pointing into the user-script's __erpcFns registry —
+	// NOT stringified via .toString(). The actual function lives as a
+	// real sobek value in every policy-engine pool runtime that
+	// evaluates `cfg.UserScript`.
 	sp := prj.Networks[0].SelectionPolicy
 	if sp == nil {
 		t.Fatal("selectionPolicy missing")
 	}
-	if !strings.Contains(sp.EvalFunc, "sortByScore") || !strings.Contains(sp.EvalFunc, "errorRate: 99") {
-		t.Fatalf("function eval not stringified to source; got %q", sp.EvalFunc)
+	if !IsTSFunctionSentinel(sp.EvalFunc) {
+		t.Fatalf("TS-defined evalFunc should be a __ts_fn__ sentinel; got %q", sp.EvalFunc)
+	}
+	if cfg.UserScript == nil {
+		t.Fatal("cfg.UserScript must be attached for TS configs")
+	}
+
+	// Smoke-check: run the user script in a fresh runtime, look up the
+	// sentinel id in __erpcFns, and confirm it's actually a function.
+	// This is what the policy-engine pool primer does on each acquire.
+	rt, err := NewRuntime()
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if _, err := rt.VM().RunProgram(cfg.UserScript); err != nil {
+		t.Fatalf("evaluate user script: %v", err)
+	}
+	id := TSFunctionSentinelID(sp.EvalFunc)
+	fns := rt.VM().GlobalObject().Get("__erpcFns")
+	if fns == nil || sobek.IsUndefined(fns) || sobek.IsNull(fns) {
+		t.Fatal("__erpcFns must be populated after running UserScript")
+	}
+	fnVal := fns.ToObject(rt.VM()).Get(id)
+	if fnVal == nil || sobek.IsUndefined(fnVal) || sobek.IsNull(fnVal) {
+		t.Fatalf("__erpcFns[%q] missing — walker did not register the function", id)
+	}
+	if _, isFn := sobek.AssertFunction(fnVal); !isFn {
+		t.Fatalf("__erpcFns[%q] is not a function: %v", id, fnVal.ExportType())
+	}
+}
+
+// TestLoadConfig_TypeScriptClosurePreserved is the regression test that
+// proves the TS path no longer drops closures the way the old
+// `.toString()` pipeline did. The user defines a module-level helper
+// (`weights`) and references it from inside `evalFunc`. The function
+// must be able to read `weights` when invoked in the policy-engine
+// pool runtime — which only works because the WHOLE user script is
+// evaluated in each runtime, putting the function's closure scope in
+// reach.
+func TestLoadConfig_TypeScriptClosurePreserved(t *testing.T) {
+	dir := t.TempDir()
+	tsPath := dir + "/erpc.ts"
+	// `weights` is a module-level constant captured by the arrow
+	// function via closure. Under the old `.toString()` pipeline the
+	// stringified function source referenced `weights` as a free
+	// variable that wouldn't resolve in the policy runtime → eval
+	// would throw ReferenceError. Under the new pipeline the function
+	// resolves to its original closure scope inside `__erpcFns`.
+	tsSrc := `
+const weights = { fast: 5, slow: 50 };
+export default {
+  projects: [
+    {
+      id: 'closure-test',
+      upstreams: [
+        { id: 'fast', endpoint: 'https://fast.example/', evm: { chainId: 1 } },
+        { id: 'slow', endpoint: 'https://slow.example/', evm: { chainId: 1 } }
+      ],
+      networks: [
+        {
+          architecture: 'evm',
+          evm: { chainId: 1 },
+          selectionPolicy: {
+            evalFunc: (upstreams, ctx) => weights[upstreams[0] && upstreams[0].id] || 0
+          }
+        }
+      ]
+    }
+  ]
+};
+`
+	if err := afero.WriteFile(afero.NewOsFs(), tsPath, []byte(tsSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := LegacyTranslateFn
+	LegacyTranslateFn = nil
+	t.Cleanup(func() { LegacyTranslateFn = prev })
+
+	cfg, err := LoadConfig(afero.NewOsFs(), tsPath, &DefaultOptions{})
+	if err != nil {
+		t.Fatalf("LoadConfig TS: %v", err)
+	}
+
+	sp := cfg.Projects[0].Networks[0].SelectionPolicy
+	if !IsTSFunctionSentinel(sp.EvalFunc) {
+		t.Fatalf("expected sentinel, got %q", sp.EvalFunc)
+	}
+	id := TSFunctionSentinelID(sp.EvalFunc)
+
+	rt, err := NewRuntime()
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if _, err := rt.VM().RunProgram(cfg.UserScript); err != nil {
+		t.Fatalf("evaluate user script: %v", err)
+	}
+	fnVal := rt.VM().GlobalObject().Get("__erpcFns").ToObject(rt.VM()).Get(id)
+	fn, isFn := sobek.AssertFunction(fnVal)
+	if !isFn {
+		t.Fatalf("function not registered: %v", fnVal)
+	}
+
+	// Call the function with a fake upstreams arg shaped like the real
+	// eval input ({ id: 'fast' }). If the closure survives, it returns
+	// `weights['fast']` = 5. If it doesn't, the function would throw a
+	// ReferenceError on `weights`.
+	upstreams := rt.VM().NewArray()
+	upObj := rt.VM().NewObject()
+	if err := upObj.Set("id", "fast"); err != nil {
+		t.Fatal(err)
+	}
+	if err := upstreams.Set("0", upObj); err != nil {
+		t.Fatal(err)
+	}
+	if err := upstreams.Set("length", 1); err != nil {
+		t.Fatal(err)
+	}
+	res, err := fn(sobek.Undefined(), upstreams, sobek.Undefined())
+	if err != nil {
+		t.Fatalf("invoke fn — closure not preserved? %v", err)
+	}
+	if got := res.ToInteger(); got != 5 {
+		t.Fatalf("closure lookup wrong: got %d, want 5 (weights['fast'])", got)
 	}
 }
 

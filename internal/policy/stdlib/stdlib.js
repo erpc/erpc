@@ -302,38 +302,77 @@
   // The composable replacement for `keepHealthy`. Each `excludeIf` call
   // takes a predicate function:
   //
-  //   .excludeIf(errorRateAbove(0.5), { reason: 'errors>50%' })
+  //   .excludeIf(errorRateAbove(0.5))
   //
   // Semantics:
   //   * If `predicate(u)` is true this tick → drop `u`.
-  //   * Annotates dropped upstreams with `opts.reason` (or a default) for
-  //     diagnostics. Multiple rules each add their own annotation.
+  //   * Annotates dropped upstreams with a human-readable reason for
+  //     diagnostics. The reason is auto-derived from the predicate:
+  //     factory-built predicates (errorRateAbove, p95DeviationPctAbove,
+  //     all/any/not, …) attach a `policyReason` property describing
+  //     what they check. Inline custom predicates can supply a label
+  //     as an optional 2nd positional arg:
+  //
+  //       .excludeIf(u => u.id.startsWith('legacy-'), 'legacy upstream')
+  //
+  // The annotation shows up in `Decision.Output.Annotations[id]`, in
+  // the simulator's policy-history modal as a pill on the excluded
+  // row, and in DEBUG eRPC logs — so "which rule trips this upstream
+  // out" is always one click / log line away.
   //
   // Re-admission timing is controlled by `readmitExcluded({reAdmitAfter})`
   // at the end of the chain — that's the anti-flap layer (stays out for N
   // before being given another chance regardless of why excluded).
-  //
-  // Note on `outFor`: an earlier shape of this primitive accepted an
-  // `outFor` opt to keep an upstream excluded even when the predicate
-  // stopped matching, using the slot's flat `excludedSince` map. That
-  // map records ALL prior-tick exclusions (including `preferTag` /
-  // sortByScore filters / etc.), so the cooldown spuriously held out
-  // upstreams excluded by unrelated steps. Correct per-rule anti-flap
-  // requires per-(upstream, reason) cross-tick state which isn't plumbed
-  // yet. `outFor` is silently accepted but inert — re-introduce it once
-  // the engine tracks per-rule exclusion history.
-  define('excludeIf', function (predicate, opts) {
+  define('excludeIf', function (predicate, reasonOverride) {
     if (typeof predicate !== 'function') {
       // Graceful no-op for invalid first arg — keeps the chain alive
       // rather than throwing mid-eval and falling back to the default
       // policy at the engine level.
       return this.slice();
     }
-    opts = opts || {};
-    const reason = opts.reason || 'excludeIf';
+    // Reason resolution order:
+    //   1. Explicit string passed as 2nd arg.
+    //   2. `predicate.policyReason` — set by factory predicates.
+    //   3. Generic "excludeIf" fallback.
+    let reason;
+    if (typeof reasonOverride === 'string') {
+      reason = reasonOverride;
+    } else if (predicate.policyReason) {
+      reason = predicate.policyReason;
+    } else {
+      reason = 'excludeIf';
+    }
+    // Per-upstream leaf-slug attribution for metrics. The Go-side metric
+    // emitter reads `__policyLeafReasons[id]` after the eval and emits
+    // one `selection_exclusion_total{reason=<slug>}` increment per leaf.
+    // Compound predicates (`any`/`all`/`not`) attribute exclusion to
+    // their LEAF slugs, never to the combinator boilerplate.
+    const leafLog = globalThis.__policyLeafReasons;
     return this.filter(u => {
       if (predicate(u)) {
         annotate(u, reason);
+        if (leafLog) {
+          let leaves;
+          if (typeof reasonOverride === 'string') {
+            // Operator overrode the reason — respect it for both display
+            // AND attribution; one slug, the override string itself.
+            leaves = [reasonOverride];
+          } else if (typeof predicate.policyLeaves === 'function') {
+            leaves = predicate.policyLeaves(u);
+          } else if (predicate.policySlug) {
+            leaves = [predicate.policySlug];
+          } else {
+            leaves = ['custom'];
+          }
+          if (leaves && leaves.length > 0) {
+            const existing = leafLog[u.id];
+            if (existing) {
+              for (const l of leaves) existing.push(l);
+            } else {
+              leafLog[u.id] = leaves.slice();
+            }
+          }
+        }
         return false;
       }
       return true;
@@ -375,14 +414,27 @@
 
   // ─── 4.5 Sorting ─────────────────────────────────────────────────────────
 
-  // Score presets — kept in sync with stdlib/install.go. We re-expose them
-  // here in pure JS so the runtime doesn't need a round-trip to Go.
+  // Score presets — the JS is the single source of truth for ranking
+  // weights. BALANCED's intuition: among upstreams that PASS the
+  // excludeIf filters (which already drop the obviously-broken ones),
+  // the signals that actually differentiate "good" routing are:
+  //   * latency (8)        — fast response is the dominant user-visible
+  //                          quality among healthy peers
+  //   * misbehaviors (6)   — silent corruption is worse than a loud
+  //                          error; can't be retried away
+  //   * blockHeadLag (4)   — stale head means stale data; clients ARE
+  //                          affected even if the request succeeds
+  //   * throttledRate (3)  — 429s hurt throughput but are recoverable
+  //   * errorRate (2)      — failed requests retry/hedge to a peer;
+  //                          less weight because the impact is masked
+  //                          at the network layer
+  //   * finalizationLag (1)— rare-bucket finalized queries; minor
   const PRESETS = {
-    BALANCED:               { errorRate: 8, respLatency: 4, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6 },
+    BALANCED:               { errorRate: 2, respLatency: 8, throttledRate: 3, blockHeadLag: 4, finalizationLag: 1, misbehaviors: 6 },
     PREFER_FASTER:          { errorRate: 4, respLatency: 12, throttledRate: 4, blockHeadLag: 1, finalizationLag: 0, misbehaviors: 2 },
     PREFER_FEWER_ERRORS:    { errorRate: 15, respLatency: 2, throttledRate: 6, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 12 },
     PREFER_FRESHER_HEAD:    { errorRate: 4, respLatency: 2, throttledRate: 2, blockHeadLag: 15, finalizationLag: 8, misbehaviors: 3 },
-    PREFER_LESS_THROTTLED:  { errorRate: 8, respLatency: 4, throttledRate: 15, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 4 },
+    PREFER_LESS_THROTTLED:  { errorRate: 4, respLatency: 8, throttledRate: 15, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 4 },
   };
   // PREFER_CHEAP is an alias of BALANCED per spec §4.1.
   PRESETS.PREFER_CHEAP = PRESETS.BALANCED;
@@ -495,6 +547,12 @@
       const out = this.slice();
       const removed = out.splice(prevIdx, 1)[0];
       out.unshift(removed);
+      // Flag that sticky actively held the primary this tick. Read by
+      // the Go-side metric emitter to increment `selection_sticky_hold_total`
+      // for the held upstream. Only flips when we WOULD have switched —
+      // the "already sticky" branch above doesn't set it (no active hold;
+      // the score-based order already preferred the previous primary).
+      globalThis.__policyStickyHeld = true;
       return out;
     }
 
@@ -796,26 +854,118 @@
   // just functions that return `u => boolean`. Stdlib exports cover the
   // common signals; ad-hoc compounds stay inline as `u => ...`.
 
+  // Every factory below stamps THREE pieces of metadata on the returned
+  // closure:
+  //   * `policyReason` — human-readable display string carrying the
+  //     threshold (e.g. `errorRate>0.5`). Surfaced in DEBUG logs, the
+  //     simulator's policy-history pane, and `Decision.Output.Excluded[i].Reason`.
+  //   * `policySlug` — stable, threshold-free metric label (e.g.
+  //     `error_rate_above`). Used by `erpc_selection_exclusion_total`'s
+  //     `reason` label so cardinality stays bounded by the set of
+  //     predicate factories (~25) rather than the powerset of thresholds.
+  //   * `policyLeaves(u)` — given an upstream that the predicate trips
+  //     on, returns the leaf-slug ARRAY for metric attribution. For base
+  //     factories this is `[slug]`; for combinators it walks children.
+  //     This is what powers option-(c) attribution: a compound like
+  //     `any(errorRateAbove(0.5), p95DeviationPctAbove(100))` excluding
+  //     an upstream attributes the exclusion to the leaf(s) that were
+  //     actually true, not the boilerplate `any` wrapper.
+
+  // _leaf builds a base predicate carrying both display reason and
+  // metric slug. `policyLeaves(u)` returns `[slug]` when the predicate
+  // trips on `u`, `[]` otherwise — `excludeIf` only calls it AFTER the
+  // predicate already returned true, so the empty branch is defensive.
+  function _leaf(fn, reason, slug) {
+    fn.policyReason = reason;
+    fn.policySlug = slug;
+    fn.policyLeaves = function (u) { return fn(u) ? [slug] : []; };
+    return fn;
+  }
+
   // Rate-based factories (0..1 fractions).
-  globalThis.errorRateAbove       = function (rate) { return u => u.metrics.errorRate       > rate; };
-  globalThis.errorRateBelow       = function (rate) { return u => u.metrics.errorRate       < rate; };
-  globalThis.throttleRateAbove    = function (rate) { return u => u.metrics.throttledRate   > rate; };
-  globalThis.throttleRateBelow    = function (rate) { return u => u.metrics.throttledRate   < rate; };
-  globalThis.misbehaviorRateAbove = function (rate) { return u => u.metrics.misbehaviorRate > rate; };
+  globalThis.errorRateAbove       = function (rate) { return _leaf(u => u.metrics.errorRate       > rate, 'errorRate>'       + rate, 'error_rate_above'); };
+  globalThis.errorRateBelow       = function (rate) { return _leaf(u => u.metrics.errorRate       < rate, 'errorRate<'       + rate, 'error_rate_below'); };
+  globalThis.throttleRateAbove    = function (rate) { return _leaf(u => u.metrics.throttledRate   > rate, 'throttledRate>'   + rate, 'throttle_rate_above'); };
+  globalThis.throttleRateBelow    = function (rate) { return _leaf(u => u.metrics.throttledRate   < rate, 'throttledRate<'   + rate, 'throttle_rate_below'); };
+  globalThis.misbehaviorRateAbove = function (rate) { return _leaf(u => u.metrics.misbehaviorRate > rate, 'misbehaviorRate>' + rate, 'misbehavior_rate_above'); };
 
   // Latency factories — millisecond thresholds; quantile accepts either
   // 0..1 fractions or 0..100 percentile numbers (auto-normalized inside
   // `u.metrics.latencyP`).
-  globalThis.latencyAbove    = function (quantile, ms) { return u => u.metrics.latencyP(quantile) > ms; };
-  globalThis.latencyP50Above = function (ms) { return u => u.metrics.latencyP(50) > ms; };
-  globalThis.latencyP70Above = function (ms) { return u => u.metrics.latencyP(70) > ms; };
-  globalThis.latencyP90Above = function (ms) { return u => u.metrics.latencyP(90) > ms; };
-  globalThis.latencyP95Above = function (ms) { return u => u.metrics.latencyP(95) > ms; };
-  globalThis.latencyP99Above = function (ms) { return u => u.metrics.latencyP(99) > ms; };
+  globalThis.latencyAbove    = function (quantile, ms) { return _leaf(u => u.metrics.latencyP(quantile) > ms, 'p' + quantile + '>' + ms + 'ms', 'latency_p' + quantile + '_above'); };
+  globalThis.latencyP50Above = function (ms) { return _leaf(u => u.metrics.latencyP(50) > ms, 'p50>' + ms + 'ms', 'latency_p50_above'); };
+  globalThis.latencyP70Above = function (ms) { return _leaf(u => u.metrics.latencyP(70) > ms, 'p70>' + ms + 'ms', 'latency_p70_above'); };
+  globalThis.latencyP90Above = function (ms) { return _leaf(u => u.metrics.latencyP(90) > ms, 'p90>' + ms + 'ms', 'latency_p90_above'); };
+  globalThis.latencyP95Above = function (ms) { return _leaf(u => u.metrics.latencyP(95) > ms, 'p95>' + ms + 'ms', 'latency_p95_above'); };
+  globalThis.latencyP99Above = function (ms) { return _leaf(u => u.metrics.latencyP(99) > ms, 'p99>' + ms + 'ms', 'latency_p99_above'); };
+
+  // Latency DEVIATION factories — compare each upstream's quantile
+  // against the pool's median of OTHER upstreams (i.e. the upstream
+  // being evaluated is excluded from its own baseline). Unlike
+  // `latencyP95Above(10_000)` which is an absolute threshold, these
+  // adapt to the network's normal: a 200ms p95 is healthy on Ethereum
+  // but degraded on a 10ms-baseline L2; the same predicate covers
+  // both because it compares against peers.
+  //
+  // Excluding self from the baseline matters in small pools — with
+  // only 2 upstreams (one at 10ms, one at 12s), the median-of-all is
+  // 6005ms and the 12s upstream sits "only" 99% above it, which
+  // wouldn't trip a 100% threshold. Median-of-others puts the slow
+  // upstream's baseline at 10ms; it's now 119000% above and trips
+  // immediately, which is the correct verdict.
+  //
+  // When the selection policy runs per-method (evalPerMethod=true),
+  // `__policyAllUpstreams` carries metrics for THAT specific method,
+  // so `p95DeviationPctAbove(100)` correctly compares same-method
+  // p95s across upstreams.
+  //
+  // Zero-sample upstreams (no traffic, no quantile yet) are excluded
+  // from the median calculation but NEVER tripped by these predicates
+  // (their own p95 is 0 → deviation negative).
+  function _latencyDeviationAbove(quantile, byMs, byPct) {
+    const ups = globalThis.__policyAllUpstreams || [];
+    // Pre-compute the per-id map once; the per-upstream median is
+    // derived from this on each predicate invocation by excluding self.
+    const samplesById = {};
+    for (const u of ups) {
+      const v = (u && u.metrics) ? u.metrics.latencyP(quantile) : 0;
+      if (v > 0) samplesById[u.id] = v;
+    }
+    return function (u) {
+      const v = (u && u.metrics) ? u.metrics.latencyP(quantile) : 0;
+      if (v <= 0) return false; // no data → can't be an outlier
+      const others = [];
+      for (const id in samplesById) {
+        if (id !== u.id) others.push(samplesById[id]);
+      }
+      if (others.length === 0) return false; // alone in the pool → no peers to compare against
+      others.sort(function (a, b) { return a - b; });
+      const median = others[Math.floor(others.length / 2)];
+      if (byMs  != null && (v - median) > byMs ) return true;
+      if (byPct != null && median > 0 && ((v - median) / median * 100) > byPct) return true;
+      return false;
+    };
+  }
+  // Public API — one factory per quantile-of-interest, in both
+  // absolute (Ms) and relative (Pct) flavors. p70 + p95 are the most
+  // useful: p70 because BALANCED uses it for scoring, p95 because
+  // tail latency is the operator's usual reach-for-the-eject-button.
+  globalThis.latencyDeviationAbove    = function (quantile, ms)  { return _leaf(_latencyDeviationAbove(quantile, ms,  null), 'p' + quantile + 'Deviation>' + ms + 'ms',  'latency_p' + quantile + '_deviation_ms_above'); };
+  globalThis.latencyDeviationPctAbove = function (quantile, pct) { return _leaf(_latencyDeviationAbove(quantile, null, pct), 'p' + quantile + 'Deviation>' + pct + '%', 'latency_p' + quantile + '_deviation_pct_above'); };
+  globalThis.p50DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(50, ms, null), 'p50Deviation>' + ms + 'ms', 'latency_p50_deviation_ms_above'); };
+  globalThis.p70DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(70, ms, null), 'p70Deviation>' + ms + 'ms', 'latency_p70_deviation_ms_above'); };
+  globalThis.p90DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(90, ms, null), 'p90Deviation>' + ms + 'ms', 'latency_p90_deviation_ms_above'); };
+  globalThis.p95DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(95, ms, null), 'p95Deviation>' + ms + 'ms', 'latency_p95_deviation_ms_above'); };
+  globalThis.p99DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(99, ms, null), 'p99Deviation>' + ms + 'ms', 'latency_p99_deviation_ms_above'); };
+  globalThis.p50DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(50, null, pct), 'p50Deviation>' + pct + '%', 'latency_p50_deviation_pct_above'); };
+  globalThis.p70DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(70, null, pct), 'p70Deviation>' + pct + '%', 'latency_p70_deviation_pct_above'); };
+  globalThis.p90DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(90, null, pct), 'p90Deviation>' + pct + '%', 'latency_p90_deviation_pct_above'); };
+  globalThis.p95DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(95, null, pct), 'p95Deviation>' + pct + '%', 'latency_p95_deviation_pct_above'); };
+  globalThis.p99DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(99, null, pct), 'p99Deviation>' + pct + '%', 'latency_p99_deviation_pct_above'); };
 
   // Lag-based factories — block-count thresholds.
-  globalThis.blockNumberLagAbove  = function (blocks) { return u => u.metrics.blockHeadLag    > blocks; };
-  globalThis.finalizationLagAbove = function (blocks) { return u => u.metrics.finalizationLag > blocks; };
+  globalThis.blockNumberLagAbove  = function (blocks) { return _leaf(u => u.metrics.blockHeadLag    > blocks, 'blockHeadLag>'    + blocks, 'block_head_lag_above'); };
+  globalThis.finalizationLagAbove = function (blocks) { return _leaf(u => u.metrics.finalizationLag > blocks, 'finalizationLag>' + blocks, 'finalization_lag_above'); };
 
   // Time-based lag — block-count × network's EMA-estimated block time.
   // Threshold is in SECONDS. Returns 0 (predicate always false) until the
@@ -823,20 +973,85 @@
   // seconds after first traffic. Useful when you want a wall-clock SLO
   // ("trip if more than 60s behind tip") instead of a chain-relative
   // block count that means different things on different chains.
-  globalThis.blockSecondsLagAbove         = function (seconds) { return u => u.metrics.blockHeadLagSeconds    > seconds; };
-  globalThis.finalizationSecondsLagAbove  = function (seconds) { return u => u.metrics.finalizationLagSeconds > seconds; };
+  globalThis.blockSecondsLagAbove         = function (seconds) { return _leaf(u => u.metrics.blockHeadLagSeconds    > seconds, 'blockHeadLagSeconds>'    + seconds, 'block_head_lag_seconds_above'); };
+  globalThis.finalizationSecondsLagAbove  = function (seconds) { return _leaf(u => u.metrics.finalizationLagSeconds > seconds, 'finalizationLagSeconds>' + seconds, 'finalization_lag_seconds_above'); };
 
   // Sample-size guard — useful as an AND-term to avoid tripping rules on
   // low-sample-count noise (when an upstream has only had a handful of
   // requests, a single error blows up errorRate to 100%).
-  globalThis.samplesBelow = function (n) { return u => u.metrics.requestsTotal < n; };
-  globalThis.samplesAbove = function (n) { return u => u.metrics.requestsTotal > n; };
+  globalThis.samplesBelow = function (n) { return _leaf(u => u.metrics.requestsTotal < n, 'samples<' + n, 'samples_below'); };
+  globalThis.samplesAbove = function (n) { return _leaf(u => u.metrics.requestsTotal > n, 'samples>' + n, 'samples_above'); };
 
   // Logical combinators — flat, variadic. Predicates compose freely:
-  //   excludeIf(all(errorRateAbove(0.3), not(samplesBelow(10))),
-  //             { outFor: '30s' })
+  //   excludeIf(all(errorRateAbove(0.3), not(samplesBelow(10))))
   // means "trip if errorRate>0.3 AND we actually have enough samples".
-  globalThis.all = function (...preds) { return u => preds.every(p => p(u)); };
-  globalThis.any = function (...preds) { return u => preds.some(p => p(u));  };
-  globalThis.not = function (pred)     { return u => !pred(u);                };
+  //
+  // The composed predicate's:
+  //   * `policyReason` joins child reasons so the simulator UI / DEBUG
+  //     logs still read clearly ("all(errorRate>0.3,not(samples<10))").
+  //   * `policyLeaves(u)` returns the leaf slugs that were ACTUALLY
+  //     responsible for the trip on this specific upstream, so the
+  //     `erpc_selection_exclusion_total{reason}` metric attributes
+  //     exclusion to the underlying signal instead of the combinator.
+  //       - `any(A,B)`: leaves = slugs of every predicate that was true
+  //       - `all(A,B)`: leaves = slugs of every predicate (all true by definition)
+  //       - `not(X)`:   leaves = `["not_" + X.slug]` (or just the slug
+  //                     if X is itself a `not(_)` — double-negation
+  //                     collapses to the original signal)
+  function _reasonFor(pred) { return (pred && pred.policyReason) || '?'; }
+  function _leavesFromPred(p, u) {
+    if (p && typeof p.policyLeaves === 'function') return p.policyLeaves(u);
+    return ['custom'];
+  }
+  globalThis.all = function () {
+    const preds = Array.prototype.slice.call(arguments);
+    const fn = function (u) { return preds.every(p => p(u)); };
+    fn.policyReason = 'all(' + preds.map(_reasonFor).join(',') + ')';
+    fn.policySlug = 'all';
+    fn.policyLeaves = function (u) {
+      // AND-semantics: when `all` trips, every leaf is implicitly true,
+      // so attribute exclusion to every leaf.
+      const out = [];
+      for (const p of preds) {
+        const leaves = _leavesFromPred(p, u);
+        for (const l of leaves) out.push(l);
+      }
+      return out;
+    };
+    return fn;
+  };
+  globalThis.any = function () {
+    const preds = Array.prototype.slice.call(arguments);
+    const fn = function (u) { return preds.some(p => p(u)); };
+    fn.policyReason = 'any(' + preds.map(_reasonFor).join(',') + ')';
+    fn.policySlug = 'any';
+    fn.policyLeaves = function (u) {
+      // OR-semantics: at least one leaf was true, possibly more. Attribute
+      // exclusion to every leaf that actually evaluated true — operators
+      // see exactly which signal(s) caused the drop, not the boilerplate.
+      const out = [];
+      for (const p of preds) {
+        if (!p(u)) continue;
+        const leaves = _leavesFromPred(p, u);
+        for (const l of leaves) out.push(l);
+      }
+      return out;
+    };
+    return fn;
+  };
+  globalThis.not = function (pred) {
+    const fn = function (u) { return !pred(u); };
+    fn.policyReason = 'not(' + _reasonFor(pred) + ')';
+    const childSlug = (pred && pred.policySlug) || 'custom';
+    fn.policySlug = 'not_' + childSlug;
+    fn.policyLeaves = function (_u) {
+      // NOT inverts truth, so the "leaf that tripped" is the negation of
+      // the child's slug. Use that as the attribution. We do NOT recurse
+      // into child leaves — if the child is itself a compound, attributing
+      // to "not_all" is more honest than picking one of the inner leaves
+      // and pretending it caused the not.
+      return [fn.policySlug];
+    };
+    return fn;
+  };
 })();

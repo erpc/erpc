@@ -228,15 +228,30 @@ func (s *Slot) tickOnce() {
 	// degrade to the prior wording.
 	ordered, excluded := materializeOrder(ups, orderedIDs)
 	enrichExcluded(excluded, evalRes.Annotations)
+	// Attach leaf-reason slugs to each excluded upstream. Drives
+	// `selection_exclusion_total{reason=<slug>}` with option (c) leaf
+	// attribution: compound predicates emit one increment per leaf
+	// instead of attributing to the combinator boilerplate. Excluded
+	// upstreams dropped by non-`excludeIf` steps (`removeCordoned`,
+	// `removeByErrorRate`, …) have no leaf slugs — they surface via
+	// `Reason` and contribute to `selection_rejection_total{step}`
+	// (the per-step counter) instead.
+	for i := range excluded {
+		if leaves, ok := evalRes.LeafReasons[excluded[i].ID]; ok {
+			excluded[i].LeafReasons = leaves
+		}
+	}
 	decision.Output = DecisionOutput{
 		Order:       orderedIDs,
 		Excluded:    excluded,
+		Scores:      scores,
 		StepLog:     evalRes.StepLog,
 		Annotations: evalRes.Annotations,
 	}
 
 	// 5. Compute diff against previous tick.
 	decision.Diff = diffAgainst(state.PreviousOrder, orderedIDs)
+	decision.Diff.StickyHeld = evalRes.StickyHeld
 
 	// 6. Atomic swap cache.
 	ordered2 := ordered
@@ -398,9 +413,27 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 
 	telemetry.MetricSelectionEligibleUpstreams.WithLabelValues(labels...).Set(float64(len(d.Output.Order)))
 
+	// Build a set of currently-in-rotation IDs for excluded-seconds and
+	// readmit-age gauges. O(n) memory, n = ordered set size.
+	inOrder := make(map[string]struct{}, len(d.Output.Order))
 	for i, id := range d.Output.Order {
 		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkID, s.method, id).Set(float64(i))
+		inOrder[id] = struct{}{}
+		// Score gauge — populated per upstream that survived sortByScore.
+		// Upstreams added after scoring (probeExcluded/forceInclude) or
+		// policies without a sortByScore step have no entry.
+		if score, ok := d.Output.Scores[id]; ok {
+			telemetry.MetricSelectionScore.WithLabelValues(project, s.networkID, s.method, id).Set(score)
+		}
+		// In-rotation upstreams report 0 excluded-seconds. Resets the
+		// gauge cleanly when a previously-excluded upstream comes back —
+		// dashboards see the transition immediately.
+		telemetry.MetricSelectionExcludedSeconds.WithLabelValues(project, s.networkID, s.method, id).Set(0)
 	}
+
+	// Excluded upstreams: position=-1, per-leaf exclusion counters, and
+	// excluded-seconds gauge.
+	nowMs := d.TickAt.UnixMilli()
 	for _, ex := range d.Output.Excluded {
 		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkID, s.method, ex.ID).Set(-1)
 		step := ex.Step
@@ -408,6 +441,60 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 			step = "eval"
 		}
 		telemetry.MetricSelectionRejectionTotal.WithLabelValues(project, s.networkID, s.method, ex.ID, step).Inc()
+		// Per-leaf exclusion attribution. The Reason field is the
+		// display string (carries thresholds — high cardinality), so we
+		// do NOT emit it as a label. Instead emit one increment per leaf
+		// SLUG (bounded by the predicate-factory set, ~25 unique).
+		// Excluded upstreams dropped by non-`excludeIf` steps have no
+		// leaves — they're already counted by `selection_rejection_total{step}`.
+		for _, slug := range ex.LeafReasons {
+			telemetry.MetricSelectionExclusionTotal.WithLabelValues(project, s.networkID, s.method, ex.ID, slug).Inc()
+		}
+		// `excludedSince` reflects the slot's bookkeeping AFTER this
+		// tick's update. Existing entries that survived this tick still
+		// carry their original since-time; newly-excluded entries got
+		// `now` written. Compute wall-clock excluded-seconds for the gauge.
+		if since, ok := s.excludedSince[ex.ID]; ok && since > 0 {
+			age := time.Duration(nowMs-since) * time.Millisecond
+			if age < 0 {
+				age = 0
+			}
+			telemetry.MetricSelectionExcludedSeconds.WithLabelValues(project, s.networkID, s.method, ex.ID).Set(age.Seconds())
+		}
+	}
+
+	// Readmit signal: any ID in this tick's Order that was excluded last
+	// tick — i.e. transitioned from -1 → in-rotation. Increment per-upstream
+	// counter and observe the per-network histogram of "how long was it out".
+	if len(prevState.PreviousExcluded) > 0 {
+		prevExcludedSet := make(map[string]int64, len(prevState.PreviousExcluded))
+		for _, id := range prevState.PreviousExcluded {
+			if since, ok := prevState.ExcludedSince[id]; ok {
+				prevExcludedSet[id] = since
+			} else {
+				prevExcludedSet[id] = 0
+			}
+		}
+		for id := range inOrder {
+			since, wasExcluded := prevExcludedSet[id]
+			if !wasExcluded {
+				continue
+			}
+			telemetry.MetricSelectionReadmitTotal.WithLabelValues(project, s.networkID, s.method, id).Inc()
+			if since > 0 {
+				age := time.Duration(nowMs-since) * time.Millisecond
+				if age > 0 {
+					telemetry.MetricSelectionReadmitAgeSeconds.WithLabelValues(labels...).Observe(age.Seconds())
+				}
+			}
+		}
+	}
+
+	// Sticky-primary holds: chain set `__policyStickyHeld = true` when
+	// the previous primary was kept against a challenger (cooldown
+	// active or hysteresis not exceeded). Attribute to the held primary.
+	if d.Diff.StickyHeld && len(d.Output.Order) > 0 {
+		telemetry.MetricSelectionStickyHoldTotal.WithLabelValues(project, s.networkID, s.method, d.Output.Order[0]).Inc()
 	}
 
 	if d.Diff.PrimaryChanged {

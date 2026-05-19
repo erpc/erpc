@@ -58,7 +58,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/legacy"
-	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/internal/simulator"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -78,15 +77,6 @@ func init() {
 	// lifecycle drawer wants to render the whole `caused by` tree.
 	// Set to 0 to disable truncation entirely.
 	upstream.AttemptErrorDetailMaxLen = 0
-
-	// Shorten the score-metrics window so knob changes (error rate,
-	// throttle rate, latency) are reflected in routing decisions
-	// within ~15s instead of the production 10-minute tumbling window.
-	// Without this override, an operator who dials drpc-eth-1's error
-	// rate from 20% → 1% sees no shift in primary selection for many
-	// minutes — which makes the simulator feel broken even though the
-	// real system is doing exactly what's been asked of it.
-	erpc.ScoreMetricsWindowSize = 15 * time.Second
 }
 
 func main() {

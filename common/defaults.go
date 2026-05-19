@@ -2448,6 +2448,17 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	}
 	c.EvalFuncOriginal = c.EvalFunc
 
+	// TS-loaded configs put the function on `globalThis.__erpcFns[id]`
+	// inside every pool runtime (via the user-script primer) — EvalFunc
+	// just carries the lookup id. No `sobek.Compile` here: the
+	// engine resolves the function natively from the runtime where the
+	// user's whole TS module evaluated, so closures + helpers stay
+	// intact. See loadConfigFromTypescript.
+	if IsTSFunctionSentinel(c.EvalFunc) {
+		c.CompiledProgram = nil
+		return nil
+	}
+
 	program, err := CompileProgram(c.EvalFunc)
 	if err != nil {
 		return fmt.Errorf("failed to compile selectionPolicy.evalFunc: %w", err)

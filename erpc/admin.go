@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/upstream"
 )
 
 // API Key structure for management
@@ -54,6 +55,12 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		return e.handleSelectionReeval(ctx, nq)
 	case "erpc_selectionDefaultPolicy":
 		return e.handleSelectionDefaultPolicy(nq)
+	case "erpc_cordonUpstream":
+		return e.handleCordonUpstream(ctx, nq, true)
+	case "erpc_uncordonUpstream":
+		return e.handleCordonUpstream(ctx, nq, false)
+	case "erpc_listCordoned":
+		return e.handleListCordoned(ctx, nq)
 
 	default:
 		return nil, common.NewErrEndpointUnsupported(
@@ -652,4 +659,145 @@ func (e *ERPC) handleProject(nq *common.NormalizedRequest) (*common.NormalizedRe
 		return nil, err
 	}
 	return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
+}
+
+// ─── Cordon admin RPCs ──────────────────────────────────────────────────
+//
+// Cordon is the operator's manual "mark this upstream out of rotation"
+// switch. The next policy tick observes `cordonedReason` on the upstream
+// and the default policy's `.removeCordoned()` step drops it from the
+// returned list, taking it out of routing for every request until the
+// operator uncordons it again. Cordon state survives across rolling-window
+// rotations of the health tracker (it isn't a metric — it's an explicit
+// mark on the (upstream, method) cell).
+//
+// Scope is `(upstream, method)`. Cordoning method `"*"` cordons the
+// upstream wholesale; cordoning a specific method (e.g. `eth_getLogs`)
+// only excludes the upstream when that method is dispatched.
+//
+// See docs/pages/operation/cordoning.mdx for the full operator runbook.
+
+type cordonParams struct {
+	ProjectID string `json:"projectId"`
+	Upstream  string `json:"upstream"`
+	Method    string `json:"method,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+func parseCordonParams(nq *common.NormalizedRequest) (cordonParams, error) {
+	var p cordonParams
+	jrr, err := nq.JsonRpcRequest()
+	if err != nil {
+		return p, err
+	}
+	if len(jrr.Params) == 0 {
+		return p, fmt.Errorf("cordon admin: params is required")
+	}
+	raw, err := json.Marshal(jrr.Params[0])
+	if err != nil {
+		return p, err
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return p, fmt.Errorf("cordon admin: invalid params: %w", err)
+	}
+	if p.ProjectID == "" || p.Upstream == "" {
+		return p, fmt.Errorf("cordon admin: projectId and upstream are required")
+	}
+	if p.Method == "" {
+		p.Method = "*"
+	}
+	return p, nil
+}
+
+// findUpstreamById walks the project's upstream registry and returns the
+// matching upstream, or an error if none match.
+func (e *ERPC) findUpstreamById(projectID, upstreamID string) (*upstream.Upstream, error) {
+	prj, err := e.GetProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if prj.upstreamsRegistry == nil {
+		return nil, fmt.Errorf("cordon admin: project %s has no upstream registry", projectID)
+	}
+	for _, u := range prj.upstreamsRegistry.GetAllUpstreams() {
+		if u.Id() == upstreamID {
+			return u, nil
+		}
+	}
+	return nil, fmt.Errorf("cordon admin: upstream %q not found in project %q", upstreamID, projectID)
+}
+
+// handleCordonUpstream marks an upstream cordoned (cordon=true) or
+// uncordoned (cordon=false) for a specific method scope.
+func (e *ERPC) handleCordonUpstream(_ context.Context, nq *common.NormalizedRequest, cordon bool) (*common.NormalizedResponse, error) {
+	p, err := parseCordonParams(nq)
+	if err != nil {
+		return nil, err
+	}
+	u, err := e.findUpstreamById(p.ProjectID, p.Upstream)
+	if err != nil {
+		return nil, err
+	}
+	reason := p.Reason
+	if reason == "" {
+		if cordon {
+			reason = "admin: manual cordon"
+		} else {
+			reason = "admin: manual uncordon"
+		}
+	}
+	if cordon {
+		u.Cordon(p.Method, reason)
+	} else {
+		u.Uncordon(p.Method, reason)
+	}
+	return makeSelectionResponse(nq, map[string]interface{}{
+		"projectId": p.ProjectID,
+		"upstream":  p.Upstream,
+		"method":    p.Method,
+		"cordoned":  cordon,
+		"reason":    reason,
+	})
+}
+
+// handleListCordoned returns every upstream currently cordoned in a
+// project — useful for `--reconcile` style scripts that want to inspect
+// state before deciding whether to uncordon.
+func (e *ERPC) handleListCordoned(_ context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	jrr, err := nq.JsonRpcRequest()
+	if err != nil {
+		return nil, err
+	}
+	type listParams struct {
+		ProjectID string `json:"projectId"`
+	}
+	var lp listParams
+	if len(jrr.Params) > 0 {
+		raw, _ := json.Marshal(jrr.Params[0])
+		_ = json.Unmarshal(raw, &lp)
+	}
+	if lp.ProjectID == "" {
+		return nil, fmt.Errorf("cordon admin: projectId is required")
+	}
+	prj, err := e.GetProject(lp.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if prj.upstreamsRegistry == nil {
+		return nil, fmt.Errorf("cordon admin: project %s has no upstream registry", lp.ProjectID)
+	}
+	type cordonedRow struct {
+		Upstream string `json:"upstream"`
+		Reason   string `json:"reason"`
+	}
+	rows := []cordonedRow{}
+	for _, u := range prj.upstreamsRegistry.GetAllUpstreams() {
+		if reason, cordoned := u.CordonedReason("*"); cordoned {
+			rows = append(rows, cordonedRow{Upstream: u.Id(), Reason: reason})
+		}
+	}
+	return makeSelectionResponse(nq, map[string]interface{}{
+		"projectId": lp.ProjectID,
+		"cordoned":  rows,
+	})
 }

@@ -414,44 +414,6 @@ export interface ProjectConfig {
     networkDefaults?: NetworkDefaults;
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
-    scoreMetricsWindowSize?: Duration;
-    scoreRefreshInterval?: Duration;
-    /**
-     * RoutingStrategy selects the upstream ordering algorithm.
-     * "score-based" (default): penalty-based sticky routing.
-     * "round-robin": time-rotating equal distribution across upstreams.
-     */
-    routingStrategy?: string;
-    /**
-     * ScoreGranularity controls whether penalties are computed per-upstream or per-method.
-     * "upstream" (default): one penalty across all methods using aggregate metrics.
-     * "method": separate penalty per (upstream, method) pair.
-     */
-    scoreGranularity?: string;
-    /**
-     * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
-     * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
-     * Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
-     */
-    scorePenaltyDecayRate?: number;
-    /**
-     * ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
-     * must be at least this fraction lower than the current primary's penalty to
-     * trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
-     */
-    scoreSwitchHysteresis?: number;
-    /**
-     * ScoreMinSwitchInterval is the cooldown between primary upstream switches.
-     */
-    scoreMinSwitchInterval?: Duration;
-    /**
-     * ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
-     * Allowed values:
-     * - "compact": emit compact series by setting upstream and category labels to 'n/a'
-     * - "detailed": emit full project/vendor/network/upstream/category series
-     */
-    scoreMetricsMode?: string;
-    healthCheck?: DeprecatedProjectHealthCheckConfig;
     /**
      * Configure user agent tracking at the project level
      */
@@ -459,6 +421,14 @@ export interface ProjectConfig {
     forwardHeaders?: string[];
     ignoreMethods?: string[];
     allowMethods?: string[];
+    /**
+     * Rolling window the per-upstream health tracker uses for its
+     * counters (errorRate, p50/p70/p95 latency, throttledRate,
+     * misbehaviorRate). 10 sliding buckets spanning this duration. Short
+     * windows react quickly but give noisier ranking; long windows give
+     * stable averages but hide spikes for longer. Defaults to 10s.
+     */
+    scoreMetricsWindowSize?: Duration;
 }
 /**
  * UserAgentTrackingMode controls how user agents are recorded for metrics/labels
@@ -513,13 +483,23 @@ export interface UpstreamConfig {
     type?: TsUpstreamType;
     /**
      * Tags is an open-ended set of labels attached to this upstream.
-     * Convention: `<dimension>:<value>` (e.g. `tier:main`, `region:us-east`).
-     * Consumed by `byTag`, `preferTag`, `spreadAcrossTags(prefix)`.
+     * Convention: `<dimension>:<value>`, e.g. `tier:main`, `region:us-east`,
+     * `sequencer:op-base`. Bare strings (no prefix) work too. Consumed by
+     * selectionPolicy primitives: `byTag`, `preferTag`, `spreadAcrossTags(prefix)`.
+     *
+     * Convention `tier:fallback` declares a fallback-tier upstream (the
+     * default policy looks for `!tier:fallback` as the primary tier).
      */
     tags?: string[];
-    /** Deprecated: use `tags` with `tier:<value>`. Auto-migrates at load. */
+    /**
+     * Deprecated: use `tags` with a `tier:<value>` entry. UnmarshalYAML
+     * auto-migrates `group: X` → `tier:X` at load time.
+     */
     group?: string;
-    /** Deprecated: use `tags` with `cohort:<value>`. Auto-migrates at load. */
+    /**
+     * Deprecated: use `tags` with a `cohort:<value>` entry. UnmarshalYAML
+     * auto-migrates `cohort: Y` → `cohort:Y` at load time.
+     */
     cohort?: string;
     vendorName?: string;
     endpoint?: string;
@@ -531,7 +511,6 @@ export interface UpstreamConfig {
     failsafe?: (FailsafeConfig | undefined)[];
     rateLimitBudget?: string;
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
-    routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
 /**
@@ -554,23 +533,6 @@ export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
     enabled?: boolean;
     checkLogIndexStrictIncrements?: boolean;
     checkLogsBloom?: boolean;
-}
-export interface RoutingConfig {
-    scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
-    scoreLatencyQuantile?: number;
-}
-export interface ScoreMultiplierConfig {
-    network?: string;
-    method?: string;
-    finality?: DataFinalityState[];
-    overall?: number;
-    errorRate?: number;
-    respLatency?: number;
-    totalRequests?: number;
-    throttledRate?: number;
-    blockHeadLag?: number;
-    finalizationLag?: number;
-    misbehaviors?: number;
 }
 export type UJAlias = UpstreamConfig;
 export type UYAlias = UpstreamConfig;
@@ -909,9 +871,6 @@ export interface ProxyPoolConfig {
     id: string;
     urls: string[];
 }
-export interface DeprecatedProjectHealthCheckConfig {
-    scoreMetricsWindowSize: Duration;
-}
 export interface MethodsConfig {
     preserveDefaultMethods?: boolean;
     definitions?: {
@@ -1108,19 +1067,35 @@ export interface EvmIntegrityConfig {
      */
     enforceNonNullTaggedBlocks?: boolean;
 }
+/**
+ * SelectionPolicyConfig declares the per-network upstream selection policy.
+ * The eval function is JavaScript that receives `upstreams` and `ctx` and
+ * returns the ordered list of upstreams that should serve traffic for the
+ * network/method scope. The chainable std-lib (see internal/policy/stdlib)
+ * provides the building blocks (sortByScore, removeByLag, stickyPrimary,
+ * probeExcluded, etc.) — see specs/selection-policy/feature.md.
+ */
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;
     evalPerMethod?: boolean;
     evalTimeout?: Duration;
     /**
-     * JavaScript source for the per-tick evaluation function.
-     * Signature: `(upstreams, ctx) => Upstream[]`. Functions written
-     * directly in TS get stringified to their source automatically.
+     * Per-tick evaluation function. Accepts either a JavaScript source
+     * string OR a real arrow function — the loader stringifies functions
+     * via `Function.prototype.toString()` at config load time so the
+     * canonical form on the wire is always source.
+     *
+     * Signature: `(upstreams, ctx) => Upstream[]`. Inside the body, the
+     * stdlib chainable methods (`removeCordoned`, `excludeIf`,
+     * `sortByScore`, `stickyPrimary`, `readmitExcluded`, `preferTag`, …)
+     * are typed via `PolicyEvalUpstreamArray`, and the predicate factories
+     * + score presets (`errorRateAbove`, `any`, `BALANCED`, …) are
+     * declared as ambient globals.
      *
      * The legacy `evalFunction` key (signature `(upstreams, method)`) is
      * still accepted in YAML and rewritten at load time.
      */
-    evalFunc?: string | SelectionPolicyEvalFunction;
+    evalFunc?: SelectionPolicyEvalFunction | string;
 }
 export type AuthType = string;
 export declare const AuthTypeSecret: AuthType;

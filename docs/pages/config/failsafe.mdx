@@ -1,6 +1,6 @@
 ---
 title: Failsafe
-description: Per-network and per-upstream failsafe policies — timeout, retry, hedge, circuit breaker, consensus — with per-method and per-finality scoping plus per-attempt observability.
+description: Per-network and per-upstream failsafe policies — timeout, retry, hedge, consensus, integrity — with per-method and per-finality scoping plus per-attempt observability.
 ---
 
 import { Callout } from "nextra/components";
@@ -17,16 +17,19 @@ import {
 
 Failsafe policies handle intermittent upstream issues — timeouts, slowdowns, rate limits, transient errors, disagreement between upstreams. They live on **networks** (the whole request lifecycle, including failover across upstreams) and on **upstreams** (one attempt against one endpoint).
 
-## Six policies
+## Five policies
 
 Each one has its own page. This page covers what's common to all of them: scoping, defaults, the observability layer that records every attempt.
 
 - [**Timeout**](/config/failsafe/timeout) — bound how long a request may take. Fixed or quantile-adaptive.
 - [**Retry**](/config/failsafe/retry) — replay transient failures with backoff. Empty-result and block-unavailable get separate knobs.
 - [**Hedge**](/config/failsafe/hedge) — race a backup request when the primary is slow.
-- [**Circuit breaker**](/config/failsafe/circuit-breaker) — temporarily remove an upstream after sustained failure.
 - [**Consensus**](/config/failsafe/consensus) — query multiple upstreams in parallel and require agreement.
 - [**Integrity**](/config/failsafe/integrity) — empty-response handling and data-correctness checks.
+
+<Callout type="info">
+  **What about circuit breaker?** In eRPC, *"trip a degraded upstream out of rotation"* is the [Selection Policy](/config/projects/selection-policies)'s job — one unified mechanism that covers failing, slow, throttled, and lagging upstreams. For manual operator-driven exclusion, see [Cordoning](/operation/cordoning). See [Circuit breaker](/config/failsafe/circuit-breaker) for how it maps to selection-policy concepts.
+</Callout>
 
 ## Scoping each policy
 
@@ -113,8 +116,9 @@ export default createConfig({
 | [`timeout`](/config/failsafe/timeout) | ✅ | ✅ | Network timeout covers the **full** lifecycle (including every upstream retry). Upstream timeout bounds one attempt. |
 | [`retry`](/config/failsafe/retry) | ✅ | ✅ | Network-level retries rotate **across** upstreams. Upstream-level retries hit the **same** upstream. Empty-result retries (`emptyResultAccept`, etc.) only fire at the network level. |
 | [`hedge`](/config/failsafe/hedge) | ✅ | (no-op) | Hedge races across upstreams; setting it at the upstream level is meaningless. |
-| [`circuitBreaker`](/config/failsafe/circuit-breaker) | ❌ | ✅ | Trips one upstream out of the rotation; the network's selection policy then routes elsewhere. |
 | [`consensus`](/config/failsafe/consensus) | ✅ | ✅ | Most commonly network-level; per-upstream usage is rare. |
+
+Need to trip a degraded upstream out of rotation? That's the [Selection Policy](/config/projects/selection-policies)'s job — not a failsafe policy. The default selection policy already excludes upstreams with high error rate, throttling, p95 latency, or block-head lag.
 
 ## Disabling a policy
 
@@ -182,9 +186,8 @@ server:
 - **`matchFinality: ["latest"]`** — silently never matches. Valid values are `finalized`, `unfinalized`, `realtime`, `unknown`.
 - **Mixing upstream + network retry without thinking about the product** — `upstream.retry.maxAttempts: 3` × `network.retry.maxAttempts: 3` = up to 9 attempts per request. Easy to accidentally 9× your upstream traffic.
 - **Network timeout shorter than `upstream.timeout × maxAttempts`** — the network gives up before the upstream's retry budget is exhausted. Set the network timeout generously.
-- **`circuitBreaker` at network level** — silently ignored; only valid at the upstream level.
-- **`emptyResultIgnore` is deprecated** — rename to `emptyResultAccept`. For network-wide empty-retry control, use `directiveDefaults.retryEmpty: false` (or per-request `?retryEmpty=false`).
-- **Single-object legacy `failsafe: { ... }` form** — still accepted, but the array form with `matchMethod: "*"` is canonical. The single-object form is implicitly `matchMethod: "*"`.
+- **Empty-result handling** — the field is `emptyResultAccept` on the retry policy. For network-wide control, set `directiveDefaults.retryEmpty: false` (or per-request `?retryEmpty=false`).
+- **Single-object `failsafe: { ... }` form** — accepted as shorthand for an array with one entry. It's implicitly `matchMethod: "*"`; use the array form when you need per-method scoping.
 - **`retry.delay: 0ms` doesn't disable retry** — it means "no wait between attempts". Use `maxAttempts: 1` to disable retry entirely.
 - **Write methods aren't retried** even when retry is configured. Set `network.evm.idempotentTransactionBroadcast: true` if you want `eth_sendRawTransaction` to be safe under retry/hedge.
 
@@ -199,8 +202,9 @@ server:
 | `timeout` | TimeoutPolicyConfig | See [Timeout policy](/config/failsafe/timeout). |
 | `retry` | RetryPolicyConfig | See [Retry policy](/config/failsafe/retry). |
 | `hedge` | HedgePolicyConfig | See [Hedge policy](/config/failsafe/hedge). |
-| `circuitBreaker` | CircuitBreakerPolicyConfig | Upstream-only. See [Circuit breaker](/config/failsafe/circuit-breaker). |
 | `consensus` | ConsensusPolicyConfig | See [Consensus](/config/failsafe/consensus). |
+
+For *"trip a bad upstream out of rotation"* — the [Selection Policy](/config/projects/selection-policies) handles it via the `excludeIf` chain (failing, slow, throttled, lagging). See [Circuit breaker](/config/failsafe/circuit-breaker) for the mapping.
 
 Each policy is independent — you can set any subset on a single `failsafe[]` entry. Evaluation order within `failsafe[]` is top-to-bottom; first match wins.
 
@@ -211,7 +215,6 @@ Each policy is independent — you can set any subset on a single `failsafe[]` e
 | `timeout` | ✅ | ✅ | ✅ |
 | `retry` | ✅ | ✅ | ✅ |
 | `hedge` | ✅ | (no-op) | ✅ |
-| `circuitBreaker` | ❌ | ✅ | ❌ |
 | `consensus` | ✅ | (rare) | ❌ |
 
 ### Retryable vs non-retryable errors (canonical list)
@@ -325,5 +328,5 @@ projects:
 </AISection>
 
 <Callout type="tip">
-	For policy-level field tables, defaults, gotchas, and metrics, see the dedicated pages: [Timeout](/config/failsafe/timeout), [Retry](/config/failsafe/retry), [Hedge](/config/failsafe/hedge), [Circuit breaker](/config/failsafe/circuit-breaker), [Consensus](/config/failsafe/consensus), [Integrity](/config/failsafe/integrity).
+	For policy-level field tables, defaults, gotchas, and metrics, see the dedicated pages: [Timeout](/config/failsafe/timeout), [Retry](/config/failsafe/retry), [Hedge](/config/failsafe/hedge), [Consensus](/config/failsafe/consensus), [Integrity](/config/failsafe/integrity). For tripping a degraded upstream out of rotation, see [Selection Policy](/config/projects/selection-policies) and [Circuit breaker](/config/failsafe/circuit-breaker).
 </Callout>

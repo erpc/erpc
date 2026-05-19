@@ -90,6 +90,27 @@ func TickForTest(e *Engine, networkID, method string) {
 	}
 }
 
+// ResetSlotStateForTest clears the cross-tick bookkeeping of a slot
+// (previousOrder / previousExcluded / lastSwitchAt / excludedSince)
+// so subsequent ticks compute as if they were the first. Used by test
+// harnesses that register a network, then bootstrap upstreams
+// asynchronously, then need a clean baseline before seeding metrics
+// — without this the initial-tick result (which may have run against
+// a partial upstream list) lingers as the slot's `previousOrder` and
+// disturbs `stickyPrimary`'s tie-breaking on the next tick.
+func ResetSlotStateForTest(e *Engine, networkID, method string) {
+	slot := lookupSlotForTest(e, networkID, method)
+	if slot == nil {
+		return
+	}
+	slot.mu.Lock()
+	slot.previousOrder = nil
+	slot.previousExcluded = nil
+	slot.excludedSince = make(map[string]int64)
+	slot.lastSwitchAt = nil
+	slot.mu.Unlock()
+}
+
 // SetFinalityForTest overrides `ctx.finality` on the slot's next tick(s)
 // without threading finality through the request layer. Useful for
 // testing policies that branch by finality (e.g. the default policy's

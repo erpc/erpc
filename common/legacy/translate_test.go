@@ -171,25 +171,20 @@ func TestTranslate_NoLegacy_NoOp(t *testing.T) {
 }
 
 // TestTranslate_InertLegacyOnly: a config that only carries deprecated
-// fields with NO behavioral mapping (scoreMetricsWindowSize,
-// scoreMetricsMode, scoreGranularity, scorePenaltyDecayRate,
-// scoreRefreshInterval) must emit warnings and leave SelectionPolicy
-// alone — so SetDefaults installs the canonical default policy.
+// fields with NO behavioral mapping (scoreMetricsMode,
+// scoreGranularity, scorePenaltyDecayRate, scoreRefreshInterval) must
+// emit warnings and leave SelectionPolicy alone — so SetDefaults
+// installs the canonical default policy.
 //
 // Regression for: legacy translator firing on any inert field caused
-// `scoreMetricsWindowSize: 10m` alone to override the rich default
-// policy with a minimal sortByScore-only synth.
+// stray deprecated knobs to override the rich default policy with a
+// minimal sortByScore-only synth.
 func TestTranslate_InertLegacyOnly(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		prj     legacy.WidenedProject
 		expects string // substring that must appear in warnings
 	}{
-		{
-			"scoreMetricsWindowSize alone",
-			legacy.WidenedProject{ScoreMetricsWindowSize: common.Duration(10 * time.Minute)},
-			"scoreMetricsWindowSize",
-		},
 		{
 			"scoreMetricsMode alone",
 			legacy.WidenedProject{ScoreMetricsMode: "compact"},
@@ -230,11 +225,11 @@ func TestTranslate_InertLegacyOnly(t *testing.T) {
 // TestTranslate_SemanticPlusInertLegacy: when BOTH inert + semantic
 // legacy fields are present, semantic wins — synthesizer fires, AND
 // inert warnings still flow through. This is the typical "operator
-// removed scoreMultipliers but left scoreMetricsWindowSize" case.
+// removed scoreMultipliers but left a stray inert knob" case.
 func TestTranslate_SemanticPlusInertLegacy(t *testing.T) {
 	prj := legacy.WidenedProject{
-		RoutingStrategy:        "round-robin",        // semantic
-		ScoreMetricsWindowSize: common.Duration(10 * time.Minute), // inert
+		RoutingStrategy:  "round-robin", // semantic
+		ScoreMetricsMode: "compact",     // inert
 	}
 	nwCfgs := []*common.NetworkConfig{{
 		Architecture: common.ArchitectureEvm,
@@ -244,7 +239,7 @@ func TestTranslate_SemanticPlusInertLegacy(t *testing.T) {
 	require.NoError(t, err)
 	joined := strings.Join(warns, "|")
 	require.Contains(t, joined, "routingStrategy", "semantic warning must fire")
-	require.Contains(t, joined, "scoreMetricsWindowSize", "inert warning must fire too")
+	require.Contains(t, joined, "scoreMetricsMode", "inert warning must fire too")
 	require.NotNil(t, nwCfgs[0].SelectionPolicy,
 		"semantic field present → synth runs")
 	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "rotateBy",

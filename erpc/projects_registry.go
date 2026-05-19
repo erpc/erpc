@@ -16,21 +16,34 @@ import (
 	"github.com/erpc/erpc/internal/policy/stdlib"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
 )
 
-// ScoreMetricsWindowSize is the tumbling window the score-metrics
-// tracker uses for per-upstream rolling counters (errorRate, p95, …).
-// At each tick the counters reset to zero and start re-accumulating —
-// so this knob also caps how fast a knob/config change is reflected
-// in the observed metrics that drive `keepHealthy` and `sortByScore`.
+// ScoreMetricsWindowSize is the FALLBACK rolling window the
+// score-metrics tracker uses for per-upstream counters (errorRate,
+// p95, throttle, lag, …) when a project's YAML doesn't set the
+// canonical `scoreMetricsWindowSize` field. The tracker keeps a
+// 10-bucket sliding window of this duration; one bucket rotates
+// every windowSize/10, so the window is also the upper bound on how
+// long a freshly-degraded upstream can keep its old healthy score
+// before `excludeIf` / `sortByScore` see the new reality.
 //
-// Production default is 10 minutes (stable averages, immune to spikes).
-// The erpc-simulator overrides this in its init() to ~15s so that
-// twiddling a fake-upstream knob produces a visible shift in routing
-// within a few seconds. Package-level so callers can override it
-// before NewERPC without plumbing it through every constructor.
-var ScoreMetricsWindowSize = 10 * time.Minute
+// 10s is the default. Two competing concerns:
+//   - reaction time: should be well under operator attention span
+//     (humans notice incidents within tens of seconds, not minutes);
+//   - rotation overhead at scale: a rotation iterates EVERY
+//     TrackedMetrics (per (upstream, method) tuple) and re-inits one
+//     DDSketch each — at a few hundred upstreams × ~20 methods that's
+//     thousands of small allocations per second. Halving the window
+//     halves both the rotation rate and the GC churn.
+//
+// 10s sits at the knee: a freshly-degraded upstream still rolls into
+// view within ~1 s on a busy network (the rolling buckets fill almost
+// immediately), but the rotation goroutine only ticks once per second
+// instead of twice. Hot deployments narrow per-project to 5s; cold /
+// huge-fan-out deployments widen to 30s+.
+var ScoreMetricsWindowSize = 10 * time.Second
 
 type ProjectsRegistry struct {
 	logger *zerolog.Logger
@@ -43,6 +56,13 @@ type ProjectsRegistry struct {
 	staticProjects       []*common.ProjectConfig
 	vendorsRegistry      *thirdparty.VendorsRegistry
 	proxyPoolRegistry    *clients.ProxyPoolRegistry
+	// userScript is the compiled program of the user's TS config file
+	// (when LoadConfig went through the .ts path). nil for YAML. Passed
+	// into every project's policy.Engine so its runtime pool can
+	// evaluate the user's whole module in each runtime — keeping
+	// closure variables + module-level helpers live in the same scope
+	// as the `evalFunc` arrow functions the user wrote.
+	userScript *sobek.Program
 }
 
 func NewProjectsRegistry(
@@ -54,6 +74,7 @@ func NewProjectsRegistry(
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *thirdparty.VendorsRegistry,
 	proxyPoolRegistry *clients.ProxyPoolRegistry,
+	userScript *sobek.Program,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
 		appCtx:               appCtx,
@@ -65,6 +86,7 @@ func NewProjectsRegistry(
 		evmJsonRpcCache:      evmJsonRpcCache,
 		vendorsRegistry:      vendorsRegistry,
 		proxyPoolRegistry:    proxyPoolRegistry,
+		userScript:           userScript,
 	}
 
 	for _, prjCfg := range staticProjects {
@@ -101,10 +123,22 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	lg := r.logger.With().Str("projectId", prjCfg.Id).Logger()
 
-	// Score-metrics window default; Phase 7 will replace with explicit config knob.
-	// Read from the package-level override so tooling (notably the
-	// erpc-simulator) can shorten it for fast feedback loops.
-	metricsTracker := health.NewTracker(&lg, prjCfg.Id, ScoreMetricsWindowSize)
+	// Score-metrics window: prefer the project's explicit YAML value;
+	// fall back to the package-level default (10m in production, 30s
+	// for the erpc-simulator which sets it in init()).
+	metricsWindow := ScoreMetricsWindowSize
+	if d := prjCfg.ScoreMetricsWindowSize.Duration(); d > 0 {
+		metricsWindow = d
+	}
+	metricsTracker := health.NewTracker(&lg, prjCfg.Id, metricsWindow)
+	// Start the rotation goroutine that advances the rolling window
+	// every `metricsWindow / rollingBuckets`. Without this the
+	// per-upstream counters + quantile sketch accumulate forever,
+	// which silently turns the rolling window into a "since process
+	// start" window — degradations get diluted by lifetime traffic
+	// and the score chip barely budges no matter how the upstream
+	// behaves now.
+	metricsTracker.Bootstrap(r.appCtx)
 	providersRegistry, err := thirdparty.NewProvidersRegistry(
 		&lg,
 		r.vendorsRegistry,
@@ -160,6 +194,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		prjCfg.Id,
 		metricsTracker,
 		stdlib.Install,
+		r.userScript,
 	)
 	pp.networksRegistry = NewNetworksRegistry(
 		pp,

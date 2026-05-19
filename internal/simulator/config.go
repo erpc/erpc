@@ -49,6 +49,28 @@ logLevel: warn
 
 projects:
   - id: sim
+    # Health tracker rolling window. Per-upstream counters (errorRate,
+    # p50/p70/p95 latency, throttledRate, misbehaviorRate) live in a
+    # 10-bucket ring spanning this duration. Every windowSize/10
+    # (= 1s here) the oldest bucket rotates out — data drips out
+    # continuously, no tumble cliff. This is the upper bound on how
+    # long a freshly-degraded upstream can keep its old healthy score.
+    # Mirrors the production-default value so the simulator
+    # demonstrates the actual rotation cadence operators get out of
+    # the box. Narrow per-project for hot deployments; widen for cold
+    # / huge-upstream-count workloads.
+    scoreMetricsWindowSize: 10s
+    # The state poller is what keeps idle / excluded upstreams' metrics
+    # populated even when no client traffic reaches them. Default is
+    # 30s; the simulator runs it at 2s so even a fully-out upstream
+    # gets ~2-3 samples per scoreMetricsWindow (eth_blockNumber +
+    # eth_syncing). Without this, an upstream the policy excluded
+    # would have empty health metrics until readmitExcluded gave it
+    # another try — and you'd see "I excluded it but the metrics are
+    # frozen" in the upstream tooltip.
+    upstreamDefaults:
+      evm:
+        statePollerInterval: 2s
     networks:
       - architecture: evm
         evm:
@@ -105,6 +127,14 @@ projects:
         # a safety net (e.g. when an AI tool call sends raw template YAML).
         selectionPolicy:
           evalInterval: 1s
+          # Setting evalPerMethod: true would run the policy per
+          # (method, network) instead of one ranking for the whole
+          # network — useful when method profiles differ wildly
+          # (eth_getLogs vs eth_blockNumber) and you want a slow-
+          # getLogs upstream to still serve the cheap calls. Off by
+          # default; predicates like p95DeviationPctAbove(100) compute
+          # against the aggregate "*" metric rollup. Flip on
+          # per-project if a workload calls for per-method routing.
           evalFunc: "{SELECTION_POLICY_FUNC}"
     upstreams:
       # Upstream-level fields stay identity-only: id, endpoint,

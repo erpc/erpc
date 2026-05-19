@@ -52,6 +52,26 @@ metrics:
   port: 4001
 projects:
   - id: main
+    # Health-tracker rolling window. Per-upstream rolling counters
+    # (errorRate, p50/p70/p95 latency, throttledRate, misbehaviorRate)
+    # are kept as a 10-bucket ring spanning this duration; one bucket
+    # rotates out every windowSize/10 (= 500ms at 5s window) so old
+    # samples drip out continuously rather than vanishing on a tumble.
+    # This is the upper bound on how long stale-fast samples can keep
+    # a degraded upstream looking healthy. Defaults to 5s when omitted;
+    # widen if your aggregate RPS is low enough that 5s gives a noisy
+    # score chip.
+    scoreMetricsWindowSize: 10s
+    upstreamDefaults:
+      evm:
+        # State-poller cadence. The poller hits each upstream's
+        # eth_blockNumber + eth_syncing on this interval, independent
+        # of client traffic AND independent of selection-policy
+        # exclusion — so even a low-traffic or currently-excluded
+        # upstream keeps its health metrics fresh in the tracker.
+        # Keep this <= scoreMetricsWindowSize so the rolling window
+        # always has at least one poller sample per upstream.
+        statePollerInterval: 2s
     networks:
       - architecture: evm
         evm:

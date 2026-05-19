@@ -52,7 +52,6 @@ type WidenedProject struct {
 	ScoreSwitchHysteresis  float64         `yaml:"scoreSwitchHysteresis,omitempty" json:"scoreSwitchHysteresis,omitempty"`
 	ScoreMinSwitchInterval common.Duration `yaml:"scoreMinSwitchInterval,omitempty" json:"scoreMinSwitchInterval,omitempty"`
 	ScoreMetricsMode       string          `yaml:"scoreMetricsMode,omitempty" json:"scoreMetricsMode,omitempty"`
-	ScoreMetricsWindowSize common.Duration `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize,omitempty"`
 	ScoreRefreshInterval   common.Duration `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval,omitempty"`
 }
 

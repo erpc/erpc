@@ -1,0 +1,166 @@
+---
+title: Cordoning
+description: Manually take an upstream out of rotation (and put it back) via the admin RPC — the operator's escape hatch for incident response, vendor maintenance windows, and forced failover testing.
+---
+
+import { Callout } from "nextra/components";
+
+# Cordoning
+
+**Cordon** is the operator's manual *"take this upstream out of rotation"* switch — the only way to exclude an upstream that isn't driven by live metrics. Use it for:
+
+- **Incident response.** A vendor's status page goes red but your tracker hasn't caught it yet (the requests it answers are slow but not failing). Cordon to fail over immediately without waiting for the rolling window to react.
+- **Planned maintenance.** A provider warns you about a 2-hour window of degraded service. Cordon at start, uncordon at end — no config push, no restart.
+- **Forced failover testing.** Cordon the primary to prove the rest of the pool actually serves traffic correctly under failover. The cheap "is failover wired?" smoke test in production-like environments.
+
+Cordoning is **independent of the [selection policy](/config/projects/selection-policies)** — it sets a sticky flag on the `(upstream, method)` cell of the health tracker, and the default policy's `.removeCordoned()` step drops anything flagged. (If you've written a custom `evalFunc`, include `.removeCordoned()` near the start of the chain to honor admin cordons; otherwise they're a no-op.)
+
+## Quick start
+
+Cordon every method on an upstream until further notice:
+
+```bash
+curl -s -X POST http://localhost:4001/admin \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "erpc_cordonUpstream",
+    "params": [{
+      "projectId": "main",
+      "upstream": "alchemy-eth-1",
+      "reason": "vendor incident #12345"
+    }]
+  }'
+```
+
+Result:
+
+```json
+{"jsonrpc":"2.0","id":1,"result":{
+  "projectId": "main",
+  "upstream": "alchemy-eth-1",
+  "method": "*",
+  "cordoned": true,
+  "reason": "vendor incident #12345"
+}}
+```
+
+Within one [`evalInterval`](/config/projects/selection-policies) (default `1s`) the selection policy re-evaluates and the cordoned upstream is dropped from the ordered list. Traffic flips to the next-best upstream; the cordoned one stays out until you uncordon.
+
+Uncordon:
+
+```bash
+curl -s -X POST http://localhost:4001/admin \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "erpc_uncordonUpstream",
+    "params": [{
+      "projectId": "main",
+      "upstream": "alchemy-eth-1",
+      "reason": "vendor confirmed resolved"
+    }]
+  }'
+```
+
+## Method-scoped cordons
+
+The `method` field scopes the cordon to a single JSON-RPC method (or glob). Useful when a vendor is bad at *one* method (e.g. `eth_getLogs` slow, everything else fine):
+
+```bash
+curl -s -X POST http://localhost:4001/admin \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "erpc_cordonUpstream",
+    "params": [{
+      "projectId": "main",
+      "upstream": "drpc-eth-1",
+      "method": "eth_getLogs",
+      "reason": "p95 > 30s, escalated"
+    }]
+  }'
+```
+
+A wildcard (`"*"`) cordon overrides per-method cordons — the upstream is out for everything. Method-scoped cordons (e.g. `eth_getLogs`) coexist; only requests for that method see the upstream excluded.
+
+## Listing currently-cordoned upstreams
+
+```bash
+curl -s -X POST http://localhost:4001/admin \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "erpc_listCordoned",
+    "params": [{ "projectId": "main" }]
+  }' | jq
+```
+
+```json
+{
+  "projectId": "main",
+  "cordoned": [
+    { "upstream": "alchemy-eth-1", "reason": "vendor incident #12345" }
+  ]
+}
+```
+
+Reconcile-style operator scripts can poll this endpoint and uncordon based on external signals (e.g. PagerDuty incident closed).
+
+## When NOT to use cordon
+
+Cordon is for **manual, intent-driven exclusion**. For automatic, metric-driven exclusion — *"trip out any upstream whose error rate goes above 50%"* — use the [selection policy's `excludeIf` chain](/config/projects/selection-policies#default-policy). The default policy already covers the common signals (error rate, throttling, p95 latency, block lag); cordon is the override for cases the metric layer can't detect on its own.
+
+See [Circuit breaker](/config/failsafe/circuit-breaker) for how "trip a bad upstream out of rotation" is wired through the selection policy at the network level.
+
+## What cordon does NOT do
+
+- **Cordoned upstreams still get state-poller traffic.** The poller runs out-of-band and keeps health metrics fresh — so when you uncordon, the next eval has up-to-date numbers and the upstream can earn its position back immediately rather than being treated as "unknown for the first few seconds".
+- **Cordoning doesn't survive process restart.** Cordon state lives in the in-process health tracker; if eRPC restarts, the cordon is gone. For a permanent exclusion, add the upstream to `ignoreMethods: ["*"]` in your config or remove it entirely. Cordon is for *transient* operator interventions — minutes to hours, not weeks.
+- **Cordoning doesn't reduce shadow traffic.** [Shadow upstreams](/config/projects/upstreams#shadow-upstreams) receive traffic mirrored from the live primary; that mirroring is unaffected by cordon.
+
+## Admin RPC reference
+
+All three methods live on the admin JSON-RPC endpoint (`POST /admin`). The endpoint is gated by your project's admin auth (see [Admin](/operation/admin)).
+
+### `erpc_cordonUpstream`
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `projectId` | string (**required**) | — | Project the upstream belongs to. |
+| `upstream` | string (**required**) | — | Upstream `id` as declared in the config. |
+| `method` | string | `"*"` | JSON-RPC method scope. `"*"` cordons the upstream wholesale. |
+| `reason` | string | `"admin: manual cordon"` | Human-readable reason. Surfaced via [`erpc_listCordoned`](#erpc_listcordoned), DEBUG logs, and the `erpc_upstream_cordoned` gauge label. |
+
+Returns `{ projectId, upstream, method, cordoned: true, reason }`. Idempotent — cordoning an already-cordoned upstream is a no-op (the reason is overwritten with the latest call's value).
+
+### `erpc_uncordonUpstream`
+
+Same param shape as `erpc_cordonUpstream`. Returns `{ ..., cordoned: false, reason }`. Idempotent.
+
+### `erpc_listCordoned`
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `projectId` | string (**required**) | — | Project to list cordoned upstreams for. |
+
+Returns `{ projectId, cordoned: [{ upstream, reason }, ...] }`. Only lists wildcard-scoped (`"*"`) cordons. To enumerate method-scoped cordons, walk the `erpc_upstream_cordoned` Prometheus gauge labels.
+
+## Observability
+
+| Where | Signal |
+|---|---|
+| Prometheus | `erpc_upstream_cordoned{project,upstream,method,reason}` — gauge: `1` while cordoned, `0` otherwise. Cardinality is bounded by the number of upstreams × methods you actually cordon, not by the full method catalog. |
+| Prometheus | `erpc_upstream_cordon_event_total{project,network,upstream,action}` — counter, `action` ∈ `cordon`/`uncordon`. Increments only on the actual OFF→ON or ON→OFF edge, so repeated `Cordon` calls (operator updating the reason) don't double-count. |
+| Prometheus | `erpc_upstream_cordon_duration_seconds{project,network,upstream}` — histogram observed on every uncordon. Long tail = real outages; very short cordons usually indicate operator mis-fires you want to review. |
+| Prometheus | `erpc_selection_excluded_seconds{upstream}` — once `.removeCordoned()` drops the cordoned upstream the selection policy reports it excluded; this gauge climbs every tick while it's out. Combined with the cordon-duration histogram you get both the live "how long has it been" and the post-mortem "how long was it" views. |
+| Logs (DEBUG) | `msg="cordoning upstream to disable routing" upstream=... method=... reason=...` on cordon, and `"uncordoning..."` on uncordon. |
+| Selection policy | The eval's per-tick `Decision.Output.Annotations[id]` includes the cordon reason on the excluded row. Surfaces in the simulator's policy-history modal as a pill. |
+
+<Callout type="info">
+  The `erpc_upstream_cordoned` gauge is what powers the healthcheck `all:activeUpstreams` eval — see [Healthcheck](/operation/healthcheck). Probes that depend on every upstream being active will fail while any are cordoned, which is usually what you want during an incident.
+</Callout>

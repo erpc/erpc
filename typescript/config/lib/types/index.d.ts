@@ -1,3 +1,3 @@
 export type { Duration, ByteSize, LogLevel, ConnectorDriverType, UpstreamType, ConnectorConfig, NetworkArchitecture, AuthType, AuthStrategyConfig, EvmNetworkConfigForDefaults, BoolOrString, } from "./generic";
-export type { PolicyEvalUpstreamMetrics, PolicyEvalUpstream, SelectionPolicyEvalFunction, } from "./policyEval";
+export type { PolicyEvalUpstreamMetrics, PolicyEvalUpstream, PolicyEvalUpstreamArray, PolicyEvalContext, PolicyEvalPredicate, EvalContext, SelectionPolicyEvalFunction, ScoreWeights, ScoreBreakdown, TagPattern, Pattern, SortByScoreOptions, RemoveByLatencyOptions, RemoveByLagOptions, KeepHealthyOptions, PreferOptions, StickyPrimaryOptions, ReadmitExcludedOptions, ByFinalityHandlers, WhereFilter, } from "./policyEval";
 //# sourceMappingURL=index.d.ts.map

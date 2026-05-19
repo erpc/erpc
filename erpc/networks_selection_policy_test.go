@@ -105,7 +105,7 @@ func setupSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamConf
 		},
 	}
 
-	policyEngine := policy.NewEngine(ctx, &log.Logger, "test", metricsTracker, policystdlib.Install)
+	policyEngine := policy.NewEngine(ctx, &log.Logger, "test", metricsTracker, policystdlib.Install, nil)
 	network, err := NewNetwork(
 		ctx,
 		&log.Logger,
@@ -133,7 +133,45 @@ func setupSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamConf
 		ups.EvmStatePoller().SuggestLatestBlock(1000)
 		ups.EvmStatePoller().SuggestFinalizedBlock(900)
 	}
-	time.Sleep(50 * time.Millisecond)
+	expectedCount := len(upstreamConfigs)
+	// Wait until the registry returns every configured upstream — the
+	// per-upstream Bootstrap above can complete asynchronously and the
+	// helper's caller relies on the policy snapshot seeing the full
+	// set. Without this gate, the re-tick below would race the registry
+	// and record a partial `previousOrder` that stickyPrimary later
+	// keys off (producing test-order-sensitive failures).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		if len(got) >= expectedCount {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	require.Len(t, upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)),
+		expectedCount, "registry never converged on the full upstream set")
+
+	// The synchronous initial tick fired inside RegisterNetwork ran
+	// BEFORE the per-upstream bootstraps above completed — it might
+	// have seen a partial slice and recorded a stale `previousOrder`.
+	// Reset cross-tick state, then re-tick against the complete
+	// upstream set so the slot's baseline matches reality before the
+	// test seeds metrics.
+	// Wipe per-upstream tracker metrics that the state poller seeded
+	// during bootstrap. Without this the policy enters the test with
+	// uneven request counts + latencies per upstream — scores diverge
+	// by a tiny margin, the lower-scoring upstream wins by score
+	// instead of by alphabetical tiebreak, and stickyPrimary locks
+	// that pick in for the rest of the test. Per-test seedDegraded
+	// will then add the metrics the test cares about against a clean
+	// baseline.
+	for _, ups := range upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
+		if m := network.metricsTracker.GetUpstreamMethodMetrics(ups, "*"); m != nil {
+			m.Reset()
+		}
+	}
+	policy.ResetSlotStateForTest(network.policyEngine, network.networkId, "*")
+	policy.TickForTest(network.policyEngine, network.networkId, "*")
 
 	// Reset the gock hit counter so test assertions count only the
 	// post-setup request, not the state-poller traffic generated above.
@@ -650,25 +688,19 @@ func TestNetworkPolicy_SafetyNet_WhenAllBroken(t *testing.T) {
 	assert.GreaterOrEqual(t, total, 1, "at least one upstream must have been attempted")
 }
 
-// TestNetworkPolicy_StickyPrimary_OnlyForRealtime — the hardened
-// default wraps stickyPrimary in `.if(ctx.finality === REALTIME, ...)`.
-// REALTIME requests pin the prior primary across ticks (anti-flap).
-// FINALIZED requests skip stickiness — reorg-tolerant, no benefit
-// from holding a degrading primary.
+// TestNetworkPolicy_StickyPrimary_AllFinalities — the hardened
+// default's stickyPrimary holds across the minSwitchInterval cooldown
+// for every finality (realtime / unfinalized / finalized). Flapping
+// between similarly-ranked upstreams every tick costs more in
+// connection-setup + cache-locality than the marginal ranking gain,
+// regardless of whether the request is reorg-tolerant.
 //
 // We exercise the JS branching by forcing ctx.finality via
 // `policy.SetFinalityForTest`, which bypasses request-side finality
 // classification but still goes through the real policy engine.
-func TestNetworkPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
-	for _, tc := range []struct {
-		name           string
-		finality       string
-		expectStickied bool // true → REALTIME, prev primary holds; false → FINALIZED, switch
-	}{
-		{"REALTIME holds prior primary", "realtime", true},
-		{"FINALIZED switches immediately", "finalized", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
+	for _, finality := range []string{"realtime", "unfinalized", "finalized"} {
+		t.Run(finality+"_holds_prior_primary", func(t *testing.T) {
 			util.ResetGock()
 			defer util.ResetGock()
 			util.SetupMocksForEvmStatePoller()
@@ -682,7 +714,7 @@ func TestNetworkPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
 				{Type: common.UpstreamTypeEvm, Id: "rpcB", Endpoint: upstreamHostFromID("rpcB"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 			})
 
-			policy.SetFinalityForTest(network.policyEngine, network.networkId, "*", tc.finality)
+			policy.SetFinalityForTest(network.policyEngine, network.networkId, "*", finality)
 
 			// Tick 1 — equal metrics; whichever upstream wins by score
 			// tiebreak becomes the incumbent. The engine records
@@ -699,9 +731,8 @@ func TestNetworkPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
 			challenger := order[1].Id()
 
 			// Degrade the incumbent (errorRate 0.23 < 0.5 → still passes
-			// keepHealthy) so score favours the challenger. Under
-			// REALTIME the 30s sticky cooldown should hold the incumbent;
-			// under FINALIZED, no stickiness, challenger takes over.
+			// keepHealthy) so score favours the challenger. The 30s sticky
+			// cooldown should hold the incumbent regardless of finality.
 			seedDegraded(network.metricsTracker, upstreamByID(t, network, incumbent),
 				seedSpec{failed: 30})
 			policy.TickForTest(network.policyEngine, network.networkId, "*")
@@ -714,13 +745,9 @@ func TestNetworkPolicy_StickyPrimary_OnlyForRealtime(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, resp)
 
-			expectPrimary := incumbent
-			if !tc.expectStickied {
-				expectPrimary = challenger
-			}
-			assert.GreaterOrEqual(t, gockHits(upstreamHostFromID(expectPrimary)), 1,
-				"%s should be the primary under finality=%s (incumbent=%s, challenger=%s)",
-				expectPrimary, tc.finality, incumbent, challenger)
+			assert.GreaterOrEqual(t, gockHits(upstreamHostFromID(incumbent)), 1,
+				"%s must remain primary under finality=%s (incumbent=%s, challenger=%s)",
+				incumbent, finality, incumbent, challenger)
 		})
 	}
 }
@@ -896,7 +923,7 @@ func setupSelectionPolicyNetworkWithEval(t *testing.T, ctx context.Context, upst
 		},
 	}
 
-	policyEngine := policy.NewEngine(ctx, &log.Logger, "test", metricsTracker, policystdlib.Install)
+	policyEngine := policy.NewEngine(ctx, &log.Logger, "test", metricsTracker, policystdlib.Install, nil)
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
 		rateLimitersRegistry, upstreamsRegistry, metricsTracker, policyEngine)
 	require.NoError(t, err)

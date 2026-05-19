@@ -132,7 +132,7 @@ func setupTwoUpstreamNetworkForSkip(
 	// eval running. Subtests that pass nil `selectionPolicy` get the
 	// default policy — harmless here since the default policy filters
 	// only on observed metrics, and these tests don't seed any.
-	pe := policy.NewEngine(ctx, &log.Logger, "test", mt, policystdlib.Install)
+	pe := policy.NewEngine(ctx, &log.Logger, "test", mt, policystdlib.Install, nil)
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkCfg, rlr, upr, mt, pe)
 	require.NoError(t, err)
 

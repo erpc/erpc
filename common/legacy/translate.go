@@ -43,10 +43,6 @@ func Translate(
 	if prj.ScoreMetricsMode != "" {
 		warnings = append(warnings, warnScoreMetricsMode(prj.ScoreMetricsMode))
 	}
-	if prj.ScoreMetricsWindowSize != 0 {
-		warnings = append(warnings, warnInertField("scoreMetricsWindowSize",
-			"metrics windowing is owned by health.Tracker; this field has no behavioral effect"))
-	}
 	if prj.ScoreGranularity != "" {
 		warnings = append(warnings, warnInertField("scoreGranularity",
 			"replaced by selectionPolicy.evalPerMethod (false=upstream, true=method)"))
@@ -163,7 +159,6 @@ func hasInertLegacy(prj WidenedProject) bool {
 	return prj.ScoreGranularity != "" ||
 		prj.ScorePenaltyDecayRate != 0 ||
 		prj.ScoreMetricsMode != "" ||
-		prj.ScoreMetricsWindowSize != 0 ||
 		prj.ScoreRefreshInterval != 0
 }
 
@@ -260,7 +255,6 @@ func widenedProjectFromConfig(prj *common.ProjectConfig) WidenedProject {
 		ScoreSwitchHysteresis:  lp.ScoreSwitchHysteresis,
 		ScoreMinSwitchInterval: lp.ScoreMinSwitchInterval,
 		ScoreMetricsMode:       lp.ScoreMetricsMode,
-		ScoreMetricsWindowSize: lp.ScoreMetricsWindowSize,
 		ScoreRefreshInterval:   lp.ScoreRefreshInterval,
 	}
 }

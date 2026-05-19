@@ -191,7 +191,7 @@ The built-in project defaults set `network.retry.maxAttempts: 5` and `upstream.r
 
 - **`delay: 0ms` does not disable retry.** It means "retry immediately without waiting." To disable retry entirely, set `maxAttempts: 1`.
 - **Write methods aren't retried** even when retry is configured. `eth_sendRawTransaction` and `eth_sendTransaction` are explicitly excluded. Enable `evm.idempotentTransactionBroadcast: true` on the network if broadcast retries are safe for your use case.
-- **`emptyResultIgnore` is deprecated.** Rename existing config keys to `emptyResultAccept`. The old key still works with a deprecation warning. For network-wide empty-retry control, use `directiveDefaults.retryEmpty: false` rather than relying on the deprecated field.
+- **Empty-result handling.** The field is `emptyResultAccept`. For network-wide control, set `directiveDefaults.retryEmpty: false` (or per-request `?retryEmpty=false`) instead.
 - **Rate-limit responses (HTTP 429).** Retry will fire but just burns through quota faster. Use `rateLimitAutoTune` for sustained rate-limit pressure and save retry for genuinely transient 5xx/network errors.
 
 ## Metrics

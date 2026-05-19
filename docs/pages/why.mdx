@@ -17,8 +17,8 @@ These are the main reasons eRPC was built:
 
 # Features
 
-- [Score](/config/projects/upstreams#priority--selection-mechanism) multiple upstreams by tracking their response time, error rate, blockchain sync status, etc.
-- [Failsafe](/config/failsafe) policies to help with intermittent issues and increase general resiliency (retries, hedging, circuit breakers).
+- [Selection policy](/config/projects/selection-policies) that scores upstreams in real time on response time, error rate, throttling, block lag, and misbehavior — and trips degraded ones out of rotation automatically. Operators can also [manually cordon](/operation/cordoning) an upstream during incidents.
+- [Failsafe](/config/failsafe) policies to help with intermittent issues and increase general resiliency (retries, hedging, consensus).
 - Offer self-imposed [rate limitting](/config/rate-limiters) per project, or network, or upstream to avoid abuse, and unintentional DDoS.
 - Prometheus metrics collection and Grafana dashboards to [monitor](/operation/monitoring) costs, usage and health of your RPC endpoints.
 - [Caching](/config/database/evm-json-rpc-cache) and multiplexing (auto-merging identical requests) to reduce redundant RPC calls and costs.

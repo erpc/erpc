@@ -226,12 +226,12 @@ effective = clamp(base + adaptive, min, max)
 
 **When `quantile == 0`:** `effective = base` exactly (no clamping applied).
 
-### Legacy flat form (still accepted)
+### Flat form shorthand
 
-The pre-`AdaptiveDuration` wire format `{ duration, quantile, minDuration, maxDuration }` is still accepted and silently folded into the new object form at parse time:
+The flat form `{ duration, quantile, minDuration, maxDuration }` is accepted as shorthand and folded into the `AdaptiveDuration` object at parse time:
 
 ```yaml
-# Legacy — still works
+# Flat shorthand
 timeout:
   duration: 5s
   quantile: 0.99

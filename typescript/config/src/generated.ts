@@ -446,6 +446,14 @@ export interface ProjectConfig {
   forwardHeaders?: string[];
   ignoreMethods?: string[];
   allowMethods?: string[];
+  /**
+   * Rolling window the per-upstream health tracker uses for its
+   * counters (errorRate, p50/p70/p95 latency, throttledRate,
+   * misbehaviorRate). 10 sliding buckets spanning this duration. Short
+   * windows react quickly but give noisier ranking; long windows give
+   * stable averages but hide spikes for longer. Defaults to 10s.
+   */
+  scoreMetricsWindowSize?: Duration;
 }
 /**
  * UserAgentTrackingMode controls how user agents are recorded for metrics/labels
@@ -1083,14 +1091,18 @@ export interface SelectionPolicyConfig {
   evalPerMethod?: boolean;
   evalTimeout?: Duration;
   /**
-   * JavaScript source for the per-tick evaluation function.
-   * Signature: `(upstreams, ctx) => Upstream[]`. Functions written
-   * directly in TS get stringified to their source automatically.
+   * Per-tick evaluation function. In a `.ts` config you pass a real
+   * arrow function (recommended); in YAML you pass the JS source as
+   * a string.
    *
-   * The legacy `evalFunction` key (signature `(upstreams, method)`) is
-   * still accepted in YAML and rewritten at load time.
+   * Signature: `(upstreams, ctx) => Upstream[]`. Inside the body, the
+   * stdlib chainable methods (`removeCordoned`, `excludeIf`,
+   * `sortByScore`, `stickyPrimary`, `readmitExcluded`, `preferTag`, …)
+   * are typed via `PolicyEvalUpstreamArray`, and the predicate factories
+   * + score presets (`errorRateAbove`, `any`, `BALANCED`, …) are
+   * declared as ambient globals.
    */
-  evalFunc?: string | ((upstreams: unknown[], ctx: unknown) => unknown[]);
+  evalFunc?: SelectionPolicyEvalFunction | string;
 }
 export type AuthType = string;
 export const AuthTypeSecret: AuthType = "secret";

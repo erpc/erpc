@@ -57,7 +57,7 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 		nil,
 	)
 
-	engine := policy.NewEngine(ctx, &log.Logger, "test", tracker, stdlib.Install)
+	engine := policy.NewEngine(ctx, &log.Logger, "test", tracker, stdlib.Install, nil)
 
 	networkConfig := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
