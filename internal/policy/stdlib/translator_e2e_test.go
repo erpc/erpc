@@ -73,7 +73,7 @@ func runTranslatedPolicy(
 // Cell (NO eval × NO multipliers)
 //
 // Pure legacy `routingStrategy: score-based` with no per-upstream
-// overrides. The translated policy is sortByScore(BALANCED) +
+// overrides. The translated policy is sortByScore(PREFER_FASTEST) +
 // stickyPrimary. Clean upstreams should outrank broken ones.
 // --------------------------------------------------------------------
 func TestTranslator_E2E_ScoreBasedOnly(t *testing.T) {
@@ -101,7 +101,7 @@ func TestTranslator_E2E_ScoreBasedOnly(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpc2", "rpc1"}, got,
 		"score-based default: clean upstream should outrank broken one")
 }
@@ -111,7 +111,7 @@ func TestTranslator_E2E_ScoreBasedOnly(t *testing.T) {
 //
 // `scoreMultipliers` shifts the per-upstream weights. We give rpc1 high
 // error-rate weight so a small error-rate gap suffices to swing the
-// order. Without the multipliers, the gap wouldn't matter under BALANCED.
+// order. Without the multipliers, the gap wouldn't matter under PREFER_FASTEST.
 // --------------------------------------------------------------------
 func TestTranslator_E2E_ScoreMultipliersOnly(t *testing.T) {
 	upCfgs := []*common.UpstreamConfig{{Id: "fast"}, {Id: "slow"}}
@@ -144,7 +144,7 @@ func TestTranslator_E2E_ScoreMultipliersOnly(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"fast", "slow"}, got,
 		"per-upstream multipliers: latency-weighted sort should put `fast` first")
 }
@@ -185,7 +185,7 @@ func TestTranslator_E2E_EvalFunctionOnly(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpc2"}, got,
 		"wrapped legacy fn should filter out the high-error upstream")
 }
@@ -260,7 +260,7 @@ func TestTranslator_E2E_EvalFunction_PlusMultipliers_PreservesOrder(t *testing.T
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"fast", "mid"}, got,
 		"pre-sort by multipliers (fast < mid < slow), then legacy slice(0,2) keeps fast & mid")
 }
@@ -284,7 +284,7 @@ func TestTranslator_E2E_RoundRobin(t *testing.T) {
 	seenPrimary := map[string]bool{}
 	for i := 0; i < 6; i++ {
 		policy.TickForTest(engine, "evm:1", "*")
-		ordered := engine.GetOrdered("evm:1", "*")
+		ordered := engine.GetOrdered("evm:1", "*", "*")
 		require.Len(t, ordered, 3)
 		seenPrimary[ordered[0].Id()] = true
 	}

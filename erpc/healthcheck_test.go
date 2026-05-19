@@ -32,7 +32,7 @@ func TestHealthCheckLastEvaluation(t *testing.T) {
 	// Network.Bootstrap registers the network with the engine, which runs
 	// an initial synchronous eval — that decision is the LastEvalAt anchor
 	// health-check exporters use.
-	last := network.policyEngine.LastEvalAt("evm:123", "*")
+	last := network.policyEngine.LastEvalAt("evm:123", "*", "*")
 	assert.False(t, last.IsZero(), "LastEvalAt should be set after Bootstrap's initial tick")
 	assert.WithinDuration(t, time.Now(), last, time.Second,
 		"LastEvalAt should be approximately now")
@@ -41,7 +41,7 @@ func TestHealthCheckLastEvaluation(t *testing.T) {
 	first := last
 	time.Sleep(5 * time.Millisecond)
 	policy.TickForTest(network.policyEngine, "evm:123", "*")
-	last = network.policyEngine.LastEvalAt("evm:123", "*")
+	last = network.policyEngine.LastEvalAt("evm:123", "*", "*")
 	assert.True(t, last.After(first), "LastEvalAt should advance after another tick")
 }
 

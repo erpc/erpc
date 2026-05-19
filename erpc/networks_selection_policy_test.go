@@ -725,7 +725,7 @@ func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 			}
 			policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-			order := network.policyEngine.GetOrdered(network.networkId, "*")
+			order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
 			require.Len(t, order, 2)
 			incumbent := order[0].Id()
 			challenger := order[1].Id()
@@ -804,7 +804,7 @@ func TestNetworkPolicy_ProbeReAdmit_AtNinetySeconds(t *testing.T) {
 	// observe re-admission via gock directly because alive (still
 	// healthier) will be position[0]. So instead we read the engine's
 	// order directly and assert dead is back in.
-	order := network.policyEngine.GetOrdered(network.networkId, "*")
+	order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
 	ids := make([]string, len(order))
 	for i, u := range order {
 		ids[i] = u.Id()
@@ -841,7 +841,7 @@ func TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade(t *testing.T) {
 	}
 	network := setupSelectionPolicyNetworkWithEval(t, ctx, upstreamConfigs,
 		`(upstreams, ctx) =>
-			upstreams.sortByScore(BALANCED).spreadAcrossTags('cohort:')`)
+			upstreams.sortByScore(PREFER_FASTEST).spreadAcrossTags('cohort:')`)
 
 	// All clean.
 	for _, u := range upstreamConfigs {
@@ -850,7 +850,7 @@ func TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade(t *testing.T) {
 	}
 	policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-	order := network.policyEngine.GetOrdered(network.networkId, "*")
+	order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
 	require.Len(t, order, 4)
 
 	// position[0] is cohort-1 best; position[1] MUST be cohort-2 (the

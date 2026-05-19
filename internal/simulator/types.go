@@ -329,7 +329,7 @@ type UpstreamStatsRow struct {
 	ThrottleRate    float64 `json:"throttleRate"`    // RemoteRateLimitedTotal / RequestsTotal
 	MisbehaviorRate float64 `json:"misbehaviorRate"` // MisbehaviorsTotal / RequestsTotal
 	P50Ms           float64 `json:"p50"`             // from ResponseQuantiles (ms)
-	P70Ms           float64 `json:"p70"`             // the quantile sortByScore(BALANCED) uses by default
+	P70Ms           float64 `json:"p70"`             // the quantile sortByScore(PREFER_FASTEST) uses by default
 	P90Ms           float64 `json:"p90"`
 	P95Ms           float64 `json:"p95"`
 	BlockHeadLag           int     `json:"blockHeadLag"`

@@ -12,13 +12,16 @@ import (
 	"github.com/erpc/erpc/telemetry"
 )
 
-// Slot is the per-(network, method) state container. Each Slot owns a
-// goroutine driven by its ticker; the request-path never touches anything
-// here except `cache` via an atomic load.
+// Slot is the per-(network, method, finality) state container. Each
+// Slot owns a goroutine driven by its ticker; the request-path never
+// touches anything here except `cache` via an atomic load. `method` and
+// `finality` are `"*"` when the corresponding `EvalPerMethod` /
+// `EvalPerFinality` knob is off — only the wildcard slot exists then.
 type Slot struct {
 	engine    *Engine
 	networkID string
 	method    string
+	finality  string
 
 	upstreamsFn func() []common.Upstream
 	cfg         *common.SelectionPolicyConfig
@@ -68,11 +71,12 @@ type Slot struct {
 	wg       sync.WaitGroup
 }
 
-func newSlot(e *Engine, networkID, method string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
+func newSlot(e *Engine, networkID, method, finality string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
 	return &Slot{
 		engine:        e,
 		networkID:     networkID,
 		method:        method,
+		finality:      finality,
 		upstreamsFn:   upstreamsFn,
 		cfg:           cfg,
 		excludedSince: make(map[string]int64),
@@ -149,6 +153,14 @@ func (s *Slot) tickOnce() {
 		TickCount:        s.tickCount,
 	}
 	evalCtx := buildEvalContext(s.networkID, s.method, state)
+	// For per-finality slots `s.finality` carries the bucket value
+	// (`realtime`/`unfinalized`/`finalized`/`unknown`); for wildcard
+	// slots it stays `"*"` and we fall back to the legacy default
+	// (`unknown`) so existing `byFinality({...})` evals don't see a
+	// surprising literal `"*"`.
+	if s.finality != "" && s.finality != "*" {
+		evalCtx.Finality = s.finality
+	}
 	// Apply test-only overrides (no-ops in production where these stay zero).
 	if s.testFinality != "" {
 		evalCtx.Finality = s.testFinality
@@ -162,7 +174,7 @@ func (s *Slot) tickOnce() {
 	// `score` values the JS attached during `sortByScore(...)` — we cache
 	// them on the slot so diagnostic tooling (admin endpoint, simulator)
 	// can read the engine's authoritative ranking without re-implementing
-	// the BALANCED formula in Go. Step log + annotations are captured
+	// the PREFER_FASTEST formula in Go. Step log + annotations are captured
 	// only when the engine's debug flag is on (simulator always, eRPC
 	// when the logger is at DEBUG) — see `Engine.SetStepLogEnabled`.
 	var (

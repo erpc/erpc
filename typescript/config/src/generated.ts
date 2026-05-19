@@ -1088,7 +1088,21 @@ export interface EvmIntegrityConfig {
  */
 export interface SelectionPolicyConfig {
   evalInterval?: Duration;
+  /**
+   * Separate slot per `(network, method)`. The eval sees `ctx.method`
+   * set to the exact method string. Useful when one upstream is fast
+   * on `eth_call` but slow on `trace_filter`.
+   */
   evalPerMethod?: boolean;
+  /**
+   * Separate slot per `(network, method, finality)`. The eval sees
+   * `ctx.finality` set to the request's finality bucket
+   * (`realtime`/`unfinalized`/`finalized`/`unknown`). Useful when
+   * realtime reads want PREFER_FRESHEST and finalized reads want
+   * PREFER_FASTEST. Cardinality scales linearly with the number of
+   * buckets actually used; cold buckets stay un-created.
+   */
+  evalPerFinality?: boolean;
   evalTimeout?: Duration;
   /**
    * Per-tick evaluation function. In a `.ts` config you pass a real
@@ -1099,7 +1113,7 @@ export interface SelectionPolicyConfig {
    * stdlib chainable methods (`removeCordoned`, `excludeIf`,
    * `sortByScore`, `stickyPrimary`, `readmitExcluded`, `preferTag`, …)
    * are typed via `PolicyEvalUpstreamArray`, and the predicate factories
-   * + score presets (`errorRateAbove`, `any`, `BALANCED`, …) are
+   * + score presets (`errorRateAbove`, `any`, `PREFER_FASTEST`, …) are
    * declared as ambient globals.
    */
   evalFunc?: SelectionPolicyEvalFunction | string;

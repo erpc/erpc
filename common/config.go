@@ -2140,9 +2140,26 @@ type EvmIntegrityConfig struct {
 // provides the building blocks (sortByScore, removeByLag, stickyPrimary,
 // probeExcluded, etc.) — see specs/selection-policy/feature.md.
 type SelectionPolicyConfig struct {
-	EvalInterval  Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
-	EvalPerMethod bool     `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
-	EvalTimeout   Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
+	EvalInterval Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
+	// EvalPerMethod gives the engine a separate slot (with its own
+	// ticker + cache) per (network, method). The eval function sees
+	// `ctx.method` set to the exact method string. Useful when one
+	// upstream is fast on `eth_call` but slow on `trace_filter`, or
+	// when a network has wildly different methods.
+	EvalPerMethod bool `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	// EvalPerFinality gives the engine a separate slot per (network,
+	// method, finality). The eval function sees `ctx.finality` set to
+	// the request's finality bucket (`realtime`/`unfinalized`/
+	// `finalized`/`unknown`). Useful when realtime reads should weight
+	// freshness differently from finalized reads — e.g. PREFER_FRESHEST
+	// for the realtime slot, PREFER_FASTEST for the finalized slot.
+	//
+	// Combine with EvalPerMethod=true for the most granular routing
+	// (one slot per network × method × finality). Cardinality scales
+	// linearly; the slot's per-(method, finality) ticker only spins up
+	// after the first request for that bucket lands.
+	EvalPerFinality bool     `yaml:"evalPerFinality,omitempty" json:"evalPerFinality"`
+	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
 	// EvalFunc is the per-tick evaluation function. In YAML it's a JS
 	// source string; in TS configs it's a real arrow function compiled
 	// into `CompiledProgram` at config load.
@@ -2443,7 +2460,7 @@ const tsLoaderWalker = `
 // TS file flow naturally into the evalFunc:
 //
 //   const weights = { hot: { errorRate: 8 }, cold: { errorRate: 4 } };
-//   selectionPolicy: { evalFunc: (u, ctx) => u.sortByScore((u) => weights[u.id] || BALANCED) }
+//   selectionPolicy: { evalFunc: (u, ctx) => u.sortByScore((u) => weights[u.id] || PREFER_FASTEST) }
 //
 // works as written, because `weights` exists in the same module scope
 // as the function in every pool runtime.

@@ -119,7 +119,7 @@ func TestStdlib_PreferTagFallback(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 2, "should return both tier:main upstreams")
 	for _, u := range ordered {
 		require.True(t, u.Config().HasTag("tier:main"),
@@ -143,17 +143,17 @@ func TestStdlib_RotateBy_RoundRobin(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 6; i++ {
 		policy.TickForTest(engine, "evm:1", "*")
-		ordered := engine.GetOrdered("evm:1", "*")
+		ordered := engine.GetOrdered("evm:1", "*", "*")
 		require.Len(t, ordered, 3)
 		seen[ordered[0].Id()] = true
 	}
 	require.Len(t, seen, 3, "all three upstreams should rotate into primary")
 }
 
-// TestStdlib_SortByScore_BalancedPenalizesErrors verifies the BALANCED preset
+// TestStdlib_SortByScore_BalancedPenalizesErrors verifies the PREFER_FASTEST preset
 // puts the high-error upstream behind the clean one.
 func TestStdlib_SortByScore_BalancedPenalizesErrors(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED)`
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)`
 	engine, _, tracker, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
@@ -178,7 +178,7 @@ func TestStdlib_SortByScore_BalancedPenalizesErrors(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Equal(t, []string{"rpc2", "rpc1"}, ids(ordered),
 		"rpc2 (clean) should outrank rpc1 (high error rate)")
 }
@@ -204,7 +204,7 @@ func TestStdlib_RemoveByLag(t *testing.T) {
 	tracker.GetUpstreamMethodMetrics(ups[1], "*").BlockHeadLag.Store(50) // rpc2 lagging
 
 	policy.TickForTest(engine, "evm:1", "*")
-	ordered := ids(engine.GetOrdered("evm:1", "*"))
+	ordered := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.NotContains(t, ordered, "rpc2", "rpc2 (lag=50) should be excluded by removeByLag(blockHead:10)")
 	require.Contains(t, ordered, "rpc1")
 	require.Contains(t, ordered, "rpc3")
@@ -231,12 +231,12 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	// After RegisterNetwork the cfg should hold the rich default source.
-	require.Contains(t, cfg.EvalFunc, "sortByScore(BALANCED)",
+	require.Contains(t, cfg.EvalFunc, "sortByScore(PREFER_FASTEST)",
 		"engine should upgrade the placeholder to the rich default")
 
 	// And the policy should run end-to-end: rpc1 (tier:default) wins
 	// because tier:fallback is only used as a backstop.
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 1)
 	require.Equal(t, "rpc1", ordered[0].Id())
 }
@@ -272,7 +272,7 @@ func TestStdlib_DefaultPolicy_DropsBrokenUpstream(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	ordered := ids(engine.GetOrdered("evm:1", "*"))
+	ordered := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpc2"}, ordered, "rpc1 should be dropped by keepHealthy (errorRate=0.9 > 0.5)")
 }
 
@@ -305,7 +305,7 @@ func TestStdlib_DefaultPolicy_SafetyNetWhenAllBroken(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 2, "safety net: when all upstreams fail filter, return all rather than empty")
 }
 
@@ -328,7 +328,7 @@ func TestStdlib_DefaultPolicy_FallbackTierWhenPrimaryEmpty(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 2, "fallback tier should serve when primary is empty")
 }
 
@@ -362,7 +362,7 @@ func TestStdlib_DefaultPolicy_DropsLaggingErrorFreeUpstream(t *testing.T) {
 	tracker.GetUpstreamMethodMetrics(ups[0], "*").BlockHeadLag.Store(30)
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpc2"}, got,
 		"rpc1 has 0 errors but blockHeadLag=30 > 16 → must be excluded by keepHealthy, not just ranked lower")
 }
@@ -395,7 +395,7 @@ func TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpc2"}, got,
 		"rpc1 has 0 errors but p95=12s > 10s → must be excluded by keepHealthy(maxP95Ms:10_000)")
 }
@@ -446,7 +446,7 @@ func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 
 			// Tick 1 — equal metrics → rpc1 wins by id tiebreak.
 			policy.TickForTest(engine, "evm:1", "*")
-			first := ids(engine.GetOrdered("evm:1", "*"))
+			first := ids(engine.GetOrdered("evm:1", "*", "*"))
 			require.Equal(t, "rpc1", first[0], "tick 1: rpc1 wins by id tiebreak")
 
 			// Make rpc1 clearly worse — but errorRate stays below the
@@ -460,7 +460,7 @@ func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 			// Tick 2 — under EVERY finality, the 30s minSwitchInterval
 			// keeps rpc1 as primary.
 			policy.TickForTest(engine, "evm:1", "*")
-			second := ids(engine.GetOrdered("evm:1", "*"))
+			second := ids(engine.GetOrdered("evm:1", "*", "*"))
 			require.GreaterOrEqual(t, len(second), 1)
 			require.Equal(t, "rpc1", second[0],
 				"tick 2 primary under finality=%s must stay rpc1 (sticky)", finality)
@@ -500,19 +500,19 @@ func TestStdlib_DefaultPolicy_ProbeReadmitsAt90s(t *testing.T) {
 
 	// Tick 1 — rpc1 excluded, excludedSince[rpc1] = now.
 	policy.TickForTest(engine, "evm:1", "*")
-	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*")))
+	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*", "*")))
 
 	// Advance virtual time 60s. probeExcluded(reAdmitAfter:'90s') must
 	// NOT re-admit yet (need > 90s).
 	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 60*time.Second)
 	policy.TickForTest(engine, "evm:1", "*")
-	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*")),
+	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*", "*")),
 		"at +60s rpc1 must still be excluded (reAdmitAfter='90s')")
 
 	// Advance to +120s total (60s since registration + 60s more = 120s).
 	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 60*time.Second)
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Contains(t, got, "rpc1",
 		"at +120s rpc1 must be re-admitted (reAdmitAfter='90s' elapsed)")
 }
@@ -539,7 +539,7 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 		tracker.RecordUpstreamFailure(ups[1], "*", fmt.Errorf("synth"))
 	}
 	policy.TickForTest(engine, "evm:1", "*")
-	require.Equal(t, "rpc1", engine.GetOrdered("evm:1", "*")[0].Id())
+	require.Equal(t, "rpc1", engine.GetOrdered("evm:1", "*", "*")[0].Id())
 
 	// Tick 2: rpc1 now WORSE than rpc2 but gap is within hysteresis → stays primary.
 	// rpc1 → errorRate ~0.5 → score 0.5*8 = 4
@@ -553,7 +553,7 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 	policy.TickForTest(engine, "evm:1", "*")
 	// rpc2 is now clean (error rate 50/250 = 0.2); rpc1 still 0 errors.
 	// Sticky shouldn't matter here — rpc1 is still better.
-	require.Equal(t, "rpc1", engine.GetOrdered("evm:1", "*")[0].Id())
+	require.Equal(t, "rpc1", engine.GetOrdered("evm:1", "*", "*")[0].Id())
 }
 
 // TestStdlib_KeepHealthy_CompositeFilter pins the composite filter from
@@ -593,7 +593,7 @@ func TestStdlib_KeepHealthy_CompositeFilter(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	ordered := ids(engine.GetOrdered("evm:1", "*"))
+	ordered := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Contains(t, ordered, "rpc1")
 	require.NotContains(t, ordered, "rpc2", "rpc2 dropped: errorRate 0.5 > 0.3")
 	require.NotContains(t, ordered, "rpc3", "rpc3 dropped: blockHeadLag 50 > 10")
@@ -616,7 +616,7 @@ func TestStdlib_Combinators_WhenEmpty_FallbackTo(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 2, "whenEmpty should fall back to tier:main")
 }
 
@@ -663,7 +663,7 @@ func TestStdlib_ByFinality_RoutesToCorrectHandler(t *testing.T) {
 
 			policy.SetFinalityForTest(engine, "evm:1", "*", tc.finality)
 			policy.TickForTest(engine, "evm:1", "*")
-			got := ids(engine.GetOrdered("evm:1", "*"))
+			got := ids(engine.GetOrdered("evm:1", "*", "*"))
 			require.Equal(t, tc.want, got)
 		})
 	}
@@ -681,7 +681,7 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 					finalized: u => u,
 					realtime:  u => u,
 				})
-				.sortByScore(BALANCED)
+				.sortByScore(PREFER_FASTEST)
 				.pickTop(1)
 	`
 	engine, _, _, cancel := newTestEngine(t, eval)
@@ -699,7 +699,7 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 
 	policy.SetFinalityForTest(engine, "evm:1", "*", "realtime")
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Len(t, got, 1, "pickTop(1) must work on byFinality() output")
 }
 
@@ -735,7 +735,7 @@ func TestStdlib_SpreadAcrossTags_ByVendorTag(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"alc-1", "inf-1", "alc-2", "alc-3"}, got,
 		"spreadAcrossTags('vendor:'): vendors interleaved; alc retains its sort order")
 }
@@ -764,7 +764,7 @@ func TestStdlib_SpreadAcrossTags_StableForTies(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"alc-A", "inf-A", "alc-B", "inf-B"}, got,
 		"alc-A before alc-B, inf-A before inf-B preserved")
 }
@@ -792,7 +792,7 @@ func TestStdlib_SpreadAcrossTags_SingleBucketFallthrough(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"alc-1", "alc-2", "alc-3"}, got,
 		"single-bucket input: order preserved")
 }
@@ -837,7 +837,7 @@ func TestStdlib_ByTag_GlobAndNegation(t *testing.T) {
 			require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 			policy.TickForTest(engine, "evm:1", "*")
-			require.Equal(t, tc.want, ids(engine.GetOrdered("evm:1", "*")))
+			require.Equal(t, tc.want, ids(engine.GetOrdered("evm:1", "*", "*")))
 		})
 	}
 }
@@ -867,7 +867,7 @@ func TestStdlib_PreferTag_Fallback(t *testing.T) {
 		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 		policy.TickForTest(engine, "evm:1", "*")
-		require.Equal(t, []string{"prim-a", "prim-b"}, ids(engine.GetOrdered("evm:1", "*")),
+		require.Equal(t, []string{"prim-a", "prim-b"}, ids(engine.GetOrdered("evm:1", "*", "*")),
 			"primary tier (!tier:fallback) has members → backup must be excluded")
 	})
 
@@ -889,7 +889,7 @@ func TestStdlib_PreferTag_Fallback(t *testing.T) {
 		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 		policy.TickForTest(engine, "evm:1", "*")
-		require.Equal(t, []string{"backup"}, ids(engine.GetOrdered("evm:1", "*")),
+		require.Equal(t, []string{"backup"}, ids(engine.GetOrdered("evm:1", "*", "*")),
 			"primary tier empty → fallback tier serves")
 	})
 }
@@ -917,7 +917,7 @@ func TestStdlib_SpreadAcrossTags_ByPrefix(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"alc-base", "drpc-direct", "inf-base"}, got,
 		"adjacent positions must not share cohort: alc-base, drpc-direct, inf-base")
 }
@@ -945,7 +945,7 @@ func TestStdlib_SpreadAcrossTags_MissingTagBucketed(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	got := ids(engine.GetOrdered("evm:1", "*"))
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Len(t, got, 3, "all upstreams returned; untagged ones aren't dropped")
 	require.Equal(t, "east-1", got[0], "first input occurrence is position 0")
 	require.NotEqual(t, "untagged", got[1],
@@ -954,7 +954,7 @@ func TestStdlib_SpreadAcrossTags_MissingTagBucketed(t *testing.T) {
 
 // TestStdlib_Slicing_PickTop_DropTop pins the slicing primitives.
 func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED).pickTop(2)`
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST).pickTop(2)`
 	engine, _, _, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
@@ -964,7 +964,7 @@ func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
-	require.Len(t, engine.GetOrdered("evm:1", "*"), 2, "pickTop(2) should cap output at 2")
+	require.Len(t, engine.GetOrdered("evm:1", "*", "*"), 2, "pickTop(2) should cap output at 2")
 }
 
 // TestStdlib_LatestDecision_OrderAndExclusions verifies the
@@ -1001,7 +1001,7 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams
 		.byTag('tier:main')
 		.excludeIf(errorRateAbove(0.5))
-		.sortByScore(BALANCED)`
+		.sortByScore(PREFER_FASTEST)`
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	logger := zerolog.Nop()
@@ -1043,7 +1043,7 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 	}
 	policy.TickForTest(engine, "evm:1", "*")
 
-	decisions := engine.RecentDecisions("evm:1", "*", 5)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 5)
 	require.NotEmpty(t, decisions)
 	d := decisions[len(decisions)-1]
 	require.NotEmpty(t, d.Output.StepLog, "step log should populate when SetStepLogEnabled(true)")
@@ -1092,7 +1092,7 @@ func TestStdlib_StepLog_DisabledByDefault(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.NotEmpty(t, decisions)
 	d := decisions[len(decisions)-1]
 	require.Empty(t, d.Output.StepLog, "step log must stay empty by default")

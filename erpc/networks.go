@@ -119,7 +119,7 @@ func (n *Network) AllUpstreams() []*upstream.Upstream {
 // PolicyScores returns the per-upstream `score` map produced by the
 // selection-policy engine's most recent tick for `(networkID, method)`,
 // or nil if the engine isn't wired up. Source of truth for "what does
-// the policy rank this upstream at?" — never re-implement the BALANCED
+// the policy rank this upstream at?" — never re-implement the PREFER_FASTEST
 // weight formula client-side; read from here.
 func (n *Network) PolicyScores(method string) map[string]float64 {
 	if n.policyEngine == nil {
@@ -128,7 +128,7 @@ func (n *Network) PolicyScores(method string) map[string]float64 {
 	if method == "" {
 		method = "*"
 	}
-	return n.policyEngine.GetScores(n.networkId, method)
+	return n.policyEngine.GetScores(n.networkId, method, "*")
 }
 
 // RecentPolicyDecisions returns up to `limit` most-recent policy
@@ -142,7 +142,7 @@ func (n *Network) RecentPolicyDecisions(method string, limit int) []*policy.Deci
 	if method == "" {
 		method = "*"
 	}
-	return n.policyEngine.RecentDecisions(n.networkId, method, limit)
+	return n.policyEngine.RecentDecisions(n.networkId, method, "*", limit)
 }
 
 // PolicyLastSwitchAt returns when the primary upstream last changed
@@ -155,7 +155,7 @@ func (n *Network) PolicyLastSwitchAt(method string) time.Time {
 	if method == "" {
 		method = "*"
 	}
-	return n.policyEngine.LastSwitchAt(n.networkId, method)
+	return n.policyEngine.LastSwitchAt(n.networkId, method, "*")
 }
 
 // PolicyOrderedUpstreams returns the IDs of upstreams in the order the
@@ -174,7 +174,7 @@ func (n *Network) PolicyOrderedUpstreams(method string) []string {
 	if method == "" {
 		method = "*"
 	}
-	ups := n.policyEngine.GetOrdered(n.networkId, method)
+	ups := n.policyEngine.GetOrdered(n.networkId, method, "*")
 	if len(ups) == 0 {
 		return nil
 	}
@@ -474,7 +474,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
 	var upsList []common.Upstream
 	if n.policyEngine != nil {
-		upsList = n.policyEngine.GetOrdered(n.networkId, method)
+		// Pass the request's actual finality so per-finality slots
+		// (when EvalPerFinality is on) resolve to the bucket-specific
+		// ordering. Networks not configured per-finality see "*" and
+		// resolve to the wildcard slot regardless.
+		upsList = n.policyEngine.GetOrdered(n.networkId, method, req.Finality(ctx).String())
 	}
 	if len(upsList) == 0 {
 		// Cold-start fallback: serve the raw registration order until the

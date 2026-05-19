@@ -70,7 +70,7 @@ projects:
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
-                .sortByScore(BALANCED)
+                .sortByScore(PREFER_FASTEST)
                 .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
                 .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })
 ```
@@ -101,7 +101,7 @@ export default createConfig({
         // methods (.removeCordoned, .excludeIf, .sortByScore, …) are
         // typed on PolicyEvalUpstreamArray; predicate factories
         // (errorRateAbove, any, blockSecondsLagAbove, …) and score
-        // presets (BALANCED, …) are declared as ambient globals so
+        // presets (PREFER_FASTEST, …) are declared as ambient globals so
         // they're in scope inside the body without an import.
         evalFunc: (upstreams, ctx) =>
           upstreams
@@ -112,7 +112,7 @@ export default createConfig({
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
-            .sortByScore(BALANCED)
+            .sortByScore(PREFER_FASTEST)
             .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
             .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' }),
       },
@@ -128,6 +128,7 @@ export default createConfig({
 | `evalInterval` | Duration | `1s` | `0` disables the ticker (test only). |
 | `evalTimeout` | Duration | `100ms` | Must be `< evalInterval`. Prior cache retained on timeout. |
 | `evalPerMethod` | bool | `false` | Separate eval + cache per method. See [per-method routing](#per-method-routing). |
+| `evalPerFinality` | bool | `false` | Separate eval + cache per finality bucket (`realtime` / `unfinalized` / `finalized` / `unknown`). The eval sees `ctx.finality` set to its bucket value. Slots are lazy-created per bucket on first request — cold buckets cost nothing. Combine with `evalPerMethod` for the most granular routing. Useful when realtime reads want `PREFER_FRESHEST` and finalized reads want `PREFER_FASTEST`. |
 | `evalFunc` | string \| function | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. In `.ts` configs pass a real arrow function — it gets stringified at load time via `Function.prototype.toString()`. |
 | `scoreMetricsWindowSize` | Duration | `10s` | Project-level. How long per-upstream rolling counters live. See [health-tracker window](#health-tracker-rolling-window). |
 
@@ -154,7 +155,7 @@ one of them lets a degraded upstream keep receiving traffic:
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))             // 5
     .whenEmpty(() => upstreams)                                                    // 6 — safety net
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })     // 7 — tier
-    .sortByScore(BALANCED)                                                         // 8 — rank survivors
+    .sortByScore(PREFER_FASTEST)                                                         // 8 — rank survivors
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })                 // 9 — anti-flap
     .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' }) // 10 — fast re-admit
 ```
@@ -175,7 +176,7 @@ Step-by-step:
 
 7. **Tier** — primary tier = NOT `tier:fallback`. Falls through to fallback tier if no primary survives.
 
-8. **Score** — `BALANCED` weights: `errorRate: 4, respLatency: 8, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6`. Latency dominates because step 2-5 already dropped degraded upstreams; among survivors the operator's strongest signal is "how fast does this answer?". A 50 ms upstream with one stray 2% error beats a 400 ms upstream with a clean record. Lower score = primary.
+8. **Score** — `PREFER_FASTEST` weights: `errorRate: 4, respLatency: 8, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6`. Latency dominates because step 2-5 already dropped degraded upstreams; among survivors the operator's strongest signal is "how fast does this answer?". A 50 ms upstream with one stray 2% error beats a 400 ms upstream with a clean record. Lower score = primary.
 
 9. **Sticky primary** — across all finalities. The challenger needs `score < incumbent × (1 - 0.30)` (i.e. 30% better) AND ≥ 30 s since the last switch. Cuts flap on close calls; flapping every tick costs more in connection setup + cache locality than the marginal ranking gain.
 
@@ -195,7 +196,7 @@ closed — write an explicit `evalFunc`:
     .removeCordoned()
     .excludeIf(errorRateAbove(0.8))         // looser error threshold
     .whenEmpty(() => upstreams)
-    .sortByScore(BALANCED)
+    .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
     .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1, position: 'tail' })
 ```
@@ -259,8 +260,8 @@ type EvalContext = {
 The `metrics` object is captured ONCE at tick start, so chained std-lib
 steps see a consistent view.
 
-Globals: `BALANCED`, `PREFER_FASTER`, `PREFER_FEWER_ERRORS`,
-`PREFER_FRESHER_HEAD`, `PREFER_LESS_THROTTLED`, `PREFER_CHEAP`;
+Globals: `PREFER_FASTEST`, `PREFER_FASTEST`, `PREFER_LEAST_ERRORS`,
+`PREFER_FRESHEST`, `PREFER_LEAST_ERRORS`, `PREFER_FASTEST`;
 `REALTIME` / `UNFINALIZED` / `FINALIZED` / `UNKNOWN`;
 `REASON_*` reason codes; `process.env`; `console.log/info/warn/error`;
 standard ECMAScript.
@@ -302,6 +303,40 @@ slot snapshots metrics for THAT specific method, so:
 Off by default — most workloads benefit from one aggregate ranking and
 the per-method overhead (one eval per method per tick) isn't free.
 
+## Per-finality routing
+
+Set `evalPerFinality: true` to run the policy separately per `(network,
+[method,] finality)` — one slot per finality bucket
+(`realtime`/`unfinalized`/`finalized`/`unknown`). The eval sees
+`ctx.finality` set to its bucket value, so different finality classes
+can use different presets/thresholds without the eval branching on
+`ctx.finality` itself.
+
+A typical pattern:
+
+```js
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()
+    .excludeIf(errorRateAbove(0.5))
+    .sortByScore(
+      ctx.finality === 'realtime' ? PREFER_FRESHEST :
+      ctx.finality === 'finalized' ? PREFER_FASTEST :
+      PREFER_FASTEST
+    )
+    .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
+```
+
+With `evalPerFinality: true` each bucket has its OWN sticky-primary
+state, score cache, and metric labels (`erpc_selection_score{...,
+finality}` etc.). The realtime bucket can hold one primary while the
+finalized bucket holds a different one — no cross-contamination.
+
+Slots are lazy-created on first request for a bucket. A network that
+never receives `finalized` queries pays zero overhead for that bucket.
+Combine with `evalPerMethod: true` to get one slot per `(method, finality)`
+— useful for indexers that classify their workload precisely.
+
 ## Common patterns
 
 ### Cost-tier routing
@@ -314,7 +349,7 @@ the per-method overhead (one eval per method per tick) isn't free.
     .removeCordoned()
     .excludeIf(errorRateAbove(0.5))
     .preferTag('tier:cheap', { minHealthy: 2, fallback: 'tier:fast' })
-    .sortByScore(BALANCED)
+    .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
 ```
 
@@ -324,8 +359,8 @@ the per-method overhead (one eval per method per tick) isn't free.
 // Upstreams declare their capability via `tags: [tier:archive]`.
 (upstreams, ctx) => {
   if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
-    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTER)
-  return upstreams.sortByScore(BALANCED).stickyPrimary()
+    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTEST)
+  return upstreams.sortByScore(PREFER_FASTEST).stickyPrimary()
 }
 ```
 
@@ -338,7 +373,7 @@ const w = {
   drpc:    { errorRate: 6, respLatency: 4 },    // weight errors MORE here
 }
 (upstreams, ctx) =>
-  upstreams.sortByScore((u) => w[u.vendor] || BALANCED)
+  upstreams.sortByScore((u) => w[u.vendor] || PREFER_FASTEST)
 ```
 
 For the declarative-YAML alternative, see [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) on the upstream config.
@@ -349,7 +384,7 @@ For the declarative-YAML alternative, see [`routing.scoreMultipliers`](/config/p
 (upstreams, ctx) =>
   upstreams
     .excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor phase-out')
-    .sortByScore(BALANCED)
+    .sortByScore(PREFER_FASTEST)
 ```
 
 ## Observability
@@ -411,14 +446,13 @@ combinators. Glob patterns (`*`, `?`, `!negation`) work everywhere a
 <details>
 <summary>**Score presets** — weight maps for `sortByScore`</summary>
 
-| Constant | `errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors` | Use when |
+Three explicit profiles. Each emphasizes ONE primary axis (weight `15`) while keeping the others balanced enough that an obviously bad upstream on a secondary signal still loses. Need something else? Pass a custom `{ errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors }` object literal directly.
+
+| Preset | `errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors` | Use when |
 |---|---|---|
-| `BALANCED` | `4, 8, 3, 2, 1, 6` | Default. Latency dominates because excludeIf already filters degraded upstreams. |
-| `PREFER_FASTER` | `4, 12, 4, 1, 0, 2` | Tail-latency sensitive workloads. |
-| `PREFER_FEWER_ERRORS` | `15, 2, 6, 2, 1, 12` | Reliability over speed (e.g. write paths). |
-| `PREFER_FRESHER_HEAD` | `4, 2, 2, 15, 8, 3` | Realtime read paths sensitive to `latest`. |
-| `PREFER_LESS_THROTTLED` | `4, 8, 15, 2, 1, 4` | Quota-constrained workloads. |
-| `PREFER_CHEAP` | alias of `BALANCED` | — |
+| `PREFER_FASTEST` | `4, 15, 4, 1, 0, 2` | Default. Among upstreams that survived `excludeIf`, latency is the dominant user-visible signal. |
+| `PREFER_FRESHEST` | `4, 2, 2, 15, 8, 3` | Realtime reads that can't tolerate any stale-head upstream. |
+| `PREFER_LEAST_ERRORS` | `15, 2, 6, 2, 1, 12` | Write paths or anywhere a 5xx costs more than a slow response. |
 
 `penalty = Σ(metric × weight) × overall(u)`. Lower penalty = higher rank. Score + breakdown attach to each upstream for later steps.
 
@@ -568,7 +602,7 @@ failure domain.
 // spread, a sequencer outage kills primary + first 2 fallbacks. With
 // spread: position 0 = best in cohort A, position 1 = best in cohort B,
 // position 2 = second-best in cohort A, etc.
-upstreams.sortByScore(BALANCED).spreadAcrossTags('cohort:')
+upstreams.sortByScore(PREFER_FASTEST).spreadAcrossTags('cohort:')
 ```
 
 For vendor diversity, add `vendor:<name>` tags and call `spreadAcrossTags('vendor:')`.
@@ -594,7 +628,7 @@ For vendor diversity, add `vendor:<name>` tags and call `spreadAcrossTags('vendo
 rank. On tied scores, alphabetical-by-id tiebreak.
 
 Weights arg can be:
-- A **preset** constant (`BALANCED`, `PREFER_FASTER`, …).
+- A **preset** constant (`PREFER_FASTEST`, `PREFER_FASTEST`, …).
 - A flat **weight map** (`{ errorRate: 10, respLatency: 3 }`).
 - A **per-upstream function** (`(u) => weights`) — for branching on tags/vendor/method. Declarative per-upstream tuning lives on the upstream config; see [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers).
 
@@ -734,10 +768,10 @@ A missing handler passes through unchanged, so
 
 ```js
 upstreams.byFinality({
-  finalized: u => u.sortByScore(PREFER_CHEAP),
-  realtime:  u => u.removeByLag({ blockHead: 5 }).sortByScore(PREFER_FRESHER_HEAD),
+  finalized: u => u.sortByScore(PREFER_FASTEST),
+  realtime:  u => u.removeByLag({ blockHead: 5 }).sortByScore(PREFER_FRESHEST),
 })
-.sortByScore(BALANCED)                 // applies to unfinalized + unknown only
+.sortByScore(PREFER_FASTEST)                 // applies to unfinalized + unknown only
 ```
 
 </details>
@@ -927,7 +961,7 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
     .excludeIf(errorRateAbove(0.5))
     .preferTag(cheapHours ? 'tier:cheap' : 'tier:fast',
                { minHealthy: 1, fallback: 'tier:cheap' })
-    .sortByScore(BALANCED)
+    .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '2m' })
 }
 ```
@@ -941,10 +975,10 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
 // Upstreams declare their capability via `tags: [tier:archive]`.
 (upstreams, ctx) => {
   if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
-    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTER)
+    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTEST)
   if (methodMatches('eth_getBalance'))
-    return upstreams.sortByScore(PREFER_FEWER_ERRORS)
-  return upstreams.sortByScore(BALANCED).stickyPrimary()
+    return upstreams.sortByScore(PREFER_LEAST_ERRORS)
+  return upstreams.sortByScore(PREFER_FASTEST).stickyPrimary()
 }
 ```
 
@@ -959,7 +993,7 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
     .removeCordoned()
     .excludeIf(errorRateAbove(0.5))
     .cooldown('1m')
-    .sortByScore(BALANCED)
+    .sortByScore(PREFER_FASTEST)
     .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
     .forceInclude('canary-rpc', 'tail')
 ```
@@ -973,7 +1007,7 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
 (upstreams, ctx) =>
   upstreams
     .excludeIf(blockNumberLagAbove(5)).label('lag-filter')
-    .sortByScore(BALANCED).label('score')
+    .sortByScore(PREFER_FASTEST).label('score')
     .stickyPrimary().label('sticky')
     .dump('debug')
 ```

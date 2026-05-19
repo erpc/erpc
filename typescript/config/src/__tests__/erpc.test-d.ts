@@ -50,7 +50,7 @@ const _realisticConfig = createConfig({
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag("!tier:fallback", { minHealthy: 1, fallback: "tier:fallback" })
-                .sortByScore(BALANCED)
+                .sortByScore(PREFER_FASTEST)
                 .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: "30s" })
                 .readmitExcluded({ reAdmitAfter: "90s", maxConcurrent: 2, position: "tail" }),
           },
@@ -73,7 +73,7 @@ const _stringEvalFunc = createConfig({
           evm: { chainId: 1 },
           selectionPolicy: {
             evalInterval: "1s",
-            evalFunc: "(upstreams, ctx) => upstreams.sortByScore(BALANCED)",
+            evalFunc: "(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)",
           },
         },
       ],
@@ -100,7 +100,7 @@ const _customPredicateConfig = createConfig({
                 .excludeIf((u) => u.id.startsWith("legacy-"), "legacy upstream")
                 // Predicate combinators compose freely.
                 .excludeIf(all(errorRateAbove(0.2), not(samplesBelow(10))))
-                .sortByScore(BALANCED),
+                .sortByScore(PREFER_FASTEST),
           },
         },
       ],
@@ -114,7 +114,7 @@ const _weightsByIdConfig: SelectionPolicyEvalFunction = (upstreams) =>
   upstreams.sortByScore((u): ScoreWeights => {
     if (u.id === "hot") return { errorRate: 8, respLatency: 12 };
     if (u.id === "cold") return { errorRate: 8, respLatency: 4 };
-    return BALANCED;
+    return PREFER_FASTEST;
   });
 
 /* ───────────────────────── 5. ctx fields are typed ────────────────────── */
@@ -131,9 +131,9 @@ const _ctxFieldsTyped: SelectionPolicyEvalFunction = (upstreams, ctx) => {
 
   if (ctx.finality === "finalized") {
     // Reorg-tolerant: no sticky needed.
-    return upstreams.sortByScore(BALANCED);
+    return upstreams.sortByScore(PREFER_FASTEST);
   }
-  return upstreams.sortByScore(BALANCED).stickyPrimary();
+  return upstreams.sortByScore(PREFER_FASTEST).stickyPrimary();
 };
 
 /* ───────────────────────── 6. Upstream helpers + metrics ──────────────── */
@@ -184,7 +184,7 @@ createConfig({
               upstreams
                 // @ts-expect-error — `errorRateAbove` takes a number, not a string
                 .excludeIf(errorRateAbove("oops"))
-                .sortByScore(BALANCED),
+                .sortByScore(PREFER_FASTEST),
           },
         },
       ],
@@ -207,7 +207,7 @@ createConfig({
               upstreams
                 // @ts-expect-error — `position` accepts only the literal union
                 .readmitExcluded({ position: "middle" })
-                .sortByScore(BALANCED),
+                .sortByScore(PREFER_FASTEST),
           },
         },
       ],
@@ -230,7 +230,7 @@ createConfig({
               upstreams
                 // @ts-expect-error — `stickyPrimary.hysteresis` must be a number
                 .stickyPrimary({ hysteresis: "0.3" })
-                .sortByScore(BALANCED),
+                .sortByScore(PREFER_FASTEST),
           },
         },
       ],
@@ -253,7 +253,7 @@ createConfig({
               upstreams
                 // @ts-expect-error — `sortByLatency` only accepts the literal quantile union
                 .sortByLatency("p42")
-                .sortByScore(BALANCED),
+                .sortByScore(PREFER_FASTEST),
           },
         },
       ],
@@ -274,7 +274,7 @@ createConfig({
             evalInterval: "1s",
             evalFunc: (upstreams) =>
               // @ts-expect-error — `nonExistentMethod` is not on PolicyEvalUpstreamArray
-              upstreams.nonExistentMethod().sortByScore(BALANCED),
+              upstreams.nonExistentMethod().sortByScore(PREFER_FASTEST),
           },
         },
       ],

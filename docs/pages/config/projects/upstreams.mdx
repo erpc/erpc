@@ -169,7 +169,7 @@ eRPC ships with a [sensible default policy](/config/projects/selection-policies#
 </Callout>
 
 <Callout type="info">
-	Per-upstream score weights live in [`routing.scoreMultipliers`](#per-upstream-score-tuning-routingscoremultipliers); project-level tuning of the rolling window lives on [`scoreMetricsWindowSize`](/config/projects/selection-policies#health-tracker-rolling-window); all global routing/scoring behaviour is expressed via the [Selection Policy stdlib](/config/projects/selection-policies) (`sortByScore(BALANCED)`, custom weights function, `stickyPrimary({ hysteresis, minSwitchInterval })`).
+	Per-upstream score weights live in [`routing.scoreMultipliers`](#per-upstream-score-tuning-routingscoremultipliers); project-level tuning of the rolling window lives on [`scoreMetricsWindowSize`](/config/projects/selection-policies#health-tracker-rolling-window); all global routing/scoring behaviour is expressed via the [Selection Policy stdlib](/config/projects/selection-policies) (`sortByScore(PREFER_FASTEST)`, custom weights function, `stickyPrimary({ hysteresis, minSwitchInterval })`).
 </Callout>
 
 ## Block availability
@@ -329,8 +329,8 @@ upstreams:
       scoreMultipliers:
         - network: "*"
           method: "*"
-          errorRate: 8            # overrides BALANCED.errorRate
-          respLatency: 12         # overrides BALANCED.respLatency
+          errorRate: 8            # overrides PREFER_FASTEST.errorRate
+          respLatency: 12         # overrides PREFER_FASTEST.respLatency
           # missing dimensions inherit from the preset
   - id: cold
     endpoint: drpc://...
@@ -341,7 +341,7 @@ upstreams:
           respLatency: 4          # mild latency preference; everything else inherits
 ```
 
-`BALANCED` (the default preset) is `{ errorRate: 4, respLatency: 8, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6 }`. Latency dominates because the `excludeIf` chain already filters degraded upstreams before scoring runs; among survivors, response speed is the strongest "which should I prefer?" signal. Per-upstream entries override on a per-dimension basis; unspecified dimensions inherit.
+`PREFER_FASTEST` (the default preset) is `{ errorRate: 4, respLatency: 8, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6 }`. Latency dominates because the `excludeIf` chain already filters degraded upstreams before scoring runs; among survivors, response speed is the strongest "which should I prefer?" signal. Per-upstream entries override on a per-dimension basis; unspecified dimensions inherit.
 
 When you need branching that the declarative form can't express (per-method, vendor, or `ctx.finality` rules), pass a function to `sortByScore` directly:
 
@@ -349,7 +349,7 @@ When you need branching that the declarative form can't express (per-method, ven
 (upstreams, ctx) =>
   upstreams.sortByScore((u) => {
     if (u.id === 'noisy' && ctx.method === 'eth_getLogs') return { respLatency: 16, errorRate: 4 };
-    return BALANCED;
+    return PREFER_FASTEST;
   })
 ```
 

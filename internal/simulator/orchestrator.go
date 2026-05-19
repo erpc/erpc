@@ -992,7 +992,7 @@ func (o *Orchestrator) resolveUpstreamHandles() map[string]common.Upstream {
 
 // (computeBalancedScore was retired in favor of reading the JS-computed
 // score directly from the policy engine via Network.PolicyScores.
-// Replicating the BALANCED formula in Go caused drift: e.g. the JS
+// Replicating the PREFER_FASTEST formula in Go caused drift: e.g. the JS
 // uses p70 latency by default while a hand-coded Go copy started with
 // p90, producing scores that didn't match the engine's actual ranking.
 // The engine is now the single source of truth for upstream scoring.)

@@ -17,7 +17,7 @@ import (
 // `sortByScore`). The score is the operator's single most-useful signal
 // for "why is X primary?" — dashboards build everything around this.
 func TestMetrics_EmitsScoreGaugeForRanked(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED)`
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)`
 	engine, _, tracker, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
@@ -173,7 +173,7 @@ func TestMetrics_ReadmitCountsTransition(t *testing.T) {
 // `selection_sticky_hold_total{upstream}` counter increments when sticky
 // actively keeps the previous primary against a challenger.
 func TestMetrics_StickyHoldCounterIncrementsOnActiveHold(t *testing.T) {
-	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED).stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '1h' })`
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST).stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '1h' })`
 	engine, _, tracker, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()

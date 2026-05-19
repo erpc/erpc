@@ -213,7 +213,12 @@ func (qe *EvmQueryExecutor) tryQueryUpstreams(
 ) (handled bool, err error) {
 	var upstreams []common.Upstream
 	if qe.network.policyEngine != nil {
-		upstreams = qe.network.policyEngine.GetOrdered(qe.network.Id(), method)
+		// Query-shim requests aren't bound to a single finality bucket
+		// (a range covers both finalized and unfinalized blocks), so
+		// route them through the wildcard slot. Networks configured
+		// with `EvalPerFinality: true` should set explicit per-method
+		// policies if they want finality-aware routing for queries.
+		upstreams = qe.network.policyEngine.GetOrdered(qe.network.Id(), method, "*")
 	}
 	if len(upstreams) == 0 {
 		// Cold-start fallback: engine hasn't published a cache yet.

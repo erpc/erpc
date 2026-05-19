@@ -90,7 +90,7 @@ func synthesizeScoreBasedEval(
 	b.WriteString("(upstreams, ctx) => {\n")
 
 	// If any upstream had multipliers, emit a per-id weights map and use
-	// the function form of sortByScore. Otherwise default to BALANCED.
+	// the function form of sortByScore. Otherwise default to PREFER_FASTEST.
 	if len(mulByID) > 0 {
 		jsonMul, _ := json.Marshal(mulByID)
 		jsonDefault, _ := json.Marshal(defaultMul)
@@ -103,7 +103,7 @@ func synthesizeScoreBasedEval(
 		b.WriteString("  const __weightsFn = (u) => __mulById[u.id] || __mulDefault;\n")
 		b.WriteString("  let result = upstreams.sortByScore(__weightsFn);\n")
 	} else {
-		b.WriteString("  let result = upstreams.sortByScore(BALANCED);\n")
+		b.WriteString("  let result = upstreams.sortByScore(PREFER_FASTEST);\n")
 	}
 
 	b.WriteString(fmt.Sprintf(

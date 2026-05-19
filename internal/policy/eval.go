@@ -278,7 +278,7 @@ type EvalResult struct {
 // `score` map the JS attached during scoring (via `sortByScore(...)`).
 // The scores map is what makes the engine the single source of truth
 // for policy ranking — diagnostics no longer need to re-implement the
-// BALANCED weight formula in Go (drift risk, e.g. p90 vs p70 quantile).
+// PREFER_FASTEST weight formula in Go (drift risk, e.g. p90 vs p70 quantile).
 // Entries missing from the map mean "this upstream was added after the
 // scoring step" (probeExcluded / forceInclude) and has no comparable
 // score.

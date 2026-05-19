@@ -49,11 +49,11 @@ func TestInjectPolicyIntoYAML(t *testing.T) {
       - id: foo
         endpoint: http://x
 `
-	out, err := injectPolicyIntoYAML(yamlSrc, "(u, c) => u.sortByScore(BALANCED)")
+	out, err := injectPolicyIntoYAML(yamlSrc, "(u, c) => u.sortByScore(PREFER_FASTEST)")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if !strings.Contains(out, "sortByScore(BALANCED)") {
+	if !strings.Contains(out, "sortByScore(PREFER_FASTEST)") {
 		t.Fatalf("new policy missing:\n%s", out)
 	}
 	if strings.Contains(out, "(u, c) => u\n") {

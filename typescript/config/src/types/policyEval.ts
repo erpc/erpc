@@ -54,9 +54,8 @@ export type PolicyEvalUpstreamMetrics = {
 
 /**
  * Score-preset weight map used by `sortByScore`. Missing keys are treated
- * as zero. The built-in presets (`BALANCED`, `PREFER_FASTER`,
- * `PREFER_FEWER_ERRORS`, `PREFER_FRESHER_HEAD`, `PREFER_LESS_THROTTLED`,
- * `PREFER_CHEAP`) are exposed as bare globals inside the eval.
+ * as zero. The built-in presets (`PREFER_FASTEST`, `PREFER_FRESHEST`,
+ * `PREFER_LEAST_ERRORS`) are exposed as bare globals inside the eval.
  */
 export type ScoreWeights = {
   errorRate?: number;
@@ -387,18 +386,21 @@ export type SelectionPolicyEvalFunction = (
 declare global {
   // Score presets ─────────────────────────────────────────────────────
   /**
-   * Balanced score weights — `{errorRate:2, respLatency:8, throttledRate:3,
-   * blockHeadLag:4, finalizationLag:1, misbehaviors:6}`. Latency dominates
-   * because the `excludeIf` chain already drops the broken upstreams; among
-   * survivors, response speed is the strongest "which should I prefer?" signal.
+   * Latency dominates (respLatency=15). Default for most request paths;
+   * the `excludeIf` chain already drops broken upstreams, so the
+   * ranking question is "which of the healthy ones answers first?".
    */
-  const BALANCED: ScoreWeights;
-  const PREFER_FASTER: ScoreWeights;
-  const PREFER_FEWER_ERRORS: ScoreWeights;
-  const PREFER_FRESHER_HEAD: ScoreWeights;
-  const PREFER_LESS_THROTTLED: ScoreWeights;
-  /** Alias of `BALANCED`. */
-  const PREFER_CHEAP: ScoreWeights;
+  const PREFER_FASTEST: ScoreWeights;
+  /**
+   * Block-head freshness dominates (blockHeadLag=15). Realtime reads
+   * that can't tolerate a stale-head upstream.
+   */
+  const PREFER_FRESHEST: ScoreWeights;
+  /**
+   * Error rate dominates (errorRate=15). Use for write paths or
+   * anything where a 5xx costs more than a slow response.
+   */
+  const PREFER_LEAST_ERRORS: ScoreWeights;
 
   // Rate-based predicate factories (0..1 fractions) ───────────────────
   function errorRateAbove(rate: number): PolicyEvalPredicate;

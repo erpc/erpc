@@ -47,7 +47,7 @@ Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the 
     .excludeIf(throttleRateAbove(0.3))
     .excludeIf(latencyP95Above(10_000))
     .whenEmpty(() => upstreams)
-    .sortByScore(BALANCED)
+    .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
     .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```

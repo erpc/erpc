@@ -414,30 +414,31 @@
 
   // ─── 4.5 Sorting ─────────────────────────────────────────────────────────
 
-  // Score presets — the JS is the single source of truth for ranking
-  // weights. BALANCED's intuition: among upstreams that PASS the
-  // excludeIf filters (which already drop the obviously-broken ones),
-  // the signals that actually differentiate "good" routing are:
-  //   * latency (8)        — fast response is the dominant user-visible
-  //                          quality among healthy peers
-  //   * misbehaviors (6)   — silent corruption is worse than a loud
-  //                          error; can't be retried away
-  //   * blockHeadLag (4)   — stale head means stale data; clients ARE
-  //                          affected even if the request succeeds
-  //   * throttledRate (3)  — 429s hurt throughput but are recoverable
-  //   * errorRate (2)      — failed requests retry/hedge to a peer;
-  //                          less weight because the impact is masked
-  //                          at the network layer
-  //   * finalizationLag (1)— rare-bucket finalized queries; minor
+  // Score presets — JS is the single source of truth for ranking weights.
+  // Three explicit profiles, each describing the operator's PRIORITY for
+  // that request class:
+  //
+  //   * PREFER_FASTEST       — latency dominates. Default for most
+  //                            request paths; the `excludeIf` chain
+  //                            already drops broken upstreams, so the
+  //                            ranking question is "which of the
+  //                            healthy ones answers first?".
+  //   * PREFER_FRESHEST      — block-head freshness dominates.
+  //                            Realtime reads that can't tolerate a
+  //                            stale-head upstream.
+  //   * PREFER_LEAST_ERRORS  — error rate dominates. Use for write
+  //                            paths or anything where a 5xx costs
+  //                            more than a slow response.
+  //
+  // Each preset emphasizes ONE primary axis (15 weight) while keeping
+  // the others balanced enough that an obviously bad upstream on a
+  // secondary signal still loses. Operators wanting a fully custom
+  // weight map pass an object literal directly to `sortByScore(...)`.
   const PRESETS = {
-    BALANCED:               { errorRate: 2, respLatency: 8, throttledRate: 3, blockHeadLag: 4, finalizationLag: 1, misbehaviors: 6 },
-    PREFER_FASTER:          { errorRate: 4, respLatency: 12, throttledRate: 4, blockHeadLag: 1, finalizationLag: 0, misbehaviors: 2 },
-    PREFER_FEWER_ERRORS:    { errorRate: 15, respLatency: 2, throttledRate: 6, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 12 },
-    PREFER_FRESHER_HEAD:    { errorRate: 4, respLatency: 2, throttledRate: 2, blockHeadLag: 15, finalizationLag: 8, misbehaviors: 3 },
-    PREFER_LESS_THROTTLED:  { errorRate: 4, respLatency: 8, throttledRate: 15, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 4 },
+    PREFER_FASTEST:       { errorRate: 4,  respLatency: 15, throttledRate: 4, blockHeadLag: 1,  finalizationLag: 0, misbehaviors: 2 },
+    PREFER_FRESHEST:      { errorRate: 4,  respLatency: 2,  throttledRate: 2, blockHeadLag: 15, finalizationLag: 8, misbehaviors: 3 },
+    PREFER_LEAST_ERRORS:  { errorRate: 15, respLatency: 2,  throttledRate: 6, blockHeadLag: 2,  finalizationLag: 1, misbehaviors: 12 },
   };
-  // PREFER_CHEAP is an alias of BALANCED per spec §4.1.
-  PRESETS.PREFER_CHEAP = PRESETS.BALANCED;
 
   // Install presets as globals.
   for (const k of Object.keys(PRESETS)) {
@@ -948,7 +949,7 @@
   }
   // Public API — one factory per quantile-of-interest, in both
   // absolute (Ms) and relative (Pct) flavors. p70 + p95 are the most
-  // useful: p70 because BALANCED uses it for scoring, p95 because
+  // useful: p70 because PREFER_FASTEST uses it for scoring, p95 because
   // tail latency is the operator's usual reach-for-the-eject-button.
   globalThis.latencyDeviationAbove    = function (quantile, ms)  { return _leaf(_latencyDeviationAbove(quantile, ms,  null), 'p' + quantile + 'Deviation>' + ms + 'ms',  'latency_p' + quantile + '_deviation_ms_above'); };
   globalThis.latencyDeviationPctAbove = function (quantile, pct) { return _leaf(_latencyDeviationAbove(quantile, null, pct), 'p' + quantile + 'Deviation>' + pct + '%', 'latency_p' + quantile + '_deviation_pct_above'); };

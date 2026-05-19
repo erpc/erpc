@@ -126,7 +126,7 @@ func (e *ERPC) handleSelectionReeval(ctx context.Context, nq *common.NormalizedR
 	policy.TickForTest(engine, p.Network, p.Method)
 	return makeSelectionResponse(nq, map[string]interface{}{
 		"reevaluated": true,
-		"lastEvalAt":  engine.LastEvalAt(p.Network, p.Method),
+		"lastEvalAt":  engine.LastEvalAt(p.Network, p.Method, "*"),
 	})
 }
 

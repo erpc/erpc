@@ -58,9 +58,25 @@ type Engine struct {
 	cancel context.CancelFunc
 }
 
+// slotKey identifies one slot in the engine. The wildcard for an
+// unspecified dimension is `"*"`. Concrete values:
+//
+//   - When neither EvalPerMethod nor EvalPerFinality is set: only one
+//     slot exists per network, keyed `("*", "*")`. `GetOrdered` always
+//     returns its cached order regardless of the caller's method or
+//     finality args.
+//   - When EvalPerMethod is on (and EvalPerFinality off): slots are
+//     lazy-created as `(method, "*")` on first request for that
+//     method. The wildcard `("*", "*")` serves cold-start traffic.
+//   - When EvalPerFinality is on (and EvalPerMethod off): slots are
+//     lazy-created as `("*", finality)` on first request.
+//   - When both are on: slots are lazy-created as `(method, finality)`.
+//     The wildcard `("*", "*")` still serves cold-start before any
+//     specific slot has produced a tick.
 type slotKey struct {
-	network string
-	method  string
+	network  string
+	method   string
+	finality string
 }
 
 type networkRegistration struct {
@@ -145,8 +161,8 @@ func (e *Engine) RegisterNetwork(networkID string, upstreamsFn func() []common.U
 		}
 	}
 
-	wildcard := newSlot(e, networkID, "*", upstreamsFn, cfg)
-	e.slots[slotKey{networkID, "*"}] = wildcard
+	wildcard := newSlot(e, networkID, "*", "*", upstreamsFn, cfg)
+	e.slots[slotKey{networkID, "*", "*"}] = wildcard
 
 	// Initial eval is synchronous so the first request sees a populated cache.
 	wildcard.tickOnce()
@@ -170,22 +186,28 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 	delete(e.networks, networkID)
 }
 
-// GetOrdered returns the cached eligible upstreams for `(networkID, method)`,
-// in policy-chosen order. The lookup is wait-free in the common path.
+// GetOrdered returns the cached eligible upstreams for
+// `(networkID, method, finality)`, in policy-chosen order. The lookup
+// is wait-free in the common path.
 //
-// Fallback chain:
-//  1. Exact slot for (network, method) — populated either at register-
-//     time (wildcard) or lazily on first lookup (when `EvalPerMethod`
-//     is true and a request comes in for a method the engine hasn't
-//     seen yet).
-//  2. Wildcard slot for (network, "*") — used as the answer until the
-//     just-created per-method slot completes its first tick (its cache
-//     is nil between creation and first tickOnce).
+// `method` and `finality` are "narrowing" hints — the engine resolves
+// them against the slot map according to the network's
+// `EvalPerMethod` / `EvalPerFinality` config:
 //
-// On either hit, the returned slice is the SAME backing array the slot
-// stores atomically — callers MUST treat it as read-only.
-func (e *Engine) GetOrdered(networkID, method string) []common.Upstream {
-	slot, wildcard := e.lookupSlotWithFallback(networkID, method)
+//   - Neither flag set: only the wildcard `("*", "*")` slot exists;
+//     `method`/`finality` are ignored.
+//   - `EvalPerMethod=true`: slots are keyed by the method;
+//     `finality` is ignored.
+//   - `EvalPerFinality=true`: slots are keyed by the finality;
+//     `method` is ignored.
+//   - Both: slots are keyed by `(method, finality)`.
+//
+// On a cold-start miss (slot just lazy-created, no tick yet) the
+// wildcard slot's cache is returned as a fallback. The returned slice
+// is the SAME backing array the slot stores atomically — callers MUST
+// treat it as read-only.
+func (e *Engine) GetOrdered(networkID, method, finality string) []common.Upstream {
+	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
 	if slot != nil {
 		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
 			return *ordered
@@ -202,8 +224,8 @@ func (e *Engine) GetOrdered(networkID, method string) []common.Upstream {
 // LastEvalAt returns the wall-clock timestamp of the slot's most recent
 // successful tick, or the zero value if the slot is unknown / has never
 // produced a decision.
-func (e *Engine) LastEvalAt(networkID, method string) time.Time {
-	slot := e.lookupSlot(networkID, method)
+func (e *Engine) LastEvalAt(networkID, method, finality string) time.Time {
+	slot := e.lookupSlot(networkID, method, finality)
 	if slot == nil {
 		return time.Time{}
 	}
@@ -217,8 +239,8 @@ func (e *Engine) LastEvalAt(networkID, method string) time.Time {
 // `minSwitchInterval` cooldown). Zero value if no switch has happened.
 // Diagnostics consume this to render "primary held for Xs / sticky
 // locked for Ys".
-func (e *Engine) LastSwitchAt(networkID, method string) time.Time {
-	slot := e.lookupSlot(networkID, method)
+func (e *Engine) LastSwitchAt(networkID, method, finality string) time.Time {
+	slot := e.lookupSlot(networkID, method, finality)
 	if slot == nil {
 		return time.Time{}
 	}
@@ -239,8 +261,8 @@ func (e *Engine) LastSwitchAt(networkID, method string) time.Time {
 // ("why did the order change at T=4.2s?"). For production
 // observability, see the Prometheus `policy_selection_*` families and
 // per-request traces.
-func (e *Engine) RecentDecisions(networkID, method string, limit int) []*Decision {
-	slot := e.lookupSlot(networkID, method)
+func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) []*Decision {
+	slot := e.lookupSlot(networkID, method, finality)
 	if slot == nil {
 		return nil
 	}
@@ -255,8 +277,8 @@ func (e *Engine) RecentDecisions(networkID, method string, limit int) []*Decisio
 //
 // Returns nil if the slot is unknown, has never produced a tick, or
 // the running policy doesn't include a scoring step.
-func (e *Engine) GetScores(networkID, method string) map[string]float64 {
-	slot := e.lookupSlot(networkID, method)
+func (e *Engine) GetScores(networkID, method, finality string) map[string]float64 {
+	slot := e.lookupSlot(networkID, method, finality)
 	if slot == nil {
 		return nil
 	}
@@ -272,60 +294,90 @@ func (e *Engine) GetScores(networkID, method string) map[string]float64 {
 	return out
 }
 
+// effectiveKey collapses the caller's `(method, finality)` hint to the
+// slot-key shape the network is configured for. Empty / "*" inputs are
+// preserved as wildcards.
+func effectiveKey(cfg *common.SelectionPolicyConfig, networkID, method, finality string) slotKey {
+	m, f := "*", "*"
+	if cfg != nil {
+		if cfg.EvalPerMethod && method != "" && method != "*" {
+			m = method
+		}
+		if cfg.EvalPerFinality && finality != "" && finality != "*" {
+			f = finality
+		}
+	}
+	return slotKey{networkID, m, f}
+}
+
 // lookupSlot is the shared resolver used by per-slot accessors that
 // want a single slot to read from (admin endpoints, diagnostics):
-// exact (network, method) match falls back to the network's "*" slot.
-// Does NOT lazy-create — those are read-only paths.
-func (e *Engine) lookupSlot(networkID, method string) *Slot {
+// exact `(network, method, finality)` match falls back to the network's
+// wildcard slot. Does NOT lazy-create — those are read-only paths.
+func (e *Engine) lookupSlot(networkID, method, finality string) *Slot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if slot, ok := e.slots[slotKey{networkID, method}]; ok {
+	reg := e.networks[networkID]
+	var cfg *common.SelectionPolicyConfig
+	if reg != nil {
+		cfg = reg.cfg
+	}
+	if slot, ok := e.slots[effectiveKey(cfg, networkID, method, finality)]; ok {
 		return slot
 	}
-	return e.slots[slotKey{networkID, "*"}]
+	return e.slots[slotKey{networkID, "*", "*"}]
 }
 
 // lookupSlotWithFallback is the request-path resolver used by
 // `GetOrdered`. Differs from `lookupSlot` in two ways:
 //
 //  1. Returns BOTH the exact slot AND the wildcard so the caller can
-//     fall back to wildcard while a freshly-created per-method slot's
+//     fall back to wildcard while a freshly-created per-bucket slot's
 //     cache is still empty (between creation and first tickOnce).
-//  2. Lazy-creates the per-method slot if `EvalPerMethod` is true on
-//     the network's config and no slot exists yet. The new slot
-//     inherits the same `upstreamsFn` + cfg as the wildcard and
-//     starts its own ticker — subsequent requests for this method
-//     get a method-specific ranking.
+//  2. Lazy-creates the per-(method, finality) slot if `EvalPerMethod`
+//     and/or `EvalPerFinality` is on AND no slot exists yet. The new
+//     slot inherits the same `upstreamsFn` + cfg as the wildcard and
+//     starts its own ticker — subsequent requests for this bucket get
+//     a bucket-specific ranking.
 //
-// First call for a fresh method pays a brief write-lock; later calls
+// First call for a fresh bucket pays a brief write-lock; later calls
 // are wait-free RLock reads like the rest of the request path.
-func (e *Engine) lookupSlotWithFallback(networkID, method string) (slot *Slot, wildcard *Slot) {
+func (e *Engine) lookupSlotWithFallback(networkID, method, finality string) (slot *Slot, wildcard *Slot) {
 	e.mu.RLock()
-	if s, ok := e.slots[slotKey{networkID, method}]; ok {
-		w := e.slots[slotKey{networkID, "*"}]
-		e.mu.RUnlock()
-		return s, w
-	}
-	wildcard = e.slots[slotKey{networkID, "*"}]
 	reg, hasReg := e.networks[networkID]
+	var cfg *common.SelectionPolicyConfig
+	if hasReg {
+		cfg = reg.cfg
+	}
+	wildcard = e.slots[slotKey{networkID, "*", "*"}]
+	key := effectiveKey(cfg, networkID, method, finality)
+	// No-narrowing case: key == wildcard, just return.
+	if key.method == "*" && key.finality == "*" {
+		e.mu.RUnlock()
+		return wildcard, wildcard
+	}
+	if s, ok := e.slots[key]; ok {
+		e.mu.RUnlock()
+		return s, wildcard
+	}
 	e.mu.RUnlock()
 
-	// No method-specific slot yet. Lazy-create iff the network is
-	// configured for per-method evaluation; otherwise the wildcard
-	// answers everything.
-	if !hasReg || method == "" || method == "*" || reg.cfg == nil || !reg.cfg.EvalPerMethod {
+	if !hasReg || cfg == nil {
 		return nil, wildcard
 	}
 
 	// Upgrade to write lock + double-check (another goroutine may have
 	// won the race while we waited).
 	e.mu.Lock()
-	if s, ok := e.slots[slotKey{networkID, method}]; ok {
+	if s, ok := e.slots[key]; ok {
 		e.mu.Unlock()
 		return s, wildcard
 	}
-	s := newSlot(e, networkID, method, reg.upstreamsFn, reg.cfg)
-	e.slots[slotKey{networkID, method}] = s
+	// Pass the resolved key's method/finality (with wildcards collapsed)
+	// to the new slot so its ticker emits ctx.finality / metric labels
+	// at the right scope.
+	s := newSlot(e, networkID, key.method, key.finality, reg.upstreamsFn, reg.cfg)
+	e.slots[key] = s
 	e.mu.Unlock()
 	// Start the slot's ticker asynchronously so this request-path call
 	// returns immediately. The slot's cache stays nil until the first

@@ -347,7 +347,7 @@
           // selection policy itself sees:
           //   errorRate, throttleRate, misbehaviorRate, p50/p90/p95,
           //   blockHeadLag, finalizationLag, cordoned, cordonedReason,
-          //   requestsTotal, errorsTotal, score (BALANCED), position,
+          //   requestsTotal, errorsTotal, score (PREFER_FASTEST), position,
           //   selectionsLast.
           // `last*`-prefixed aliases mirror the canonical fields for
           // any tooltip/chart components that read those keys.

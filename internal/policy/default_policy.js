@@ -46,8 +46,13 @@
     .whenEmpty(() => upstreams)
     // Tier split: primary = NOT tier:fallback; fallback when no primary survives.
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
-    // Order survivors by the BALANCED composite penalty (lower = primary).
-    .sortByScore(BALANCED)
+    // Order survivors by latency — among the upstreams that PASS the
+    // excludeIf chain, "answers fastest" is the operator's strongest
+    // user-visible quality signal. Switch to PREFER_FRESHEST per
+    // network if you serve realtime reads that can't tolerate any
+    // stale-head, or PREFER_LEAST_ERRORS if you're on a write path
+    // and a 5xx costs more than a slow response.
+    .sortByScore(PREFER_FASTEST)
     // Sticky primary across ALL finalities — flapping between two
     // similarly-ranked upstreams every tick costs more in connection
     // setup + cache-locality than it saves in marginal ranking

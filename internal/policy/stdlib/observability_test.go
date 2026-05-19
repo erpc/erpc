@@ -46,7 +46,7 @@ func TestStdlib_LeafReasons_LeafPredicate(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, decisions, 1)
 	d := decisions[0]
 
@@ -110,7 +110,7 @@ func TestStdlib_LeafReasons_AnyAttributesToTruthyLeaves(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, decisions, 1)
 	d := decisions[0]
 
@@ -157,7 +157,7 @@ func TestStdlib_LeafReasons_AllAttributesEveryLeaf(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, decisions, 1)
 	d := decisions[0]
 
@@ -197,7 +197,7 @@ func TestStdlib_LeafReasons_NotPrefixesSlug(t *testing.T) {
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, decisions, 1)
 
 	var starved *policy.ExcludedUpstream
@@ -227,7 +227,7 @@ func TestStdlib_LeafReasons_CustomInlinePredicate(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, decisions, 1)
 	d := decisions[0]
 
@@ -257,7 +257,7 @@ func TestStdlib_LeafReasons_OverrideStringWins(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
-	decisions := engine.RecentDecisions("evm:1", "*", 1)
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, decisions, 1)
 	d := decisions[0]
 
@@ -283,7 +283,7 @@ func TestStdlib_StickyHeld_FlagSetOnActiveHold(t *testing.T) {
 	// deterministically picks `a-prim` as the tick-1 primary; tick-2
 	// degrades `a-prim` enough to flip the score order but the cooldown
 	// holds the incumbent and sets `Diff.StickyHeld = true`.
-	eval := `(upstreams, ctx) => upstreams.sortByScore(BALANCED).stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '1h' })`
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST).stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '1h' })`
 	engine, _, tracker, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
@@ -302,7 +302,7 @@ func TestStdlib_StickyHeld_FlagSetOnActiveHold(t *testing.T) {
 		}
 	}
 	policy.TickForTest(engine, "evm:1", "*")
-	d1 := engine.RecentDecisions("evm:1", "*", 1)
+	d1 := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, d1, 1)
 	require.Equal(t, "a-prim", d1[0].Output.Order[0])
 	require.False(t, d1[0].Diff.StickyHeld, "no prior primary → sticky cannot have held")
@@ -317,7 +317,7 @@ func TestStdlib_StickyHeld_FlagSetOnActiveHold(t *testing.T) {
 		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
 	}
 	policy.TickForTest(engine, "evm:1", "*")
-	d2 := engine.RecentDecisions("evm:1", "*", 1)
+	d2 := engine.RecentDecisions("evm:1", "*", "*", 1)
 	require.Len(t, d2, 1)
 	require.Equal(t, "a-prim", d2[0].Output.Order[0],
 		"incumbent should be held by sticky despite worse score (cooldown still active)")

@@ -162,7 +162,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		policy.TickForTest(nw.policyEngine, "evm:123", "*")
-		ordered := nw.policyEngine.GetOrdered("evm:123", "*")
+		ordered := nw.policyEngine.GetOrdered("evm:123", "*", "*")
 		if len(ordered) >= 2 && ordered[0].Id() == "rpc2" {
 			break
 		}
@@ -175,7 +175,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	cancel1()
 	cancel2()
 
-	sortedUpstreams := nw.policyEngine.GetOrdered("evm:123", "*")
+	sortedUpstreams := nw.policyEngine.GetOrdered("evm:123", "*", "*")
 	expectedOrder := []string{"rpc2", "rpc1"}
 	assert.Len(t, sortedUpstreams, 2)
 	for i, ups := range sortedUpstreams {

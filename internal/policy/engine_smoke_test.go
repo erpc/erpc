@@ -71,7 +71,7 @@ func TestEngine_IdentityPolicy_PassesThrough(t *testing.T) {
 	}
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 3)
 	require.Equal(t, "rpc1", ordered[0].Id())
 	require.Equal(t, "rpc2", ordered[1].Id())
@@ -104,7 +104,7 @@ func TestEngine_OverrideOrderForTest(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
 
 	policy.OverrideOrderForTest(engine, "evm:1", "rpc3", "rpc1")
-	ordered := engine.GetOrdered("evm:1", "*")
+	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 2)
 	require.Equal(t, "rpc3", ordered[0].Id())
 	require.Equal(t, "rpc1", ordered[1].Id())

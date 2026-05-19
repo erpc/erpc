@@ -327,14 +327,14 @@ selectionPolicy:
         .excludeIf(errorRateAbove(0.5))
         .whenEmpty(() => upstreams)
         .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
-        .sortByScore(BALANCED)
+        .sortByScore(PREFER_FASTEST)
         .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
         .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })
 ```
 
 `evalFunc` returns an **ordered** `Upstream[]`: position 0 is the primary, the rest are retry order, anything missing is excluded. Use the chainable stdlib (`removeCordoned`, `excludeIf`, `whenEmpty`, `preferTag`, `sortByScore`, `stickyPrimary`, `readmitExcluded`, …) — see [Selection policy](/config/projects/selection-policies) for the full DSL + every method.
 
-Default policy: omitting `selectionPolicy` (or `evalFunc`) applies a production-hardened chain-agnostic default — `removeCordoned` + `excludeIf` filters (errorRate, throttle, p95 deviation, block lag) + tier-based fallback via `preferTag('!tier:fallback')` + `sortByScore(BALANCED)` + sticky primary + readmit. Investigations are exposed via OTLP tracing and the `erpc_selection_*` Prometheus metric family.
+Default policy: omitting `selectionPolicy` (or `evalFunc`) applies a production-hardened chain-agnostic default — `removeCordoned` + `excludeIf` filters (errorRate, throttle, p95 deviation, block lag) + tier-based fallback via `preferTag('!tier:fallback')` + `sortByScore(PREFER_FASTEST)` + sticky primary + readmit. Investigations are exposed via OTLP tracing and the `erpc_selection_*` Prometheus metric family.
 
 ### `directiveDefaults` — request directives at network level
 

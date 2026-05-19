@@ -108,7 +108,7 @@ func TestTranslateFromConfig_NoLegacy(t *testing.T) {
 // untouched. Critical: prevents the translator from clobbering a
 // hand-written policy when someone forgets to delete the legacy block.
 func TestTranslateFromConfig_PreservesUserEval(t *testing.T) {
-	userEval := "(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTER)"
+	userEval := "(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)"
 	prj := &common.ProjectConfig{
 		Id: "p1",
 		Networks: []*common.NetworkConfig{
@@ -154,7 +154,7 @@ func TestTranslate_ScoreBased_DefaultEmitsBalanced(t *testing.T) {
 	warns, err := legacy.Translate(prj, nil, nil, []legacy.WidenedNetwork{{}}, nwCfgs)
 	require.NoError(t, err)
 	require.Len(t, warns, 1, "routingStrategy warning")
-	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "sortByScore(BALANCED)")
+	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "sortByScore(PREFER_FASTEST)")
 	require.Contains(t, nwCfgs[0].SelectionPolicy.EvalFunc, "stickyPrimary")
 }
 
