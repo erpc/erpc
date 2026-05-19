@@ -450,11 +450,16 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 		for _, slug := range ex.LeafReasons {
 			telemetry.MetricSelectionExclusionTotal.WithLabelValues(project, s.networkID, s.method, ex.ID, slug).Inc()
 		}
-		// `excludedSince` reflects the slot's bookkeeping AFTER this
-		// tick's update. Existing entries that survived this tick still
-		// carry their original since-time; newly-excluded entries got
-		// `now` written. Compute wall-clock excluded-seconds for the gauge.
-		if since, ok := s.excludedSince[ex.ID]; ok && since > 0 {
+		// `prevState.ExcludedSince` is the pre-tick clone, captured at the
+		// start of tickOnce under s.mu. Reading the LIVE `s.excludedSince`
+		// here would be a data race with the next tick (emitMetrics runs
+		// outside s.mu). For upstreams newly excluded this tick, the
+		// prev clone has no entry — we don't emit and the gauge stays
+		// at its previous value (`0` from when it was in rotation),
+		// which is the right cold-start age. For upstreams already
+		// excluded last tick, the timestamp is identical (the slot
+		// preserves it across ticks).
+		if since, ok := prevState.ExcludedSince[ex.ID]; ok && since > 0 {
 			age := time.Duration(nowMs-since) * time.Millisecond
 			if age < 0 {
 				age = 0
