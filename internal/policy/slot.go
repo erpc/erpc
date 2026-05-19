@@ -450,15 +450,15 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 		for _, slug := range ex.LeafReasons {
 			telemetry.MetricSelectionExclusionTotal.WithLabelValues(project, s.networkID, s.method, ex.ID, slug).Inc()
 		}
-		// `prevState.ExcludedSince` is the pre-tick clone, captured at the
-		// start of tickOnce under s.mu. Reading the LIVE `s.excludedSince`
+		// `prevState.ExcludedSince` is the pre-tick clone captured under
+		// s.mu at the start of tickOnce. Reading the LIVE `s.excludedSince`
 		// here would be a data race with the next tick (emitMetrics runs
-		// outside s.mu). For upstreams newly excluded this tick, the
-		// prev clone has no entry — we don't emit and the gauge stays
-		// at its previous value (`0` from when it was in rotation),
-		// which is the right cold-start age. For upstreams already
-		// excluded last tick, the timestamp is identical (the slot
-		// preserves it across ticks).
+		// outside s.mu). For upstreams newly excluded this tick the prev
+		// clone has no entry — we don't emit and the gauge stays at its
+		// previous value (`0` from when it was in rotation), which is the
+		// correct cold-start age. For upstreams already excluded last
+		// tick the timestamp is identical (the slot preserves it across
+		// ticks).
 		if since, ok := prevState.ExcludedSince[ex.ID]; ok && since > 0 {
 			age := time.Duration(nowMs-since) * time.Millisecond
 			if age < 0 {

@@ -22,9 +22,17 @@
     // degraded. Pairing with an absolute floor catches the case where
     // every upstream is slow (median rises, deviation looks tame) but
     // p95 is genuinely catastrophic.
+    //
+    // The relative-deviation predicate is gated behind a `samplesAbove`
+    // guard: under low-traffic startup (handful of state-poller calls,
+    // tiny timing variance) the median-of-others is too unstable and one
+    // upstream can spuriously land >100% above the other's. Requiring
+    // ≥20 samples before tripping keeps the predicate honest. The
+    // absolute p95>30s floor stays unguarded because it's a real
+    // catastrophic threshold any sample count.
     .excludeIf(errorRateAbove(0.5))
     .excludeIf(throttleRateAbove(0.3))
-    .excludeIf(any(p95DeviationPctAbove(100), latencyP95Above(30_000)))
+    .excludeIf(any(all(samplesAbove(20), p95DeviationPctAbove(100)), latencyP95Above(30_000)))
     // Block-head lag: trip on either a chain-agnostic block count
     // (16 blocks ≈ 3 min behind tip on Ethereum, ~32s on a 2s chain)
     // OR a wall-clock seconds bound (30s behind tip) — the seconds
