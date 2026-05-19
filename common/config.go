@@ -1217,9 +1217,9 @@ func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {
 func (c *TimeoutPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type legacy struct {
 		Duration    *AdaptiveDuration `yaml:"duration,omitempty"`
-		Quantile    float64       `yaml:"quantile,omitempty"`
-		MinDuration Duration      `yaml:"minDuration,omitempty"`
-		MaxDuration Duration      `yaml:"maxDuration,omitempty"`
+		Quantile    float64           `yaml:"quantile,omitempty"`
+		MinDuration Duration          `yaml:"minDuration,omitempty"`
+		MaxDuration Duration          `yaml:"maxDuration,omitempty"`
 	}
 	var raw legacy
 	if err := unmarshal(&raw); err != nil {
@@ -1236,10 +1236,10 @@ func (c *TimeoutPolicyConfig) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	type legacy struct {
-		Duration    *AdaptiveDuration   `json:"duration,omitempty"`
-		Quantile    float64         `json:"quantile,omitempty"`
-		MinDuration json.RawMessage `json:"minDuration,omitempty"`
-		MaxDuration json.RawMessage `json:"maxDuration,omitempty"`
+		Duration    *AdaptiveDuration `json:"duration,omitempty"`
+		Quantile    float64           `json:"quantile,omitempty"`
+		MinDuration json.RawMessage   `json:"minDuration,omitempty"`
+		MaxDuration json.RawMessage   `json:"maxDuration,omitempty"`
 	}
 	var raw legacy
 	if err := SonicCfg.Unmarshal(data, &raw); err != nil {
@@ -1285,7 +1285,7 @@ func (c *TimeoutPolicyConfig) applyLegacySiblings(quantile float64, minD, maxD D
 // siblings get folded into Delay at YAML/JSON unmarshal time.
 type HedgePolicyConfig struct {
 	Delay    *AdaptiveDuration `yaml:"delay,omitempty" json:"delay,omitempty" tstype:"Duration | AdaptiveDuration"`
-	MaxCount int           `yaml:"maxCount" json:"maxCount"`
+	MaxCount int               `yaml:"maxCount" json:"maxCount"`
 }
 
 func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
@@ -1304,10 +1304,10 @@ func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
 func (c *HedgePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type legacy struct {
 		Delay    *AdaptiveDuration `yaml:"delay,omitempty"`
-		MaxCount int           `yaml:"maxCount,omitempty"`
-		Quantile float64       `yaml:"quantile,omitempty"`
-		MinDelay Duration      `yaml:"minDelay,omitempty"`
-		MaxDelay Duration      `yaml:"maxDelay,omitempty"`
+		MaxCount int               `yaml:"maxCount,omitempty"`
+		Quantile float64           `yaml:"quantile,omitempty"`
+		MinDelay Duration          `yaml:"minDelay,omitempty"`
+		MaxDelay Duration          `yaml:"maxDelay,omitempty"`
 	}
 	var raw legacy
 	if err := unmarshal(&raw); err != nil {
@@ -1325,11 +1325,11 @@ func (c *HedgePolicyConfig) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	type legacy struct {
-		Delay    *AdaptiveDuration   `json:"delay,omitempty"`
-		MaxCount int             `json:"maxCount,omitempty"`
-		Quantile float64         `json:"quantile,omitempty"`
-		MinDelay json.RawMessage `json:"minDelay,omitempty"`
-		MaxDelay json.RawMessage `json:"maxDelay,omitempty"`
+		Delay    *AdaptiveDuration `json:"delay,omitempty"`
+		MaxCount int               `json:"maxCount,omitempty"`
+		Quantile float64           `json:"quantile,omitempty"`
+		MinDelay json.RawMessage   `json:"minDelay,omitempty"`
+		MaxDelay json.RawMessage   `json:"maxDelay,omitempty"`
 	}
 	var raw legacy
 	if err := SonicCfg.Unmarshal(data, &raw); err != nil {
@@ -1873,6 +1873,7 @@ type DirectiveDefaultsConfig struct {
 	SkipCacheRead     interface{} `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
 	UseUpstream       *string     `yaml:"useUpstream,omitempty" json:"useUpstream"`
 	SkipInterpolation *bool       `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+	SkipConsensus     *bool       `yaml:"skipConsensus,omitempty" json:"skipConsensus"`
 
 	// Validation: Block Integrity
 	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
