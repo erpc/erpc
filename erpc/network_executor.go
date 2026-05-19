@@ -170,8 +170,17 @@ func (e *networkExecutor) Run(
 		}
 	}
 
-	if e.HasConsensus() && e.consensus != nil {
-		// Consensus branch: each slot is retry(hedge(tryOneUpstream)).
+	// Consensus branch: each slot is retry(hedge(tryOneUpstream)).
+	// Skipped when the request carries the SkipConsensus directive (header
+	// `X-ERPC-Skip-Consensus: true`, query `?skip-consensus=true`, or
+	// `directiveDefaults.skipConsensus: true` in the network/project config).
+	// Falls through to the standard non-consensus retry+hedge path; all
+	// other policies (retry, hedge, breaker, timeout) still apply.
+	skipConsensus := false
+	if rds := req.Directives(); rds != nil {
+		skipConsensus = rds.SkipConsensus
+	}
+	if e.HasConsensus() && e.consensus != nil && !skipConsensus {
 		slotInner := func(slotCtx context.Context, slotReq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream)
 		}

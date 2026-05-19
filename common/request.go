@@ -41,6 +41,7 @@ const (
 	headerDirectiveSkipCacheRead              = "X-ERPC-Skip-Cache-Read"
 	headerDirectiveUseUpstream                = "X-ERPC-Use-Upstream"
 	headerDirectiveSkipInterpolation          = "X-ERPC-Skip-Interpolation"
+	headerDirectiveSkipConsensus              = "X-ERPC-Skip-Consensus"
 	headerDirectiveEnforceHighestBlock        = "X-ERPC-Enforce-Highest-Block"
 	headerDirectiveEnforceGetLogsRange        = "X-ERPC-Enforce-GetLogs-Range"
 	headerDirectiveEnforceNonNullTaggedBlocks = "X-ERPC-Enforce-Non-Null-Tagged-Blocks"
@@ -66,6 +67,7 @@ const (
 	queryDirectiveSkipCacheRead              = "skip-cache-read"
 	queryDirectiveUseUpstream                = "use-upstream"
 	queryDirectiveSkipInterpolation          = "skip-interpolation"
+	queryDirectiveSkipConsensus              = "skip-consensus"
 	queryDirectiveEnforceHighestBlock        = "enforce-highest-block"
 	queryDirectiveEnforceGetLogsRange        = "enforce-getlogs-range"
 	queryDirectiveEnforceNonNullTaggedBlocks = "enforce-non-null-tagged-blocks"
@@ -91,6 +93,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveSkipCacheRead, query: queryDirectiveSkipCacheRead},
 	{header: headerDirectiveUseUpstream, query: queryDirectiveUseUpstream},
 	{header: headerDirectiveSkipInterpolation, query: queryDirectiveSkipInterpolation},
+	{header: headerDirectiveSkipConsensus, query: queryDirectiveSkipConsensus},
 	{header: headerDirectiveEnforceHighestBlock, query: queryDirectiveEnforceHighestBlock},
 	{header: headerDirectiveEnforceGetLogsRange, query: queryDirectiveEnforceGetLogsRange},
 	{header: headerDirectiveEnforceNonNullTaggedBlocks, query: queryDirectiveEnforceNonNullTaggedBlocks},
@@ -148,6 +151,14 @@ type RequestDirectives struct {
 	// When true, the system will still compute and cache block references (for finality/metrics),
 	// but will NOT replace tags like "latest"/"finalized" with hex numbers in outbound requests.
 	SkipInterpolation bool `json:"skipInterpolation"`
+
+	// Instruct the proxy to bypass the consensus policy for this request and
+	// route through the standard retry+hedge+breaker+timeout path instead.
+	// Retry, hedge, breaker, and timeout policies still apply — only the
+	// consensus dispute / agreement step is skipped. Useful when the caller
+	// has its own correctness checks downstream and prefers first-response
+	// latency over multi-upstream agreement.
+	SkipConsensus bool `json:"skipConsensus"`
 
 	// Validation: Block Integrity
 	EnforceHighestBlock        bool `json:"enforceHighestBlock,omitempty"`
@@ -234,6 +245,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		UseUpstream:                     d.UseUpstream,
 		ByPassMethodExclusion:           d.ByPassMethodExclusion,
 		SkipInterpolation:               d.SkipInterpolation,
+		SkipConsensus:                   d.SkipConsensus,
 		EnforceHighestBlock:             d.EnforceHighestBlock,
 		EnforceGetLogsBlockRange:        d.EnforceGetLogsBlockRange,
 		EnforceNonNullTaggedBlocks:      d.EnforceNonNullTaggedBlocks,
@@ -580,6 +592,9 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	if directiveDefaults.SkipInterpolation != nil {
 		r.directives.SkipInterpolation = *directiveDefaults.SkipInterpolation
 	}
+	if directiveDefaults.SkipConsensus != nil {
+		r.directives.SkipConsensus = *directiveDefaults.SkipConsensus
+	}
 
 	// Validation: Block Integrity
 	if directiveDefaults.EnforceHighestBlock != nil {
@@ -728,6 +743,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get(headerDirectiveSkipInterpolation); hv != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
+	if hv := headers.Get(headerDirectiveSkipConsensus); hv != "" {
+		r.directives.SkipConsensus = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
 
 	// Validation Headers
 	if hv := headers.Get(headerDirectiveEnforceHighestBlock); hv != "" {
@@ -808,6 +826,10 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 
 	if skipInterpolation := queryArgs.Get(queryDirectiveSkipInterpolation); skipInterpolation != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(skipInterpolation)) == "true"
+	}
+
+	if skipConsensus := queryArgs.Get(queryDirectiveSkipConsensus); skipConsensus != "" {
+		r.directives.SkipConsensus = strings.ToLower(strings.TrimSpace(skipConsensus)) == "true"
 	}
 
 	// Validation query parameters
