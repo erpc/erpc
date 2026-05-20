@@ -1137,6 +1137,15 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 			if err != nil {
 				return err
 			}
+			if len(upsCfgs) == 0 {
+				// Provider claimed SupportsNetwork=true but produced zero upstream configs.
+				// Returning nil here would mark the task TaskSucceeded and make
+				// summarizeNetworkTasks treat the network as terminally-resolved with
+				// zero upstreams, permanently surfacing ErrNetworkInitializing /
+				// ErrNetworkNotSupported to callers until the process restarts.
+				// Return a retryable error so the initializer can re-attempt.
+				return fmt.Errorf("provider %q reported support for network %q but generated 0 upstream configs", provider.Id(), networkId)
+			}
 			if lg.GetLevel() <= zerolog.DebugLevel {
 				lg.Debug().Interface("upstreams", upsCfgs).Msgf("created %d upstream(s) from provider", len(upsCfgs))
 			} else {
