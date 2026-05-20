@@ -538,6 +538,35 @@ func (e *networkExecutor) runHedge(
 		if r == nil || r.IsObjectNull(ctx) {
 			return false
 		}
+		// Mirror the upstream-sweep empty-result policy so a fast
+		// {"result": null} from one hedge leg does not cancel siblings
+		// that may still return real data. When the method legitimately
+		// returns empty (eth_getLogs, eth_call, point state reads, …)
+		// the method is in emptyResultAccept and we keep the fast empty
+		// winner — preserving prior behaviour.
+		//
+		// For methods like eth_getBlockByNumber / eth_getTransactionByHash /
+		// eth_getTransactionReceipt, null means "this upstream does not
+		// have it yet" (tip lag, reorg, pruned). Letting that null win
+		// the hedge cancels the in-flight legs that could have returned
+		// the data, then forces the retry layer to redo the whole fan-
+		// out — amplifying latency on the cold path. Reject emptyish
+		// here so the hedge keeps racing for a non-empty sibling; if all
+		// legs finish empty the failsafe hedge falls through to the
+		// last response, matching the pre-existing terminal behaviour.
+		if r.IsResultEmptyish(ctx) {
+			method, _ := req.Method()
+			accepted := false
+			for _, m := range e.emptyResultAccept {
+				if m == method {
+					accepted = true
+					break
+				}
+			}
+			if !accepted {
+				return false
+			}
+		}
 		kept = true
 		return true
 	}
