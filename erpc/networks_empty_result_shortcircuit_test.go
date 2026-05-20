@@ -166,13 +166,14 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 
 		var rpc1Calls, rpc2Calls atomic.Int32
 
-		// eth_getTransactionCount returns "0x0" which is emptyish, but this
-		// method is NOT in the emptyResultAccept list so both upstreams must
-		// be tried before returning to the failsafe layer.
+		// eth_getBlockReceipts returns "[]" which is emptyish, but this
+		// method is NOT in the emptyResultAccept list (nor the
+		// mark-empty-as-error list) so both upstreams must be tried before
+		// returning to the failsafe layer.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionCount")
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts")
 			}).
 			Persist().
 			Reply(200).
@@ -180,13 +181,13 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x0",
+				"result":  []interface{}{},
 			})
 
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionCount")
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts")
 			}).
 			Persist().
 			Reply(200).
@@ -194,7 +195,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x0",
+				"result":  []interface{}{},
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -210,7 +211,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 			},
 		)
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xabc","latest"]}`)
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1234"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
 		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
 
