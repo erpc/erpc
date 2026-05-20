@@ -215,6 +215,9 @@ func TestNetwork_Forward(t *testing.T) {
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts:            4,
 				EmptyResultMaxAttempts: 2, // cap empties at 2 total attempts
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
@@ -337,7 +340,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{MaxAttempts: 3}, // no EmptyResultMaxAttempts set
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3, // no EmptyResultMaxAttempts set
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
+			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
@@ -738,6 +746,9 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts:      2,
 				Delay:            common.Duration(10 * time.Millisecond),  // normal error delay: 10ms
 				EmptyResultDelay: common.Duration(300 * time.Millisecond), // empty result delay: 300ms
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
@@ -953,6 +964,9 @@ func TestNetwork_Forward(t *testing.T) {
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 				Delay:       common.Duration(10 * time.Millisecond), // normal delay only, no emptyResultDelay
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
@@ -1958,6 +1972,9 @@ func TestNetwork_Forward(t *testing.T) {
 			Timeout: nil,
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -2723,6 +2740,9 @@ func TestNetwork_Forward(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -2931,6 +2951,9 @@ func TestNetwork_Forward(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -3121,6 +3144,9 @@ func TestNetwork_Forward(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -3506,6 +3532,10 @@ func TestNetwork_Forward(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
+				// Pin an empty accept list so this test exercises the
+				// retry-on-empty path regardless of DefaultEmptyResultAccept
+				// (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -6927,6 +6957,9 @@ func TestNetwork_Forward(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
+				// Pin empty accept list so this exercises retry-on-empty regardless of
+				// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+				EmptyResultAccept: []string{},
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
@@ -7302,6 +7335,9 @@ func TestNetwork_Forward(t *testing.T) {
 				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 2,
+						// Pin empty accept list so this exercises retry-on-empty regardless of
+						// DefaultEmptyResultAccept (eth_getBalance is now accepted by default).
+						EmptyResultAccept: []string{},
 					}},
 				},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{

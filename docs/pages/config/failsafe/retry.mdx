@@ -150,7 +150,14 @@ Example with `delay: 200ms`, `backoffFactor: 1.5`, `jitter: 50ms`, `backoffMaxDe
 
 Many JSON-RPC methods legitimately return empty results. `eth_getLogs` for a block with no matching events returns `[]`. `eth_call` for a cleanly reverting contract returns `0x`. Retrying these is wasteful and can hide correctness bugs. Three knobs control this:
 
-**`emptyResultAccept`** lists methods where empty IS valid data. These methods are never retried purely because their result was empty. The default list is `["eth_getLogs", "eth_call"]`. Add methods freely; the cost of a false entry is one extra round trip, not a correctness problem.
+**`emptyResultAccept`** lists methods where empty IS valid data. These methods are never retried purely because their result was empty. The default list covers filter/range queries (where `[]` means "no matches") and point state reads (where the zero value is a real value, not absence):
+
+```
+eth_getLogs, trace_filter, arbtrace_filter,
+eth_call, eth_getBalance, eth_getCode, eth_getStorageAt, eth_getTransactionCount
+```
+
+Methods like `eth_getBlockByNumber` / `eth_getTransactionReceipt` are deliberately excluded — for those, `null` means "not found yet, try another upstream". The per-upstream block-availability gate still runs before the call, so accepting an empty here never returns a stale empty from a lagging node. Add methods freely; the cost of a false entry is one extra round trip, not a correctness problem.
 
 **`emptyResultConfidence`** decides when to trust an empty from an accepted method. `blockHead` (default) trusts empty responses even for chain-tip data. `finalizedBlock` is more conservative: if the requested block isn't yet finalized, an empty result is treated as potentially missing data and retried. Use `finalizedBlock` when you're consuming data from nodes that sometimes serve stale state.
 
@@ -171,7 +178,7 @@ When `blockUnavailableDelay` is not set, block-unavailable retries use the norma
 | `backoffFactor` | `1.2` | Gentle exponential ramp. |
 | `backoffMaxDelay` | `3s` | Delay ceiling. |
 | `jitter` | `0ms` | No jitter by default; add to avoid thundering herd. |
-| `emptyResultAccept` | `["eth_getLogs", "eth_call"]` | Methods where empty is valid. |
+| `emptyResultAccept` | filter queries (`eth_getLogs`, `trace_filter`, `arbtrace_filter`) + state reads (`eth_call`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`) | Methods where empty/zero is valid data, not "missing". |
 | `emptyResultConfidence` | `blockHead` | Trust empties at chain tip. |
 | `emptyResultMaxAttempts` | = `maxAttempts` | Inherits the error retry cap if not set. |
 | `emptyResultDelay` | = `delay` | Inherits the error delay if not set. |

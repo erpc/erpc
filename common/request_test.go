@@ -380,3 +380,159 @@ func TestHeaderOverridesConfigDefault_ValidateTransactionsRoot(t *testing.T) {
 		}
 	})
 }
+
+// ----------------------------------------------------------------------------
+// SkipConsensus directive
+// ----------------------------------------------------------------------------
+
+func TestSkipConsensusDirective_DefaultIsFalse(t *testing.T) {
+	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+	req.EnrichFromHttp(http.Header{}, url.Values{}, UserAgentTrackingModeSimplified)
+
+	if dir := req.Directives(); dir != nil && dir.SkipConsensus {
+		t.Fatalf("expected SkipConsensus=false by default, got true")
+	}
+}
+
+func TestSkipConsensusDirective_FromHeader(t *testing.T) {
+	cases := []struct {
+		header string
+		value  string
+		want   bool
+	}{
+		{"X-ERPC-Skip-Consensus", "true", true},
+		{"X-ERPC-Skip-Consensus", "TRUE", true},
+		{"X-ERPC-Skip-Consensus", "  true  ", true},
+		{"X-ERPC-Skip-Consensus", "false", false},
+		{"X-ERPC-Skip-Consensus", "1", false}, // only "true" is truthy
+		{"X-ERPC-Skip-Consensus", "yes", false},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s=%s", tc.header, tc.value), func(t *testing.T) {
+			req := NewNormalizedRequest(nil)
+			h := http.Header{}
+			h.Set(tc.header, tc.value)
+			req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+			dir := req.Directives()
+			if dir == nil {
+				t.Fatalf("expected directives to be initialized")
+			}
+			if dir.SkipConsensus != tc.want {
+				t.Fatalf("expected SkipConsensus=%v, got %v", tc.want, dir.SkipConsensus)
+			}
+		})
+	}
+}
+
+func TestSkipConsensusDirective_FromQuery(t *testing.T) {
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		{"true", true},
+		{"TRUE", true},
+		{" true ", true},
+		{"false", false},
+		{"", false}, // empty doesn't change default
+		{"yes", false},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("?skip-consensus=%q", tc.query), func(t *testing.T) {
+			req := NewNormalizedRequest(nil)
+			q := url.Values{}
+			if tc.query != "" {
+				q.Set("skip-consensus", tc.query)
+			}
+			req.EnrichFromHttp(nil, q, UserAgentTrackingModeSimplified)
+			dir := req.Directives()
+			if dir == nil {
+				if tc.want {
+					t.Fatalf("expected SkipConsensus=%v but directives are nil", tc.want)
+				}
+				return
+			}
+			if dir.SkipConsensus != tc.want {
+				t.Fatalf("expected SkipConsensus=%v, got %v", tc.want, dir.SkipConsensus)
+			}
+		})
+	}
+}
+
+func TestSkipConsensusDirective_QueryOverridesHeader(t *testing.T) {
+	// Documented precedence: query parameters apply after headers in the
+	// parser, so an explicit query value wins.
+	req := NewNormalizedRequest(nil)
+	h := http.Header{}
+	h.Set("X-ERPC-Skip-Consensus", "true")
+	q := url.Values{}
+	q.Set("skip-consensus", "false")
+	req.EnrichFromHttp(h, q, UserAgentTrackingModeSimplified)
+
+	if dir := req.Directives(); dir == nil || dir.SkipConsensus {
+		t.Fatalf("expected SkipConsensus=false (query override), got %+v", dir)
+	}
+}
+
+func TestSkipConsensusDirective_DefaultsFromConfig(t *testing.T) {
+	tr := true
+	fa := false
+
+	t.Run("default_true_applies_when_no_request_override", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+		req.ApplyDirectiveDefaults(&DirectiveDefaultsConfig{SkipConsensus: &tr})
+		if dir := req.Directives(); dir == nil || !dir.SkipConsensus {
+			t.Fatalf("expected SkipConsensus=true from defaults")
+		}
+	})
+
+	t.Run("default_false_applies_when_no_request_override", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+		req.ApplyDirectiveDefaults(&DirectiveDefaultsConfig{SkipConsensus: &fa})
+		if dir := req.Directives(); dir == nil || dir.SkipConsensus {
+			t.Fatalf("expected SkipConsensus=false from defaults")
+		}
+	})
+
+	t.Run("header_overrides_default_true_to_false", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+		req.ApplyDirectiveDefaults(&DirectiveDefaultsConfig{SkipConsensus: &tr})
+
+		h := http.Header{}
+		h.Set("X-ERPC-Skip-Consensus", "false")
+		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
+
+		if dir := req.Directives(); dir == nil || dir.SkipConsensus {
+			t.Fatalf("expected SkipConsensus=false after header override, got %+v", dir)
+		}
+	})
+
+	t.Run("query_overrides_default_false_to_true", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+		req.ApplyDirectiveDefaults(&DirectiveDefaultsConfig{SkipConsensus: &fa})
+
+		q := url.Values{}
+		q.Set("skip-consensus", "true")
+		req.EnrichFromHttp(nil, q, UserAgentTrackingModeSimplified)
+
+		if dir := req.Directives(); dir == nil || !dir.SkipConsensus {
+			t.Fatalf("expected SkipConsensus=true after query override, got %+v", dir)
+		}
+	})
+}
+
+func TestSkipConsensusDirective_ClonePreservesValue(t *testing.T) {
+	for _, v := range []bool{true, false} {
+		t.Run(fmt.Sprintf("SkipConsensus=%v", v), func(t *testing.T) {
+			d := &RequestDirectives{SkipConsensus: v}
+			cloned := d.Clone()
+			if cloned.SkipConsensus != v {
+				t.Fatalf("Clone() did not preserve SkipConsensus: got %v, want %v", cloned.SkipConsensus, v)
+			}
+			// Mutating the clone must not affect the original.
+			cloned.SkipConsensus = !v
+			if d.SkipConsensus != v {
+				t.Fatalf("Clone() returned an aliased reference; original mutated")
+			}
+		})
+	}
+}

@@ -2844,6 +2844,9 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 8,
 										Delay:       common.Duration(100 * time.Millisecond),
+										// Pin empty accept list so this still sweeps both upstreams on
+										// empty (eth_getBalance is accepted by default now).
+										EmptyResultAccept: []string{},
 									},
 								},
 							},
@@ -2987,7 +2990,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm:          &common.EvmNetworkConfig{ChainId: 123},
 							Failsafe: []*common.FailsafeConfig{
 								{
-									Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
+									// Pin empty accept list so the sweep still visits both
+									// upstreams on empty (eth_getBalance is accepted by
+									// default now); this test asserts no empty-RETRY rounds.
+									Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond), EmptyResultAccept: []string{}},
 								},
 							},
 						},

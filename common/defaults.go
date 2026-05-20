@@ -1954,10 +1954,45 @@ const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
 const DefaultBlockUnavailableDelayMultiplier = 0.8
 
 // DefaultEmptyResultAccept returns a fresh copy of the methods for which an
-// empty/null result is considered valid (e.g. eth_getLogs, eth_call). A new
-// slice is returned on every call so callers cannot mutate the shared default.
+// empty/null/zero result is the canonical, final answer — NOT a "data is
+// missing, retry elsewhere" signal. For these methods an emptyish response
+// (`[]`, `0x`, `0x0`, `null`) is accepted immediately instead of burning the
+// retry budget (and its emptyResultDelay sleeps) chasing a non-empty answer
+// that will never come. A fresh slice is returned every call so callers
+// cannot mutate the shared default.
+//
+// Safety: this only governs what to do once a response arrives. The
+// per-upstream block-availability gate still runs BEFORE the call — an
+// upstream that doesn't yet have the requested block is skipped, so we never
+// accept a stale empty from a lagging node.
+//
+// Two categories qualify:
+//
+//   - Filter / range queries that return an array; `[]` means "nothing
+//     matched in this range", which is a complete answer:
+//     eth_getLogs, trace_filter, arbtrace_filter.
+//
+//   - Point state reads where the zero value is a real value, not absence:
+//     eth_call (empty/0x return), eth_getBalance (0x0 = zero balance),
+//     eth_getCode (0x = EOA / no code), eth_getStorageAt (0x0 = empty slot),
+//     eth_getTransactionCount (0x0 = nonce zero / no txns).
+//
+// Methods deliberately EXCLUDED — for these, empty/null means "not found
+// yet, try another upstream": eth_getBlockByNumber, eth_getBlockByHash,
+// eth_getTransactionByHash, eth_getTransactionReceipt, eth_getBlockReceipts.
 func DefaultEmptyResultAccept() []string {
-	return []string{"eth_getLogs", "eth_call"}
+	return []string{
+		// Filter / range queries — empty array is a valid "no matches".
+		"eth_getLogs",
+		"trace_filter",
+		"arbtrace_filter",
+		// Point state reads — zero value is a real value, not absence.
+		"eth_call",
+		"eth_getBalance",
+		"eth_getCode",
+		"eth_getStorageAt",
+		"eth_getTransactionCount",
+	}
 }
 
 // DefaultMarkEmptyAsErrorMethods returns a fresh copy of the methods for which
