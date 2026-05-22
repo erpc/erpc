@@ -707,156 +707,266 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				maxLoopIterations = 1
 			}
 			attempted := make(map[string]struct{}, maxLoopIterations)
+			// Capture the pre-escalation upsList size for the error reporting
+			// path below. If the per-request fallback escape hatch fires, we
+			// replace upsList with the appended fallback set, but the
+			// ErrUpstreamsExhausted.upstreams field is meant to describe the
+			// routable set the policy selected — not the escape-hatch override.
+			originalUpsListLen := len(upsList)
 
-			for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
-				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
-				if ctxErr := loopCtx.Err(); ctxErr != nil {
-					cause := context.Cause(loopCtx)
+		escalationLoop:
+			for {
+
+				for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
+					loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
+					if ctxErr := loopCtx.Err(); ctxErr != nil {
+						cause := context.Cause(loopCtx)
+						if cause == nil {
+							cause = ctxErr
+						}
+						common.SetTraceSpanError(loopSpan, cause)
+						loopSpan.End()
+						return nil, cause
+					}
+
+					u, selErr := effectiveReq.NextUpstream()
+					if selErr != nil {
+						loopSpan.SetAttributes(
+							attribute.Bool("upstreams_exhausted", true),
+							attribute.String("error", selErr.Error()),
+						)
+						loopSpan.End()
+						break
+					}
+
+					if _, seen := attempted[u.Id()]; seen {
+						// Already tried in this execution — MarkUpstreamCompleted freed
+						// it from ConsumedUpstreams (retryable error or empty result) and
+						// UpstreamIdx wrapped around. Release the reservation so the
+						// upstream is available for the next failsafe retry round.
+						effectiveReq.ConsumedUpstreams.Delete(u)
+						loopSpan.SetAttributes(attribute.Bool("duplicate_selection", true))
+						loopSpan.End()
+						break
+					}
+					attempted[u.Id()] = struct{}{}
+
+					loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
+					if common.IsTracingDetailed {
+						loopSpan.SetAttributes(
+							attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
+						)
+					}
+					if eu, ok := u.(common.EvmUpstream); ok {
+						if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+							loopSpan.SetAttributes(
+								attribute.Int64("upstream.latest_block", sp.LatestBlock()),
+								attribute.Int64("upstream.finalized_block", sp.FinalizedBlock()),
+							)
+						}
+					}
+
+					ulg := lg.With().Str("upstreamId", u.Id()).Logger()
+					ulg.Debug().
+						Interface("id", effectiveReq.ID()).
+						Str("ptr", fmt.Sprintf("%p", effectiveReq)).
+						Str("selectedUpstream", u.Id()).
+						Msg("selected upstream from list")
+
+					// Pre-forward: block availability gating → skip to next upstream
+					if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
+						n.handleBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
+						// Track the skip as the loop's last error so the per-
+						// request fallback escape hatch (after the loop) can
+						// see it. Record BOTH retryable (block slightly ahead,
+						// upstream may catch up on retry) AND non-retryable
+						// (block far ahead beyond MaxRetryableBlockDistance,
+						// or below a configured lower bound) skips. The
+						// "non-retryable" classification means "don't retry
+						// the SAME upstream", not "don't try OTHER upstreams"
+						// — that's exactly what the escape hatch is for, and
+						// fallbacks ahead of a stalled primary (the B2 reth-
+						// stall case) need this path to be reachable.
+						lastErr = skipErr
+						loopSpan.End()
+						continue
+					}
+
+					hedges := exec.Hedges()
+					attempts := exec.Attempts()
+					if hedges > 0 {
+						finality := effectiveReq.Finality(loopCtx)
+						telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
+							n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges),
+							finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
+						).Inc()
+					}
+
+					r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, exec.Retries())
+					if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
+						ulg.Error().Err(e).Msgf("failed to normalize response")
+						err = e
+					}
+					effectiveReq.MarkUpstreamCompleted(loopCtx, u, r, err)
+
+					// Hedge cancelled → this execution lost the race, bail out
+					if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
+						n.recordHedgeDiscard(loopCtx, loopSpan, &ulg, u, effectiveReq, method, err, attempts, hedges)
+						loopSpan.End()
+						return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
+					}
+
+					if r != nil {
+						r.SetUpstream(u)
+						r.WithRequest(effectiveReq)
+					}
+
+					// Return immediately when the result is usable:
+					//  - Non-empty success always qualifies.
+					//  - Emptyish success qualifies when the method is in
+					//    emptyResultAccept and consensus is not required,
+					//    because failsafe would accept the empty result anyway
+					//    so trying more upstreams just wastes time on slow ones.
+					//  - Otherwise emptyish results continue to the next upstream.
+					if err == nil && r != nil && !r.IsObjectNull() {
+						emptyish := r.IsResultEmptyish()
+						acceptEmpty := !emptyish ||
+							(!failsafeExecutor.consensusPolicyEnabled &&
+								slices.Contains(failsafeExecutor.emptyResultAccept, method))
+						if acceptEmpty {
+							r.SetAttempts(exec.Attempts())
+							r.SetRetries(exec.Retries())
+							r.SetHedges(exec.Hedges())
+							loopSpan.SetStatus(codes.Ok, "")
+							if emptyish {
+								loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
+							}
+							loopSpan.End()
+							return r, nil
+						}
+					}
+
+					// Deterministic errors: client faults and execution reverts are the
+					// same on every upstream — no point trying others.
+					if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+						common.SetTraceSpanError(loopSpan, err)
+						loopSpan.End()
+						return nil, err
+					}
+
+					// Track best result and continue to next upstream.
+					if err != nil {
+						lastErr = err
+						common.SetTraceSpanError(loopSpan, err)
+					} else if r != nil {
+						bestResp = r
+						loopSpan.SetStatus(codes.Ok, "")
+					}
+					loopSpan.End()
+				}
+
+				// Check context after the inner loop — handles single-upstream
+				// case where the loop cap is reached before a new iteration
+				// can check ctx.
+				if ctxErr := execSpanCtx.Err(); ctxErr != nil {
+					cause := context.Cause(execSpanCtx)
 					if cause == nil {
 						cause = ctxErr
 					}
-					common.SetTraceSpanError(loopSpan, cause)
-					loopSpan.End()
 					return nil, cause
 				}
 
-				u, selErr := effectiveReq.NextUpstream()
-				if selErr != nil {
-					loopSpan.SetAttributes(
-						attribute.Bool("upstreams_exhausted", true),
-						attribute.String("error", selErr.Error()),
+				// === Per-request fallback escape hatch ===
+				//
+				// If the inner loop exhausted upsList with a retryable error,
+				// the selectionPolicy has cordoned fallbacks (e.g. via PR
+				// #10248's "keep hedges off fallback group" policy), and
+				// failover.onDefaultsExhausted is enabled, append fallback-
+				// group upstreams that are CB-closed and method-allowed and
+				// run the inner loop one more time. Client gets the fallback's
+				// response on the same call that would have otherwise returned
+				// ErrUpstreamsExhausted.
+				//
+				// Bounds:
+				//   - At most one escalation per request (MarkEscalatedToFallbacks).
+				//   - bestResp != nil means we have an emptyish response that
+				//     failsafe's emptyResultDelay should evaluate — don't pre-empt
+				//     it with a fallback retry.
+				//   - Deterministic client errors (client faults / execution
+				//     reverts) return from the inner loop immediately via the
+				//     IsClientError branch above, so they never reach this gate.
+				//     By the time we're here, any non-nil lastErr is one of:
+				//     gate-skip, CB-open, transport failure, rate-limit,
+				//     ErrUpstreamExcludedByPolicy, etc. — all of which mean "this
+				//     upstream couldn't serve; try a different one." That's
+				//     exactly what the escape does, so we don't gate on
+				//     IsRetryableTowardsUpstream (which mistakenly excludes
+				//     CB-open — its semantics are "retry on the SAME upstream",
+				//     but the escape switches to a DIFFERENT one).
+				//   - Consensus policy requires strict per-upstream semantics; do
+				//     not modify the candidate set mid-execution.
+				if bestResp == nil &&
+					!effectiveReq.HasEscalatedToFallbacks() &&
+					lastErr != nil &&
+					n.cfg.Failover != nil && n.cfg.Failover.Enabled() &&
+					!failsafeExecutor.consensusPolicyEnabled {
+
+					fallbacks := n.upstreamsRegistry.GetFallbackEscapeUpstreams(
+						execSpanCtx, n.networkId, method,
 					)
-					loopSpan.End()
-					break
-				}
-
-				if _, seen := attempted[u.Id()]; seen {
-					// Already tried in this execution — MarkUpstreamCompleted freed
-					// it from ConsumedUpstreams (retryable error or empty result) and
-					// UpstreamIdx wrapped around. Release the reservation so the
-					// upstream is available for the next failsafe retry round.
-					effectiveReq.ConsumedUpstreams.Delete(u)
-					loopSpan.SetAttributes(attribute.Bool("duplicate_selection", true))
-					loopSpan.End()
-					break
-				}
-				attempted[u.Id()] = struct{}{}
-
-				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
-				if common.IsTracingDetailed {
-					loopSpan.SetAttributes(
-						attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
-					)
-				}
-				if eu, ok := u.(common.EvmUpstream); ok {
-					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-						loopSpan.SetAttributes(
-							attribute.Int64("upstream.latest_block", sp.LatestBlock()),
-							attribute.Int64("upstream.finalized_block", sp.FinalizedBlock()),
-						)
-					}
-				}
-
-				ulg := lg.With().Str("upstreamId", u.Id()).Logger()
-				ulg.Debug().
-					Interface("id", effectiveReq.ID()).
-					Str("ptr", fmt.Sprintf("%p", effectiveReq)).
-					Str("selectedUpstream", u.Id()).
-					Msg("selected upstream from list")
-
-				// Pre-forward: block availability gating → skip to next upstream
-				if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
-					n.handleBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
-					loopSpan.End()
-					continue
-				}
-
-				hedges := exec.Hedges()
-				attempts := exec.Attempts()
-				if hedges > 0 {
-					finality := effectiveReq.Finality(loopCtx)
-					telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
-						n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges),
-						finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
-					).Inc()
-				}
-
-				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, exec.Retries())
-				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
-					ulg.Error().Err(e).Msgf("failed to normalize response")
-					err = e
-				}
-				effectiveReq.MarkUpstreamCompleted(loopCtx, u, r, err)
-
-				// Hedge cancelled → this execution lost the race, bail out
-				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
-					n.recordHedgeDiscard(loopCtx, loopSpan, &ulg, u, effectiveReq, method, err, attempts, hedges)
-					loopSpan.End()
-					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
-				}
-
-				if r != nil {
-					r.SetUpstream(u)
-					r.WithRequest(effectiveReq)
-				}
-
-				// Return immediately when the result is usable:
-				//  - Non-empty success always qualifies.
-				//  - Emptyish success qualifies when the method is in
-				//    emptyResultAccept and consensus is not required,
-				//    because failsafe would accept the empty result anyway
-				//    so trying more upstreams just wastes time on slow ones.
-				//  - Otherwise emptyish results continue to the next upstream.
-				if err == nil && r != nil && !r.IsObjectNull() {
-					emptyish := r.IsResultEmptyish()
-					acceptEmpty := !emptyish ||
-						(!failsafeExecutor.consensusPolicyEnabled &&
-							slices.Contains(failsafeExecutor.emptyResultAccept, method))
-					if acceptEmpty {
-						r.SetAttempts(exec.Attempts())
-						r.SetRetries(exec.Retries())
-						r.SetHedges(exec.Hedges())
-						loopSpan.SetStatus(codes.Ok, "")
-						if emptyish {
-							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
+					if len(fallbacks) > 0 {
+						// Replace upsList with ALL eligible fallbacks (whether
+						// or not they were previously in upsList). The first
+						// pass may have already attempted some — denied by
+						// ErrUpstreamExcludedByPolicy when the registry's
+						// sortedUpstreams hadn't yet refreshed away from the
+						// cordoned set — but those denials happen at the
+						// permit-check layer, which the HasEscalatedToFallbacks
+						// flag now bypasses. So even fallbacks already in
+						// upsList need a fresh attempt with the bypass active.
+						//
+						// Clear their stored errors and consumed reservations
+						// so NextUpstream re-selects them. Primaries are
+						// removed from upsList entirely, so they won't be
+						// picked up; their state in attempted/ErrorsByUpstream
+						// is preserved for the eventual error reporting.
+						fbCommon := make([]common.Upstream, 0, len(fallbacks))
+						for _, fb := range fallbacks {
+							fbCommon = append(fbCommon, fb)
+							effectiveReq.ErrorsByUpstream.Delete(common.Upstream(fb))
+							effectiveReq.ConsumedUpstreams.Delete(common.Upstream(fb))
 						}
-						loopSpan.End()
-						return r, nil
+						effectiveReq.SetUpstreams(fbCommon)
+						upsList = fbCommon
+						maxLoopIterations = len(fallbacks)
+						attempted = make(map[string]struct{}, len(fallbacks))
+						effectiveReq.MarkEscalatedToFallbacks()
+						// Reset lastErr so the next pass either replaces
+						// it (new failure) or leaves it nil (success).
+						lastErr = nil
+
+						telemetry.MetricNetworkFallbackEscapeTotal.WithLabelValues(
+							n.projectId, n.Label(), method,
+						).Inc()
+
+						lg.Debug().
+							Str("networkId", n.networkId).
+							Str("method", method).
+							Int("fallbacks", len(fallbacks)).
+							Msg("activated per-request fallback escape after primary set exhausted")
+
+						continue escalationLoop
 					}
 				}
 
-				// Deterministic errors: client faults and execution reverts are the
-				// same on every upstream — no point trying others.
-				if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-					common.SetTraceSpanError(loopSpan, err)
-					loopSpan.End()
-					return nil, err
-				}
-
-				// Track best result and continue to next upstream.
-				if err != nil {
-					lastErr = err
-					common.SetTraceSpanError(loopSpan, err)
-				} else if r != nil {
-					bestResp = r
-					loopSpan.SetStatus(codes.Ok, "")
-				}
-				loopSpan.End()
+				// No further escalation possible; exit the outer loop.
+				break escalationLoop
 			}
 
-			// Check context after the loop — handles single-upstream case where
-			// the loop cap is reached before a new iteration can check ctx.
-			if ctxErr := execSpanCtx.Err(); ctxErr != nil {
-				cause := context.Cause(execSpanCtx)
-				if cause == nil {
-					cause = ctxErr
-				}
-				return nil, cause
-			}
-
-			// All upstreams tried. Return the best result for failsafe to evaluate
-			// delays and retries. Prefer a valid response over an error so the
-			// delay function can detect empty results and apply emptyResultDelay.
+			// All upstreams (including any escaped-to fallbacks) tried. Return
+			// the best result for failsafe to evaluate delays and retries.
+			// Prefer a valid response over an error so the delay function can
+			// detect empty results and apply emptyResultDelay.
 			if bestResp != nil {
 				bestResp.SetAttempts(exec.Attempts())
 				bestResp.SetRetries(exec.Retries())
@@ -875,6 +985,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Wrap all errors as ErrUpstreamsExhausted. The delay function
 			// uses HasErrorCode which traverses child errors, so it can still
 			// detect blockUnavailable / missingData inside the wrapper.
+			//
+			// Use originalUpsListLen (not len(upsList)) so the "upstreams"
+			// field describes the policy-selected routable set, not any
+			// fallback set that the escape hatch may have appended.
 			exhaustedErr := common.NewErrUpstreamsExhausted(
 				effectiveReq,
 				&effectiveReq.ErrorsByUpstream,
@@ -885,7 +999,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				exec.Attempts(),
 				exec.Retries(),
 				exec.Hedges(),
-				len(upsList),
+				originalUpsListLen,
 			)
 			common.SetTraceSpanError(execSpan, exhaustedErr)
 			return nil, exhaustedErr
@@ -1331,6 +1445,17 @@ func (n *Network) handleBlockSkip(
 		req.CompositeType(), finality.String(),
 		req.UserId(), req.AgentName(),
 	).Inc()
+	// Record retryable block-availability skips as upstream failures in the
+	// health tracker so the selection policy's errorRate reflects what the
+	// upstream actually can't serve. Without this, an upstream whose poller is
+	// stuck behind the network aggregator gets gate-rejected indefinitely
+	// without ever moving errorRate, and the policy keeps it in `healthy` —
+	// preventing failover to fallbacks. Non-retryable skips remain silent
+	// (lower-bound / too-far-ahead are configuration semantics, not health).
+	if isRetryable && n.metricsTracker != nil {
+		n.metricsTracker.RecordUpstreamRequest(u, method)
+		n.metricsTracker.RecordUpstreamFailure(u, method, skipErr)
+	}
 	errToStore := skipErr
 	if !isRetryable {
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
@@ -1481,6 +1606,17 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 			span.SetAttributes(attribute.String("force_use_upstream", dr.UseUpstream))
 			return nil
 		}
+	}
+
+	// If the request has escalated to the fallback escape hatch, bypass the
+	// selectionPolicy permit. The escape hatch is the explicit override for
+	// the cordon: by the time we're here, the inner loop has already
+	// exhausted the policy-permitted set with retryable errors, and the
+	// fallback upstreams appended by Network.Forward are the only path to a
+	// non-failing response for this request.
+	if req.HasEscalatedToFallbacks() {
+		span.SetAttributes(attribute.Bool("fallback_escape_bypass", true))
+		return nil
 	}
 
 	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
