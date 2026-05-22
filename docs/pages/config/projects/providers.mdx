@@ -375,6 +375,21 @@ providers:
 
 Long-form settings: `settings.apiKey`.
 
+##### Chain Prism (multi-chain) endpoints
+
+QuickNode [Chain Prism](https://www.quicknode.com/guides/quicknode-products/how-to-use-multichain-endpoint) endpoints expose many chains through a single endpoint. When `enableMultiChain: true` is set, eRPC fetches the per-chain URLs of each multi-chain endpoint via `GET /v0/endpoints/:id/urls`, validates each chain with an `eth_chainId` probe, and registers every activated chain as its own upstream (ID suffixed with the QuickNode slug, e.g. `quicknode-42161-<endpointId>-arbitrum-mainnet`).
+
+Non-EVM slugs (e.g. `btc`, `solana`) and Select Access Chains the account has not subscribed to are listed in the API response but fail the `eth_chainId` probe and are dropped silently — see debug logs for the per-slug reason (non-JSON-RPC body, `401`, or a JSON-RPC error envelope).
+
+```yaml filename="erpc.yaml"
+providers:
+  - vendor: quicknode
+    settings:
+      apiKey: YOUR_QUICKNODE_API_KEY
+      enableMultiChain: true          # opt in to Chain Prism expansion
+      tagLabels: ["production"]       # optional, scope to endpoints with this tag
+```
+
 #### `routemesh`
 
 [RouteMesh](https://routemesh.io) only supports the long-form `providers[]` syntax (no URL shorthand).
@@ -500,8 +515,11 @@ providers:
     settings: { apiKey: xxxxx }
   - vendor: quicknode
     settings:
-      apiKey: xxxxx
-      recheckInterval: 1h
+      apiKey: xxxxx # Your QuickNode API key
+      recheckInterval: 1h # (optional) How often to recheck the API for newly added networks (default: 1h)
+      tagIds: [123, 456] # (optional) Filter endpoints by tag IDs (QuickNode dashboard tags)
+      tagLabels: ["production"] # (optional) Filter endpoints by tag labels
+      enableMultiChain: false # (optional) Opt in to Chain Prism (multi-chain) endpoint expansion — see note below
   - vendor: routemesh
     settings:
       apiKey: xxxxx
