@@ -212,6 +212,7 @@ Performance note: consensus increases costs and latency since it waits for multi
 | `fireAndForget` | bool | `false` | When `true`, return immediately upon reaching agreement without cancelling remaining in-flight requests. Ideal for broadcasts like `eth_sendRawTransaction`. |
 | `maxWaitOnResult` | AdaptiveDuration | `{ quantile: 0.5, min: 5ms, max: 1s }` | After the first **non-empty** response arrives, cancel remaining in-flight participants at most this long after. Bounds tail latency when one slow upstream drags the whole round. See "Tail-latency caps" below. |
 | `maxWaitOnEmpty` | AdaptiveDuration | `{ quantile: 0.9, min: 50ms, max: 2s }` | After the first response of **any kind** (empty, error, or non-empty) arrives, give remaining participants at most this long. Fires before `maxWaitOnResult` when only empties/errors have landed so far. |
+| `requiredParticipants` | `{ tag, minParticipants }[]` | — | Optional. Enforce a minimum number of participants carrying a given tag (e.g. region/provider diversity). Off by default. See "Tag-based participant quotas" below. |
 
 ### `disputeBehavior` values
 
@@ -234,6 +235,41 @@ Same set of values as `disputeBehavior`, with one addition:
 | `acceptMostCommonValidResult` | Apply preferences to pick a valid result; still respects threshold semantics. |
 | `preferBlockHeadLeader` | If the block head leader has a non-error result, return it; otherwise fall back to `acceptMostCommonValidResult`. |
 | `onlyBlockHeadLeader` | If the leader has a non-error result, return it; if only an error, return that error; otherwise return a low-participants error. |
+
+### Tag-based participant quotas (`requiredParticipants`)
+
+By default consensus fills its `maxParticipants` slots with the first N healthy upstreams by score. `requiredParticipants` adds a per-tag floor on top of that: each entry says "at least `minParticipants` of the participants must carry `tag`". Use it for diversity guarantees — e.g. always include a node from a second region or a second provider in every consensus round.
+
+The engine front-loads enough tag-matching upstreams into the participant set so the first `maxParticipants` drawn satisfy every entry. It does **not** change `maxParticipants`, and it leaves the order of non-required participants (their score ranking) intact — only set *membership* matters for voting.
+
+```yaml
+consensus:
+  maxParticipants: 3
+  agreementThreshold: 2
+  requiredParticipants:
+    - tag: "region:us-*"   # glob; matched against each upstream's tags
+      minParticipants: 1   # ≥1 US participant every round
+    - tag: "provider:quicknode"
+      minParticipants: 1   # ≥1 QuickNode participant every round
+```
+
+Tag the upstreams accordingly:
+
+```yaml
+upstreams:
+  - id: alchemy-us
+    tags: [region:us-east, provider:alchemy]
+  - id: quicknode-eu
+    tags: [region:eu-west, provider:quicknode]
+  # ...
+```
+
+Semantics:
+
+- **Off by default** — omit `requiredParticipants` and consensus behaves exactly as before.
+- **Best-effort** — if a required group has fewer healthy upstreams than `minParticipants` (or the quotas can't all fit within `maxParticipants`), consensus runs with what it can promote and the resulting participation is handled by your existing `lowParticipantsBehavior` / `agreementThreshold` — exactly like any organic low-participation round. No new failure mode is introduced.
+- **Healthy-only** — quotas are satisfied from the upstreams already eligible for this request (post selection-policy filtering), so a cordoned or excluded upstream is never forced in.
+- **`tag`** is a glob pattern (`*`, `?`); a single upstream can satisfy multiple entries it matches.
 
 ### `preferNonEmpty` semantics
 

@@ -67,6 +67,18 @@ export type ScoreWeights = {
 };
 
 /**
+ * Per-upstream score multiplier resolved for the current tick and exposed
+ * as `u.scoreMultipliers`. Same metric keys as `ScoreWeights` plus
+ * `overall` — the preference dial that scales the upstream's final score
+ * (>1 prefers this upstream, <1 avoids it). Comes from the upstream's
+ * `routing.scoreMultipliers` config; `sortByScore` combines it with the
+ * base weights per its `multipliers` option.
+ */
+export type ScoreMultiplierWeights = ScoreWeights & {
+  overall?: number;
+};
+
+/**
  * Per-upstream score breakdown attached by `sortByScore`.
  */
 export type ScoreBreakdown = {
@@ -94,6 +106,14 @@ export type PolicyEvalUpstream = {
 
   readonly config: UpstreamConfig;
   readonly metrics: PolicyEvalUpstreamMetrics;
+
+  /**
+   * Per-upstream score multipliers resolved from `routing.scoreMultipliers`
+   * for THIS tick's (network, method, finality). Absent when the upstream
+   * has no matching entry. `sortByScore` reads this automatically — you
+   * rarely touch it directly.
+   */
+  readonly scoreMultipliers?: ScoreMultiplierWeights;
 
   readonly score?: number;
   readonly penaltyBreakdown?: ScoreBreakdown;
@@ -143,11 +163,22 @@ export type TagPattern = string | readonly string[];
 export type Pattern = string | readonly string[];
 
 /**
- * Options for `sortByScore`. `latencyQuantile` selects which quantile
- * the `respLatency` weight scales; `overall` is a per-upstream
- * multiplier hook used by the legacy `scoreMultipliers` translator.
+ * Options for `sortByScore`.
+ *
+ * - `multipliers` controls how each upstream's `routing.scoreMultipliers`
+ *   (exposed as `u.scoreMultipliers`) combine with the base weights:
+ *     - `'merge'` (default): per-upstream keys override the matching base
+ *       keys; unset keys inherit the base. `overall` lifts the final score.
+ *     - `'override'`: configured upstreams rank by THEIR weights only
+ *       (base ignored); upstreams without config use the base.
+ *     - `'off'`: ignore `u.scoreMultipliers` entirely; rank by base.
+ * - `latencyQuantile` selects which response-time quantile the
+ *   `respLatency` weight scales (default `p70`).
+ * - `overall` is an extra multiplicative dial folded on top of the
+ *   per-upstream `overall`; mainly for programmatic callers.
  */
 export type SortByScoreOptions = {
+  multipliers?: "merge" | "override" | "off";
   latencyQuantile?: "p50" | "p70" | "p90" | "p95" | "p99";
   overall?: (u: PolicyEvalUpstream) => number;
 };
@@ -266,8 +297,17 @@ export interface PolicyEvalUpstreamArray
   difference(other: readonly PolicyEvalUpstream[]): PolicyEvalUpstreamArray;
 
   // ─── 4.5 Sorting ──────────────────────────────────────────────────────
+  /**
+   * Rank upstreams best-first (HIGHER score wins):
+   * `score(u) = overall(u) / (1 + Σ metricᵢ × weightᵢ)`.
+   * `base` is the baseline weight map — a preset (PREFER_FASTEST,
+   * PREFER_FRESHEST, PREFER_LEAST_ERRORS), a custom `ScoreWeights` object,
+   * a `(u) => ScoreWeights` function, or omitted (defaults to
+   * PREFER_FASTEST). Per-upstream `u.scoreMultipliers` combine with `base`
+   * per `opts.multipliers` (default `'merge'`).
+   */
   sortByScore(
-    weightsOrFnOrPreset:
+    base?:
       | ScoreWeights
       | ((u: PolicyEvalUpstream) => ScoreWeights),
     opts?: SortByScoreOptions,
@@ -364,11 +404,11 @@ export interface PolicyEvalUpstreamArray
  * should serve traffic — order is law, missing means excluded.
  *
  * When written as a TypeScript function in `erpc.ts`, the eRPC loader
- * stringifies it via `Function.prototype.toString()` at config load time,
- * compiles the source into a sobek program, and re-evaluates it inside
- * the policy runtime — where the chainable methods + predicate factories
- * declared below as ambient globals are actually installed on
- * `Array.prototype` / `globalThis`.
+ * compiles your whole config module into a sobek program and runs it
+ * INSIDE the policy runtime (the function is never stringified, so its
+ * closures stay intact). It's there — where the chainable methods +
+ * predicate factories declared below as ambient globals are installed on
+ * `Array.prototype` / `globalThis` — that the eval actually executes.
  */
 export type SelectionPolicyEvalFunction = (
   upstreams: PolicyEvalUpstreamArray,
@@ -379,8 +419,9 @@ export type SelectionPolicyEvalFunction = (
  * The factories and presets below are installed on `globalThis` by the
  * stdlib at policy-runtime load time. Declaring them as ambient globals
  * here lets the TypeScript checker see them inside `evalFunc` bodies
- * without making the user import from the package (which would not
- * survive Function.prototype.toString() round-tripping into sobek).
+ * without making the user import them from the package — they resolve to
+ * the runtime-installed `globalThis` symbols when the config module runs
+ * inside the policy runtime.
  * ──────────────────────────────────────────────────────────────────── */
 
 declare global {

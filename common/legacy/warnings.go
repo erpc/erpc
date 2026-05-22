@@ -14,13 +14,6 @@ func warnRoutingStrategy(strategy string) string {
 	)
 }
 
-func warnScoreMultipliers() string {
-	return fmt.Sprintf(
-		"[deprecated config] upstream.routing.scoreMultipliers is deprecated; translated to a per-upstream weights function passed to sortByScore. See %s#score-multipliers",
-		migrationDoc,
-	)
-}
-
 func warnScoreMetricsMode(mode string) string {
 	return fmt.Sprintf(
 		"[deprecated config] scoreMetricsMode=%q is no longer used; the new erpc_selection_* metrics have fixed cardinality. See %s#score-metrics-mode",

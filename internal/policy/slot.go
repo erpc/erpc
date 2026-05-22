@@ -38,7 +38,8 @@ type Slot struct {
 	excludedSince    map[string]int64
 	// lastScores holds the per-upstream `score` values the JS produced on
 	// the most recent successful tick (via `sortByScore(...)` setting
-	// `u.score = computePenalty(...)`). Entries are missing for upstreams
+	// `u.score = overall / (1 + penalty)`, higher = better). Entries are
+	// missing for upstreams
 	// added after the scoring step (probeExcluded / forceInclude). Read
 	// by Engine.GetScores for diagnostics — single source of truth for
 	// "what does the policy rank this upstream at?".

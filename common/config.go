@@ -735,38 +735,52 @@ type UpstreamConfig struct {
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
 
-	// LegacyRouting holds the deprecated `routing:` block (if any) parsed
-	// at YAML / TS load time. Consumed by the legacy translator hook in
-	// LoadConfig to synthesize the owning network's `selectionPolicy.eval`,
-	// then cleared. Never serialized.
-	LegacyRouting *LegacyUpstreamRouting `yaml:"-" json:"-"`
+	// Routing holds per-upstream routing hints consumed by the selection
+	// policy. `scoreMultipliers` bias this upstream's rank inside
+	// `sortByScore` (see SelectionPolicyConfig): the engine resolves the
+	// matching entry for each (network, method, finality) tick and exposes
+	// the resulting weight map to the eval function as `u.scoreMultipliers`.
+	Routing *UpstreamRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
 }
 
-// LegacyUpstreamRouting mirrors the deprecated `routing:` shape that
-// used to live on `UpstreamConfig`. Captured at config-load time so
-// the legacy translator can fold `scoreMultipliers` into the network's
-// synthesized selectionPolicy.eval. The shape is intentionally minimal —
-// every consumer of this snapshot lives in common/legacy/translate.go.
-type LegacyUpstreamRouting struct {
-	ScoreMultipliers     []*LegacyScoreMultiplier `yaml:"scoreMultipliers,omitempty"`
-	ScoreLatencyQuantile float64                  `yaml:"scoreLatencyQuantile,omitempty"`
+// UpstreamRoutingConfig holds per-upstream routing hints. Today this is
+// the home of `scoreMultipliers` — per-upstream weight overrides the
+// selection policy folds into `sortByScore`.
+type UpstreamRoutingConfig struct {
+	// ScoreMultipliers biases this upstream's rank. Each entry is a
+	// matcher (network/method/finality) plus weight overrides; the engine
+	// resolves the first matching entry per tick and hands it to the eval
+	// function as `u.scoreMultipliers`. `sortByScore` merges it over the
+	// base weights by default (see its `multipliers` option).
+	ScoreMultipliers []*ScoreMultiplierConfig `yaml:"scoreMultipliers,omitempty" json:"scoreMultipliers,omitempty"`
+	// ScoreLatencyQuantile selects which response-time quantile feeds the
+	// score (e.g. 0.9 → p90). When unset, the policy's own
+	// `sortByScore({ latencyQuantile })` (default p70) applies.
+	ScoreLatencyQuantile float64 `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile,omitempty"`
 }
 
-// LegacyScoreMultiplier mirrors one entry in the old `routing.scoreMultipliers`
-// list. Pointer fields distinguish "unset" from "zero" — only non-nil
-// weights flow into the synthesized score function.
-type LegacyScoreMultiplier struct {
-	Network         string               `yaml:"network,omitempty"`
-	Method          string               `yaml:"method,omitempty"`
-	Finality        []DataFinalityState  `yaml:"finality,omitempty"`
-	Overall         *float64             `yaml:"overall,omitempty"`
-	ErrorRate       *float64             `yaml:"errorRate,omitempty"`
-	RespLatency     *float64             `yaml:"respLatency,omitempty"`
-	TotalRequests   *float64             `yaml:"totalRequests,omitempty"`
-	ThrottledRate   *float64             `yaml:"throttledRate,omitempty"`
-	BlockHeadLag    *float64             `yaml:"blockHeadLag,omitempty"`
-	FinalizationLag *float64             `yaml:"finalizationLag,omitempty"`
-	Misbehaviors    *float64             `yaml:"misbehaviors,omitempty"`
+// ScoreMultiplierConfig is one per-upstream weight override. The matcher
+// fields (network/method/finality) scope the entry — leave them empty (or
+// `"*"`) for an entry that applies to every request. Weight fields are
+// pointers so "unset" is distinct from "zero": an unset weight inherits
+// from the policy's base weights (merge mode), a zero weight removes that
+// metric's contribution. `overall` scales the upstream's FINAL score — a
+// preference dial where >1 prefers this upstream and <1 avoids it.
+type ScoreMultiplierConfig struct {
+	Network         string              `yaml:"network,omitempty" json:"network,omitempty"`
+	Method          string              `yaml:"method,omitempty" json:"method,omitempty"`
+	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
+	Overall         *float64            `yaml:"overall,omitempty" json:"overall,omitempty"`
+	ErrorRate       *float64            `yaml:"errorRate,omitempty" json:"errorRate,omitempty"`
+	RespLatency     *float64            `yaml:"respLatency,omitempty" json:"respLatency,omitempty"`
+	ThrottledRate   *float64            `yaml:"throttledRate,omitempty" json:"throttledRate,omitempty"`
+	BlockHeadLag    *float64            `yaml:"blockHeadLag,omitempty" json:"blockHeadLag,omitempty"`
+	FinalizationLag *float64            `yaml:"finalizationLag,omitempty" json:"finalizationLag,omitempty"`
+	Misbehaviors    *float64            `yaml:"misbehaviors,omitempty" json:"misbehaviors,omitempty"`
+	// TotalRequests is accepted for backward compatibility but no longer
+	// influences scoring (the score is computed from rolling-window rates,
+	// not absolute request counts).
+	TotalRequests *float64 `yaml:"totalRequests,omitempty" json:"totalRequests,omitempty"`
 }
 
 // UnmarshalYAML accepts the current canonical schema, plus three legacy
@@ -775,21 +789,19 @@ type LegacyScoreMultiplier struct {
 //  1. `failsafe:` as a single object (pre-list shape).
 //  2. `group:` / `cohort:` keys at the top level — rewritten as
 //     `tier:<value>` / `cohort:<value>` entries in `tags`.
-//  3. A `routing:` block (`scoreMultipliers`, `scoreLatencyQuantile`) —
-//     stashed on `LegacyRouting` for the legacy translator to fold
-//     into the owning network's selectionPolicy.eval.
 //
-// None of these legacy fields exist on the runtime struct beyond the
-// load-time stash. Programmatic callers use `Tags` directly.
+// The `routing:` block (`scoreMultipliers`, `scoreLatencyQuantile`) is a
+// first-class field (`u.Routing`) — it parses straight through the
+// canonical schema and survives to runtime; the `group`/`cohort` keys are
+// the only load-time-only rewrites left here.
 func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	// Strict-schema shadow: inlines the canonical config and adds the
 	// deprecated yaml-only keys. yaml v3 ignores `json:"-"` so this is safe.
 	type canonicalUpstreamConfig UpstreamConfig
 	type shadow struct {
 		canonicalUpstreamConfig `yaml:",inline"`
-		Group                   string                 `yaml:"group,omitempty"`
-		Cohort                  string                 `yaml:"cohort,omitempty"`
-		Routing                 *LegacyUpstreamRouting `yaml:"routing,omitempty"`
+		Group                   string `yaml:"group,omitempty"`
+		Cohort                  string `yaml:"cohort,omitempty"`
 	}
 
 	var s shadow
@@ -797,9 +809,6 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	if err == nil {
 		*u = UpstreamConfig(s.canonicalUpstreamConfig)
 		mergeLegacyLabelKeysIntoTags(u, s.Group, s.Cohort)
-		if s.Routing != nil {
-			u.LegacyRouting = s.Routing
-		}
 		return nil
 	}
 
@@ -818,7 +827,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Tags                         []string                 `yaml:"tags,omitempty"`
 		Group                        string                   `yaml:"group,omitempty"`
 		Cohort                       string                   `yaml:"cohort,omitempty"`
-		Routing                      *LegacyUpstreamRouting   `yaml:"routing,omitempty"`
+		Routing                      *UpstreamRoutingConfig   `yaml:"routing,omitempty"`
 		VendorName                   string                   `yaml:"vendorName,omitempty"`
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
@@ -860,7 +869,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 
 	mergeLegacyLabelKeysIntoTags(u, old.Group, old.Cohort)
 	if old.Routing != nil {
-		u.LegacyRouting = old.Routing
+		u.Routing = old.Routing
 	}
 	return nil
 }
@@ -1558,6 +1567,31 @@ type ConsensusPolicyConfig struct {
 	//
 	// Same shape as MaxWaitOnResult; defaults applied when consensus is set.
 	MaxWaitOnEmpty *AdaptiveDuration `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty,omitempty" tstype:"Duration | AdaptiveDuration"`
+
+	// RequiredParticipants enforces a minimum number of consensus
+	// participants carrying a given tag. Each entry says "at least
+	// `minParticipants` of the upstreams that participate must match
+	// `tag`". The engine front-loads enough tag-matching upstreams into
+	// the participant set so the first `maxParticipants` drawn satisfy
+	// every entry — without changing `maxParticipants` itself.
+	//
+	// Best-effort and governed by the EXISTING consensus behaviors: if a
+	// required group has fewer healthy upstreams than requested (or the
+	// quotas can't all fit within `maxParticipants`), consensus simply
+	// runs with what it can promote and the resulting participation is
+	// handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
+	// like any other low-participation tick. Empty (default) = disabled.
+	RequiredParticipants []*ConsensusRequiredParticipant `yaml:"requiredParticipants,omitempty" json:"requiredParticipants,omitempty"`
+}
+
+// ConsensusRequiredParticipant is one tag-quota entry for
+// `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
+// matched against each upstream's `tags`; `MinParticipants` is the minimum
+// number of matching upstreams that must be in the consensus participant
+// set. A single upstream can satisfy multiple entries it matches.
+type ConsensusRequiredParticipant struct {
+	Tag             string `yaml:"tag" json:"tag"`
+	MinParticipants int    `yaml:"minParticipants" json:"minParticipants"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1593,6 +1627,17 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 
 	copied.MaxWaitOnResult = c.MaxWaitOnResult.Copy()
 	copied.MaxWaitOnEmpty = c.MaxWaitOnEmpty.Copy()
+
+	if c.RequiredParticipants != nil {
+		copied.RequiredParticipants = make([]*ConsensusRequiredParticipant, len(c.RequiredParticipants))
+		for i, rp := range c.RequiredParticipants {
+			if rp == nil {
+				continue
+			}
+			rpCopy := *rp
+			copied.RequiredParticipants[i] = &rpCopy
+		}
+	}
 
 	return copied
 }

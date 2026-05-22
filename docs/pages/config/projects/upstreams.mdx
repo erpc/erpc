@@ -319,41 +319,44 @@ upstreams:
 
 ### Per-upstream score tuning (`routing.scoreMultipliers`)
 
-Per-upstream score weighting lives next to the upstream itself, in `routing.scoreMultipliers`. Each entry selects on `(network, method, finality)` and overrides the score-weight preset's dimension(s) for that upstream when the selector matches the current request.
+Per-upstream score weighting lives next to the upstream itself, in `routing.scoreMultipliers`. Each entry is a matcher on `(network, method, finality)` plus weight overrides. The engine resolves the first matching entry for the current request and hands it to the policy's `sortByScore` step as `u.scoreMultipliers` — so you usually need **no custom eval at all**: the [default policy](/config/projects/selection-policies#the-default-policy) and any `sortByScore(...)` call merge it in automatically.
 
 ```yaml
 upstreams:
-  - id: hot
+  - id: premium
     endpoint: alchemy://...
     routing:
       scoreMultipliers:
-        - network: "*"
-          method: "*"
-          errorRate: 8            # overrides PREFER_FASTEST.errorRate
-          respLatency: 12         # overrides PREFER_FASTEST.respLatency
-          # missing dimensions inherit from the preset
-  - id: cold
+        - overall: 2              # preference dial: prefer this upstream 2× (keeps preset weights)
+  - id: archive
     endpoint: drpc://...
     routing:
       scoreMultipliers:
-        - network: "*"
-          method: "*"
-          respLatency: 4          # mild latency preference; everything else inherits
+        - method: "eth_getLogs"   # heavy scans on this one: weight latency hard
+          respLatency: 25
+        - method: "*"             # everything else: a mild preference
+          overall: 1.2
+  - id: backup
+    endpoint: llamarpc://...
+    tags: [tier:fallback]
+    routing:
+      scoreMultipliers:
+        - errorRate: 12           # punish errors harder here; rest inherits the preset
+          overall: 0.5            # and de-prioritize overall
 ```
 
-`PREFER_FASTEST` (the default preset) is `{ errorRate: 4, respLatency: 8, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6 }`. Latency dominates because the `excludeIf` chain already filters degraded upstreams before scoring runs; among survivors, response speed is the strongest "which should I prefer?" signal. Per-upstream entries override on a per-dimension basis; unspecified dimensions inherit.
+Weight fields override the score preset **per dimension** — unset dimensions inherit. `overall` is the **preference dial**: it scales the upstream's FINAL score, so `overall: 2` makes an upstream twice as preferred and `0.5` half (default `1`). (`PREFER_FASTEST`, the default preset, is `{ errorRate: 4, respLatency: 15, throttledRate: 4, blockHeadLag: 1, finalizationLag: 0, misbehaviors: 2 }` — latency dominates because the `excludeIf` chain already filters degraded upstreams before scoring runs.)
 
-When you need branching that the declarative form can't express (per-method, vendor, or `ctx.finality` rules), pass a function to `sortByScore` directly:
+Matcher fields accept glob patterns (`*`, `?`, `!negation`); an empty field or `"*"` matches anything, and the first matching entry wins. **Per-method and per-finality entries only take effect when the policy runs per-method / per-finality** (`evalPerMethod` / `evalPerFinality` on the network's `selectionPolicy`) — otherwise the slot is a wildcard and only `*`/empty-matcher entries apply.
+
+How these per-upstream weights combine with the policy's base weights is controlled by [`sortByScore`'s `multipliers` option](/config/projects/selection-policies#sorting) — `'merge'` (default, override-matching-keys), `'override'` (configured upstreams use their weights only), or `'off'` (ignore them).
+
+When you need branching the declarative form can't express (per-vendor baselines, etc.), pass a function to `sortByScore` to pick the **base** per upstream — per-upstream `scoreMultipliers` still merge on top (set `multipliers: 'off'` to opt out):
 
 ```js
 (upstreams, ctx) =>
-  upstreams.sortByScore((u) => {
-    if (u.id === 'noisy' && ctx.method === 'eth_getLogs') return { respLatency: 16, errorRate: 4 };
-    return PREFER_FASTEST;
-  })
+  upstreams.sortByScore((u) => u.hasTag('tier:archive') ? PREFER_FRESHEST : PREFER_FASTEST)
 ```
-
-The function form takes full control — it does NOT auto-merge with `routing.scoreMultipliers`. Pick one or the other per upstream.
 
 ### `rateLimitAutoTune` fields
 

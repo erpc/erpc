@@ -121,6 +121,19 @@ func (e *executor) Run(
 		return in(ctx, originalReq)
 	}
 
+	// Tag-based participant quota (opt-in). Front-load enough tag-matching
+	// upstreams so the first maxParticipants drawn by the slots below
+	// include the configured minimum from each required group. Runs at the
+	// very top of consensus, before any participant slot consumes an
+	// upstream (req.UpstreamIdx is still 0), so the reorder takes effect.
+	// Best-effort: shortfalls fall through to lowParticipantsBehavior /
+	// agreementThreshold like organic low participation.
+	if len(e.config.requiredParticipants) > 0 {
+		if reordered := reorderForParticipantQuota(originalReq.Upstreams(), e.config.requiredParticipants); len(reordered) > 0 {
+			originalReq.SetUpstreams(reordered)
+		}
+	}
+
 	labels := e.extractMetricsLabels(ctx, originalReq)
 	ctx, consensusSpan := e.startConsensusSpan(ctx, labels)
 	defer consensusSpan.End()

@@ -533,6 +533,52 @@ export interface UpstreamConfig {
   rateLimitBudget?: string;
   rateLimitAutoTune?: RateLimitAutoTuneConfig;
   shadow?: ShadowUpstreamConfig;
+  /**
+   * Per-upstream routing hints consumed by the selection policy. Today this
+   * is the home of `scoreMultipliers` — per-upstream weight overrides the
+   * policy folds into `sortByScore` (exposed in the eval as
+   * `u.scoreMultipliers`).
+   */
+  routing?: UpstreamRoutingConfig;
+}
+/**
+ * Per-upstream routing hints. `scoreMultipliers` bias this upstream's rank
+ * inside `sortByScore`; the engine resolves the first matching entry per
+ * (network, method, finality) tick and hands it to the eval function as
+ * `u.scoreMultipliers`.
+ */
+export interface UpstreamRoutingConfig {
+  scoreMultipliers?: (ScoreMultiplierConfig | undefined)[];
+  /**
+   * Which response-time quantile feeds the score (e.g. 0.9 → p90). When
+   * unset, the policy's own `sortByScore({ latencyQuantile })` (default
+   * p70) applies.
+   */
+  scoreLatencyQuantile?: number;
+}
+/**
+ * One per-upstream weight override. Matcher fields (network/method/finality)
+ * scope the entry — leave empty (or `"*"`) to apply to every request.
+ * Weight fields are optional: an unset weight inherits the policy's base
+ * weight (merge mode), a `0` removes that metric's contribution. `overall`
+ * scales the upstream's FINAL score — >1 prefers this upstream, <1 avoids it.
+ */
+export interface ScoreMultiplierConfig {
+  network?: string;
+  method?: string;
+  finality?: DataFinalityState[];
+  overall?: number;
+  errorRate?: number;
+  respLatency?: number;
+  throttledRate?: number;
+  blockHeadLag?: number;
+  finalizationLag?: number;
+  misbehaviors?: number;
+  /**
+   * Accepted for backward compatibility but no longer influences scoring
+   * (the score is computed from rolling-window rates, not request counts).
+   */
+  totalRequests?: number;
 }
 /**
  * Define a type alias to avoid recursion
@@ -785,6 +831,24 @@ export interface ConsensusPolicyConfig {
    * Same shape as MaxWaitOnResult; defaults applied when consensus is set.
    */
   maxWaitOnEmpty?: Duration | AdaptiveDuration;
+  /**
+   * RequiredParticipants enforces a minimum number of consensus participants
+   * carrying a given tag. The engine front-loads enough tag-matching upstreams
+   * so the first `maxParticipants` drawn satisfy every entry (without changing
+   * `maxParticipants`). Best-effort: shortfalls fall through to
+   * `lowParticipantsBehavior` / `agreementThreshold`. Empty (default) = disabled.
+   */
+  requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
+}
+/**
+ * One tag-quota entry for `consensus.requiredParticipants`. `tag` is a glob
+ * pattern (`*`, `?`) matched against each upstream's `tags`; `minParticipants`
+ * is the minimum number of matching upstreams that must participate. A single
+ * upstream can satisfy multiple entries it matches.
+ */
+export interface ConsensusRequiredParticipant {
+  tag: string;
+  minParticipants: number /* int */;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";

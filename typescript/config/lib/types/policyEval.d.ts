@@ -52,9 +52,8 @@ export type PolicyEvalUpstreamMetrics = {
 };
 /**
  * Score-preset weight map used by `sortByScore`. Missing keys are treated
- * as zero. The built-in presets (`BALANCED`, `PREFER_FASTER`,
- * `PREFER_FEWER_ERRORS`, `PREFER_FRESHER_HEAD`, `PREFER_LESS_THROTTLED`,
- * `PREFER_CHEAP`) are exposed as bare globals inside the eval.
+ * as zero. The built-in presets (`PREFER_FASTEST`, `PREFER_FRESHEST`,
+ * `PREFER_LEAST_ERRORS`) are exposed as bare globals inside the eval.
  */
 export type ScoreWeights = {
     errorRate?: number;
@@ -63,6 +62,17 @@ export type ScoreWeights = {
     blockHeadLag?: number;
     finalizationLag?: number;
     misbehaviors?: number;
+};
+/**
+ * Per-upstream score multiplier resolved for the current tick and exposed
+ * as `u.scoreMultipliers`. Same metric keys as `ScoreWeights` plus
+ * `overall` — the preference dial that scales the upstream's final score
+ * (>1 prefers this upstream, <1 avoids it). Comes from the upstream's
+ * `routing.scoreMultipliers` config; `sortByScore` combines it with the
+ * base weights per its `multipliers` option.
+ */
+export type ScoreMultiplierWeights = ScoreWeights & {
+    overall?: number;
 };
 /**
  * Per-upstream score breakdown attached by `sortByScore`.
@@ -90,6 +100,13 @@ export type PolicyEvalUpstream = {
     readonly tags: readonly string[];
     readonly config: UpstreamConfig;
     readonly metrics: PolicyEvalUpstreamMetrics;
+    /**
+     * Per-upstream score multipliers resolved from `routing.scoreMultipliers`
+     * for THIS tick's (network, method, finality). Absent when the upstream
+     * has no matching entry. `sortByScore` reads this automatically — you
+     * rarely touch it directly.
+     */
+    readonly scoreMultipliers?: ScoreMultiplierWeights;
     readonly score?: number;
     readonly penaltyBreakdown?: ScoreBreakdown;
     readonly annotations?: string[];
@@ -132,11 +149,22 @@ export type TagPattern = string | readonly string[];
 /** `tier:fallback`, `region:us-*`, `!cohort:beta`, ... */
 export type Pattern = string | readonly string[];
 /**
- * Options for `sortByScore`. `latencyQuantile` selects which quantile
- * the `respLatency` weight scales; `overall` is a per-upstream
- * multiplier hook used by the legacy `scoreMultipliers` translator.
+ * Options for `sortByScore`.
+ *
+ * - `multipliers` controls how each upstream's `routing.scoreMultipliers`
+ *   (exposed as `u.scoreMultipliers`) combine with the base weights:
+ *     - `'merge'` (default): per-upstream keys override the matching base
+ *       keys; unset keys inherit the base. `overall` lifts the final score.
+ *     - `'override'`: configured upstreams rank by THEIR weights only
+ *       (base ignored); upstreams without config use the base.
+ *     - `'off'`: ignore `u.scoreMultipliers` entirely; rank by base.
+ * - `latencyQuantile` selects which response-time quantile the
+ *   `respLatency` weight scales (default `p70`).
+ * - `overall` is an extra multiplicative dial folded on top of the
+ *   per-upstream `overall`; mainly for programmatic callers.
  */
 export type SortByScoreOptions = {
+    multipliers?: "merge" | "override" | "off";
     latencyQuantile?: "p50" | "p70" | "p90" | "p95" | "p99";
     overall?: (u: PolicyEvalUpstream) => number;
 };
@@ -228,7 +256,16 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
     union(other: readonly PolicyEvalUpstream[]): PolicyEvalUpstreamArray;
     intersect(other: readonly PolicyEvalUpstream[]): PolicyEvalUpstreamArray;
     difference(other: readonly PolicyEvalUpstream[]): PolicyEvalUpstreamArray;
-    sortByScore(weightsOrFnOrPreset: ScoreWeights | ((u: PolicyEvalUpstream) => ScoreWeights), opts?: SortByScoreOptions): PolicyEvalUpstreamArray;
+    /**
+     * Rank upstreams best-first (HIGHER score wins):
+     * `score(u) = overall(u) / (1 + Σ metricᵢ × weightᵢ)`.
+     * `base` is the baseline weight map — a preset (PREFER_FASTEST,
+     * PREFER_FRESHEST, PREFER_LEAST_ERRORS), a custom `ScoreWeights` object,
+     * a `(u) => ScoreWeights` function, or omitted (defaults to
+     * PREFER_FASTEST). Per-upstream `u.scoreMultipliers` combine with `base`
+     * per `opts.multipliers` (default `'merge'`).
+     */
+    sortByScore(base?: ScoreWeights | ((u: PolicyEvalUpstream) => ScoreWeights), opts?: SortByScoreOptions): PolicyEvalUpstreamArray;
     sortBy(fn: (u: PolicyEvalUpstream) => number, opts?: {
         desc?: boolean;
     }): PolicyEvalUpstreamArray;
@@ -275,27 +312,30 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
  * should serve traffic — order is law, missing means excluded.
  *
  * When written as a TypeScript function in `erpc.ts`, the eRPC loader
- * stringifies it via `Function.prototype.toString()` at config load time,
- * compiles the source into a sobek program, and re-evaluates it inside
- * the policy runtime — where the chainable methods + predicate factories
- * declared below as ambient globals are actually installed on
- * `Array.prototype` / `globalThis`.
+ * compiles your whole config module into a sobek program and runs it
+ * INSIDE the policy runtime (the function is never stringified, so its
+ * closures stay intact). It's there — where the chainable methods +
+ * predicate factories declared below as ambient globals are installed on
+ * `Array.prototype` / `globalThis` — that the eval actually executes.
  */
 export type SelectionPolicyEvalFunction = (upstreams: PolicyEvalUpstreamArray, ctx: PolicyEvalContext) => readonly PolicyEvalUpstream[];
 declare global {
     /**
-     * Balanced score weights — `{errorRate:2, respLatency:8, throttledRate:3,
-     * blockHeadLag:4, finalizationLag:1, misbehaviors:6}`. Latency dominates
-     * because the `excludeIf` chain already drops the broken upstreams; among
-     * survivors, response speed is the strongest "which should I prefer?" signal.
+     * Latency dominates (respLatency=15). Default for most request paths;
+     * the `excludeIf` chain already drops broken upstreams, so the
+     * ranking question is "which of the healthy ones answers first?".
      */
-    const BALANCED: ScoreWeights;
-    const PREFER_FASTER: ScoreWeights;
-    const PREFER_FEWER_ERRORS: ScoreWeights;
-    const PREFER_FRESHER_HEAD: ScoreWeights;
-    const PREFER_LESS_THROTTLED: ScoreWeights;
-    /** Alias of `BALANCED`. */
-    const PREFER_CHEAP: ScoreWeights;
+    const PREFER_FASTEST: ScoreWeights;
+    /**
+     * Block-head freshness dominates (blockHeadLag=15). Realtime reads
+     * that can't tolerate a stale-head upstream.
+     */
+    const PREFER_FRESHEST: ScoreWeights;
+    /**
+     * Error rate dominates (errorRate=15). Use for write paths or
+     * anything where a 5xx costs more than a slow response.
+     */
+    const PREFER_LEAST_ERRORS: ScoreWeights;
     function errorRateAbove(rate: number): PolicyEvalPredicate;
     function errorRateBelow(rate: number): PolicyEvalPredicate;
     function throttleRateAbove(rate: number): PolicyEvalPredicate;

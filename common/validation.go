@@ -1082,6 +1082,21 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	for i, rp := range c.RequiredParticipants {
+		if rp == nil {
+			return fmt.Errorf("consensus.requiredParticipants[%d] must not be null", i)
+		}
+		if strings.TrimSpace(rp.Tag) == "" {
+			return fmt.Errorf("consensus.requiredParticipants[%d].tag is required", i)
+		}
+		if rp.MinParticipants <= 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minParticipants must be greater than 0", i)
+		}
+		if rp.MinParticipants > c.MaxParticipants {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minParticipants (%d) cannot exceed maxParticipants (%d)", i, rp.MinParticipants, c.MaxParticipants)
+		}
+	}
+
 	return nil
 }
 

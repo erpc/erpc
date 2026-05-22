@@ -452,7 +452,9 @@
     return ok[name] || 'p70ResponseSeconds';
   }
 
-  function computePenalty(u, weights, latencyKey, overall) {
+  // computeWeightedPenalty sums each enabled metric × weight. Lower is
+  // healthier; `sortByScore` turns it into a higher-is-better score.
+  function computeWeightedPenalty(u, weights, latencyKey) {
     const m = u.metrics;
     let p = 0;
     if (weights.errorRate)       p += m.errorRate       * weights.errorRate;
@@ -461,21 +463,78 @@
     if (weights.blockHeadLag)    p += m.blockHeadLag    * weights.blockHeadLag;
     if (weights.finalizationLag) p += m.finalizationLag * weights.finalizationLag;
     if (weights.misbehaviors)    p += m.misbehaviorRate * weights.misbehaviors;
-    if (overall) p *= overall(u);
     return p;
   }
 
-  define('sortByScore', function (weightsOrFnOrPreset, opts) {
+  // sortByScore(base, opts) — rank upstreams best-first. HIGHER score wins.
+  //
+  //   score(u) = overall(u) / (1 + Σ metricᵢ(u) × weightᵢ)
+  //
+  // A clean upstream (zero penalty) scores `overall` (default 1); accrued
+  // errors / latency / lag divide that back down. `overall` is the
+  // preference dial — >1 prefers an upstream, <1 avoids it.
+  //
+  // `base` is the BASELINE weight map every upstream starts from:
+  //   * a preset (PREFER_FASTEST / PREFER_FRESHEST / PREFER_LEAST_ERRORS),
+  //   * a custom `{ errorRate, respLatency, throttledRate, blockHeadLag,
+  //     finalizationLag, misbehaviors }` object,
+  //   * a function `(u) => preset | weights` for per-upstream baselines,
+  //   * or omitted → defaults to PREFER_FASTEST.
+  //
+  // Per-upstream `routing.scoreMultipliers` (config) arrive as
+  // `u.scoreMultipliers` and combine with `base` per `opts.multipliers`:
+  //   * 'merge'    (default) — per-upstream keys override the matching
+  //                base keys; unset keys inherit base. `overall` lifts the
+  //                final score.
+  //   * 'override' — configured upstreams rank by THEIR weights only
+  //                (base ignored); upstreams without config use base.
+  //   * 'off'      — ignore `u.scoreMultipliers` entirely; rank by base.
+  //
+  // `opts.latencyQuantile` ('p50'..'p99', default p70) picks which
+  // response-time quantile feeds `respLatency`. `opts.overall` (a
+  // function) is an extra multiplicative dial folded on top of the
+  // per-upstream `overall`, kept for advanced/programmatic callers.
+  define('sortByScore', function (base, opts) {
     opts = opts || {};
     const latencyKey = quantileKey(opts.latencyQuantile);
-    const overall = (typeof opts.overall === 'function') ? opts.overall : null;
-    const isFn = (typeof weightsOrFnOrPreset === 'function');
+    const mode = opts.multipliers || 'merge';
+    const optsOverallFn = (typeof opts.overall === 'function') ? opts.overall : null;
+    const baseIsFn = (typeof base === 'function');
+
     const out = this.slice();
     for (const u of out) {
-      const w = isFn ? weightsOrFnOrPreset(u) : weightsOrFnOrPreset;
-      u.score = computePenalty(u, w, latencyKey, overall);
+      let baseW = baseIsFn ? base(u) : base;
+      if (!baseW) baseW = PRESETS.PREFER_FASTEST;
+
+      // Per-upstream override object (engine-attached), unless disabled.
+      const pm = (mode !== 'off') ? u.scoreMultipliers : null;
+
+      let weights = baseW;
+      let overallVal = 1;
+      if (pm) {
+        // Split the non-metric `overall` dial out from the metric weights.
+        let pmWeights = null, hasW = false;
+        for (const k in pm) {
+          if (!Object.prototype.hasOwnProperty.call(pm, k)) continue;
+          if (k === 'overall') { if (pm[k] != null) overallVal = pm[k]; continue; }
+          if (!pmWeights) pmWeights = {};
+          pmWeights[k] = pm[k];
+          hasW = true;
+        }
+        if (mode === 'override') {
+          weights = hasW ? pmWeights : baseW;
+        } else {
+          weights = hasW ? Object.assign({}, baseW, pmWeights) : baseW;
+        }
+      }
+
+      if (optsOverallFn) overallVal *= optsOverallFn(u);
+
+      const penalty = computeWeightedPenalty(u, weights, latencyKey);
+      u.score = overallVal / (1 + penalty);
     }
-    out.sort((a, b) => a.score - b.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    // Descending score; alphabetical id as the stable tiebreak.
+    out.sort((a, b) => (b.score - a.score) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     return out;
   });
   define('sortBy', function (fn, opts) {
@@ -521,8 +580,10 @@
   // ─── 4.7 Stability (cross-tick) ─────────────────────────────────────────
 
   // Spec §4.7: hold the previous primary across ticks unless BOTH
-  //   (a) challenger.score < prev.score × (1 - hysteresis), AND
+  //   (a) challenger.score > prev.score × (1 + hysteresis), AND
   //   (b) at least `minSwitchInterval` has elapsed since the last switch.
+  // (Scores are higher-is-better, so a challenger must be DECISIVELY
+  // higher than the incumbent — by the hysteresis margin — to take over.)
   // Both are needed: during an incident the score gap between primary
   // and challenger can be huge, so without (b) sticky becomes a no-op
   // and a degrading primary still flaps every tick. With (b), a recent
@@ -568,8 +629,9 @@
       return keepPrev.call(this);
     }
 
-    // Cooldown elapsed; check hysteresis.
-    if (curScore < prevScore * (1 - hysteresis)) {
+    // Cooldown elapsed; check hysteresis. Higher is better, so the
+    // challenger must clear the incumbent by the hysteresis margin.
+    if (curScore > prevScore * (1 + hysteresis)) {
       return this.slice();                                    // switch
     }
     return keepPrev.call(this);

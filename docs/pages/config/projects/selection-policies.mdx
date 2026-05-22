@@ -176,9 +176,9 @@ Step-by-step:
 
 7. **Tier** — primary tier = NOT `tier:fallback`. Falls through to fallback tier if no primary survives.
 
-8. **Score** — `PREFER_FASTEST` weights: `errorRate: 4, respLatency: 8, throttledRate: 3, blockHeadLag: 2, finalizationLag: 1, misbehaviors: 6`. Latency dominates because step 2-5 already dropped degraded upstreams; among survivors the operator's strongest signal is "how fast does this answer?". A 50 ms upstream with one stray 2% error beats a 400 ms upstream with a clean record. Lower score = primary.
+8. **Score** — `PREFER_FASTEST` weights: `errorRate: 4, respLatency: 15, throttledRate: 4, blockHeadLag: 1, finalizationLag: 0, misbehaviors: 2`. Latency dominates because step 2-5 already dropped degraded upstreams; among survivors the operator's strongest signal is "how fast does this answer?". A 50 ms upstream with one stray 2% error beats a 400 ms upstream with a clean record. Higher score = primary. Any per-upstream [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) flow through this step automatically (merged over the preset).
 
-9. **Sticky primary** — across all finalities. The challenger needs `score < incumbent × (1 - 0.30)` (i.e. 30% better) AND ≥ 30 s since the last switch. Cuts flap on close calls; flapping every tick costs more in connection setup + cache locality than the marginal ranking gain.
+9. **Sticky primary** — across all finalities. The challenger needs `score > incumbent × (1 + 0.30)` (i.e. 30% higher) AND ≥ 30 s since the last switch. Cuts flap on close calls; flapping every tick costs more in connection setup + cache locality than the marginal ranking gain.
 
 10. **Re-admit excluded** — every tick, restore up to 2 previously-excluded upstreams whose 90 s cooldown has elapsed, appended at the tail. They prove themselves over the next few ticks; if still bad, step 2-5 drop them again. Typical transient-blip windows (rate-limit reset, regional networking dip) recover in 60-90 s.
 
@@ -219,8 +219,16 @@ type Upstream = {
   readonly is: (tag: string) => boolean    // alias of hasTag
 
   // Attached by std-lib steps:
-  readonly score?: number                  // sortByScore (lower = better)
+  readonly score?: number                  // sortByScore (higher = better)
   readonly annotations?: string[]          // step reasons (auto-set by excludeIf etc.)
+
+  // Per-upstream weight overrides resolved from routing.scoreMultipliers
+  // for this tick's (network, method, finality). sortByScore reads it.
+  readonly scoreMultipliers?: {
+    overall?: number
+    errorRate?: number; respLatency?: number; throttledRate?: number
+    blockHeadLag?: number; finalizationLag?: number; misbehaviors?: number
+  }
 }
 
 type UpstreamMetrics = {
@@ -260,8 +268,7 @@ type EvalContext = {
 The `metrics` object is captured ONCE at tick start, so chained std-lib
 steps see a consistent view.
 
-Globals: `PREFER_FASTEST`, `PREFER_FASTEST`, `PREFER_LEAST_ERRORS`,
-`PREFER_FRESHEST`, `PREFER_LEAST_ERRORS`, `PREFER_FASTEST`;
+Globals: `PREFER_FASTEST`, `PREFER_FRESHEST`, `PREFER_LEAST_ERRORS`;
 `REALTIME` / `UNFINALIZED` / `FINALIZED` / `UNKNOWN`;
 `REASON_*` reason codes; `process.env`; `console.log/info/warn/error`;
 standard ECMAScript.
@@ -376,7 +383,44 @@ const w = {
   upstreams.sortByScore((u) => w[u.vendor] || PREFER_FASTEST)
 ```
 
-For the declarative-YAML alternative, see [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) on the upstream config.
+For the declarative-config alternative, see [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) on the upstream config — covered next.
+
+### Per-upstream score multipliers (config-driven)
+
+Instead of branching inside the eval, declare per-upstream weight overrides
+on the upstream config under [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers).
+The engine resolves the matching entry for each `(network, method, finality)`
+and exposes it as `u.scoreMultipliers`; `sortByScore` folds it in. Most
+policies (including the default) need **no eval change at all** — multipliers
+flow through `sortByScore`'s default `'merge'` mode:
+
+```yaml
+# Nudge priority without touching the weight shape — both keep the preset's
+# latency-dominant weights, but `overall` biases the final score.
+upstreams:
+  - id: premium
+    routing: { scoreMultipliers: [{ overall: 2 }] }     # strongly preferred
+  - id: backup
+    routing: { scoreMultipliers: [{ overall: 0.5 }] }   # only when premium degrades
+```
+
+```js
+// The eval is just the usual chain — nothing multiplier-specific needed.
+(upstreams, ctx) =>
+  upstreams.removeCordoned().sortByScore(PREFER_FASTEST).stickyPrimary()
+```
+
+Switch how the config combines with the base via `opts.multipliers`:
+
+```js
+// 'override': upstreams that set scoreMultipliers rank by THEIR weights
+// only; everyone else falls back to the preset.
+(upstreams, ctx) =>
+  upstreams.removeCordoned().sortByScore(PREFER_FASTEST, { multipliers: 'override' })
+
+// 'off': ignore per-upstream config entirely (e.g. on a canary policy).
+(upstreams, ctx) => upstreams.sortByScore(PREFER_FRESHEST, { multipliers: 'off' })
+```
 
 ### Custom inline predicate with a human-readable label
 
@@ -406,7 +450,7 @@ The selection policy emits one tick's worth of decision data into Prometheus on 
 | Metric | Answers |
 |---|---|
 | `erpc_selection_position{upstream}` | `0` = primary, `1+` = runner-up, `-1` = excluded |
-| `erpc_selection_score{upstream}` | Penalty from `sortByScore`. **Lower = better.** |
+| `erpc_selection_score{upstream}` | Score from `sortByScore`. **Higher = better.** |
 | `erpc_selection_excluded_seconds{upstream}` | How long stuck excluded (gauge). Alert on `> 600` for "stuck > 10 min". |
 | `erpc_selection_sticky_hold_total{upstream}` | Ticks where sticky actively held this upstream as primary against a challenger. |
 | `erpc_selection_readmit_total{upstream}` | Times this upstream transitioned excluded → in-rotation. |
@@ -454,7 +498,7 @@ Three explicit profiles. Each emphasizes ONE primary axis (weight `15`) while ke
 | `PREFER_FRESHEST` | `4, 2, 2, 15, 8, 3` | Realtime reads that can't tolerate any stale-head upstream. |
 | `PREFER_LEAST_ERRORS` | `15, 2, 6, 2, 1, 12` | Write paths or anywhere a 5xx costs more than a slow response. |
 
-`penalty = Σ(metric × weight) × overall(u)`. Lower penalty = higher rank. Score + breakdown attach to each upstream for later steps.
+`score = overall(u) / (1 + Σ(metric × weight))`. **Higher score = higher rank.** A clean upstream (zero penalty) scores its `overall` (default `1`); accrued errors / latency / lag divide it back down. On tied scores, alphabetical-by-id tiebreak. Per-upstream [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) merge over the chosen preset (see the `sortByScore` reference below).
 
 </details>
 
@@ -616,21 +660,28 @@ For vendor diversity, add `vendor:<name>` tags and call `spreadAcrossTags('vendo
 
 ```ts
 .sortByScore(
-  weights: ScoreWeights | preset | ((u) => ScoreWeights),
+  base?: ScoreWeights | preset | ((u) => ScoreWeights),   // default PREFER_FASTEST
   opts?: {
-    latencyQuantile?: 'p50' | 'p70' | 'p90' | 'p95' | 'p99'  // default 'p70'
-    overall?: (u) => number                                   // post-multiplier
+    multipliers?: 'merge' | 'override' | 'off'             // default 'merge'
+    latencyQuantile?: 'p50' | 'p70' | 'p90' | 'p95' | 'p99' // default 'p70'
+    overall?: (u) => number                                 // extra dial (advanced)
   }
 )
 ```
 
-`penalty = Σ(metric × weight) × overall(u)`. Lower penalty = higher
-rank. On tied scores, alphabetical-by-id tiebreak.
+`score = overall(u) / (1 + Σ(metric × weight))`. **Higher score = higher
+rank.** On tied scores, alphabetical-by-id tiebreak.
 
-Weights arg can be:
-- A **preset** constant (`PREFER_FASTEST`, `PREFER_FASTEST`, …).
+`base` is the baseline weight map every upstream starts from:
+- A **preset** constant (`PREFER_FASTEST`, `PREFER_FRESHEST`, `PREFER_LEAST_ERRORS`).
 - A flat **weight map** (`{ errorRate: 10, respLatency: 3 }`).
-- A **per-upstream function** (`(u) => weights`) — for branching on tags/vendor/method. Declarative per-upstream tuning lives on the upstream config; see [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers).
+- A **per-upstream function** (`(u) => weights`) — for branching on tags/vendor/method.
+- **Omitted** → defaults to `PREFER_FASTEST`.
+
+Per-upstream [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) arrive as `u.scoreMultipliers` and combine with `base` per `opts.multipliers`:
+- **`'merge'`** (default) — per-upstream keys override the matching base keys; unset keys inherit base. `overall` lifts the final score.
+- **`'override'`** — configured upstreams rank by THEIR weights only (base ignored); upstreams without config use base.
+- **`'off'`** — ignore `u.scoreMultipliers` entirely; rank by base alone.
 
 </details>
 

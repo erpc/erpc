@@ -115,16 +115,16 @@ projects:
 	if prj.LegacyProject == nil || prj.LegacyProject.ScoreMetricsMode != "compact" {
 		t.Fatalf("LegacyProject.ScoreMetricsMode not captured; got %+v", prj.LegacyProject)
 	}
-	if prj.UpstreamDefaults == nil || prj.UpstreamDefaults.LegacyRouting == nil ||
-		len(prj.UpstreamDefaults.LegacyRouting.ScoreMultipliers) != 1 {
+	if prj.UpstreamDefaults == nil || prj.UpstreamDefaults.Routing == nil ||
+		len(prj.UpstreamDefaults.Routing.ScoreMultipliers) != 1 {
 		t.Fatalf("upstreamDefaults.routing.scoreMultipliers not captured; got %+v",
 			prj.UpstreamDefaults)
 	}
-	if len(prj.Upstreams) == 0 || prj.Upstreams[0].LegacyRouting == nil ||
-		len(prj.Upstreams[0].LegacyRouting.ScoreMultipliers) != 1 ||
-		prj.Upstreams[0].LegacyRouting.ScoreMultipliers[0].Overall == nil ||
-		*prj.Upstreams[0].LegacyRouting.ScoreMultipliers[0].Overall != 0.2 {
-		t.Fatalf("upstream legacy routing.overall not captured")
+	if len(prj.Upstreams) == 0 || prj.Upstreams[0].Routing == nil ||
+		len(prj.Upstreams[0].Routing.ScoreMultipliers) != 1 ||
+		prj.Upstreams[0].Routing.ScoreMultipliers[0].Overall == nil ||
+		*prj.Upstreams[0].Routing.ScoreMultipliers[0].Overall != 0.2 {
+		t.Fatalf("upstream routing.overall not captured")
 	}
 }
 
@@ -136,9 +136,9 @@ projects:
 //   2. the user's whole compiled module is attached to `cfg.UserScript`
 //      so each policy-engine pool runtime can re-evaluate it natively,
 //      preserving closures + helpers;
-//   3. legacy YAML keys written via TS (`group:`, `routing:`) still
-//      flow through the shadow types and get migrated identically to
-//      the YAML path.
+//   3. the legacy `group:` key written via TS still flows through the
+//      shadow types and gets migrated to a `tier:` tag identically to
+//      the YAML path, and first-class `routing:` parses onto u.Routing.
 //
 // We don't run the legacy translator hook here — that has its own
 // suite. This test just verifies that the TS object survives the
@@ -201,12 +201,13 @@ export default {
 		t.Fatalf("group→tag migration failed; tags=%q", got)
 	}
 
-	// (2) Legacy `routing.scoreMultipliers` stashed on LegacyRouting.
-	if u.LegacyRouting == nil || len(u.LegacyRouting.ScoreMultipliers) != 1 {
-		t.Fatalf("routing stash missing; LegacyRouting=%+v", u.LegacyRouting)
+	// (2) First-class `routing.scoreMultipliers` parsed onto u.Routing
+	// (survives to runtime — NOT a load-time stash).
+	if u.Routing == nil || len(u.Routing.ScoreMultipliers) != 1 {
+		t.Fatalf("routing not parsed; Routing=%+v", u.Routing)
 	}
-	if u.LegacyRouting.ScoreMultipliers[0].ErrorRate == nil ||
-		*u.LegacyRouting.ScoreMultipliers[0].ErrorRate != 7 {
+	if u.Routing.ScoreMultipliers[0].ErrorRate == nil ||
+		*u.Routing.ScoreMultipliers[0].ErrorRate != 7 {
 		t.Fatalf("routing scoreMultipliers value not preserved")
 	}
 
@@ -381,11 +382,6 @@ projects:
 	prev := LegacyTranslateFn
 	LegacyTranslateFn = func(cfg *Config) ([]string, error) {
 		for _, prj := range cfg.Projects {
-			for _, u := range prj.Upstreams {
-				if u.LegacyRouting != nil {
-					u.LegacyRouting = nil // simulate "consumed"
-				}
-			}
 			for _, n := range prj.Networks {
 				if n.SelectionPolicy == nil {
 					n.SelectionPolicy = &SelectionPolicyConfig{EvalFunc: "(upstreams, ctx) => upstreams"}
@@ -407,8 +403,11 @@ projects:
 	if want, got := []string{"test-warn"}, captured; !strings.EqualFold(strings.Join(want, "|"), strings.Join(got, "|")) {
 		t.Fatalf("warnings not flowed through LegacyTranslateLogger: got %v", got)
 	}
-	if cfg.Projects[0].Upstreams[0].LegacyRouting != nil {
-		t.Fatalf("hook must clear LegacyRouting stash")
+	// routing.scoreMultipliers is first-class — it must SURVIVE the hook
+	// (it's not a load-time stash to be consumed).
+	if u0 := cfg.Projects[0].Upstreams[0]; u0.Routing == nil ||
+		len(u0.Routing.ScoreMultipliers) != 1 {
+		t.Fatalf("first-class routing must survive load; got %+v", u0.Routing)
 	}
 	if cfg.Projects[0].Networks[0].SelectionPolicy == nil ||
 		cfg.Projects[0].Networks[0].SelectionPolicy.EvalFunc == "" {

@@ -42,9 +42,9 @@ func TestMetrics_EmitsScoreGaugeForRanked(t *testing.T) {
 	slowGauge := telemetry.MetricSelectionScore.WithLabelValues("p1", "evm:1", "*", "slow")
 	fastScore := promUtil.ToFloat64(fastGauge)
 	slowScore := promUtil.ToFloat64(slowGauge)
-	require.Greater(t, fastScore, 0.0, "fast upstream score must be non-zero (latency contributes)")
-	require.Less(t, fastScore, slowScore,
-		"fast upstream's score must be lower than slow's — lower = better, dashboards depend on this orientation")
+	require.Greater(t, fastScore, 0.0, "fast upstream score must be non-zero")
+	require.Greater(t, fastScore, slowScore,
+		"fast upstream's score must be HIGHER than slow's — higher = better, dashboards depend on this orientation")
 }
 
 // TestMetrics_ExclusionTotalEmitsLeafSlugs verifies that

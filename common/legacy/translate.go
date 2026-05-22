@@ -55,16 +55,6 @@ func Translate(
 		warnings = append(warnings, warnInertField("scorePenaltyDecayRate",
 			"no equivalent; sortByScore uses a fresh metric snapshot every tick"))
 	}
-	hasLegacyMul := false
-	for _, u := range upstreams {
-		if u.Routing != nil && len(u.Routing.ScoreMultipliers) > 0 {
-			hasLegacyMul = true
-			break
-		}
-	}
-	if hasLegacyMul {
-		warnings = append(warnings, warnScoreMultipliers())
-	}
 
 	// If only inert legacy fields are present, emit warnings but DON'T
 	// synthesize an eval — the network's selectionPolicy stays nil so
@@ -91,7 +81,7 @@ func Translate(
 			continue
 		}
 
-		evalSrc := synthesizeEval(prj, upstreamConfigs, upstreams, legacyNw)
+		evalSrc := synthesizeEval(prj, upstreams, legacyNw)
 		if evalSrc == "" {
 			continue
 		}
@@ -123,13 +113,19 @@ func Translate(
 //   - prj.RoutingStrategy            ("round-robin" → rotateBy; "score-based" → sortByScore)
 //   - prj.ScoreSwitchHysteresis      (stickyPrimary({hysteresis}))
 //   - prj.ScoreMinSwitchInterval     (stickyPrimary({minSwitchInterval}))
-//   - upstream.routing.scoreMultipliers / scoreLatencyQuantile
-//                                    (per-id weights map handed to sortByScore)
-//   - network.selectionPolicy.evalFunction  (wrapped as legacy fn)
-//   - network.selectionPolicy.resample*     (appended as probeExcluded)
+//   - upstream.routing.scoreLatencyQuantile  (sortByScore({latencyQuantile}))
+//   - network.selectionPolicy.evalFunction   (wrapped as legacy fn)
+//   - network.selectionPolicy.resample*      (appended as probeExcluded)
 //
-// If none of these are set, the translator must leave selectionPolicy
-// nil so the canonical default policy installs unchanged.
+// `routing.scoreMultipliers` is deliberately NOT in this list: it is a
+// first-class field attached to each upstream at runtime as
+// `u.scoreMultipliers` and merged in by `sortByScore`. A config whose
+// only "scoring" customization is scoreMultipliers therefore gets the
+// FULL canonical default policy, with the per-upstream weights flowing
+// through it — no synthesized stand-in needed.
+//
+// If none of the listed fields are set, the translator must leave
+// selectionPolicy nil so the canonical default policy installs unchanged.
 func hasSemanticLegacy(prj WidenedProject, ups []WidenedUpstream, nws []WidenedNetwork) bool {
 	if prj.RoutingStrategy != "" ||
 		prj.ScoreSwitchHysteresis != 0 ||
@@ -137,7 +133,7 @@ func hasSemanticLegacy(prj WidenedProject, ups []WidenedUpstream, nws []WidenedN
 		return true
 	}
 	for _, u := range ups {
-		if u.Routing != nil && (len(u.Routing.ScoreMultipliers) > 0 || u.Routing.ScoreLatencyQuantile != 0) {
+		if u.Routing != nil && u.Routing.ScoreLatencyQuantile != 0 {
 			return true
 		}
 	}
@@ -170,29 +166,27 @@ func hasInertLegacy(prj WidenedProject) bool {
 //   - else → sortByScore + stickyPrimary + probeExcluded with the
 //     project's legacy tuning baked in.
 //
-// Per-upstream `scoreMultipliers` are always gathered up-front and
-// flow into whichever branch wins (the legacy eval-function wrapper
-// uses them to pre-sort; the score-based branch hands them directly
-// to sortByScore). This keeps the translation lossless when a user
-// had BOTH evalFunction AND scoreMultipliers set.
+// Per-upstream `scoreMultipliers` need no handling here: they are
+// first-class config attached to each upstream as `u.scoreMultipliers`
+// and merged in by `sortByScore` at runtime. `scoreLatencyQuantile` is
+// the only routing hint folded in, as a `sortByScore({ latencyQuantile })`
+// option.
 func synthesizeEval(
 	prj WidenedProject,
-	ups []*common.UpstreamConfig,
 	legacyUps []WidenedUpstream,
 	nw WidenedNetwork,
 ) string {
-	mulByID, defaultMul := collectMultipliers(ups, legacyUps)
+	latencyQuantile := firstLatencyQuantile(legacyUps)
 	if nw.SelectionPolicy != nil && strings.TrimSpace(nw.SelectionPolicy.EvalFunction) != "" {
-		return wrapLegacyEvalFunction(nw.SelectionPolicy, mulByID, defaultMul)
+		return wrapLegacyEvalFunction(nw.SelectionPolicy, latencyQuantile)
 	}
 	if strings.EqualFold(prj.RoutingStrategy, "round-robin") {
 		// `rotateBy` rotates each tick — uses ctx.tickCount.
 		return `(upstreams, ctx) => upstreams.rotateBy(ctx.tickCount)`
 	}
 	// Score-based default — bake in any project-level hysteresis +
-	// min-switch interval, and emit per-upstream weights for legacy
-	// scoreMultipliers when present.
-	return synthesizeScoreBasedEval(prj, mulByID, defaultMul, nw)
+	// min-switch interval and the latency quantile if set.
+	return synthesizeScoreBasedEval(prj, nw, latencyQuantile)
 }
 
 // formatDuration returns "30s" for time.Duration(30s). Used to inline
@@ -262,10 +256,10 @@ func widenedProjectFromConfig(prj *common.ProjectConfig) WidenedProject {
 func widenedUpstreamsFromConfig(ups []*common.UpstreamConfig) []WidenedUpstream {
 	out := make([]WidenedUpstream, len(ups))
 	for i, u := range ups {
-		if u == nil || u.LegacyRouting == nil {
+		if u == nil || u.Routing == nil {
 			continue
 		}
-		out[i] = WidenedUpstream{Routing: routingConfigFromCommon(u.LegacyRouting)}
+		out[i] = WidenedUpstream{Routing: routingConfigFromCommon(u.Routing)}
 	}
 	return out
 }
@@ -295,39 +289,19 @@ func widenedNetworksFromConfig(nws []*common.NetworkConfig) []WidenedNetwork {
 	return out
 }
 
-func routingConfigFromCommon(lr *common.LegacyUpstreamRouting) *routingConfig {
-	rc := &routingConfig{ScoreLatencyQuantile: lr.ScoreLatencyQuantile}
-	for _, m := range lr.ScoreMultipliers {
-		if m == nil {
-			continue
-		}
-		rc.ScoreMultipliers = append(rc.ScoreMultipliers, &scoreMultiplier{
-			Network:         m.Network,
-			Method:          m.Method,
-			Finality:        m.Finality,
-			Overall:         m.Overall,
-			ErrorRate:       m.ErrorRate,
-			RespLatency:     m.RespLatency,
-			TotalRequests:   m.TotalRequests,
-			ThrottledRate:   m.ThrottledRate,
-			BlockHeadLag:    m.BlockHeadLag,
-			FinalizationLag: m.FinalizationLag,
-			Misbehaviors:    m.Misbehaviors,
-		})
-	}
-	return rc
+// routingConfigFromCommon projects the first-class `routing:` block into
+// the translator's widened view. Only `scoreLatencyQuantile` is carried —
+// `scoreMultipliers` are attached to upstreams at runtime as
+// `u.scoreMultipliers`, so the translator never has to materialize them.
+func routingConfigFromCommon(r *common.UpstreamRoutingConfig) *routingConfig {
+	return &routingConfig{ScoreLatencyQuantile: r.ScoreLatencyQuantile}
 }
 
 func clearLegacyStashes(prj *common.ProjectConfig) {
 	prj.LegacyProject = nil
-	for _, u := range prj.Upstreams {
-		if u != nil {
-			u.LegacyRouting = nil
-		}
-	}
-	if prj.UpstreamDefaults != nil {
-		prj.UpstreamDefaults.LegacyRouting = nil
-	}
+	// NOTE: `u.Routing` (scoreMultipliers / scoreLatencyQuantile) is NOT a
+	// stash — it's a first-class field that must survive to runtime, so we
+	// leave it untouched here.
 	for _, n := range prj.Networks {
 		if n != nil && n.SelectionPolicy != nil {
 			n.SelectionPolicy.LegacySelectionPolicy = nil

@@ -47,6 +47,14 @@ func WithEvmStatePoller(evmStatePoller EvmStatePoller) func(*FakeUpstream) {
 	}
 }
 
+// WithTags sets the upstream's config tags (used by consensus
+// requiredParticipants quotas, selection-policy tag filters, etc.).
+func WithTags(tags ...string) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.config.Tags = tags
+	}
+}
+
 func (u *FakeUpstream) Id() string {
 	return u.id
 }

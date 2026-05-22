@@ -42,7 +42,7 @@ projects:
                 .removeByErrorRate(maxErrorRate)
                 .removeByLag({ blockHead: maxBlockHeadLag })
                 .preferGroup('default', { minHealthy, fallback: 'fallback' })
-                .sortByScore(BALANCED)
+                .sortByScore(PREFER_FASTEST)
                 .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
                 .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 });
             }

@@ -136,6 +136,60 @@ const _ctxFieldsTyped: SelectionPolicyEvalFunction = (upstreams, ctx) => {
   return upstreams.sortByScore(PREFER_FASTEST).stickyPrimary();
 };
 
+/* ─────────────── 5b. sortByScore base + multiplier modes ──────────────── */
+
+// `base` is optional — defaults to PREFER_FASTEST.
+const _bareSort: SelectionPolicyEvalFunction = (upstreams) =>
+  upstreams.sortByScore();
+
+// merge / override / off modes + latencyQuantile all type-check.
+const _multiplierModes: SelectionPolicyEvalFunction = (upstreams) =>
+  upstreams
+    .sortByScore(PREFER_FASTEST, { multipliers: "merge" })
+    .sortByScore(PREFER_FRESHEST, { multipliers: "override", latencyQuantile: "p95" })
+    .sortByScore({ errorRate: 8 }, { multipliers: "off" });
+
+const _badMultiplierMode: SelectionPolicyEvalFunction = (upstreams) =>
+  // @ts-expect-error — "sometimes" is not a valid multipliers mode
+  upstreams.sortByScore(PREFER_FASTEST, { multipliers: "sometimes" });
+
+// `u.scoreMultipliers` is readable and typed (overall + metric weights).
+const _readMultipliers: SelectionPolicyEvalFunction = (upstreams) =>
+  upstreams.sortByScore((u) => {
+    const _overall: number | undefined = u.scoreMultipliers?.overall;
+    const _err: number | undefined = u.scoreMultipliers?.errorRate;
+    return u.scoreMultipliers ?? PREFER_FASTEST;
+  });
+
+/* ─────────────── 5c. Per-upstream routing.scoreMultipliers config ──────── */
+
+const _scoreMultipliersConfig = createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          endpoint: "alchemy://x",
+          // Object-of-matchers list form: per-method + a catch-all.
+          routing: {
+            scoreMultipliers: [
+              { network: "evm:1", method: "eth_getLogs", respLatency: 25 },
+              { method: "*", overall: 1.5 },
+            ],
+            scoreLatencyQuantile: 0.9,
+          },
+        },
+        {
+          endpoint: "drpc://x",
+          tags: ["tier:fallback"],
+          routing: { scoreMultipliers: [{ errorRate: 12, overall: 0.5 }] },
+        },
+      ],
+      networks: [{ architecture: "evm", evm: { chainId: 1 } }],
+    },
+  ],
+});
+
 /* ───────────────────────── 6. Upstream helpers + metrics ──────────────── */
 
 const _upstreamHelpers: SelectionPolicyEvalFunction = (upstreams) =>

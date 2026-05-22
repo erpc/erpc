@@ -117,7 +117,7 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string) Ups
 //
 // Annotations is pre-allocated (non-nil empty array) so stdlib steps
 // that `u.annotations.push(...)` don't trip on undefined.
-func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics) sobek.Value {
+func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics, evalCtx EvalContext) sobek.Value {
 	arr := vm.NewArray()
 	for i, u := range ups {
 		obj := vm.NewObject()
@@ -214,10 +214,105 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		})
 
 		_ = obj.Set("metrics", mObj)
+
+		// scoreMultipliers — per-upstream weight overrides resolved for
+		// THIS tick's (network, method, finality). Attached only when an
+		// entry matches and carries at least one weight; `sortByScore`
+		// reads it (`u.scoreMultipliers`) and merges it over the base
+		// weights. Absent when the upstream has no `routing.scoreMultipliers`
+		// or none match — `sortByScore` then uses the base weights alone.
+		if cfg := u.Config(); cfg != nil && cfg.Routing != nil {
+			if mul := resolveScoreMultipliers(cfg.Routing, evalCtx.Network, evalCtx.Method, evalCtx.Finality); len(mul) > 0 {
+				smObj := vm.NewObject()
+				for k, v := range mul {
+					_ = smObj.Set(k, v)
+				}
+				_ = obj.Set("scoreMultipliers", smObj)
+			}
+		}
+
 		_ = arr.Set(strconv.Itoa(i), obj)
 	}
 	_ = arr.Set("length", vm.ToValue(len(ups)))
 	return arr
+}
+
+// resolveScoreMultipliers selects the first `routing.scoreMultipliers`
+// entry whose matchers fit the current (network, method, finality) and
+// returns its weights as a flat map keyed by the JS-side metric names
+// (errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag,
+// misbehaviors) plus `overall`. Only fields the operator actually set are
+// included, so `sortByScore` can distinguish "unset → inherit base" from
+// "explicitly zero → drop this metric".
+//
+// Matcher semantics — all three must match; first matching entry wins:
+//   - network / method: glob via common.WildcardMatch; empty or "*" == any.
+//     A per-method entry only takes effect when the policy runs per-method
+//     (evalPerMethod=true); otherwise ctx.method is the "*" wildcard slot
+//     and only empty/"*" method entries apply. Likewise per-finality
+//     entries need evalPerFinality=true.
+//   - finality: membership in the entry's list; empty == any.
+//
+// Returns nil when routing is nil, has no entries, or nothing matches.
+func resolveScoreMultipliers(routing *common.UpstreamRoutingConfig, network, method, finality string) map[string]float64 {
+	if routing == nil || len(routing.ScoreMultipliers) == 0 {
+		return nil
+	}
+	for _, sm := range routing.ScoreMultipliers {
+		if sm == nil {
+			continue
+		}
+		if !scoreMatcherMatches(sm.Network, network) ||
+			!scoreMatcherMatches(sm.Method, method) ||
+			!finalityListMatches(sm.Finality, finality) {
+			continue
+		}
+		out := make(map[string]float64, 7)
+		setIf := func(key string, p *float64) {
+			if p != nil {
+				out[key] = *p
+			}
+		}
+		setIf("overall", sm.Overall)
+		setIf("errorRate", sm.ErrorRate)
+		setIf("respLatency", sm.RespLatency)
+		setIf("throttledRate", sm.ThrottledRate)
+		setIf("blockHeadLag", sm.BlockHeadLag)
+		setIf("finalizationLag", sm.FinalizationLag)
+		setIf("misbehaviors", sm.Misbehaviors)
+		// First matching entry wins even if it carries no weights — that's
+		// a deliberate no-op override that shadows broader entries below it.
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	return nil
+}
+
+// scoreMatcherMatches treats empty / "*" as match-any and otherwise defers
+// to common.WildcardMatch (the same glob engine used for method/network
+// matching elsewhere). A malformed pattern fails closed (no match).
+func scoreMatcherMatches(pattern, value string) bool {
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+	m, err := common.WildcardMatch(pattern, value)
+	return err == nil && m
+}
+
+// finalityListMatches returns true if `finality` is in the entry's list,
+// or the list is empty (match-any).
+func finalityListMatches(list []common.DataFinalityState, finality string) bool {
+	if len(list) == 0 {
+		return true
+	}
+	for _, f := range list {
+		if f.String() == finality {
+			return true
+		}
+	}
+	return false
 }
 
 // StepEntry is one row in the per-tick step-trail the stdlib pushes
@@ -348,7 +443,7 @@ func runEval(
 		}
 	}
 
-	upsValue := buildJSUpstreams(vm, ups, metrics)
+	upsValue := buildJSUpstreams(vm, ups, metrics, evalCtx)
 	ctxValue := vm.ToValue(evalCtx)
 
 	// Per-tick globals consumed by the stdlib (probeExcluded reads the full

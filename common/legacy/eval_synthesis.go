@@ -1,11 +1,8 @@
 package legacy
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/erpc/erpc/common"
 )
 
 // wrapLegacyEvalFunction takes a legacy `selectionPolicy.evalFunction`
@@ -15,43 +12,23 @@ import (
 //
 // Legacy semantics: the upstreams arg passed to the user's eval-function
 // was the ALREADY-SCORED list (the scoring loop ran first; the eval-
-// function filtered/reordered on top). So if the user had per-upstream
-// `scoreMultipliers`, those weights must be applied BEFORE invoking the
-// legacy fn — otherwise translation is silently lossy.
-//
-// When `mulByID` is non-empty the wrapper emits the per-id weights map,
-// calls `.sortByScore(__weightsFn)` first, and passes `__sorted` (not
-// raw upstreams) into the legacy fn. When `mulByID` is empty the legacy
-// fn sees `upstreams` directly — equivalent to default weights, which
-// the new sort doesn't actually need to materialize.
+// function filtered/reordered on top). We reproduce that by sorting with
+// `sortByScore(PREFER_FASTEST)` before invoking the legacy fn. Any
+// per-upstream `routing.scoreMultipliers` are first-class config now, so
+// they are attached to each upstream as `u.scoreMultipliers` at runtime
+// and merged in by `sortByScore` automatically — no static weights map
+// needs to be emitted here.
 //
 // `.probeExcluded()` is appended at the end if the user enabled
 // `resampleExcluded`.
-func wrapLegacyEvalFunction(sp *selectionPolicy, mulByID map[string]scoreWeights, defaultMul scoreWeights) string {
+func wrapLegacyEvalFunction(sp *selectionPolicy, latencyQuantile string) string {
 	var b strings.Builder
 	b.WriteString("(upstreams, ctx) => {\n")
 	b.WriteString("  const __legacyFn = ")
 	b.WriteString(strings.TrimSpace(sp.EvalFunction))
 	b.WriteString(";\n")
-
-	inputVar := "upstreams"
-	if len(mulByID) > 0 {
-		jsonMul, _ := json.Marshal(mulByID)
-		jsonDefault, _ := json.Marshal(defaultMul)
-		b.WriteString("  const __mulById = ")
-		b.WriteString(string(jsonMul))
-		b.WriteString(";\n")
-		b.WriteString("  const __mulDefault = ")
-		b.WriteString(string(jsonDefault))
-		b.WriteString(";\n")
-		b.WriteString("  const __weightsFn = (u) => __mulById[u.id] || __mulDefault;\n")
-		b.WriteString("  const __sorted = upstreams.sortByScore(__weightsFn);\n")
-		inputVar = "__sorted"
-	}
-
-	b.WriteString("  let result = __legacyFn(")
-	b.WriteString(inputVar)
-	b.WriteString(", ctx.method);\n")
+	b.WriteString(fmt.Sprintf("  const __sorted = upstreams.sortByScore(PREFER_FASTEST%s);\n", scoreOpts(latencyQuantile)))
+	b.WriteString("  let result = __legacyFn(__sorted, ctx.method);\n")
 
 	if sp.ResampleExcluded && sp.ResampleInterval > 0 {
 		// .probeExcluded preserves the spirit of legacy resampling.
@@ -66,17 +43,12 @@ func wrapLegacyEvalFunction(sp *selectionPolicy, mulByID map[string]scoreWeights
 }
 
 // synthesizeScoreBasedEval emits a sortByScore-based policy that honors
-// the user's legacy ScoreSwitchHysteresis + ScoreMinSwitchInterval. If
-// any upstream had per-(network/method/finality) `scoreMultipliers`, the
-// weights are emitted as a static map keyed by upstream id and looked up
-// at sort time. The caller pre-collects `mulByID` so the same map can be
-// reused by the eval-function-wrapping branch.
-func synthesizeScoreBasedEval(
-	prj WidenedProject,
-	mulByID map[string]scoreWeights,
-	defaultMul scoreWeights,
-	nw WidenedNetwork,
-) string {
+// the user's legacy ScoreSwitchHysteresis + ScoreMinSwitchInterval and
+// (when set) scoreLatencyQuantile. Per-upstream `scoreMultipliers` are
+// first-class config and flow through `u.scoreMultipliers` at runtime —
+// `sortByScore(PREFER_FASTEST)` merges them automatically — so this
+// synthesizer no longer emits any per-id weights map.
+func synthesizeScoreBasedEval(prj WidenedProject, nw WidenedNetwork, latencyQuantile string) string {
 	hysteresis := prj.ScoreSwitchHysteresis
 	if hysteresis == 0 {
 		hysteresis = 0.10
@@ -88,24 +60,7 @@ func synthesizeScoreBasedEval(
 
 	var b strings.Builder
 	b.WriteString("(upstreams, ctx) => {\n")
-
-	// If any upstream had multipliers, emit a per-id weights map and use
-	// the function form of sortByScore. Otherwise default to PREFER_FASTEST.
-	if len(mulByID) > 0 {
-		jsonMul, _ := json.Marshal(mulByID)
-		jsonDefault, _ := json.Marshal(defaultMul)
-		b.WriteString("  const __mulById = ")
-		b.WriteString(string(jsonMul))
-		b.WriteString(";\n")
-		b.WriteString("  const __mulDefault = ")
-		b.WriteString(string(jsonDefault))
-		b.WriteString(";\n")
-		b.WriteString("  const __weightsFn = (u) => __mulById[u.id] || __mulDefault;\n")
-		b.WriteString("  let result = upstreams.sortByScore(__weightsFn);\n")
-	} else {
-		b.WriteString("  let result = upstreams.sortByScore(PREFER_FASTEST);\n")
-	}
-
+	b.WriteString(fmt.Sprintf("  let result = upstreams.sortByScore(PREFER_FASTEST%s);\n", scoreOpts(latencyQuantile)))
 	b.WriteString(fmt.Sprintf(
 		"  result = result.stickyPrimary({ hysteresis: %v, minSwitchInterval: %s });\n",
 		hysteresis, minSwitch,
@@ -124,68 +79,46 @@ func synthesizeScoreBasedEval(
 	return b.String()
 }
 
-// collectMultipliers walks the per-upstream legacy multipliers and emits
-// a flattened weights map per upstream id. Per-method/per-network
-// granularity is collapsed: we take the first wildcard-matching entry
-// (the legacy resolver did the same when called with the per-tick
-// method, but at synthesis time we don't know the method). Operators
-// who relied on per-method weights should keep their legacy YAML and
-// migrate manually — the warning emits a docs anchor.
-func collectMultipliers(ups []*common.UpstreamConfig, legacyUps []WidenedUpstream) (map[string]scoreWeights, scoreWeights) {
-	out := make(map[string]scoreWeights, len(ups))
-	for i, u := range ups {
-		if u == nil || i >= len(legacyUps) || legacyUps[i].Routing == nil {
-			continue
-		}
-		for _, mul := range legacyUps[i].Routing.ScoreMultipliers {
-			// Take the first wildcard-or-explicit-match entry.
-			out[u.Id] = weightsFromMul(mul)
-			break
-		}
+// scoreOpts renders the `sortByScore` second-argument when a latency
+// quantile override is present, e.g. `, { latencyQuantile: 'p90' }`.
+// Returns "" for the common no-override case so the emitted call stays
+// `sortByScore(PREFER_FASTEST)`.
+func scoreOpts(latencyQuantile string) string {
+	if latencyQuantile == "" {
+		return ""
 	}
-	return out, defaultWeights()
+	return fmt.Sprintf(", { latencyQuantile: '%s' }", latencyQuantile)
 }
 
-// scoreWeights mirrors the JS `ScoreWeights` shape.
-type scoreWeights struct {
-	ErrorRate       float64 `json:"errorRate,omitempty"`
-	RespLatency     float64 `json:"respLatency,omitempty"`
-	ThrottledRate   float64 `json:"throttledRate,omitempty"`
-	BlockHeadLag    float64 `json:"blockHeadLag,omitempty"`
-	FinalizationLag float64 `json:"finalizationLag,omitempty"`
-	Misbehaviors    float64 `json:"misbehaviors,omitempty"`
-}
-
-func weightsFromMul(m *scoreMultiplier) scoreWeights {
-	deref := func(p *float64) float64 {
-		if p == nil {
-			return 0
+// firstLatencyQuantile returns the first non-zero `routing.scoreLatencyQuantile`
+// across the upstreams, mapped to a `pNN` label sortByScore understands.
+// Legacy scoring used a single quantile; per-upstream divergence isn't
+// expressible as one sortByScore opt, so the first wins.
+func firstLatencyQuantile(legacyUps []WidenedUpstream) string {
+	for _, u := range legacyUps {
+		if u.Routing != nil && u.Routing.ScoreLatencyQuantile > 0 {
+			return latencyQuantileLabel(u.Routing.ScoreLatencyQuantile)
 		}
-		return *p
 	}
-	w := scoreWeights{
-		ErrorRate:       deref(m.ErrorRate),
-		RespLatency:     deref(m.RespLatency),
-		ThrottledRate:   deref(m.ThrottledRate),
-		BlockHeadLag:    deref(m.BlockHeadLag),
-		FinalizationLag: deref(m.FinalizationLag),
-		Misbehaviors:    deref(m.Misbehaviors),
-	}
-	if m.Overall != nil && *m.Overall > 0 {
-		// In the new shape, `overall` is a per-upstream multiplier on the
-		// final penalty. We bake it in by scaling each weight; for
-		// `overall > 0` it's a uniform scale, so equivalent to keeping
-		// the relative shape and trusting the sort to be invariant under
-		// monotonic scaling. We skip the scale here and let the new sort
-		// produce the same order.
-	}
-	return w
+	return ""
 }
 
-func defaultWeights() scoreWeights {
-	// Matches the legacy `DefaultScoreMultiplier`.
-	return scoreWeights{
-		ErrorRate: 4, RespLatency: 8, ThrottledRate: 3,
-		BlockHeadLag: 2, FinalizationLag: 1, Misbehaviors: 5,
+// latencyQuantileLabel snaps a 0..1 quantile to the nearest precomputed
+// bucket label. Mirrors the snapping in internal/policy/eval.go's
+// `latencyP`, so the synthesized opt lines up with the runtime metric.
+func latencyQuantileLabel(q float64) string {
+	switch {
+	case q <= 0:
+		return ""
+	case q <= 0.50:
+		return "p50"
+	case q <= 0.70:
+		return "p70"
+	case q <= 0.90:
+		return "p90"
+	case q <= 0.95:
+		return "p95"
+	default:
+		return "p99"
 	}
 }

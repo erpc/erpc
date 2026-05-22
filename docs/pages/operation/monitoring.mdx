@@ -136,7 +136,7 @@ The repo includes ready-made templates. See [erpc/monitoring](https://github.com
 | erpc_selection_eval_duration_seconds               | Histogram | Per-tick eval latency. Labels: project, network, method.                                                                                                                                       |
 | erpc_selection_eval_errors_total                   | Counter   | Eval failures by kind (timeout, throw, invalid_return, fallback_default). Labels: project, network, method, kind.                                                                              |
 | erpc_selection_eligible_upstreams                  | Gauge     | Count of upstreams returned by the most recent tick. Labels: project, network, method.                                                                                                         |
-| erpc_selection_score                               | Gauge     | Per-upstream score from `sortByScore`. Lower = better. Missing for upstreams that bypassed scoring (probeExcluded/forceInclude additions). Labels: project, network, method, upstream.         |
+| erpc_selection_score                               | Gauge     | Per-upstream score from `sortByScore`. Higher = better. Missing for upstreams that bypassed scoring (probeExcluded/forceInclude additions). Labels: project, network, method, upstream.         |
 | erpc_selection_exclusion_total                     | Counter   | Per-leaf-predicate exclusion events. `reason` is a stable slug — `error_rate_above`, `latency_p95_above`, `block_head_lag_above`, `not_<slug>`, `custom`, .... Compound predicates (`any`/`all`/`not`) increment ONE leaf slug per child that actually tripped, not the combinator. Labels: project, network, method, upstream, reason. |
 | erpc_selection_excluded_seconds                    | Gauge     | Wall-clock seconds the upstream has been continuously excluded. `0` when in rotation. Alert on `> 600` for "stuck excluded > 10m". Labels: project, network, method, upstream.                  |
 | erpc_selection_readmit_total                       | Counter   | Times an upstream transitioned excluded → in-rotation (driven by `readmitExcluded` or by no longer tripping `excludeIf`). Labels: project, network, method, upstream.                            |
@@ -224,7 +224,7 @@ Emitted by the [selection policy](/config/projects/selection-policies) engine on
 | Metric | Type | Description |
 |---|---|---|
 | `erpc_selection_position{upstream}` | Gauge | `0` = primary, `1+` = runner-up, `-1` = excluded. |
-| `erpc_selection_score{upstream}` | Gauge | Penalty from `sortByScore`. **Lower = better.** Missing for upstreams added after the scoring step. |
+| `erpc_selection_score{upstream}` | Gauge | Score from `sortByScore`. **Higher = better.** Missing for upstreams added after the scoring step. |
 | `erpc_selection_exclusion_total{upstream,reason}` | Counter | One increment **per leaf** predicate that tripped (`error_rate_above`, `latency_p95_above`, `block_head_lag_above`, `not_<slug>`, `custom`, …). Compound predicates (`any`/`all`/`not`) attribute to leaves, not the combinator. |
 | `erpc_selection_excluded_seconds{upstream}` | Gauge | Time stuck excluded (`0` in rotation). Alert on `> 600` for "stuck > 10 min". |
 | `erpc_selection_readmit_total{upstream}` | Counter | Excluded → in-rotation transitions. |

@@ -107,31 +107,28 @@ func TestTranslator_E2E_ScoreBasedOnly(t *testing.T) {
 }
 
 // --------------------------------------------------------------------
-// Cell (NO eval × YES multipliers)
+// scoreLatencyQuantile (the one surviving routing hint the translator
+// folds in) → sortByScore({ latencyQuantile }). The synthesized policy
+// must compile and run, ranking the faster upstream first.
 //
-// `scoreMultipliers` shifts the per-upstream weights. We give rpc1 high
-// error-rate weight so a small error-rate gap suffices to swing the
-// order. Without the multipliers, the gap wouldn't matter under PREFER_FASTEST.
+// (Per-upstream `scoreMultipliers` are no longer a translator concern —
+// they're first-class config attached at runtime; see the first-class
+// runtime tests in stdlib_test.go.)
 // --------------------------------------------------------------------
-func TestTranslator_E2E_ScoreMultipliersOnly(t *testing.T) {
+func TestTranslator_E2E_ScoreLatencyQuantile(t *testing.T) {
 	upCfgs := []*common.UpstreamConfig{{Id: "fast"}, {Id: "slow"}}
 	legacyUps := []legacy.WidenedUpstream{
-		// `fast` upstream — heavy latency penalty (it's expected to be fast).
-		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{{
-			Network: "*", Method: "*",
-			ErrorRate: 4, RespLatency: 20,
-		}}, 0),
-		// `slow` upstream — light latency penalty, heavy error penalty.
-		legacy.WidenedUpstreamForTest([]legacy.ScoreMultiplierSnapshot{{
-			Network: "*", Method: "*",
-			ErrorRate: 4, RespLatency: 2,
-		}}, 0),
+		legacy.WidenedUpstreamForTest(nil, 0.95), // scoreLatencyQuantile=0.95 → p95
+		legacy.WidenedUpstreamForTest(nil, 0.95),
 	}
 	ups := mkUps("fast", "slow")
 
-	engine, tracker, _, cancel := runTranslatedPolicy(t, legacy.WidenedProject{}, upCfgs, legacyUps, []legacy.WidenedNetwork{{}}, ups)
+	engine, tracker, cfg, cancel := runTranslatedPolicy(t, legacy.WidenedProject{}, upCfgs, legacyUps, []legacy.WidenedNetwork{{}}, ups)
 	defer cancel()
 	defer engine.Stop()
+
+	require.Contains(t, cfg.EvalFunc, "latencyQuantile: 'p95'",
+		"scoreLatencyQuantile must fold into a sortByScore latencyQuantile opt")
 
 	// Both upstreams clean, but `fast` is faster.
 	for i := 0; i < 100; i++ {
@@ -146,7 +143,7 @@ func TestTranslator_E2E_ScoreMultipliersOnly(t *testing.T) {
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"fast", "slow"}, got,
-		"per-upstream multipliers: latency-weighted sort should put `fast` first")
+		"p95-weighted score should put the faster upstream first")
 }
 
 // --------------------------------------------------------------------

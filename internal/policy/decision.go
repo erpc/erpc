@@ -44,7 +44,7 @@ type DecisionOutput struct {
 	Excluded []ExcludedUpstream
 
 	// Scores[upstreamID] is the per-upstream score the JS attached
-	// during `sortByScore(...)`. Lower = better. Missing for upstreams
+	// during `sortByScore(...)`. Higher = better. Missing for upstreams
 	// added after the scoring step (probeExcluded / forceInclude) and
 	// for policies without a sortByScore step. Carried per-decision so
 	// historical ticks in the diagnostic ring still answer "what did

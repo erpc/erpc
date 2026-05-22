@@ -18,9 +18,10 @@ import (
 // Only the canonical fields (id, vendor, tags) are tracked; legacy
 // group / cohort fields are gone and tests must use tags directly.
 type fakeUpstream struct {
-	id     string
-	vendor string
-	tags   []string
+	id      string
+	vendor  string
+	tags    []string
+	routing *common.UpstreamRoutingConfig
 }
 
 func (f *fakeUpstream) Id() string         { return f.id }
@@ -30,7 +31,7 @@ func (f *fakeUpstream) NetworkLabel() string {
 	return "evm:1"
 }
 func (f *fakeUpstream) Config() *common.UpstreamConfig {
-	return &common.UpstreamConfig{Id: f.id, Tags: f.tags}
+	return &common.UpstreamConfig{Id: f.id, Tags: f.tags, Routing: f.routing}
 }
 func (f *fakeUpstream) Logger() *zerolog.Logger { l := zerolog.Nop(); return &l }
 func (f *fakeUpstream) Vendor() common.Vendor   { return nil }
@@ -82,6 +83,23 @@ func mkUpsWithTags(specs []struct {
 	return out
 }
 
+// mkUpsWithScoreMultipliers builds upstreams (order preserved) where each
+// id in `mults` gets a single match-all `routing.scoreMultipliers` entry.
+// ids absent from `mults` carry no routing config.
+func mkUpsWithScoreMultipliers(order []string, mults map[string]*common.ScoreMultiplierConfig) []common.Upstream {
+	out := make([]common.Upstream, len(order))
+	for i, id := range order {
+		f := &fakeUpstream{id: id, vendor: "v" + id, tags: []string{"tier:main"}}
+		if m := mults[id]; m != nil {
+			f.routing = &common.UpstreamRoutingConfig{ScoreMultipliers: []*common.ScoreMultiplierConfig{m}}
+		}
+		out[i] = f
+	}
+	return out
+}
+
+func f64(v float64) *float64 { return &v }
+
 func newTestEngine(t *testing.T, eval string) (*policy.Engine, []common.Upstream, *health.Tracker, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -103,6 +121,102 @@ func ids(ups []common.Upstream) []string {
 		out[i] = u.Id()
 	}
 	return out
+}
+
+// recordEqual records `n` identical successful requests of `dur` for each
+// upstream — used to give a deterministic, equal metric baseline so a
+// test isolates the effect of scoreMultipliers.
+func recordEqual(tracker *health.Tracker, ups []common.Upstream, n int, dur time.Duration) {
+	for _, u := range ups {
+		for i := 0; i < n; i++ {
+			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamDuration(u, "*", dur, true, "none", common.DataFinalityStateUnknown, "n/a")
+		}
+	}
+}
+
+// TestStdlib_ScoreMultipliers_OverallBoost: with the default 'merge' mode,
+// a per-upstream `overall` is a pure preference dial. `a` and `b` have
+// identical metrics, so the alphabetical tiebreak would put `a` first;
+// `b`'s `overall: 5` must lift it above `a`.
+func TestStdlib_ScoreMultipliers_OverallBoost(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsWithScoreMultipliers([]string{"a", "b"}, map[string]*common.ScoreMultiplierConfig{
+		"b": {Overall: f64(5)},
+	})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	recordEqual(tracker, ups, 50, 20*time.Millisecond)
+	policy.TickForTest(engine, "evm:1", "*")
+
+	require.Equal(t, []string{"b", "a"}, ids(engine.GetOrdered("evm:1", "*", "*")),
+		"overall:5 on `b` (merge mode) must lift it above the otherwise-equal `a`")
+}
+
+// TestStdlib_ScoreMultipliers_OffIgnoresConfig: identical setup, but
+// `multipliers: 'off'` makes sortByScore ignore `u.scoreMultipliers`, so
+// `b`'s boost is dropped and the alphabetical tiebreak wins → `a` first.
+func TestStdlib_ScoreMultipliers_OffIgnoresConfig(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST, { multipliers: 'off' })`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsWithScoreMultipliers([]string{"a", "b"}, map[string]*common.ScoreMultiplierConfig{
+		"b": {Overall: f64(5)},
+	})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	recordEqual(tracker, ups, 50, 20*time.Millisecond)
+	policy.TickForTest(engine, "evm:1", "*")
+
+	require.Equal(t, []string{"a", "b"}, ids(engine.GetOrdered("evm:1", "*", "*")),
+		"multipliers:'off' must ignore u.scoreMultipliers (boost dropped, alphabetical wins)")
+}
+
+// TestStdlib_ScoreMultipliers_OverrideMode: in 'override' mode a configured
+// upstream ranks by ITS weights only. `a` is error-prone but fast; its
+// override scores on latency alone (no errorRate weight), so its errors are
+// ignored and it outranks the clean-but-slower `b`. Under the base preset
+// (or 'merge') `a`'s errors would sink it below `b`.
+func TestStdlib_ScoreMultipliers_OverrideMode(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST, { multipliers: 'override' })`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUpsWithScoreMultipliers([]string{"a", "b"}, map[string]*common.ScoreMultiplierConfig{
+		"a": {RespLatency: f64(15)}, // latency only — errorRate weight intentionally absent
+	})
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	// `a`: fast (10ms) but 50% errors. `b`: clean but slower (80ms).
+	for i := 0; i < 50; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	for i := 0; i < 50; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamDuration(ups[1], "*", 80*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	policy.TickForTest(engine, "evm:1", "*")
+
+	require.Equal(t, []string{"a", "b"}, ids(engine.GetOrdered("evm:1", "*", "*")),
+		"override: `a` ranks on latency alone, ignoring its errors, so it beats the slower `b`")
 }
 
 // TestStdlib_PreferTagFallback validates the most-used default-policy
@@ -150,9 +264,9 @@ func TestStdlib_RotateBy_RoundRobin(t *testing.T) {
 	require.Len(t, seen, 3, "all three upstreams should rotate into primary")
 }
 
-// TestStdlib_SortByScore_BalancedPenalizesErrors verifies the PREFER_FASTEST preset
+// TestStdlib_SortByScore_PenalizesErrors verifies the PREFER_FASTEST preset
 // puts the high-error upstream behind the clean one.
-func TestStdlib_SortByScore_BalancedPenalizesErrors(t *testing.T) {
+func TestStdlib_SortByScore_PenalizesErrors(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)`
 	engine, _, tracker, cancel := newTestEngine(t, eval)
 	defer cancel()
