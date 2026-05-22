@@ -3,6 +3,7 @@ package common
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -551,6 +552,45 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 	if p.SetTimeout == 0 {
 		return fmt.Errorf("database.*.connector.postgresql.setTimeout is required")
 	}
+
+	if p.IAMAuth != nil && p.IAMAuth.Enabled {
+		if p.IAMAuth.Endpoint == "" {
+			return fmt.Errorf("postgresql.iamAuth.endpoint could not be derived from connectionUri; set it explicitly as host:port")
+		}
+		if !strings.Contains(p.IAMAuth.Endpoint, ":") {
+			return fmt.Errorf("postgresql.iamAuth.endpoint must include a port (host:port)")
+		}
+		if p.IAMAuth.DBUser == "" {
+			return fmt.Errorf("postgresql.iamAuth.dbUser could not be derived from connectionUri; set it explicitly or include a user in connectionUri")
+		}
+		if parsed, err := url.Parse(p.ConnectionUri); err == nil {
+			// Reject static password alongside IAM auth.
+			if parsed.User != nil {
+				if pw, hasPw := parsed.User.Password(); hasPw && pw != "" {
+					return fmt.Errorf("postgresql.iamAuth: cannot combine IAM auth with a static password in connectionUri (got password for user %q)", parsed.User.Username())
+				}
+			}
+			// Reject dbUser that disagrees with the URI user — rdsutils signs for
+			// DBUser while pgx connects as the URI user, causing a silent auth mismatch.
+			if parsed.User != nil {
+				if uriUser := parsed.User.Username(); uriUser != "" && p.IAMAuth.DBUser != uriUser {
+					return fmt.Errorf("postgresql.iamAuth.dbUser %q does not match the user in connectionUri %q; they must be identical", p.IAMAuth.DBUser, uriUser)
+				}
+			}
+			// Require a TLS-enforcing sslmode; checking for sslmode= presence alone
+			// would let sslmode=disable through.
+			sslmode := parsed.Query().Get("sslmode")
+			if !slices.Contains([]string{"require", "verify-ca", "verify-full"}, sslmode) {
+				return fmt.Errorf("postgresql.iamAuth requires SSL; sslmode must be require, verify-ca, or verify-full (got %q; SetDefaults appends sslmode=require automatically)", sslmode)
+			}
+		}
+		if p.IAMAuth.Auth != nil {
+			if !slices.Contains([]string{"file", "env", "secret"}, p.IAMAuth.Auth.Mode) {
+				return fmt.Errorf("postgresql.iamAuth.auth.mode %q is invalid; must be file, env, or secret", p.IAMAuth.Auth.Mode)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -563,6 +603,30 @@ func (c *RedisConnectorConfig) Validate() error {
 	// Enforce supported schemes.
 	if !strings.HasPrefix(uri, "rediss://") && !strings.HasPrefix(uri, "redis://") {
 		return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
+	}
+
+	if c.IAMAuth != nil && c.IAMAuth.Enabled {
+		if c.IAMAuth.CacheName == "" {
+			return fmt.Errorf("redis.iamAuth.cacheName is required when iamAuth.enabled is true")
+		}
+		if c.IAMAuth.UserID == "" {
+			return fmt.Errorf("redis.iamAuth.userID is required when iamAuth.enabled is true")
+		}
+		// IAM auth requires TLS; SetDefaults promotes addr to rediss:// automatically.
+		if !strings.HasPrefix(uri, "rediss://") {
+			return fmt.Errorf("redis.iamAuth requires in-transit TLS: URI must use 'rediss://' scheme (set tls.enabled: true with addr, or use a rediss:// URI)")
+		}
+		// Reject static password alongside IAM auth.
+		if parsed, perr := url.Parse(uri); perr == nil && parsed.User != nil {
+			if pw, hasPw := parsed.User.Password(); hasPw && pw != "" {
+				return fmt.Errorf("redis.iamAuth: cannot combine IAM auth with a static password (got password for user %q)", parsed.User.Username())
+			}
+		}
+		if c.IAMAuth.Auth != nil {
+			if !slices.Contains([]string{"file", "env", "secret"}, c.IAMAuth.Auth.Mode) {
+				return fmt.Errorf("redis.iamAuth.auth.mode %q is invalid; must be file, env, or secret", c.IAMAuth.Auth.Mode)
+			}
+		}
 	}
 
 	// Validate lock retry interval
