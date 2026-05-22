@@ -335,6 +335,13 @@ type NormalizedRequest struct {
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
+	// escalatedToFallbacks marks whether this request has already invoked the
+	// per-request fallback escape hatch (Network.Forward's inner loop appends
+	// cordoned fallback-group upstreams when the primary set is exhausted with
+	// retryable errors). Prevents escalation loops across failsafe retries
+	// and re-entries.
+	escalatedToFallbacks atomic.Bool
+
 	lastValidResponse atomic.Pointer[NormalizedResponse]
 	lastUpstream      atomic.Value
 	evmBlockRef       atomic.Value
@@ -1265,6 +1272,25 @@ func (r *NormalizedRequest) Upstreams() []Upstream {
 	out := make([]Upstream, len(r.upstreamList))
 	copy(out, r.upstreamList)
 	return out
+}
+
+// HasEscalatedToFallbacks reports whether the per-request fallback escape
+// hatch has already fired for this request. Used by Network.Forward's outer
+// loop to ensure the escape is attempted at most once per request.
+func (r *NormalizedRequest) HasEscalatedToFallbacks() bool {
+	if r == nil {
+		return false
+	}
+	return r.escalatedToFallbacks.Load()
+}
+
+// MarkEscalatedToFallbacks records that this request has invoked the
+// fallback escape hatch.
+func (r *NormalizedRequest) MarkEscalatedToFallbacks() {
+	if r == nil {
+		return
+	}
+	r.escalatedToFallbacks.Store(true)
 }
 
 // UserId returns the user ID from the user object, or "n/a" if not available
