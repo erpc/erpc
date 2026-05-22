@@ -110,6 +110,12 @@ type RemoteDataCache[T any] struct {
 	// loggerName is included in async-refresh log lines so messages
 	// identify which vendor is refreshing.
 	loggerName string
+
+	// refreshTimeout is the deadline applied to each background refresh
+	// goroutine. Defaults to 90s; vendors with longer sweeps (e.g.
+	// QuickNode Chain Prism probing ~137 URLs) should raise it via
+	// WithRefreshTimeout to avoid hitting the cap mid-sweep.
+	refreshTimeout time.Duration
 }
 
 type remoteCacheSnapshot[T any] struct {
@@ -122,9 +128,17 @@ type remoteCacheSnapshot[T any] struct {
 // without grepping the file path.
 func NewRemoteDataCache[T any](loggerName string) *RemoteDataCache[T] {
 	return &RemoteDataCache[T]{
-		inflight:   make(map[string]struct{}),
-		loggerName: loggerName,
+		inflight:       make(map[string]struct{}),
+		loggerName:     loggerName,
+		refreshTimeout: 90 * time.Second,
 	}
+}
+
+// WithRefreshTimeout overrides the per-refresh goroutine deadline.
+// Returns the receiver for chaining: NewRemoteDataCache[T]("x").WithRefreshTimeout(3*time.Minute).
+func (c *RemoteDataCache[T]) WithRefreshTimeout(d time.Duration) *RemoteDataCache[T] {
+	c.refreshTimeout = d
+	return c
 }
 
 // Lookup returns (value-for-key, fresh) for the current snapshot.
@@ -202,7 +216,7 @@ func (c *RemoteDataCache[T]) TriggerAsyncRefresh(
 			}
 		}()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), c.refreshTimeout)
 		defer cancel()
 
 		val, err := fetcher(ctx)
@@ -238,6 +252,28 @@ func (c *RemoteDataCache[T]) TriggerAsyncRefresh(
 	}()
 }
 
+// WaitForKey blocks until the cache has a populated entry for cacheKey, or
+// timeout elapses. Returns true when the value is available. Intended for
+// test synchronisation: call the vendor method that triggers an async
+// refresh, then call WaitForKey before asserting results.
+func (c *RemoteDataCache[T]) WaitForKey(cacheKey string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		c.refreshMu.Lock()
+		_, busy := c.inflight[cacheKey]
+		c.refreshMu.Unlock()
+		// Both conditions are required: snapshot.Store happens before the
+		// defer removes the key from inflight, so Has can be true while busy
+		// is still true. Waiting for !busy ensures the goroutine has fully
+		// committed before we declare the key ready.
+		if !busy && c.Has(cacheKey) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return c.Has(cacheKey)
+}
+
 // EnsureFresh is the canonical hot-path call. It returns the cached value
 // for cacheKey, plus whether the value should be considered usable. If
 // the value is missing or stale, an async refresh is kicked off.
@@ -263,5 +299,11 @@ func (c *RemoteDataCache[T]) EnsureFresh(
 		var zero T
 		return zero, false
 	}
+	// Re-lookup after Has confirms the key is present: the async refresh may
+	// have completed between the original Lookup and the Has check, storing a
+	// populated snapshot. Without this second Lookup we would return the
+	// zero/nil val from the original cold-start Lookup and callers would see
+	// ok=true with no data — a false-negative cold start.
+	val, _ = c.Lookup(cacheKey, recheckInterval)
 	return val, true
 }
