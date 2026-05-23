@@ -1243,17 +1243,20 @@ export interface SelectionPolicyConfig {
    */
   evalScope?: EvalScope | "network" | "network-method" | "network-finality" | "network-method-finality";
   /**
-   * EvalPerMethod is DEPRECATED — use EvalScope instead. When both
-   * EvalPerMethod and EvalScope are set, EvalScope wins and a warning
-   * is emitted at config-load. Kept for back-compat with existing
-   * configs; mapped into EvalScope in SetDefaults.
+   * EvalPerMethod is DEPRECATED — use EvalScope instead.
+   * Pointer-typed so the config layer can distinguish "operator
+   * didn't set this" (nil) from "operator explicitly set false"
+   * (deref to false). Translated into EvalScope by SetDefaults and
+   * then niled out — the engine + downstream code only ever consults
+   * EvalScope, never these legacy fields. A zerolog warning is
+   * emitted at translation time pointing the operator at evalScope.
    */
-  evalPerMethod?: boolean;
+  evalPerMethod?: boolean | undefined;
   /**
    * EvalPerFinality is DEPRECATED — use EvalScope instead. Same
-   * mapping rules as EvalPerMethod.
+   * pointer semantics + translation behavior as EvalPerMethod.
    */
-  evalPerFinality?: boolean;
+  evalPerFinality?: boolean | undefined;
   evalTimeout?: Duration;
   /**
    * EvalFunc is the per-tick evaluation function. In YAML it's a JS

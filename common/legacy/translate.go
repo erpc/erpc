@@ -92,13 +92,18 @@ func Translate(
 		nwCfg.SelectionPolicy.EvalFunc = evalSrc
 
 		// Honor legacy evalInterval/evalPerMethod if the user wrote a
-		// legacy selectionPolicy block.
+		// legacy selectionPolicy block. The bool is translated into
+		// `EvalScope` here (the modern source of truth); SetDefaults
+		// will then nil the bool out. We intentionally promote the
+		// legacy `evalPerMethod` directly to `network-method` —
+		// finality wasn't a knob in the legacy schema, so there's no
+		// `network-method-finality` upgrade path from this surface.
 		if legacyNw.SelectionPolicy != nil {
 			if legacyNw.SelectionPolicy.EvalInterval > 0 && nwCfg.SelectionPolicy.EvalInterval == 0 {
 				nwCfg.SelectionPolicy.EvalInterval = legacyNw.SelectionPolicy.EvalInterval
 			}
-			if legacyNw.SelectionPolicy.EvalPerMethod {
-				nwCfg.SelectionPolicy.EvalPerMethod = true
+			if legacyNw.SelectionPolicy.EvalPerMethod && nwCfg.SelectionPolicy.EvalScope == "" {
+				nwCfg.SelectionPolicy.EvalScope = common.EvalScopeNetworkMethod
 			}
 		}
 	}
@@ -271,6 +276,19 @@ func widenedNetworksFromConfig(nws []*common.NetworkConfig) []WidenedNetwork {
 			continue
 		}
 		lp := n.SelectionPolicy.LegacySelectionPolicy
+		// Pre-translation snapshot of evalPerMethod. By the time
+		// SetDefaults has run, the legacy *bool is niled and the
+		// canonical EvalScope holds the decision — but this widener
+		// runs at the legacy-translation pass, before SetDefaults
+		// collapses the channels. Fall back to EvalScope for the case
+		// where the operator wrote the modern key alongside legacy.
+		var perMethod bool
+		if n.SelectionPolicy.EvalPerMethod != nil {
+			perMethod = *n.SelectionPolicy.EvalPerMethod
+		} else if n.SelectionPolicy.EvalScope == common.EvalScopeNetworkMethod ||
+			n.SelectionPolicy.EvalScope == common.EvalScopeNetworkMethodFinality {
+			perMethod = true
+		}
 		out[i] = WidenedNetwork{
 			SelectionPolicy: &selectionPolicy{
 				// EvalInterval / EvalPerMethod live on the canonical
@@ -278,7 +296,7 @@ func widenedNetworksFromConfig(nws []*common.NetworkConfig) []WidenedNetwork {
 				// when the user wrote a legacy block AND no modern eval.
 				// Copy them over so synthesized eval keeps the cadence.
 				EvalInterval:     n.SelectionPolicy.EvalInterval,
-				EvalPerMethod:    n.SelectionPolicy.EvalPerMethod,
+				EvalPerMethod:    perMethod,
 				EvalFunction:     lp.EvalFunction,
 				ResampleExcluded: lp.ResampleExcluded,
 				ResampleInterval: lp.ResampleInterval,

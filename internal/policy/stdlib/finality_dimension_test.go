@@ -49,7 +49,7 @@ func TestStdlib_EvalPerFinality_SeparateSlots(t *testing.T) {
 		EvalInterval:    common.Duration(0), // frozen — drive manually
 		EvalTimeout:     common.Duration(50 * time.Millisecond),
 		EvalFunc:        eval,
-		EvalPerFinality: true,
+		EvalScope:    common.EvalScopeNetworkFinality,
 	}
 	require.NoError(t, cfg.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
@@ -94,7 +94,7 @@ func TestStdlib_EvalPerFinality_SeparateSlots(t *testing.T) {
 		EvalInterval:    common.Duration(10 * time.Millisecond),
 		EvalTimeout:     common.Duration(100 * time.Millisecond),
 		EvalFunc:        eval,
-		EvalPerFinality: true,
+		EvalScope:    common.EvalScopeNetworkFinality,
 	}
 	require.NoError(t, cfg2.SetDefaults())
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg2))

@@ -2229,14 +2229,18 @@ type SelectionPolicyConfig struct {
 	// Tighter scopes let predicates like `errorRateAbove(0.5)` see
 	// genuinely (method, finality)-specific health.
 	EvalScope EvalScope `yaml:"evalScope,omitempty" json:"evalScope" tstype:"EvalScope | \"network\" | \"network-method\" | \"network-finality\" | \"network-method-finality\""`
-	// EvalPerMethod is DEPRECATED — use EvalScope instead. When both
-	// EvalPerMethod and EvalScope are set, EvalScope wins and a warning
-	// is emitted at config-load. Kept for back-compat with existing
-	// configs; mapped into EvalScope in SetDefaults.
-	EvalPerMethod bool `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	// EvalPerMethod is DEPRECATED — use EvalScope instead.
+	//
+	// Pointer-typed so the config layer can distinguish "operator
+	// didn't set this" (nil) from "operator explicitly set false"
+	// (deref to false). Translated into EvalScope by SetDefaults and
+	// then niled out — the engine + downstream code only ever consults
+	// EvalScope, never these legacy fields. A zerolog warning is
+	// emitted at translation time pointing the operator at evalScope.
+	EvalPerMethod *bool `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty" tstype:"boolean | undefined"`
 	// EvalPerFinality is DEPRECATED — use EvalScope instead. Same
-	// mapping rules as EvalPerMethod.
-	EvalPerFinality bool     `yaml:"evalPerFinality,omitempty" json:"evalPerFinality"`
+	// pointer semantics + translation behavior as EvalPerMethod.
+	EvalPerFinality *bool    `yaml:"evalPerFinality,omitempty" json:"evalPerFinality,omitempty" tstype:"boolean | undefined"`
 	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
 	// EvalFunc is the per-tick evaluation function. In YAML it's a JS
 	// source string; in TS configs it's a real arrow function compiled

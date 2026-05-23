@@ -407,9 +407,10 @@ func TestNetworkSkip(t *testing.T) {
 		// the eval chain. This test doesn't need probe behavior, so the
 		// chain is just the filter.)
 		policy := &common.SelectionPolicyConfig{
-			EvalInterval:  common.Duration(50 * time.Millisecond),
-			EvalPerMethod: false,
-			EvalFunc:          `(upstreams, ctx) => upstreams.filter(u => u.id === 'rpc2')`,
+			EvalInterval: common.Duration(50 * time.Millisecond),
+			// EvalScope defaults to `network` (single wildcard slot) —
+			// no method/finality scoping needed for this test.
+			EvalFunc: `(upstreams, ctx) => upstreams.filter(u => u.id === 'rpc2')`,
 		}
 
 		network := setupTwoUpstreamNetworkForSkip(t, ctx,

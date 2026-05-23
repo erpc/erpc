@@ -2492,54 +2492,61 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalTimeout == 0 {
 		c.EvalTimeout = Duration(100 * time.Millisecond)
 	}
-	// Resolve EvalScope. Source of truth is the new `evalScope` enum;
-	// the deprecated `evalPerMethod` / `evalPerFinality` bools map into
-	// it when EvalScope is unset, so existing configs keep working.
+	// Resolve EvalScope. The new `evalScope` enum is the single
+	// runtime source of truth — the deprecated `evalPerMethod` /
+	// `evalPerFinality` *bool fields only exist to translate older
+	// configs and emit a deprecation warning. After SetDefaults, both
+	// legacy fields are NILED OUT; engine + downstream code never read
+	// them again. This is the boundary the config layer protects:
+	// legacy lives only here.
 	//
-	// Rules:
-	//   1. Explicit EvalScope wins. If the user ALSO set the legacy
-	//      bools, log a warning and ignore them (EvalScope is the
-	//      stated source of truth).
-	//   2. Legacy bools alone (no EvalScope) map to the matching enum:
-	//        (false, false) → network          (default)
-	//        (true,  false) → network-method
-	//        (false, true ) → network-finality
-	//        (true,  true ) → network-method-finality
-	//   3. Empty everywhere → default to `network`.
+	// Pointer-typed legacy fields let us distinguish three states:
+	//   nil          → operator didn't write the key at all
+	//   *(false)     → operator wrote `evalPerMethod: false` explicitly
+	//   *(true)      → operator wrote `evalPerMethod: true` explicitly
+	// The second case still counts as "deprecated key set" and gets
+	// the same warning, because the operator is touching legacy
+	// surface — they should migrate.
+	legacyMethodSet := c.EvalPerMethod != nil
+	legacyFinalitySet := c.EvalPerFinality != nil
+	legacyMethod := legacyMethodSet && *c.EvalPerMethod
+	legacyFinality := legacyFinalitySet && *c.EvalPerFinality
+
 	if c.EvalScope == "" {
+		// No explicit evalScope — translate from the legacy bools (or
+		// fall back to the default `network`).
 		switch {
-		case c.EvalPerMethod && c.EvalPerFinality:
+		case legacyMethod && legacyFinality:
 			c.EvalScope = EvalScopeNetworkMethodFinality
-		case c.EvalPerMethod:
+		case legacyMethod:
 			c.EvalScope = EvalScopeNetworkMethod
-		case c.EvalPerFinality:
+		case legacyFinality:
 			c.EvalScope = EvalScopeNetworkFinality
 		default:
 			c.EvalScope = EvalScopeNetwork
 		}
-	} else if c.EvalPerMethod || c.EvalPerFinality {
-		// Operator set BOTH — log once at SetDefaults time and let
-		// EvalScope win. We can't use the project's structured logger
-		// from common/, so this is a stderr line; loud enough to catch
-		// on config reload.
-		fmt.Fprintf(os.Stderr,
-			"warning: selectionPolicy.evalScope=%q overrides deprecated "+
-				"evalPerMethod=%v / evalPerFinality=%v — drop the bools\n",
-			c.EvalScope, c.EvalPerMethod, c.EvalPerFinality)
-		c.EvalPerMethod = false
-		c.EvalPerFinality = false
+		if legacyMethodSet || legacyFinalitySet {
+			log.Warn().
+				Bool("evalPerMethod", legacyMethod).
+				Bool("evalPerFinality", legacyFinality).
+				Str("evalScope", string(c.EvalScope)).
+				Msg("selectionPolicy: evalPerMethod / evalPerFinality are deprecated — use `evalScope` (translated automatically; drop the legacy bools)")
+		}
+	} else if legacyMethodSet || legacyFinalitySet {
+		// Operator set BOTH the canonical enum AND a legacy bool — the
+		// enum wins, but tell them loudly so they clean up.
+		log.Warn().
+			Bool("evalPerMethod", legacyMethod).
+			Bool("evalPerFinality", legacyFinality).
+			Str("evalScope", string(c.EvalScope)).
+			Msg("selectionPolicy: evalScope overrides deprecated evalPerMethod / evalPerFinality — drop the legacy bools from your config")
 	}
-	// Reflect the resolved scope back into the bools so any remaining
-	// reader that hasn't migrated still observes a consistent view.
 	switch c.EvalScope {
-	case EvalScopeNetworkMethodFinality:
-		c.EvalPerMethod, c.EvalPerFinality = true, true
-	case EvalScopeNetworkMethod:
-		c.EvalPerMethod, c.EvalPerFinality = true, false
-	case EvalScopeNetworkFinality:
-		c.EvalPerMethod, c.EvalPerFinality = false, true
-	case EvalScopeNetwork:
-		c.EvalPerMethod, c.EvalPerFinality = false, false
+	case EvalScopeNetworkMethodFinality, EvalScopeNetworkMethod, EvalScopeNetworkFinality, EvalScopeNetwork:
+		// Valid; clear the legacy fields so no downstream consumer
+		// can accidentally read stale data.
+		c.EvalPerMethod = nil
+		c.EvalPerFinality = nil
 	default:
 		return fmt.Errorf("selectionPolicy.evalScope=%q: must be one of "+
 			"network / network-method / network-finality / network-method-finality",

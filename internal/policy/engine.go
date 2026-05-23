@@ -71,20 +71,19 @@ type Engine struct {
 }
 
 // slotKey identifies one slot in the engine. The wildcard for an
-// unspecified dimension is `"*"`. Concrete values:
+// unspecified dimension is `"*"`. Which dimensions are wildcarded is
+// driven by `SelectionPolicyConfig.EvalScope`:
 //
-//   - When neither EvalPerMethod nor EvalPerFinality is set: only one
-//     slot exists per network, keyed `("*", "*")`. `GetOrdered` always
-//     returns its cached order regardless of the caller's method or
-//     finality args.
-//   - When EvalPerMethod is on (and EvalPerFinality off): slots are
-//     lazy-created as `(method, "*")` on first request for that
-//     method. The wildcard `("*", "*")` serves cold-start traffic.
-//   - When EvalPerFinality is on (and EvalPerMethod off): slots are
-//     lazy-created as `("*", finality)` on first request.
-//   - When both are on: slots are lazy-created as `(method, finality)`.
-//     The wildcard `("*", "*")` still serves cold-start before any
-//     specific slot has produced a tick.
+//   - `network`                 → only `("*", "*")` per network
+//   - `network-method`          → `(method, "*")` lazy-created per request
+//   - `network-finality`        → `("*", finality)` lazy-created per request
+//   - `network-method-finality` → `(method, finality)` lazy-created per request
+//
+// The `("*", "*")` wildcard always exists per network and serves
+// cold-start traffic before a finer-grained slot has produced its first
+// tick. The legacy `EvalPerMethod` / `EvalPerFinality` config fields
+// are translated into `EvalScope` by `SetDefaults` and never reach the
+// engine — the engine reads `EvalScope` exclusively.
 type slotKey struct {
 	network  string
 	method   string
@@ -218,16 +217,13 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 // is wait-free in the common path.
 //
 // `method` and `finality` are "narrowing" hints — the engine resolves
-// them against the slot map according to the network's
-// `EvalPerMethod` / `EvalPerFinality` config:
+// them against the slot map according to the network's `EvalScope`:
 //
-//   - Neither flag set: only the wildcard `("*", "*")` slot exists;
+//   - `network`                 → only `("*", "*")` slot exists;
 //     `method`/`finality` are ignored.
-//   - `EvalPerMethod=true`: slots are keyed by the method;
-//     `finality` is ignored.
-//   - `EvalPerFinality=true`: slots are keyed by the finality;
-//     `method` is ignored.
-//   - Both: slots are keyed by `(method, finality)`.
+//   - `network-method`          → slots keyed by method; `finality` ignored.
+//   - `network-finality`        → slots keyed by finality; `method` ignored.
+//   - `network-method-finality` → slots keyed by `(method, finality)`.
 //
 // On a cold-start miss (slot just lazy-created, no tick yet) the
 // wildcard slot's cache is returned as a fallback. The returned slice
@@ -322,19 +318,43 @@ func (e *Engine) GetScores(networkID, method, finality string) map[string]float6
 }
 
 // effectiveKey collapses the caller's `(method, finality)` hint to the
-// slot-key shape the network is configured for. Empty / "*" inputs are
-// preserved as wildcards.
+// slot-key shape the network is configured for, per `cfg.EvalScope`.
+// Empty / "*" inputs are preserved as wildcards. A nil cfg or empty
+// scope degrades to the all-wildcard key (`("*", "*")`).
+//
+// The deprecated `EvalPerMethod` / `EvalPerFinality` bools are NEVER
+// consulted here — `SetDefaults` already translated them into
+// `EvalScope` and niled the legacy fields. If the engine were to read
+// them again it would risk seeing the post-translation zero values
+// and silently degrade to the wrong grain.
 func effectiveKey(cfg *common.SelectionPolicyConfig, networkID, method, finality string) slotKey {
 	m, f := "*", "*"
 	if cfg != nil {
-		if cfg.EvalPerMethod && method != "" && method != "*" {
+		perMethod, perFinality := scopeAxes(cfg.EvalScope)
+		if perMethod && method != "" && method != "*" {
 			m = method
 		}
-		if cfg.EvalPerFinality && finality != "" && finality != "*" {
+		if perFinality && finality != "" && finality != "*" {
 			f = finality
 		}
 	}
 	return slotKey{networkID, m, f}
+}
+
+// scopeAxes decomposes the `EvalScope` enum back into the two axis
+// bits the slot-key builder needs. Tracker-grain plumbing will read
+// the same helper once finality lands on the tracker side.
+func scopeAxes(s common.EvalScope) (perMethod, perFinality bool) {
+	switch s {
+	case common.EvalScopeNetworkMethodFinality:
+		return true, true
+	case common.EvalScopeNetworkMethod:
+		return true, false
+	case common.EvalScopeNetworkFinality:
+		return false, true
+	default: // network or empty → all-wildcard
+		return false, false
+	}
 }
 
 // lookupSlot is the shared resolver used by per-slot accessors that

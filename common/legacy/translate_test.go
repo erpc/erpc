@@ -539,8 +539,13 @@ func TestTranslate_LegacyEvalPerMethod_Preserved(t *testing.T) {
 	}}
 	_, err := legacy.Translate(legacy.WidenedProject{}, nil, nil, nws, nwCfgs)
 	require.NoError(t, err)
-	require.True(t, nwCfgs[0].SelectionPolicy.EvalPerMethod,
-		"legacy evalPerMethod must carry over to new-shape EvalPerMethod")
+	// The legacy `evalPerMethod: true` bool now promotes to the
+	// modern `EvalScope: network-method` enum. SetDefaults will later
+	// nil-out the deprecated pointer; here we're observing the
+	// translator's output BEFORE SetDefaults runs, so the enum is the
+	// source of truth.
+	require.Equal(t, common.EvalScopeNetworkMethod, nwCfgs[0].SelectionPolicy.EvalScope,
+		"legacy evalPerMethod must translate into EvalScope=network-method")
 }
 
 // scoreMetricsMode is removed; the translator must surface a warning.

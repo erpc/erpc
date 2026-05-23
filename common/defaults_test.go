@@ -1,13 +1,21 @@
 package common
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func boolPtr(b bool) *bool { return &b }
 
 func TestSetDefaults_NetworkConfig(t *testing.T) {
 	sysDefCfg := NewDefaultNetworkConfig(nil)
@@ -1196,3 +1204,125 @@ func TestSetDefaults_ConsensusWaitCaps(t *testing.T) {
 		assert.Equal(t, Duration(800*time.Millisecond), c.MaxWaitOnEmpty.Base)
 	})
 }
+
+// captureWarnings rebinds the package-level zerolog `log.Logger` to a
+// JSON-encoded buffer for the duration of `fn`, then restores the
+// prior logger. Used to assert that `SetDefaults` emits a deprecation
+// warning when the operator wrote the legacy `evalPerMethod` /
+// `evalPerFinality` bools.
+//
+// `util.ConfigureTestLogger` (init_test.go) sets the global level to
+// Disabled when `LOG_LEVEL` is unset — which suppresses every log
+// regardless of which logger is configured. We temporarily lift the
+// global level to Warn so our capture sees the warning, then restore.
+func captureWarnings(t *testing.T, fn func()) string {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prevLogger := log.Logger
+	prevLevel := zerolog.GlobalLevel()
+	log.Logger = zerolog.New(buf)
+	zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	defer func() {
+		log.Logger = prevLogger
+		zerolog.SetGlobalLevel(prevLevel)
+	}()
+	fn()
+	return buf.String()
+}
+
+// TestSetDefaults_SelectionPolicy_EvalScope covers the deprecation
+// translation for the legacy `evalPerMethod` / `evalPerFinality`
+// *bool fields. Three invariants:
+//
+//  1. legacy bools alone (modern `evalScope` absent) map to the
+//     matching enum value.
+//  2. SetDefaults nils out the legacy fields after translation —
+//     downstream code MUST NOT see stale values.
+//  3. setting any legacy bool emits a single deprecation warning at
+//     log.Warn level with both the offending fields and the
+//     translated `evalScope` value, so the operator can copy-paste
+//     the migration.
+func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
+	t.Run("default — nothing set", func(t *testing.T) {
+		c := &SelectionPolicyConfig{}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, EvalScopeNetwork, c.EvalScope)
+		assert.Nil(t, c.EvalPerMethod)
+		assert.Nil(t, c.EvalPerFinality)
+	})
+
+	t.Run("legacy bools translate + nil out + warn", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			perMethod, perFinality *bool
+			wantScope              EvalScope
+		}{
+			"perMethod only":     {boolPtr(true), nil, EvalScopeNetworkMethod},
+			"perFinality only":   {nil, boolPtr(true), EvalScopeNetworkFinality},
+			"both true":          {boolPtr(true), boolPtr(true), EvalScopeNetworkMethodFinality},
+			"perMethod=false":    {boolPtr(false), nil, EvalScopeNetwork}, // still warns because the deprecated key was touched
+			"both explicit false": {boolPtr(false), boolPtr(false), EvalScopeNetwork},
+		} {
+			t.Run(name, func(t *testing.T) {
+				c := &SelectionPolicyConfig{
+					EvalPerMethod:   tc.perMethod,
+					EvalPerFinality: tc.perFinality,
+				}
+				warnings := captureWarnings(t, func() {
+					require.NoError(t, c.SetDefaults())
+				})
+				assert.Equal(t, tc.wantScope, c.EvalScope,
+					"resolved EvalScope after translation")
+				assert.Nil(t, c.EvalPerMethod, "legacy field niled after translation")
+				assert.Nil(t, c.EvalPerFinality, "legacy field niled after translation")
+				// Deprecation warning must carry both the offending
+				// fields AND the resolved enum so operators can copy
+				// the migration into their config.
+				var msg struct {
+					Level    string `json:"level"`
+					Message  string `json:"message"`
+					Scope    string `json:"evalScope"`
+				}
+				require.NotEmpty(t, warnings,
+					"setting any legacy bool MUST emit a warning (test case %q)", name)
+				require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(strings.Split(warnings, "\n")[0])), &msg))
+				assert.Equal(t, "warn", msg.Level)
+				assert.Contains(t, msg.Message, "deprecated")
+				assert.Equal(t, string(tc.wantScope), msg.Scope)
+			})
+		}
+	})
+
+	t.Run("explicit evalScope wins over legacy bools (with warning)", func(t *testing.T) {
+		c := &SelectionPolicyConfig{
+			EvalScope:       EvalScopeNetworkFinality, // explicit
+			EvalPerMethod:   boolPtr(true),            // legacy — should be ignored
+			EvalPerFinality: boolPtr(false),
+		}
+		warnings := captureWarnings(t, func() {
+			require.NoError(t, c.SetDefaults())
+		})
+		assert.Equal(t, EvalScopeNetworkFinality, c.EvalScope,
+			"explicit evalScope wins")
+		assert.Nil(t, c.EvalPerMethod, "legacy field niled after override")
+		assert.Nil(t, c.EvalPerFinality, "legacy field niled after override")
+		assert.Contains(t, warnings, "deprecated",
+			"warn even on override so operator cleans up the stale bools")
+	})
+
+	t.Run("no warning when only modern evalScope is set", func(t *testing.T) {
+		c := &SelectionPolicyConfig{EvalScope: EvalScopeNetworkMethod}
+		warnings := captureWarnings(t, func() {
+			require.NoError(t, c.SetDefaults())
+		})
+		assert.Empty(t, warnings,
+			"no legacy fields touched → no deprecation noise")
+	})
+
+	t.Run("invalid evalScope rejects", func(t *testing.T) {
+		c := &SelectionPolicyConfig{EvalScope: "bogus"}
+		err := c.SetDefaults()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "evalScope")
+	})
+}
+
