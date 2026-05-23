@@ -595,37 +595,9 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		}
 	}
 
-	var topics []*evm.TopicFilter
-	if topicsParam, ok := filterParams["topics"].([]interface{}); ok {
-		for _, topicParam := range topicsParam {
-			topicFilter := &evm.TopicFilter{}
-
-			switch v := topicParam.(type) {
-			case string:
-				// Single topic value
-				topic, err := parseHexBytes(v)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse topic: %w", err)
-				}
-				topicFilter.Values = append(topicFilter.Values, topic)
-			case []interface{}:
-				// Multiple possible values for this topic position
-				for _, t := range v {
-					if topicStr, ok := t.(string); ok {
-						topic, err := parseHexBytes(topicStr)
-						if err != nil {
-							return nil, fmt.Errorf("failed to parse topic: %w", err)
-						}
-						topicFilter.Values = append(topicFilter.Values, topic)
-					}
-				}
-			case nil:
-				// null topic means any value at this position
-				continue
-			}
-
-			topics = append(topics, topicFilter)
-		}
+	topics, err := buildTopicFilters(filterParams["topics"])
+	if err != nil {
+		return nil, err
 	}
 
 	grpcReq := &evm.GetLogsRequest{
@@ -962,6 +934,47 @@ func (c *GenericGrpcBdsClient) QueryClient() evm.QueryServiceClient {
 
 func parseHexBytes(hexStr string) ([]byte, error) {
 	return evm.HexToBytes(hexStr)
+}
+
+// buildTopicFilters converts the JSON-RPC topics array (where each entry may be
+// a string, an array of strings, or null) into the proto TopicFilter slice.
+//
+// A null entry is a wildcard at that position and MUST emit an empty
+// TopicFilter so positional alignment with subsequent filters is preserved:
+// dropping the entry would shift later filters left, e.g. [selector, null, to]
+// would be sent as [selector, to] and match logs where topic[1]=to instead of
+// topic[2]=to — silently returning zero results.
+func buildTopicFilters(topicsParam interface{}) ([]*evm.TopicFilter, error) {
+	raw, ok := topicsParam.([]interface{})
+	if !ok {
+		return nil, nil
+	}
+	topics := make([]*evm.TopicFilter, 0, len(raw))
+	for _, topicParam := range raw {
+		topicFilter := &evm.TopicFilter{}
+		switch v := topicParam.(type) {
+		case string:
+			topic, err := parseHexBytes(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse topic: %w", err)
+			}
+			topicFilter.Values = append(topicFilter.Values, topic)
+		case []interface{}:
+			for _, t := range v {
+				if topicStr, ok := t.(string); ok {
+					topic, err := parseHexBytes(topicStr)
+					if err != nil {
+						return nil, fmt.Errorf("failed to parse topic: %w", err)
+					}
+					topicFilter.Values = append(topicFilter.Values, topic)
+				}
+			}
+		case nil:
+			// wildcard: leave Values empty, fall through to append below
+		}
+		topics = append(topics, topicFilter)
+	}
+	return topics, nil
 }
 
 // ensureQueryClient returns an error if the gRPC QueryService client has not
