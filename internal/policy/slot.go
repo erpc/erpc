@@ -185,9 +185,9 @@ func (s *Slot) tickOnce() {
 	// `score` values the JS attached during `sortByScore(...)` — we cache
 	// them on the slot so diagnostic tooling (admin endpoint, simulator)
 	// can read the engine's authoritative ranking without re-implementing
-	// the PREFER_FASTEST formula in Go. Step log + annotations are captured
-	// only when the engine's debug flag is on (simulator always, eRPC
-	// when the logger is at DEBUG) — see `Engine.SetStepLogEnabled`.
+	// the PREFER_FASTEST formula in Go. The chronological step log is
+	// captured only when the engine's debug flag is on (simulator always,
+	// eRPC when the logger is at DEBUG) — see `Engine.SetStepLogEnabled`.
 	var (
 		evalRes *EvalResult
 		evalErr error
@@ -242,34 +242,35 @@ func (s *Slot) tickOnce() {
 	orderedIDs := evalRes.OrderedIDs
 	scores := evalRes.Scores
 
-	// 4. Validate + materialize the ordered upstream slice. Per-upstream
-	// annotations from the step trail are used to enrich exclusion
-	// reasons — if a step annotated a dropped upstream with WHY it
-	// dropped it (`u.annotations.push(reason)`), the last annotation
-	// becomes the exclusion's `Step` + `Reason` instead of the bare
-	// "not in eval result" fallback. Best-effort: missing annotations
-	// degrade to the prior wording.
+	// 4. Validate + materialize the ordered upstream slice. The JS side
+	// folds two signals into one `__policyLeafReasons[id]` array:
+	//   * `"@step:NAME"` sentinel entries — the first stdlib primitive
+	//     that dropped the upstream (`removeCordoned`, `excludeIf`,
+	//     `take`, `byTag`, ...). Drives
+	//     `selection_rejection_total{step}` after the sentinel is split
+	//     out into `ExcludedUpstream.Step`. Bounded cardinality.
+	//   * leaf-reason slugs — `excludeIf`'s option-(c) attribution
+	//     (`error_rate_above`, `latency_p95_above`, ...). Drives
+	//     `selection_exclusion_total{reason}` after the sentinel is
+	//     filtered out of `LeafReasons`.
+	//
+	// `Reason` ← first leaf slug if any, else the step name, else the
+	// default "not in eval result" set by materializeOrder. Diagnostic
+	// surface for `RecentDecisions` / simulator UI — metrics never read it.
 	ordered, excluded := materializeOrder(ups, orderedIDs)
-	enrichExcluded(excluded, evalRes.Annotations)
-	// Attach leaf-reason slugs to each excluded upstream. Drives
-	// `selection_exclusion_total{reason=<slug>}` with option (c) leaf
-	// attribution: compound predicates emit one increment per leaf
-	// instead of attributing to the combinator boilerplate. Excluded
-	// upstreams dropped by non-`excludeIf` steps (`removeCordoned`,
-	// `removeByErrorRate`, …) have no leaf slugs — they surface via
-	// `Reason` and contribute to `selection_rejection_total{step}`
-	// (the per-step counter) instead.
 	for i := range excluded {
-		if leaves, ok := evalRes.LeafReasons[excluded[i].ID]; ok {
-			excluded[i].LeafReasons = leaves
+		entries, ok := evalRes.LeafReasons[excluded[i].ID]
+		if !ok || len(entries) == 0 {
+			continue
 		}
+		excluded[i].Step, excluded[i].LeafReasons = splitStepFromLeafReasons(entries)
 	}
+	enrichExcluded(excluded)
 	decision.Output = DecisionOutput{
 		Order:         orderedIDs,
 		Excluded:      excluded,
 		Scores:        scores,
 		StepLog:       evalRes.StepLog,
-		Annotations:   evalRes.Annotations,
 		ShadowReasons: evalRes.ShadowReasons,
 	}
 
@@ -326,7 +327,7 @@ func (s *Slot) tickOnce() {
 // log to see WHY a specific routing decision was made without
 // re-running the simulator.
 func (s *Slot) logStepTrail(d *Decision) {
-	if d == nil || (len(d.Output.StepLog) == 0 && len(d.Output.Annotations) == 0) {
+	if d == nil || (len(d.Output.StepLog) == 0 && len(d.Output.Excluded) == 0) {
 		return
 	}
 	// Cheap level check: we already know the trail data exists, but
@@ -358,7 +359,6 @@ func (s *Slot) logStepTrail(d *Decision) {
 		ev.Msg("policy step")
 	}
 	for _, ex := range d.Output.Excluded {
-		notes := d.Output.Annotations[ex.ID]
 		ev := logger.Debug().
 			Str("network", s.networkID).
 			Str("method", s.method).
@@ -366,8 +366,8 @@ func (s *Slot) logStepTrail(d *Decision) {
 			Str("upstream", ex.ID).
 			Str("step", ex.Step).
 			Str("reason", ex.Reason)
-		if len(notes) > 0 {
-			ev = ev.Strs("annotations", notes)
+		if len(ex.LeafReasons) > 0 {
+			ev = ev.Strs("leaf_reasons", ex.LeafReasons)
 		}
 		ev.Msg("policy excluded upstream")
 	}
@@ -572,31 +572,56 @@ func upstreamIDs(ups []common.Upstream) []string {
 	return out
 }
 
-// enrichExcluded upgrades the default `Reason: "not in eval result"` on
-// each excluded upstream to the LAST annotation the stdlib chain
-// recorded for it — which captures the closest "why was this dropped?"
-// signal. We use the last annotation rather than the first because
-// later steps may have re-evaluated the upstream (e.g.
-// `whenEmpty(() => upstreams).preferTag(...)`) and the most recent
-// annotation reflects the final verdict. When no annotation exists,
-// the default fallback wording stays as-is.
-//
-// Step is set to the same string for now — the simulator UI uses Step
-// for grouping. Once we plumb step-name onto each annotation
-// individually we can split them; for now the annotation IS the step
-// reason.
-func enrichExcluded(excluded []ExcludedUpstream, annotations map[string][]string) {
-	if len(annotations) == 0 {
-		return
-	}
-	for i := range excluded {
-		notes := annotations[excluded[i].ID]
-		if len(notes) == 0 {
+// stepPrefix is the sentinel the JS `define()` wrapper prepends to
+// `__policyLeafReasons[id]` to record the first stdlib primitive that
+// dropped the upstream — folded into the leaf-reason channel so we
+// only maintain ONE per-tick map instead of two parallel ones.
+const stepPrefix = "@step:"
+
+// splitStepFromLeafReasons separates the `"@step:NAME"` sentinel
+// entries from the real leaf-reason slugs in a single LeafReasons
+// array. First sentinel wins (matches JS-side first-step-wins). Any
+// subsequent sentinels are silently dropped — defensive; the JS guard
+// already prevents them — so a future writer regression can't leak
+// `@step:*` into the `selection_exclusion_total{reason}` label.
+func splitStepFromLeafReasons(entries []string) (step string, leaves []string) {
+	leaves = entries[:0]
+	for _, e := range entries {
+		if len(e) >= len(stepPrefix) && e[:len(stepPrefix)] == stepPrefix {
+			if step == "" {
+				step = e[len(stepPrefix):]
+			}
 			continue
 		}
-		last := notes[len(notes)-1]
-		excluded[i].Reason = last
-		excluded[i].Step = last
+		leaves = append(leaves, e)
+	}
+	if len(leaves) == 0 {
+		leaves = nil
+	}
+	return step, leaves
+}
+
+// enrichExcluded resolves a diagnostic `Reason` for each excluded
+// upstream. Preferred order:
+//  1. the first `LeafReasons` slug (rich, set by `excludeIf`'s
+//     option-(c) walk),
+//  2. the `Step` name (`removeCordoned`, `byTag`, ...),
+//  3. the default "not in eval result" set by materializeOrder for raw
+//     `Array.filter` fall-throughs.
+//
+// `Reason` is the diagnostic surface — `RecentDecisions` and the
+// simulator UI render it; metrics emit `Step` + `LeafReasons` directly,
+// not `Reason`.
+//
+// Must run AFTER `splitStepFromLeafReasons` has populated `Step` and
+// `LeafReasons` on each excluded upstream.
+func enrichExcluded(excluded []ExcludedUpstream) {
+	for i := range excluded {
+		if len(excluded[i].LeafReasons) > 0 {
+			excluded[i].Reason = excluded[i].LeafReasons[0]
+		} else if excluded[i].Step != "" {
+			excluded[i].Reason = excluded[i].Step
+		}
 	}
 }
 

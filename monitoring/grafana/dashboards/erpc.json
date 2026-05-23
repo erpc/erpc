@@ -7186,6 +7186,79 @@
           "title": "Cordon Events (admin RPC)",
           "type": "timeseries",
           "description": "Manual `erpc_cordonUpstream` / `erpc_uncordonUpstream` admin RPC events. Action: `cordon` / `uncordon`. Spikes = operator intervention."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 25,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 24,
+            "x": 0,
+            "y": 67
+          },
+          "id": 217,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (step) (\n  rate(erpc_selection_rejection_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{step}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Rejection by Chain Step",
+          "type": "timeseries",
+          "description": "Per-primitive exclusion rate (stacked). Tells you WHICH stdlib step is dropping upstreams — `byTag` (tag mismatch), `excludeIf` (health predicate), `take` (limit-N cap), `removeCordoned` (admin cordon), etc. Bounded-cardinality: `step` is the primitive name, not annotation text. The orthogonal `Exclusions by Upstream & Reason` panel above shows the per-leaf-reason view. A `step=\"eval\"` line means the chain uses raw `Array.filter` (no stdlib wrapper), or no primitives ran — investigate the policy."
         }
       ],
       "title": "Selection Policy",

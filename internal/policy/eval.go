@@ -114,9 +114,6 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string) Ups
 // 0..100 percentile numbers and returns milliseconds — it snaps to the
 // nearest pre-computed quantile bucket since the underlying
 // QuantileTracker isn't (and shouldn't be) exposed across the JS bridge.
-//
-// Annotations is pre-allocated (non-nil empty array) so stdlib steps
-// that `u.annotations.push(...)` don't trip on undefined.
 func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics, evalCtx EvalContext) sobek.Value {
 	arr := vm.NewArray()
 	for i, u := range ups {
@@ -152,9 +149,6 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		}
 		_ = obj.Set("hasTag", hasTagFn)
 		_ = obj.Set("is", hasTagFn)
-
-		// Annotations: real JS array so `u.annotations.push(...)` works.
-		_ = obj.Set("annotations", vm.NewArray())
 
 		// Metrics — same shape the existing stdlib reads from, PLUS a
 		// `latencyP(q)` method for ergonomic policy expressions.
@@ -345,11 +339,6 @@ type StepEntry struct {
 type EvalResult struct {
 	OrderedIDs []string
 	Scores     map[string]float64
-	// Annotations[upstreamID] = ordered list of `annotate(u, note)`
-	// strings the chain attached to this upstream. Empty when step-log
-	// recording is disabled (production-default), populated when the
-	// caller flips the toggle (simulator, DEBUG logger).
-	Annotations map[string][]string
 	// StepLog is the chronological trail of stdlib steps invoked
 	// during the eval. Order follows JS chain order. Empty when
 	// step-log recording is disabled.
@@ -388,12 +377,11 @@ type EvalResult struct {
 // scoring step" (probeExcluded / forceInclude) and has no comparable
 // score.
 //
-// `stepLogEnabled` toggles the per-step trail. When true, each stdlib
-// step pushes an entry into a JS global that this function reads back
-// and surfaces in `EvalResult.StepLog` along with each upstream's
-// `.annotations`. When false (production default), the JS wrapper
-// fast-paths the recording entirely — zero overhead beyond the
-// function-call indirection.
+// `stepLogEnabled` toggles the per-step chain trail. When true, each
+// stdlib step pushes an entry into a JS global that this function reads
+// back and surfaces in `EvalResult.StepLog`. When false (production
+// default), the JS wrapper skips the per-step record entirely — zero
+// overhead beyond the function-call indirection.
 func runEval(
 	pool *runtimePool,
 	cfg *common.SelectionPolicyConfig,
@@ -516,23 +504,20 @@ func runEval(
 	}
 
 	if stepLogEnabled {
-		// Step log first — order matters: the chain's own reads happen on
-		// the SAME JS objects whose annotations we'll capture next, but
-		// the step log is a separate global so order's just cosmetic here.
+		// Chronological chain trail (one entry per stdlib step). Gated
+		// because it allocates per-step (inIds/outIds/dropped/added) and
+		// is a diagnostic surface, not a metric input.
 		if steps, err := readStepLog(vm); err == nil {
 			out.StepLog = steps
 		}
-		// Per-upstream annotations: read directly from the INPUT array's
-		// objects. Every upstream we built with `buildJSUpstreams` got an
-		// `annotations` array attached; we read it back regardless of
-		// whether the upstream survived the chain. This captures BOTH
-		// what stayed AND why each dropped upstream got dropped.
-		out.Annotations = readAnnotations(vm, upsValue, ups)
 	}
 
 	// LeafReasons + ShadowReasons + StickyHeld are read every tick (not
 	// gated by stepLogEnabled). They feed Prometheus counters in the
 	// slot's emitMetrics, not the diagnostic-only step trail.
+	// `LeafReasons` may contain `"@step:NAME"` sentinel entries
+	// recording the primitive that dropped each upstream — split out by
+	// the slot before metric emit.
 	out.LeafReasons = readReasonsMap(vm, "__policyLeafReasons")
 	out.ShadowReasons = readReasonsMap(vm, "__policyShadowReasons")
 	if heldVal := vm.GlobalObject().Get("__policyStickyHeld"); heldVal != nil && !sobek.IsUndefined(heldVal) && !sobek.IsNull(heldVal) {
@@ -619,58 +604,6 @@ func readStepLog(vm *sobek.Runtime) ([]StepEntry, error) {
 		return nil, err
 	}
 	return entries, nil
-}
-
-// readAnnotations walks the JS-side input upstream array and pulls each
-// element's `annotations` array into a Go map keyed by upstream ID. We
-// read from the INPUT array, not the result array, so dropped upstreams
-// are included — their annotation trail is exactly what explains why
-// they were dropped.
-func readAnnotations(vm *sobek.Runtime, upsValue sobek.Value, ups []common.Upstream) map[string][]string {
-	if upsValue == nil {
-		return nil
-	}
-	obj, ok := upsValue.(*sobek.Object)
-	if !ok {
-		return nil
-	}
-	out := make(map[string][]string, len(ups))
-	for i := range ups {
-		entry := obj.Get(strconv.Itoa(i))
-		if entry == nil || sobek.IsUndefined(entry) {
-			continue
-		}
-		entryObj, ok := entry.(*sobek.Object)
-		if !ok {
-			continue
-		}
-		idVal := entryObj.Get("id")
-		annV := entryObj.Get("annotations")
-		if idVal == nil || annV == nil {
-			continue
-		}
-		id := idVal.String()
-		exported := annV.Export()
-		// `annotations` is a plain JS array of strings. sobek exports
-		// arrays as `[]interface{}` — coerce to []string.
-		raw, ok := exported.([]interface{})
-		if !ok || len(raw) == 0 {
-			continue
-		}
-		notes := make([]string, 0, len(raw))
-		for _, x := range raw {
-			if s, ok := x.(string); ok {
-				notes = append(notes, s)
-			}
-		}
-		if len(notes) > 0 {
-			out[id] = notes
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // extractOrderedResult validates that `result` is an array of upstreams

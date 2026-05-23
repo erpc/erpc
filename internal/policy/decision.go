@@ -59,13 +59,6 @@ type DecisionOutput struct {
 	// the request path.
 	StepLog []StepEntry
 
-	// Annotations[upstreamID] is the ordered list of `annotate(u, note)`
-	// strings each step attached to the upstream during this tick.
-	// Populated under the same toggle as `StepLog`. Used to surface
-	// per-upstream "why was this dropped / kept / re-ordered" rationale
-	// in the simulator's policy-history drawer and in DEBUG logs.
-	Annotations map[string][]string
-
 	// ShadowReasons[upstreamID] is the leaf slug(s) the upstream WOULD
 	// have been dropped for, had the predicate been written as `excludeIf`
 	// instead of `shadowExcludeIf`. The upstream stays in rotation; the

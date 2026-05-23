@@ -45,13 +45,12 @@ type Engine struct {
 	// itself drops requests when paused, so this is belt-and-braces).
 	paused atomic.Bool
 
-	// stepLogEnabled gates the JS-side per-step trail (one entry per
-	// chainable stdlib step invoked, plus per-upstream annotations).
-	// When false (production default), the JS wrapper around `define`
-	// fast-paths and pushes nothing — zero overhead beyond the call
-	// indirection. When true, the slot's Decision carries `StepLog` +
-	// `Annotations` and the simulator / DEBUG eRPC logs surface them.
-	// Toggled via `SetStepLogEnabled`.
+	// stepLogEnabled gates the JS-side per-step chain trail (one entry
+	// per chainable stdlib step invoked). When false (production
+	// default), the JS wrapper around `define` skips `_recordStep` —
+	// zero overhead beyond the call indirection. When true, the slot's
+	// Decision carries `StepLog` and the simulator / DEBUG eRPC logs
+	// surface it. Toggled via `SetStepLogEnabled`.
 	stepLogEnabled atomic.Bool
 
 	appCtx context.Context
@@ -426,10 +425,10 @@ func (e *Engine) IsPaused() bool {
 	return e.paused.Load()
 }
 
-// SetStepLogEnabled toggles per-tick step-log + annotation capture.
-// While enabled, each Decision the engine produces carries:
-//   - StepLog: chronological trail of stdlib steps invoked
-//   - Annotations: per-upstream `annotate(u, note)` strings
+// SetStepLogEnabled toggles per-tick step-log capture. While enabled,
+// each Decision the engine produces carries `StepLog` — the
+// chronological trail of stdlib steps invoked (step name, args,
+// in/out IDs, dropped/added).
 //
 // This is the input the simulator's "policy history" detail view
 // consumes and the source DEBUG-level eRPC logs use for per-step

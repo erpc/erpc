@@ -1183,15 +1183,26 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 	require.NotNil(t, excludeStep, "excludeIf step should be in the trail")
 	require.Contains(t, excludeStep.Dropped, "rpc1", "excludeIf should have dropped rpc1")
 
-	// Per-upstream annotations: rpc1 should carry the auto-derived
-	// reason string from `errorRateAbove(0.5).policyReason` — no
-	// explicit reason was passed at the callsite.
-	require.NotEmpty(t, d.Output.Annotations["rpc1"], "rpc1 should have annotations from excludeIf")
-	require.Contains(t, d.Output.Annotations["rpc1"], "errorRate>0.5")
+	// The diagnostic Reason on the excluded upstream comes from the
+	// first leaf slug (option-(c) attribution lives in `LeafReasons`).
+	// We dropped the per-upstream `annotate(u, ...)` text trail when we
+	// collapsed the metadata surface — operators see the stable slug
+	// instead of the threshold-encoded text ("errorRate>0.5").
+	var rpc1Excluded *policy.ExcludedUpstream
+	for i := range d.Output.Excluded {
+		if d.Output.Excluded[i].ID == "rpc1" {
+			rpc1Excluded = &d.Output.Excluded[i]
+			break
+		}
+	}
+	require.NotNil(t, rpc1Excluded)
+	require.Equal(t, []string{"error_rate_above"}, rpc1Excluded.LeafReasons)
+	require.Equal(t, "error_rate_above", rpc1Excluded.Reason,
+		"Reason falls back to the first leaf slug after the annotation channel was removed")
 }
 
 // TestStdlib_StepLog_DisabledByDefault verifies that without
-// `SetStepLogEnabled(true)`, the trail + annotations are empty — the
+// `SetStepLogEnabled(true)`, the chain trail stays empty — the
 // production-default fast path that keeps eval overhead at "one
 // extra function-call indirection per stdlib step".
 func TestStdlib_StepLog_DisabledByDefault(t *testing.T) {
@@ -1210,5 +1221,4 @@ func TestStdlib_StepLog_DisabledByDefault(t *testing.T) {
 	require.NotEmpty(t, decisions)
 	d := decisions[len(decisions)-1]
 	require.Empty(t, d.Output.StepLog, "step log must stay empty by default")
-	require.Empty(t, d.Output.Annotations, "annotations must stay empty by default")
 }

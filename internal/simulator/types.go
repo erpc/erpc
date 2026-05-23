@@ -215,12 +215,6 @@ type PolicyDecisionFrame struct {
 	// simulator flips it on at boot via `Engine.SetStepLogEnabled`).
 	Steps []PolicyDecisionStep `json:"steps,omitempty"`
 
-	// Annotations[upstreamID] is the ordered list of per-step
-	// `annotate(u, note)` strings the chain attached to the upstream.
-	// Surfaces "why was THIS upstream dropped / kept / re-ordered" in
-	// the simulator's policy-history drawer.
-	Annotations map[string][]string `json:"annotations,omitempty"`
-
 	// Metrics[upstreamID] is the per-upstream metric snapshot the eval
 	// saw at this tick — errorRate, throttledRate, latency quantiles,
 	// block-head lag, etc. Carried so the simulator's policy-history

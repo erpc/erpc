@@ -21,11 +21,6 @@ func TestStdlib_LeafReasons_LeafPredicate(t *testing.T) {
 	engine, _, tracker, cancel := newTestEngine(t, eval)
 	defer cancel()
 	defer engine.Stop()
-	// Step-log enables display-Reason enrichment from annotations. The
-	// LeafReasons slug attribution is independent of this flag — it
-	// always flows because Prometheus needs it — but display Reason
-	// only carries the threshold when annotation capture is on.
-	engine.SetStepLogEnabled(true)
 
 	ups := mkUps("erroring", "clean")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
@@ -58,10 +53,10 @@ func TestStdlib_LeafReasons_LeafPredicate(t *testing.T) {
 		}
 	}
 	require.NotNil(t, excludedErroring, "erroring upstream should be excluded")
-	require.Contains(t, excludedErroring.Reason, "errorRate>0.5",
-		"display Reason carries threshold for humans (step-log enabled)")
 	require.Equal(t, []string{"error_rate_above"}, excludedErroring.LeafReasons,
 		"leaf slug must be threshold-free and stable for metric label cardinality")
+	require.Equal(t, "error_rate_above", excludedErroring.Reason,
+		"display Reason falls back to the first leaf slug (annotation channel removed)")
 }
 
 // TestStdlib_LeafReasons_AnyAttributesToTruthyLeaves verifies option (c):

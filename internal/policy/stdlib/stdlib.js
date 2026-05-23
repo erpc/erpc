@@ -107,16 +107,77 @@
     });
   }
 
+  // _stepDropAttribute records which stdlib primitive first dropped a
+  // given upstream this tick — drives `erpc_selection_rejection_total{step}`
+  // with a low-cardinality primitive label (`removeCordoned`, `excludeIf`,
+  // `take`, `byTag`, ...).
+  //
+  // The step name lands as a SENTINEL-prefixed entry on the existing
+  // `__policyLeafReasons[id]` array (`"@step:removeCordoned"`). The Go
+  // side splits it back out before the leaf-reason metric emitter sees
+  // it. Folding step + leaves into one map lets us delete the
+  // `__policyStepReasons` global, its reader, and the parallel field
+  // on EvalResult — at the cost of a 6-char prefix scan.
+  //
+  // ALWAYS-ON — independent of `__policyStepLogEnabled`. Cost per step
+  // transition:
+  //   * Skip when `before.length === 0` (nothing could drop).
+  //   * One `Set` of size `after.length`.
+  //   * One walk of `before` (Set.has lookups, push on drops).
+  //   * No work when no drops (every input ID is in survivors).
+  //
+  // First-step-wins: an entry whose first element already starts with
+  // `"@step:"` is left alone. Once an upstream falls out of the chain
+  // it can't be dropped again, so the first writer is the only one
+  // that matters; the guard is belt-and-braces against re-entry.
+  //
+  // Safety: bail out if `before`/`after` contains a non-upstream (e.g.
+  // `partition` returns a 2-tuple of arrays). Don't pollute the metric
+  // with garbage attributions.
+  function _stepDropAttribute(name, before, after) {
+    const log = globalThis.__policyLeafReasons;
+    if (!log) return;
+    if (before.length === 0) return;
+    const survivors = new Set();
+    for (let i = 0; i < after.length; i++) {
+      const u = after[i];
+      if (u == null || typeof u.id !== 'string') return;
+      survivors.add(u.id);
+    }
+    const marker = '@step:' + name;
+    for (let i = 0; i < before.length; i++) {
+      const u = before[i];
+      if (u == null || typeof u.id !== 'string') return;
+      const id = u.id;
+      if (survivors.has(id)) continue;
+      let entry = log[id];
+      if (!entry) {
+        entry = log[id] = [];
+      }
+      // First-step-wins guard: skip if a step marker is already in slot 0.
+      if (entry.length > 0 && typeof entry[0] === 'string' &&
+          entry[0].length >= 6 && entry[0].slice(0, 6) === '@step:') {
+        continue;
+      }
+      entry.unshift(marker);
+    }
+  }
+
   function define(name, fn) {
     if (proto[name]) return; // idempotent: a re-installed primer must not throw
     const wrapped = function () {
       const before = this;
       const result = fn.apply(this, arguments);
-      // Only record array-in/array-out transitions. Non-array outputs
-      // (e.g. `partition` returns a 2-tuple, `at_` returns a single
+      // Only attribute / record array-in/array-out transitions. Non-array
+      // outputs (e.g. `partition` returns a 2-tuple, `at_` returns a single
       // upstream) skip the trail — they're terminal-ish ops anyway.
-      if (globalThis.__policyStepLogEnabled && Array.isArray(before) && Array.isArray(result)) {
-        _recordStep(name, before, result, _captureArgs(arguments));
+      if (Array.isArray(before) && Array.isArray(result)) {
+        // Always-on: low-cost step-name attribution for metrics.
+        _stepDropAttribute(name, before, result);
+        // Diagnostic-only: full step trail with args / dropped / added.
+        if (globalThis.__policyStepLogEnabled) {
+          _recordStep(name, before, result, _captureArgs(arguments));
+        }
       }
       return result;
     };
@@ -153,18 +214,6 @@
       return false;
     }
     return globMatch(pat, value);
-  }
-
-  function annotate(u, note) {
-    // The Go bridge sometimes returns array-likes that don't support
-    // .push (e.g. value types vs pointer types). Best-effort only —
-    // annotations are diagnostic.
-    try {
-      if (!u.annotations) u.annotations = [];
-      if (typeof u.annotations.push === 'function') {
-        u.annotations.push(note);
-      }
-    } catch (_) {}
   }
 
   // ─── 4.2 Identity & label selection ─────────────────────────────────────
@@ -248,11 +297,7 @@
   // ─── 4.3 Health filters ──────────────────────────────────────────────────
 
   define('removeByErrorRate', function (max) {
-    return this.filter(u => {
-      if (u.metrics.errorRate <= max) return true;
-      annotate(u, 'removed:errorRate=' + u.metrics.errorRate.toFixed(3));
-      return false;
-    });
+    return this.filter(u => u.metrics.errorRate <= max);
   });
   define('removeByThrottling', function (max) {
     return this.filter(u => u.metrics.throttledRate <= max);
@@ -330,18 +375,6 @@
       // policy at the engine level.
       return this.slice();
     }
-    // Reason resolution order:
-    //   1. Explicit string passed as 2nd arg.
-    //   2. `predicate.policyReason` — set by factory predicates.
-    //   3. Generic "excludeIf" fallback.
-    let reason;
-    if (typeof reasonOverride === 'string') {
-      reason = reasonOverride;
-    } else if (predicate.policyReason) {
-      reason = predicate.policyReason;
-    } else {
-      reason = 'excludeIf';
-    }
     // Per-upstream leaf-slug attribution for metrics. The Go-side metric
     // emitter reads `__policyLeafReasons[id]` after the eval and emits
     // one `selection_exclusion_total{reason=<slug>}` increment per leaf.
@@ -350,7 +383,6 @@
     const leafLog = globalThis.__policyLeafReasons;
     return this.filter(u => {
       if (predicate(u)) {
-        annotate(u, reason);
         if (leafLog) {
           let leaves;
           if (typeof reasonOverride === 'string') {
@@ -405,20 +437,10 @@
     if (typeof predicate !== 'function') {
       return this.slice();
     }
-    // Reason resolution mirrors excludeIf for consistency.
-    let reason;
-    if (typeof reasonOverride === 'string') {
-      reason = reasonOverride;
-    } else if (predicate.policyReason) {
-      reason = predicate.policyReason;
-    } else {
-      reason = 'shadowExcludeIf';
-    }
     const shadowLog = globalThis.__policyShadowReasons;
     const out = this.slice();
     for (const u of out) {
       if (!predicate(u)) continue;
-      annotate(u, 'shadow:' + reason);
       if (shadowLog) {
         let leaves;
         if (typeof reasonOverride === 'string') {
@@ -864,7 +886,6 @@
     const byId = {};
     for (const u of all) byId[u.id] = u;
     const probed = pick.map(id => byId[id]).filter(Boolean);
-    for (const u of probed) annotate(u, 'readmitted');
 
     if (position === 'head') return probed.concat(this);
     if (position === 'random') {
@@ -940,12 +961,10 @@
     return (typeof h === 'function') ? h(this) : this.slice();
   });
 
-  // ─── 4.13 Annotations & debug ───────────────────────────────────────────
+  // ─── 4.13 Debug ─────────────────────────────────────────────────────────
 
   define('tap',      function (fn) { fn(this); return this; });
   define('label',    function (_name) { return this; }); // no-op for now; decision-record wiring in phase 6
-  define('annotate', function (fn) { for (const u of this) annotate(u, fn(u)); return this; });
-  define('mark',     function (pred, note) { for (const u of this) if (pred(u)) annotate(u, note); return this; });
   define('dump',     function (level) {
     const fn = (console[level || 'debug']) || console.log;
     fn('[policy.dump]', toIDs(this));

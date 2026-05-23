@@ -203,10 +203,9 @@ func (n *Network) SetPolicyEnginePaused(paused bool) {
 }
 
 // SetPolicyStepLogEnabled toggles per-tick capture of the selection
-// policy's step trail + per-upstream annotations. While enabled the
-// engine's `Decision` carries `Output.StepLog` (the chain timeline)
-// and `Output.Annotations` (per-upstream "why" notes), and DEBUG-level
-// logs print one line per step + one per excluded upstream.
+// policy's chain trail. While enabled the engine's `Decision` carries
+// `Output.StepLog` (the chain timeline) and DEBUG-level logs print one
+// line per step + one per excluded upstream.
 //
 // Off by default in production (zero overhead beyond a function-call
 // indirection per stdlib step). Flipped on by the simulator at boot so
