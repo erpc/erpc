@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 0,
+  "id": 87,
   "links": [],
   "panels": [
     {
@@ -162,10 +162,10 @@
             "overrides": []
           },
           "gridPos": {
-            "h": 19,
-            "w": 12,
+            "h": 18,
+            "w": 8,
             "x": 0,
-            "y": 2252
+            "y": 6525
           },
           "id": 138,
           "options": {
@@ -205,7 +205,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (vendor) (\n    increase(erpc_network_successful_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
+              "expr": "topk(20,\n  sum by (vendor) (\n    increase(erpc_network_successful_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\",\n    }[$__range])\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -265,10 +265,10 @@
             "overrides": []
           },
           "gridPos": {
-            "h": 19,
-            "w": 12,
-            "x": 12,
-            "y": 2252
+            "h": 18,
+            "w": 8,
+            "x": 8,
+            "y": 6525
           },
           "id": 100,
           "options": {
@@ -368,10 +368,113 @@
             "overrides": []
           },
           "gridPos": {
+            "h": 18,
+            "w": 8,
+            "x": 16,
+            "y": 6525
+          },
+          "id": 201,
+          "options": {
+            "displayLabels": [
+              "name",
+              "value"
+            ],
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "values": [
+                "percent"
+              ]
+            },
+            "pieType": "pie",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "sort": "desc",
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(2,\n  sum by (connector) (\n    increase(erpc_cache_get_success_hit_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      policy=~\".*finality=(${finality:pipe}).*\",\n      user=~\"${user:regex}\",\n    }[$__range])\n  )\n)",
+              "format": "time_series",
+              "hide": false,
+              "instant": true,
+              "legendFormat": "__auto",
+              "range": false,
+              "refId": "B"
+            }
+          ],
+          "title": "Cache Connector Share",
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "desc": true,
+                "fields": [
+                  "Value"
+                ],
+                "sort": [
+                  {
+                    "field": "Value"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "limit",
+              "options": {
+                "limit": 10,
+                "offset": 0
+              }
+            }
+          ],
+          "transparent": true,
+          "type": "piechart"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
             "h": 17,
             "w": 8,
             "x": 0,
-            "y": 2271
+            "y": 6543
           },
           "id": 118,
           "options": {
@@ -474,7 +577,7 @@
             "h": 17,
             "w": 8,
             "x": 8,
-            "y": 2271
+            "y": 6543
           },
           "id": 119,
           "options": {
@@ -577,7 +680,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 2271
+            "y": 6543
           },
           "id": 120,
           "options": {
@@ -617,11 +720,11 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (finality, vendor) (\n    increase(erpc_network_successful_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
+              "expr": "topk(20,\n  sum by (finality, vendor_group, category) (\n    label_replace(\n      label_replace(\n        label_replace(\n          increase(\n            erpc_network_successful_request_total{\n              cluster=~\"${cluster:regex}\",\n              region=~\"${region:regex}\",\n              network=~\"${network:regex}\",\n              network!~\"${ignore_network:regex}\",\n              project=~\"${project:regex}\",\n              vendor=~\"${vendor:regex}\",\n              vendor!~\"${ignore_vendor:regex}\",\n              category=~\"${category:regex}\",\n              finality=~\"${finality:regex}\",\n              user=~\"${user:regex}\"\n            }[$__range]\n          ),\n          \"vendor_group\", \"vendors\", \"vendor\", \".*\"\n        ),\n        \"vendor_group\", \"CACHE\", \"vendor\", \"<cache>\"\n      ),\n      \"vendor_group\", \"CACHE\", \"vendor\", \"prism\"\n    )\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
-              "legendFormat": "{{vendor}} {{finality}}",
+              "legendFormat": "{{finality}} {{category}} -> {{vendor_group}}",
               "range": false,
               "refId": "A"
             }
@@ -717,7 +820,7 @@
             "h": 14,
             "w": 16,
             "x": 0,
-            "y": 2584
+            "y": 6560
           },
           "id": 85,
           "interval": "1m",
@@ -821,7 +924,7 @@
             "h": 14,
             "w": 8,
             "x": 16,
-            "y": 2584
+            "y": 6560
           },
           "id": 137,
           "interval": "1m",
@@ -969,9 +1072,9 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_network_request_received_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    network!~\"${ignore_network:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (region, network, category, finality)",
+              "expr": "sum(increase(erpc_network_request_received_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    network!~\"${ignore_network:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\",\n    namespace=~\"${namespace:regex}\"\n}[1m])) by (region, namespace, network, category, finality)",
               "interval": "",
-              "legendFormat": "{{region}}, {{network}}, {{category}}, {{finality}}",
+              "legendFormat": "{{namespace}}, {{network}}, {{category}}, {{finality}}, {{region}}",
               "range": true,
               "refId": "A"
             }
@@ -1082,9 +1185,9 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_network_request_received_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    network!~\"${ignore_network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[$__rate_interval])) by (region, network, user, category, finality) > 0",
+              "expr": "sum(rate(erpc_network_request_received_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    network!~\"${ignore_network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\",\n    namespace=~\"${namespace:regex}\",\n}[$__rate_interval])) by (region, namespace, network, user, category, finality) > 0",
               "interval": "",
-              "legendFormat": "{{region}}, {{network}}, {{user}}, {{category}}, {{finality}}",
+              "legendFormat": "{{namespace}}, {{network}}, {{user}}, {{category}}, {{finality}}, {{region}}",
               "range": true,
               "refId": "A"
             }
@@ -1186,9 +1289,9 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_network_successful_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (region, network, vendor, category, finality, emptyish) > 0",
+              "expr": "sum(rate(erpc_network_successful_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\",\n    namespace=~\"${namespace:regex}\",\n}[1m])) by (region, namespace, network, vendor, category, finality, emptyish) > 0",
               "interval": "",
-              "legendFormat": "{{region}} {{network}}, {{vendor}}, {{category}}, {{finality}}, empty={{emptyish}}",
+              "legendFormat": "{{namespace}}, {{network}}, {{vendor}}, {{category}}, {{finality}}, empty={{emptyish}}, {{region}}",
               "range": true,
               "refId": "A"
             }
@@ -1215,8 +1318,8 @@
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 10,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
@@ -1235,7 +1338,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -1295,10 +1398,10 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_network_failed_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    severity=\"critical\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (network,category, finality,error) > 0",
+              "expr": "sum(increase(erpc_network_failed_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    severity=\"critical\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\",\n    namespace=~\"${namespace:regex}\"\n}[1m])) by (network,namespace, category, finality,error) > 0",
               "instant": false,
               "interval": "",
-              "legendFormat": "{{network}}, {{category}}, {{finality}}, {{error}}",
+              "legendFormat": "{{namespace}}, {{network}}, {{category}}, {{finality}}, {{error}}",
               "range": true,
               "refId": "A"
             }
@@ -1325,8 +1428,8 @@
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 10,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
@@ -1345,7 +1448,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -1430,8 +1533,8 @@
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 10,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
@@ -1450,7 +1553,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -1485,15 +1588,21 @@
           "options": {
             "alertThreshold": true,
             "legend": {
-              "calcs": [],
+              "calcs": [
+                "last",
+                "max",
+                "mean"
+              ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
             },
             "tooltip": {
               "hideZeros": false,
               "mode": "multi",
-              "sort": "none"
+              "sort": "desc"
             }
           },
           "pluginVersion": "12.3.0",
@@ -1596,7 +1705,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 361
+            "y": 3
           },
           "id": 8,
           "interval": "1m",
@@ -1622,7 +1731,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -1698,7 +1807,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 361
+            "y": 3
           },
           "id": 44,
           "interval": "1m",
@@ -1799,7 +1908,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 361
+            "y": 3
           },
           "id": 45,
           "interval": "1m",
@@ -1905,7 +2014,7 @@
             "h": 7,
             "w": 8,
             "x": 0,
-            "y": 373
+            "y": 15
           },
           "id": 106,
           "interval": "1m",
@@ -2007,7 +2116,7 @@
             "h": 7,
             "w": 8,
             "x": 8,
-            "y": 373
+            "y": 15
           },
           "id": 107,
           "interval": "1m",
@@ -2108,7 +2217,7 @@
             "h": 7,
             "w": 8,
             "x": 16,
-            "y": 373
+            "y": 15
           },
           "id": 108,
           "interval": "1m",
@@ -2142,6 +2251,131 @@
             }
           ],
           "title": "Network errors P50 Resp. time",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Dynamic timeout duration computed per request from method latency percentiles. Shows how the quantile-based timeout adapts to real traffic patterns.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 22
+          },
+          "id": 200,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "logmin",
+                "max",
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "rate(erpc_network_timeout_duration_seconds_sum{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]) / rate(erpc_network_timeout_duration_seconds_count{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m])",
+              "interval": "",
+              "legendFormat": "avg {{project}}, {{network}}, {{category}}",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]))",
+              "interval": "",
+              "legendFormat": "p99 {{project}}, {{network}}, {{category}}",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Dynamic Timeout Duration",
           "type": "timeseries"
         }
       ],
@@ -2225,7 +2459,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 820
+            "y": 928
           },
           "id": 135,
           "interval": "1m",
@@ -2259,121 +2493,6 @@
             }
           ],
           "title": "Hedge Quantile",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "Dynamic timeout duration computed per request from method latency percentiles. Shows how the quantile-based timeout adapts to real traffic patterns.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "never",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "s"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 12,
-            "w": 8,
-            "x": 8,
-            "y": 820
-          },
-          "id": 200,
-          "interval": "1m",
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "rate(erpc_network_timeout_duration_seconds_sum{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]) / rate(erpc_network_timeout_duration_seconds_count{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m])",
-              "interval": "",
-              "legendFormat": "avg {{project}}, {{network}}, {{category}}",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]))",
-              "interval": "",
-              "legendFormat": "p99 {{project}}, {{network}}, {{category}}",
-              "range": true,
-              "refId": "B"
-            }
-          ],
-          "title": "Dynamic Timeout Duration",
           "type": "timeseries"
         },
         {
@@ -2443,7 +2562,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 820
+            "y": 928
           },
           "id": 68,
           "interval": "1m",
@@ -2554,7 +2673,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 820
+            "y": 928
           },
           "id": 33,
           "options": {
@@ -2655,7 +2774,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 832
+            "y": 940
           },
           "id": 9,
           "interval": "1m",
@@ -2761,7 +2880,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 832
+            "y": 940
           },
           "id": 86,
           "interval": "1m",
@@ -2864,7 +2983,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 832
+            "y": 940
           },
           "id": 89,
           "interval": "1m",
@@ -2977,7 +3096,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 844
+            "y": 952
           },
           "id": 63,
           "interval": "1m",
@@ -3097,7 +3216,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 844
+            "y": 952
           },
           "id": 25,
           "interval": "1m",
@@ -3219,7 +3338,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 854
+            "y": 962
           },
           "id": 130,
           "interval": "1m",
@@ -3360,7 +3479,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 854
+            "y": 962
           },
           "id": 132,
           "interval": "1m",
@@ -3409,11 +3528,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Dynamically computed block time per network in seconds. Used to auto-tune the state poller interval and debounce.",
+          "description": "EMA-estimated block time per network, dynamically computed from local block detection timestamps",
           "fieldConfig": {
             "defaults": {
               "color": {
-                "mode": "palette-classic"
+                "mode": "thresholds",
+                "seriesBy": "last"
               },
               "custom": {
                 "axisBorderShow": false,
@@ -3421,12 +3541,12 @@
                 "axisColorMode": "text",
                 "axisGridShow": false,
                 "axisLabel": "",
-                "axisPlacement": "auto",
+                "axisPlacement": "hidden",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
                 "drawStyle": "line",
-                "fillOpacity": 10,
-                "gradientMode": "scheme",
+                "fillOpacity": 0,
+                "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
                   "tooltip": false,
@@ -3434,12 +3554,21 @@
                 },
                 "insertNulls": false,
                 "lineInterpolation": "smooth",
-                "lineWidth": 2,
+                "lineStyle": {
+                  "dash": [
+                    0,
+                    10
+                  ],
+                  "fill": "dot"
+                },
+                "lineWidth": 1,
                 "pointSize": 5,
                 "scaleDistribution": {
-                  "type": "linear"
+                  "linearThreshold": 1,
+                  "log": 10,
+                  "type": "symlog"
                 },
-                "showPoints": "auto",
+                "showPoints": "always",
                 "showValues": false,
                 "spanNulls": false,
                 "stacking": {
@@ -3447,7 +3576,7 @@
                   "mode": "none"
                 },
                 "thresholdsStyle": {
-                  "mode": "off"
+                  "mode": "area"
                 }
               },
               "mappings": [],
@@ -3456,12 +3585,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
+                    "color": "text",
+                    "value": 0
                   }
                 ]
               },
@@ -3473,17 +3598,19 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 864
+            "y": 972
           },
           "id": 141,
           "interval": "1m",
+          "maxDataPoints": 500,
           "options": {
+            "alertThreshold": true,
             "legend": {
               "calcs": [
                 "lastNotNull",
                 "min",
                 "max",
-                "mean"
+                "median"
               ],
               "displayMode": "table",
               "placement": "right",
@@ -3497,6 +3624,7 @@
               "sort": "desc"
             }
           },
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -3505,15 +3633,401 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\"}",
+              "expr": "max by (network, project) (erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"})",
               "format": "time_series",
               "instant": false,
-              "legendFormat": "{{project}} / {{network}}",
+              "legendFormat": "{{network}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Dynamic Block Time",
+          "title": "Block Time",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "EMA-estimated block time per network, dynamically computed from local block detection timestamps",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds",
+                "seriesBy": "last"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "linearThreshold": 1,
+                  "log": 10,
+                  "type": "symlog"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "area"
+                }
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "semi-dark-green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 982
+          },
+          "id": 142,
+          "interval": "1m",
+          "maxDataPoints": 500,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min",
+                "max",
+                "median"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Min",
+              "sortDesc": false
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "max by (network, project) (erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}) / 1000",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "Block Time: {{network}}",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "1 / max by (network, upstream) (rate(erpc_upstream_latest_block_polled_total{network!=\"\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "hide": false,
+              "instant": false,
+              "legendFormat": "Actual: {{network}} / {{upstream}}",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Block Time",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds",
+                "seriesBy": "last"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "linearThreshold": 1,
+                  "log": 10,
+                  "type": "symlog"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "area"
+                }
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "semi-dark-green",
+                    "value": 0
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 2
+                  },
+                  {
+                    "color": "orange",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 10
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 992
+          },
+          "id": 143,
+          "interval": "1m",
+          "maxDataPoints": 500,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min",
+                "max",
+                "median"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "(1 / max by (network, upstream) (rate(erpc_upstream_latest_block_polled_total{network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) / on(network) group_left() (max by (network) (erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}) / 1000)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{upstream}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Poll Interval / Block Time Ratio",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds",
+                "seriesBy": "last"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "linearThreshold": 1,
+                  "log": 10,
+                  "type": "symlog"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "area"
+                }
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "semi-dark-green",
+                    "value": 0
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 2
+                  },
+                  {
+                    "color": "orange",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 10
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 1002
+          },
+          "id": 144,
+          "interval": "1m",
+          "maxDataPoints": 500,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min",
+                "max",
+                "median"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{upstream}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Block Head Lag",
           "type": "timeseries"
         }
       ],
@@ -3558,6 +4072,111 @@
             "w": 24,
             "x": 0,
             "y": 5
+          },
+          "id": 202,
+          "options": {
+            "displayLabels": [
+              "name",
+              "value"
+            ],
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "values": [
+                "percent"
+              ]
+            },
+            "pieType": "pie",
+            "reduceOptions": {
+              "calcs": [
+                "sum"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "sort": "desc",
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "repeat": "finality",
+          "repeatDirection": "h",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (vendor) (\n  erpc_network_successful_request_total{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    user=~\"${user:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"n/a\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
+              "format": "time_series",
+              "instant": true,
+              "interval": "1m",
+              "legendFormat": "{{vendor}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Vendors Share: finality=$finality",
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "desc": true,
+                "fields": [
+                  "Value"
+                ],
+                "sort": [
+                  {
+                    "field": "Value"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "limit",
+              "options": {
+                "limit": 10,
+                "offset": 0
+              }
+            }
+          ],
+          "transparent": true,
+          "type": "piechart"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 14
           },
           "id": 81,
           "options": {
@@ -3702,7 +4321,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 14
+            "y": 23
           },
           "id": 70,
           "interval": "1m",
@@ -3805,7 +4424,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 14
+            "y": 23
           },
           "id": 29,
           "interval": "1m",
@@ -3907,7 +4526,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 26
+            "y": 35
           },
           "id": 24,
           "options": {
@@ -4008,7 +4627,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 26
+            "y": 35
           },
           "id": 82,
           "options": {
@@ -4110,7 +4729,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 40
+            "y": 49
           },
           "id": 78,
           "interval": "1m",
@@ -4136,7 +4755,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "C"
@@ -4212,7 +4831,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 40
+            "y": 49
           },
           "id": 79,
           "options": {
@@ -4243,7 +4862,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "B"
@@ -4319,7 +4938,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 40
+            "y": 49
           },
           "id": 80,
           "options": {
@@ -4350,7 +4969,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",category=~\"${category:regex}\",composite=\"none\",project=~\"${project:regex}\"}[30s])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[30s])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "A"
@@ -4440,7 +5059,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 383
+            "y": 116
           },
           "id": 91,
           "options": {
@@ -4465,7 +5084,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -4541,7 +5160,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 383
+            "y": 116
           },
           "id": 46,
           "options": {
@@ -4571,7 +5190,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -4647,7 +5266,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 383
+            "y": 116
           },
           "id": 47,
           "options": {
@@ -4678,7 +5297,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[30s])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[30s])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -4706,8 +5325,8 @@
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 0,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
@@ -4726,7 +5345,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -4754,7 +5373,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 504
+            "y": 128
           },
           "id": 4,
           "interval": "1m",
@@ -4857,7 +5476,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 504
+            "y": 128
           },
           "id": 71,
           "interval": "1m",
@@ -4959,7 +5578,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 516
+            "y": 140
           },
           "id": 83,
           "options": {
@@ -5060,7 +5679,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 516
+            "y": 140
           },
           "id": 73,
           "options": {
@@ -5161,7 +5780,7 @@
             "h": 9,
             "w": 12,
             "x": 0,
-            "y": 528
+            "y": 152
           },
           "id": 102,
           "options": {
@@ -5263,7 +5882,7 @@
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 528
+            "y": 152
           },
           "id": 74,
           "options": {
@@ -5369,7 +5988,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 537
+            "y": 161
           },
           "id": 87,
           "options": {
@@ -5470,7 +6089,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 537
+            "y": 161
           },
           "id": 88,
           "options": {
@@ -5620,7 +6239,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 7
+            "y": 2189
           },
           "id": 139,
           "interval": "1m",
@@ -5762,7 +6381,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 7
+            "y": 2189
           },
           "id": 140,
           "interval": "1m",
@@ -5869,7 +6488,7 @@
             "h": 19,
             "w": 12,
             "x": 0,
-            "y": 19
+            "y": 2201
           },
           "id": 26,
           "interval": "1m",
@@ -5972,7 +6591,7 @@
             "h": 19,
             "w": 12,
             "x": 12,
-            "y": 19
+            "y": 2201
           },
           "id": 50,
           "interval": "1m",
@@ -6004,7 +6623,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg(erpc_upstream_score_overall{\n    region=~\"${region:regex}\",\n    project=~\"${project:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n}) by (cluster, region, project, vendor, network, category)",
+              "expr": "avg(erpc_upstream_score_overall{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    project=~\"${project:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n}) by (cluster, region, project, vendor, network, category)",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{cluster}}, {{region}}, {{project}}, {{network}}, {{project}}, {{vendor}}, {{category}}",
@@ -6114,7 +6733,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 38
+            "y": 2220
           },
           "id": 49,
           "interval": "1m",
@@ -6250,7 +6869,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 38
+            "y": 2220
           },
           "id": 59,
           "interval": "1m",
@@ -6358,7 +6977,7 @@
             "h": 15,
             "w": 12,
             "x": 0,
-            "y": 50
+            "y": 2232
           },
           "id": 51,
           "interval": "1m",
@@ -6381,7 +7000,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "avg(erpc_upstream_latest_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}) by (project, region, upstream, network)",
+              "expr": "avg(erpc_upstream_latest_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}) by (cluster, project, namespace, region, upstream, network)",
               "format": "table",
               "instant": true,
               "interval": "1m",
@@ -6460,7 +7079,7 @@
             "h": 15,
             "w": 12,
             "x": 12,
-            "y": 50
+            "y": 2232
           },
           "id": 52,
           "interval": "1m",
@@ -6588,7 +7207,7 @@
             "h": 15,
             "w": 12,
             "x": 0,
-            "y": 65
+            "y": 2247
           },
           "id": 54,
           "interval": "1m",
@@ -6721,7 +7340,7 @@
             "h": 15,
             "w": 12,
             "x": 12,
-            "y": 65
+            "y": 2247
           },
           "id": 57,
           "interval": "1m",
@@ -6833,7 +7452,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 80
+            "y": 2262
           },
           "id": 55,
           "interval": "1m",
@@ -6935,7 +7554,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 80
+            "y": 2262
           },
           "id": 56,
           "interval": "1m",
@@ -7039,7 +7658,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 93
+            "y": 2275
           },
           "id": 60,
           "interval": "1m",
@@ -7143,7 +7762,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 93
+            "y": 2275
           },
           "id": 61,
           "interval": "1m",
@@ -7247,7 +7866,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 106
+            "y": 2288
           },
           "id": 65,
           "interval": "1m",
@@ -7318,8 +7937,8 @@
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 10,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
@@ -7338,7 +7957,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -7366,7 +7985,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 7314
+            "y": 7965
           },
           "id": 75,
           "interval": "1m",
@@ -7393,7 +8012,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_shadow_response_identical_total{project=~\"${project:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality)",
+              "expr": "sum(increase(erpc_shadow_response_identical_total{project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality)",
               "instant": false,
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{upstream}}, {{finality}}",
@@ -7422,9 +8041,9 @@
                 "axisLabel": "",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 10,
+                "barWidthFactor": 0.7,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
@@ -7443,7 +8062,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -7471,7 +8090,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 7314
+            "y": 7965
           },
           "id": 76,
           "interval": "1m",
@@ -7497,10 +8116,10 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_shadow_response_mismatch_total{project=~\"${project:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, emptyish, larger)",
+              "expr": "sum(increase(erpc_shadow_response_mismatch_total{project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\",finality!=\"realtime\",emptyish=\"false\"}[1m])) by (project, network, upstream, category, emptyish, larger, finality)",
               "hide": false,
               "instant": false,
-              "legendFormat": "{{network}}, {{category}}, {{upstream}}, emt={{emptyish}}, lgr={{larger}}",
+              "legendFormat": "{{network}}, {{category}}, {{upstream}}, {{finality}}, emt={{emptyish}}, lgr={{larger}}",
               "range": true,
               "refId": "B"
             }
@@ -7526,9 +8145,9 @@
                 "axisLabel": "",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 10,
+                "barWidthFactor": 0.7,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
@@ -7547,7 +8166,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "none"
+                  "mode": "normal"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -7575,7 +8194,7 @@
             "h": 12,
             "w": 24,
             "x": 0,
-            "y": 7326
+            "y": 7977
           },
           "id": 77,
           "interval": "1m",
@@ -7602,7 +8221,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_shadow_response_error_total{project=~\"${project:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality, error)",
+              "expr": "sum(increase(erpc_shadow_response_error_total{project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality, error)",
               "instant": false,
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{upstream}}, {{error}}, {{finality}}",
@@ -7693,7 +8312,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1329
+            "y": 7358
           },
           "id": 17,
           "options": {
@@ -7798,7 +8417,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1329
+            "y": 7358
           },
           "id": 16,
           "options": {
@@ -7911,7 +8530,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1339
+            "y": 7368
           },
           "id": 36,
           "options": {
@@ -8013,7 +8632,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1339
+            "y": 7368
           },
           "id": 37,
           "options": {
@@ -8125,7 +8744,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1349
+            "y": 7378
           },
           "id": 38,
           "options": {
@@ -8154,7 +8773,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_success_hit_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (project, network, category, connector)",
+              "expr": "sum(increase(erpc_cache_get_success_hit_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (project, network, category, connector)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -8229,7 +8848,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1349
+            "y": 7378
           },
           "id": 39,
           "options": {
@@ -8259,7 +8878,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -8270,7 +8889,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
               "hide": false,
               "legendFormat": "p99 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -8347,7 +8966,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1359
+            "y": 7388
           },
           "id": 42,
           "options": {
@@ -8451,7 +9070,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1359
+            "y": 7388
           },
           "id": 43,
           "options": {
@@ -8476,8 +9095,9 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector))",
-              "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
+              "hide": true,
+              "legendFormat": "p50 - {{region}}, {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
             },
@@ -8487,9 +9107,9 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
               "hide": false,
-              "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}",
+              "legendFormat": "p95 - {{region}}, {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "B"
             }
@@ -8563,7 +9183,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1369
+            "y": 7398
           },
           "id": 40,
           "options": {
@@ -8592,7 +9212,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\".*(ErrRecordNotFound|MissingData).*\",project=~\"${project:regex}\"}[1m])) by (region, project, network, category, connector, error)",
+              "expr": "sum(increase(erpc_cache_get_error_total{region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\".*(ErrRecordNotFound|MissingData).*\",project=~\"${project:regex}\"}[1m])) by (region, project, network, category, connector, error) > 0",
               "legendFormat": "{{region}} {{project}}, {{network}}, {{category}}, {{connector}}, {{error}}",
               "range": true,
               "refId": "A"
@@ -8667,7 +9287,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1369
+            "y": 7398
           },
           "id": 41,
           "options": {
@@ -8760,7 +9380,7 @@
             "h": 11,
             "w": 24,
             "x": 0,
-            "y": 1380
+            "y": 2500
           },
           "id": 121,
           "interval": "1m",
@@ -8876,7 +9496,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 1391
+            "y": 2511
           },
           "id": 92,
           "interval": "1m",
@@ -8979,7 +9599,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 1391
+            "y": 2511
           },
           "id": 95,
           "interval": "1m",
@@ -9088,7 +9708,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 1399
+            "y": 2519
           },
           "id": 94,
           "interval": "1m",
@@ -9118,7 +9738,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_consensus_responses_collected_count{cluster=~\"${cluster:regex}\",network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\",finality=~\"${finality:regex}\"}[1m])) by (network, category, finality, vendors) > 0",
+              "expr": "sum(rate(erpc_consensus_responses_collected_count{cluster=~\"${cluster:regex}\",network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\",finality=~\"${finality:regex}\"}[1m])) by (network, category, finality, vendors) > 0",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{finality}}, {{vendors}}",
               "range": true,
@@ -9195,7 +9815,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 1399
+            "y": 2519
           },
           "id": 93,
           "interval": "1m",
@@ -9298,7 +9918,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 1407
+            "y": 2527
           },
           "id": 96,
           "interval": "1m",
@@ -9405,7 +10025,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 1407
+            "y": 2527
           },
           "id": 99,
           "interval": "1m",
@@ -9508,7 +10128,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 1415
+            "y": 2535
           },
           "id": 98,
           "interval": "1m",
@@ -9611,7 +10231,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 1415
+            "y": 2535
           },
           "id": 97,
           "interval": "1m",
@@ -9686,7 +10306,7 @@
             "h": 17,
             "w": 16,
             "x": 0,
-            "y": 15320
+            "y": 7968
           },
           "id": 109,
           "interval": "1m",
@@ -9795,7 +10415,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 15320
+            "y": 7968
           },
           "id": 110,
           "interval": "1m",
@@ -9868,7 +10488,7 @@
             "h": 17,
             "w": 16,
             "x": 0,
-            "y": 15337
+            "y": 7985
           },
           "id": 112,
           "interval": "1m",
@@ -9891,7 +10511,7 @@
               "color": "rgba(255,0,255,0.7)"
             },
             "filterValues": {
-              "le": 1e-09
+              "le": 1e-9
             },
             "legend": {
               "show": true
@@ -9962,7 +10582,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 15337
+            "y": 7985
           },
           "id": 113,
           "interval": "1m",
@@ -10091,7 +10711,7 @@
             "h": 9,
             "w": 24,
             "x": 0,
-            "y": 26254
+            "y": 21686
           },
           "id": 30,
           "options": {
@@ -10165,6 +10785,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
+                "showValues": false,
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -10179,7 +10800,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": 0
                   },
                   {
                     "color": "red",
@@ -10195,7 +10817,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 26263
+            "y": 21695
           },
           "id": 12,
           "interval": "1m",
@@ -10213,7 +10835,7 @@
               "sort": "none"
             }
           },
-          "pluginVersion": "12.0.1",
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -10264,6 +10886,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
+                "showValues": false,
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -10278,7 +10901,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": 0
                   },
                   {
                     "color": "red",
@@ -10294,7 +10918,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 26263
+            "y": 21695
           },
           "id": 124,
           "interval": "1m",
@@ -10312,7 +10936,7 @@
               "sort": "none"
             }
           },
-          "pluginVersion": "12.0.1",
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -10363,6 +10987,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
+                "showValues": false,
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -10377,7 +11002,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": 0
                   },
                   {
                     "color": "red",
@@ -10393,7 +11019,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 26276
+            "y": 21708
           },
           "id": 125,
           "interval": "1m",
@@ -10411,7 +11037,7 @@
               "sort": "none"
             }
           },
-          "pluginVersion": "12.0.1",
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -10462,6 +11088,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
+                "showValues": false,
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -10476,7 +11103,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": 0
                   },
                   {
                     "color": "red",
@@ -10492,7 +11120,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 26276
+            "y": 21708
           },
           "id": 128,
           "interval": "1m",
@@ -10510,7 +11138,7 @@
               "sort": "none"
             }
           },
-          "pluginVersion": "12.0.1",
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -10561,6 +11189,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
+                "showValues": false,
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -10575,7 +11204,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": 0
                   },
                   {
                     "color": "red",
@@ -10591,7 +11221,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 26289
+            "y": 21721
           },
           "id": 126,
           "interval": "1m",
@@ -10609,7 +11239,7 @@
               "sort": "none"
             }
           },
-          "pluginVersion": "12.0.1",
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -10660,6 +11290,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
+                "showValues": false,
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -10674,7 +11305,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": 0
                   },
                   {
                     "color": "red",
@@ -10690,7 +11322,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 26289
+            "y": 21721
           },
           "id": 129,
           "interval": "1m",
@@ -10713,7 +11345,7 @@
               "sort": "desc"
             }
           },
-          "pluginVersion": "12.0.1",
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -10721,7 +11353,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limits_total{network=~\"${network:regex}\",project=~\"${project:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin, budget)",
+              "expr": "sum(rate(erpc_rate_limits_total{network=~\"${network:regex}\",project=~\"${project:regex}\",upstream=~\"${upstream:regex}\",user=~\"${user:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin, budget)",
               "legendFormat": "origin={{origin}}, project={{project}}, {{network}}, {{category}}, budget={{budget}}",
               "range": true,
               "refId": "A"
@@ -10764,6 +11396,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
+                "showValues": false,
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -10778,7 +11411,8 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green"
+                    "color": "green",
+                    "value": 0
                   },
                   {
                     "color": "red",
@@ -10794,7 +11428,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 26302
+            "y": 21734
           },
           "id": 136,
           "interval": "1m",
@@ -10817,7 +11451,7 @@
               "sort": "desc"
             }
           },
-          "pluginVersion": "12.0.1",
+          "pluginVersion": "12.3.0",
           "targets": [
             {
               "datasource": {
@@ -10914,7 +11548,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 5632
+            "y": 65461
           },
           "id": 114,
           "interval": "1m",
@@ -11015,7 +11649,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 5632
+            "y": 65461
           },
           "id": 115,
           "interval": "1m",
@@ -11133,7 +11767,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 93815
+            "y": 153644
           },
           "id": 134,
           "options": {
@@ -11172,15 +11806,15 @@
     }
   ],
   "preload": false,
-  "refresh": "1m",
+  "refresh": "5s",
   "schemaVersion": 42,
   "tags": [],
   "templating": {
     "list": [
       {
         "current": {
-          "text": "groundcover-prometheus",
-          "value": "P0D78D883DED9C41C"
+          "text": "fly-prometheus",
+          "value": "eeud4a1fwxtkwa"
         },
         "includeAll": false,
         "name": "datasource",
@@ -11194,10 +11828,10 @@
         "allValue": ".*",
         "current": {
           "text": [
-            "mercury-prod"
+            "All"
           ],
           "value": [
-            "mercury-prod"
+            "$__all"
           ]
         },
         "datasource": {
@@ -11232,6 +11866,33 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
+        "definition": "label_values(namespace)",
+        "includeAll": true,
+        "label": "namespace",
+        "multi": true,
+        "name": "namespace",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(namespace)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "/^erpc/",
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "definition": "label_values(region)",
         "includeAll": true,
         "multi": true,
@@ -11249,11 +11910,9 @@
       {
         "allValue": ".*",
         "current": {
-          "text": [
-            "main"
-          ],
+          "text": "All",
           "value": [
-            "main"
+            "$__all"
           ]
         },
         "datasource": {
@@ -11277,9 +11936,7 @@
       {
         "allValue": ".*",
         "current": {
-          "text": [
-            "All"
-          ],
+          "text": "All",
           "value": [
             "$__all"
           ]
@@ -11332,10 +11989,16 @@
         "allValue": ".*",
         "current": {
           "text": [
-            "mainnet"
+            "base",
+            "arbitrum-one",
+            "mainnet",
+            "polygon"
           ],
           "value": [
-            "mainnet"
+            "base",
+            "arbitrum-one",
+            "mainnet",
+            "polygon"
           ]
         },
         "datasource": {
@@ -11437,9 +12100,15 @@
         "allValue": ".*",
         "current": {
           "text": [
+            "eth_call",
+            "eth_getLogs",
+            "eth_getBlockByNumber",
             "eth_getBlockByHash"
           ],
           "value": [
+            "eth_call",
+            "eth_getLogs",
+            "eth_getBlockByNumber",
             "eth_getBlockByHash"
           ]
         },
@@ -11499,12 +12168,12 @@
     ]
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-3h",
     "to": "now"
   },
   "timepicker": {},
-  "timezone": "browser",
+  "timezone": "utc",
   "title": "eRPC Metrics",
   "uid": "erpc_metrics",
-  "version": 314
+  "version": 366
 }
