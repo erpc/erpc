@@ -151,6 +151,12 @@ var (
 		Help:      "Per-upstream exclusion events labelled by the leaf-predicate slug that tripped (`error_rate_above`, `latency_p95_above`, `block_head_lag_above`, ...). Compound predicates emit one increment per leaf — exclusion is attributed to the actual signal, not the combinator.",
 	}, []string{"project", "network", "method", "upstream", "reason"})
 
+	MetricSelectionShadowExclusionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_shadow_exclusion_total",
+		Help:      "Per-upstream WOULD-HAVE-BEEN-EXCLUDED events from `shadowExcludeIf` predicates. Same leaf-slug attribution as `selection_exclusion_total`, but the upstream stays in rotation — meant for safely auditioning a new (or removed) exclusion rule in production before promoting it to a real `excludeIf`.",
+	}, []string{"project", "network", "method", "upstream", "reason"})
+
 	MetricSelectionExcludedSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "selection_excluded_seconds",

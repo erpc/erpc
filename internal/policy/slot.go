@@ -255,11 +255,12 @@ func (s *Slot) tickOnce() {
 		}
 	}
 	decision.Output = DecisionOutput{
-		Order:       orderedIDs,
-		Excluded:    excluded,
-		Scores:      scores,
-		StepLog:     evalRes.StepLog,
-		Annotations: evalRes.Annotations,
+		Order:         orderedIDs,
+		Excluded:      excluded,
+		Scores:        scores,
+		StepLog:       evalRes.StepLog,
+		Annotations:   evalRes.Annotations,
+		ShadowReasons: evalRes.ShadowReasons,
 	}
 
 	// 5. Compute diff against previous tick.
@@ -478,6 +479,17 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 				age = 0
 			}
 			telemetry.MetricSelectionExcludedSeconds.WithLabelValues(project, s.networkID, s.method, ex.ID).Set(age.Seconds())
+		}
+	}
+
+	// Shadow exclusions — predicates wrapped in `shadowExcludeIf` that
+	// WOULD have dropped the upstream but didn't. The upstream is still
+	// in `d.Output.Order`; we just count the leaf slugs so operators can
+	// compare shadow rate to real exclusion rate when auditioning a new
+	// rule. Same option-(c) attribution as the real counter.
+	for id, slugs := range d.Output.ShadowReasons {
+		for _, slug := range slugs {
+			telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues(project, s.networkID, s.method, id, slug).Inc()
 		}
 	}
 

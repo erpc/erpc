@@ -431,6 +431,30 @@ Switch how the config combines with the base via `opts.multipliers`:
     .sortByScore(PREFER_FASTEST)
 ```
 
+### Auditioning a new rule with `shadowExcludeIf`
+
+`shadowExcludeIf` is the dry-run counterpart of `excludeIf`. The predicate runs every tick, but no upstream is actually dropped — every would-have-been-excluded trip is surfaced as `erpc_selection_shadow_exclusion_total{upstream, reason=<leaf-slug>}` (same per-leaf attribution as the real counter) plus a `shadow:<reason>` annotation. Use it to safely roll out a new exclusion rule (or audit the impact of removing an existing one) before flipping the call to `excludeIf` for real.
+
+```js
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()
+    .excludeIf(errorRateAbove(0.5))                     // real
+    .shadowExcludeIf(errorRateAbove(0.3))               // shadow: would a tighter bar be safe?
+    .shadowExcludeIf(any(blockSecondsLagAbove(15), latencyP95Above(15_000)))
+    .sortByScore(PREFER_FASTEST)
+    .stickyPrimary()
+    .readmitExcluded()
+```
+
+Operator workflow:
+
+1. Deploy with the new rule as `shadowExcludeIf`. Watch `erpc_selection_shadow_exclusion_total{reason=<your-rule-slug>}` for N days; compare to the current real-exclusion counter on the same upstreams.
+2. Once the shadow rate matches your expectation (no false positives, no over-firing), flip the call to `excludeIf` and redeploy.
+3. To audit removal of an existing rule: shadow what's currently real, deploy, confirm the shadow rate drops to zero on healthy upstreams before deleting it.
+
+Shadow trips never touch `excludedSince` / `stickyPrimary` / `readmitExcluded` — the upstream stays in rotation in its original position, so a shadow rule cannot accidentally affect routing.
+
 ## Observability
 
 The selection policy emits one tick's worth of decision data into Prometheus on every eval. Bounded cardinality — labels stay within `(project, network, method, upstream)` plus a small `reason` enum on the exclusion counter. See [Monitoring → selection-policy decision metrics](/operation/monitoring#selection-policy-decision-metrics) for the full table plus PromQL queries.

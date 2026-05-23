@@ -85,6 +85,61 @@ func TestMetrics_ExclusionTotalEmitsLeafSlugs(t *testing.T) {
 		"compound 'any' slug must NOT receive an increment — option (c) attributes to leaves only")
 }
 
+// TestMetrics_ShadowExcludeIf_ObservesButDoesNotDrop pins the
+// shadowExcludeIf invariants in one shot:
+//
+//  1. The upstream that trips a shadow predicate stays in rotation —
+//     never appears in `excluded`, still appears in `order`.
+//  2. `selection_shadow_exclusion_total{reason}` increments with the
+//     LEAF slug (same option-(c) attribution as the real counter).
+//  3. `selection_exclusion_total{reason}` is NOT incremented for the
+//     same upstream/slug — shadow and real are independently observable.
+//  4. The upstream's `selection_excluded_seconds` gauge stays at 0,
+//     proving shadow never touches `excludedSince` / cooldown bookkeeping.
+func TestMetrics_ShadowExcludeIf_ObservesButDoesNotDrop(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.shadowExcludeIf(errorRateAbove(0.5))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("shadow-erroring", "clean")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+
+	beforeShadow := promUtil.ToFloat64(telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+	beforeReal := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+
+	for i := 0; i < 80; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	policy.TickForTest(engine, "evm:1", "*") // second tick for excluded-seconds gauge to settle
+
+	order, excluded := policy.LatestDecisionOutputForTest(engine, "evm:1", "*")
+	require.NotContains(t, excluded, "shadow-erroring",
+		"shadow predicates must NEVER produce an excluded entry")
+	require.Contains(t, order, "shadow-erroring",
+		"shadow-tripped upstream must stay in rotation")
+
+	afterShadow := promUtil.ToFloat64(telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+	afterReal := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+	require.Greater(t, afterShadow, beforeShadow,
+		"shadow counter must increment when the predicate would have tripped")
+	require.Equal(t, beforeReal, afterReal,
+		"real exclusion counter must NOT move for a shadow trip")
+
+	excludedSeconds := promUtil.ToFloat64(telemetry.MetricSelectionExcludedSeconds.WithLabelValues("p1", "evm:1", "*", "shadow-erroring"))
+	require.Equal(t, 0.0, excludedSeconds,
+		"shadow trips must NOT enter excludedSince/cooldown — the gauge stays 0")
+}
+
 // TestMetrics_ExcludedSecondsGaugeTransitions verifies that the
 // `selection_excluded_seconds` gauge:
 //   * is 0 for in-rotation upstreams (clean upstream stays at 0)

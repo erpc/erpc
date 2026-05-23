@@ -379,6 +379,70 @@
     });
   });
 
+  // ─── 4.3b shadowExcludeIf — dry-run / observed-only exclusion ──────────
+  //
+  // Mirrors `excludeIf` exactly — but DOES NOT drop the upstream. Used to
+  // safely audition a new exclusion rule (or removal of an existing one) in
+  // production before flipping the call to `excludeIf` for real.
+  //
+  // Per tick, for every upstream whose predicate trips:
+  //   * Annotates `shadow:<reason>` (visible in DEBUG logs / the
+  //     simulator's policy-history pane / Decision.Output.Annotations).
+  //   * Populates `globalThis.__policyShadowReasons[u.id]` with the LEAF
+  //     slugs the predicate would have attributed to (mirrors option-(c)
+  //     attribution from `excludeIf`).
+  //
+  // The Go-side metric emitter reads `__policyShadowReasons` after the
+  // eval and increments `erpc_selection_shadow_exclusion_total{reason}` —
+  // one per leaf, NOT the combinator. Operators compare its rate to
+  // `erpc_selection_exclusion_total` over time to decide whether the
+  // proposed rule is safe to promote.
+  //
+  // The upstream stays in the pool in its original position. No effect on
+  // `excludedSince`, `stickyPrimary`, or `readmitExcluded` — shadow trips
+  // never enter the cooldown bookkeeping.
+  define('shadowExcludeIf', function (predicate, reasonOverride) {
+    if (typeof predicate !== 'function') {
+      return this.slice();
+    }
+    // Reason resolution mirrors excludeIf for consistency.
+    let reason;
+    if (typeof reasonOverride === 'string') {
+      reason = reasonOverride;
+    } else if (predicate.policyReason) {
+      reason = predicate.policyReason;
+    } else {
+      reason = 'shadowExcludeIf';
+    }
+    const shadowLog = globalThis.__policyShadowReasons;
+    const out = this.slice();
+    for (const u of out) {
+      if (!predicate(u)) continue;
+      annotate(u, 'shadow:' + reason);
+      if (shadowLog) {
+        let leaves;
+        if (typeof reasonOverride === 'string') {
+          leaves = [reasonOverride];
+        } else if (typeof predicate.policyLeaves === 'function') {
+          leaves = predicate.policyLeaves(u);
+        } else if (predicate.policySlug) {
+          leaves = [predicate.policySlug];
+        } else {
+          leaves = ['custom'];
+        }
+        if (leaves && leaves.length > 0) {
+          const existing = shadowLog[u.id];
+          if (existing) {
+            for (const l of leaves) existing.push(l);
+          } else {
+            shadowLog[u.id] = leaves.slice();
+          }
+        }
+      }
+    }
+    return out;
+  });
+
   // ─── 4.4 Generic functional (extends what JS already gives us) ──────────
 
   define('reject', function (fn) { return this.filter((u, i, a) => !fn(u, i, a)); });

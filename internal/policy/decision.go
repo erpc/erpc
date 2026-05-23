@@ -65,6 +65,15 @@ type DecisionOutput struct {
 	// per-upstream "why was this dropped / kept / re-ordered" rationale
 	// in the simulator's policy-history drawer and in DEBUG logs.
 	Annotations map[string][]string
+
+	// ShadowReasons[upstreamID] is the leaf slug(s) the upstream WOULD
+	// have been dropped for, had the predicate been written as `excludeIf`
+	// instead of `shadowExcludeIf`. The upstream stays in rotation; the
+	// slugs drive `erpc_selection_shadow_exclusion_total` so operators can
+	// audition a new (or removed) rule in production before flipping it
+	// for real. Always captured (production-default), not gated by the
+	// step-log toggle.
+	ShadowReasons map[string][]string
 }
 
 // ExcludedUpstream explains why an upstream was dropped this tick.

@@ -219,8 +219,9 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		// THIS tick's (network, method, finality). Attached only when an
 		// entry matches and carries at least one weight; `sortByScore`
 		// reads it (`u.scoreMultipliers`) and merges it over the base
-		// weights. Absent when the upstream has no `routing.scoreMultipliers`
-		// or none match — `sortByScore` then uses the base weights alone.
+		// weights. ApplyDefaults inherits `upstreamDefaults.routing` onto
+		// upstreams that didn't set their own, so the resolver is
+		// single-source: only `u.Routing` is consulted here.
 		if cfg := u.Config(); cfg != nil && cfg.Routing != nil {
 			if mul := resolveScoreMultipliers(cfg.Routing, evalCtx.Network, evalCtx.Method, evalCtx.Finality); len(mul) > 0 {
 				smObj := vm.NewObject()
@@ -254,6 +255,8 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 //   - finality: membership in the entry's list; empty == any.
 //
 // Returns nil when routing is nil, has no entries, or nothing matches.
+// `upstreamDefaults.routing` inheritance is handled at config-load time by
+// ApplyDefaults (all-or-nothing), so this function is single-source.
 func resolveScoreMultipliers(routing *common.UpstreamRoutingConfig, network, method, finality string) map[string]float64 {
 	if routing == nil || len(routing.ScoreMultipliers) == 0 {
 		return nil
@@ -361,6 +364,13 @@ type EvalResult struct {
 	// gives `[not_<A.slug>]`. Cardinality bounded by the set of predicate
 	// factories (~25). See option (c) in the metrics design doc.
 	LeafReasons map[string][]string
+	// ShadowReasons[upstreamID] = leaf slugs for predicates that would have
+	// dropped the upstream had they been written as `excludeIf` instead of
+	// `shadowExcludeIf`. Same slug shape as LeafReasons, same option-(c)
+	// attribution semantics — drives `erpc_selection_shadow_exclusion_total`
+	// so operators can audition a new (or removed) rule in production
+	// before flipping it for real.
+	ShadowReasons map[string][]string
 	// StickyHeld is true when `stickyPrimary` ACTIVELY held the previous
 	// primary this tick (i.e. challenger would have won under a no-sticky
 	// ordering, but cooldown or hysteresis kept the incumbent). Drives
@@ -474,6 +484,13 @@ func runEval(
 	if err := vm.GlobalObject().Set("__policyLeafReasons", vm.NewObject()); err != nil {
 		return nil, err
 	}
+	// Per-upstream "would-have-been-excluded" leaf slugs from
+	// `shadowExcludeIf`. Reset each tick; the metric emitter consumes it
+	// to drive `erpc_selection_shadow_exclusion_total`. Always captured
+	// (production-default), independent of `stepLogEnabled`.
+	if err := vm.GlobalObject().Set("__policyShadowReasons", vm.NewObject()); err != nil {
+		return nil, err
+	}
 	// Cleared each tick to detect active stickyPrimary holds.
 	if err := vm.GlobalObject().Set("__policyStickyHeld", false); err != nil {
 		return nil, err
@@ -484,6 +501,7 @@ func runEval(
 		_ = vm.GlobalObject().Set("__policyStepLogEnabled", false)
 		_ = vm.GlobalObject().Set("__policyStepLog", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyLeafReasons", sobek.Undefined())
+		_ = vm.GlobalObject().Set("__policyShadowReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyStickyHeld", false)
 	}()
 
@@ -512,10 +530,11 @@ func runEval(
 		out.Annotations = readAnnotations(vm, upsValue, ups)
 	}
 
-	// LeafReasons + StickyHeld are read every tick (not gated by
-	// stepLogEnabled). They feed Prometheus counters in the slot's
-	// emitMetrics, not the diagnostic-only step trail.
-	out.LeafReasons = readLeafReasons(vm)
+	// LeafReasons + ShadowReasons + StickyHeld are read every tick (not
+	// gated by stepLogEnabled). They feed Prometheus counters in the
+	// slot's emitMetrics, not the diagnostic-only step trail.
+	out.LeafReasons = readReasonsMap(vm, "__policyLeafReasons")
+	out.ShadowReasons = readReasonsMap(vm, "__policyShadowReasons")
 	if heldVal := vm.GlobalObject().Get("__policyStickyHeld"); heldVal != nil && !sobek.IsUndefined(heldVal) && !sobek.IsNull(heldVal) {
 		out.StickyHeld = heldVal.ToBoolean()
 	}
@@ -523,12 +542,13 @@ func runEval(
 	return out, nil
 }
 
-// readLeafReasons deserializes the JS-side `__policyLeafReasons` global
-// (a `{ [upstreamId]: string[] }` map populated by `excludeIf`) into a
-// Go map. Empty map on missing / malformed input — leaf attribution is
-// best-effort and shouldn't break the eval if the JS-side wiring drifts.
-func readLeafReasons(vm *sobek.Runtime) map[string][]string {
-	v := vm.GlobalObject().Get("__policyLeafReasons")
+// readReasonsMap deserializes a JS-side `{ [upstreamId]: string[] }`
+// global (populated by `excludeIf` → __policyLeafReasons or
+// `shadowExcludeIf` → __policyShadowReasons) into a Go map. Empty map on
+// missing / malformed input — attribution is best-effort and shouldn't
+// break the eval if the JS-side wiring drifts.
+func readReasonsMap(vm *sobek.Runtime, globalName string) map[string][]string {
+	v := vm.GlobalObject().Get(globalName)
 	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {
 		return nil
 	}

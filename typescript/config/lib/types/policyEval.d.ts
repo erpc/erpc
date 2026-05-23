@@ -250,6 +250,23 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
     removeByLatency(opts: RemoveByLatencyOptions): PolicyEvalUpstreamArray;
     keepHealthy(opts?: KeepHealthyOptions): PolicyEvalUpstreamArray;
     excludeIf(predicate: PolicyEvalPredicate, reasonOverride?: string): PolicyEvalUpstreamArray;
+    /**
+     * Dry-run / observed-only counterpart of `excludeIf`. The predicate runs
+     * for every upstream, but no upstream is actually dropped — instead, every
+     * trip is surfaced via:
+     *
+     *  - `erpc_selection_shadow_exclusion_total{upstream, reason=<leaf slug>}`
+     *    (same option-(c) leaf attribution as the real counter);
+     *  - a `shadow:<reason>` annotation on the upstream this tick;
+     *  - the per-tick step trail (when DEBUG / simulator step-log is on).
+     *
+     * Use when auditioning a new exclusion rule (or removal of an existing
+     * one) in production: deploy with `shadowExcludeIf`, watch the shadow
+     * counter for N days, then flip to `excludeIf` once the rate matches
+     * expectations. The upstream stays in rotation and `excludedSince` /
+     * `stickyPrimary` / `readmitExcluded` are untouched.
+     */
+    shadowExcludeIf(predicate: PolicyEvalPredicate, reasonOverride?: string): PolicyEvalUpstreamArray;
     reject(fn: (u: PolicyEvalUpstream, i: number, a: PolicyEvalUpstream[]) => unknown): PolicyEvalUpstreamArray;
     partition(fn: (u: PolicyEvalUpstream) => unknown): [PolicyEvalUpstreamArray, PolicyEvalUpstreamArray];
     unique(keyFn?: (u: PolicyEvalUpstream) => string): PolicyEvalUpstreamArray;
