@@ -740,6 +740,9 @@ type UpstreamConfig struct {
 	// `sortByScore` (see SelectionPolicyConfig): the engine resolves the
 	// matching entry for each (network, method, finality) tick and exposes
 	// the resulting weight map to the eval function as `u.scoreMultipliers`.
+	// When the upstream omits its own `routing` block, `ApplyDefaults`
+	// inherits the project-level `upstreamDefaults.routing` (all-or-nothing,
+	// matching the Tags inheritance pattern).
 	Routing *UpstreamRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
 }
 

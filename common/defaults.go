@@ -1572,6 +1572,20 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if u.AutoIgnoreUnsupportedMethods == nil && defaults.AutoIgnoreUnsupportedMethods != nil {
 		u.AutoIgnoreUnsupportedMethods = defaults.AutoIgnoreUnsupportedMethods
 	}
+	// Routing — all-or-nothing inheritance matching the Tags pattern:
+	// when this upstream omitted its own `routing` block, clone the
+	// project-level `upstreamDefaults.routing` so it survives to runtime.
+	// Cloning (not pointer-sharing) keeps each upstream independently
+	// owned in case any later step mutates the matcher list. Inner
+	// `*ScoreMultiplierConfig` entries are treated as immutable so the
+	// pointers are reused.
+	if u.Routing == nil && defaults.Routing != nil && defaults != u {
+		cp := *defaults.Routing
+		if defaults.Routing.ScoreMultipliers != nil {
+			cp.ScoreMultipliers = append([]*ScoreMultiplierConfig{}, defaults.Routing.ScoreMultipliers...)
+		}
+		u.Routing = &cp
+	}
 
 	return nil
 }
