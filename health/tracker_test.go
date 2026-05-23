@@ -1436,6 +1436,56 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		assert.True(t, ok, "hot method must NOT be evicted while it keeps receiving traffic")
 	})
 
+	t.Run("idle_sweep_releases_prom_observer_series", func(t *testing.T) {
+		// Verifies the second half of the method-flood defense: the
+		// IN-MEMORY observer cache shrinks AND the Prometheus
+		// registry side actually releases the series. Without
+		// DeleteLabelValues, even an evicted cache entry would leave
+		// the label-set in the registry forever, and the next
+		// `/metrics` scrape would still emit it.
+		tracker := NewTracker(&log.Logger, "test-project-prom", 2*time.Second)
+		tracker.SetIdleEvictionAfter(150 * time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("prom-flood-target")
+
+		// Drive the observer cache via real duration records — that's
+		// the only path that lazy-creates entries in urdObsCache.
+		for i := 0; i < 50; i++ {
+			method := fmt.Sprintf("eth_prom_random%d", i)
+			tracker.RecordUpstreamDuration(ups, method, 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "user-a")
+		}
+
+		// Pre-sweep: the cache holds at least 50 unique label tuples
+		// AND the underlying MetricVec sees them all.
+		cacheBefore := 0
+		tracker.urdObsCache.Range(func(_, _ any) bool { cacheBefore++; return true })
+		require.GreaterOrEqual(t, cacheBefore, 50,
+			"observer cache should hold an entry per unique method")
+		metricBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamRequestDuration)
+		require.GreaterOrEqual(t, metricBefore, 50,
+			"Prometheus registry should hold a series per unique method (got %d)", metricBefore)
+
+		// Wait past the idle threshold + a sweep cycle. Sweep fires
+		// once per windowSize (2s) so 2.5s is enough.
+		require.Eventually(t, func() bool {
+			n := 0
+			tracker.urdObsCache.Range(func(_, _ any) bool { n++; return true })
+			return n == 0
+		}, 5*time.Second, 100*time.Millisecond,
+			"observer cache should have evicted every flood entry once idle")
+
+		// Critical: the Prom registry shrunk too. Without
+		// DeleteLabelValues this count would still be ≥ 50 even after
+		// the in-memory cache cleared.
+		metricAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamRequestDuration)
+		require.Less(t, metricAfter, metricBefore,
+			"Prometheus registry must release evicted series — without DeleteLabelValues the count stays sticky (got after=%d, before=%d)",
+			metricAfter, metricBefore)
+	})
+
 	t.Run("idle_sweep_preserves_cordoned_state", func(t *testing.T) {
 		// Cordon is operator-set; it must never be evicted by the
 		// idle sweep, even if the cordoned (upstream, method) has

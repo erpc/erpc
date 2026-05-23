@@ -307,6 +307,29 @@ type urdoKey struct {
 	user      string
 }
 
+// cachedObserver wraps a Prometheus Observer with an idle timestamp so
+// the tracker's sweep loop can evict label-sets that haven't received
+// an observation in `idleEvictionAfter` — and call
+// `MetricVec.DeleteLabelValues(...)` to release the matching series
+// from the Prometheus registry. Without this, every unique label
+// combination a request EVER triggers stays in the registry forever
+// (Prometheus's append-only model).
+//
+// Hot-path overhead: one atomic.Int64 store per cache hit. The cache
+// itself is sync.Map (LoadOrStore on miss, Load on hit) — same as
+// before, just unwrapping a pointer.
+type cachedObserver struct {
+	obs              prometheus.Observer
+	lastAccessedAtMs atomic.Int64
+}
+
+// cachedCounter is the parallel wrapper for the rate-limited counter
+// cache — same idle-tracking story, different Prom type.
+type cachedCounter struct {
+	ctr              prometheus.Counter
+	lastAccessedAtMs atomic.Int64
+}
+
 func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method, composite string, finality common.DataFinalityState, userId string) prometheus.Observer {
 	key := urdoKey{
 		project:   t.projectId,
@@ -318,14 +341,20 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 		finality:  finality.String(),
 		user:      userId,
 	}
+	nowMs := time.Now().UnixMilli()
 	if v, ok := t.urdObsCache.Load(key); ok {
-		return v.(prometheus.Observer)
+		co := v.(*cachedObserver)
+		co.lastAccessedAtMs.Store(nowMs)
+		return co.obs
 	}
-	obs := telemetry.MetricUpstreamRequestDuration.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
-	)
-	actual, _ := t.urdObsCache.LoadOrStore(key, obs)
-	return actual.(prometheus.Observer)
+	co := &cachedObserver{
+		obs: telemetry.MetricUpstreamRequestDuration.WithLabelValues(
+			key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
+		),
+	}
+	co.lastAccessedAtMs.Store(nowMs)
+	actual, _ := t.urdObsCache.LoadOrStore(key, co)
+	return actual.(*cachedObserver).obs
 }
 
 // Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
@@ -342,25 +371,31 @@ type rrltKey struct {
 
 func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName, finality string) prometheus.Counter {
 	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName, finality}
+	nowMs := time.Now().UnixMilli()
 	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
-		return v.(prometheus.Counter)
+		cc := v.(*cachedCounter)
+		cc.lastAccessedAtMs.Store(nowMs)
+		return cc.ctr
 	}
-	c := telemetry.MetricRateLimitsTotal.WithLabelValues(
-		key.project,   // project
-		key.network,   // network
-		key.vendor,    // vendor
-		key.upstream,  // upstream
-		key.category,  // category
-		key.finality,  // finality
-		key.user,      // user
-		key.agentName, // agent_name
-		"<remote>",    // budget
-		"remote",      // scope (remote upstream)
-		"",            // auth
-		"upstream",    // origin
-	)
-	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, c)
-	return actual.(prometheus.Counter)
+	cc := &cachedCounter{
+		ctr: telemetry.MetricRateLimitsTotal.WithLabelValues(
+			key.project,   // project
+			key.network,   // network
+			key.vendor,    // vendor
+			key.upstream,  // upstream
+			key.category,  // category
+			key.finality,  // finality
+			key.user,      // user
+			key.agentName, // agent_name
+			"<remote>",    // budget
+			"remote",      // scope (remote upstream)
+			"",            // auth
+			"upstream",    // origin
+		),
+	}
+	cc.lastAccessedAtMs.Store(nowMs)
+	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, cc)
+	return actual.(*cachedCounter).ctr
 }
 
 type ubKey struct {
@@ -554,8 +589,12 @@ const sweepEveryRotations = uint64(rollingBuckets)
 //     If a cordoned upstream has been silent for 30 min the cordon
 //     would otherwise vanish on the next request.
 //
-// Prometheus side: also delete the matching MetricVec label-sets via
-// observer-cache walks (see sweepIdleObservers).
+// Prometheus side: idle entries in the urdObsCache /
+// remoteRateLimitedCounterCache get DeleteLabelValues'd on their
+// parent MetricVec, releasing the registered series so the
+// `/metrics` endpoint stops re-emitting stale label combos. Without
+// this, even with the in-memory cache evicted, the Prometheus
+// registry would keep the series forever (append-only model).
 func (t *Tracker) sweepIdle() {
 	cutoffMs := time.Now().Add(-t.idleEvictionAfter).UnixMilli()
 
@@ -585,6 +624,44 @@ func (t *Tracker) sweepIdle() {
 			return true
 		}
 		t.ntwMetrics.Delete(key)
+		return true
+	})
+
+	t.sweepIdleObservers(cutoffMs)
+}
+
+// sweepIdleObservers drops idle Prometheus observer/counter cache
+// entries AND deletes their underlying MetricVec label-sets so the
+// registry side of the cardinality blow-up actually shrinks. The
+// cache key IS the label tuple — we reuse it directly for the
+// DeleteLabelValues call, which is why the labels stayed structured
+// throughout (the audit found the cache, the cache held the labels,
+// the labels are what we now release).
+func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
+	t.urdObsCache.Range(func(key, value any) bool {
+		co := value.(*cachedObserver)
+		if co.lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		k := key.(urdoKey)
+		t.urdObsCache.Delete(key)
+		telemetry.MetricUpstreamRequestDuration.DeleteLabelValues(
+			k.project, k.vendor, k.network, k.upstream, k.category, k.composite, k.finality, k.user,
+		)
+		return true
+	})
+
+	t.remoteRateLimitedCounterCache.Range(func(key, value any) bool {
+		cc := value.(*cachedCounter)
+		if cc.lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		k := key.(rrltKey)
+		t.remoteRateLimitedCounterCache.Delete(key)
+		telemetry.MetricRateLimitsTotal.DeleteLabelValues(
+			k.project, k.network, k.vendor, k.upstream, k.category, k.finality, k.user, k.agentName,
+			"<remote>", "remote", "", "upstream",
+		)
 		return true
 	})
 }
