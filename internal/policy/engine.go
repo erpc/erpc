@@ -66,9 +66,26 @@ type Engine struct {
 	// remain independent.
 	sticky *stickyStore
 
+	// idleEvictionAfter is the duration past which a narrow
+	// (method, finality)-keyed slot or sticky entry gets evicted.
+	// Defaults to `DefaultEngineIdleEvictionAfter`. Zero disables
+	// the engine's sweep entirely. Same defense as the tracker's
+	// idle sweep — bounds the slot map under a method-flood by
+	// dropping silent narrow slots while keeping the network's
+	// wildcard slot alive forever.
+	idleEvictionAfter time.Duration
+
 	appCtx context.Context
 	cancel context.CancelFunc
 }
+
+// DefaultEngineIdleEvictionAfter is the conservative idle threshold the
+// engine uses for sweeping silent narrow slots + sticky entries when
+// the caller doesn't override it. Longer than the tracker's idle
+// threshold because slot eviction also tears down a live ticker —
+// flapping eviction on/off across the slot lifecycle is more
+// disruptive than just dropping a tracker bucket.
+const DefaultEngineIdleEvictionAfter = 1 * time.Hour
 
 // slotKey identifies one slot in the engine. The wildcard for an
 // unspecified dimension is `"*"`. Which dimensions are wildcarded is
@@ -125,17 +142,90 @@ func NewEngine(
 ) *Engine {
 	ctx, cancel := context.WithCancel(parentCtx)
 	lg := logger.With().Str("component", "policy-engine").Str("projectId", projectID).Logger()
-	return &Engine{
-		projectID: projectID,
-		logger:    &lg,
-		tracker:   tracker,
-		pool:      newRuntimePool(runtimePrimer, userScript),
-		slots:     make(map[slotKey]*Slot),
-		networks:  make(map[string]*networkRegistration),
-		sticky:    newStickyStore(),
-		appCtx:    ctx,
-		cancel:    cancel,
+	e := &Engine{
+		projectID:         projectID,
+		logger:            &lg,
+		tracker:           tracker,
+		pool:              newRuntimePool(runtimePrimer, userScript),
+		slots:             make(map[slotKey]*Slot),
+		networks:          make(map[string]*networkRegistration),
+		sticky:            newStickyStore(),
+		idleEvictionAfter: DefaultEngineIdleEvictionAfter,
+		appCtx:            ctx,
+		cancel:            cancel,
 	}
+	go e.idleSweepLoop()
+	return e
+}
+
+// SetIdleEvictionAfter overrides the default engine idle-eviction
+// threshold for narrow slots + sticky entries. Pass `0` to disable
+// engine-side sweeping (tracker sweep is independent). Tests use this
+// to exercise eviction without waiting an hour.
+func (e *Engine) SetIdleEvictionAfter(d time.Duration) {
+	e.idleEvictionAfter = d
+}
+
+// idleSweepLoop runs once per `engineSweepInterval` and drops narrow
+// slots + sticky-store entries that haven't been touched in
+// `idleEvictionAfter`. Wildcard slots ("*", "*") are never evicted —
+// the engine guarantees a network always has at least its wildcard
+// slot to serve cold-start traffic.
+//
+// Stops cleanly on `e.appCtx.Done()` (engine.Stop / project teardown).
+func (e *Engine) idleSweepLoop() {
+	ticker := time.NewTicker(engineSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.appCtx.Done():
+			return
+		case <-ticker.C:
+			if e.idleEvictionAfter <= 0 {
+				continue
+			}
+			e.sweepIdleSlots()
+			e.sweepIdleSticky()
+		}
+	}
+}
+
+// engineSweepInterval — fires often enough that an idle slot evicts
+// within a couple of intervals of its threshold elapsing, infrequent
+// enough that the per-network Range() walk doesn't measurably show
+// up in CPU profiles. 1 minute is a comfortable default — operators
+// caring about precision will set a tighter `idleEvictionAfter`.
+const engineSweepInterval = 1 * time.Minute
+
+// sweepIdleSlots stops and removes per-(method, finality) slots that
+// haven't been read OR ticked in `idleEvictionAfter`. The wildcard
+// (`("*", "*")`) slot is exempt; only narrow slots that lazy-created
+// in response to specific-method traffic are evictable.
+func (e *Engine) sweepIdleSlots() {
+	cutoffMs := time.Now().Add(-e.idleEvictionAfter).UnixMilli()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for k, slot := range e.slots {
+		if k.method == "*" && k.finality == "*" {
+			continue // never evict the network's wildcard slot
+		}
+		if slot.lastAccessedAtMs.Load() >= cutoffMs {
+			continue
+		}
+		slot.stop() // tear down the ticker goroutine
+		delete(e.slots, k)
+	}
+}
+
+// sweepIdleSticky drops shared-primary register entries whose
+// scope-key hasn't been written in `idleEvictionAfter`. The store
+// tracks `LastSwitchAt` per entry, which doubles as a "last write"
+// timestamp — sticky writes happen on switch AND on confirm, so a
+// quiet scope stops updating it and ages out naturally.
+func (e *Engine) sweepIdleSticky() {
+	cutoffMs := time.Now().Add(-e.idleEvictionAfter).UnixMilli()
+	e.sticky.evictIdle(cutoffMs)
 }
 
 // RegisterNetwork creates (or replaces) the "*" slot for the given network
@@ -242,12 +332,18 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 // treat it as read-only.
 func (e *Engine) GetOrdered(networkID, method, finality string) []common.Upstream {
 	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
+	// Refresh both slots' idle timestamps — a request hitting THIS
+	// (method, finality) keeps both the narrow slot AND the wildcard
+	// fallback alive against the engine's sweep.
+	nowMs := time.Now().UnixMilli()
 	if slot != nil {
+		slot.lastAccessedAtMs.Store(nowMs)
 		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
 			return *ordered
 		}
 	}
 	if wildcard != nil {
+		wildcard.lastAccessedAtMs.Store(nowMs)
 		if ordered := wildcard.cache.Load(); ordered != nil {
 			return *ordered
 		}

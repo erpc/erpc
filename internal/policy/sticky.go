@@ -103,3 +103,21 @@ func (s *stickyStore) snapshot() map[stickyKey]stickyEntry {
 	}
 	return out
 }
+
+// evictIdle drops entries whose `LastSwitchAt` is older than
+// `cutoffMs`. The store writes `LastSwitchAt` on every `Set` (switch
+// or confirm) so quiet scopes age out naturally — no need for a
+// separate "lastWrittenAt" field. Network-wildcard scope-keys are
+// also evictable (unlike engine wildcard slots): the cross-method
+// shared primary is bounded by the configured set of networks, so
+// dropping a silent one just means the next request on that scope
+// reseeds it.
+func (s *stickyStore) evictIdle(cutoffMs int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.entries {
+		if v.LastSwitchAt < cutoffMs {
+			delete(s.entries, k)
+		}
+	}
+}

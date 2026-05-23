@@ -115,19 +115,47 @@ type TrackedMetrics struct {
 	// `0` means not cordoned (or never cordoned). Read by Uncordon to
 	// observe the cordon-duration histogram for dashboards.
 	CordonedAtMs atomic.Int64 `json:"cordonedAtMs"`
+
+	// LastAccessedAtMs is unix-millis of the last Record* or Get*
+	// touching this entry. Drives the tracker's idle-sweep — entries
+	// that haven't been touched in `idleAfter` get evicted from the
+	// `upsMetrics` / `ntwMetrics` maps + their matching Prometheus
+	// MetricVec label sets.
+	//
+	// Defends against method-flood: a hostile client hitting random
+	// JSON-RPC method names (`eth_random1`, `eth_random2`, ...) could
+	// otherwise grow the per-method map without bound. With idle
+	// sweep, stale methods drop out shortly after the attack stops.
+	//
+	// Set once on construction (so freshly-allocated entries don't
+	// look idle to the very next sweep tick) and refreshed on every
+	// hot-path write.
+	LastAccessedAtMs atomic.Int64 `json:"-"`
 }
 
 // newTrackedMetrics constructs an empty TrackedMetrics with all
 // rolling-window components initialized. Used at every sync.Map insert
 // in the tracker so callers never see a half-built record.
 func newTrackedMetrics(logger *zerolog.Logger) *TrackedMetrics {
-	return &TrackedMetrics{
+	tm := &TrackedMetrics{
 		ResponseQuantiles:      NewQuantileTracker(logger),
 		ErrorsTotal:            NewRollingCounter(),
 		RemoteRateLimitedTotal: NewRollingCounter(),
 		RequestsTotal:          NewRollingCounter(),
 		MisbehaviorsTotal:      NewRollingCounter(),
 	}
+	// Seed LastAccessedAtMs to "now" so a brand-new entry doesn't
+	// look idle to a sweep that fires before the first hot-path write.
+	tm.LastAccessedAtMs.Store(time.Now().UnixMilli())
+	return tm
+}
+
+// touch refreshes the per-entry idle timestamp. Called from every
+// Record* and Get* path. Cheap: one atomic store; avoids time.Now()
+// when the millisecond hasn't advanced (a request burst within the
+// same ms keeps the same value).
+func (m *TrackedMetrics) touch(nowMs int64) {
+	m.LastAccessedAtMs.Store(nowMs)
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
@@ -235,6 +263,23 @@ type Tracker struct {
 	// off-path stays as cheap as today; the cost only shows up for
 	// projects that opted into per-finality scoping.
 	trackByFinality atomic.Bool
+
+	// idleEvictionAfter is the duration past which an unaccessed
+	// (upstream, method, finality) or (network, method) entry gets
+	// evicted from upsMetrics / ntwMetrics. Defaults to 30 min — well
+	// above any realistic `scoreMetricsWindowSize` (10s simulator …
+	// 5m production) so we never evict an entry that's still
+	// contributing to the rolling window. Zero disables sweeping.
+	//
+	// Defends against method-flood: a hostile client hammering
+	// random JSON-RPC method names (`eth_random1`, `eth_random2`,
+	// ...) would otherwise grow the per-method map without bound.
+	// With idle sweep, stale method buckets drop out a few sweep
+	// intervals after the attack stops, the matching Prometheus
+	// MetricVec label-sets get explicitly deleted, and steady-state
+	// memory tracks ACTUAL request patterns rather than peak
+	// adversarial cardinality.
+	idleEvictionAfter time.Duration
 
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
@@ -398,6 +443,14 @@ func (t *Tracker) getRollbackGauge(up common.Upstream) prometheus.Gauge {
 	return actual.(prometheus.Gauge)
 }
 
+// DefaultIdleEvictionAfter is the conservative idle threshold the
+// tracker uses for sweeping stale (method/network)-keyed entries when
+// the caller doesn't override it. Long enough to safely survive a
+// quiet period in production (5m scoreMetricsWindowSize) without
+// evicting still-rotating buckets, short enough to bound memory
+// under a method-flood that runs for hours.
+const DefaultIdleEvictionAfter = 30 * time.Minute
+
 // NewTracker constructs a new Tracker, using sync.Map for concurrency.
 func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Duration) *Tracker {
 	return &Tracker{
@@ -405,7 +458,17 @@ func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Durati
 		projectId:          projectId,
 		windowSize:         windowSize,
 		upstreamsByNetwork: make(map[string][]upstreamKey),
+		idleEvictionAfter:  DefaultIdleEvictionAfter,
 	}
+}
+
+// SetIdleEvictionAfter overrides the default idle eviction threshold.
+// Pass `0` to disable sweeping entirely (matches pre-fix behavior).
+// Used by tests that want to exercise eviction without waiting 30
+// minutes, and by operators who want a tighter bound for
+// high-cardinality-method workloads.
+func (t *Tracker) SetIdleEvictionAfter(d time.Duration) {
+	t.idleEvictionAfter = d
 }
 
 // Bootstrap starts the goroutine that rotates rolling-window buckets.
@@ -431,6 +494,10 @@ func (t *Tracker) rotateMetricsLoop(ctx context.Context) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// Tick counter so we can schedule the idle sweep at a coarser
+	// cadence than rotation (every Nth tick) — sweep work is O(map size)
+	// and shouldn't run every 100ms when rotation does.
+	var rotationCount uint64
 
 	for {
 		select {
@@ -449,8 +516,77 @@ func (t *Tracker) rotateMetricsLoop(ctx context.Context) {
 				}
 				return true
 			})
+
+			// Idle eviction: every `sweepEveryRotations` ticks (roughly
+			// every `windowSize`), walk both maps and drop entries that
+			// haven't been touched in `idleEvictionAfter`. Skipped when
+			// the threshold is 0 (sweep disabled) or the rotation
+			// counter hasn't reached the next sweep boundary yet.
+			rotationCount++
+			if t.idleEvictionAfter > 0 && rotationCount%sweepEveryRotations == 0 {
+				t.sweepIdle()
+			}
 		}
 	}
+}
+
+// sweepEveryRotations sets how often (in rotation ticks) the idle
+// sweep runs. With rollingBuckets=10, sweep fires once per full
+// rolling window — a 30 min threshold against a 1 min window means
+// up to ~30 sweep passes between an entry going idle and being
+// evicted (acceptable; the goal is bounded memory, not
+// minute-precision eviction).
+const sweepEveryRotations = uint64(rollingBuckets)
+
+// sweepIdle removes (upstream, method, finality) and (network, method)
+// entries from the in-memory tracker maps when they haven't been
+// touched in `idleEvictionAfter`. Bounds memory under method-flood
+// attacks while leaving steady-state hot keys alone.
+//
+// Skipped buckets:
+//
+//   - All-finalities wildcard (`(*, "*", All)`) — only the most-narrow
+//     buckets are user-controllable; the wildcard rollups are bounded
+//     by the upstream count and serve as the read-path fallback.
+//   - Method "*" wildcard — same reasoning: the cross-method aggregate
+//     is bounded; we evict the narrow per-method buckets only.
+//   - Cordoned entries — admin-set state must not be evicted, ever.
+//     If a cordoned upstream has been silent for 30 min the cordon
+//     would otherwise vanish on the next request.
+//
+// Prometheus side: also delete the matching MetricVec label-sets via
+// observer-cache walks (see sweepIdleObservers).
+func (t *Tracker) sweepIdle() {
+	cutoffMs := time.Now().Add(-t.idleEvictionAfter).UnixMilli()
+
+	t.upsMetrics.Range(func(key, value any) bool {
+		k := key.(upstreamKey)
+		if k.method == "*" {
+			return true // never evict the per-upstream wildcard rollup
+		}
+		tm := value.(*TrackedMetrics)
+		if tm.Cordoned.Load() {
+			return true // preserve admin-set cordon state
+		}
+		if tm.LastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		t.upsMetrics.Delete(key)
+		return true
+	})
+
+	t.ntwMetrics.Range(func(key, value any) bool {
+		k := key.(networkKey)
+		if k.method == "*" {
+			return true
+		}
+		tm := value.(*TrackedMetrics)
+		if tm.LastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		t.ntwMetrics.Delete(key)
+		return true
+	})
 }
 
 // getUpsKeys expands a (upstream, method, finality) record into the
@@ -681,11 +817,16 @@ func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (strin
 // ------------------------------------
 
 func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string, finality common.DataFinalityState) {
+	nowMs := time.Now().UnixMilli()
 	for _, k := range t.getUpsKeys(up, method, finality) {
-		t.getUpsMetrics(k).RequestsTotal.Add(1)
+		tm := t.getUpsMetrics(k)
+		tm.RequestsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).RequestsTotal.Add(1)
+		tm := t.getNtwMetrics(nk)
+		tm.RequestsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 }
 
@@ -719,11 +860,16 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		// Hard upstream errors (connection refused, server 5xx,
 		// throttling) stay out so an upstream that's failing fast
 		// doesn't get crowned "fastest in the pool".
+		nowMs := time.Now().UnixMilli()
 		for _, k := range t.getUpsKeys(up, method, finality) {
-			t.getUpsMetrics(k).ResponseQuantiles.Add(sec)
+			tm := t.getUpsMetrics(k)
+			tm.ResponseQuantiles.Add(sec)
+			tm.touch(nowMs)
 		}
 		for _, nk := range t.getNtwKeys(up, method) {
-			t.getNtwMetrics(nk).ResponseQuantiles.Add(sec)
+			tm := t.getNtwMetrics(nk)
+			tm.ResponseQuantiles.Add(sec)
+			tm.touch(nowMs)
 		}
 	}
 	// Use cached observer to avoid per-request MetricVec lookups/locks.
@@ -759,20 +905,30 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, final
 		return
 	}
 
+	nowMs := time.Now().UnixMilli()
 	for _, k := range t.getUpsKeys(up, method, finality) {
-		t.getUpsMetrics(k).ErrorsTotal.Add(1)
+		tm := t.getUpsMetrics(k)
+		tm.ErrorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).ErrorsTotal.Add(1)
+		tm := t.getNtwMetrics(nk)
+		tm.ErrorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 }
 
 func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string, finality common.DataFinalityState) {
+	nowMs := time.Now().UnixMilli()
 	for _, k := range t.getUpsKeys(up, method, finality) {
-		t.getUpsMetrics(k).MisbehaviorsTotal.Add(1)
+		tm := t.getUpsMetrics(k)
+		tm.MisbehaviorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).MisbehaviorsTotal.Add(1)
+		tm := t.getNtwMetrics(nk)
+		tm.MisbehaviorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 }
 
@@ -790,11 +946,16 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common
 		finality = common.DataFinalityStateAll
 	}
 
+	nowMs := time.Now().UnixMilli()
 	for _, k := range t.getUpsKeys(up, method, finality) {
-		t.getUpsMetrics(k).RemoteRateLimitedTotal.Add(1)
+		tm := t.getUpsMetrics(k)
+		tm.RemoteRateLimitedTotal.Add(1)
+		tm.touch(nowMs)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
+		tm := t.getNtwMetrics(nk)
+		tm.RemoteRateLimitedTotal.Add(1)
+		tm.touch(nowMs)
 	}
 
 	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finalityStr).Inc()
@@ -810,18 +971,31 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common
 // transparently falls back to the all-finalities aggregate so the
 // eval is never starved of signal. Pass `DataFinalityStateAll` to
 // request the rollup directly.
+//
+// Touches `LastAccessedAtMs` so an actively-read entry (the policy
+// engine's per-tick eval reads every upstream's metrics) is treated
+// as "alive" by the idle sweep — otherwise a chain with all writes
+// going to the wildcard slot could see specific-bucket entries
+// evicted out from under the read path.
 func (t *Tracker) GetUpstreamMethodMetrics(up common.Upstream, method string, finality common.DataFinalityState) *TrackedMetrics {
+	nowMs := time.Now().UnixMilli()
 	if finality == common.DataFinalityStateAll || !t.trackByFinality.Load() {
-		return t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
+		tm := t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
+		tm.touch(nowMs)
+		return tm
 	}
 	// Use the LIVE map (don't lazy-create) for the specific-finality
 	// bucket — if no Record* has fed it yet, fall through to the
 	// aggregate rather than handing the eval an empty
 	// counters/quantile sketch.
 	if v, ok := t.upsMetrics.Load(upstreamKey{up, method, finality}); ok {
-		return v.(*TrackedMetrics)
+		tm := v.(*TrackedMetrics)
+		tm.touch(nowMs)
+		return tm
 	}
-	return t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
+	tm := t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
+	tm.touch(nowMs)
+	return tm
 }
 
 func (t *Tracker) GetUpstreamMetrics(ups common.Upstream) map[string]*TrackedMetrics {

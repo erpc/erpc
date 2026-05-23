@@ -35,6 +35,15 @@ type Slot struct {
 	// cache holds the most recent eval output. nil before the first tick.
 	cache atomic.Pointer[[]common.Upstream]
 
+	// lastAccessedAtMs is unix-millis of the last tick OR GetOrdered
+	// touching this slot. Drives the engine's idle-slot eviction —
+	// per-(method, finality) slots that haven't seen traffic in a
+	// while get stopped and removed so a method-flood attacker can't
+	// grow the engine's slot map without bound. The wildcard
+	// (`("*", "*")`) slot is exempt; only narrow lazily-created slots
+	// are sweepable.
+	lastAccessedAtMs atomic.Int64
+
 	// crossTick state — touched only inside tickOnce, no locking.
 	mu               sync.Mutex // protects fields below from admin reads
 	tickCount        uint64
@@ -82,7 +91,7 @@ func newSlot(e *Engine, networkID, networkLabel, method, finality string, upstre
 	if networkLabel == "" {
 		networkLabel = networkID
 	}
-	return &Slot{
+	s := &Slot{
 		engine:        e,
 		networkID:     networkID,
 		networkLabel:  networkLabel,
@@ -93,6 +102,10 @@ func newSlot(e *Engine, networkID, networkLabel, method, finality string, upstre
 		excludedSince: make(map[string]int64),
 		stopCh:        make(chan struct{}),
 	}
+	// Seed lastAccessedAtMs to "now" so a freshly-created slot doesn't
+	// look idle to the very next sweep tick.
+	s.lastAccessedAtMs.Store(time.Now().UnixMilli())
+	return s
 }
 
 // start spawns the ticker goroutine. If evalInterval is zero or negative
@@ -146,6 +159,11 @@ const decisionsRingSize = 64
 // tickOnce runs one eval cycle synchronously. Exported via TickForTest.
 func (s *Slot) tickOnce() {
 	start := time.Now()
+	// Mark the slot active so the engine's idle-sweep keeps it alive
+	// even if no request has hit GetOrdered between ticks. Ticking IS
+	// activity — the JS evaluator burned CPU on this slot, evicting
+	// would be wasteful.
+	s.lastAccessedAtMs.Store(start.UnixMilli())
 	timeout := s.cfg.EvalTimeout.Duration()
 
 	// Re-resolve upstreams each tick so newly-bootstrapped ones become visible.

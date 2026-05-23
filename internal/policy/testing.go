@@ -90,6 +90,42 @@ func TickForTest(e *Engine, networkID, method string) {
 	}
 }
 
+// SlotCountForTest returns the number of slots the engine currently
+// holds — used by the idle-sweep test to observe the slot map
+// shrinking as silent narrow slots get evicted. The wildcard slot is
+// included; tests that want narrow-only should subtract it manually.
+func SlotCountForTest(e *Engine) int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.slots)
+}
+
+// SweepIdleSlotsForTest runs the engine's idle-slot sweep
+// synchronously. Used by tests that want deterministic eviction
+// without waiting for the periodic ticker. The real sweep runs from
+// `idleSweepLoop` on a 1-minute cadence.
+func SweepIdleSlotsForTest(e *Engine) {
+	e.sweepIdleSlots()
+	e.sweepIdleSticky()
+}
+
+// WalkSlotsForTest invokes `fn` for every slot the engine currently
+// holds, passing the slot key dimensions + the slot's cached
+// ordering length (-1 if the cache hasn't been populated yet). Used
+// by sweep tests to assert lifecycle properties on a specific slot
+// without exposing the internal slotKey type.
+func WalkSlotsForTest(e *Engine, fn func(network, method, finality string, cacheLen int)) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for k, s := range e.slots {
+		cacheLen := -1
+		if c := s.cache.Load(); c != nil {
+			cacheLen = len(*c)
+		}
+		fn(k.network, k.method, k.finality, cacheLen)
+	}
+}
+
 // TickForTestAtScope is the finality-aware sibling of TickForTest — needed
 // when evalScope includes finality so the test can drive a specific
 // (network, method, finality) slot. Falls back to the network wildcard if

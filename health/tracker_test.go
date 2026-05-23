@@ -1381,6 +1381,87 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 			"cordon-duration histogram must have observed the duration on uncordon")
 	})
 
+	t.Run("idle_sweep_evicts_silent_methods", func(t *testing.T) {
+		// Defends against the method-flood attack vector — a hostile
+		// client sending unique JSON-RPC method names to grow the
+		// per-method tracker map without bound. After the attack
+		// stops, the idle sweep must drop those buckets within a few
+		// rotations and the steady-state memory should track only
+		// methods that received recent traffic.
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		// Aggressive threshold so the test doesn't wait minutes.
+		// Just shy of the sweep cadence so the second sweep cycle
+		// catches still-silent buckets.
+		tracker.SetIdleEvictionAfter(150 * time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("flood-target")
+
+		for i := 0; i < 200; i++ {
+			tracker.RecordUpstreamRequest(ups, fmt.Sprintf("eth_random%d", i), common.DataFinalityStateUnknown)
+		}
+		hotMethod := "eth_blockNumber"
+
+		countBefore := 0
+		tracker.upsMetrics.Range(func(k, _ any) bool {
+			if k.(upstreamKey).method != "*" {
+				countBefore++
+			}
+			return true
+		})
+		require.GreaterOrEqual(t, countBefore, 200,
+			"all 200 flood methods should have spawned per-method entries")
+
+		// Eviction needs (a) idleEvictionAfter to elapse, AND (b) the
+		// sweep cadence — sweepEveryRotations × interval. With
+		// windowSize=2s and rollingBuckets=10, sweep fires every 2s.
+		// Generous margin to absorb CI jitter.
+		require.Eventually(t, func() bool {
+			// Keep the hot method alive across the wait so it survives.
+			tracker.RecordUpstreamRequest(ups, hotMethod, common.DataFinalityStateUnknown)
+			n := 0
+			tracker.upsMetrics.Range(func(k, _ any) bool {
+				if k.(upstreamKey).method != "*" {
+					n++
+				}
+				return true
+			})
+			return n <= 1
+		}, 5*time.Second, 100*time.Millisecond,
+			"flooded methods should have evicted after going idle past the threshold")
+
+		_, ok := tracker.upsMetrics.Load(upstreamKey{ups, hotMethod, common.DataFinalityStateAll})
+		assert.True(t, ok, "hot method must NOT be evicted while it keeps receiving traffic")
+	})
+
+	t.Run("idle_sweep_preserves_cordoned_state", func(t *testing.T) {
+		// Cordon is operator-set; it must never be evicted by the
+		// idle sweep, even if the cordoned (upstream, method) has
+		// received zero traffic since the cordon was applied.
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		tracker.SetIdleEvictionAfter(50 * time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("cordoned-method-target")
+		tracker.RecordUpstreamRequest(ups, "eth_call", common.DataFinalityStateUnknown)
+		tracker.Cordon(ups, "eth_call", "investigated regression")
+
+		// Wait through a couple of sweep cycles.
+		time.Sleep(2500 * time.Millisecond)
+
+		// `Cordon` stores on the all-finalities key; the sweep skips
+		// any entry where `Cordoned == true`, so the cordoned bucket
+		// MUST survive.
+		tm, ok := tracker.upsMetrics.Load(upstreamKey{ups, "eth_call", common.DataFinalityStateAll})
+		require.True(t, ok, "cordoned per-method entry must NOT be evicted by the idle sweep")
+		assert.True(t, tm.(*TrackedMetrics).Cordoned.Load(),
+			"cordon flag must still be set after the sweep")
+	})
+
 	t.Run("uncordon_when_not_cordoned_is_idempotent", func(t *testing.T) {
 		// Uncordoning a never-cordoned upstream must not panic, must not
 		// observe the duration histogram, and must not increment the

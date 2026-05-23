@@ -2,6 +2,7 @@ package policy_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -108,4 +109,92 @@ func TestEngine_OverrideOrderForTest(t *testing.T) {
 	require.Len(t, ordered, 2)
 	require.Equal(t, "rpc3", ordered[0].Id())
 	require.Equal(t, "rpc1", ordered[1].Id())
+}
+
+// TestEngine_SweepIdleSlots verifies the engine evicts narrow slots
+// that have gone silent past `idleEvictionAfter`. Defends against
+// method-flood: a malicious client hitting random JSON-RPC method
+// names would otherwise grow the slot map unbounded (one slot per
+// distinct method × finality combo when evalScope opts in).
+//
+// Properties asserted:
+//
+//  1. Narrow slots (specific method, with evalScope=network-method)
+//     lazy-create on first GetOrdered and DO get evicted after
+//     idleEvictionAfter elapses.
+//  2. The network wildcard slot (`("*", "*")`) is NEVER evicted, no
+//     matter how long it sits idle — it's the cold-start fallback.
+//  3. A hot narrow slot (re-touched on every sweep cycle) survives.
+func TestEngine_SweepIdleSlots(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "test", time.Minute)
+
+	cfg := &common.SelectionPolicyConfig{
+		// EvalInterval=0 freezes auto-ticking — combined with
+		// DisableTickerForTest=true, slot timestamps don't refresh
+		// behind our back while we wait for the idle threshold to
+		// elapse. The initial sync tick at RegisterNetwork still runs
+		// (it's separate from the ticker), so the wildcard slot's
+		// cache is populated for the GetOrdered fallback to hit.
+		EvalInterval:         common.Duration(0),
+		EvalTimeout:          common.Duration(500 * time.Millisecond),
+		EvalScope:            common.EvalScopeNetworkMethod, // lazy per-method slots
+		EvalFunc:             `(ups, _ctx) => ups`,          // trivial pass-through
+		DisableTickerForTest: true,
+	}
+	require.NoError(t, cfg.SetDefaults())
+
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, nil, nil)
+	defer engine.Stop()
+	// Aggressive threshold so the sweep test doesn't have to wait an hour.
+	engine.SetIdleEvictionAfter(50 * time.Millisecond)
+
+	ups := []common.Upstream{
+		&fakeUpstream{id: "rpc1"},
+		&fakeUpstream{id: "rpc2"},
+	}
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// Simulate the method-flood: 50 unique JSON-RPC method names, each
+	// touched once via GetOrdered (which lazy-creates the slot).
+	for i := 0; i < 50; i++ {
+		_ = engine.GetOrdered("evm:1", fmt.Sprintf("eth_random%d", i), "*")
+	}
+	// One method that we'll keep alive across the wait.
+	const hotMethod = "eth_blockNumber"
+	_ = engine.GetOrdered("evm:1", hotMethod, "*")
+
+	// Wildcard slot (created at RegisterNetwork) + 50 random + 1 hot = 52.
+	require.Equal(t, 52, policy.SlotCountForTest(engine),
+		"flood should have lazy-created 50 narrow slots plus the hot one + wildcard")
+
+	// Wait past the idle threshold, then sweep.
+	time.Sleep(100 * time.Millisecond)
+	// Re-touch the hot slot RIGHT BEFORE the sweep so it survives.
+	_ = engine.GetOrdered("evm:1", hotMethod, "*")
+	policy.SweepIdleSlotsForTest(engine)
+
+	// Now: wildcard + hot = 2.
+	got := policy.SlotCountForTest(engine)
+	require.Equal(t, 2, got,
+		"after sweep, only the wildcard slot + the hot method's slot should remain (got %d)", got)
+
+	// Sanity: the wildcard slot is still alive AND its slot key
+	// remains in the engine's map.
+	wildcardOK := false
+	wildcardCacheLen := -1
+	policy.WalkSlotsForTest(engine, func(network, method, finality string, cacheLen int) {
+		if network == "evm:1" && method == "*" && finality == "*" {
+			wildcardOK = true
+			wildcardCacheLen = cacheLen
+		}
+	})
+	require.True(t, wildcardOK, "wildcard slot ('*', '*') must NOT be evicted")
+	// Initial RegisterNetwork tick populated the cache, sweep didn't
+	// touch it — the wildcard cache should still hold both upstreams.
+	require.Equal(t, 2, wildcardCacheLen,
+		"wildcard cache should still hold both upstreams after the sweep (got %d)", wildcardCacheLen)
 }
