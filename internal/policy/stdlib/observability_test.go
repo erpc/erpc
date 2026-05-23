@@ -30,7 +30,7 @@ func TestStdlib_LeafReasons_LeafPredicate(t *testing.T) {
 	ups := mkUps("erroring", "clean")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 80; i++ {
 		tracker.RecordUpstreamRequest(ups[0], "*")
@@ -77,7 +77,7 @@ func TestStdlib_LeafReasons_AnyAttributesToTruthyLeaves(t *testing.T) {
 	ups := mkUps("erroring", "lagging", "both", "clean")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Setup block lag via SetLatestBlockNumber: network's tip is the max
 	// across upstreams, lag is (tip - upstream's block). Clean & erroring
@@ -143,7 +143,7 @@ func TestStdlib_LeafReasons_AllAttributesEveryLeaf(t *testing.T) {
 	ups := mkUps("tripped", "low-samples")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// tripped: lots of samples, mostly errors → AND trips.
 	for i := 0; i < 80; i++ {
@@ -187,7 +187,7 @@ func TestStdlib_LeafReasons_NotPrefixesSlug(t *testing.T) {
 	ups := mkUps("starved", "mature")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 3; i++ {
 		tracker.RecordUpstreamRequest(ups[0], "*")
@@ -224,7 +224,7 @@ func TestStdlib_LeafReasons_CustomInlinePredicate(t *testing.T) {
 	ups := mkUps("legacy", "modern")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
@@ -254,7 +254,7 @@ func TestStdlib_LeafReasons_OverrideStringWins(t *testing.T) {
 	ups := mkUps("legacy", "modern")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
@@ -291,7 +291,7 @@ func TestStdlib_StickyHeld_FlagSetOnActiveHold(t *testing.T) {
 	ups := mkUps("a-prim", "b-chal")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Tick 1: equal metrics → a-prim wins by id tiebreak. StickyHeld is
 	// false because there's no prior primary to actively defend.

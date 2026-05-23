@@ -55,7 +55,7 @@ func runTranslatedPolicy(
 	logger := zerolog.Nop()
 	tracker := health.NewTracker(&logger, "p1", time.Minute)
 	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// RegisterNetwork synchronously runs an initial tick so the cache is
 	// populated before the first request. With empty metrics that initial

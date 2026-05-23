@@ -85,6 +85,11 @@ type networkRegistration struct {
 	// can use a closure that returns a frozen slice.
 	upstreamsFn func() []common.Upstream
 	cfg         *common.SelectionPolicyConfig
+	// networkLabel is the human-friendly alias (e.g. "base", "mainnet")
+	// used on Prometheus labels. Distinct from the canonical `networkID`
+	// (e.g. "evm:8453") which stays the engine's internal key. Defaults
+	// to networkID when the caller passes "".
+	networkLabel string
 }
 
 // NewEngine constructs an Engine. `tracker` is read-only from the engine's
@@ -134,22 +139,31 @@ func NewEngine(
 // the embedded rich default (sortByScore + preferTag + stickyPrimary
 // + probeExcluded).
 //
+// `networkLabel` is the human-friendly alias used on Prometheus labels —
+// pass `Network.Label()` from the caller. When the caller passes "" it
+// falls back to `networkID` so test/fixture callers don't have to plumb
+// a label they don't care about.
+//
 // The initial eval runs synchronously so callers can rely on a non-empty
 // cache being present once RegisterNetwork returns.
-func (e *Engine) RegisterNetwork(networkID string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) error {
+func (e *Engine) RegisterNetwork(networkID, networkLabel string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) error {
 	if err := upgradeDefaultPolicy(cfg); err != nil {
 		return err
 	}
 	if upstreamsFn == nil {
 		upstreamsFn = func() []common.Upstream { return nil }
 	}
+	if networkLabel == "" {
+		networkLabel = networkID
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.networks[networkID] = &networkRegistration{
-		upstreamsFn: upstreamsFn,
-		cfg:         cfg,
+		upstreamsFn:  upstreamsFn,
+		cfg:          cfg,
+		networkLabel: networkLabel,
 	}
 
 	// Tear down any pre-existing slots for this network so reconfiguration
@@ -161,7 +175,7 @@ func (e *Engine) RegisterNetwork(networkID string, upstreamsFn func() []common.U
 		}
 	}
 
-	wildcard := newSlot(e, networkID, "*", "*", upstreamsFn, cfg)
+	wildcard := newSlot(e, networkID, networkLabel, "*", "*", upstreamsFn, cfg)
 	e.slots[slotKey{networkID, "*", "*"}] = wildcard
 
 	// Initial eval is synchronous so the first request sees a populated cache.
@@ -375,8 +389,13 @@ func (e *Engine) lookupSlotWithFallback(networkID, method, finality string) (slo
 	}
 	// Pass the resolved key's method/finality (with wildcards collapsed)
 	// to the new slot so its ticker emits ctx.finality / metric labels
-	// at the right scope.
-	s := newSlot(e, networkID, key.method, key.finality, reg.upstreamsFn, reg.cfg)
+	// at the right scope. `reg.networkLabel` was set at RegisterNetwork
+	// time — falls back to networkID if the caller didn't supply one.
+	label := reg.networkLabel
+	if label == "" {
+		label = networkID
+	}
+	s := newSlot(e, networkID, label, key.method, key.finality, reg.upstreamsFn, reg.cfg)
 	e.slots[key] = s
 	e.mu.Unlock()
 	// Start the slot's ticker asynchronously so this request-path call

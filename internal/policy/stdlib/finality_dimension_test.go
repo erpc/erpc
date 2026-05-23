@@ -52,7 +52,7 @@ func TestStdlib_EvalPerFinality_SeparateSlots(t *testing.T) {
 		EvalPerFinality: true,
 	}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Three finality buckets — each `GetOrdered` lazy-creates its own
 	// slot. Without EvalPerFinality every call would resolve to the
@@ -97,7 +97,7 @@ func TestStdlib_EvalPerFinality_SeparateSlots(t *testing.T) {
 		EvalPerFinality: true,
 	}
 	require.NoError(t, cfg2.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg2))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg2))
 
 	// Touch each finality bucket so the per-finality slot is created
 	// and its 10ms ticker starts.
@@ -149,7 +149,7 @@ func TestStdlib_EvalPerFinality_Off_FallsThroughToWildcard(t *testing.T) {
 		// EvalPerFinality is FALSE (zero value) — single wildcard slot.
 	}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Wait for the initial wildcard tick to publish a cache.
 	require.Eventually(t, func() bool {

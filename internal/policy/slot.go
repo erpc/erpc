@@ -20,8 +20,14 @@ import (
 type Slot struct {
 	engine    *Engine
 	networkID string
-	method    string
-	finality  string
+	// networkLabel is the human-friendly alias used as the Prometheus
+	// `network` label (so `mainnet`/`base` instead of `evm:1`/`evm:8453`).
+	// Matches the convention used by every other erpc_* metric (filed via
+	// Network.Label()). Falls back to networkID if the caller didn't pass
+	// one through RegisterNetwork.
+	networkLabel string
+	method       string
+	finality     string
 
 	upstreamsFn func() []common.Upstream
 	cfg         *common.SelectionPolicyConfig
@@ -72,10 +78,14 @@ type Slot struct {
 	wg       sync.WaitGroup
 }
 
-func newSlot(e *Engine, networkID, method, finality string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
+func newSlot(e *Engine, networkID, networkLabel, method, finality string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) *Slot {
+	if networkLabel == "" {
+		networkLabel = networkID
+	}
 	return &Slot{
 		engine:        e,
 		networkID:     networkID,
+		networkLabel:  networkLabel,
 		method:        method,
 		finality:      finality,
 		upstreamsFn:   upstreamsFn,
@@ -409,7 +419,7 @@ func (s *Slot) recentDecisions(limit int) []*Decision {
 // proliferation beyond the steps the user's eval actually fires.
 func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 	project := s.engine.projectID
-	labels := []string{project, s.networkID, s.method}
+	labels := []string{project, s.networkLabel, s.method}
 
 	telemetry.MetricSelectionEvalDurationSeconds.WithLabelValues(labels...).
 		Observe(d.EvalDuration.Seconds())
@@ -421,7 +431,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 		} else if strings.Contains(d.Error, ErrInvalidReturn.Error()) {
 			kind = "invalid_return"
 		}
-		telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues(project, s.networkID, s.method, kind).Inc()
+		telemetry.MetricSelectionEvalErrorsTotal.WithLabelValues(project, s.networkLabel, s.method, kind).Inc()
 		return
 	}
 
@@ -431,30 +441,30 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 	// readmit-age gauges. O(n) memory, n = ordered set size.
 	inOrder := make(map[string]struct{}, len(d.Output.Order))
 	for i, id := range d.Output.Order {
-		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkID, s.method, id).Set(float64(i))
+		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkLabel, s.method, id).Set(float64(i))
 		inOrder[id] = struct{}{}
 		// Score gauge — populated per upstream that survived sortByScore.
 		// Upstreams added after scoring (probeExcluded/forceInclude) or
 		// policies without a sortByScore step have no entry.
 		if score, ok := d.Output.Scores[id]; ok {
-			telemetry.MetricSelectionScore.WithLabelValues(project, s.networkID, s.method, id).Set(score)
+			telemetry.MetricSelectionScore.WithLabelValues(project, s.networkLabel, s.method, id).Set(score)
 		}
 		// In-rotation upstreams report 0 excluded-seconds. Resets the
 		// gauge cleanly when a previously-excluded upstream comes back —
 		// dashboards see the transition immediately.
-		telemetry.MetricSelectionExcludedSeconds.WithLabelValues(project, s.networkID, s.method, id).Set(0)
+		telemetry.MetricSelectionExcludedSeconds.WithLabelValues(project, s.networkLabel, s.method, id).Set(0)
 	}
 
 	// Excluded upstreams: position=-1, per-leaf exclusion counters, and
 	// excluded-seconds gauge.
 	nowMs := d.TickAt.UnixMilli()
 	for _, ex := range d.Output.Excluded {
-		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkID, s.method, ex.ID).Set(-1)
+		telemetry.MetricSelectionPosition.WithLabelValues(project, s.networkLabel, s.method, ex.ID).Set(-1)
 		step := ex.Step
 		if step == "" {
 			step = "eval"
 		}
-		telemetry.MetricSelectionRejectionTotal.WithLabelValues(project, s.networkID, s.method, ex.ID, step).Inc()
+		telemetry.MetricSelectionRejectionTotal.WithLabelValues(project, s.networkLabel, s.method, ex.ID, step).Inc()
 		// Per-leaf exclusion attribution. The Reason field is the
 		// display string (carries thresholds — high cardinality), so we
 		// do NOT emit it as a label. Instead emit one increment per leaf
@@ -462,7 +472,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 		// Excluded upstreams dropped by non-`excludeIf` steps have no
 		// leaves — they're already counted by `selection_rejection_total{step}`.
 		for _, slug := range ex.LeafReasons {
-			telemetry.MetricSelectionExclusionTotal.WithLabelValues(project, s.networkID, s.method, ex.ID, slug).Inc()
+			telemetry.MetricSelectionExclusionTotal.WithLabelValues(project, s.networkLabel, s.method, ex.ID, slug).Inc()
 		}
 		// `prevState.ExcludedSince` is the pre-tick clone captured under
 		// s.mu at the start of tickOnce. Reading the LIVE `s.excludedSince`
@@ -478,7 +488,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 			if age < 0 {
 				age = 0
 			}
-			telemetry.MetricSelectionExcludedSeconds.WithLabelValues(project, s.networkID, s.method, ex.ID).Set(age.Seconds())
+			telemetry.MetricSelectionExcludedSeconds.WithLabelValues(project, s.networkLabel, s.method, ex.ID).Set(age.Seconds())
 		}
 	}
 
@@ -489,7 +499,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 	// rule. Same option-(c) attribution as the real counter.
 	for id, slugs := range d.Output.ShadowReasons {
 		for _, slug := range slugs {
-			telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues(project, s.networkID, s.method, id, slug).Inc()
+			telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues(project, s.networkLabel, s.method, id, slug).Inc()
 		}
 	}
 
@@ -510,7 +520,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 			if !wasExcluded {
 				continue
 			}
-			telemetry.MetricSelectionReadmitTotal.WithLabelValues(project, s.networkID, s.method, id).Inc()
+			telemetry.MetricSelectionReadmitTotal.WithLabelValues(project, s.networkLabel, s.method, id).Inc()
 			if since > 0 {
 				age := time.Duration(nowMs-since) * time.Millisecond
 				if age > 0 {
@@ -524,7 +534,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 	// the previous primary was kept against a challenger (cooldown
 	// active or hysteresis not exceeded). Attribute to the held primary.
 	if d.Diff.StickyHeld && len(d.Output.Order) > 0 {
-		telemetry.MetricSelectionStickyHoldTotal.WithLabelValues(project, s.networkID, s.method, d.Output.Order[0]).Inc()
+		telemetry.MetricSelectionStickyHoldTotal.WithLabelValues(project, s.networkLabel, s.method, d.Output.Order[0]).Inc()
 	}
 
 	if d.Diff.PrimaryChanged {
@@ -537,7 +547,7 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 			to = d.Output.Order[0]
 		}
 		if from != to {
-			telemetry.MetricSelectionPrimarySwitchTotal.WithLabelValues(project, s.networkID, s.method, from, to).Inc()
+			telemetry.MetricSelectionPrimarySwitchTotal.WithLabelValues(project, s.networkLabel, s.method, from, to).Inc()
 		}
 	}
 }

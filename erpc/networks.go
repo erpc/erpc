@@ -78,7 +78,7 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		}
 		return out
 	}
-	return n.policyEngine.RegisterNetwork(n.networkId, upstreamsFn, cfg)
+	return n.policyEngine.RegisterNetwork(n.networkId, n.Label(), upstreamsFn, cfg)
 }
 
 // PinUpstreamOrderForTest pins the upstream ordering for this network to

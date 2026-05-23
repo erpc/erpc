@@ -25,7 +25,7 @@ func TestMetrics_EmitsScoreGaugeForRanked(t *testing.T) {
 	ups := mkUps("fast", "slow")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 100; i++ {
 		tracker.RecordUpstreamRequest(ups[0], "*")
@@ -60,7 +60,7 @@ func TestMetrics_ExclusionTotalEmitsLeafSlugs(t *testing.T) {
 	ups := mkUps("erroring-X", "clean-X")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	beforeLeaf := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "erroring-X", "error_rate_above"))
 	beforeCompound := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "erroring-X", "any"))
@@ -105,7 +105,7 @@ func TestMetrics_ShadowExcludeIf_ObservesButDoesNotDrop(t *testing.T) {
 	ups := mkUps("shadow-erroring", "clean")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	beforeShadow := promUtil.ToFloat64(telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
 	beforeReal := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
@@ -155,7 +155,7 @@ func TestMetrics_ExcludedSecondsGaugeTransitions(t *testing.T) {
 	ups := mkUps("flaky", "steady")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Tick 1: flaky degrades, steady stays clean.
 	for i := 0; i < 80; i++ {
@@ -191,7 +191,7 @@ func TestMetrics_ReadmitCountsTransition(t *testing.T) {
 	ups := mkUps("returner", "anchor")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	beforeReadmits := promUtil.ToFloat64(telemetry.MetricSelectionReadmitTotal.WithLabelValues("p1", "evm:1", "*", "returner"))
 
@@ -236,7 +236,7 @@ func TestMetrics_StickyHoldCounterIncrementsOnActiveHold(t *testing.T) {
 	ups := mkUps("a-prim2", "b-chal2")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	beforeHolds := promUtil.ToFloat64(telemetry.MetricSelectionStickyHoldTotal.WithLabelValues("p1", "evm:1", "*", "a-prim2"))
 
@@ -258,4 +258,41 @@ func TestMetrics_StickyHoldCounterIncrementsOnActiveHold(t *testing.T) {
 	afterHolds := promUtil.ToFloat64(telemetry.MetricSelectionStickyHoldTotal.WithLabelValues("p1", "evm:1", "*", "a-prim2"))
 	require.Equal(t, beforeHolds+1, afterHolds,
 		"sticky hold counter must increment when stickyPrimary actively held a primary it would have lost")
+}
+
+// TestMetrics_NetworkLabelUsesAlias verifies that the human-friendly
+// `networkLabel` (i.e. `Network.Label()` — alias when set, else
+// networkID) is the value emitted on the Prometheus `network` label —
+// NOT the canonical `evm:<chainID>`. Dashboards filter and group by
+// alias (consistent with every other erpc_* metric), so getting this
+// wrong silently breaks every Selection Policy panel.
+func TestMetrics_NetworkLabelUsesAlias(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("u1")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	// networkID is the canonical "evm:8453"; alias is "base" — the
+	// alias is what should land on every emitted metric.
+	require.NoError(t, engine.RegisterNetwork("evm:8453", "base", func() []common.Upstream { return ups }, cfg))
+
+	for i := 0; i < 50; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	policy.TickForTest(engine, "evm:8453", "*")
+
+	aliasScore := promUtil.ToFloat64(telemetry.MetricSelectionScore.WithLabelValues("p1", "base", "*", "u1"))
+	require.Greater(t, aliasScore, 0.0,
+		"selection_score must be emitted under the alias `base` — dashboards filter by `network` and rely on the alias-not-networkID convention")
+
+	// The canonical-id label vector must not have been written to: any
+	// nonzero value here would mean we double-emit under both keys (or
+	// regressed to networkID emission).
+	canonicalScore := promUtil.ToFloat64(telemetry.MetricSelectionScore.WithLabelValues("p1", "evm:8453", "*", "u1"))
+	require.Equal(t, 0.0, canonicalScore,
+		"selection_score must NOT be emitted under canonical networkID `evm:8453` when an alias is configured")
 }

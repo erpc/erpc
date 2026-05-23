@@ -150,7 +150,7 @@ func TestStdlib_ScoreMultipliers_OverallBoost(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	recordEqual(tracker, ups, 50, 20*time.Millisecond)
 	policy.TickForTest(engine, "evm:1", "*")
@@ -173,7 +173,7 @@ func TestStdlib_ScoreMultipliers_OffIgnoresConfig(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	recordEqual(tracker, ups, 50, 20*time.Millisecond)
 	policy.TickForTest(engine, "evm:1", "*")
@@ -198,7 +198,7 @@ func TestStdlib_ScoreMultipliers_OverrideMode(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// `a`: fast (10ms) but 50% errors. `b`: clean but slower (80ms).
 	for i := 0; i < 50; i++ {
@@ -231,7 +231,7 @@ func TestStdlib_PreferTagFallback(t *testing.T) {
 	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 2, "should return both tier:main upstreams")
@@ -252,7 +252,7 @@ func TestStdlib_RotateBy_RoundRobin(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2", "rpc3")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	seen := map[string]bool{}
 	for i := 0; i < 6; i++ {
@@ -275,7 +275,7 @@ func TestStdlib_SortByScore_PenalizesErrors(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Drive rpc1 → high error rate; rpc2 → clean.
 	for i := 0; i < 80; i++ {
@@ -307,7 +307,7 @@ func TestStdlib_RemoveByLag(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2", "rpc3")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Force-create metric entries, then set lag directly. (We can't use
 	// SetLatestBlockNumber here without a real registry.)
@@ -342,7 +342,7 @@ func TestStdlib_RichDefaultPolicy(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUpsWithTier(map[string]string{"rpc1": "default", "rpc2": "fallback"})
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// After RegisterNetwork the cfg should hold the rich default source.
 	require.Contains(t, cfg.EvalFunc, "sortByScore(PREFER_FASTEST)",
@@ -369,7 +369,7 @@ func TestStdlib_DefaultPolicy_DropsBrokenUpstream(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// rpc1: 90% error rate (broken). rpc2: clean.
 	for i := 0; i < 90; i++ {
@@ -404,7 +404,7 @@ func TestStdlib_DefaultPolicy_SafetyNetWhenAllBroken(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Both upstreams broken.
 	for _, u := range ups {
@@ -439,7 +439,7 @@ func TestStdlib_DefaultPolicy_FallbackTierWhenPrimaryEmpty(t *testing.T) {
 	// All upstreams tagged tier:fallback → primary tier
 	// (`!tier:fallback`) is empty.
 	ups := mkUpsWithTier(map[string]string{"rpc1": "fallback", "rpc2": "fallback"})
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	ordered := engine.GetOrdered("evm:1", "*", "*")
@@ -463,7 +463,7 @@ func TestStdlib_DefaultPolicy_DropsLaggingErrorFreeUpstream(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Drive 100 clean requests for both; only rpc1 is lagging.
 	for _, u := range ups {
@@ -497,7 +497,7 @@ func TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// rpc1: 100 requests, all SLOW (12s) → p95 ≈ 12s > 10s threshold.
 	// rpc2: 100 requests, all fast (10ms) → p95 ≈ 10ms.
@@ -539,7 +539,7 @@ func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 		engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
 
 		ups := mkUps("rpc1", "rpc2")
-		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+		require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 		for _, u := range ups {
 			for i := 0; i < 100; i++ {
@@ -600,7 +600,7 @@ func TestStdlib_DefaultPolicy_ProbeReadmitsAt90s(t *testing.T) {
 	defer engine.Stop()
 
 	ups := mkUps("rpc1", "rpc2")
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// rpc1 broken; rpc2 healthy.
 	for i := 0; i < 90; i++ {
@@ -641,7 +641,7 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Tick 1: rpc1 clean, rpc2 broken → rpc1 becomes primary.
 	for i := 0; i < 100; i++ {
@@ -682,7 +682,7 @@ func TestStdlib_KeepHealthy_CompositeFilter(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2", "rpc3")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// rpc1: clean. rpc2: 50% errors. rpc3: blockHeadLag=50.
 	for i := 0; i < 100; i++ {
@@ -728,7 +728,7 @@ func TestStdlib_Combinators_WhenEmpty_FallbackTo(t *testing.T) {
 	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 2, "whenEmpty should fall back to tier:main")
@@ -773,7 +773,7 @@ func TestStdlib_ByFinality_RoutesToCorrectHandler(t *testing.T) {
 				EvalFunc:            eval,
 			}
 			require.NoError(t, cfg.SetDefaults())
-			require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+			require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 			policy.SetFinalityForTest(engine, "evm:1", "*", tc.finality)
 			policy.TickForTest(engine, "evm:1", "*")
@@ -809,7 +809,7 @@ func TestStdlib_ByFinality_ChainsCleanly(t *testing.T) {
 		EvalFunc:            eval,
 	}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.SetFinalityForTest(engine, "evm:1", "*", "realtime")
 	policy.TickForTest(engine, "evm:1", "*")
@@ -846,7 +846,7 @@ func TestStdlib_SpreadAcrossTags_ByVendorTag(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -875,7 +875,7 @@ func TestStdlib_SpreadAcrossTags_StableForTies(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -903,7 +903,7 @@ func TestStdlib_SpreadAcrossTags_SingleBucketFallthrough(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -948,7 +948,7 @@ func TestStdlib_ByTag_GlobAndNegation(t *testing.T) {
 			})
 			cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: tc.eval}
 			require.NoError(t, cfg.SetDefaults())
-			require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+			require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 			policy.TickForTest(engine, "evm:1", "*")
 			require.Equal(t, tc.want, ids(engine.GetOrdered("evm:1", "*", "*")))
@@ -978,7 +978,7 @@ func TestStdlib_PreferTag_Fallback(t *testing.T) {
 		})
 		cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 		require.NoError(t, cfg.SetDefaults())
-		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+		require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 		policy.TickForTest(engine, "evm:1", "*")
 		require.Equal(t, []string{"prim-a", "prim-b"}, ids(engine.GetOrdered("evm:1", "*", "*")),
@@ -1000,7 +1000,7 @@ func TestStdlib_PreferTag_Fallback(t *testing.T) {
 		})
 		cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 		require.NoError(t, cfg.SetDefaults())
-		require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+		require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 		policy.TickForTest(engine, "evm:1", "*")
 		require.Equal(t, []string{"backup"}, ids(engine.GetOrdered("evm:1", "*", "*")),
@@ -1028,7 +1028,7 @@ func TestStdlib_SpreadAcrossTags_ByPrefix(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -1056,7 +1056,7 @@ func TestStdlib_SpreadAcrossTags_MissingTagBucketed(t *testing.T) {
 	})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -1076,7 +1076,7 @@ func TestStdlib_Slicing_PickTop_DropTop(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2", "rpc3", "rpc4")
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	require.Len(t, engine.GetOrdered("evm:1", "*", "*"), 2, "pickTop(2) should cap output at 2")
 }
@@ -1095,7 +1095,7 @@ func TestStdlib_LatestDecision_OrderAndExclusions(t *testing.T) {
 	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main", "rpc3": "fallback"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	order, excluded := policy.LatestDecisionOutputForTest(engine, "evm:1", "*")
@@ -1143,7 +1143,7 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 		{id: "rpc2", tags: []string{"tier:main"}},
 		{id: "rpc3", tags: []string{"tier:fallback"}},
 	})
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// rpc1 is broken so the excludeIf step trips on it.
 	rpc1 := ups[0]
@@ -1203,7 +1203,7 @@ func TestStdlib_StepLog_DisabledByDefault(t *testing.T) {
 	ups := mkUpsWithTier(map[string]string{"rpc1": "main", "rpc2": "main"})
 	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
 	require.NoError(t, cfg.SetDefaults())
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.TickForTest(engine, "evm:1", "*")
 	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)

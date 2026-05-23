@@ -69,7 +69,7 @@ func TestEngine_IdentityPolicy_PassesThrough(t *testing.T) {
 		&fakeUpstream{id: "rpc2", tier: "main"},
 		&fakeUpstream{id: "rpc3", tier: "fallback"},
 	}
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	ordered := engine.GetOrdered("evm:1", "*", "*")
 	require.Len(t, ordered, 3)
@@ -101,7 +101,7 @@ func TestEngine_OverrideOrderForTest(t *testing.T) {
 		&fakeUpstream{id: "rpc2"},
 		&fakeUpstream{id: "rpc3"},
 	}
-	require.NoError(t, engine.RegisterNetwork("evm:1", func() []common.Upstream { return ups }, cfg))
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	policy.OverrideOrderForTest(engine, "evm:1", "rpc3", "rpc1")
 	ordered := engine.GetOrdered("evm:1", "*", "*")
