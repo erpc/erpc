@@ -145,7 +145,6 @@ function PolicyHistoryModal({ d, onClose }) {
 const PolicyTipContext = React.createContext(null);
 
 function PolicyHistoryDetail({ d }) {
-  const annotations = d.annotations || {};
   const metrics = d.metrics || {};
   const scores = d.perUpstreamScore || {};
   const steps = d.steps || [];
@@ -166,13 +165,6 @@ function PolicyHistoryDetail({ d }) {
             <div key={id} className={`ph-order-row ${i === 0 ? "primary" : ""}`}>
               <span className="ph-pos">{i}</span>
               <UpstreamPill id={id} metrics={metrics[id]} score={scores[id]} className="ph-up" />
-              {annotations[id] && annotations[id].length > 0 && (
-                <span className="ph-annots">
-                  {annotations[id].map((n, j) => (
-                    <span key={j} className="ph-annot">{n}</span>
-                  ))}
-                </span>
-              )}
             </div>
           ))}
         </div>
@@ -181,25 +173,15 @@ function PolicyHistoryDetail({ d }) {
         <div className="ph-section">
           <div className="ph-section-hd">excluded</div>
           <div className="ph-excluded">
-            {d.excluded.map((e, i) => {
-              const notes = annotations[e.id] || [];
-              return (
-                <div key={`${e.id}-${i}`} className="ph-excluded-row">
-                  <UpstreamPill id={e.id} metrics={metrics[e.id]} score={scores[e.id]} className="ph-up out" />
-                  {e.step && <span className="ph-step">{e.step}</span>}
-                  {e.reason && e.reason !== e.step && (
-                    <span className="ph-reason">{e.reason}</span>
-                  )}
-                  {notes.length > 0 && (
-                    <span className="ph-annots">
-                      {notes.map((n, j) => (
-                        <span key={j} className="ph-annot">{n}</span>
-                      ))}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+            {d.excluded.map((e, i) => (
+              <div key={`${e.id}-${i}`} className="ph-excluded-row">
+                <UpstreamPill id={e.id} metrics={metrics[e.id]} score={scores[e.id]} className="ph-up out" />
+                {e.step && <span className="ph-step">{e.step}</span>}
+                {e.reason && e.reason !== e.step && (
+                  <span className="ph-reason">{e.reason}</span>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

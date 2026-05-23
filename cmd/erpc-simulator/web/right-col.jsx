@@ -401,11 +401,14 @@ function parseErpcError(s) {
 
 function splitCausedBy(s) {
   // Accept all three:  "\ncaused by: ", "  \\ncaused by: ", " caused by: "
-  // The two alternatives are deliberately DISJOINT so the `+` quantifier
-  // can't backtrack exponentially on long whitespace runs:
-  //   \\n — the two-character literal `\n` (e.g. from a JSON-encoded error)
-  //   \s  — a single whitespace char (covers real \n / \r / space / tab)
-  return s.split(/(?:\\n|\s)+caused by:\s*/);
+  //
+  // Two-pass to keep the split regex unambiguous (CodeQL flagged the
+  // previous `(?:\\n|\s)+` because the two-character `\n` literal and
+  // `\s` aren't visibly disjoint to the optimizer, so on long
+  // whitespace runs without a trailing "caused by:" the engine can
+  // explore exponential alternations). Step 1: normalize the encoded
+  // `\n` sequence to a space; step 2: split on a single quantifier.
+  return s.replace(/\\n/g, " ").split(/\s+caused by:\s*/);
 }
 
 function parseErpcLevel(part) {

@@ -291,7 +291,6 @@ function SelectionPolicy() {
   vendor: string;
   tags: string[];
   type: string;          // 'http' | 'evm' | …
-  annotations: string[]; // diagnostic trail
   // Tag check — equivalent to tags.includes(t);
   // 'is' is an alias.
   hasTag(t: string): boolean;
