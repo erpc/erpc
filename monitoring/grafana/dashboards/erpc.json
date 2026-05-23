@@ -6795,17 +6795,17 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (step) (\n  rate(erpc_selection_rejection_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "expr": "topk(20,\n  sum by (network, upstream, reason) (\n    rate(erpc_selection_exclusion_total{\n        cluster=~\"${cluster:regex}\",\n        region=~\"${region:regex}\",\n        project=~\"${project:regex}\",\n        network=~\"${network:regex}\",\n        network!~\"${ignore_network:regex}\",\n        upstream=~\"${upstream:regex}\"\n    }[5m])\n  )\n)",
               "format": "time_series",
               "instant": false,
-              "legendFormat": "{{step}}",
+              "legendFormat": "{{network}} / {{upstream}} \u2014 {{reason}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Rejection by Chain Step",
+          "title": "Exclusions by Upstream & Reason",
           "type": "timeseries",
-          "description": "Per-step rejection counts. Tells you WHICH primitive (`removeCordoned`, `excludeIf`, `preferTag`, etc.) is dropping upstreams \u2014 orthogonal to the reason slug."
+          "description": "Per-upstream, per-leaf-reason exclusion rate (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p95_above`, `block_head_lag_above`, ...). Drives root-cause: a `viction-drpc` row spiking on `error_rate_above` is a different problem from `kodiak-berachain` spiking on `throttle_rate_above`."
         },
         {
           "datasource": {
