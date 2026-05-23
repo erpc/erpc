@@ -593,6 +593,23 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					finality,
 				)
 			}
+			// TODO(memory): this and the matching MetricUpstreamErrorTotal /
+			// MetricUpstreamWrongEmptyResponseTotal / MetricUpstreamCanceledTotal
+			// sites in this file + erpc/networks.go all emit label-sets
+			// keyed by user-controlled inputs (method, finality, userId,
+			// agentName, etc.) WITHOUT going through a tracker cache, so
+			// the Prometheus registry accumulates one series per unique
+			// combo forever — even after the in-memory caches added in
+			// the 826df9f5 idle-sweep get cleared.
+			//
+			// The fix is parallel to the urdObsCache / remoteRateLimited
+			// pattern: wrap each WithLabelValues call in a cached*-style
+			// indirection that remembers the label tuple + a
+			// lastAccessedAtMs, then sweep on idle with
+			// MetricVec.DeleteLabelValues. Each direct call site needs the
+			// same retrofit. Out of scope for this PR — flagged for a
+			// follow-up titled "sweep direct Prom emissions in
+			// upstream/erpc hot paths".
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
