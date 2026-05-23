@@ -29,21 +29,25 @@ import (
 // long a freshly-degraded upstream can keep its old healthy score
 // before `excludeIf` / `sortByScore` see the new reality.
 //
-// 10s is the default. Two competing concerns:
-//   - reaction time: should be well under operator attention span
-//     (humans notice incidents within tens of seconds, not minutes);
-//   - rotation overhead at scale: a rotation iterates EVERY
-//     TrackedMetrics (per (upstream, method) tuple) and re-inits one
-//     DDSketch each — at a few hundred upstreams × ~20 methods that's
-//     thousands of small allocations per second. Halving the window
-//     halves both the rotation rate and the GC churn.
+// 1 minute is the default — a balance of reaction speed and signal
+// stability:
+//   - reaction: a fully-broken upstream crosses `errorRate > 0.5`
+//     within ~30s under steady traffic (50% of the window is enough
+//     to flip the ratio); the next 1s eval tick excludes it. Block-lag
+//     gates fire faster still (≤ statePollerInterval + 1s).
+//   - stability: low-traffic networks with a handful of samples per
+//     minute don't get whipsawed by a single bad request the way a
+//     10-second window would (1 failure out of 5 calls = 20% spike).
+//   - rotation cost: 10 buckets at 6s each = once-every-6s rotation
+//     across all (upstream, method) tuples — sustainable at the
+//     hundreds-of-upstreams × tens-of-methods scale typical of an
+//     edge aggregator.
 //
-// 10s sits at the knee: a freshly-degraded upstream still rolls into
-// view within ~1 s on a busy network (the rolling buckets fill almost
-// immediately), but the rotation goroutine only ticks once per second
-// instead of twice. Hot deployments narrow per-project to 5s; cold /
-// huge-fan-out deployments widen to 30s+.
-var ScoreMetricsWindowSize = 10 * time.Second
+// Tune lower (30s, 15s) for high-RPS edges where reaction-time is
+// paramount and per-window sample volume is high; tune higher (5m,
+// 10m) for archival aggregators where signal stability matters more
+// than detection speed.
+var ScoreMetricsWindowSize = 1 * time.Minute
 
 type ProjectsRegistry struct {
 	logger *zerolog.Logger

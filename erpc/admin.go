@@ -9,7 +9,6 @@ import (
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/upstream"
 )
 
@@ -51,10 +50,6 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		return e.handleUpdateApiKey(ctx, nq)
 	case "erpc_deleteApiKey":
 		return e.handleDeleteApiKey(ctx, nq)
-	case "erpc_selectionReeval":
-		return e.handleSelectionReeval(ctx, nq)
-	case "erpc_selectionDefaultPolicy":
-		return e.handleSelectionDefaultPolicy(nq)
 	case "erpc_cordonUpstream":
 		return e.handleCordonUpstream(ctx, nq, true)
 	case "erpc_uncordonUpstream":
@@ -67,75 +62,6 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 			fmt.Errorf("admin method %s is not supported", method),
 		)
 	}
-}
-
-// selectionParams is the shared param shape for selection admin RPCs.
-type selectionParams struct {
-	ProjectID string `json:"projectId"`
-	Network   string `json:"network"`
-	Method    string `json:"method,omitempty"`
-}
-
-func parseSelectionParams(nq *common.NormalizedRequest) (selectionParams, error) {
-	var p selectionParams
-	jrr, err := nq.JsonRpcRequest()
-	if err != nil {
-		return p, err
-	}
-	if len(jrr.Params) == 0 {
-		return p, fmt.Errorf("selection admin: params is required")
-	}
-	raw, err := json.Marshal(jrr.Params[0])
-	if err != nil {
-		return p, err
-	}
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return p, fmt.Errorf("selection admin: invalid params: %w", err)
-	}
-	if p.ProjectID == "" || p.Network == "" {
-		return p, fmt.Errorf("selection admin: projectId and network are required")
-	}
-	if p.Method == "" {
-		p.Method = "*"
-	}
-	return p, nil
-}
-
-func (e *ERPC) getProjectEngine(projectID string) (*policy.Engine, error) {
-	prj, err := e.GetProject(projectID)
-	if err != nil {
-		return nil, err
-	}
-	if prj.policyEngine == nil {
-		return nil, fmt.Errorf("selection admin: project %s has no policy engine", projectID)
-	}
-	return prj.policyEngine, nil
-}
-
-// handleSelectionReeval forces a synchronous eval cycle for the slot. Maps
-// to spec §8.1 `POST /admin/selection/<net>/<method>/reeval`.
-func (e *ERPC) handleSelectionReeval(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	p, err := parseSelectionParams(nq)
-	if err != nil {
-		return nil, err
-	}
-	engine, err := e.getProjectEngine(p.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	policy.TickForTest(engine, p.Network, p.Method)
-	return makeSelectionResponse(nq, map[string]interface{}{
-		"reevaluated": true,
-		"lastEvalAt":  engine.LastEvalAt(p.Network, p.Method, "*"),
-	})
-}
-
-// handleSelectionDefaultPolicy returns the source of the embedded default
-// policy. Maps to spec §8.1 `GET /admin/selection/default-policy`.
-func (e *ERPC) handleSelectionDefaultPolicy(nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	return makeSelectionResponse(nq, map[string]interface{}{
-		"source": policy.DefaultPolicySource(),
-	})
 }
 
 // makeSelectionResponse wraps a result map into the JSON-RPC envelope the
