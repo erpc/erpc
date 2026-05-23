@@ -422,13 +422,36 @@ export interface ProjectConfig {
     ignoreMethods?: string[];
     allowMethods?: string[];
     /**
-     * Rolling window the per-upstream health tracker uses for its
-     * counters (errorRate, p50/p70/p95 latency, throttledRate,
-     * misbehaviorRate). 10 sliding buckets spanning this duration. Short
-     * windows react quickly but give noisier ranking; long windows give
-     * stable averages but hide spikes for longer. Defaults to 10s.
+     * ScoreMetricsWindowSize is the tumbling window the per-upstream
+     * health tracker uses for its rolling counters (errorRate, p50/p70/
+     * p95 latency, throttledRate, misbehaviorRate). At each tick the
+     * counters reset and start re-accumulating, so this knob effectively
+     * controls how fast a degraded upstream's metrics start reflecting
+     * the new reality. Short windows (e.g. 30s) react quickly but give
+     * noisier ranking; long windows (5–10m) give stable averages but
+     * hide spikes for longer. Defaults to 10m when zero — production
+     * systems typically leave it default; the eRPC simulator overrides
+     * to 30s so knob changes show up in the UI within seconds.
      */
     scoreMetricsWindowSize?: Duration;
+}
+/**
+ * LegacyProjectFields collects the deprecated project-level scoring +
+ * routing keys. The translator inspects these to synthesize a
+ * `selectionPolicy.eval` for each network and to emit deprecation
+ * warnings. All fields are zero-valued for a clean modern config.
+ * `scoreMetricsWindowSize` was previously listed here as inert; it is
+ * now a first-class field on ProjectConfig (above) — operators
+ * control the health tracker window directly.
+ */
+export interface LegacyProjectFields {
+    routingStrategy?: string;
+    scoreGranularity?: string;
+    scorePenaltyDecayRate?: number;
+    scoreSwitchHysteresis?: number;
+    scoreMinSwitchInterval?: Duration;
+    scoreMetricsMode?: string;
+    scoreRefreshInterval?: Duration;
 }
 /**
  * UserAgentTrackingMode controls how user agents are recorded for metrics/labels
@@ -482,25 +505,23 @@ export interface UpstreamConfig {
     id?: string;
     type?: TsUpstreamType;
     /**
-     * Tags is an open-ended set of labels attached to this upstream.
-     * Convention: `<dimension>:<value>`, e.g. `tier:main`, `region:us-east`,
-     * `sequencer:op-base`. Bare strings (no prefix) work too. Consumed by
-     * selectionPolicy primitives: `byTag`, `preferTag`, `spreadAcrossTags(prefix)`.
-     *
-     * Convention `tier:fallback` declares a fallback-tier upstream (the
-     * default policy looks for `!tier:fallback` as the primary tier).
+     * Tags is the single canonical user-applied label set. Convention is
+     * `<dimension>:<value>` so a single upstream can carry orthogonal labels:
+     *   tags:
+     *     - tier:main               # used by .preferTag for tiering
+     *     - region:us-east          # used by .spreadAcrossTags('region:')
+     *     - sequencer:op-base       # shared-fate label
+     * Bare strings (no prefix) work too. Patterns supported by every
+     * stdlib tag method: glob (`*`, `?`) and `!negation`.
+     * Tier convention: `tier:fallback` declares a fallback-tier upstream
+     * (matches the long-standing eRPC convention; the default policy
+     * looks for `!tier:fallback` as the primary tier).
+     * The legacy `group: X` / `cohort: Y` YAML keys are accepted at
+     * load time only — UnmarshalYAML rewrites them as `tier:X` /
+     * `cohort:Y` tags and forgets them. There is no Go-level Group or
+     * Cohort field; programmatic code uses Tags directly.
      */
     tags?: string[];
-    /**
-     * Deprecated: use `tags` with a `tier:<value>` entry. UnmarshalYAML
-     * auto-migrates `group: X` → `tier:X` at load time.
-     */
-    group?: string;
-    /**
-     * Deprecated: use `tags` with a `cohort:<value>` entry. UnmarshalYAML
-     * auto-migrates `cohort: Y` → `cohort:Y` at load time.
-     */
-    cohort?: string;
     vendorName?: string;
     endpoint?: string;
     evm?: EvmUpstreamConfig;
@@ -513,34 +534,46 @@ export interface UpstreamConfig {
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
     shadow?: ShadowUpstreamConfig;
     /**
-     * Per-upstream routing hints consumed by the selection policy. Today this
-     * is the home of `scoreMultipliers` — per-upstream weight overrides the
-     * policy folds into `sortByScore` (exposed in the eval as
-     * `u.scoreMultipliers`).
+     * Routing holds per-upstream routing hints consumed by the selection
+     * policy. `scoreMultipliers` bias this upstream's rank inside
+     * `sortByScore` (see SelectionPolicyConfig): the engine resolves the
+     * matching entry for each (network, method, finality) tick and exposes
+     * the resulting weight map to the eval function as `u.scoreMultipliers`.
+     * When the upstream omits its own `routing` block, `ApplyDefaults`
+     * inherits the project-level `upstreamDefaults.routing` (all-or-nothing,
+     * matching the Tags inheritance pattern).
      */
     routing?: UpstreamRoutingConfig;
 }
 /**
- * Per-upstream routing hints. `scoreMultipliers` bias this upstream's rank
- * inside `sortByScore`; the engine resolves the first matching entry per
- * (network, method, finality) tick and hands it to the eval function as
- * `u.scoreMultipliers`.
+ * UpstreamRoutingConfig holds per-upstream routing hints. Today this is
+ * the home of `scoreMultipliers` — per-upstream weight overrides the
+ * selection policy folds into `sortByScore`.
  */
 export interface UpstreamRoutingConfig {
+    /**
+     * ScoreMultipliers biases this upstream's rank. Each entry is a
+     * matcher (network/method/finality) plus weight overrides; the engine
+     * resolves the first matching entry per tick and hands it to the eval
+     * function as `u.scoreMultipliers`. `sortByScore` merges it over the
+     * base weights by default (see its `multipliers` option).
+     */
     scoreMultipliers?: (ScoreMultiplierConfig | undefined)[];
     /**
-     * Which response-time quantile feeds the score (e.g. 0.9 → p90). When
-     * unset, the policy's own `sortByScore({ latencyQuantile })` (default
-     * p70) applies.
+     * ScoreLatencyQuantile selects which response-time quantile feeds the
+     * score (e.g. 0.9 → p90). When unset, the policy's own
+     * `sortByScore({ latencyQuantile })` (default p70) applies.
      */
     scoreLatencyQuantile?: number;
 }
 /**
- * One per-upstream weight override. Matcher fields (network/method/finality)
- * scope the entry — leave empty (or `"*"`) to apply to every request.
- * Weight fields are optional: an unset weight inherits the policy's base
- * weight (merge mode), a `0` removes that metric's contribution. `overall`
- * scales the upstream's FINAL score — >1 prefers this upstream, <1 avoids it.
+ * ScoreMultiplierConfig is one per-upstream weight override. The matcher
+ * fields (network/method/finality) scope the entry — leave them empty (or
+ * `"*"`) for an entry that applies to every request. Weight fields are
+ * pointers so "unset" is distinct from "zero": an unset weight inherits
+ * from the policy's base weights (merge mode), a zero weight removes that
+ * metric's contribution. `overall` scales the upstream's FINAL score — a
+ * preference dial where >1 prefers this upstream and <1 avoids it.
  */
 export interface ScoreMultiplierConfig {
     network?: string;
@@ -554,16 +587,18 @@ export interface ScoreMultiplierConfig {
     finalizationLag?: number;
     misbehaviors?: number;
     /**
-     * Accepted for backward compatibility but no longer influences scoring
-     * (the score is computed from rolling-window rates, not request counts).
+     * TotalRequests is accepted for backward compatibility but no longer
+     * influences scoring (the score is computed from rolling-window rates,
+     * not absolute request counts).
      */
     totalRequests?: number;
 }
 /**
- * Define a type alias to avoid recursion
+ * Strict-schema shadow: inlines the canonical config and adds the
+ * deprecated yaml-only keys. yaml v3 ignores `json:"-"` so this is safe.
  */
 /**
- * If that fails, try the old format with single failsafe object
+ * Legacy shape: `failsafe:` as a single object instead of a list.
  */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
@@ -819,19 +854,27 @@ export interface ConsensusPolicyConfig {
      */
     maxWaitOnEmpty?: Duration | AdaptiveDuration;
     /**
-     * RequiredParticipants enforces a minimum number of consensus participants
-     * carrying a given tag. The engine front-loads enough tag-matching upstreams
-     * so the first `maxParticipants` drawn satisfy every entry (without changing
-     * `maxParticipants`). Best-effort: shortfalls fall through to
-     * `lowParticipantsBehavior` / `agreementThreshold`. Empty (default) = disabled.
+     * RequiredParticipants enforces a minimum number of consensus
+     * participants carrying a given tag. Each entry says "at least
+     * `minParticipants` of the upstreams that participate must match
+     * `tag`". The engine front-loads enough tag-matching upstreams into
+     * the participant set so the first `maxParticipants` drawn satisfy
+     * every entry — without changing `maxParticipants` itself.
+     * Best-effort and governed by the EXISTING consensus behaviors: if a
+     * required group has fewer healthy upstreams than requested (or the
+     * quotas can't all fit within `maxParticipants`), consensus simply
+     * runs with what it can promote and the resulting participation is
+     * handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
+     * like any other low-participation tick. Empty (default) = disabled.
      */
     requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
 }
 /**
- * One tag-quota entry for `consensus.requiredParticipants`. `tag` is a glob
- * pattern (`*`, `?`) matched against each upstream's `tags`; `minParticipants`
- * is the minimum number of matching upstreams that must participate. A single
- * upstream can satisfy multiple entries it matches.
+ * ConsensusRequiredParticipant is one tag-quota entry for
+ * `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
+ * matched against each upstream's `tags`; `MinParticipants` is the minimum
+ * number of matching upstreams that must be in the consensus participant
+ * set. A single upstream can satisfy multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
     tag: string;
@@ -994,6 +1037,7 @@ export interface DirectiveDefaultsConfig {
     skipCacheRead?: any;
     useUpstream?: string;
     skipInterpolation?: boolean;
+    skipConsensus?: boolean;
     /**
      * Validation: Block Integrity
      */
@@ -1132,6 +1176,45 @@ export interface EvmIntegrityConfig {
     enforceNonNullTaggedBlocks?: boolean;
 }
 /**
+ * EvalScope picks the grain at which the selection policy evaluates AND
+ * at which the health tracker stores per-upstream metrics. One knob
+ * covers what `evalPerMethod` + `evalPerFinality` used to cover as two
+ * bools — and pulls the tracker's metric grain in lockstep so a
+ * predicate like `errorRateAbove(0.5)` in a (method, finality)-grained
+ * slot sees genuinely (method, finality)-specific error rate, not the
+ * per-method aggregate.
+ * Values are kebab-case strings so they round-trip through YAML / JSON
+ * / Go enum literals cleanly. The TS SDK exports the same names in
+ * CAPITAL_SNAKE_CASE with these same string values, so `evalScope:
+ * NETWORK` in a TS config and `evalScope: network` in a YAML config
+ * produce identical Go state.
+ */
+export type EvalScope = string;
+/**
+ * EvalScopeNetwork — single slot per network. Methods + finalities
+ * share. Default. Lowest cardinality + lowest tracker memory.
+ */
+export declare const EvalScopeNetwork: EvalScope;
+/**
+ * EvalScopeNetworkMethod — slot per (network, method). Finalities
+ * share. Useful when one upstream is fast on `eth_call` but slow on
+ * `trace_filter`.
+ */
+export declare const EvalScopeNetworkMethod: EvalScope;
+/**
+ * EvalScopeNetworkFinality — slot per (network, finality). Methods
+ * share. Useful when realtime reads weight freshness differently
+ * from finalized reads.
+ */
+export declare const EvalScopeNetworkFinality: EvalScope;
+/**
+ * EvalScopeNetworkMethodFinality — slot per (network, method,
+ * finality). Most granular routing. Cardinality scales linearly;
+ * each slot's ticker only spins up after the first request for
+ * that bucket lands.
+ */
+export declare const EvalScopeNetworkMethodFinality: EvalScope;
+/**
  * SelectionPolicyConfig declares the per-network upstream selection policy.
  * The eval function is JavaScript that receives `upstreams` and `ctx` and
  * returns the ordered list of upstreams that should serve traffic for the
@@ -1142,34 +1225,43 @@ export interface EvmIntegrityConfig {
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;
     /**
-     * Separate slot per `(network, method)`. The eval sees `ctx.method`
-     * set to the exact method string. Useful when one upstream is fast
-     * on `eth_call` but slow on `trace_filter`.
+     * EvalScope picks the slot grain — and the matching tracker grain
+     * (see `EvalScope` doc). Default `network` (one slot per network).
+     * Tighter scopes let predicates like `errorRateAbove(0.5)` see
+     * genuinely (method, finality)-specific health.
+     */
+    evalScope?: EvalScope | "network" | "network-method" | "network-finality" | "network-method-finality";
+    /**
+     * EvalPerMethod is DEPRECATED — use EvalScope instead. When both
+     * EvalPerMethod and EvalScope are set, EvalScope wins and a warning
+     * is emitted at config-load. Kept for back-compat with existing
+     * configs; mapped into EvalScope in SetDefaults.
      */
     evalPerMethod?: boolean;
     /**
-     * Separate slot per `(network, method, finality)`. The eval sees
-     * `ctx.finality` set to the request's finality bucket
-     * (`realtime`/`unfinalized`/`finalized`/`unknown`). Useful when
-     * realtime reads want PREFER_FRESHEST and finalized reads want
-     * PREFER_FASTEST. Cardinality scales linearly with the number of
-     * buckets actually used; cold buckets stay un-created.
+     * EvalPerFinality is DEPRECATED — use EvalScope instead. Same
+     * mapping rules as EvalPerMethod.
      */
     evalPerFinality?: boolean;
     evalTimeout?: Duration;
     /**
-     * Per-tick evaluation function. In a `.ts` config you pass a real
-     * arrow function (recommended); in YAML you pass the JS source as
-     * a string.
-     *
-     * Signature: `(upstreams, ctx) => Upstream[]`. Inside the body, the
-     * stdlib chainable methods (`removeCordoned`, `excludeIf`,
-     * `sortByScore`, `stickyPrimary`, `readmitExcluded`, `preferTag`, …)
-     * are typed via `PolicyEvalUpstreamArray`, and the predicate factories
-     * + score presets (`errorRateAbove`, `any`, `PREFER_FASTEST`, …) are
-     * declared as ambient globals.
+     * EvalFunc is the per-tick evaluation function. In YAML it's a JS
+     * source string; in TS configs it's a real arrow function compiled
+     * into `CompiledProgram` at config load.
+     * Signature: `(upstreams, ctx) => Upstream[]`.
+     * See specs/selection-policy/feature.md for the stdlib reference.
      */
     evalFunc?: SelectionPolicyEvalFunction | string;
+}
+/**
+ * LegacySelectionPolicyFields mirrors the deprecated keys that used to
+ * live on SelectionPolicyConfig. None survive translation.
+ */
+export interface LegacySelectionPolicyFields {
+    evalFunction?: string;
+    resampleExcluded?: boolean;
+    resampleInterval?: Duration;
+    resampleCount?: number;
 }
 export type AuthType = string;
 export declare const AuthTypeSecret: AuthType;
@@ -1292,6 +1384,32 @@ export interface RateLimitStoreConfig {
     cacheKeyPrefix?: string;
     nearLimitRatio?: number;
 }
+/**
+ * tsFunctionSentinelPrefix marks a SelectionPolicy.EvalFunc whose actual
+ * implementation lives as a real sobek function in `globalThis.__erpcFns`
+ * (populated by running `Config.UserScript` inside the policy-engine pool
+ * runtime). The suffix is the function's lookup id. Sentinels NEVER hit
+ * `sobek.Compile` and the function is never stringified — when the engine
+ * needs to evaluate, it pulls the runtime-native function out of the
+ * registry and calls it directly. This preserves closures + module-level
+ * helpers that the user wrote in the TS config alongside the function.
+ */
+/**
+ * tsLoaderWalker is JS that runs INSIDE the user script. After the user's
+ * `createConfig(...)` builds the default export, the walker:
+ *   - assigns a stable sequential id to each function-typed leaf
+ *     in the default export's object tree;
+ *   - registers that function on `globalThis.__erpcFns[id]` so the
+ *     engine can look it up natively in this runtime;
+ *   - stamps `fn.__erpcFnId = id` on the function value so the
+ *     LOAD-time JSON.stringify replacer can substitute the sentinel
+ *     string `"__ts_fn__:<id>"` into the serialized form (which then
+ *     becomes the value of `SelectionPolicyConfig.EvalFunc` in Go).
+ * The walk is order-deterministic, so the same user script produces the
+ * same ids in every pool runtime that subsequently runs it. That's what
+ * keeps the load-time sentinel ids and the pool-runtime registry ids in
+ * lockstep without sharing state across runtimes.
+ */
 export type DataFinalityState = number;
 /**
  * Finalized gets 0 intentionally so that when user has not specified finality,

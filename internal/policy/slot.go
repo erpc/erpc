@@ -152,7 +152,7 @@ func (s *Slot) tickOnce() {
 	ups := s.upstreamsFn()
 
 	// 1. Snapshot metrics for every upstream.
-	metrics := snapshotMetrics(s.engine.tracker, ups, s.method)
+	metrics, metricsAcrossMethods := snapshotMetrics(s.engine.tracker, ups, s.method)
 
 	// 2. Build EvalContext from cross-tick state.
 	s.mu.Lock()
@@ -196,7 +196,7 @@ func (s *Slot) tickOnce() {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, evalCtx, stepLogEnabled)
+		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, evalCtx, stepLogEnabled, s.engine.sticky)
 	}()
 
 	if timeout > 0 {
@@ -555,12 +555,27 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 // snapshotMetrics captures one consistent view of every upstream's metrics
 // for the given method. The eval sees this snapshot; subsequent updates
 // during the eval don't change what the JS reads.
-func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string) map[string]UpstreamMetrics {
-	out := make(map[string]UpstreamMetrics, len(ups))
+//
+// `local` is the per-(upstream, method) view exposed as `u.metrics`.
+// `acrossMethods` is the per-(upstream, "*") wildcard aggregate exposed
+// as `u.metricsAcrossMethods` — used by `stickyPrimary({scope: NETWORK})`
+// (and other cross-slot primitives) to score a primary from a metric
+// every slot in the scope sees identically. When `method == "*"` the
+// two slices share the same map by reference (the slot itself is the
+// wildcard slot — no separate aggregate needed).
+func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string) (local, acrossMethods map[string]UpstreamMetrics) {
+	local = make(map[string]UpstreamMetrics, len(ups))
 	for _, u := range ups {
-		out[u.Id()] = readUpstreamMetrics(tr, u, method)
+		local[u.Id()] = readUpstreamMetrics(tr, u, method)
 	}
-	return out
+	if method == "*" {
+		return local, local
+	}
+	acrossMethods = make(map[string]UpstreamMetrics, len(ups))
+	for _, u := range ups {
+		acrossMethods[u.Id()] = readUpstreamMetrics(tr, u, "*")
+	}
+	return local, acrossMethods
 }
 
 // upstreamIDs extracts the IDs of every upstream in the given slice.

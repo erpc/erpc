@@ -39,6 +39,11 @@ export {
   // Scope exports
   ScopeNetwork,
   ScopeUpstream,
+  // Selection-policy evalScope + stickyPrimary scope constants (canonical)
+  EvalScopeNetwork,
+  EvalScopeNetworkMethod,
+  EvalScopeNetworkFinality,
+  EvalScopeNetworkMethodFinality,
   // Cache behavior exports
   CacheEmptyBehaviorIgnore,
   CacheEmptyBehaviorAllow,
@@ -78,6 +83,19 @@ export {
   RateLimitPeriodMonth,
   RateLimitPeriodYear,
 } from "./generated";
+// Short-name re-exports for selection-policy evalScope / stickyPrimary
+// scope (CAPITAL_SNAKE_CASE matching the JS ambient globals installed
+// by the policy stdlib) and the finality bit-flags for `when(mask, ...)`.
+export {
+  NETWORK,
+  NETWORK_METHOD,
+  NETWORK_FINALITY,
+  NETWORK_METHOD_FINALITY,
+  REALTIME,
+  UNFINALIZED,
+  FINALIZED,
+  UNKNOWN,
+} from "./constants";
 export type {
   Config,
   ProjectConfig,
@@ -105,6 +123,7 @@ export type {
   EvmNetworkConfig,
   EvmIntegrityConfig,
   SelectionPolicyConfig,
+  EvalScope,
   DirectiveDefaultsConfig,
   // DB related
   DatabaseConfig,

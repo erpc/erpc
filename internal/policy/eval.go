@@ -114,7 +114,61 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string) Ups
 // 0..100 percentile numbers and returns milliseconds — it snaps to the
 // nearest pre-computed quantile bucket since the underlying
 // QuantileTracker isn't (and shouldn't be) exposed across the JS bridge.
-func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics, evalCtx EvalContext) sobek.Value {
+// buildMetricsObject mints a JS object mirroring the `UpstreamMetrics`
+// shape. Pulled out of `buildJSUpstreams` so we can build BOTH the
+// slot-local view (`u.metrics`) and the cross-method aggregate
+// (`u.metricsAcrossMethods`) without duplicating ~30 lines of Set calls.
+func buildMetricsObject(vm *sobek.Runtime, m UpstreamMetrics) *sobek.Object {
+	mObj := vm.NewObject()
+	_ = mObj.Set("errorRate", m.ErrorRate)
+	_ = mObj.Set("errorsTotal", m.ErrorsTotal)
+	_ = mObj.Set("requestsTotal", m.RequestsTotal)
+	_ = mObj.Set("throttledRate", m.ThrottledRate)
+	_ = mObj.Set("misbehaviorRate", m.MisbehaviorRate)
+	_ = mObj.Set("blockHeadLag", m.BlockHeadLag)
+	_ = mObj.Set("finalizationLag", m.FinalizationLag)
+	_ = mObj.Set("blockHeadLagSeconds", m.BlockHeadLagSeconds)
+	_ = mObj.Set("finalizationLagSeconds", m.FinalizationLagSeconds)
+	_ = mObj.Set("p50ResponseSeconds", m.P50ResponseSeconds)
+	_ = mObj.Set("p70ResponseSeconds", m.P70ResponseSeconds)
+	_ = mObj.Set("p90ResponseSeconds", m.P90ResponseSeconds)
+	_ = mObj.Set("p95ResponseSeconds", m.P95ResponseSeconds)
+	_ = mObj.Set("p99ResponseSeconds", m.P99ResponseSeconds)
+	if m.CordonedReason != "" {
+		_ = mObj.Set("cordonedReason", m.CordonedReason)
+	}
+	// latencyP(quantile) → ms. See `u.metrics.latencyP` doc in
+	// `buildJSUpstreams` — same snap-to-bucket behavior, just bound to
+	// THIS metrics object's quantiles. Closure captures the precomputed
+	// values for this tick.
+	p50, p70, p90, p95, p99 := m.P50ResponseSeconds, m.P70ResponseSeconds, m.P90ResponseSeconds, m.P95ResponseSeconds, m.P99ResponseSeconds
+	_ = mObj.Set("latencyP", func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) == 0 {
+			return vm.ToValue(0.0)
+		}
+		q := call.Argument(0).ToFloat()
+		if q > 1 {
+			q = q / 100.0
+		}
+		var sec float64
+		switch {
+		case q <= 0.50:
+			sec = p50
+		case q <= 0.70:
+			sec = p70
+		case q <= 0.90:
+			sec = p90
+		case q <= 0.95:
+			sec = p95
+		default:
+			sec = p99
+		}
+		return vm.ToValue(sec * 1000.0)
+	})
+	return mObj
+}
+
+func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics, metricsAcrossMethods map[string]UpstreamMetrics, evalCtx EvalContext) sobek.Value {
 	arr := vm.NewArray()
 	for i, u := range ups {
 		obj := vm.NewObject()
@@ -150,64 +204,22 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		_ = obj.Set("hasTag", hasTagFn)
 		_ = obj.Set("is", hasTagFn)
 
-		// Metrics — same shape the existing stdlib reads from, PLUS a
-		// `latencyP(q)` method for ergonomic policy expressions.
-		m := metrics[u.Id()]
-		mObj := vm.NewObject()
-		_ = mObj.Set("errorRate", m.ErrorRate)
-		_ = mObj.Set("errorsTotal", m.ErrorsTotal)
-		_ = mObj.Set("requestsTotal", m.RequestsTotal)
-		_ = mObj.Set("throttledRate", m.ThrottledRate)
-		_ = mObj.Set("misbehaviorRate", m.MisbehaviorRate)
-		_ = mObj.Set("blockHeadLag", m.BlockHeadLag)
-		_ = mObj.Set("finalizationLag", m.FinalizationLag)
-		// Wall-clock lag — block-count × network block-time EMA. Zero
-		// until the tracker has enough samples; policies relying on
-		// `*LagSeconds` should AND with `samplesAbove(N)` or similar
-		// if they want to avoid no-oping during boot.
-		_ = mObj.Set("blockHeadLagSeconds", m.BlockHeadLagSeconds)
-		_ = mObj.Set("finalizationLagSeconds", m.FinalizationLagSeconds)
-		_ = mObj.Set("p50ResponseSeconds", m.P50ResponseSeconds)
-		_ = mObj.Set("p70ResponseSeconds", m.P70ResponseSeconds)
-		_ = mObj.Set("p90ResponseSeconds", m.P90ResponseSeconds)
-		_ = mObj.Set("p95ResponseSeconds", m.P95ResponseSeconds)
-		_ = mObj.Set("p99ResponseSeconds", m.P99ResponseSeconds)
-		if m.CordonedReason != "" {
-			_ = mObj.Set("cordonedReason", m.CordonedReason)
-		}
-
-		// latencyP(quantile) → ms. Accepts 95 or 0.95 (auto-normalized).
-		// Snaps to nearest precomputed bucket — adequate for policy
-		// predicates and avoids exposing the live QuantileTracker
-		// across the JS bridge. Closure captures the precomputed values
-		// for this tick, no escape of engine-owned state.
-		p50, p70 := m.P50ResponseSeconds, m.P70ResponseSeconds
-		p90, p95, p99 := m.P90ResponseSeconds, m.P95ResponseSeconds, m.P99ResponseSeconds
-		_ = mObj.Set("latencyP", func(call sobek.FunctionCall) sobek.Value {
-			if len(call.Arguments) == 0 {
-				return vm.ToValue(0.0)
-			}
-			q := call.Argument(0).ToFloat()
-			if q > 1 {
-				q = q / 100.0
-			}
-			var sec float64
-			switch {
-			case q <= 0.50:
-				sec = p50
-			case q <= 0.70:
-				sec = p70
-			case q <= 0.90:
-				sec = p90
-			case q <= 0.95:
-				sec = p95
-			default:
-				sec = p99
-			}
-			return vm.ToValue(sec * 1000.0)
-		})
-
+		// Metrics — slot-local (`u.metrics`) and the cross-method
+		// wildcard aggregate (`u.metricsAcrossMethods`) the
+		// stickyPrimary scope picker reads when cohesion crosses
+		// methods. When the slot itself runs at `method="*"` the two
+		// are the SAME snapshot (snapshotMetrics returns a shared map
+		// ref), so we expose the same object under both names to keep
+		// the JS surface uniform.
+		mObj := buildMetricsObject(vm, metrics[u.Id()])
 		_ = obj.Set("metrics", mObj)
+		if metricsAcrossMethods == nil {
+			_ = obj.Set("metricsAcrossMethods", mObj)
+		} else if &metricsAcrossMethods != &metrics {
+			_ = obj.Set("metricsAcrossMethods", buildMetricsObject(vm, metricsAcrossMethods[u.Id()]))
+		} else {
+			_ = obj.Set("metricsAcrossMethods", mObj)
+		}
 
 		// scoreMultipliers — per-upstream weight overrides resolved for
 		// THIS tick's (network, method, finality). Attached only when an
@@ -387,8 +399,10 @@ func runEval(
 	cfg *common.SelectionPolicyConfig,
 	ups []common.Upstream,
 	metrics map[string]UpstreamMetrics,
+	metricsAcrossMethods map[string]UpstreamMetrics,
 	evalCtx EvalContext,
 	stepLogEnabled bool,
+	sticky *stickyStore,
 ) (*EvalResult, error) {
 	tsSentinel := common.IsTSFunctionSentinel(cfg.EvalFunc)
 	if !tsSentinel && cfg.CompiledProgram == nil {
@@ -441,7 +455,7 @@ func runEval(
 		}
 	}
 
-	upsValue := buildJSUpstreams(vm, ups, metrics, evalCtx)
+	upsValue := buildJSUpstreams(vm, ups, metrics, metricsAcrossMethods, evalCtx)
 	ctxValue := vm.ToValue(evalCtx)
 
 	// Per-tick globals consumed by the stdlib (probeExcluded reads the full
@@ -483,6 +497,39 @@ func runEval(
 	if err := vm.GlobalObject().Set("__policyStickyHeld", false); err != nil {
 		return nil, err
 	}
+	// Cross-slot sticky register: stickyPrimary({scope}) reads/writes
+	// this via two Go-side helpers installed below. Closes over `sticky`
+	// + the eval's network/method/finality so the JS caller only needs
+	// to pass the scope value. Empty store on `sticky == nil` (test
+	// fixtures that don't wire an engine) — reads return undefined and
+	// writes no-op, so the JS falls back to slot-local sticky state.
+	getShared := func(scope string) sobek.Value {
+		if sticky == nil {
+			return sobek.Undefined()
+		}
+		key := resolveStickyKey(common.EvalScope(scope), evalCtx.Network, evalCtx.Method, evalCtx.Finality)
+		primary, lastSwitchAt, ok := sticky.Get(key)
+		if !ok || primary == "" {
+			return sobek.Undefined()
+		}
+		obj := vm.NewObject()
+		_ = obj.Set("primary", primary)
+		_ = obj.Set("lastSwitchAt", lastSwitchAt)
+		return obj
+	}
+	setShared := func(scope, primary string, lastSwitchAt int64) {
+		if sticky == nil || primary == "" {
+			return
+		}
+		key := resolveStickyKey(common.EvalScope(scope), evalCtx.Network, evalCtx.Method, evalCtx.Finality)
+		sticky.Set(key, primary, lastSwitchAt)
+	}
+	if err := vm.Set("__getSharedSticky", getShared); err != nil {
+		return nil, err
+	}
+	if err := vm.Set("__setSharedSticky", setShared); err != nil {
+		return nil, err
+	}
 	defer func() {
 		_ = vm.GlobalObject().Set("__policyCtx", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyAllUpstreams", sobek.Undefined())
@@ -491,6 +538,11 @@ func runEval(
 		_ = vm.GlobalObject().Set("__policyLeafReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyShadowReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyStickyHeld", false)
+		// Stub the sticky helpers back to no-ops so the pooled runtime
+		// cannot leak a closure referencing this tick's store after
+		// release. (The next runEval reinstalls them.)
+		_ = vm.Set("__getSharedSticky", sobek.Undefined())
+		_ = vm.Set("__setSharedSticky", sobek.Undefined())
 	}()
 
 	result, err := fn(sobek.Undefined(), upsValue, ctxValue)

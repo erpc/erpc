@@ -2181,6 +2181,40 @@ type EvmIntegrityConfig struct {
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 }
 
+// EvalScope picks the grain at which the selection policy evaluates AND
+// at which the health tracker stores per-upstream metrics. One knob
+// covers what `evalPerMethod` + `evalPerFinality` used to cover as two
+// bools — and pulls the tracker's metric grain in lockstep so a
+// predicate like `errorRateAbove(0.5)` in a (method, finality)-grained
+// slot sees genuinely (method, finality)-specific error rate, not the
+// per-method aggregate.
+//
+// Values are kebab-case strings so they round-trip through YAML / JSON
+// / Go enum literals cleanly. The TS SDK exports the same names in
+// CAPITAL_SNAKE_CASE with these same string values, so `evalScope:
+// NETWORK` in a TS config and `evalScope: network` in a YAML config
+// produce identical Go state.
+type EvalScope string
+
+const (
+	// EvalScopeNetwork — single slot per network. Methods + finalities
+	// share. Default. Lowest cardinality + lowest tracker memory.
+	EvalScopeNetwork EvalScope = "network"
+	// EvalScopeNetworkMethod — slot per (network, method). Finalities
+	// share. Useful when one upstream is fast on `eth_call` but slow on
+	// `trace_filter`.
+	EvalScopeNetworkMethod EvalScope = "network-method"
+	// EvalScopeNetworkFinality — slot per (network, finality). Methods
+	// share. Useful when realtime reads weight freshness differently
+	// from finalized reads.
+	EvalScopeNetworkFinality EvalScope = "network-finality"
+	// EvalScopeNetworkMethodFinality — slot per (network, method,
+	// finality). Most granular routing. Cardinality scales linearly;
+	// each slot's ticker only spins up after the first request for
+	// that bucket lands.
+	EvalScopeNetworkMethodFinality EvalScope = "network-method-finality"
+)
+
 // SelectionPolicyConfig declares the per-network upstream selection policy.
 //
 // The eval function is JavaScript that receives `upstreams` and `ctx` and
@@ -2190,23 +2224,18 @@ type EvmIntegrityConfig struct {
 // probeExcluded, etc.) — see specs/selection-policy/feature.md.
 type SelectionPolicyConfig struct {
 	EvalInterval Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
-	// EvalPerMethod gives the engine a separate slot (with its own
-	// ticker + cache) per (network, method). The eval function sees
-	// `ctx.method` set to the exact method string. Useful when one
-	// upstream is fast on `eth_call` but slow on `trace_filter`, or
-	// when a network has wildly different methods.
+	// EvalScope picks the slot grain — and the matching tracker grain
+	// (see `EvalScope` doc). Default `network` (one slot per network).
+	// Tighter scopes let predicates like `errorRateAbove(0.5)` see
+	// genuinely (method, finality)-specific health.
+	EvalScope EvalScope `yaml:"evalScope,omitempty" json:"evalScope" tstype:"EvalScope | \"network\" | \"network-method\" | \"network-finality\" | \"network-method-finality\""`
+	// EvalPerMethod is DEPRECATED — use EvalScope instead. When both
+	// EvalPerMethod and EvalScope are set, EvalScope wins and a warning
+	// is emitted at config-load. Kept for back-compat with existing
+	// configs; mapped into EvalScope in SetDefaults.
 	EvalPerMethod bool `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
-	// EvalPerFinality gives the engine a separate slot per (network,
-	// method, finality). The eval function sees `ctx.finality` set to
-	// the request's finality bucket (`realtime`/`unfinalized`/
-	// `finalized`/`unknown`). Useful when realtime reads should weight
-	// freshness differently from finalized reads — e.g. PREFER_FRESHEST
-	// for the realtime slot, PREFER_FASTEST for the finalized slot.
-	//
-	// Combine with EvalPerMethod=true for the most granular routing
-	// (one slot per network × method × finality). Cardinality scales
-	// linearly; the slot's per-(method, finality) ticker only spins up
-	// after the first request for that bucket lands.
+	// EvalPerFinality is DEPRECATED — use EvalScope instead. Same
+	// mapping rules as EvalPerMethod.
 	EvalPerFinality bool     `yaml:"evalPerFinality,omitempty" json:"evalPerFinality"`
 	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
 	// EvalFunc is the per-tick evaluation function. In YAML it's a JS

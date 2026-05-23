@@ -90,6 +90,25 @@ func TickForTest(e *Engine, networkID, method string) {
 	}
 }
 
+// TickForTestAtScope is the finality-aware sibling of TickForTest — needed
+// when evalScope includes finality so the test can drive a specific
+// (network, method, finality) slot. Falls back to the network wildcard if
+// no exact match exists.
+func TickForTestAtScope(e *Engine, networkID, method, finality string) {
+	e.mu.RLock()
+	slot, ok := e.slots[slotKey{networkID, method, finality}]
+	if !ok {
+		slot, ok = e.slots[slotKey{networkID, method, "*"}]
+	}
+	if !ok {
+		slot = e.slots[slotKey{networkID, "*", "*"}]
+	}
+	e.mu.RUnlock()
+	if slot != nil {
+		slot.tickOnce()
+	}
+}
+
 // ResetSlotStateForTest clears the cross-tick bookkeeping of a slot
 // (previousOrder / previousExcluded / lastSwitchAt / excludedSince)
 // so subsequent ticks compute as if they were the first. Used by test

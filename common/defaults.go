@@ -2492,6 +2492,59 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalTimeout == 0 {
 		c.EvalTimeout = Duration(100 * time.Millisecond)
 	}
+	// Resolve EvalScope. Source of truth is the new `evalScope` enum;
+	// the deprecated `evalPerMethod` / `evalPerFinality` bools map into
+	// it when EvalScope is unset, so existing configs keep working.
+	//
+	// Rules:
+	//   1. Explicit EvalScope wins. If the user ALSO set the legacy
+	//      bools, log a warning and ignore them (EvalScope is the
+	//      stated source of truth).
+	//   2. Legacy bools alone (no EvalScope) map to the matching enum:
+	//        (false, false) → network          (default)
+	//        (true,  false) → network-method
+	//        (false, true ) → network-finality
+	//        (true,  true ) → network-method-finality
+	//   3. Empty everywhere → default to `network`.
+	if c.EvalScope == "" {
+		switch {
+		case c.EvalPerMethod && c.EvalPerFinality:
+			c.EvalScope = EvalScopeNetworkMethodFinality
+		case c.EvalPerMethod:
+			c.EvalScope = EvalScopeNetworkMethod
+		case c.EvalPerFinality:
+			c.EvalScope = EvalScopeNetworkFinality
+		default:
+			c.EvalScope = EvalScopeNetwork
+		}
+	} else if c.EvalPerMethod || c.EvalPerFinality {
+		// Operator set BOTH — log once at SetDefaults time and let
+		// EvalScope win. We can't use the project's structured logger
+		// from common/, so this is a stderr line; loud enough to catch
+		// on config reload.
+		fmt.Fprintf(os.Stderr,
+			"warning: selectionPolicy.evalScope=%q overrides deprecated "+
+				"evalPerMethod=%v / evalPerFinality=%v — drop the bools\n",
+			c.EvalScope, c.EvalPerMethod, c.EvalPerFinality)
+		c.EvalPerMethod = false
+		c.EvalPerFinality = false
+	}
+	// Reflect the resolved scope back into the bools so any remaining
+	// reader that hasn't migrated still observes a consistent view.
+	switch c.EvalScope {
+	case EvalScopeNetworkMethodFinality:
+		c.EvalPerMethod, c.EvalPerFinality = true, true
+	case EvalScopeNetworkMethod:
+		c.EvalPerMethod, c.EvalPerFinality = true, false
+	case EvalScopeNetworkFinality:
+		c.EvalPerMethod, c.EvalPerFinality = false, true
+	case EvalScopeNetwork:
+		c.EvalPerMethod, c.EvalPerFinality = false, false
+	default:
+		return fmt.Errorf("selectionPolicy.evalScope=%q: must be one of "+
+			"network / network-method / network-finality / network-method-finality",
+			c.EvalScope)
+	}
 	if c.EvalFunc == "" {
 		c.EvalFunc = DefaultSelectionPolicySource
 	}

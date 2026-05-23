@@ -53,6 +53,19 @@ type Engine struct {
 	// surface it. Toggled via `SetStepLogEnabled`.
 	stepLogEnabled atomic.Bool
 
+	// sticky is the cross-slot primary register that backs
+	// `stickyPrimary({scope: NETWORK | NETWORK_FINALITY | ...})`. Keyed
+	// by the scope-resolved tuple (`network`, `method` or "*",
+	// `finality` or "*"); each entry holds the currently-selected
+	// primary upstream id + the unix-millis of the last switch.
+	//
+	// Per-tick stickyPrimary reads its own scope's entry via the
+	// `__getSharedSticky` Go fn installed in runEval; on a switch
+	// decision it writes back via `__setSharedSticky`. The store is the
+	// ONLY surface that crosses slot boundaries — slots otherwise
+	// remain independent.
+	sticky *stickyStore
+
 	appCtx context.Context
 	cancel context.CancelFunc
 }
@@ -120,6 +133,7 @@ func NewEngine(
 		pool:      newRuntimePool(runtimePrimer, userScript),
 		slots:     make(map[slotKey]*Slot),
 		networks:  make(map[string]*networkRegistration),
+		sticky:    newStickyStore(),
 		appCtx:    ctx,
 		cancel:    cancel,
 	}

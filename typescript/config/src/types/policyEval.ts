@@ -214,6 +214,21 @@ export type PreferOptions = {
 
 /** Options for `stickyPrimary`. */
 export type StickyPrimaryOptions = {
+  /**
+   * Grouping grain for the cross-slot shared primary register. Slots
+   * mapped to the same scope value share a primary and converge on it
+   * via hysteresis + minSwitchInterval. Defaults to `NETWORK` — max
+   * cohesion (all methods + finalities on a network share one primary).
+   *
+   * Pass one of the imported `NETWORK` / `NETWORK_METHOD` /
+   * `NETWORK_FINALITY` / `NETWORK_METHOD_FINALITY` constants, or the
+   * raw kebab-case string.
+   */
+  scope?:
+    | "network"
+    | "network-method"
+    | "network-finality"
+    | "network-method-finality";
   hysteresis?: number;
   minSwitchInterval?: Duration;
 };
@@ -396,6 +411,23 @@ export interface PolicyEvalUpstreamArray
   whenNotEmpty(
     fn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray,
   ): PolicyEvalUpstreamArray;
+  /**
+   * Finality-conditional sub-chain. `mask` is a bitwise-OR of the
+   * `REALTIME` / `UNFINALIZED` / `FINALIZED` / `UNKNOWN` flag constants
+   * (each a power of two). When the request's `ctx.finality` matches
+   * the mask, `fn(this)` runs and its result becomes the chain value;
+   * otherwise the array passes through unchanged.
+   *
+   *   .when(REALTIME | UNFINALIZED | UNKNOWN,
+   *     u => u.stickyPrimary({ scope: NETWORK }))
+   *
+   * Typical use: skip stickyPrimary for finalized reads (no consistency
+   * requirement, so route freely on latency).
+   */
+  when(
+    mask: number,
+    fn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray,
+  ): PolicyEvalUpstreamArray;
   fallbackTo(
     arrOrFn:
       | readonly PolicyEvalUpstream[]
@@ -407,16 +439,9 @@ export interface PolicyEvalUpstreamArray
   ): PolicyEvalUpstreamArray;
   byFinality(handlers: ByFinalityHandlers): PolicyEvalUpstreamArray;
 
-  // ─── 4.13 Annotations & debug ─────────────────────────────────────────
+  // ─── 4.13 Debug ───────────────────────────────────────────────────────
   tap(fn: (arr: PolicyEvalUpstreamArray) => void): PolicyEvalUpstreamArray;
   label(name: string): PolicyEvalUpstreamArray;
-  annotate(
-    fn: (u: PolicyEvalUpstream) => string,
-  ): PolicyEvalUpstreamArray;
-  mark(
-    predicate: (u: PolicyEvalUpstream) => unknown,
-    note: string,
-  ): PolicyEvalUpstreamArray;
   dump(level?: "trace" | "debug" | "info" | "warn" | "error" | "log"): PolicyEvalUpstreamArray;
 }
 
@@ -524,4 +549,31 @@ declare global {
   function isFinalityRequest(): boolean;
   /** Convert a `Duration` to milliseconds. Installed by the engine. */
   function durationMs(d: Duration): number;
+
+  // EvalScope constants — kebab-case string values matching the Go
+  // `EvalScope` enum. Use these as `stickyPrimary({ scope: NETWORK })`
+  // and as the `evalScope` field on `SelectionPolicyConfig`. Each
+  // constant resolves to a TypeScript template-literal type so the
+  // checker keeps you on the closed set of valid values.
+  /** One primary per network; max cohesion across methods + finalities. */
+  const NETWORK: "network";
+  /** One primary per `(network, method)`; finalities share. */
+  const NETWORK_METHOD: "network-method";
+  /** One primary per `(network, finality)`; methods share. */
+  const NETWORK_FINALITY: "network-finality";
+  /** One primary per slot — independent per `(network, method, finality)`. */
+  const NETWORK_METHOD_FINALITY: "network-method-finality";
+
+  // Finality bit-flags — used with the chainable `.when(mask, fn)` to
+  // run a sub-chain only when the request's finality matches the mask.
+  // Compose with bitwise OR:
+  //   .when(REALTIME | UNFINALIZED | UNKNOWN, u => u.stickyPrimary({...}))
+  /** Bit 0 — request is reading live tip data (e.g. eth_blockNumber). */
+  const REALTIME: 1;
+  /** Bit 1 — request is reading a recent-but-not-yet-finalized block. */
+  const UNFINALIZED: 2;
+  /** Bit 2 — request is reading a finalized (no-reorg) block. */
+  const FINALIZED: 4;
+  /** Bit 3 — finality couldn't be determined for this request. */
+  const UNKNOWN: 8;
 }

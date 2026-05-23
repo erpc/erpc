@@ -193,6 +193,21 @@
     return out;
   }
 
+  // _finalityBit maps a finality string (the canonical value the Go side
+  // puts on `ctx.finality`) to its bit position — mirroring the
+  // REALTIME/UNFINALIZED/FINALIZED/UNKNOWN constants installed in Go.
+  // Used by `when()` and any future finality-mask primitive. Unknown /
+  // missing maps to UNKNOWN's bit so a mask containing UNKNOWN still
+  // matches an ambiguous request.
+  function _finalityBit(f) {
+    switch (f) {
+      case 'realtime':    return 1 << 0;
+      case 'unfinalized': return 1 << 1;
+      case 'finalized':   return 1 << 2;
+      default:            return 1 << 3; // unknown / missing
+    }
+  }
+
   // globMatch supports '*', '?', and '!' prefix for negation.
   function globMatch(pattern, value) {
     if (pattern == null) return true;
@@ -540,8 +555,12 @@
 
   // computeWeightedPenalty sums each enabled metric × weight. Lower is
   // healthier; `sortByScore` turns it into a higher-is-better score.
-  function computeWeightedPenalty(u, weights, latencyKey) {
-    const m = u.metrics;
+  //
+  // `m` is the metrics object — `u.metrics` for slot-local scoring,
+  // `u.metricsAcrossMethods` when stickyPrimary needs the wildcard
+  // aggregate every slot in the scope sees identically.
+  function computeWeightedPenalty(m, weights, latencyKey) {
+    if (!m) return 0;
     let p = 0;
     if (weights.errorRate)       p += m.errorRate       * weights.errorRate;
     if (weights.respLatency)     p += m[latencyKey]     * weights.respLatency;
@@ -616,7 +635,7 @@
 
       if (optsOverallFn) overallVal *= optsOverallFn(u);
 
-      const penalty = computeWeightedPenalty(u, weights, latencyKey);
+      const penalty = computeWeightedPenalty(u.metrics, weights, latencyKey);
       u.score = overallVal / (1 + penalty);
     }
     // Descending score; alphabetical id as the stable tiebreak.
@@ -665,7 +684,7 @@
 
   // ─── 4.7 Stability (cross-tick) ─────────────────────────────────────────
 
-  // Spec §4.7: hold the previous primary across ticks unless BOTH
+  // Hold the previous primary across ticks unless BOTH
   //   (a) challenger.score > prev.score × (1 + hysteresis), AND
   //   (b) at least `minSwitchInterval` has elapsed since the last switch.
   // (Scores are higher-is-better, so a challenger must be DECISIVELY
@@ -674,23 +693,101 @@
   // and challenger can be huge, so without (b) sticky becomes a no-op
   // and a degrading primary still flaps every tick. With (b), a recent
   // switch is locked in for the cooldown window regardless of score gap.
+  //
+  // `opts.scope` controls WHICH set of slots agree on this primary.
+  // Cross-method scopes (NETWORK, NETWORK_FINALITY) score the primary
+  // off the wildcard `u.metricsAcrossMethods` aggregate — the only
+  // metric source every slot in the scope sees identically — so they
+  // converge deterministically without "first-writer wins" flapping.
+  // Slot-local scope (NETWORK_METHOD_FINALITY) scores off the slot's
+  // own per-method `u.score`, current behavior.
+  //
+  // Convergence: the shared register is keyed by the scope-resolved
+  // (network, method-or-*, finality-or-*) tuple; every slot that maps
+  // to the same key reads/writes the SAME entry. Hysteresis is
+  // evaluated against the SAME challenger score (wildcard) in every
+  // slot, so they all reach the same hold/switch verdict.
   define('stickyPrimary', function (opts) {
     opts = opts || {};
-    const hysteresis    = (opts.hysteresis != null) ? opts.hysteresis : 0.10;
-    const minSwitchMs   = (opts.minSwitchInterval != null)
-      ? durationMs(opts.minSwitchInterval)
-      : 30_000;
+    const hysteresis  = (opts.hysteresis != null) ? opts.hysteresis : 0.10;
+    const minSwitchMs = (opts.minSwitchInterval != null) ? durationMs(opts.minSwitchInterval) : 30_000;
+    const scope       = opts.scope || 'network';
+    if (this.length === 0) return this.slice();
+
     const ctx = globalThis.__policyCtx || {};
-    const prevPrimary = (ctx.previousOrder && ctx.previousOrder.length) ? ctx.previousOrder[0] : null;
-    if (!prevPrimary || this.length === 0) return this.slice();
+
+    // Resolve previous primary + lastSwitchAt. Coarser-than-slot
+    // scopes consult the cross-slot shared register; slot-grain scope
+    // falls through to ctx.previousOrder for back-compat with chains
+    // that don't go through the shared register (e.g. tests).
+    let prevPrimary = null, lastSwitchAt = null;
+    if (scope !== 'network-method-finality' && typeof __getSharedSticky === 'function') {
+      const shared = __getSharedSticky(scope);
+      if (shared && shared.primary) {
+        prevPrimary = shared.primary;
+        lastSwitchAt = shared.lastSwitchAt;
+      }
+    }
+    if (prevPrimary == null) {
+      // Fallback / slot-local scope: read the slot's own previousOrder.
+      // The shared register also exists for slot-grain scopes; we just
+      // skip the round-trip when ctx already has the value.
+      prevPrimary = (ctx.previousOrder && ctx.previousOrder.length) ? ctx.previousOrder[0] : null;
+      lastSwitchAt = ctx.lastSwitchAt;
+    }
+
+    // Scoring source: WILDCARD aggregate for cross-method scopes (the
+    // only metric every participating slot sees identically), or the
+    // slot-local `u.score` (set by sortByScore) for slot-grain scopes.
+    const useWildcard = (scope === 'network' || scope === 'network-finality');
+    function scoreOf(u) {
+      if (useWildcard) {
+        const m = u.metricsAcrossMethods;
+        if (!m) return null;
+        // PREFER_FASTEST is hard-coded for the primary picker — it's
+        // the canonical "score across methods" formula. Per-upstream
+        // scoreMultipliers stay out of the wildcard view because they
+        // resolve per (method, finality) and don't share a single
+        // canonical value across the scope. We can plumb opts.scoreFn
+        // later if operator preference grows beyond this.
+        const penalty = computeWeightedPenalty(m, PRESETS.PREFER_FASTEST, 'p70ResponseSeconds');
+        return 1 / (1 + penalty);
+      }
+      return u.score;
+    }
+
+    // Note the publish/write happens at the END regardless of branch —
+    // this ensures the shared register seeds with the slot's current
+    // primary on cold start (no prevPrimary), and updates on switch.
+    function publish(primary, switching) {
+      if (typeof __setSharedSticky === 'function' && primary) {
+        const ts = switching ? ctx.now : (lastSwitchAt != null ? lastSwitchAt : ctx.now);
+        __setSharedSticky(scope, primary, ts);
+      }
+    }
+
+    if (!prevPrimary) {
+      // Cold start: current head IS the primary; seed the register.
+      publish(this[0].id, true);
+      return this.slice();
+    }
+
     const cur = this[0];
-    if (cur.id === prevPrimary) return this.slice();          // already sticky
+    if (cur.id === prevPrimary) {
+      publish(cur.id, false);          // confirm — no switch, same lastSwitchAt
+      return this.slice();             // already sticky
+    }
     const prevIdx = this.findIndex(u => u.id === prevPrimary);
-    if (prevIdx < 0) return this.slice();                     // prev is gone (excluded etc.)
+    if (prevIdx < 0) {
+      // Prev is gone from this slot's survivor set (excluded for this
+      // method or removed upstream). Per-slot fall-through: use the
+      // slot's local best WITHOUT updating the shared register — other
+      // slots that still have the prev primary in their survivors keep
+      // using it. This is the "method-disagreement" escape hatch.
+      return this.slice();
+    }
     const prevU = this[prevIdx];
 
-    // Move prev to head; we'll only NOT do this when both conditions
-    // for a switch are satisfied.
     function keepPrev() {
       const out = this.slice();
       const removed = out.splice(prevIdx, 1)[0];
@@ -698,26 +795,29 @@
       // Flag that sticky actively held the primary this tick. Read by
       // the Go-side metric emitter to increment `selection_sticky_hold_total`
       // for the held upstream. Only flips when we WOULD have switched —
-      // the "already sticky" branch above doesn't set it (no active hold;
-      // the score-based order already preferred the previous primary).
+      // the "already sticky" branch above doesn't set it.
       globalThis.__policyStickyHeld = true;
+      publish(prevPrimary, false);
       return out;
     }
 
     // Cooldown not elapsed → keep prev regardless of score gap.
-    if (ctx.lastSwitchAt != null && (ctx.now - ctx.lastSwitchAt) < minSwitchMs) {
+    if (lastSwitchAt != null && (ctx.now - lastSwitchAt) < minSwitchMs) {
       return keepPrev.call(this);
     }
 
-    const curScore = cur.score, prevScore = prevU.score;
+    const curScore = scoreOf(cur);
+    const prevScore = scoreOf(prevU);
     if (curScore == null || prevScore == null) {
-      // No sortByScore ran; positional sticky: keep prev as primary.
+      // Missing score (no sortByScore ran AND no wildcard metrics
+      // available) → positional sticky: keep prev as primary.
       return keepPrev.call(this);
     }
 
     // Cooldown elapsed; check hysteresis. Higher is better, so the
     // challenger must clear the incumbent by the hysteresis margin.
     if (curScore > prevScore * (1 + hysteresis)) {
+      publish(cur.id, true);
       return this.slice();                                    // switch
     }
     return keepPrev.call(this);
@@ -940,6 +1040,33 @@
   });
   define('whenEmpty', function (fn) { return this.length === 0 ? fn() : this.slice(); });
   define('whenNotEmpty', function (fn) { return this.length > 0 ? fn(this) : this.slice(); });
+
+  // when(mask, fn) — finality-conditional chain step. The `mask` is a
+  // bitwise-OR of finality bit constants (REALTIME | UNFINALIZED |
+  // FINALIZED | UNKNOWN). When the request's `ctx.finality` matches the
+  // mask, `fn(this)` runs and its result becomes the chain value.
+  // Otherwise the array passes through unchanged.
+  //
+  // Typical use: skip stickyPrimary for finalized reads (no consistency
+  // requirement, so route freely on latency):
+  //
+  //   .when(REALTIME | UNFINALIZED | UNKNOWN,
+  //     u => u.stickyPrimary({ scope: NETWORK }))
+  //
+  // The lambda receives `this` (the array) so chain methods can be
+  // tacked on inside (`u => u.stickyPrimary(...)`); ctx is reachable
+  // via `globalThis.__policyCtx` if the lambda needs it.
+  //
+  // Defensive: a non-function `fn` is a no-op (returns the array as-is)
+  // rather than throwing — keeps the chain alive on a typo'd policy
+  // instead of falling back to the default-policy at the engine level.
+  define('when', function (mask, fn) {
+    if (typeof fn !== 'function') return this.slice();
+    const ctx = globalThis.__policyCtx || {};
+    const bit = _finalityBit(ctx.finality);
+    if ((Number(mask) & bit) === 0) return this.slice();
+    return fn(this);
+  });
   define('fallbackTo', function (arrOrFn) {
     if (this.length > 0) return this.slice();
     return (typeof arrOrFn === 'function') ? arrOrFn(globalThis.__policyCtx) : arrOrFn;

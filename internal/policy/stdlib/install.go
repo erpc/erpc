@@ -61,20 +61,49 @@ func Install(rt *common.Runtime) error {
 		}
 	}
 
-	// 3. Finality constants (match `EvalContext.Finality` values).
-	finalities := map[string]string{
-		"REALTIME":    "realtime",
-		"UNFINALIZED": "unfinalized",
-		"FINALIZED":   "finalized",
-		"UNKNOWN":     "unknown",
-	}
-	for k, v := range finalities {
+	// 3. Finality bit-flag constants — used with `when(mask, fn)` and other
+	// finality-conditional sugar. Bitwise-OR composes a multi-finality mask:
+	//
+	//   .when(REALTIME | UNFINALIZED | UNKNOWN, u => u.stickyPrimary({...}))
+	//
+	// The mask is OR'd with the request's finality-bit (looked up from
+	// `ctx.finality` at run time). Raw string-finality comparisons still work
+	// directly against `ctx.finality` (e.g. `ctx.finality === 'realtime'`) —
+	// these constants are purely the bitmask form.
+	for k, v := range map[string]int64{
+		"REALTIME":    1 << 0,
+		"UNFINALIZED": 1 << 1,
+		"FINALIZED":   1 << 2,
+		"UNKNOWN":     1 << 3,
+	} {
 		if err := vm.Set(k, v); err != nil {
 			return err
 		}
 	}
 
-	// 4. Install Array.prototype methods + globals.
+	// 4. Scope constants — the grouping grain for stickyPrimary + the
+	// engine's `evalScope` config field. Values are kebab-case strings so
+	// they round-trip through YAML / JSON / Go enums cleanly. The TS SDK
+	// exports the same CAPITAL_SNAKE_CASE names with the same string
+	// values, so an operator writes `scope: NETWORK` in both the eval
+	// function and (via the SDK) the YAML config.
+	//
+	//   NETWORK                   one primary per network across everything
+	//   NETWORK_METHOD            one primary per (network, method)
+	//   NETWORK_FINALITY          one primary per (network, finality)
+	//   NETWORK_METHOD_FINALITY   one primary per slot (most granular, no sharing)
+	for k, v := range map[string]string{
+		"NETWORK":                 "network",
+		"NETWORK_METHOD":          "network-method",
+		"NETWORK_FINALITY":        "network-finality",
+		"NETWORK_METHOD_FINALITY": "network-method-finality",
+	} {
+		if err := vm.Set(k, v); err != nil {
+			return err
+		}
+	}
+
+	// 5. Install Array.prototype methods + globals.
 	if _, err := vm.RunString(stdlibSource); err != nil {
 		return fmt.Errorf("install policy stdlib: %w", err)
 	}
