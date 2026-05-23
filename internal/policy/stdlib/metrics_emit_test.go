@@ -28,11 +28,11 @@ func TestMetrics_EmitsScoreGaugeForRanked(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 100*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -66,11 +66,11 @@ func TestMetrics_ExclusionTotalEmitsLeafSlugs(t *testing.T) {
 	beforeCompound := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "erroring-X", "any"))
 
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -111,11 +111,11 @@ func TestMetrics_ShadowExcludeIf_ObservesButDoesNotDrop(t *testing.T) {
 	beforeReal := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
 
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -159,11 +159,11 @@ func TestMetrics_ExcludedSecondsGaugeTransitions(t *testing.T) {
 
 	// Tick 1: flaky degrades, steady stays clean.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:1", "*")
@@ -197,11 +197,11 @@ func TestMetrics_ReadmitCountsTransition(t *testing.T) {
 
 	// Tick 1: returner errors hard → excluded; anchor steady.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:1", "*")
@@ -212,7 +212,7 @@ func TestMetrics_ReadmitCountsTransition(t *testing.T) {
 	// Tick 2: flood returner with successes — errorRate drops well
 	// below 50% (1000 successes vs 80 failures = ~7.4% error rate).
 	for i := 0; i < 1000; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:1", "*")
@@ -243,15 +243,15 @@ func TestMetrics_StickyHoldCounterIncrementsOnActiveHold(t *testing.T) {
 	// Tick 1: equal → a-prim2 wins by id tiebreak.
 	for _, u := range ups {
 		for i := 0; i < 100; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}
 	policy.TickForTest(engine, "evm:1", "*")
 	// Tick 2: degrade a-prim2 → score-only ordering would flip, sticky holds.
 	for i := 0; i < 30; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	policy.TickForTest(engine, "evm:1", "*")
 
@@ -280,7 +280,7 @@ func TestMetrics_NetworkLabelUsesAlias(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:8453", "base", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 50; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:8453", "*")

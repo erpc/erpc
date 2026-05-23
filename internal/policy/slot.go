@@ -152,7 +152,7 @@ func (s *Slot) tickOnce() {
 	ups := s.upstreamsFn()
 
 	// 1. Snapshot metrics for every upstream.
-	metrics, metricsAcrossMethods := snapshotMetrics(s.engine.tracker, ups, s.method)
+	metrics, metricsAcrossMethods := snapshotMetrics(s.engine.tracker, ups, s.method, parseFinality(s.finality))
 
 	// 2. Build EvalContext from cross-tick state.
 	s.mu.Lock()
@@ -553,29 +553,57 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 }
 
 // snapshotMetrics captures one consistent view of every upstream's metrics
-// for the given method. The eval sees this snapshot; subsequent updates
-// during the eval don't change what the JS reads.
+// for the given (method, finality). The eval sees this snapshot;
+// subsequent updates during the eval don't change what the JS reads.
 //
-// `local` is the per-(upstream, method) view exposed as `u.metrics`.
-// `acrossMethods` is the per-(upstream, "*") wildcard aggregate exposed
-// as `u.metricsAcrossMethods` — used by `stickyPrimary({scope: NETWORK})`
-// (and other cross-slot primitives) to score a primary from a metric
-// every slot in the scope sees identically. When `method == "*"` the
-// two slices share the same map by reference (the slot itself is the
-// wildcard slot — no separate aggregate needed).
-func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string) (local, acrossMethods map[string]UpstreamMetrics) {
+// `local` is the per-(upstream, method, finality) view exposed as
+// `u.metrics` — the most-specific tracker bucket the slot's grain
+// supports. When the tracker hasn't opted into per-finality tracking,
+// the per-finality lookup transparently falls back to the
+// (upstream, method, *) all-finalities aggregate, so callers always
+// see populated metrics.
+//
+// `acrossMethods` is the per-(upstream, "*", "*") full wildcard
+// aggregate exposed as `u.metricsAcrossMethods` — used by
+// `stickyPrimary({scope: NETWORK})` (and other cross-slot primitives)
+// to score a primary from a metric every slot in the scope sees
+// identically. When the slot itself runs at method="*" + finality=All
+// the two slices share the same map by reference (no separate
+// aggregate needed).
+func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string, finality common.DataFinalityState) (local, acrossMethods map[string]UpstreamMetrics) {
 	local = make(map[string]UpstreamMetrics, len(ups))
 	for _, u := range ups {
-		local[u.Id()] = readUpstreamMetrics(tr, u, method)
+		local[u.Id()] = readUpstreamMetrics(tr, u, method, finality)
 	}
-	if method == "*" {
+	if method == "*" && finality == common.DataFinalityStateAll {
 		return local, local
 	}
 	acrossMethods = make(map[string]UpstreamMetrics, len(ups))
 	for _, u := range ups {
-		acrossMethods[u.Id()] = readUpstreamMetrics(tr, u, "*")
+		acrossMethods[u.Id()] = readUpstreamMetrics(tr, u, "*", common.DataFinalityStateAll)
 	}
 	return local, acrossMethods
+}
+
+// parseFinality maps a slot's string finality (the canonical
+// `realtime`/`unfinalized`/`finalized`/`unknown` plus the engine's
+// `"*"` wildcard) to the tracker-side `DataFinalityState`. The
+// wildcard maps to `DataFinalityStateAll` — the cross-finality
+// aggregate the tracker maintains regardless of whether
+// per-finality tracking is on.
+func parseFinality(s string) common.DataFinalityState {
+	switch s {
+	case "realtime":
+		return common.DataFinalityStateRealtime
+	case "unfinalized":
+		return common.DataFinalityStateUnfinalized
+	case "finalized":
+		return common.DataFinalityStateFinalized
+	case "unknown":
+		return common.DataFinalityStateUnknown
+	default:
+		return common.DataFinalityStateAll
+	}
 }
 
 // upstreamIDs extracts the IDs of every upstream in the given slice.

@@ -984,13 +984,13 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 
 		rpc1, rpc2 := getUpstreamPair(t, network)
 
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m1)
 		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts")
 		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(), "rpc1 succeeded")
 
 		// rpc2's hedge never fired — clean slate.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance")
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
 		if m2 != nil {
 			assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 was never tried")
 			assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
@@ -1050,7 +1050,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		// rpc1 was the primary attempt → its RequestsTotal ticks. Its
 		// cancellation is ignored at both layers (upstream early-return
 		// branch + tracker skip list), so ErrorsTotal stays zero.
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m1)
 		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary attempt counts in RequestsTotal")
 		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
@@ -1059,7 +1059,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		// rpc2 was the hedge attempt → EXCLUDED from RequestsTotal even
 		// though it ran successfully. Its successful latency still lands
 		// in ResponseQuantiles, preserving the latency signal.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance")
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m2)
 		assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
 			"rpc2's hedge attempt must NOT inflate RequestsTotal — it's speculative fan-out")
@@ -1118,7 +1118,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 
 		_, rpc2 := getUpstreamPair(t, network)
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance")
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m2)
 
 		// RequestsTotal still zero — exclusion held across multiple requests.
@@ -1187,7 +1187,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		rpc1, rpc2 := getUpstreamPair(t, network)
 
 		// rpc1 (primary): one request, success.
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m1)
 		assert.Equal(t, int64(1), m1.RequestsTotal.Load())
 		assert.Equal(t, int64(0), m1.ErrorsTotal.Load())
@@ -1195,7 +1195,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		// rpc2 (hedge): hedge attempt that failed with a real error.
 		// Still excluded — this is the whole point of treating hedges as
 		// speculative fan-out rather than first-class attempts.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance")
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
 		if m2 != nil {
 			assert.Equal(t, int64(0), m2.RequestsTotal.Load(),
 				"rpc2's hedge attempt not in RequestsTotal even though it actually ran")
@@ -1264,7 +1264,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 
 		rpc1, _ := getUpstreamPair(t, network)
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m1)
 
 		// rpc1's error rate stays clean — cancellation is not an upstream
@@ -1354,16 +1354,16 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		}
 
 		// rpc1: primary → counts.
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc1"], "eth_getBalance")
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc1"], "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m1)
 		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "rpc1 primary counts")
 
 		// rpc2 and rpc3: BOTH hedges → both excluded.
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc2"], "eth_getBalance")
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc2"], "eth_getBalance", common.DataFinalityStateAll)
 		if m2 != nil {
 			assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "1st hedge excluded")
 		}
-		m3 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc3"], "eth_getBalance")
+		m3 := network.metricsTracker.GetUpstreamMethodMetrics(byID["rpc3"], "eth_getBalance", common.DataFinalityStateAll)
 		if m3 != nil {
 			assert.Equal(t, int64(0), m3.RequestsTotal.Load(), "2nd hedge also excluded")
 		}
@@ -1426,7 +1426,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		time.Sleep(150 * time.Millisecond) // let recording paths complete
 
 		rpc1, _ := getUpstreamPair(t, network)
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m1)
 		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "primary attempt counted")
 		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
@@ -1501,8 +1501,8 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 
 		rpc1, rpc2 := getUpstreamPair(t, network)
-		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
-		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance")
+		m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
+		m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll)
 		require.NotNil(t, m1)
 		require.NotNil(t, m2)
 
@@ -1674,8 +1674,8 @@ func TestNetwork_LongTermHedgingDynamics_PromotesFasterUpstream(t *testing.T) {
 	// should beat rpc1's p90 (~30ms) → rpc2 promoted to primary.
 	require.NoError(t, network.upstreamsRegistry.RefreshUpstreamNetworkMethodScores())
 
-	m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, method)
-	m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, method)
+	m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, method, common.DataFinalityStateAll)
+	m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, method, common.DataFinalityStateAll)
 	require.NotNil(t, m1)
 	require.NotNil(t, m2)
 	p90rpc1 := m1.GetResponseQuantiles().GetQuantile(0.9).Seconds()
@@ -1781,7 +1781,7 @@ func TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting(t *testing.T)
 	time.Sleep(700 * time.Millisecond)
 
 	rpc1, rpc2 := getUpstreamPair(t, network)
-	m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance")
+	m1 := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getBalance", common.DataFinalityStateAll)
 	require.NotNil(t, m1)
 	// rpc1 was the primary attempt → exactly one RequestsTotal tick. The
 	// cancellation is skipped at both layers. If the late goroutine fired
@@ -1791,7 +1791,7 @@ func TestNetwork_LatePrimaryResponseAfterHedgeWin_NoDoubleCounting(t *testing.T)
 	assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
 		"rpc1's cancellation is not an error; a late successful response after cancel also shouldn't dirty anything")
 
-	if m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance"); m2 != nil {
+	if m2 := network.metricsTracker.GetUpstreamMethodMetrics(rpc2, "eth_getBalance", common.DataFinalityStateAll); m2 != nil {
 		assert.Equal(t, int64(0), m2.RequestsTotal.Load(), "rpc2 hedge stayed excluded")
 		assert.Equal(t, int64(0), m2.ErrorsTotal.Load())
 	}

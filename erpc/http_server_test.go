@@ -3926,7 +3926,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				time.Sleep(1000 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
+				metrics := mtk.GetUpstreamMethodMetrics(up, "*", common.DataFinalityStateAll)
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(5) // 5% error rate
 
@@ -3965,7 +3965,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				time.Sleep(1000 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
+				metrics := mtk.GetUpstreamMethodMetrics(up, "*", common.DataFinalityStateAll)
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(99) // 99% error rate
 
@@ -4013,12 +4013,12 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				time.Sleep(1000 * time.Millisecond)
 
 				ups1 := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*")
+				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*", common.DataFinalityStateAll)
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(5) // 5% error rate
 
 				upsBad := pp.upstreamsRegistry.GetAllUpstreams()[1]
-				metricsBad := mtk.GetUpstreamMethodMetrics(upsBad, "*")
+				metricsBad := mtk.GetUpstreamMethodMetrics(upsBad, "*", common.DataFinalityStateAll)
 				metricsBad.RequestsTotal.Store(100)
 				metricsBad.ErrorsTotal.Store(99) // 99% error rate
 

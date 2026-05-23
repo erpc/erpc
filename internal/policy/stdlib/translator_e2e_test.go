@@ -88,15 +88,15 @@ func TestTranslator_E2E_ScoreBasedOnly(t *testing.T) {
 
 	// rpc1 broken, rpc2 clean.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 20; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -132,11 +132,11 @@ func TestTranslator_E2E_ScoreLatencyQuantile(t *testing.T) {
 
 	// Both upstreams clean, but `fast` is faster.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 200*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -169,15 +169,15 @@ func TestTranslator_E2E_EvalFunctionOnly(t *testing.T) {
 
 	// rpc1 broken (>50% errors), rpc2 clean.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 20; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -251,7 +251,7 @@ func TestTranslator_E2E_EvalFunction_PlusMultipliers_PreservesOrder(t *testing.T
 	}
 	for _, u := range ups {
 		for i := 0; i < 100; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", latencies[u.Id()], true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}

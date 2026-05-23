@@ -169,6 +169,17 @@ func (e *Engine) RegisterNetwork(networkID, networkLabel string, upstreamsFn fun
 		networkLabel = networkID
 	}
 
+	// Opt the project's health tracker into per-finality writes if THIS
+	// network's evalScope needs them. The tracker flag is monotonic
+	// (once on, stays on) — other networks' Record* calls now pay the
+	// extra 2 sub-key writes, but the cost only kicks in for projects
+	// that actually have a finality-scoped network in the mix.
+	if cfg != nil && e.tracker != nil {
+		if _, needsFinality := scopeAxes(cfg.EvalScope); needsFinality {
+			e.tracker.EnableFinalityTracking()
+		}
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

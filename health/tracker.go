@@ -16,12 +16,19 @@ import (
 // Key Types
 // ------------------------------------
 
-// upstreamKey represents "upstream × method".
-// A nil Upstream means the "all-upstreams" aggregate
-// and method "*" means the "all-methods" aggregate.
+// upstreamKey represents "upstream × method × finality".
+// A nil Upstream means the "all-upstreams" aggregate;
+// method "*" means the "all-methods" aggregate;
+// finality `DataFinalityStateAll` (-1) means the "all-finalities"
+// aggregate. The finality axis is only populated when the tracker's
+// `trackByFinality` flag is on — see `Tracker.EnableFinalityTracking`.
+// When the flag is off, only the all-finalities slot is ever written
+// to, and reads of a specific-finality key transparently fall back to
+// it via `GetUpstreamMethodMetrics`.
 type upstreamKey struct {
-	ups    common.Upstream
-	method string
+	ups      common.Upstream
+	method   string
+	finality common.DataFinalityState
 }
 
 // networkKey represents "network × method".
@@ -215,6 +222,19 @@ type Tracker struct {
 
 	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
 	mu                 sync.RWMutex             // Protect the map
+
+	// trackByFinality switches Record* between a 2-key write (current
+	// behavior — only the all-finalities aggregate) and a 4-key write
+	// (per-finality + all-finalities + cross-method finality rollups).
+	// The policy engine flips this to true via EnableFinalityTracking
+	// at network-registration time when any network's `EvalScope`
+	// includes finality. Once true it stays true — flipping back
+	// would orphan partially-populated keys and confuse the eval.
+	//
+	// Reads are atomic.Bool (1 cycle in the request path) so the
+	// off-path stays as cheap as today; the cost only shows up for
+	// projects that opted into per-finality scoping.
+	trackByFinality atomic.Bool
 
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
@@ -433,12 +453,69 @@ func (t *Tracker) rotateMetricsLoop(ctx context.Context) {
 	}
 }
 
-// For real-time aggregator updates, we store expansions of the key:
-func (t *Tracker) getUpsKeys(upstream common.Upstream, method string) []upstreamKey {
-	return []upstreamKey{
-		{upstream, method},
-		{upstream, "*"}, // any-method for this upstream
+// getUpsKeys expands a (upstream, method, finality) record into the
+// set of bucket keys the Record* hot path must increment. When the
+// engine hasn't opted into finality tracking, only the
+// all-finalities rollups exist — that's the current behavior.
+//
+// Off (`trackByFinality == false`) — 2 keys:
+//
+//	(ups, method,    All)        — current per-method aggregate
+//	(ups, "*",       All)        — current any-method aggregate
+//
+// On (`trackByFinality == true`)  — 4 keys:
+//
+//	(ups, method,    finality)   — most specific
+//	(ups, method,    All)        — cross-finality rollup per method
+//	(ups, "*",       finality)   — cross-method rollup per finality
+//	(ups, "*",       All)        — full wildcard (== off-mode any-method)
+//
+// Off-mode behavior is identical to pre-finality tracker — same key
+// count, same key shapes (with finality=All filling the slot that
+// used to be implicit).
+func (t *Tracker) getUpsKeys(upstream common.Upstream, method string, finality common.DataFinalityState) []upstreamKey {
+	if !t.trackByFinality.Load() {
+		return []upstreamKey{
+			{upstream, method, common.DataFinalityStateAll},
+			{upstream, "*", common.DataFinalityStateAll},
+		}
 	}
+	// Avoid a 4th identical write when the caller passed All directly
+	// (no specific finality known). Falls back to the 2-key set with
+	// the per-method + any-method aggregates.
+	if finality == common.DataFinalityStateAll {
+		return []upstreamKey{
+			{upstream, method, common.DataFinalityStateAll},
+			{upstream, "*", common.DataFinalityStateAll},
+		}
+	}
+	return []upstreamKey{
+		{upstream, method, finality},
+		{upstream, method, common.DataFinalityStateAll},
+		{upstream, "*", finality},
+		{upstream, "*", common.DataFinalityStateAll},
+	}
+}
+
+// EnableFinalityTracking flips the tracker into 4-key mode so
+// subsequent Record* writes populate per-(method, finality) entries
+// in addition to the all-finalities rollups. Idempotent + monotonic
+// — once on, stays on, because flipping back would orphan partial
+// keys and starve the eval that depends on them. Safe to call
+// concurrently with Record* via atomic.Bool semantics; a flip races
+// with at most one in-flight Record* which will see the old value
+// and write 2 keys instead of 4 (a single missing tick of
+// per-finality data on the boundary, indistinguishable from the
+// natural sliding-window noise).
+func (t *Tracker) EnableFinalityTracking() {
+	t.trackByFinality.Store(true)
+}
+
+// IsFinalityTracked reports whether the tracker is currently writing
+// per-finality keys. Used by diagnostic surfaces (admin, simulator)
+// to label their output with the active grain.
+func (t *Tracker) IsFinalityTracked() bool {
+	return t.trackByFinality.Load()
 }
 
 func (t *Tracker) getNtwKeys(up common.Upstream, method string) []networkKey {
@@ -507,7 +584,11 @@ func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
 		Str("reason", reason).
 		Msg("cordoning upstream to disable routing")
 
-	tm := t.getUpsMetrics(upstreamKey{upstream, method})
+	// Cordon state is finality-agnostic — operators cordon "drpc for
+	// eth_call", not "drpc for eth_call when reading finalized data".
+	// Store on the all-finalities key so every finality-specific
+	// lookup sees the same cordon flag.
+	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
 	wasCordoned := tm.Cordoned.Swap(true)
 	tm.LastCordonedReason.Store(reason)
 	if !wasCordoned {
@@ -529,7 +610,11 @@ func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason strin
 		Str("method", method).
 		Msg("uncordoning upstream to enable routing")
 
-	tm := t.getUpsMetrics(upstreamKey{upstream, method})
+	// Cordon state is finality-agnostic — operators cordon "drpc for
+	// eth_call", not "drpc for eth_call when reading finalized data".
+	// Store on the all-finalities key so every finality-specific
+	// lookup sees the same cordon flag.
+	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
 	wasCordoned := tm.Cordoned.Swap(false)
 	tm.LastCordonedReason.Store("")
 	if wasCordoned {
@@ -551,13 +636,14 @@ func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason strin
 }
 
 // IsCordoned checks if (ups, network, method) or (ups, network, "*") is cordoned.
+// Cordon flags live on the all-finalities key (see Cordon).
 func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
-	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*"}); ok {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok {
 		if val.(*TrackedMetrics).Cordoned.Load() {
 			return true
 		}
 	}
-	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method}); ok {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
 		return val.(*TrackedMetrics).Cordoned.Load()
 	}
 	return false
@@ -569,7 +655,7 @@ func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
 // endpoints + tooling to surface "why is this upstream out" without
 // going through the metrics-snapshot JSON path.
 func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (string, bool) {
-	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*"}); ok {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok {
 		tm := val.(*TrackedMetrics)
 		if tm.Cordoned.Load() {
 			if r, ok := tm.LastCordonedReason.Load().(string); ok {
@@ -578,7 +664,7 @@ func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (strin
 			return "", true
 		}
 	}
-	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method}); ok {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
 		tm := val.(*TrackedMetrics)
 		if tm.Cordoned.Load() {
 			if r, ok := tm.LastCordonedReason.Load().(string); ok {
@@ -594,8 +680,8 @@ func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (strin
 // Basic Request & Failure Tracking
 // ------------------------------------
 
-func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
-	for _, k := range t.getUpsKeys(up, method) {
+func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string, finality common.DataFinalityState) {
+	for _, k := range t.getUpsKeys(up, method, finality) {
 		t.getUpsMetrics(k).RequestsTotal.Add(1)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
@@ -633,7 +719,7 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		// Hard upstream errors (connection refused, server 5xx,
 		// throttling) stay out so an upstream that's failing fast
 		// doesn't get crowned "fastest in the pool".
-		for _, k := range t.getUpsKeys(up, method) {
+		for _, k := range t.getUpsKeys(up, method, finality) {
 			t.getUpsMetrics(k).ResponseQuantiles.Add(sec)
 		}
 		for _, nk := range t.getNtwKeys(up, method) {
@@ -645,7 +731,7 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 	obs.Observe(sec)
 }
 
-func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
+func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, finality common.DataFinalityState, err error) {
 	// Ignore errors that do not reflect upstream quality:
 	// - ExecutionException: valid blockchain state (e.g. revert)
 	// - ExcludedByPolicy / RequestSkipped / Shadowing: internal routing decisions
@@ -673,7 +759,7 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 		return
 	}
 
-	for _, k := range t.getUpsKeys(up, method) {
+	for _, k := range t.getUpsKeys(up, method, finality) {
 		t.getUpsMetrics(k).ErrorsTotal.Add(1)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
@@ -681,8 +767,8 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 	}
 }
 
-func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
-	for _, k := range t.getUpsKeys(up, method) {
+func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string, finality common.DataFinalityState) {
+	for _, k := range t.getUpsKeys(up, method, finality) {
 		t.getUpsMetrics(k).MisbehaviorsTotal.Add(1)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
@@ -691,32 +777,51 @@ func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common.Upstream, method string, req *common.NormalizedRequest) {
-	for _, k := range t.getUpsKeys(up, method) {
+	var finality common.DataFinalityState
+	var userId, agentName, finalityStr string
+	if req != nil {
+		userId = req.UserId()
+		agentName = req.AgentName()
+		finality = req.Finality(ctx)
+		finalityStr = finality.String()
+	} else {
+		userId = "n/a"
+		agentName = "unknown"
+		finality = common.DataFinalityStateAll
+	}
+
+	for _, k := range t.getUpsKeys(up, method, finality) {
 		t.getUpsMetrics(k).RemoteRateLimitedTotal.Add(1)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
 		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
 	}
 
-	var userId, agentName, finality string
-	if req != nil {
-		userId = req.UserId()
-		agentName = req.AgentName()
-		finality = req.Finality(ctx).String()
-	} else {
-		userId = "n/a"
-		agentName = "unknown"
-	}
-
-	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finality).Inc()
+	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finalityStr).Inc()
 }
 
 // --------------------------------------------
 // Accessors
 // --------------------------------------------
 
-func (t *Tracker) GetUpstreamMethodMetrics(up common.Upstream, method string) *TrackedMetrics {
-	return t.getUpsMetrics(upstreamKey{up, method})
+// GetUpstreamMethodMetrics returns the rolling-window metrics for the
+// (upstream, method, finality) bucket. When per-finality tracking is
+// off OR the specific bucket has no recorded data, the lookup
+// transparently falls back to the all-finalities aggregate so the
+// eval is never starved of signal. Pass `DataFinalityStateAll` to
+// request the rollup directly.
+func (t *Tracker) GetUpstreamMethodMetrics(up common.Upstream, method string, finality common.DataFinalityState) *TrackedMetrics {
+	if finality == common.DataFinalityStateAll || !t.trackByFinality.Load() {
+		return t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
+	}
+	// Use the LIVE map (don't lazy-create) for the specific-finality
+	// bucket — if no Record* has fed it yet, fall through to the
+	// aggregate rather than handing the eval an empty
+	// counters/quantile sketch.
+	if v, ok := t.upsMetrics.Load(upstreamKey{up, method, finality}); ok {
+		return v.(*TrackedMetrics)
+	}
+	return t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
 }
 
 func (t *Tracker) GetUpstreamMetrics(ups common.Upstream) map[string]*TrackedMetrics {

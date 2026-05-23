@@ -1000,10 +1000,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 			// Wrong-empty is a misbehavior (data disagreement with other upstreams),
 			// not an error. The upstream responded correctly, it just lacked data
-			// that others had. Only record misbehavior, not failure.
+			// that others had. Only record misbehavior, not failure. `finality` was
+			// resolved a few lines up for the wrong-empty telemetry metric — reuse it
+			// here so per-(method, finality) misbehavior counters stratify
+			// consistently with the rest of the tracker writes.
 			if upstream != nil {
 				if mt := upstream.MetricsTracker(); mt != nil {
-					mt.RecordUpstreamMisbehavior(upstream, method)
+					mt.RecordUpstreamMisbehavior(upstream, method, finality)
 				}
 			}
 			return true

@@ -166,7 +166,7 @@ func setupSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamConf
 	// will then add the metrics the test cares about against a clean
 	// baseline.
 	for _, ups := range upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
-		if m := network.metricsTracker.GetUpstreamMethodMetrics(ups, "*"); m != nil {
+		if m := network.metricsTracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll); m != nil {
 			m.Reset()
 		}
 	}
@@ -214,7 +214,7 @@ func seedDegraded(tracker *health.Tracker, ups common.Upstream, s seedSpec) {
 	}
 
 	for i := 0; i < s.successful; i++ {
-		tracker.RecordUpstreamRequest(ups, method)
+		tracker.RecordUpstreamRequest(ups, method, common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(
 			ups, method,
 			time.Duration(s.successAvgMs)*time.Millisecond,
@@ -222,18 +222,18 @@ func seedDegraded(tracker *health.Tracker, ups common.Upstream, s seedSpec) {
 		)
 	}
 	for i := 0; i < s.failed; i++ {
-		tracker.RecordUpstreamRequest(ups, method)
-		tracker.RecordUpstreamFailure(ups, method, fmt.Errorf("seed: synth failure"))
+		tracker.RecordUpstreamRequest(ups, method, common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups, method, common.DataFinalityStateUnknown, fmt.Errorf("seed: synth failure"))
 	}
 	for i := 0; i < s.throttled; i++ {
-		tracker.RecordUpstreamRequest(ups, method)
-		tracker.RecordUpstreamFailure(ups, method, common.NewErrEndpointCapacityExceeded(fmt.Errorf("seed: 429")))
+		tracker.RecordUpstreamRequest(ups, method, common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups, method, common.DataFinalityStateUnknown, common.NewErrEndpointCapacityExceeded(fmt.Errorf("seed: 429")))
 	}
 	for i := 0; i < s.misbehaviors; i++ {
-		tracker.RecordUpstreamMisbehavior(ups, method)
+		tracker.RecordUpstreamMisbehavior(ups, method, common.DataFinalityStateUnknown)
 	}
 	if s.blockHeadLag > 0 {
-		m := tracker.GetUpstreamMethodMetrics(ups, method)
+		m := tracker.GetUpstreamMethodMetrics(ups, method, common.DataFinalityStateAll)
 		require.NotNilf(nilTBOnPanic{}, m, "tracker has no metrics for %s/%s yet", ups.Id(), method)
 		m.BlockHeadLag.Store(s.blockHeadLag)
 	}

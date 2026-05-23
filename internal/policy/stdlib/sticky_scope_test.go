@@ -50,26 +50,26 @@ func recordAcrossMethods(tracker *health.Tracker, ups []common.Upstream, methods
 	for _, m := range methods {
 		// alchemy: 100% clean, 10ms.
 		for i := 0; i < 100; i++ {
-			tracker.RecordUpstreamRequest(ups[0], m)
+			tracker.RecordUpstreamRequest(ups[0], m, common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(ups[0], m, 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 		// drpc: 95% clean, 40ms — decent but worse than alchemy.
 		for i := 0; i < 95; i++ {
-			tracker.RecordUpstreamRequest(ups[1], m)
+			tracker.RecordUpstreamRequest(ups[1], m, common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(ups[1], m, 40*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 		for i := 0; i < 5; i++ {
-			tracker.RecordUpstreamRequest(ups[1], m)
-			tracker.RecordUpstreamFailure(ups[1], m, fmt.Errorf("synth"))
+			tracker.RecordUpstreamRequest(ups[1], m, common.DataFinalityStateUnknown)
+			tracker.RecordUpstreamFailure(ups[1], m, common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 		}
 		// quicknode: 50% errors, 200ms — poor.
 		for i := 0; i < 50; i++ {
-			tracker.RecordUpstreamRequest(ups[2], m)
+			tracker.RecordUpstreamRequest(ups[2], m, common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(ups[2], m, 200*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 		for i := 0; i < 50; i++ {
-			tracker.RecordUpstreamRequest(ups[2], m)
-			tracker.RecordUpstreamFailure(ups[2], m, fmt.Errorf("synth"))
+			tracker.RecordUpstreamRequest(ups[2], m, common.DataFinalityStateUnknown)
+			tracker.RecordUpstreamFailure(ups[2], m, common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 		}
 	}
 }
@@ -178,8 +178,8 @@ func TestStickyScope_NetworkScope_HoldsAcrossDivergence(t *testing.T) {
 	// MUST still keep alchemy as primary because the cross-method
 	// scope reads the wildcard aggregate, not the per-method score.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "eth_getLogs")
-		tracker.RecordUpstreamFailure(ups[0], "eth_getLogs", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "eth_getLogs", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "eth_getLogs", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	policy.TickForTest(engine, "evm:1", "eth_getLogs")
 	got := engine.GetOrdered("evm:1", "eth_getLogs", "*")[0].Id()

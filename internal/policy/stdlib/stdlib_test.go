@@ -129,7 +129,7 @@ func ids(ups []common.Upstream) []string {
 func recordEqual(tracker *health.Tracker, ups []common.Upstream, n int, dur time.Duration) {
 	for _, u := range ups {
 		for i := 0; i < n; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", dur, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}
@@ -202,15 +202,15 @@ func TestStdlib_ScoreMultipliers_OverrideMode(t *testing.T) {
 
 	// `a`: fast (10ms) but 50% errors. `b`: clean but slower (80ms).
 	for i := 0; i < 50; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 50; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 80*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:1", "*")
@@ -279,15 +279,15 @@ func TestStdlib_SortByScore_PenalizesErrors(t *testing.T) {
 
 	// Drive rpc1 → high error rate; rpc2 → clean.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 20; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -312,10 +312,10 @@ func TestStdlib_RemoveByLag(t *testing.T) {
 	// Force-create metric entries, then set lag directly. (We can't use
 	// SetLatestBlockNumber here without a real registry.)
 	for _, u := range ups {
-		m := tracker.GetUpstreamMethodMetrics(u, "*")
+		m := tracker.GetUpstreamMethodMetrics(u, "*", common.DataFinalityStateAll)
 		m.BlockHeadLag.Store(0)
 	}
-	tracker.GetUpstreamMethodMetrics(ups[1], "*").BlockHeadLag.Store(50) // rpc2 lagging
+	tracker.GetUpstreamMethodMetrics(ups[1], "*", common.DataFinalityStateAll).BlockHeadLag.Store(50) // rpc2 lagging
 
 	policy.TickForTest(engine, "evm:1", "*")
 	ordered := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -373,15 +373,15 @@ func TestStdlib_DefaultPolicy_DropsBrokenUpstream(t *testing.T) {
 
 	// rpc1: 90% error rate (broken). rpc2: clean.
 	for i := 0; i < 90; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 10; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -409,11 +409,11 @@ func TestStdlib_DefaultPolicy_SafetyNetWhenAllBroken(t *testing.T) {
 	// Both upstreams broken.
 	for _, u := range ups {
 		for i := 0; i < 90; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
-			tracker.RecordUpstreamFailure(u, "*", fmt.Errorf("synth"))
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
+			tracker.RecordUpstreamFailure(u, "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 		}
 		for i := 0; i < 10; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}
@@ -468,12 +468,12 @@ func TestStdlib_DefaultPolicy_DropsLaggingErrorFreeUpstream(t *testing.T) {
 	// Drive 100 clean requests for both; only rpc1 is lagging.
 	for _, u := range ups {
 		for i := 0; i < 100; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}
 	// rpc1 lags 30 blocks behind tip (> 16 default threshold).
-	tracker.GetUpstreamMethodMetrics(ups[0], "*").BlockHeadLag.Store(30)
+	tracker.GetUpstreamMethodMetrics(ups[0], "*", common.DataFinalityStateAll).BlockHeadLag.Store(30)
 
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -502,9 +502,9 @@ func TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream(t *testing.T) {
 	// rpc1: 100 requests, all SLOW (12s) → p95 ≈ 12s > 10s threshold.
 	// rpc2: 100 requests, all fast (10ms) → p95 ≈ 10ms.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 12*time.Second, true, "none", common.DataFinalityStateUnknown, "n/a")
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -543,7 +543,7 @@ func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 
 		for _, u := range ups {
 			for i := 0; i < 100; i++ {
-				tracker.RecordUpstreamRequest(u, "*")
+				tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 				tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 			}
 		}
@@ -567,8 +567,8 @@ func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 			// 50% excludeIf threshold so the contest is over RANKING,
 			// not exclusion.
 			for i := 0; i < 30; i++ {
-				tracker.RecordUpstreamRequest(ups[0], "*")
-				tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+				tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+				tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 			}
 
 			// Tick 2 — under EVERY finality, the 30s minSwitchInterval
@@ -604,11 +604,11 @@ func TestStdlib_DefaultPolicy_ProbeReadmitsAt90s(t *testing.T) {
 
 	// rpc1 broken; rpc2 healthy.
 	for i := 0; i < 90; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -645,12 +645,12 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 
 	// Tick 1: rpc1 clean, rpc2 broken → rpc1 becomes primary.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 50; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
-		tracker.RecordUpstreamFailure(ups[1], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[1], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	policy.TickForTest(engine, "evm:1", "*")
 	require.Equal(t, "rpc1", engine.GetOrdered("evm:1", "*", "*")[0].Id())
@@ -661,7 +661,7 @@ func TestStdlib_StickyPrimary_RetainsPriorPrimary(t *testing.T) {
 	// switch condition: 1.6 < 4 * (1 - 0.5) = 2 → false (1.6 < 2 IS true)
 	// Use a smaller gap so switch is suppressed.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:1", "*")
@@ -686,23 +686,23 @@ func TestStdlib_KeepHealthy_CompositeFilter(t *testing.T) {
 
 	// rpc1: clean. rpc2: 50% errors. rpc3: blockHeadLag=50.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 50; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
-		tracker.RecordUpstreamFailure(ups[1], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[1], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 50; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for _, u := range ups {
-		tracker.GetUpstreamMethodMetrics(u, "*").BlockHeadLag.Store(0)
+		tracker.GetUpstreamMethodMetrics(u, "*", common.DataFinalityStateAll).BlockHeadLag.Store(0)
 	}
-	tracker.GetUpstreamMethodMetrics(ups[2], "*").BlockHeadLag.Store(50)
+	tracker.GetUpstreamMethodMetrics(ups[2], "*", common.DataFinalityStateAll).BlockHeadLag.Store(50)
 	for i := 0; i < 10; i++ {
-		tracker.RecordUpstreamRequest(ups[2], "*")
+		tracker.RecordUpstreamRequest(ups[2], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[2], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -1148,11 +1148,11 @@ func TestStdlib_StepLog_CapturesChainTrail(t *testing.T) {
 	// rpc1 is broken so the excludeIf step trips on it.
 	rpc1 := ups[0]
 	for i := 0; i < 90; i++ {
-		tracker.RecordUpstreamRequest(rpc1, "*")
-		tracker.RecordUpstreamFailure(rpc1, "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(rpc1, "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(rpc1, "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 10; i++ {
-		tracker.RecordUpstreamRequest(rpc1, "*")
+		tracker.RecordUpstreamRequest(rpc1, "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(rpc1, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	policy.TickForTest(engine, "evm:1", "*")

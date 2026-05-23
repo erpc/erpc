@@ -1495,7 +1495,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.Equal(t, int64(0), metrics.MisbehaviorsTotal.Load(),
 			"rpc1 should NOT have misbehavior recorded — block 200 is outside its upper bound of 100")
 	})
@@ -1584,7 +1584,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
 			"rpc1 SHOULD have misbehavior recorded — block 200 is within its upper bound of 300")
 		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),
@@ -1670,7 +1670,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
 			"rpc1 SHOULD have misbehavior recorded — no block availability bounds configured")
 		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),

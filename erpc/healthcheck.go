@@ -257,7 +257,7 @@ func (s *HttpServer) handleHealthCheck(
 
 			// Collect metrics for non-simple modes
 			if !s.isSimpleMode() {
-				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll)
 				upstreamHealth.Metrics = mts
 
 				// LastEvaluation timestamp wiring deferred to Phase 7 (policy engine).
@@ -451,7 +451,7 @@ func (s *HttpServer) evaluateNetworkHealth(
 		belowThresholdErrorRates := []float64{}
 
 		for _, ups := range networkUpstreams {
-			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll)
 			if mts != nil && mts.RequestsTotal.Load() > 0 {
 				errorRate := float64(mts.ErrorsTotal.Load()) / float64(mts.RequestsTotal.Load())
 				allErrorRates = append(allErrorRates, errorRate)
@@ -590,7 +590,7 @@ func (s *HttpServer) evaluateProjectHealth(
 		belowThresholdErrorRates := []float64{}
 
 		for _, ups := range filteredUpstreams {
-			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll)
 			if mts != nil && mts.RequestsTotal.Load() > 0 {
 				errorRate := float64(mts.ErrorsTotal.Load()) / float64(mts.RequestsTotal.Load())
 				allErrorRates = append(allErrorRates, errorRate)

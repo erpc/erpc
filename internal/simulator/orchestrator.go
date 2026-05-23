@@ -868,7 +868,7 @@ func copyIntMap(m map[string]int) map[string]int {
 //
 // All health metrics (errorRate, throttledRate, misbehaviorRate, p50,
 // p90, p95, blockHeadLag, finalizationLag, cordoned) come from
-// `metricsTracker.GetUpstreamMethodMetrics(up, "*")` — eRPC's
+// `metricsTracker.GetUpstreamMethodMetrics(up, "*", common.DataFinalityStateAll)` — eRPC's
 // any-method aggregate for that upstream. The "*" aggregate gets
 // incremented alongside per-method counters (see tracker.getUpsKeys),
 // so it reflects the upstream's overall observed quality.
@@ -909,7 +909,7 @@ func (o *Orchestrator) snapshotUpstreamRows(last bucketTotals) map[string]Upstre
 		// Tracker-side metrics (the source of truth the policy uses).
 		if tracker != nil {
 			if up := upstreamsByID[k.ID]; up != nil {
-				m := tracker.GetUpstreamMethodMetrics(up, "*")
+				m := tracker.GetUpstreamMethodMetrics(up, "*", common.DataFinalityStateAll)
 				if m != nil {
 					row.ErrorRate = m.ErrorRate()
 					row.ThrottleRate = m.ThrottledRate()

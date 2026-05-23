@@ -73,15 +73,15 @@ func TestStepAttribution_ExcludeIf_DropsAttributeToExcludeIf(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 20; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -116,7 +116,7 @@ func TestStepAttribution_Take_DropsTailToTake(t *testing.T) {
 	// Identical baseline metrics so sortByScore tie-breaks alphabetically.
 	for _, u := range ups {
 		for i := 0; i < 100; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}
@@ -162,15 +162,15 @@ func TestStepAttribution_FirstStepWins(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[2], "*")
-		tracker.RecordUpstreamFailure(ups[2], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[2], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[2], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 20; i++ {
-		tracker.RecordUpstreamRequest(ups[2], "*")
+		tracker.RecordUpstreamRequest(ups[2], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[2], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -207,7 +207,7 @@ func TestStepAttribution_ReorderStepsDontAttribute(t *testing.T) {
 
 	for _, u := range ups {
 		for i := 0; i < 50; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}
@@ -274,15 +274,15 @@ func TestStepAttribution_RejectionMetricEmitsPrimitive(t *testing.T) {
 
 	// m-bad → 80% error rate; m-keep clean.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[2], "*")
-		tracker.RecordUpstreamFailure(ups[2], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[2], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[2], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 20; i++ {
-		tracker.RecordUpstreamRequest(ups[2], "*")
+		tracker.RecordUpstreamRequest(ups[2], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[2], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 

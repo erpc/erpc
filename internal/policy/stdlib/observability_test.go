@@ -28,15 +28,15 @@ func TestStdlib_LeafReasons_LeafPredicate(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	for i := 0; i < 20; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -85,22 +85,22 @@ func TestStdlib_LeafReasons_AnyAttributesToTruthyLeaves(t *testing.T) {
 
 	// erroring: high error rate, low lag.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	// lagging: clean errors, high lag.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 	// both: high error rate AND high lag — should attribute to both leaves.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[2], "*")
-		tracker.RecordUpstreamFailure(ups[2], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[2], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[2], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	// clean: nothing.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[3], "*")
+		tracker.RecordUpstreamRequest(ups[3], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamDuration(ups[3], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
@@ -142,13 +142,13 @@ func TestStdlib_LeafReasons_AllAttributesEveryLeaf(t *testing.T) {
 
 	// tripped: lots of samples, mostly errors → AND trips.
 	for i := 0; i < 80; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	// low-samples: just a few requests, all errors → errorRate trips but samplesAbove(10) does not.
 	for i := 0; i < 5; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
-		tracker.RecordUpstreamFailure(ups[1], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[1], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
@@ -185,10 +185,10 @@ func TestStdlib_LeafReasons_NotPrefixesSlug(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	for i := 0; i < 3; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 	}
 	for i := 0; i < 50; i++ {
-		tracker.RecordUpstreamRequest(ups[1], "*")
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
@@ -292,7 +292,7 @@ func TestStdlib_StickyHeld_FlagSetOnActiveHold(t *testing.T) {
 	// false because there's no prior primary to actively defend.
 	for _, u := range ups {
 		for i := 0; i < 100; i++ {
-			tracker.RecordUpstreamRequest(u, "*")
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
 			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 	}
@@ -308,8 +308,8 @@ func TestStdlib_StickyHeld_FlagSetOnActiveHold(t *testing.T) {
 	// drag the score above the challenger's. Cooldown is still active
 	// (1h minSwitchInterval, tick-1 just happened) → sticky must hold.
 	for i := 0; i < 30; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*")
-		tracker.RecordUpstreamFailure(ups[0], "*", fmt.Errorf("synth"))
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
 	policy.TickForTest(engine, "evm:1", "*")
 	d2 := engine.RecentDecisions("evm:1", "*", "*", 1)

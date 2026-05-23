@@ -268,18 +268,18 @@ type FakeHealthTracker struct {
 	mu                  sync.Mutex
 }
 
-func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string) {
+func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.MisbehaviorRecorded = true
 	t.MisbehaviorCount++
 }
 
-func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string) {
+func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState) {
 	// No-op for testing
 }
 
-func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, err error) {
+func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, finality DataFinalityState, err error) {
 	// No-op for testing
 }
 

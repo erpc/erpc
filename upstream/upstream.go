@@ -585,13 +585,14 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			// isHedgeAttempt is the OR of the explicit network-passed flag
 			// and any hedge fan-out from the upstream's own executor.
 			hedgeAttempt := isHedgeAttempt || isHedge
+			finality := nrq.Finality(ctx)
 			if !hedgeAttempt {
 				u.metricsTracker.RecordUpstreamRequest(
 					u,
 					method,
+					finality,
 				)
 			}
-			finality := nrq.Finality(ctx)
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
@@ -702,6 +703,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						u.metricsTracker.RecordUpstreamFailure(
 							u,
 							method,
+							finality,
 							errCall,
 						)
 					}

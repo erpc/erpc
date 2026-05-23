@@ -8571,7 +8571,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		ups1 := network.upstreamsRegistry.GetNetworkUpstreams(ctx, "evm:123")[0]
 
 		// Verify metrics show high error rate from state poller requests
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*", common.DataFinalityStateAll)
 		assert.True(t, metrics.ErrorRate() > 0.7,
 			"Expected error rate above 70%% due to state poller failures, got %.2f%%",
 			metrics.ErrorRate()*100)
@@ -8583,7 +8583,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		time.Sleep(600 * time.Millisecond)
 
 		// Verify metrics show improved error rate
-		metrics = network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*")
+		metrics = network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*", common.DataFinalityStateAll)
 		assert.True(t, metrics.ErrorRate() < 0.7,
 			"Expected error rate below 70%% after successful requests, got %.2f%%",
 			metrics.ErrorRate()*100)
@@ -11526,13 +11526,13 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Create metrics to make excluded upstream have high error rate
-		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*")
-		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", fmt.Errorf("test problem"))
-		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*")
-		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", fmt.Errorf("test problem"))
+		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*", common.DataFinalityStateUnknown)
+		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", common.DataFinalityStateUnknown, fmt.Errorf("test problem"))
+		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*", common.DataFinalityStateUnknown)
+		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", common.DataFinalityStateUnknown, fmt.Errorf("test problem"))
 
 		// Create good metrics for included upstream
-		metricsTracker.RecordUpstreamRequest(includedUpstream, "*")
+		metricsTracker.RecordUpstreamRequest(includedUpstream, "*", common.DataFinalityStateUnknown)
 		metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for selection policy to evaluate

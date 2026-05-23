@@ -53,14 +53,18 @@ func buildEvalContext(networkID, method string, state DecisionState) EvalContext
 // and policies relying on time-based trips just won't fire — which is
 // the correct conservative behavior on a freshly-booted engine.
 type healthTracker interface {
-	GetUpstreamMethodMetrics(up common.Upstream, method string) *health.TrackedMetrics
+	GetUpstreamMethodMetrics(up common.Upstream, method string, finality common.DataFinalityState) *health.TrackedMetrics
 	GetNetworkBlockTime(networkId string) time.Duration
 }
 
 // readUpstreamMetrics builds the JS-visible metrics object for one upstream.
-// Mirrors §3.1 of the spec.
-func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string) UpstreamMetrics {
-	m := tr.GetUpstreamMethodMetrics(u, method)
+// Mirrors §3.1 of the spec. `finality` selects the tracker bucket — pass
+// `DataFinalityStateAll` for the cross-finality rollup (used by the
+// `u.metricsAcrossMethods` aggregate consumed by cross-method
+// stickyPrimary picking) and the slot's specific finality for the
+// per-(method, finality) view.
+func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, finality common.DataFinalityState) UpstreamMetrics {
+	m := tr.GetUpstreamMethodMetrics(u, method, finality)
 	if m == nil {
 		return UpstreamMetrics{}
 	}
