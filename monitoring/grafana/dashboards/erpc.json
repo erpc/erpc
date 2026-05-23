@@ -6130,378 +6130,67 @@
     },
     {
       "collapsed": true,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 6
       },
-      "id": 53,
+      "id": 217,
       "panels": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "",
           "fieldConfig": {
             "defaults": {
+              "unit": "short",
               "color": {
                 "mode": "palette-classic"
               },
               "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": -1,
-                "barWidthFactor": 0.6,
                 "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
+                "fillOpacity": 10,
                 "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
+                "showPoints": "never",
                 "spanNulls": false,
                 "stacking": {
-                  "group": "A",
-                  "mode": "none"
+                  "mode": "none",
+                  "group": "A"
                 },
-                "thresholdsStyle": {
-                  "mode": "off"
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
                 }
-              },
-              "fieldMinMax": false,
-              "mappings": [
-                {
-                  "options": {
-                    "-1": {
-                      "index": 0,
-                      "text": "Primary"
-                    },
-                    "-2": {
-                      "index": 1,
-                      "text": "Secondary"
-                    },
-                    "-3": {
-                      "index": 2,
-                      "text": "3rd"
-                    },
-                    "-4": {
-                      "index": 3,
-                      "text": "4th"
-                    },
-                    "-5": {
-                      "index": 4,
-                      "text": "5th"
-                    },
-                    "-6": {
-                      "index": 5,
-                      "text": "6th"
-                    },
-                    "-7": {
-                      "index": 6,
-                      "text": "7th"
-                    },
-                    "-8": {
-                      "index": 7,
-                      "text": "8th"
-                    }
-                  },
-                  "type": "value"
-                }
-              ],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  }
-                ]
               }
             },
             "overrides": []
           },
           "gridPos": {
             "h": 12,
-            "w": 12,
+            "w": 8,
             "x": 0,
-            "y": 2189
+            "y": 7
           },
-          "id": 139,
-          "interval": "1m",
+          "id": 203,
           "options": {
-            "alertThreshold": true,
             "legend": {
               "calcs": [
-                "last"
+                "mean",
+                "lastNotNull",
+                "max"
               ],
               "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "round(avg by (project, network, vendor, category) (\n  erpc_upstream_routing_priority{\n    project=~\"${project:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\"\n  }\n)) * -1",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "{{project}}, {{network}}, {{vendor}}, {{category}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Primary by Vendor",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": -1,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "fieldMinMax": false,
-              "mappings": [
-                {
-                  "options": {
-                    "-1": {
-                      "index": 0,
-                      "text": "Primary"
-                    },
-                    "-2": {
-                      "index": 1,
-                      "text": "Secondary"
-                    },
-                    "-3": {
-                      "index": 2,
-                      "text": "3rd"
-                    },
-                    "-4": {
-                      "index": 3,
-                      "text": "4th"
-                    },
-                    "-5": {
-                      "index": 4,
-                      "text": "5th"
-                    },
-                    "-6": {
-                      "index": 5,
-                      "text": "6th"
-                    },
-                    "-7": {
-                      "index": 6,
-                      "text": "7th"
-                    },
-                    "-8": {
-                      "index": 7,
-                      "text": "8th"
-                    }
-                  },
-                  "type": "value"
-                }
-              ],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 12,
-            "w": 12,
-            "x": 12,
-            "y": 2189
-          },
-          "id": 140,
-          "interval": "1m",
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "round(avg by (project, network, upstream, category) (\n  erpc_upstream_routing_priority{\n    project=~\"${project:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\"\n  }\n)) * -1",
-              "format": "time_series",
-              "interval": "",
-              "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Primary by Upstream",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 19,
-            "w": 12,
-            "x": 0,
-            "y": 2201
-          },
-          "id": 26,
-          "interval": "1m",
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
               "placement": "bottom",
               "showLegend": true
             },
             "tooltip": {
-              "hideZeros": false,
               "mode": "multi",
               "sort": "desc"
             }
@@ -6514,73 +6203,490 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg(erpc_upstream_score_overall{\n    project=~\"${project:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    upstream!=\"n/a\",\n}) by (region, project, upstream, category)",
+              "expr": "topk(20, avg by (network) (\n  erpc_selection_eligible_upstreams{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }\n))",
               "format": "time_series",
-              "interval": "1m",
-              "legendFormat": "{{region}}, {{project}}, {{upstream}}, {{category}}",
+              "instant": false,
+              "legendFormat": "{{network}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Avg. Score by Upstream",
-          "type": "timeseries"
+          "title": "Eligible Upstreams per Network",
+          "type": "timeseries",
+          "description": "Number of upstreams currently in rotation per network. Drops mean the policy excluded one; if it hits 0, the safety net (`whenEmpty`) is serving the raw set."
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "",
           "fieldConfig": {
             "defaults": {
+              "unit": "s",
               "color": {
                 "mode": "palette-classic"
               },
               "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
                 "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
+                "fillOpacity": 10,
                 "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
+                "showPoints": "never",
                 "spanNulls": false,
                 "stacking": {
-                  "group": "A",
-                  "mode": "none"
+                  "mode": "none",
+                  "group": "A"
                 },
-                "thresholdsStyle": {
-                  "mode": "off"
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
                 }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 8,
+            "y": 7
+          },
+          "id": 204,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
               },
-              "mappings": [],
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "p50",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "p95",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "p99",
+              "range": true,
+              "refId": "C"
+            }
+          ],
+          "title": "Eval Duration p50/p95/p99",
+          "type": "timeseries",
+          "description": "Per-tick JS eval cost. Should sit well under `selectionPolicy.evalTimeout` (default 100ms). Spikes correlate with sobek GC or large upstream pools."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 16,
+            "y": 7
+          },
+          "id": 205,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (kind) (rate(erpc_selection_eval_errors_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m]))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{kind}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Eval Errors by Kind",
+          "type": "timeseries",
+          "description": "kind: `timeout` (eval ran past evalTimeout), `throw` (JS runtime exception), `invalid_return` (eval returned non-array), `fallback_default` (engine fell back to the canonical default). Healthy = flat zero."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 0,
+            "y": 19
+          },
+          "id": 206,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "avg by (network, upstream) (\n  erpc_selection_score{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }\n)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{upstream}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Score per Upstream",
+          "type": "timeseries",
+          "description": "`sortByScore` output, HIGHER = better. Score = overall(u) / (1 + \u03a3 metric\u00d7weight). Per-upstream `routing.scoreMultipliers.overall` boosts visibly lift the line."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 8,
+            "y": 19
+          },
+          "id": 207,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "avg by (network, upstream) (\n  erpc_selection_position{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }\n)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{upstream}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Position per Upstream",
+          "type": "timeseries",
+          "description": "Current rank in the order. 0 = primary, 1+ = backup, -1 = excluded. Averaged across instances; a value like 0.4 means the upstream is primary on 40% of instances."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 16,
+            "y": 19
+          },
+          "id": 208,
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "desc": true,
+                "displayName": "Value"
+              }
+            ]
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sort_desc(\n  max by (network, upstream) (\n    erpc_selection_excluded_seconds{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n    } > 60\n  )\n)",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "__auto",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Currently Stuck-Excluded (>60s)",
+          "type": "table",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true
+                }
+              }
+            }
+          ],
+          "description": "Upstreams continuously excluded for >60s. Alert on >600s for 'stuck out >10 min'. Filter by $upstream/$network to drill in."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 0,
+            "y": 31
+          },
+          "id": 209,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (reason) (\n  rate(erpc_selection_exclusion_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Exclusion Rate by Reason",
+          "type": "timeseries",
+          "description": "`excludeIf` trips per second, per leaf-predicate slug (`error_rate_above`, `latency_p95_above`, `block_head_lag_above`, ...). Option-(c) attribution: compound predicates emit one increment per leaf."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
+                    "color": "blue",
+                    "value": null
                   }
                 ]
               }
@@ -6588,29 +6694,95 @@
             "overrides": []
           },
           "gridPos": {
-            "h": 19,
-            "w": 12,
-            "x": 12,
-            "y": 2201
+            "h": 12,
+            "w": 8,
+            "x": 8,
+            "y": 31
           },
-          "id": 50,
-          "interval": "1m",
+          "id": 210,
           "options": {
-            "alertThreshold": true,
+            "displayMode": "lcd",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "valueMode": "color",
+            "namePlacement": "left"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(15, sum by (network, upstream) (\n  increase(erpc_selection_exclusion_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[$__range])\n))",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "{{network}} / {{upstream}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Top Excluded (last $__range)",
+          "type": "bargauge",
+          "description": "Top-15 upstreams by total exclusion events over the dashboard range. Helps pinpoint the worst offenders."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 16,
+            "y": 31
+          },
+          "id": 211,
+          "options": {
             "legend": {
               "calcs": [
-                "max",
-                "logmin",
-                "mean"
+                "mean",
+                "lastNotNull",
+                "max"
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Mean",
-              "sortDesc": true
+              "showLegend": true
             },
             "tooltip": {
-              "hideZeros": false,
               "mode": "multi",
               "sort": "desc"
             }
@@ -6623,17 +6795,412 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg(erpc_upstream_score_overall{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    project=~\"${project:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n}) by (cluster, region, project, vendor, network, category)",
+              "expr": "sum by (step) (\n  rate(erpc_selection_rejection_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
               "format": "time_series",
-              "interval": "1m",
-              "legendFormat": "{{cluster}}, {{region}}, {{project}}, {{network}}, {{project}}, {{vendor}}, {{category}}",
+              "instant": false,
+              "legendFormat": "{{step}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Avg. Score by Vendor",
-          "type": "timeseries"
+          "title": "Rejection by Chain Step",
+          "type": "timeseries",
+          "description": "Per-step rejection counts. Tells you WHICH primitive (`removeCordoned`, `excludeIf`, `preferTag`, etc.) is dropping upstreams \u2014 orthogonal to the reason slug."
         },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 0,
+            "y": 43
+          },
+          "id": 212,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(20, sum by (network) (\n  rate(erpc_selection_primary_switch_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])\n))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Primary Switches per Network",
+          "type": "timeseries",
+          "description": "Rate of primary-upstream changes per network. Sustained high rate = the policy is flapping (close-scoring contenders). Consider tightening `stickyPrimary.hysteresis` for that network."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 8,
+            "y": 43
+          },
+          "id": 213,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(20, sum by (network, upstream) (\n  rate(erpc_selection_sticky_hold_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{upstream}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Sticky Holds per Upstream",
+          "type": "timeseries",
+          "description": "Ticks where `stickyPrimary` ACTIVELY held the incumbent against a challenger. High count = sticky is doing real anti-flap work."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 8,
+            "x": 16,
+            "y": 43
+          },
+          "id": 214,
+          "options": {
+            "calculate": false,
+            "cellGap": 1,
+            "cellValues": {
+              "unit": "short"
+            },
+            "color": {
+              "mode": "scheme",
+              "fill": "dark-orange",
+              "scale": "exponential",
+              "scheme": "Spectral",
+              "steps": 32,
+              "reverse": false,
+              "exponent": 0.5,
+              "min": 0
+            },
+            "exemplars": {
+              "color": "rgba(255,0,255,0.7)"
+            },
+            "filterValues": {
+              "le": 1e-09
+            },
+            "legend": {
+              "show": true
+            },
+            "rowsFrame": {
+              "layout": "auto"
+            },
+            "tooltip": {
+              "mode": "single",
+              "yHistogram": false,
+              "showColorScale": false
+            },
+            "yAxis": {
+              "axisPlacement": "left",
+              "reverse": false,
+              "unit": "s",
+              "decimals": 0
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (le) (\n  rate(erpc_selection_readmit_age_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[$__rate_interval])\n)",
+              "format": "heatmap",
+              "instant": false,
+              "legendFormat": "{{le}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Readmit Age Distribution",
+          "type": "heatmap",
+          "description": "How long upstreams were out before being readmitted. Should peak near `readmitExcluded.reAdmitAfter` (90s in the default). Anything in the tail = stuck excluded longer than intended."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 0,
+            "y": 55
+          },
+          "id": 215,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (reason) (\n  rate(erpc_selection_shadow_exclusion_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Shadow Exclusions by Reason (dry-run signal)",
+          "type": "timeseries",
+          "description": "`shadowExcludeIf` trips \u2014 upstreams that WOULD have been excluded if the rule were real. Compare to `selection_exclusion_total` to decide when to flip a shadow rule to a real `excludeIf`."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 12,
+            "y": 55
+          },
+          "id": 216,
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean",
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (action, reason) (\n  rate(erpc_upstream_cordon_event_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{action}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Cordon Events (admin RPC)",
+          "type": "timeseries",
+          "description": "Manual `erpc_cordonUpstream` / `erpc_uncordonUpstream` admin RPC events. Action: `cordon` / `uncordon`. Spikes = operator intervention."
+        }
+      ],
+      "title": "Selection Policy",
+      "type": "row"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "id": 53,
+      "panels": [
         {
           "datasource": {
             "type": "prometheus",
@@ -7914,7 +8481,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 7
+        "y": 8
       },
       "id": 64,
       "panels": [
@@ -8242,7 +8809,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 9
       },
       "id": 21,
       "panels": [
@@ -9343,7 +9910,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 10
       },
       "id": 84,
       "panels": [
@@ -10277,7 +10844,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 11
       },
       "id": 111,
       "panels": [
@@ -10511,7 +11078,7 @@
               "color": "rgba(255,0,255,0.7)"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "legend": {
               "show": true
@@ -10640,7 +11207,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 11
+        "y": 12
       },
       "id": 123,
       "panels": [
@@ -11478,7 +12045,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 13
       },
       "id": 127,
       "panels": [
@@ -11700,7 +12267,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 14
       },
       "id": 133,
       "panels": [
