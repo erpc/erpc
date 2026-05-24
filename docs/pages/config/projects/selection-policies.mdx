@@ -66,7 +66,7 @@ projects:
                 .removeCordoned()
                 .excludeIf(errorRateAbove(0.5))
                 .excludeIf(throttleRateAbove(0.3))
-                .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))
+                .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -108,7 +108,7 @@ export default createConfig({
             .removeCordoned()
             .excludeIf(errorRateAbove(0.5))
             .excludeIf(throttleRateAbove(0.3))
-            .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))
+            .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -151,7 +151,7 @@ one of them lets a degraded upstream keep receiving traffic:
     .removeCordoned()                                                              // 1
     .excludeIf(errorRateAbove(0.5))                                                // 2
     .excludeIf(throttleRateAbove(0.3))                                             // 3
-    .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))            // 4
+    .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))                // 4
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))             // 5
     .whenEmpty(() => upstreams)                                                    // 6 — safety net
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })     // 7 — tier
@@ -168,7 +168,7 @@ Step-by-step:
 
 3. **Drop heavily throttled** — the vendor is rate-limiting us; reroute before quota burns.
 
-4. **Drop latency outliers** — either an upstream that's 2× slower than peers (relative; adapts to chain baseline) OR > 30 s p95 (absolute floor for "all upstreams slow" scenarios). The relative check catches "this vendor is dragging" on any chain; the absolute floor catches catastrophic latency.
+4. **Drop latency outliers** — either an upstream that's 3× the fastest peer (relative; adapts to chain baseline) OR > 30 s p70 (absolute floor for "all upstreams slow" scenarios). The relative check catches "this vendor is dragging" on any chain; the absolute floor catches catastrophic latency. Both predicates default to p70 — the same quantile `sortByScore(PREFER_FASTEST)` ranks on, so exclusion and ranking agree on what "fast" means.
 
 5. **Drop laggers** — > 16 blocks behind tip OR > 30 wall-clock seconds. The block-count check is chain-agnostic; the seconds check adapts to the chain's actual block time via the tracker's EMA, but no-ops until the EMA accumulates ≥ 3 samples, so the count check carries the load at cold-start.
 
@@ -302,7 +302,7 @@ Set `evalPerMethod: true` to run the policy separately per (network,
 method) instead of one ranking for the whole network. Each method's
 slot snapshots metrics for THAT specific method, so:
 
-- `latencyDeviationPctAbove(95, 100)` compares same-method p95s across upstreams.
+- `latencyDeviationAbove(3)` compares same-method p70s across upstreams.
 - A slow-`eth_getLogs` upstream can still serve `eth_blockNumber`.
 - Slots are created lazily on first request for a method; the wildcard
   `"*"` slot answers until the method-specific slot's first tick lands.
@@ -441,7 +441,7 @@ Switch how the config combines with the base via `opts.multipliers`:
     .removeCordoned()
     .excludeIf(errorRateAbove(0.5))                     // real
     .shadowExcludeIf(errorRateAbove(0.3))               // shadow: would a tighter bar be safe?
-    .shadowExcludeIf(any(blockSecondsLagAbove(15), latencyAbove(95, 15_000)))
+    .shadowExcludeIf(any(blockSecondsLagAbove(15), latencyAbove(15_000, 95)))
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary()
     .readmitExcluded()
@@ -481,7 +481,7 @@ The selection policy emits one tick's worth of decision data into Prometheus on 
 
 ### Per-leaf exclusion attribution
 
-`erpc_selection_exclusion_total{upstream, reason}` emits **one increment per leaf predicate that tripped** — so an `any(errorRateAbove(0.5), latencyAbove(95, 30_000))` excluding an upstream because the latency leaf was true increments `reason="latency_p95_above"`, not the combinator. AND-semantics (`all(A,B)`) increments every leaf since each must be true to trip. `not(A)` increments `reason="not_<A.slug>"`.
+`erpc_selection_exclusion_total{upstream, reason}` emits **one increment per leaf predicate that tripped** — so an `any(errorRateAbove(0.5), latencyAbove(30_000))` excluding an upstream because the latency leaf was true increments `reason="latency_p70_above"` (p70 is the default-quantile slug), not the combinator. AND-semantics (`all(A,B)`) increments every leaf since each must be true to trip. `not(A)` increments `reason="not_<A.slug>"`.
 
 Operators see exactly *which signal* caused each exclusion. The reason slug is threshold-free (`error_rate_above`, not `errorRate>0.5`) so cardinality stays bounded by the predicate-factory set, not by the powerset of thresholds.
 
@@ -599,7 +599,7 @@ logs, and the simulator UI. Reason resolution:
 
 ```js
 .excludeIf(errorRateAbove(0.5))                                       // factory: auto-labels "errorRate>0.5"
-.excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))   // combinator: auto-labels "any(p95Deviation>100%,p95>30000ms)"
+.excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))   // combinator: auto-labels "any(p70>3xFastest,p70>30000ms)"
 .excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor')         // inline: explicit reason
 ```
 
@@ -873,8 +873,9 @@ misbehaviorRateAbove(rate)
 <summary>**Latency, absolute** (millisecond thresholds; quantile accepts `0..100` or `0..1`)</summary>
 
 ```ts
-// quantile is the first arg (0..1 fraction or 0..100 number)
-latencyAbove(quantile, ms)
+// value is the first arg; quantile is optional (defaults to p70).
+// quantile accepts a 0..1 fraction or 0..100 number.
+latencyAbove(ms, quantile?)
 ```
 
 </details>
@@ -882,25 +883,31 @@ latencyAbove(quantile, ms)
 <details>
 <summary>**Latency, relative deviation from peers**</summary>
 
-Compare each upstream's quantile against the median p-value of the
-OTHER upstreams (self excluded from the baseline). Self-exclusion
-matters in small pools — with one fast (10 ms) and one slow (12 s)
-upstream, median-of-all is 6 s and the slow upstream is "only" 99% above
-it; median-of-others puts the slow upstream at 119 000% above its 10 ms
-baseline.
+Trip when this upstream's p<q> exceeds the FASTEST peer's p<q> by the
+given multiplier (self excluded from the baseline). Reads like English:
+`latencyDeviationAbove(4, 85)` = "out if p85 is more than 4× the
+fastest peer's p85"; `latencyDeviationAbove(3)` = "out if p70 is more
+than 3× the fastest peer's p70" (p70 is the default quantile).
+
+Fastest-of-others (not median) tracks the user's actual quality
+ceiling: if three upstreams answer at 200 ms and one drifts to 800 ms,
+the slow one sits at 4× the achievable best — exactly what the
+operator cares about. In small pools this also gives clean semantics —
+with one fast (10 ms) and one slow (12 s) upstream, the slow one sits
+at 1 200× the achievable best and trips at any multiplier ≥ 1.
 
 When the selection policy runs per-method, the per-upstream metric is
 that method's quantile — so the same predicate compares same-method
-p95s across upstreams.
+quantiles across upstreams.
 
 ```ts
-// quantile is the first arg (0..1 fraction or 0..100 number)
-latencyDeviationAbove(quantile, ms)      // absolute ms above median-of-others
-latencyDeviationPctAbove(quantile, pct)  // percent above median-of-others
+// multiplier is the first arg; quantile is optional (defaults to p70).
+// quantile accepts a 0..1 fraction or 0..100 number.
+latencyDeviationAbove(multiplier, quantile?)
 ```
 
 Zero-sample upstreams (no traffic, no quantile yet) are excluded from
-the median calculation and never tripped by these predicates.
+the baseline AND can never trip themselves.
 
 </details>
 
@@ -950,8 +957,8 @@ not(pred)        // NOT
 ```
 
 Composed predicates carry a joined `policyReason` —
-`any(errorRateAbove(0.5), p95Above(30_000))` annotates as
-`any(errorRate>0.5,p95>30000ms)`.
+`any(errorRateAbove(0.5), latencyAbove(30_000))` annotates as
+`any(errorRate>0.5,p70>30000ms)` (p70 is the default-quantile slug).
 
 </details>
 

@@ -255,8 +255,11 @@ errorRateAbove(rate)        / errorRateBelow(rate)
 throttleRateAbove(rate)     / throttleRateBelow(rate)
 misbehaviorRateAbove(rate)
 
-// Latency (ms thresholds) — quantile is the first arg (0..1 fraction or 0..100 number)
-latencyAbove(quantile, ms)
+// Latency (ms thresholds) — value is the first arg; quantile is optional (defaults to p70)
+latencyAbove(ms, quantile?)
+
+// Latency (relative; trip if p<q> > multiplier × fastest peer's p<q>)
+latencyDeviationAbove(multiplier, quantile?)
 
 // Lag (block counts)
 blockNumberLagAbove(blocks)
@@ -287,11 +290,11 @@ not(pred)       // NOT
 // Default trip rules:
 .excludeIf(errorRateAbove(0.5),     { outFor: '30s', reason: 'errorRate>50%' })
 .excludeIf(throttleRateAbove(0.3),  { outFor: '30s' })
-.excludeIf(latencyAbove(95, 10_000), { outFor: '30s' })
+.excludeIf(latencyAbove(10_000, 95), { outFor: '30s' })
 .excludeIf(blockNumberLagAbove(16), { outFor: '90s' })
 
 // Compound: trip only when errors AND latency are both bad
-.excludeIf(all(errorRateAbove(0.2), latencyAbove(99, 2_000)), { outFor: '60s' })
+.excludeIf(all(errorRateAbove(0.2), latencyAbove(2_000, 99)), { outFor: '60s' })
 
 // Sample-size guard: don't trip on noise from low-sample upstreams
 .excludeIf(all(errorRateAbove(0.3), not(samplesBelow(10))), { outFor: '30s' })
@@ -310,7 +313,7 @@ not(pred)       // NOT
 
 #### Latency: `u.metrics.latencyP(q)`
 
-Returns milliseconds. Accepts either `0..1` fractions (`0.95`) or `0..100` percentiles (`95`). Snaps to the nearest precomputed quantile bucket (p50/p70/p90/p95/p99). Use `latencyAbove(q, ms)` to build absolute-threshold predicates at any quantile.
+Returns milliseconds. Accepts either `0..1` fractions (`0.95`) or `0..100` percentiles (`95`). Snaps to the nearest precomputed quantile bucket (p50/p70/p90/p95/p99). Use `latencyAbove(ms, quantile?)` (quantile defaults to p70) to build absolute-threshold predicates; use `latencyDeviationAbove(multiplier, quantile?)` to trip when p<q> exceeds the fastest peer's p<q> by `multiplier`×.
 
 #### Authoring custom factories
 
@@ -630,8 +633,11 @@ errorRateAbove(rate)       / errorRateBelow(rate)
 throttleRateAbove(rate)    / throttleRateBelow(rate)
 misbehaviorRateAbove(rate)
 
-// Latency (ms) — quantile is the first arg (0..1 fraction or 0..100 number)
-latencyAbove(quantile, ms)
+// Latency (ms) — value is the first arg; quantile is optional (defaults to p70)
+latencyAbove(ms, quantile?)
+
+// Latency (relative; trip if p<q> > multiplier × fastest peer's p<q>)
+latencyDeviationAbove(multiplier, quantile?)
 
 // Lag (block counts)
 blockNumberLagAbove(blocks)
@@ -795,7 +801,7 @@ When `selectionPolicy.evalFunc` is omitted, the engine applies the production-ha
     // 2 — health excludes, one per signal, with per-rule cooldowns
     .excludeIf(errorRateAbove(0.5),       { outFor: '30s', reason: 'errorRate>50%' })
     .excludeIf(throttleRateAbove(0.3),    { outFor: '30s', reason: 'throttled>30%' })
-    .excludeIf(latencyAbove(95, 10_000),  { outFor: '30s', reason: 'p95>10s'       })
+    .excludeIf(latencyAbove(10_000, 95),  { outFor: '30s', reason: 'p95>10s'       })
     .excludeIf(blockNumberLagAbove(16),   { outFor: '90s', reason: 'blockLag>16'   })
     .whenEmpty(() => upstreams)                                           // 3 — safety net
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })  // 4
@@ -817,7 +823,7 @@ When `selectionPolicy.evalFunc` is omitted, the engine applies the production-ha
 2. **Health excludes** — one `excludeIf` per signal, with its own cooldown via `outFor`. Each line is self-documenting and reads top-to-bottom: drop if `<signal>` exceeds threshold, hold dropped for at least `<duration>`. Different signals get different cooldowns because they recover on different timescales (errors clear fast as the rate-limit window resets; block-lag means the chain is reorging or the node is syncing, which takes longer):
    - `errorRateAbove(0.5)` / `outFor: '30s'` — more than half-erroring is broken regardless of chain.
    - `throttleRateAbove(0.3)` / `outFor: '30s'` — vendor is rate-limiting; reroute before quota burns.
-   - `latencyAbove(95, 10_000)` / `outFor: '30s'` — catches a slow vendor before its blended percentile poisons the pool's hedge / consensus timeouts.
+   - `latencyAbove(10_000, 95)` / `outFor: '30s'` — catches a slow vendor before its blended percentile poisons the pool's hedge / consensus timeouts.
    - `blockNumberLagAbove(16)` / `outFor: '90s'` — ~1 min behind tip on Ethereum, ~32 s on a 2 s chain; clearly degraded.
 
    Filtering on these signals (rather than only ranking via `sortByScore`) is the key defence against the "slow or erroring upstream still wins by score" class of incident.

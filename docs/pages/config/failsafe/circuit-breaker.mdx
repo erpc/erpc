@@ -17,7 +17,7 @@ The selection policy runs on a tick (default every `1s`) and returns the ordered
 upstreams
   .excludeIf(errorRateAbove(0.5))                              // failing
   .excludeIf(throttleRateAbove(0.3))                           // throttled
-  .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))  // slow
+  .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))      // slow
   .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))   // lagging
   ...
   .readmitExcluded({ reAdmitAfter: '90s' })                    // probe back
@@ -25,14 +25,14 @@ upstreams
 
 An excluded upstream stays out until the next tick — and is then re-admitted via `.readmitExcluded({ reAdmitAfter })`, which gives it organic traffic again after a cooldown. If the live metrics still trip the `excludeIf` chain, it's excluded again. Otherwise it earns its score-based position back.
 
-This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (50% error rate, 30% throttle rate, p95 > 30s OR 2× peers, head lag > 16 blocks OR 30s, 90s readmit) are tuned for production from day one.
+This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (50% error rate, 30% throttle rate, p70 > 30s OR 3× the fastest peer, head lag > 16 blocks OR 30s, 90s readmit) are tuned for production from day one.
 
 ## State, mapped to selection-policy concepts
 
 | Concept | Surfaced as |
 |---|---|
 | **Closed** (upstream healthy) | Present in the eval's returned ordered list. `erpc_selection_position{upstream}` is `0` (primary) or `1+` (runner-up). |
-| **Open** (upstream excluded) | Missing from the returned list. `erpc_selection_position{upstream}` is `-1`. The reason ("errorRate>0.5", "p95>30000ms", ...) appears on the per-upstream annotation in `Decision.Output.Annotations[id]` and DEBUG logs. |
+| **Open** (upstream excluded) | Missing from the returned list. `erpc_selection_position{upstream}` is `-1`. The reason ("errorRate>0.5", "p70>30000ms", "p70>3xFastest", ...) appears on the per-upstream annotation in `Decision.Output.Annotations[id]` and DEBUG logs. |
 | **Half-open** (probing recovery) | `readmitExcluded` re-admits previously-excluded upstreams at the tail of the returned list. Organic retry/hedge traffic probes them; if metrics still bad on the next tick, excluded again. |
 
 ## Tuning the thresholds
@@ -45,7 +45,7 @@ Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the 
     .removeCordoned()
     .excludeIf(all(errorRateAbove(0.5), samplesAbove(10)))
     .excludeIf(throttleRateAbove(0.3))
-    .excludeIf(latencyAbove(95, 10_000))
+    .excludeIf(latencyAbove(10_000, 95))
     .whenEmpty(() => upstreams)
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
@@ -64,7 +64,7 @@ For operator-driven exclusion that doesn't depend on metrics — *"this vendor's
 |---|---|
 | Prometheus | `erpc_selection_position{project,network,method,upstream}` — `0` = primary, `1+` = runner-up, `-1` = excluded. `erpc_selection_rejection_total{...,step}` — per-step rejection counter. `erpc_selection_primary_switch_total{...,from,to}` — primary changes. |
 | OTLP | Per-tick eval span on the network with selected upstream + tick id. |
-| Logs (DEBUG) | One line per `excludeIf` rejection with the upstream id and the predicate's `policyReason` (e.g. `errorRate>0.5`, `p95>30000ms`, `blockHeadLag>16`). |
+| Logs (DEBUG) | One line per `excludeIf` rejection with the upstream id and the predicate's `policyReason` (e.g. `errorRate>0.5`, `p70>30000ms`, `p70>3xFastest`, `blockHeadLag>16`). |
 | Simulator | The policy-history pane shows the per-step trail (every chainable method's input → output → dropped/added/reordered) with timestamps. |
 
 <Callout type="info">

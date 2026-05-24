@@ -1189,7 +1189,7 @@
     return _leaf(u => u.metrics.latencyP(quantile) > ms, 'p' + quantile + '>' + ms + 'ms', 'latency_p' + quantile + '_above');
   };
 
-  // latencyDeviationAbove(quantile, multiplier) — trips when this
+  // latencyDeviationAbove(multiplier, quantile?) — trips when this
   // upstream's p<quantile> exceeds the FASTEST peer's p<quantile> by
   // the given multiplier.
   //
