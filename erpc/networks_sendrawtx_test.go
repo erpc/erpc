@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -1507,6 +1508,196 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 		jrr, err := resp.JsonRpcResponse()
 		require.NoError(t, err)
 		assert.Contains(t, jrr.GetResultString(), "0x")
+	})
+}
+
+// TestNetwork_SendRawTransaction_NetworkPostForwardIntegration reproduces the
+// production bug pattern that PR #898 fixes:
+//
+//   - Customer broadcasts an eth_sendRawTransaction.
+//   - Every upstream returns a non-nonce error (HTTP 500, generic 5xx) — these
+//     bypass the per-upstream idempotency hook because they aren't classified as
+//     ErrCodeEndpointNonceException.
+//   - The failsafe retry budget exhausts, surfacing ErrUpstreamsExhausted /
+//     -32603 "all upstream attempts failed".
+//   - But the tx is actually in the network (mempool or chain) — some upstream
+//     accepted it silently.
+//   - The new network-level postForward hook issues eth_getTransactionByHash,
+//     finds the tx, and converts the misleading error into a synthetic success.
+//
+// This test drives the full stack: gock-mocked HTTP upstreams, real failsafe
+// retry loop, real ErrUpstreamsExhausted construction, then evm.HandleNetworkPostForward
+// (the same call site invoked by PreparedProject.doForward in production).
+func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) {
+	t.Run("AllUpstreams500_TxInNetwork_ReturnsSyntheticSuccess", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		// Every retry attempt to rpc1 returns HTTP 500. Persisted so all
+		// failsafe attempts hit the same outcome.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(500).
+			BodyString("Internal Server Error")
+
+		// rpc2 also returns HTTP 500 for the broadcast.
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(500).
+			BodyString("Internal Server Error")
+
+		// But the tx IS actually in the network — eth_getTransactionByHash on
+		// either upstream returns a non-null tx object. This simulates an
+		// upstream that silently accepted the broadcast despite returning 5xx,
+		// or a different upstream that already saw the tx in its mempool.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"hash":        expectedTxHash,
+					"blockNumber": "0x123",
+					"from":        "0x0000000000000000000000000000000000000001",
+					"to":          "0x3535353535353535353535353535353535353535",
+				},
+			})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"hash":        expectedTxHash,
+					"blockNumber": "0x123",
+					"from":        "0x0000000000000000000000000000000000000001",
+					"to":          "0x3535353535353535353535353535353535353535",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+			MaxAttempts: 3,
+			Delay:       common.Duration(10 * time.Millisecond),
+		})
+
+		req := common.NewNormalizedRequest(requestBytes)
+
+		// Stage 1: bare network.Forward — failsafe loop exhausts on 500s.
+		// This is the "without the network postForward" behavior.
+		respRaw, errRaw := network.Forward(ctx, req)
+		require.Error(t, errRaw, "raw network.Forward should fail when all upstreams 500")
+		assert.True(t, common.HasErrorCode(errRaw, common.ErrCodeFailsafeRetryExceeded) ||
+			common.HasErrorCode(errRaw, common.ErrCodeUpstreamsExhausted),
+			"raw error should be exhausted-class, got: %v", errRaw)
+		log.Info().Err(errRaw).Msg("STAGE 1: bare network.Forward returned exhausted error (the bug)")
+
+		// Stage 2: feed that error through the network postForward hook (this
+		// is exactly what PreparedProject.doForward does at projects.go:265).
+		resp, err := evm.HandleNetworkPostForward(ctx, network, req, respRaw, errRaw)
+		require.NoError(t, err, "post-forward should override -32603 with synthetic success when tx is in network")
+		require.NotNil(t, resp)
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		// Actual keccak256 of the sample legacy signed tx (verified with `cast keccak`).
+		// Don't reuse the package-level `expectedTxHash` constant — it's stale.
+		const sampleSignedTxActualHash = "0x33469b22e9f636356c4160a87eb19df52b7412e8eac32a4a55ffe88ea8350788"
+		assert.Contains(t, jrr.GetResultString(), sampleSignedTxActualHash,
+			"synthetic success should carry the tx hash extracted from the signed bytes")
+		log.Info().Str("result", jrr.GetResultString()).Msg("STAGE 2: postForward returned synthetic success (the fix)")
+	})
+
+	t.Run("AllUpstreams500_TxNotInNetwork_PropagatesOriginalError", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		// All broadcast attempts 500.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(500).BodyString("Internal Server Error")
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(500).BodyString("Internal Server Error")
+
+		// Tx is NOT in network — both upstreams return null result.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+			MaxAttempts: 3,
+			Delay:       common.Duration(10 * time.Millisecond),
+		})
+
+		req := common.NewNormalizedRequest(requestBytes)
+		respRaw, errRaw := network.Forward(ctx, req)
+		require.Error(t, errRaw)
+
+		resp, err := evm.HandleNetworkPostForward(ctx, network, req, respRaw, errRaw)
+		require.Error(t, err, "tx genuinely missing → original error must propagate")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) ||
+			common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
+			"expected exhausted-class error to be preserved, got: %v", err)
+		_ = resp // may be nil — only the error matters here
+		log.Info().Err(err).Msg("regression guard: tx absent → original error preserved")
 	})
 }
 
