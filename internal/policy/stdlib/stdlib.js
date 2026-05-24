@@ -1148,9 +1148,20 @@
   // metric slug. `policyLeaves(u)` returns `[slug]` when the predicate
   // trips on `u`, `[]` otherwise — `excludeIf` only calls it AFTER the
   // predicate already returned true, so the empty branch is defensive.
-  function _leaf(fn, reason, slug) {
+  //
+  // `isGuard` marks "this predicate is a precondition, not a reason."
+  // Guards (e.g. `samplesAbove(20)`) are used inside `all(...)` to gate
+  // the REAL exclusion check on having enough signal — operationally
+  // they describe sample-volume readiness, not health. When `all` /
+  // `any` collect leaves for `erpc_selection_exclusion_total{reason}`,
+  // guards are filtered out so the dashboard shows only the meaningful
+  // reason (`latency_p95_deviation_pct_above`), not the noise
+  // (`samples_above`). Guards fall back into attribution only if EVERY
+  // tripping leaf is a guard — defensive so we never lose all signal.
+  function _leaf(fn, reason, slug, isGuard) {
     fn.policyReason = reason;
     fn.policySlug = slug;
+    fn.policyIsGuard = !!isGuard;
     fn.policyLeaves = function (u) { return fn(u) ? [slug] : []; };
     return fn;
   }
@@ -1252,8 +1263,15 @@
   // Sample-size guard — useful as an AND-term to avoid tripping rules on
   // low-sample-count noise (when an upstream has only had a handful of
   // requests, a single error blows up errorRate to 100%).
-  globalThis.samplesBelow = function (n) { return _leaf(u => u.metrics.requestsTotal < n, 'samples<' + n, 'samples_below'); };
-  globalThis.samplesAbove = function (n) { return _leaf(u => u.metrics.requestsTotal > n, 'samples>' + n, 'samples_above'); };
+  // samplesAbove / samplesBelow are GUARDS — they answer "do we have
+  // enough signal yet?" not "is this upstream unhealthy?". Marked as
+  // such so `all(samplesAbove(20), p95DeviationPctAbove(100))` doesn't
+  // bleed `samples_above` into the `reason` label of the per-exclusion
+  // metric (operators reading the dashboard saw `samples_above` next
+  // to `latency_p95_deviation_pct_above` and rightly wondered what
+  // "had enough samples" was supposed to mean as a cause).
+  globalThis.samplesBelow = function (n) { return _leaf(u => u.metrics.requestsTotal < n, 'samples<' + n, 'samples_below', /* isGuard */ true); };
+  globalThis.samplesAbove = function (n) { return _leaf(u => u.metrics.requestsTotal > n, 'samples>' + n, 'samples_above', /* isGuard */ true); };
 
   // Logical combinators — flat, variadic. Predicates compose freely:
   //   excludeIf(all(errorRateAbove(0.3), not(samplesBelow(10))))
@@ -1276,20 +1294,40 @@
     if (p && typeof p.policyLeaves === 'function') return p.policyLeaves(u);
     return ['custom'];
   }
+  // _collectLeaves splits children into (guard, real) buckets so the
+  // caller can prefer "real" leaves (the actual reason) over guards
+  // (preconditions like `samplesAbove`). Used by `all()` / `any()` to
+  // keep the exclusion `reason` label meaningful — `latency_p95_…`
+  // surfaces, `samples_above` doesn't pollute it.
+  function _collectLeaves(preds, u, filter) {
+    const guards = [];
+    const real = [];
+    for (const p of preds) {
+      if (filter && !p(u)) continue;
+      const leaves = _leavesFromPred(p, u);
+      if (p && p.policyIsGuard) {
+        for (const l of leaves) guards.push(l);
+      } else {
+        for (const l of leaves) real.push(l);
+      }
+    }
+    // Defensive: if every contributing leaf was a guard, fall back to
+    // the guard slugs rather than emit no attribution. Shouldn't happen
+    // for well-formed policies (a chain of pure guards has no meaningful
+    // exclusion criterion) but better than a silent metric drop.
+    return real.length > 0 ? real : guards;
+  }
   globalThis.all = function () {
     const preds = Array.prototype.slice.call(arguments);
     const fn = function (u) { return preds.every(p => p(u)); };
     fn.policyReason = 'all(' + preds.map(_reasonFor).join(',') + ')';
     fn.policySlug = 'all';
     fn.policyLeaves = function (u) {
-      // AND-semantics: when `all` trips, every leaf is implicitly true,
-      // so attribute exclusion to every leaf.
-      const out = [];
-      for (const p of preds) {
-        const leaves = _leavesFromPred(p, u);
-        for (const l of leaves) out.push(l);
-      }
-      return out;
+      // AND-semantics: when `all` trips, every child returned true so
+      // we attribute to every NON-GUARD leaf (the "real" reasons).
+      // `filter=false` because no per-pred truth check is needed —
+      // they all tripped to get us here.
+      return _collectLeaves(preds, u, /* filter */ false);
     };
     return fn;
   };
@@ -1299,16 +1337,10 @@
     fn.policyReason = 'any(' + preds.map(_reasonFor).join(',') + ')';
     fn.policySlug = 'any';
     fn.policyLeaves = function (u) {
-      // OR-semantics: at least one leaf was true, possibly more. Attribute
-      // exclusion to every leaf that actually evaluated true — operators
-      // see exactly which signal(s) caused the drop, not the boilerplate.
-      const out = [];
-      for (const p of preds) {
-        if (!p(u)) continue;
-        const leaves = _leavesFromPred(p, u);
-        for (const l of leaves) out.push(l);
-      }
-      return out;
+      // OR-semantics: only the leaves that ACTUALLY evaluated true
+      // contributed to the trip — filter to those, then prefer
+      // non-guard ones for the exclusion label.
+      return _collectLeaves(preds, u, /* filter */ true);
     };
     return fn;
   };

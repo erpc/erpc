@@ -126,10 +126,18 @@ func TestStdlib_LeafReasons_AnyAttributesToTruthyLeaves(t *testing.T) {
 	require.False(t, cleanExcluded, "clean upstream should stay in rotation")
 }
 
-// TestStdlib_LeafReasons_AllAttributesEveryLeaf verifies that `all(A,B)`
-// excluding an upstream attributes to EVERY leaf (AND-semantics means
-// every child must have been true).
-func TestStdlib_LeafReasons_AllAttributesEveryLeaf(t *testing.T) {
+// TestStdlib_LeafReasons_AllFiltersGuardsFromAttribution verifies the
+// guard-filter contract: `all(samplesAbove(N), realPredicate)` MUST
+// attribute only to `realPredicate`'s slug, not the precondition
+// guard. Operationally `samples_above` is a readiness check ("do we
+// have enough signal to evaluate the real predicate?"), not a
+// reason an upstream is unhealthy — emitting it as the exclusion
+// `reason` label confuses dashboards (operator sees `samples_above`
+// next to `latency_p95_deviation_pct_above` and rightly wonders what
+// "had enough samples" is supposed to mean as a cause). The guard
+// keeps doing its job at the predicate-evaluation layer; it just
+// stays out of the attribution layer.
+func TestStdlib_LeafReasons_AllFiltersGuardsFromAttribution(t *testing.T) {
 	eval := `(upstreams, ctx) => upstreams.excludeIf(all(errorRateAbove(0.5), samplesAbove(10)))`
 	engine, _, tracker, cancel := newTestEngine(t, eval)
 	defer cancel()
@@ -163,11 +171,59 @@ func TestStdlib_LeafReasons_AllAttributesEveryLeaf(t *testing.T) {
 		excludedByID[ex.ID] = sorted
 	}
 
-	require.Equal(t, []string{"error_rate_above", "samples_above"}, excludedByID["tripped"],
-		"all() must attribute to EVERY leaf when it trips")
+	require.Equal(t, []string{"error_rate_above"}, excludedByID["tripped"],
+		"all(samplesAbove, errorRateAbove) tripping must attribute ONLY "+
+			"to the non-guard leaf — `samples_above` is a guard (precondition), "+
+			"not a reason. Surfacing both would pollute the exclusion dashboard's "+
+			"reason label with a meaningless `had enough samples` entry next to "+
+			"the actual `error_rate_above` cause.")
 	_, lowSamplesExcluded := excludedByID["low-samples"]
 	require.False(t, lowSamplesExcluded,
-		"all() must NOT trip when any leaf is false — `samples_above(10)` blocks attribution here")
+		"all() must NOT trip when any leaf is false — `samples_above(10)` "+
+			"still GATES the compound (its truth value still matters); we only "+
+			"filtered it out of the ATTRIBUTION leaves, not the boolean evaluation.")
+}
+
+// TestStdlib_LeafReasons_AllGuardsFallback asserts the defensive
+// path: when EVERY tripping leaf is a guard (a degenerate policy
+// like `all(samplesAbove(1), samplesAbove(5))`), attribution falls
+// BACK to the guard slugs rather than emitting nothing. We'd rather
+// surface "samples_above" than silently drop the metric — a
+// pure-guards policy is operator error, but losing the trail makes
+// it hard to diagnose.
+func TestStdlib_LeafReasons_AllGuardsFallback(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.excludeIf(all(samplesAbove(1), samplesAbove(5)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("busy")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	for i := 0; i < 20; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	decisions := engine.RecentDecisions("evm:1", "*", "*", 1)
+	require.Len(t, decisions, 1)
+
+	var busy *policy.ExcludedUpstream
+	for i := range decisions[0].Output.Excluded {
+		if decisions[0].Output.Excluded[i].ID == "busy" {
+			busy = &decisions[0].Output.Excluded[i]
+			break
+		}
+	}
+	require.NotNil(t, busy, "busy upstream should be excluded by all(samplesAbove(1), samplesAbove(5))")
+	require.NotEmpty(t, busy.LeafReasons,
+		"degenerate all-guards policy must still emit SOMETHING — silently "+
+			"losing the metric trail is worse than a noisy slug")
+	require.Contains(t, busy.LeafReasons, "samples_above",
+		"with no non-guard leaves to attribute to, the guard slug is the fallback signal")
 }
 
 // TestStdlib_LeafReasons_NotPrefixesSlug — `not(X)` excluding an upstream
