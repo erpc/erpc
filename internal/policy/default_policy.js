@@ -32,7 +32,7 @@
     // catastrophic threshold any sample count.
     .excludeIf(errorRateAbove(0.5))
     .excludeIf(throttleRateAbove(0.3))
-    .excludeIf(any(all(samplesAbove(20), p95DeviationPctAbove(100)), latencyP95Above(30_000)))
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationPctAbove(95, 100)), latencyAbove(95, 30_000)))
     // Block-head lag: trip on either a chain-agnostic block count
     // (16 blocks ≈ 3 min behind tip on Ethereum, ~32s on a 2s chain)
     // OR a wall-clock seconds bound (30s behind tip) — the seconds

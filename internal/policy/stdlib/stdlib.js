@@ -368,7 +368,7 @@
   //   * If `predicate(u)` is true this tick → drop `u`.
   //   * Annotates dropped upstreams with a human-readable reason for
   //     diagnostics. The reason is auto-derived from the predicate:
-  //     factory-built predicates (errorRateAbove, p95DeviationPctAbove,
+  //     factory-built predicates (errorRateAbove, latencyDeviationPctAbove,
   //     all/any/not, …) attach a `policyReason` property describing
   //     what they check. Inline custom predicates can supply a label
   //     as an optional 2nd positional arg:
@@ -1120,7 +1120,7 @@
   //
   // Combinators (`all` / `any` / `not`) compose them into compound rules:
   //
-  //   excludeIf(all(errorRateAbove(0.2), latencyP99Above(2000)),
+  //   excludeIf(all(errorRateAbove(0.2), latencyAbove(99, 2000)),
   //             { outFor: '60s' })
   //
   // Authors can write their own factories in their policy file — they're
@@ -1140,7 +1140,7 @@
   //     on, returns the leaf-slug ARRAY for metric attribution. For base
   //     factories this is `[slug]`; for combinators it walks children.
   //     This is what powers option-(c) attribution: a compound like
-  //     `any(errorRateAbove(0.5), p95DeviationPctAbove(100))` excluding
+  //     `any(errorRateAbove(0.5), latencyDeviationPctAbove(95, 100))` excluding
   //     an upstream attributes the exclusion to the leaf(s) that were
   //     actually true, not the boilerplate `any` wrapper.
 
@@ -1173,20 +1173,20 @@
   globalThis.throttleRateBelow    = function (rate) { return _leaf(u => u.metrics.throttledRate   < rate, 'throttledRate<'   + rate, 'throttle_rate_below'); };
   globalThis.misbehaviorRateAbove = function (rate) { return _leaf(u => u.metrics.misbehaviorRate > rate, 'misbehaviorRate>' + rate, 'misbehavior_rate_above'); };
 
-  // Latency factories — millisecond thresholds; quantile accepts either
-  // 0..1 fractions or 0..100 percentile numbers (auto-normalized inside
-  // `u.metrics.latencyP`).
-  globalThis.latencyAbove    = function (quantile, ms) { return _leaf(u => u.metrics.latencyP(quantile) > ms, 'p' + quantile + '>' + ms + 'ms', 'latency_p' + quantile + '_above'); };
-  globalThis.latencyP50Above = function (ms) { return _leaf(u => u.metrics.latencyP(50) > ms, 'p50>' + ms + 'ms', 'latency_p50_above'); };
-  globalThis.latencyP70Above = function (ms) { return _leaf(u => u.metrics.latencyP(70) > ms, 'p70>' + ms + 'ms', 'latency_p70_above'); };
-  globalThis.latencyP90Above = function (ms) { return _leaf(u => u.metrics.latencyP(90) > ms, 'p90>' + ms + 'ms', 'latency_p90_above'); };
-  globalThis.latencyP95Above = function (ms) { return _leaf(u => u.metrics.latencyP(95) > ms, 'p95>' + ms + 'ms', 'latency_p95_above'); };
-  globalThis.latencyP99Above = function (ms) { return _leaf(u => u.metrics.latencyP(99) > ms, 'p99>' + ms + 'ms', 'latency_p99_above'); };
+  // Latency factory — millisecond threshold at any quantile. `quantile`
+  // accepts either `0..1` fractions (`0.95`) or `0..100` percentile
+  // numbers (`95`); both are normalized inside `u.metrics.latencyP`.
+  // Single generic factory (no per-quantile aliases) — the small naming
+  // convenience wasn't worth the surface duplication, and
+  // `latencyAbove(95, 30_000)` reads identically.
+  globalThis.latencyAbove = function (quantile, ms) {
+    return _leaf(u => u.metrics.latencyP(quantile) > ms, 'p' + quantile + '>' + ms + 'ms', 'latency_p' + quantile + '_above');
+  };
 
   // Latency DEVIATION factories — compare each upstream's quantile
   // against the pool's median of OTHER upstreams (i.e. the upstream
   // being evaluated is excluded from its own baseline). Unlike
-  // `latencyP95Above(10_000)` which is an absolute threshold, these
+  // `latencyAbove(95, 10_000)` which is an absolute threshold, these
   // adapt to the network's normal: a 200ms p95 is healthy on Ethereum
   // but degraded on a 10ms-baseline L2; the same predicate covers
   // both because it compares against peers.
@@ -1200,7 +1200,7 @@
   //
   // When the selection policy runs per-method (evalPerMethod=true),
   // `__policyAllUpstreams` carries metrics for THAT specific method,
-  // so `p95DeviationPctAbove(100)` correctly compares same-method
+  // so `latencyDeviationPctAbove(95, 100)` correctly compares same-method
   // p95s across upstreams.
   //
   // Zero-sample upstreams (no traffic, no quantile yet) are excluded
@@ -1230,22 +1230,13 @@
       return false;
     };
   }
-  // Public API — one factory per quantile-of-interest, in both
-  // absolute (Ms) and relative (Pct) flavors. p70 + p95 are the most
-  // useful: p70 because PREFER_FASTEST uses it for scoring, p95 because
-  // tail latency is the operator's usual reach-for-the-eject-button.
+  // Public API — TWO factories, one per absolute (`Ms`) vs relative
+  // (`Pct`) flavor. Both take the quantile as the first argument so
+  // there's no per-quantile alias soup. Pass the percentile as 0..1
+  // fraction or 0..100 number; both forms are accepted everywhere
+  // `latencyP(q)` is consulted.
   globalThis.latencyDeviationAbove    = function (quantile, ms)  { return _leaf(_latencyDeviationAbove(quantile, ms,  null), 'p' + quantile + 'Deviation>' + ms + 'ms',  'latency_p' + quantile + '_deviation_ms_above'); };
   globalThis.latencyDeviationPctAbove = function (quantile, pct) { return _leaf(_latencyDeviationAbove(quantile, null, pct), 'p' + quantile + 'Deviation>' + pct + '%', 'latency_p' + quantile + '_deviation_pct_above'); };
-  globalThis.p50DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(50, ms, null), 'p50Deviation>' + ms + 'ms', 'latency_p50_deviation_ms_above'); };
-  globalThis.p70DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(70, ms, null), 'p70Deviation>' + ms + 'ms', 'latency_p70_deviation_ms_above'); };
-  globalThis.p90DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(90, ms, null), 'p90Deviation>' + ms + 'ms', 'latency_p90_deviation_ms_above'); };
-  globalThis.p95DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(95, ms, null), 'p95Deviation>' + ms + 'ms', 'latency_p95_deviation_ms_above'); };
-  globalThis.p99DeviationMsAbove  = function (ms)  { return _leaf(_latencyDeviationAbove(99, ms, null), 'p99Deviation>' + ms + 'ms', 'latency_p99_deviation_ms_above'); };
-  globalThis.p50DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(50, null, pct), 'p50Deviation>' + pct + '%', 'latency_p50_deviation_pct_above'); };
-  globalThis.p70DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(70, null, pct), 'p70Deviation>' + pct + '%', 'latency_p70_deviation_pct_above'); };
-  globalThis.p90DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(90, null, pct), 'p90Deviation>' + pct + '%', 'latency_p90_deviation_pct_above'); };
-  globalThis.p95DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(95, null, pct), 'p95Deviation>' + pct + '%', 'latency_p95_deviation_pct_above'); };
-  globalThis.p99DeviationPctAbove = function (pct) { return _leaf(_latencyDeviationAbove(99, null, pct), 'p99Deviation>' + pct + '%', 'latency_p99_deviation_pct_above'); };
 
   // Lag-based factories — block-count thresholds.
   globalThis.blockNumberLagAbove  = function (blocks) { return _leaf(u => u.metrics.blockHeadLag    > blocks, 'blockHeadLag>'    + blocks, 'block_head_lag_above'); };
@@ -1265,7 +1256,7 @@
   // requests, a single error blows up errorRate to 100%).
   // samplesAbove / samplesBelow are GUARDS — they answer "do we have
   // enough signal yet?" not "is this upstream unhealthy?". Marked as
-  // such so `all(samplesAbove(20), p95DeviationPctAbove(100))` doesn't
+  // such so `all(samplesAbove(20), latencyDeviationPctAbove(95, 100))` doesn't
   // bleed `samples_above` into the `reason` label of the per-exclusion
   // metric (operators reading the dashboard saw `samples_above` next
   // to `latency_p95_deviation_pct_above` and rightly wondered what

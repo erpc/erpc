@@ -17,7 +17,7 @@ The selection policy runs on a tick (default every `1s`) and returns the ordered
 upstreams
   .excludeIf(errorRateAbove(0.5))                              // failing
   .excludeIf(throttleRateAbove(0.3))                           // throttled
-  .excludeIf(any(p95DeviationPctAbove(100), latencyP95Above(30_000)))  // slow
+  .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))  // slow
   .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))   // lagging
   ...
   .readmitExcluded({ reAdmitAfter: '90s' })                    // probe back
@@ -45,7 +45,7 @@ Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the 
     .removeCordoned()
     .excludeIf(all(errorRateAbove(0.5), samplesAbove(10)))
     .excludeIf(throttleRateAbove(0.3))
-    .excludeIf(latencyP95Above(10_000))
+    .excludeIf(latencyAbove(95, 10_000))
     .whenEmpty(() => upstreams)
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })

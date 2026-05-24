@@ -496,27 +496,18 @@ declare global {
   function throttleRateBelow(rate: number): PolicyEvalPredicate;
   function misbehaviorRateAbove(rate: number): PolicyEvalPredicate;
 
-  // Latency predicate factories (ms thresholds) ───────────────────────
+  // Latency predicate factories — quantile-first generic form (no
+  // per-quantile aliases like `latencyP95Above`; pass the quantile
+  // as the first arg). `quantile` accepts `0..1` fraction (`0.95`) or
+  // `0..100` number (`95`).
   function latencyAbove(quantile: number, ms: number): PolicyEvalPredicate;
-  function latencyP50Above(ms: number): PolicyEvalPredicate;
-  function latencyP70Above(ms: number): PolicyEvalPredicate;
-  function latencyP90Above(ms: number): PolicyEvalPredicate;
-  function latencyP95Above(ms: number): PolicyEvalPredicate;
-  function latencyP99Above(ms: number): PolicyEvalPredicate;
 
-  // Latency-deviation predicate factories (compare against pool median) ─
+  // Latency-deviation predicate factories — compare each upstream's
+  // quantile against the median-of-others (self-excluded). Same
+  // quantile-first signature; absolute (`ms`) and relative (`pct`)
+  // flavors.
   function latencyDeviationAbove(quantile: number, ms: number): PolicyEvalPredicate;
   function latencyDeviationPctAbove(quantile: number, pct: number): PolicyEvalPredicate;
-  function p50DeviationMsAbove(ms: number): PolicyEvalPredicate;
-  function p70DeviationMsAbove(ms: number): PolicyEvalPredicate;
-  function p90DeviationMsAbove(ms: number): PolicyEvalPredicate;
-  function p95DeviationMsAbove(ms: number): PolicyEvalPredicate;
-  function p99DeviationMsAbove(ms: number): PolicyEvalPredicate;
-  function p50DeviationPctAbove(pct: number): PolicyEvalPredicate;
-  function p70DeviationPctAbove(pct: number): PolicyEvalPredicate;
-  function p90DeviationPctAbove(pct: number): PolicyEvalPredicate;
-  function p95DeviationPctAbove(pct: number): PolicyEvalPredicate;
-  function p99DeviationPctAbove(pct: number): PolicyEvalPredicate;
 
   // Lag predicate factories ───────────────────────────────────────────
   function blockNumberLagAbove(blocks: number): PolicyEvalPredicate;

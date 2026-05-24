@@ -66,7 +66,7 @@ projects:
                 .removeCordoned()
                 .excludeIf(errorRateAbove(0.5))
                 .excludeIf(throttleRateAbove(0.3))
-                .excludeIf(any(p95DeviationPctAbove(100), latencyP95Above(30_000)))
+                .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -108,7 +108,7 @@ export default createConfig({
             .removeCordoned()
             .excludeIf(errorRateAbove(0.5))
             .excludeIf(throttleRateAbove(0.3))
-            .excludeIf(any(p95DeviationPctAbove(100), latencyP95Above(30_000)))
+            .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -151,7 +151,7 @@ one of them lets a degraded upstream keep receiving traffic:
     .removeCordoned()                                                              // 1
     .excludeIf(errorRateAbove(0.5))                                                // 2
     .excludeIf(throttleRateAbove(0.3))                                             // 3
-    .excludeIf(any(p95DeviationPctAbove(100), latencyP95Above(30_000)))            // 4
+    .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))            // 4
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))             // 5
     .whenEmpty(() => upstreams)                                                    // 6 — safety net
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })     // 7 — tier
@@ -302,7 +302,7 @@ Set `evalPerMethod: true` to run the policy separately per (network,
 method) instead of one ranking for the whole network. Each method's
 slot snapshots metrics for THAT specific method, so:
 
-- `p95DeviationPctAbove(100)` compares same-method p95s across upstreams.
+- `latencyDeviationPctAbove(95, 100)` compares same-method p95s across upstreams.
 - A slow-`eth_getLogs` upstream can still serve `eth_blockNumber`.
 - Slots are created lazily on first request for a method; the wildcard
   `"*"` slot answers until the method-specific slot's first tick lands.
@@ -441,7 +441,7 @@ Switch how the config combines with the base via `opts.multipliers`:
     .removeCordoned()
     .excludeIf(errorRateAbove(0.5))                     // real
     .shadowExcludeIf(errorRateAbove(0.3))               // shadow: would a tighter bar be safe?
-    .shadowExcludeIf(any(blockSecondsLagAbove(15), latencyP95Above(15_000)))
+    .shadowExcludeIf(any(blockSecondsLagAbove(15), latencyAbove(95, 15_000)))
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary()
     .readmitExcluded()
@@ -481,7 +481,7 @@ The selection policy emits one tick's worth of decision data into Prometheus on 
 
 ### Per-leaf exclusion attribution
 
-`erpc_selection_exclusion_total{upstream, reason}` emits **one increment per leaf predicate that tripped** — so an `any(errorRateAbove(0.5), latencyP95Above(30_000))` excluding an upstream because the latency leaf was true increments `reason="latency_p95_above"`, not the combinator. AND-semantics (`all(A,B)`) increments every leaf since each must be true to trip. `not(A)` increments `reason="not_<A.slug>"`.
+`erpc_selection_exclusion_total{upstream, reason}` emits **one increment per leaf predicate that tripped** — so an `any(errorRateAbove(0.5), latencyAbove(95, 30_000))` excluding an upstream because the latency leaf was true increments `reason="latency_p95_above"`, not the combinator. AND-semantics (`all(A,B)`) increments every leaf since each must be true to trip. `not(A)` increments `reason="not_<A.slug>"`.
 
 Operators see exactly *which signal* caused each exclusion. The reason slug is threshold-free (`error_rate_above`, not `errorRate>0.5`) so cardinality stays bounded by the predicate-factory set, not by the powerset of thresholds.
 
@@ -599,7 +599,7 @@ logs, and the simulator UI. Reason resolution:
 
 ```js
 .excludeIf(errorRateAbove(0.5))                                       // factory: auto-labels "errorRate>0.5"
-.excludeIf(any(p95DeviationPctAbove(100), latencyP95Above(30_000)))   // combinator: auto-labels "any(p95Deviation>100%,p95>30000ms)"
+.excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))   // combinator: auto-labels "any(p95Deviation>100%,p95>30000ms)"
 .excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor')         // inline: explicit reason
 ```
 
@@ -873,9 +873,8 @@ misbehaviorRateAbove(rate)
 <summary>**Latency, absolute** (millisecond thresholds; quantile accepts `0..100` or `0..1`)</summary>
 
 ```ts
+// quantile is the first arg (0..1 fraction or 0..100 number)
 latencyAbove(quantile, ms)
-latencyP50Above(ms)   latencyP70Above(ms)   latencyP90Above(ms)
-latencyP95Above(ms)   latencyP99Above(ms)
 ```
 
 </details>
@@ -895,16 +894,9 @@ that method's quantile — so the same predicate compares same-method
 p95s across upstreams.
 
 ```ts
-// Generic — choose any quantile:
+// quantile is the first arg (0..1 fraction or 0..100 number)
 latencyDeviationAbove(quantile, ms)      // absolute ms above median-of-others
 latencyDeviationPctAbove(quantile, pct)  // percent above median-of-others
-
-// Convenience — common quantiles, both absolute and relative:
-p50DeviationMsAbove(ms)    p50DeviationPctAbove(pct)
-p70DeviationMsAbove(ms)    p70DeviationPctAbove(pct)
-p90DeviationMsAbove(ms)    p90DeviationPctAbove(pct)
-p95DeviationMsAbove(ms)    p95DeviationPctAbove(pct)
-p99DeviationMsAbove(ms)    p99DeviationPctAbove(pct)
 ```
 
 Zero-sample upstreams (no traffic, no quantile yet) are excluded from
