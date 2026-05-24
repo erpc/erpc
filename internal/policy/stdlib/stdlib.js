@@ -368,7 +368,7 @@
   //   * If `predicate(u)` is true this tick → drop `u`.
   //   * Annotates dropped upstreams with a human-readable reason for
   //     diagnostics. The reason is auto-derived from the predicate:
-  //     factory-built predicates (errorRateAbove, latencyDeviationPctAbove,
+  //     factory-built predicates (errorRateAbove, latencyDeviationAbove,
   //     all/any/not, …) attach a `policyReason` property describing
   //     what they check. Inline custom predicates can supply a label
   //     as an optional 2nd positional arg:
@@ -1140,7 +1140,7 @@
   //     on, returns the leaf-slug ARRAY for metric attribution. For base
   //     factories this is `[slug]`; for combinators it walks children.
   //     This is what powers option-(c) attribution: a compound like
-  //     `any(errorRateAbove(0.5), latencyDeviationPctAbove(95, 100))` excluding
+  //     `any(errorRateAbove(0.5), latencyDeviationAbove(95, 4))` excluding
   //     an upstream attributes the exclusion to the leaf(s) that were
   //     actually true, not the boilerplate `any` wrapper.
 
@@ -1173,43 +1173,63 @@
   globalThis.throttleRateBelow    = function (rate) { return _leaf(u => u.metrics.throttledRate   < rate, 'throttledRate<'   + rate, 'throttle_rate_below'); };
   globalThis.misbehaviorRateAbove = function (rate) { return _leaf(u => u.metrics.misbehaviorRate > rate, 'misbehaviorRate>' + rate, 'misbehavior_rate_above'); };
 
-  // Latency factory — millisecond threshold at any quantile. `quantile`
-  // accepts either `0..1` fractions (`0.95`) or `0..100` percentile
-  // numbers (`95`); both are normalized inside `u.metrics.latencyP`.
-  // Single generic factory (no per-quantile aliases) — the small naming
-  // convenience wasn't worth the surface duplication, and
-  // `latencyAbove(95, 30_000)` reads identically.
-  globalThis.latencyAbove = function (quantile, ms) {
+  // Latency factory — millisecond threshold at any quantile.
+  //
+  // `ms` is the threshold (required); `quantile` is optional and
+  // defaults to p70 — matches the quantile `sortByScore(PREFER_FASTEST)`
+  // uses for ranking, so the exclusion axis and the rank axis agree
+  // on what "fast" means. Quantile accepts `0..1` fractions (`0.95`)
+  // or `0..100` numbers (`95`); both normalize inside
+  // `u.metrics.latencyP`.
+  //
+  // Reads like English: `latencyAbove(30_000)` = "out if p70 > 30s";
+  // `latencyAbove(10_000, 95)` = "out if p95 > 10s".
+  globalThis.latencyAbove = function (ms, quantile) {
+    if (quantile == null) quantile = 70;
     return _leaf(u => u.metrics.latencyP(quantile) > ms, 'p' + quantile + '>' + ms + 'ms', 'latency_p' + quantile + '_above');
   };
 
-  // Latency DEVIATION factories — compare each upstream's quantile
-  // against the pool's median of OTHER upstreams (i.e. the upstream
-  // being evaluated is excluded from its own baseline). Unlike
-  // `latencyAbove(95, 10_000)` which is an absolute threshold, these
-  // adapt to the network's normal: a 200ms p95 is healthy on Ethereum
-  // but degraded on a 10ms-baseline L2; the same predicate covers
-  // both because it compares against peers.
+  // latencyDeviationAbove(quantile, multiplier) — trips when this
+  // upstream's p<quantile> exceeds the FASTEST peer's p<quantile> by
+  // the given multiplier.
   //
-  // Excluding self from the baseline matters in small pools — with
-  // only 2 upstreams (one at 10ms, one at 12s), the median-of-all is
-  // 6005ms and the 12s upstream sits "only" 99% above it, which
-  // wouldn't trip a 100% threshold. Median-of-others puts the slow
-  // upstream's baseline at 10ms; it's now 119000% above and trips
-  // immediately, which is the correct verdict.
+  // Reads like English: `latencyDeviationAbove(85, 4)` = "p85 is more
+  // than 4× the fastest peer's p85." If the fastest peer answers at
+  // 250 ms p85, anyone above 1 s is gone.
   //
-  // When the selection policy runs per-method (evalPerMethod=true),
-  // `__policyAllUpstreams` carries metrics for THAT specific method,
-  // so `latencyDeviationPctAbove(95, 100)` correctly compares same-method
-  // p95s across upstreams.
+  // Why fastest-of-others (not median): tracks the user's actual
+  // quality ceiling. If three upstreams answer at 200 ms and one drifts
+  // to 800 ms, the slow one sits at 4× the achievable best — exactly
+  // what the operator cares about. Median-of-others would also work
+  // here (200 ms median), but in a 50/50 split (two fast, two slow)
+  // the median sits halfway and the worst outlier needs to be 4×
+  // SLOWER THAN THE MEDIAN, not 4× slower than the achievable best —
+  // a meaningfully looser bound. Fastest-of-others is the cleaner
+  // mental model and matches what `sortByScore(PREFER_FASTEST)` is
+  // optimizing for elsewhere in the chain.
+  //
+  // Stability: a single fast outlier can't tilt the baseline because
+  // `latencyP(q)` is already rolling-window smoothed inside the
+  // tracker — you don't get a single 5 ms sample dragging everyone
+  // else to "4× slower."
+  //
+  // Self-exclusion matters in tiny pools: a 2-pool with one at 10 ms
+  // and one at 12 s — the slow upstream sees the OTHER's 10 ms as the
+  // baseline (not its own 12 s averaged in) and trips at any
+  // multiplier ≥1.
+  //
+  // When `evalScope` includes method, `__policyAllUpstreams` carries
+  // that specific method's metrics, so the comparison is same-method
+  // (a slow `eth_getLogs` upstream isn't penalized against a fast
+  // `eth_blockNumber` peer).
   //
   // Zero-sample upstreams (no traffic, no quantile yet) are excluded
-  // from the median calculation but NEVER tripped by these predicates
-  // (their own p95 is 0 → deviation negative).
-  function _latencyDeviationAbove(quantile, byMs, byPct) {
+  // from the baseline AND can never trip themselves (their own p[q]
+  // is 0, so any multiplier × any positive baseline > 0).
+  function _latencyDeviationAbove(quantile, multiplier) {
     const ups = globalThis.__policyAllUpstreams || [];
-    // Pre-compute the per-id map once; the per-upstream median is
-    // derived from this on each predicate invocation by excluding self.
+    // Pre-compute every upstream's quantile once so the per-predicate
+    // closure doesn't re-walk the full pool on each call.
     const samplesById = {};
     for (const u of ups) {
       const v = (u && u.metrics) ? u.metrics.latencyP(quantile) : 0;
@@ -1217,26 +1237,27 @@
     }
     return function (u) {
       const v = (u && u.metrics) ? u.metrics.latencyP(quantile) : 0;
-      if (v <= 0) return false; // no data → can't be an outlier
-      const others = [];
+      if (v <= 0) return false; // no data → not enough signal to trip
+      let fastest = Infinity;
       for (const id in samplesById) {
-        if (id !== u.id) others.push(samplesById[id]);
+        if (id === u.id) continue;
+        const ov = samplesById[id];
+        if (ov < fastest) fastest = ov;
       }
-      if (others.length === 0) return false; // alone in the pool → no peers to compare against
-      others.sort(function (a, b) { return a - b; });
-      const median = others[Math.floor(others.length / 2)];
-      if (byMs  != null && (v - median) > byMs ) return true;
-      if (byPct != null && median > 0 && ((v - median) / median * 100) > byPct) return true;
-      return false;
+      if (!isFinite(fastest)) return false; // alone in the pool — no peer to compare against
+      return v > fastest * multiplier;
     };
   }
-  // Public API — TWO factories, one per absolute (`Ms`) vs relative
-  // (`Pct`) flavor. Both take the quantile as the first argument so
-  // there's no per-quantile alias soup. Pass the percentile as 0..1
-  // fraction or 0..100 number; both forms are accepted everywhere
-  // `latencyP(q)` is consulted.
-  globalThis.latencyDeviationAbove    = function (quantile, ms)  { return _leaf(_latencyDeviationAbove(quantile, ms,  null), 'p' + quantile + 'Deviation>' + ms + 'ms',  'latency_p' + quantile + '_deviation_ms_above'); };
-  globalThis.latencyDeviationPctAbove = function (quantile, pct) { return _leaf(_latencyDeviationAbove(quantile, null, pct), 'p' + quantile + 'Deviation>' + pct + '%', 'latency_p' + quantile + '_deviation_pct_above'); };
+  // `multiplier` first, `quantile` second-and-optional (defaults to
+  // p70). `latencyDeviationAbove(3)` = "out if p70 is more than 3× the
+  // fastest peer's p70"; `latencyDeviationAbove(3, 95)` shifts both
+  // sides of the comparison to p95.
+  globalThis.latencyDeviationAbove = function (multiplier, quantile) {
+    if (quantile == null) quantile = 70;
+    return _leaf(_latencyDeviationAbove(quantile, multiplier),
+      'p' + quantile + '>' + multiplier + 'xFastest',
+      'latency_p' + quantile + '_deviation_above');
+  };
 
   // Lag-based factories — block-count thresholds.
   globalThis.blockNumberLagAbove  = function (blocks) { return _leaf(u => u.metrics.blockHeadLag    > blocks, 'blockHeadLag>'    + blocks, 'block_head_lag_above'); };
@@ -1256,10 +1277,10 @@
   // requests, a single error blows up errorRate to 100%).
   // samplesAbove / samplesBelow are GUARDS — they answer "do we have
   // enough signal yet?" not "is this upstream unhealthy?". Marked as
-  // such so `all(samplesAbove(20), latencyDeviationPctAbove(95, 100))` doesn't
+  // such so `all(samplesAbove(20), latencyDeviationAbove(85, 4))` doesn't
   // bleed `samples_above` into the `reason` label of the per-exclusion
   // metric (operators reading the dashboard saw `samples_above` next
-  // to `latency_p95_deviation_pct_above` and rightly wondered what
+  // to `latency_p85_deviation_above` and rightly wondered what
   // "had enough samples" was supposed to mean as a cause).
   globalThis.samplesBelow = function (n) { return _leaf(u => u.metrics.requestsTotal < n, 'samples<' + n, 'samples_below', /* isGuard */ true); };
   globalThis.samplesAbove = function (n) { return _leaf(u => u.metrics.requestsTotal > n, 'samples>' + n, 'samples_above', /* isGuard */ true); };

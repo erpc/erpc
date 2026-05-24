@@ -46,7 +46,7 @@ const _realisticConfig = createConfig({
                 .removeCordoned()
                 .excludeIf(errorRateAbove(0.5))
                 .excludeIf(throttleRateAbove(0.3))
-                .excludeIf(any(latencyDeviationPctAbove(95, 100), latencyAbove(95, 30_000)))
+                .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag("!tier:fallback", { minHealthy: 1, fallback: "tier:fallback" })
@@ -340,7 +340,7 @@ createConfig({
 
 const _standalonePredicate: PolicyEvalPredicate = any(
   errorRateAbove(0.5),
-  latencyAbove(95, 10_000),
+  latencyAbove(10_000, 95),
 );
 // `policyReason` is readable for diagnostics.
 const _reason: string | undefined = _standalonePredicate.policyReason;

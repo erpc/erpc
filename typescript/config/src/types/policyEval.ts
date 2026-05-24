@@ -496,18 +496,25 @@ declare global {
   function throttleRateBelow(rate: number): PolicyEvalPredicate;
   function misbehaviorRateAbove(rate: number): PolicyEvalPredicate;
 
-  // Latency predicate factories — quantile-first generic form (no
-  // per-quantile aliases like `latencyP95Above`; pass the quantile
-  // as the first arg). `quantile` accepts `0..1` fraction (`0.95`) or
-  // `0..100` number (`95`).
-  function latencyAbove(quantile: number, ms: number): PolicyEvalPredicate;
+  // Latency predicate factory — `ms` required, `quantile` optional
+  // (defaults to p70 — matches the quantile `sortByScore(PREFER_FASTEST)`
+  // ranks by, so exclusion and ranking share the same axis).
+  // `quantile` accepts `0..1` fraction (`0.95`) or `0..100` number
+  // (`95`); both forms normalize inside `u.metrics.latencyP`.
+  //   latencyAbove(30_000)        → "out if p70 > 30s"
+  //   latencyAbove(10_000, 95)    → "out if p95 > 10s"
+  function latencyAbove(ms: number, quantile?: number): PolicyEvalPredicate;
 
-  // Latency-deviation predicate factories — compare each upstream's
-  // quantile against the median-of-others (self-excluded). Same
-  // quantile-first signature; absolute (`ms`) and relative (`pct`)
-  // flavors.
-  function latencyDeviationAbove(quantile: number, ms: number): PolicyEvalPredicate;
-  function latencyDeviationPctAbove(quantile: number, pct: number): PolicyEvalPredicate;
+  // Latency-deviation predicate factory — trips when this upstream's
+  // p<quantile> exceeds the FASTEST peer's p<quantile> by the given
+  // multiplier. Same `(value, quantile?)` ordering as `latencyAbove`;
+  // `quantile` defaults to p70.
+  //   latencyDeviationAbove(3)    → "out if p70 > 3× fastest peer's p70"
+  //   latencyDeviationAbove(3, 95) → "out if p95 > 3× fastest peer's p95"
+  // Self is excluded from the baseline (a tiny pool of {10ms, 12s}
+  // treats the slow one's 10ms peer as the baseline, not the 6s
+  // average).
+  function latencyDeviationAbove(multiplier: number, quantile?: number): PolicyEvalPredicate;
 
   // Lag predicate factories ───────────────────────────────────────────
   function blockNumberLagAbove(blocks: number): PolicyEvalPredicate;

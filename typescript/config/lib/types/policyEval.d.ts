@@ -381,9 +381,8 @@ declare global {
     function throttleRateAbove(rate: number): PolicyEvalPredicate;
     function throttleRateBelow(rate: number): PolicyEvalPredicate;
     function misbehaviorRateAbove(rate: number): PolicyEvalPredicate;
-    function latencyAbove(quantile: number, ms: number): PolicyEvalPredicate;
-    function latencyDeviationAbove(quantile: number, ms: number): PolicyEvalPredicate;
-    function latencyDeviationPctAbove(quantile: number, pct: number): PolicyEvalPredicate;
+    function latencyAbove(ms: number, quantile?: number): PolicyEvalPredicate;
+    function latencyDeviationAbove(multiplier: number, quantile?: number): PolicyEvalPredicate;
     function blockNumberLagAbove(blocks: number): PolicyEvalPredicate;
     function finalizationLagAbove(blocks: number): PolicyEvalPredicate;
     function blockSecondsLagAbove(seconds: number): PolicyEvalPredicate;

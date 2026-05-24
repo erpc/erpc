@@ -30,7 +30,7 @@ func init() {
 //
 // Health-based routing is the selection policy's job. Its excludeIf
 // chain drops upstreams whose tracker metrics cross thresholds
-// (errorRateAbove / throttleRateAbove / latencyAbove(95, _) /
+// (errorRateAbove / throttleRateAbove / latencyAbove(_) /
 // blockNumberLagAbove), and readmitExcluded brings them back after
 // a cooldown.
 //
@@ -132,7 +132,7 @@ projects:
           # network — useful when method profiles differ wildly
           # (eth_getLogs vs eth_blockNumber) and you want a slow-
           # getLogs upstream to still serve the cheap calls. Off by
-          # default; predicates like latencyDeviationPctAbove(95, 100) compute
+          # default; predicates like latencyDeviationAbove(3) compute
           # against the aggregate "*" metric rollup. Flip on
           # per-project if a workload calls for per-method routing.
           evalFunc: "{SELECTION_POLICY_FUNC}"

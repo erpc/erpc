@@ -15,39 +15,37 @@
     // end of the chain (uniform 90s cooldown regardless of why a given
     // upstream was excluded — adequate for most operational scenarios).
     //
-    // Latency uses RELATIVE deviation (p85 > 25% above the pool median)
-    // rather than an absolute threshold — a 200ms p85 on Ethereum and a
-    // 5ms p85 on a fast L2 are both "normal" for their network, but in
-    // either case an upstream answering meaningfully slower than its
-    // peers IS degraded. Pairing with an absolute floor catches the case
-    // where every upstream is slow (median rises, deviation looks tame)
-    // but p85 is genuinely catastrophic.
+    // Latency uses RELATIVE deviation — "trip if p70 is more than 3×
+    // the fastest peer's p70". This adapts to the network's normal: a
+    // 200 ms p70 is healthy on Ethereum and a 5 ms p70 is healthy on a
+    // fast L2; both pools share the same predicate because the
+    // comparison is to the achievable best in THIS pool. Pairing with
+    // an absolute floor catches the case where every upstream is slow
+    // and the deviation looks tame in relative terms.
     //
     // We're deliberately aggressive on latency relative to the other
-    // health predicates (25% above median vs 50% errorRate or 30%
-    // throttle): latency is the user-visible quality signal, every other
-    // axis already has retry/hedge layers to absorb spikes. Excluding a
-    // marginally-slow upstream costs us one degraded reply at most; NOT
-    // excluding one costs us tail latency on every call routed through
-    // it. Lower threshold (25% vs the previous 100%) trips roughly 4×
-    // more aggressively than the same predicate would on `error_rate` or
-    // `throttle_rate` — by design.
+    // health predicates: latency is the user-visible quality signal
+    // every other axis (errors, throttle) already has retry / hedge /
+    // consensus to absorb. Excluding a marginally-slow upstream costs
+    // us one degraded reply at most; NOT excluding one poisons tail
+    // latency on every call routed through it. So the latency
+    // threshold is tighter than the other rules — 3× vs the much
+    // looser "50% error rate / 30% throttle rate" bounds.
     //
-    // p85 (instead of p95) catches "consistently slow" upstreams a tier
-    // earlier — an upstream whose p85 is degraded probably has its p95
-    // degraded too, and tripping at p85 means we eject before the tail
-    // poisons consensus / hedge timeouts upstream.
+    // p70 is the default quantile (no explicit arg) so the exclusion
+    // axis aligns with the rank axis — `sortByScore(PREFER_FASTEST)`
+    // ranks upstreams by p70 too. Same metric drives both decisions.
     //
     // The relative-deviation predicate is gated behind a `samplesAbove`
     // guard: under low-traffic startup (handful of state-poller calls,
-    // tiny timing variance) the median-of-others is too unstable and one
-    // upstream can spuriously land >25% above the other's. Requiring
+    // tiny timing variance) the fastest-of-others is too unstable and
+    // one upstream can spuriously land 3× above another. Requiring
     // ≥20 samples before tripping keeps the predicate honest. The
-    // absolute p85>30s floor stays unguarded because it's a real
-    // catastrophic threshold any sample count.
+    // absolute p70>30s floor stays unguarded because it's a real
+    // catastrophic threshold at any sample count.
     .excludeIf(errorRateAbove(0.5))
     .excludeIf(throttleRateAbove(0.3))
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationPctAbove(85, 25)), latencyAbove(85, 30_000)))
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
     // Block-head lag: trip on either a chain-agnostic block count
     // (16 blocks ≈ 3 min behind tip on Ethereum, ~32s on a 2s chain)
     // OR a wall-clock seconds bound (30s behind tip) — the seconds
