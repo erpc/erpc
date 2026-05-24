@@ -227,7 +227,17 @@ func seedDegraded(tracker *health.Tracker, ups common.Upstream, s seedSpec) {
 	}
 	for i := 0; i < s.throttled; i++ {
 		tracker.RecordUpstreamRequest(ups, method, common.DataFinalityStateUnknown)
-		tracker.RecordUpstreamFailure(ups, method, common.DataFinalityStateUnknown, common.NewErrEndpointCapacityExceeded(fmt.Errorf("seed: 429")))
+		// RecordUpstreamFailure with CapacityExceeded is INTENTIONALLY a
+		// no-op (see RecordUpstreamFailure's early-return list — "429
+		// already penalized via ThrottledRate"). Driving the throttle
+		// counter requires the actual RemoteRateLimited path, which is
+		// what the live upstream layer uses when it sees a 429. Without
+		// this, ThrottledRate stays at zero and the policy's
+		// throttleRateAbove(0.3) predicate doesn't trip — making
+		// TestNetworkPolicy_ThrottledUpstream_Excluded coin-flip on the
+		// alphabetical sortByScore tiebreak instead of deterministically
+		// excluding the throttled upstream.
+		tracker.RecordUpstreamRemoteRateLimited(context.Background(), ups, method, nil)
 	}
 	for i := 0; i < s.misbehaviors; i++ {
 		tracker.RecordUpstreamMisbehavior(ups, method, common.DataFinalityStateUnknown)
