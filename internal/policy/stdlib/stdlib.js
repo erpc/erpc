@@ -1214,22 +1214,43 @@
   // same methods) never trip. Self is excluded from the per-method
   // fastest-peer computation, so a 2-pool with one slow upstream
   // detects the slow one against its peer correctly.
-  function _latencyDeviationAbove(quantile, multiplier, mode) {
+  function _latencyDeviationAbove(quantile, multiplier, mode, minMethodSamples, dampingMs) {
     const ups = globalThis.__policyAllUpstreams || [];
     // Pre-compute top-2 fastest p<quantile> PER METHOD across the
     // pool, so the per-upstream closure can pick "fastest PEER (not
-    // me)" in O(1). When an upstream IS the unique fastest, use the
-    // second-fastest as its peer baseline; when tied or not the
-    // fastest, use the global minimum. This makes the comparison
-    // ratio meaningful for every upstream, including the fastest
-    // one — its ratio will be 1.0 against the runner-up, contributing
-    // log(1)=0 to the geomean (a vote for "this upstream is fine").
+    // me)" in O(1).
+    //
+    // Two safeguards apply before the ratio contributes to the
+    // collapse:
+    //
+    //   • `minMethodSamples` (default 50) — methods with fewer
+    //     samples than this are skipped entirely. The p<q> is too
+    //     noisy at low n; multiple unstable methods otherwise
+    //     conspire on the geomean and falsely-trip healthy
+    //     upstreams.
+    //
+    //   • `dampingMs` (default 100) — exponential damping of the
+    //     per-method ratio by THIS upstream's absolute latency:
+    //         effective_ratio = raw_ratio × (1 − exp(−my / dampingMs))
+    //     At my << dampingMs the ratio fades toward zero (the case
+    //     where a 3× spread between 2ms and 6ms isn't human-
+    //     noticeable). At my >> dampingMs the damping → 1 and the
+    //     raw ratio takes over (a 3× spread between 200ms and 600ms
+    //     is a real UX delta). No hard cutoff — graceful transition
+    //     means a slightly-mis-tuned dampingMs degrades smoothly
+    //     instead of flipping the predicate.
+    //
+    //     `dampingMs = 0` disables damping entirely; use sparingly,
+    //     and only when you've already constrained the comparison
+    //     to a regime where absolute latency differences matter.
     const topByMethod = {}; // method → { v1, id1, v2 }
     for (const u of ups) {
       if (!u) continue;
       const byMethod = u.metricsByMethod || {};
       for (const m in byMethod) {
-        const v = byMethod[m].latencyP(quantile);
+        const mm = byMethod[m];
+        if (minMethodSamples > 0 && mm.requestsTotal < minMethodSamples) continue;
+        const v = mm.latencyP(quantile);
         if (v <= 0) continue;
         const entry = topByMethod[m] || { v1: Infinity, id1: null, v2: Infinity };
         if (v < entry.v1) {
@@ -1247,15 +1268,23 @@
       const byMethod = u.metricsByMethod || {};
       let logSum = 0, geoCount = 0, slow = 0, compared = 0;
       for (const m in byMethod) {
-        const my = byMethod[m].latencyP(quantile);
+        const mm = byMethod[m];
+        if (minMethodSamples > 0 && mm.requestsTotal < minMethodSamples) continue;
+        const my = mm.latencyP(quantile);
         if (my <= 0) continue;                       // no signal on this method
         const top = topByMethod[m];
-        if (!top) continue;                          // shouldn't happen — self IS in topByMethod
-        // Fastest peer = global minimum unless THIS upstream owns it,
-        // in which case the second-fastest is the peer baseline.
+        if (!top) continue;                          // method filtered out by samples gate
         const fastestPeer = (top.id1 === u.id) ? top.v2 : top.v1;
-        if (!isFinite(fastestPeer)) continue;        // alone in pool on this method
-        const ratio = my / fastestPeer;
+        if (!isFinite(fastestPeer)) continue;        // alone in pool (after gate) on this method
+        const rawRatio = my / fastestPeer;
+        // Exponential damping by this upstream's absolute latency.
+        // The closer `my` sits to 0, the closer the effective ratio
+        // sits to 0 — sub-perceptible latency differences don't
+        // contribute regardless of raw ratio. At my >> dampingMs the
+        // damping factor → 1 and the raw ratio is preserved.
+        const ratio = dampingMs > 0
+          ? rawRatio * (1 - Math.exp(-my / dampingMs))
+          : rawRatio;
         compared++;
         if (ratio > multiplier) slow++;
         if (mode === 'geomean' && ratio > 0) {
@@ -1278,19 +1307,33 @@
   }
   // `multiplier` first, `optsOrQuantile` second-and-optional.
   // Accepts:
-  //   • undefined → { quantile: 70, mode: 'geomean' }
-  //   • a number  → quantile shorthand, mode='geomean'
-  //   • an object → { quantile?: 70, mode?: 'geomean'|'majority'|'veto' }
+  //   • undefined → { quantile: 70, mode: 'geomean', minMethodSamples: 50, dampingMs: 100 }
+  //   • a number  → quantile shorthand, defaults for the rest
+  //   • an object → { quantile?, mode?, minMethodSamples?, dampingMs? }
+  //
+  // Defaults reflect the production lessons:
+  //   • minMethodSamples=50 — per-method sample floor. Below this,
+  //     the p<q> CI is too wide for cross-upstream comparison.
+  //   • dampingMs=100 — exponential damping scale (ms). Methods
+  //     where the candidate's p<q> is well below 100ms have their
+  //     ratio damped toward zero (1ms vs 5ms is human-invisible
+  //     regardless of raw ratio); methods at hundreds of ms get
+  //     full-weight ratios. The damping is smooth — scale is a
+  //     soft knob, not a cliff. Set to 0 to disable damping.
   globalThis.latencyDeviationAbove = function (multiplier, optsOrQuantile) {
     let quantile = 70;
     let mode = 'geomean';
+    let minMethodSamples = 50;
+    let dampingMs = 100;
     if (typeof optsOrQuantile === 'number') {
       quantile = optsOrQuantile;
     } else if (optsOrQuantile && typeof optsOrQuantile === 'object') {
       if (optsOrQuantile.quantile != null) quantile = optsOrQuantile.quantile;
       if (optsOrQuantile.mode != null) mode = optsOrQuantile.mode;
+      if (optsOrQuantile.minMethodSamples != null) minMethodSamples = optsOrQuantile.minMethodSamples;
+      if (optsOrQuantile.dampingMs != null) dampingMs = optsOrQuantile.dampingMs;
     }
-    return _leaf(_latencyDeviationAbove(quantile, multiplier, mode),
+    return _leaf(_latencyDeviationAbove(quantile, multiplier, mode, minMethodSamples, dampingMs),
       'p' + quantile + '>' + multiplier + 'xFastest(' + mode + ')',
       'latency_p' + quantile + '_deviation_above');
   };

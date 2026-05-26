@@ -66,7 +66,7 @@ projects:
                 .removeCordoned()
                 .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
                 .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
+                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -108,7 +108,7 @@ export default createConfig({
             .removeCordoned()
             .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
             .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
+            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -160,7 +160,7 @@ one of them lets a degraded upstream keep receiving traffic:
     // samplesAbove(20) so the comparison sees real variance) OR p70 > 30 s (absolute,
     // unguarded — 30 s is catastrophic at any sample count). p70 matches the rank
     // axis below so exclusion and ranking agree on "fast".
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
     // Drop laggers: >16 blocks behind tip (chain-agnostic) OR >30 wall-clock seconds
     // (adapts to chain block-time via the tracker's EMA, no-op until ≥3 samples).
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
@@ -601,7 +601,7 @@ DEBUG logs + the simulator UI. Reason resolution:
 
 ```js
 .excludeIf(errorRateAbove(0.5))                                       // factory: auto-labels "errorRate>0.5"
-.excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))   // combinator: auto-labels "any(p70>3xFastest,p70>30000ms)"
+.excludeIf(any(latencyDeviationAbove(5), latencyAbove(30_000)))   // combinator: auto-labels "any(p70>5xFastest(geomean),p70>30000ms)"
 .excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor')         // inline: explicit reason
 ```
 
@@ -931,26 +931,30 @@ latencyAbove(ms, quantile?)
 </details>
 
 <details>
-<summary>**Latency, relative deviation from peers** (per-method-aware)</summary>
+<summary>**Latency, relative deviation from peers** (per-method-aware, exponentially damped)</summary>
 
 Trip when this upstream is significantly slower than the fastest peer,
-**compared apples-to-apples per method** and then collapsed across
-methods via the configured mode.
+**compared apples-to-apples per method** and **damped by absolute
+latency** so sub-perceptible micro-differences don't fire.
 
 ```ts
-// Default — p70, geomean of per-method ratios > 3
-latencyDeviationAbove(3)
+// Default — p70, geomean across methods, ratio > 5, damping at 100ms
+latencyDeviationAbove(5)
 
 // 2nd arg as a number is a quantile shorthand
-latencyDeviationAbove(3, 95)
+latencyDeviationAbove(5, 95)
 
 // Modes for resolving disagreement across methods
-latencyDeviationAbove(3, { mode: 'geomean' })   // default
-latencyDeviationAbove(3, { mode: 'majority' })
-latencyDeviationAbove(3, { mode: 'veto' })
+latencyDeviationAbove(5, { mode: 'geomean' })   // default
+latencyDeviationAbove(5, { mode: 'majority' })
+latencyDeviationAbove(5, { mode: 'veto' })
 
-// Combine with non-default quantile
-latencyDeviationAbove(3, { quantile: 95, mode: 'majority' })
+// Tune the damping scale (default 100ms — methods well below this
+// have their ratio damped toward zero so 2ms vs 6ms doesn't trip)
+latencyDeviationAbove(5, { dampingMs: 50 })
+
+// Combine
+latencyDeviationAbove(5, { quantile: 95, mode: 'majority', dampingMs: 200 })
 ```
 
 **Why per-method**: an upstream's aggregate p<q> is a sample-count-
@@ -961,23 +965,49 @@ even when their per-method latencies are identical. The predicate
 eliminates this distribution bias by computing per-method ratios first,
 then collapsing them.
 
+**Why exponential damping**: a raw 3× ratio between 2ms and 6ms is
+human-invisible; the same 3× between 200ms and 600ms is real. The
+predicate damps the per-method ratio by the candidate's absolute
+latency:
+
+```
+effective_ratio = (my / peer) × (1 − exp(−my / dampingMs))
+```
+
+| my latency (dampingMs=100) | damping factor | effective ratio (raw=5) |
+|---|---|---|
+| 5ms | 0.05 | 0.25 — no trip |
+| 50ms | 0.39 | 1.97 — no trip |
+| 100ms | 0.63 | 3.16 — no trip |
+| 300ms | 0.95 | 4.75 — borderline |
+| 1000ms+ | ≈ 1.00 | 5.00 — full weight |
+
+Smooth transition — a slightly mis-tuned `dampingMs` degrades
+gracefully rather than flipping the predicate. Set `dampingMs: 0` to
+disable damping (raw ratios at all latencies).
+
 **Modes** (when methods disagree):
 
 | Mode | Rule | When to use |
 |---|---|---|
-| `'geomean'` (default) | Trips when the geometric mean of per-method ratios is ≥ multiplier. `geomean({1, 5}) = √5 ≈ 2.24` < 3 → no trip | The safe default. Self-protective against single-method outliers; one bad method out of many doesn't trip a vendor that's otherwise healthy |
-| `'majority'` | Trips when ≥50% of compared methods show the upstream as ≥ multiplier× slower | Strikes a middle ground — multiple bad methods needed, but not all |
-| `'veto'` | Trips when ANY single method shows the upstream as ≥ multiplier× slower | Most aggressive: one bad method casts a vote-out. False-positive prone on specialty methods (vendor good at most things, bad on one) |
+| `'geomean'` (default) | Trips when the geometric mean of per-method effective ratios is ≥ multiplier | The safe default. Self-protective against single-method outliers |
+| `'majority'` | Trips when ≥50% of compared methods show the upstream as ≥ multiplier× slower | Multiple bad methods needed, but not all |
+| `'veto'` | Trips when ANY single method shows the upstream as ≥ multiplier× slower | Most aggressive — one bad method casts a vote-out |
+
+**Per-method samples gate** (`minMethodSamples`, default 50): methods
+with fewer than this many samples on an upstream are skipped from
+BOTH the peer-baseline pool AND the per-upstream ratio loop. Below
+~50 samples the p<q> CI is too wide to be a reliable comparison
+signal; multiple unstable methods otherwise conspire on the geomean.
 
 **Peer baseline**: for each method, the "fastest peer" is the minimum
 p<q> among OTHER upstreams (self excluded). When this upstream IS the
-fastest, its peer is the runner-up. So a 2-pool with one fast (10ms)
+fastest, its peer is the runner-up — so a 2-pool with one fast (10ms)
 and one slow (12s) upstream still trips the slow one against the fast
-one's 10ms.
+one's 10ms (subject to damping).
 
-Methods with no peer-data on either side are skipped (not counted in
-the ratio). Upstreams alone in the pool (no peers with data on the
-same methods) never trip.
+Methods with no peer-data on either side are skipped. Upstreams alone
+in the pool (no peers with data on the same methods) never trip.
 
 </details>
 

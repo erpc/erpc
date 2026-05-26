@@ -7,10 +7,15 @@
     // consensus) already absorbs occasional failures.
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
     .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-    // Latency: drop if p70 is >3× the fastest peer's p70 (gated on
-    // samplesAbove(20) so the relative comparison is meaningful) OR
-    // catastrophically slow (>30s). p70 matches the rank axis below.
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
+    // Latency: drop if p70 is >5× the fastest peer's p70 across the
+    // majority of comparable methods (per-method comparison with a
+    // 50-sample-per-method floor — see latencyDeviationAbove's
+    // minMethodSamples) OR catastrophically slow (>30s). 5× tolerates
+    // natural variance between cloud RPC vendors on identical methods
+    // (typically 2-4×) while still catching genuinely-broken
+    // upstreams. Outer samplesAbove(20) gates on aggregate counts so
+    // the predicate doesn't even run on cold-start pods.
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
     // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
     // Outage safety net: if everyone failed the health excludes, fall

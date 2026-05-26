@@ -279,6 +279,35 @@ export type LatencyDeviationOptions = {
      *   on specialty methods.
      */
     mode?: "geomean" | "majority" | "veto";
+    /**
+     * Per-method sample floor. Methods with fewer recorded requests on
+     * an upstream are skipped from BOTH the top-2 peer-baseline pool
+     * AND the per-upstream ratio loop. Defaults to `50` — at that count
+     * the p70 quantile's CI is tight enough (~±10%) for cross-upstream
+     * comparison to be meaningful. Below that, bootstrap noise on rare
+     * methods amplifies through the geomean and falsely-trips healthy
+     * upstreams. Set to `0` to disable the gate entirely (only useful
+     * for testing or when you've already gated upstream).
+     */
+    minMethodSamples?: number;
+    /**
+     * Exponential damping scale (ms) for per-method ratios. The
+     * effective ratio that contributes to the collapse is:
+     *
+     *     effective_ratio = (my / peer) × (1 − exp(−my / dampingMs))
+     *
+     * — so methods where the candidate's latency is well below
+     * `dampingMs` have their ratio damped toward zero, while methods at
+     * many × `dampingMs` get full-weight ratios. The transition is
+     * smooth: a slightly mis-tuned `dampingMs` degrades gracefully
+     * rather than flipping the predicate.
+     *
+     * Defaults to `100` (ms) — sub-perceptible latency differences
+     * (e.g. 2ms vs 6ms, raw 3× but invisible to users) don't
+     * contribute, while real UX deltas (e.g. 200ms vs 600ms) do. Set
+     * to `0` to disable damping entirely (raw ratios at all latencies).
+     */
+    dampingMs?: number;
 };
 /** Options for `byFinality` — per-finality branch handlers. */
 export type ByFinalityHandlers = {

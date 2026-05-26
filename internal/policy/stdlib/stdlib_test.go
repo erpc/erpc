@@ -1352,10 +1352,12 @@ func TestStdlib_LatencyDeviationAbove_GenuinelySlowAcrossAllMethods(t *testing.T
 }
 
 // TestStdlib_LatencyDeviationAbove_OneMethodSlow_ModesDifferentiate:
-// upstream is slow on ONE method (5× slower on eth_getLogs) but
-// healthy on another (1× on eth_call). Mode behavior differentiates:
-//   • geomean: √(1 × 5) = 2.24 < 3 → no trip
-//   • majority: 1/2 = 50% slow → ≥0.5 → trip (borderline majority)
+// upstream is slow on ONE method (5× slower) but healthy on another
+// (1× on the other). Latencies are well above the dampingMs default
+// (100ms) so the damping factor is ≈1 and the raw ratio comes through.
+// Mode behavior differentiates:
+//   • geomean: √(1 × 5) ≈ 2.24 < 3 → no trip
+//   • majority: 1/2 = 50% slow → ≥0.5 → trip
 //   • veto: 1 slow method → trip
 func TestStdlib_LatencyDeviationAbove_OneMethodSlow_ModesDifferentiate(t *testing.T) {
 	cases := []struct {
@@ -1380,12 +1382,13 @@ func TestStdlib_LatencyDeviationAbove_OneMethodSlow_ModesDifferentiate(t *testin
 			require.NoError(t, cfg.SetDefaults())
 			require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
-			// rpcFast: 50ms on both methods.
-			// rpcMixed: 50ms on eth_call (same), 250ms on eth_getLogs (5×).
-			seedLatency(t, tracker, ups[0], "eth_call", 50*time.Millisecond, 100)
-			seedLatency(t, tracker, ups[0], "eth_getLogs", 50*time.Millisecond, 100)
-			seedLatency(t, tracker, ups[1], "eth_call", 50*time.Millisecond, 100)
-			seedLatency(t, tracker, ups[1], "eth_getLogs", 250*time.Millisecond, 100)
+			// rpcFast: 1000ms on both methods (well above dampingMs=100
+			// so damping≈1 and raw ratio is preserved).
+			// rpcMixed: 1000ms on eth_call (same), 5000ms on eth_getLogs (5×).
+			seedLatency(t, tracker, ups[0], "eth_call", 1000*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[0], "eth_getLogs", 1000*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[1], "eth_call", 1000*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[1], "eth_getLogs", 5000*time.Millisecond, 100)
 
 			policy.TickForTest(engine, "evm:1", "*")
 			got := ids(engine.GetOrdered("evm:1", "*", "*"))
@@ -1418,4 +1421,130 @@ func TestStdlib_LatencyDeviationAbove_QuantileNumberShorthand(t *testing.T) {
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpcFast"}, got,
 		"polymorphic 2nd arg as a number is the quantile shorthand — still excludes the slow upstream")
+}
+
+// TestStdlib_LatencyDeviationAbove_MinMethodSamplesGate: methods with
+// only a handful of samples produce unstable quantiles whose tails
+// can drift wildly. Without a per-method samples floor, multiple such
+// methods conspire on the geomean and falsely-trip otherwise-healthy
+// upstreams (the production failure mode). With the default
+// minMethodSamples=50, methods below the floor are skipped from BOTH
+// the top-2 pool AND the per-upstream ratio loop — so a 5-sample
+// noisy outlier doesn't count.
+func TestStdlib_LatencyDeviationAbove_MinMethodSamplesGate(t *testing.T) {
+	eval := `(upstreams, ctx) =>
+		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpcA", "rpcB")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// rpcA: 100 samples on eth_call @ 50ms — clears the gate.
+	// rpcB: 100 samples on eth_call @ 50ms — clears the gate. Same speed.
+	// rpcA: ALSO has 5 noisy samples on a specialty method @ 5000ms.
+	//   Without the gate, geomean({50/50, 5000/X}) trips. With the
+	//   50-sample gate, the specialty method is filtered out → no trip.
+	seedLatency(t, tracker, ups[0], "eth_call", 50*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[1], "eth_call", 50*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[0], "debug_traceCall", 5000*time.Millisecond, 5) // noisy outlier
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.ElementsMatch(t, []string{"rpcA", "rpcB"}, got,
+		"5-sample noisy method must NOT pull rpcA out via geomean — minMethodSamples=50 filters it")
+}
+
+// TestStdlib_LatencyDeviationAbove_MinMethodSamplesOverride: the
+// opts.minMethodSamples knob can be lowered (e.g. for testing /
+// known-stable methods). At 0 (disabled), every method contributes
+// regardless of sample count.
+func TestStdlib_LatencyDeviationAbove_MinMethodSamplesOverride(t *testing.T) {
+	// dampingMs:0 disables the exponential floor too, so the test can
+	// use low-ish latencies and still trip on the raw 100× ratio.
+	eval := `(upstreams, ctx) =>
+		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3, { minMethodSamples: 0, dampingMs: 0 })))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpcA", "rpcB")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// Same setup as the gate test, but with both gates disabled — now
+	// the 5-sample specialty method DOES count. rpcA is 100× slower
+	// on it vs rpcB's clean methods, so geomean trips.
+	seedLatency(t, tracker, ups[0], "eth_call", 50*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[1], "eth_call", 50*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[0], "debug_traceCall", 5000*time.Millisecond, 5)
+	seedLatency(t, tracker, ups[1], "debug_traceCall", 50*time.Millisecond, 5)
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.Equal(t, []string{"rpcB"}, got,
+		"with minMethodSamples=0 and dampingMs=0, the 5-sample noisy method counts and trips rpcA via geomean")
+}
+
+// TestStdlib_LatencyDeviationAbove_ExponentialDamping_LowLatencyNoTrip:
+// at very low absolute latencies the exponential damping pulls the
+// effective ratio down — a 5× raw spread between 5ms and 25ms gets
+// damped to ~0.25 by the default dampingMs=100, well below the
+// multiplier=3 trip threshold. This is the "humans don't notice
+// micro-differences" guarantee.
+func TestStdlib_LatencyDeviationAbove_ExponentialDamping_LowLatencyNoTrip(t *testing.T) {
+	eval := `(upstreams, ctx) =>
+		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpcFast", "rpcSlowButStillFast")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// rpcSlowButStillFast is 5× rpcFast — but both are sub-perceptible
+	// (5ms vs 25ms). At dampingMs=100, effective_ratio ≈ 5 ×
+	// (1 - exp(-25/100)) = 5 × 0.221 = 1.10. Well below the
+	// multiplier=3 trip threshold.
+	seedLatency(t, tracker, ups[0], "eth_call", 5*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[1], "eth_call", 25*time.Millisecond, 100)
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.ElementsMatch(t, []string{"rpcFast", "rpcSlowButStillFast"}, got,
+		"sub-100ms latencies must NOT trip a 5× raw ratio — exponential damping at dampingMs=100 reduces the effective ratio below the multiplier")
+}
+
+// TestStdlib_LatencyDeviationAbove_ExponentialDamping_HighLatencyDoesTrip:
+// the SAME 5× raw ratio at HIGH absolute latencies (500ms vs 2500ms)
+// produces an effective ratio ≈ 5 × (1 - exp(-25)) ≈ 5 — fully
+// preserved. This is the "real UX-impacting delta" case.
+func TestStdlib_LatencyDeviationAbove_ExponentialDamping_HighLatencyDoesTrip(t *testing.T) {
+	eval := `(upstreams, ctx) =>
+		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpcFast", "rpcSlow")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// Same 5× ratio but at human-noticeable latencies. Damping ≈ 1
+	// since both latencies are well above dampingMs=100. Effective
+	// ratio ≈ 5 > 3 → trips.
+	seedLatency(t, tracker, ups[0], "eth_call", 500*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[1], "eth_call", 2500*time.Millisecond, 100)
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.Equal(t, []string{"rpcFast"}, got,
+		"same 5× raw ratio at high latencies passes through damping ≈ 1 — should trip the multiplier=3 threshold")
 }
