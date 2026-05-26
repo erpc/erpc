@@ -18,6 +18,7 @@ type FakeUpstream struct {
 	id                 string
 	config             *UpstreamConfig
 	network            Network
+	networkIDOverride  string // set via WithFakeUpstreamNetworkID; "" → fall back to default
 	evmStatePoller     EvmStatePoller
 	cordoned           bool
 	lastCordonedReason string
@@ -55,6 +56,18 @@ func WithTags(tags ...string) func(*FakeUpstream) {
 	}
 }
 
+// WithFakeUpstreamNetworkID overrides the network ID this fake reports.
+// Tests that exercise per-network indexing (e.g.
+// `tracker.GetUpstreamMetrics`'s `upstreamsByNetwork` lookup) need
+// upstreams on DIFFERENT networks to validate the per-network scope.
+// Default (no override) keeps the historical "evm:123" string so
+// existing tests aren't affected.
+func WithFakeUpstreamNetworkID(networkID string) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.networkIDOverride = networkID
+	}
+}
+
 func (u *FakeUpstream) Id() string {
 	return u.id
 }
@@ -80,10 +93,16 @@ func (u *FakeUpstream) EvmGetChainId(context.Context) (string, error) {
 }
 
 func (u *FakeUpstream) NetworkId() string {
+	if u.networkIDOverride != "" {
+		return u.networkIDOverride
+	}
 	return "evm:123"
 }
 
 func (u *FakeUpstream) NetworkLabel() string {
+	if u.networkIDOverride != "" {
+		return u.networkIDOverride
+	}
 	return "evm:123"
 }
 

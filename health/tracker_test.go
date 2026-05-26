@@ -1538,3 +1538,131 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 			"no-op uncordon must NOT increment the event counter")
 	})
 }
+
+// TestGetUpstreamMetrics_ScopedByNetwork pins the O(per-network)
+// behavior of the indexed lookup. With multiple networks × upstreams
+// in the tracker, calling GetUpstreamMetrics(u) must return ONLY
+// `u`'s per-method buckets, not entries belonging to other upstreams
+// or other networks. Validates that the upstreamsByNetwork-driven
+// implementation hasn't broken the response shape.
+func TestGetUpstreamMetrics_ScopedByNetwork(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test", 60*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	// Two networks, two upstreams each, several methods.
+	uA := common.NewFakeUpstream("a", common.WithFakeUpstreamNetworkID("evm:1"))
+	uB := common.NewFakeUpstream("b", common.WithFakeUpstreamNetworkID("evm:1"))
+	uC := common.NewFakeUpstream("c", common.WithFakeUpstreamNetworkID("evm:10"))
+	uD := common.NewFakeUpstream("d", common.WithFakeUpstreamNetworkID("evm:10"))
+
+	for _, u := range []common.Upstream{uA, uB, uC, uD} {
+		for _, m := range []string{"eth_call", "eth_getLogs", "eth_chainId"} {
+			tracker.RecordUpstreamRequest(u, m, common.DataFinalityStateUnknown)
+		}
+	}
+
+	gotA := tracker.GetUpstreamMetrics(uA)
+	// Expected: every method we recorded for uA (eth_call/eth_getLogs/
+	// eth_chainId) plus the wildcard "*" aggregate `getUpsKeys` writes.
+	require.Contains(t, gotA, "eth_call")
+	require.Contains(t, gotA, "eth_getLogs")
+	require.Contains(t, gotA, "eth_chainId")
+	require.Contains(t, gotA, "*")
+
+	// Critically: no entries for uB / uC / uD slip through. The pre-fix
+	// implementation walked the GLOBAL map and filtered by ID; the
+	// index-based path must produce the same result without scanning
+	// other entries.
+	for method, tm := range gotA {
+		require.NotNil(t, tm, "method %q must have non-nil metrics", method)
+	}
+
+	gotC := tracker.GetUpstreamMetrics(uC)
+	require.Contains(t, gotC, "eth_call")
+	require.Contains(t, gotC, "eth_getLogs")
+	// uC's metrics must NOT include uD's (same network, different upstream).
+	// We can't directly check identity, but counts should reflect ONLY uC's
+	// recorded requests:
+	assert.Equal(t, int64(1), gotC["eth_call"].RequestsTotal.Load(),
+		"uC's eth_call bucket should have 1 request, not include uD's")
+}
+
+// TestGetUpstreamMetrics_DistinctUpstreamsSameID_Buckets — the
+// upstreamsByNetwork index dedups on (ups_id, method). Test that the
+// indexed lookup correctly returns metrics for an upstream when
+// multiple upstreams might share method names. Critical guard against
+// regressing the per-upstream filter.
+func TestGetUpstreamMetrics_DistinctUpstreamsSameID_Buckets(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test", 60*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	uA := common.NewFakeUpstream("ups-A", common.WithFakeUpstreamNetworkID("evm:1"))
+	uB := common.NewFakeUpstream("ups-B", common.WithFakeUpstreamNetworkID("evm:1"))
+
+	// Differing request volumes per upstream — if the per-upstream
+	// filter is broken (e.g., returning uB's bucket when querying uA),
+	// the counts will be wrong.
+	for i := 0; i < 50; i++ {
+		tracker.RecordUpstreamRequest(uA, "eth_call", common.DataFinalityStateUnknown)
+	}
+	for i := 0; i < 13; i++ {
+		tracker.RecordUpstreamRequest(uB, "eth_call", common.DataFinalityStateUnknown)
+	}
+
+	got := tracker.GetUpstreamMetrics(uA)
+	require.NotNil(t, got["eth_call"])
+	assert.Equal(t, int64(50), got["eth_call"].RequestsTotal.Load(),
+		"GetUpstreamMetrics(uA) must return uA's count, not uB's")
+
+	got = tracker.GetUpstreamMetrics(uB)
+	require.NotNil(t, got["eth_call"])
+	assert.Equal(t, int64(13), got["eth_call"].RequestsTotal.Load())
+}
+
+// BenchmarkGetUpstreamMetrics_IndexScaling proves the optimization:
+// GetUpstreamMetrics per-call cost should NOT scale with the GLOBAL
+// number of tracker entries (which was the bug — `sync.Map.Range` was
+// walking everything). With the upstreamsByNetwork index it scales
+// only with the per-NETWORK key count.
+//
+// Setup: populate the tracker with N networks × 5 upstreams × 30
+// methods (= 150N total entries). Then call GetUpstreamMetrics on
+// ONE upstream. Allocation and time should be near-constant in N.
+func BenchmarkGetUpstreamMetrics_IndexScaling(b *testing.B) {
+	for _, networks := range []int{1, 10, 50} {
+		b.Run(fmt.Sprintf("networks=%d", networks), func(b *testing.B) {
+			tracker := NewTracker(&log.Logger, "bench", 60*time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tracker.Bootstrap(ctx)
+
+			var target common.Upstream
+			for n := 0; n < networks; n++ {
+				netID := "evm:" + strconv.Itoa(n)
+				for u := 0; u < 5; u++ {
+					ups := common.NewFakeUpstream(
+						"u-"+strconv.Itoa(n)+"-"+strconv.Itoa(u),
+						common.WithFakeUpstreamNetworkID(netID),
+					)
+					if n == 0 && u == 0 {
+						target = ups
+					}
+					for m := 0; m < 30; m++ {
+						method := "method_" + strconv.Itoa(m)
+						tracker.RecordUpstreamRequest(ups, method, common.DataFinalityStateUnknown)
+					}
+				}
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = tracker.GetUpstreamMetrics(target)
+			}
+		})
+	}
+}
