@@ -59,7 +59,7 @@ projects:
         selectionPolicy:
           evalInterval: 1s
           evalTimeout: 100ms
-          evalPerMethod: false
+          evalScope: network        # 'network' | 'network-method' | 'network-finality' | 'network-method-finality'
           evalFunc: |
             (upstreams, ctx) =>
               upstreams
@@ -96,7 +96,7 @@ export default createConfig({
       selectionPolicy: {
         evalInterval: "1s",
         evalTimeout: "100ms",
-        evalPerMethod: false,
+        evalScope: "network",   // or NETWORK_METHOD / NETWORK_FINALITY / NETWORK_METHOD_FINALITY consts
         // Real arrow function — fully type-checked. The chainable
         // methods (.removeCordoned, .excludeIf, .sortByScore, …) are
         // typed on PolicyEvalUpstreamArray; predicate factories
@@ -127,10 +127,22 @@ export default createConfig({
 |---|---|---|---|
 | `evalInterval` | Duration | `1s` | `0` disables the ticker (test only). |
 | `evalTimeout` | Duration | `100ms` | Must be `< evalInterval`. Prior cache retained on timeout. |
-| `evalPerMethod` | bool | `false` | Separate eval + cache per method. See [per-method routing](#per-method-routing). |
-| `evalPerFinality` | bool | `false` | Separate eval + cache per finality bucket (`realtime` / `unfinalized` / `finalized` / `unknown`). The eval sees `ctx.finality` set to its bucket value. Slots are lazy-created per bucket on first request — cold buckets cost nothing. Combine with `evalPerMethod` for the most granular routing. Useful when realtime reads want `PREFER_FRESHEST` and finalized reads want `PREFER_FASTEST`. |
-| `evalFunc` | string \| function | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. In `.ts` configs pass a real arrow function — it gets stringified at load time via `Function.prototype.toString()`. |
+| `evalScope` | `'network'` \| `'network-method'` \| `'network-finality'` \| `'network-method-finality'` | `'network'` | Picks the grain at which the policy evaluates AND the matching health-tracker grain. `network` = one ranking per network (cheapest, default); `network-method` = per-(network, method) — same `getLogs` ranking can differ from the `blockNumber` ranking; `network-finality` = per-(network, finality bucket); `network-method-finality` = full granularity. Slots are lazy-created on first request — cold buckets cost nothing. The TypeScript SDK exports `NETWORK` / `NETWORK_METHOD` / `NETWORK_FINALITY` / `NETWORK_METHOD_FINALITY` consts with these same string values. |
+| `evalFunc` | string \| function | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. In `.ts` configs pass a real arrow function — it gets stringified at load time via `Function.prototype.toString()`. Omit to apply the [default policy](#the-default-policy). |
 | `scoreMetricsWindowSize` | Duration | `10s` | Project-level. How long per-upstream rolling counters live. See [health-tracker window](#health-tracker-rolling-window). |
+| `evalPerMethod` | bool | — | **DEPRECATED.** Use `evalScope: 'network-method'` instead. If both are set, `evalScope` wins and a warning logs at config-load time. If only the legacy bools are set, they translate automatically — `true` becomes the corresponding `evalScope` value. |
+| `evalPerFinality` | bool | — | **DEPRECATED.** Use `evalScope: 'network-finality'` (or `'network-method-finality'` paired with `evalPerMethod: true`'s replacement) instead. Same translation + warning behavior as `evalPerMethod`. |
+
+### Migrating from `evalPerMethod` / `evalPerFinality`
+
+| Old config | New config |
+|---|---|
+| (neither set, or both false) | `evalScope: 'network'` (default — can be omitted entirely) |
+| `evalPerMethod: true` | `evalScope: 'network-method'` |
+| `evalPerFinality: true` | `evalScope: 'network-finality'` |
+| `evalPerMethod: true` + `evalPerFinality: true` | `evalScope: 'network-method-finality'` |
+
+The legacy bools still work — a deprecation warning logs at startup and they translate automatically. Drop them from your config at your convenience; an explicit `evalScope` always wins over the bools when both are set.
 
 > **Investigations.** Per-tick reasoning is exposed via OTLP tracing
 > spans and the `erpc_selection_*` Prometheus metric family (selection
@@ -261,7 +273,7 @@ type UpstreamMetrics = {
 
 type EvalContext = {
   network: string                          // "evm:1"
-  method: string                           // "*" unless evalPerMethod=true
+  method: string                           // "*" unless evalScope includes "method"
   finality: 'realtime' | 'unfinalized' | 'finalized' | 'unknown'
   now: number                              // unix ms
 
@@ -307,8 +319,8 @@ so the window is never empty for a low-traffic upstream.
 
 ## Per-method routing
 
-Set `evalPerMethod: true` to run the policy separately per (network,
-method) instead of one ranking for the whole network. Each method's
+Set `evalScope: 'network-method'` to run the policy separately per `(network,
+method)` instead of one ranking for the whole network. Each method's
 slot snapshots metrics for THAT specific method, so:
 
 - `latencyDeviationAbove(3)` compares same-method p70s across upstreams.
@@ -316,14 +328,12 @@ slot snapshots metrics for THAT specific method, so:
 - Slots are created lazily on first request for a method; the wildcard
   `"*"` slot answers until the method-specific slot's first tick lands.
 
-Off by default — most workloads benefit from one aggregate ranking and
-the per-method overhead (one eval per method per tick) isn't free.
+Default is `evalScope: 'network'` — most workloads benefit from one aggregate ranking and the per-method overhead (one eval per method per tick) isn't free.
 
 ## Per-finality routing
 
-Set `evalPerFinality: true` to run the policy separately per `(network,
-[method,] finality)` — one slot per finality bucket
-(`realtime`/`unfinalized`/`finalized`/`unknown`). The eval sees
+Set `evalScope: 'network-finality'` (or `'network-method-finality'` to combine with per-method) to run the policy separately per finality bucket
+(`realtime` / `unfinalized` / `finalized` / `unknown`). The eval sees
 `ctx.finality` set to its bucket value, so different finality classes
 can use different presets/thresholds without the eval branching on
 `ctx.finality` itself.
@@ -334,7 +344,7 @@ A typical pattern:
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
-    .excludeIf(errorRateAbove(0.5))
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
     .sortByScore(
       ctx.finality === 'realtime' ? PREFER_FRESHEST :
       ctx.finality === 'finalized' ? PREFER_FASTEST :
@@ -343,14 +353,18 @@ A typical pattern:
     .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
 ```
 
-With `evalPerFinality: true` each bucket has its OWN sticky-primary
+With finality-scoped evaluation each bucket has its OWN sticky-primary
 state, score cache, and metric labels (`erpc_selection_score{...,
 finality}` etc.). The realtime bucket can hold one primary while the
-finalized bucket holds a different one — no cross-contamination.
+finalized bucket holds a different one — no cross-contamination. The
+underlying health tracker also splits its rolling-window counters by
+finality once the policy needs them, so per-finality predicates
+(`errorRateAbove`, `latencyDeviationAbove`, etc.) operate on the
+correct bucket without you having to opt in separately.
 
 Slots are lazy-created on first request for a bucket. A network that
 never receives `finalized` queries pays zero overhead for that bucket.
-Combine with `evalPerMethod: true` to get one slot per `(method, finality)`
+Use `evalScope: 'network-method-finality'` to get one slot per `(method, finality)`
 — useful for indexers that classify their workload precisely.
 
 ## Common patterns

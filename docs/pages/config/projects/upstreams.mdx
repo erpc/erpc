@@ -347,7 +347,7 @@ upstreams:
 
 Weight fields override the score preset **per dimension** — unset dimensions inherit. `overall` is the **preference dial**: it scales the upstream's FINAL score, so `overall: 2` makes an upstream twice as preferred and `0.5` half (default `1`). (`PREFER_FASTEST`, the default preset, is `{ errorRate: 4, respLatency: 15, throttledRate: 4, blockHeadLag: 1, finalizationLag: 0, misbehaviors: 2 }` — latency dominates because the `excludeIf` chain already filters degraded upstreams before scoring runs.)
 
-Matcher fields accept glob patterns (`*`, `?`, `!negation`); an empty field or `"*"` matches anything, and the first matching entry wins. **Per-method and per-finality entries only take effect when the policy runs per-method / per-finality** (`evalPerMethod` / `evalPerFinality` on the network's `selectionPolicy`) — otherwise the slot is a wildcard and only `*`/empty-matcher entries apply.
+Matcher fields accept glob patterns (`*`, `?`, `!negation`); an empty field or `"*"` matches anything, and the first matching entry wins. **Per-method and per-finality entries only take effect when the policy is scoped to that grain** — set `selectionPolicy.evalScope` on the network to `'network-method'`, `'network-finality'`, or `'network-method-finality'`. With the default `'network'` scope the slot is a wildcard and only `*`/empty-matcher entries apply.
 
 How these per-upstream weights combine with the policy's base weights is controlled by [`sortByScore`'s `multipliers` option](/config/projects/selection-policies#sorting) — `'merge'` (default, override-matching-keys), `'override'` (configured upstreams use their weights only), or `'off'` (ignore them).
 
@@ -387,7 +387,7 @@ upstreams:
           errorRate: 2
 ```
 
-Per-finality entries only take effect when the network's `selectionPolicy.evalPerFinality: true` — otherwise the slot resolves with `ctx.finality = "unknown"` and only entries whose `finality` list includes `unknown` (or is empty) match. Same for `evalPerMethod` and per-method entries.
+Per-finality entries only take effect when the network's `selectionPolicy.evalScope` includes the finality axis (`'network-finality'` or `'network-method-finality'`) — otherwise the slot resolves with `ctx.finality = "unknown"` and only entries whose `finality` list includes `unknown` (or is empty) match. Same for per-method entries with `'network-method'`.
 
 When you need branching the declarative form can't express (per-vendor baselines, etc.), pass a function to `sortByScore` to pick the **base** per upstream — per-upstream `scoreMultipliers` still merge on top (set `multipliers: 'off'` to opt out):
 

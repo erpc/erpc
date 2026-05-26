@@ -319,7 +319,7 @@ networks:
 selectionPolicy:
   evalInterval: 1s            # how often to re-evaluate eligibility
   evalTimeout: 100ms          # per-tick eval deadline (must be < evalInterval; prior cache retained on timeout)
-  evalPerMethod: false        # if true, run evalFunc per (network, method) pair
+  evalScope: network          # 'network' (default) | 'network-method' | 'network-finality' | 'network-method-finality'
   evalFunc: |
     (upstreams, ctx) =>
       upstreams
