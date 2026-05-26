@@ -429,10 +429,11 @@ func TestNetworkPolicy_SlowUpstream_Excluded(t *testing.T) {
 }
 
 // TestNetworkPolicy_ErroringUpstream_Excluded — the most common
-// observed pattern: one upstream starts erroring (50%+ error rate over
-// the window) and the policy should reroute. Without filtering it
-// would still pull traffic on every retry. With the hardened default's
-// `keepHealthy(maxErrorRate: 0.5)`, it's out.
+// observed pattern: one upstream starts erroring fundamentally (>70%
+// error rate over the window) and the policy should reroute. Without
+// filtering it would still pull traffic on every retry. With the
+// hardened default's `excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))`,
+// it's out.
 func TestNetworkPolicy_ErroringUpstream_Excluded(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -447,10 +448,12 @@ func TestNetworkPolicy_ErroringUpstream_Excluded(t *testing.T) {
 		{Type: common.UpstreamTypeEvm, Id: "errs", Endpoint: upstreamHostFromID("errs"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	})
 
-	// "errs": 60% error rate (60 failures + 40 successful).
+	// "errs": 80% error rate (80 failures + 20 successful) — clearly
+	// past the default's 0.7 threshold, with 100 samples to clear
+	// samplesAbove(10).
 	// "good": 100 clean successes.
 	seedDegraded(network.metricsTracker, upstreamByID(t, network, "errs"), seedSpec{
-		successful: 40, successAvgMs: 10, failed: 60,
+		successful: 20, successAvgMs: 10, failed: 80,
 	})
 	seedDegraded(network.metricsTracker, upstreamByID(t, network, "good"), seedSpec{
 		successful: 100, successAvgMs: 10,
@@ -468,7 +471,7 @@ func TestNetworkPolicy_ErroringUpstream_Excluded(t *testing.T) {
 
 	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("good")), 1, "good must serve the request")
 	assert.Equal(t, 0, gockHits(upstreamHostFromID("errs")),
-		"errs (errorRate=0.6) must be excluded by keepHealthy(maxErrorRate:0.5)")
+		"errs (errorRate=0.8) must be excluded by excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))")
 }
 
 // TestNetworkPolicy_LaggingUpstream_Excluded — reproduces the
@@ -521,7 +524,7 @@ func TestNetworkPolicy_LaggingUpstream_Excluded(t *testing.T) {
 // TestNetworkPolicy_ThrottledUpstream_Excluded — vendor is
 // rate-limiting us (429s consistently). The policy should reroute
 // before quota burns. Hardened default's
-// `keepHealthy(maxThrottledRate: 0.3)` covers this.
+// `excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))` covers this.
 //
 // Also defends against the rate-limit cascade pattern: lag on one
 // vendor shifts traffic to another, which then rate-limits because
@@ -562,7 +565,7 @@ func TestNetworkPolicy_ThrottledUpstream_Excluded(t *testing.T) {
 
 	assert.GreaterOrEqual(t, gockHits(upstreamHostFromID("open")), 1, "open must serve")
 	assert.Equal(t, 0, gockHits(upstreamHostFromID("quota")),
-		"quota (throttledRate=0.5) must be excluded by keepHealthy(maxThrottledRate:0.3)")
+		"quota (throttledRate=0.5) must be excluded by excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))")
 }
 
 // TestNetworkPolicy_MixedDegraded_OnlyHealthyServed reproduces a real
@@ -587,7 +590,9 @@ func TestNetworkPolicy_MixedDegraded_OnlyHealthyServed(t *testing.T) {
 
 	seedDegraded(network.metricsTracker, upstreamByID(t, network, "healthy"), seedSpec{successful: 100, successAvgMs: 10})
 	seedDegraded(network.metricsTracker, upstreamByID(t, network, "slow"), seedSpec{successful: 100, successAvgMs: 15_000})
-	seedDegraded(network.metricsTracker, upstreamByID(t, network, "errs"), seedSpec{successful: 30, successAvgMs: 10, failed: 70})
+	// errs: 85% errors (15 successful + 85 failed) — clearly past 0.7
+	// default threshold with 100 samples to clear samplesAbove(10).
+	seedDegraded(network.metricsTracker, upstreamByID(t, network, "errs"), seedSpec{successful: 15, successAvgMs: 10, failed: 85})
 	seedDegraded(network.metricsTracker, upstreamByID(t, network, "lagger"), seedSpec{successful: 100, successAvgMs: 10, blockHeadLag: 25})
 
 	policy.TickForTest(network.policyEngine, network.networkId, "*")
@@ -740,9 +745,10 @@ func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 			incumbent := order[0].Id()
 			challenger := order[1].Id()
 
-			// Degrade the incumbent (errorRate 0.23 < 0.5 → still passes
-			// keepHealthy) so score favours the challenger. The 30s sticky
-			// cooldown should hold the incumbent regardless of finality.
+			// Degrade the incumbent (errorRate 0.23 — well below the 0.7
+			// default ceiling so it still passes excludeIf) so score
+			// favours the challenger. The 30s sticky cooldown should hold
+			// the incumbent regardless of finality.
 			seedDegraded(network.metricsTracker, upstreamByID(t, network, incumbent),
 				seedSpec{failed: 30})
 			policy.TickForTest(network.policyEngine, network.networkId, "*")
