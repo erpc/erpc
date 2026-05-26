@@ -57,7 +57,7 @@ projects:
         # The block below is the DEFAULT — omit `selectionPolicy`
         # entirely if you're happy with these settings.
         selectionPolicy:
-          evalInterval: 1s
+          evalInterval: 15s
           evalTimeout: 100ms
           evalScope: network        # 'network' | 'network-method' | 'network-finality' | 'network-method-finality'
           evalFunc: |
@@ -94,7 +94,7 @@ export default createConfig({
       architecture: "evm",
       evm: { chainId: 1 },
       selectionPolicy: {
-        evalInterval: "1s",
+        evalInterval: "15s",
         evalTimeout: "100ms",
         evalScope: "network",   // or NETWORK_METHOD / NETWORK_FINALITY / NETWORK_METHOD_FINALITY consts
         // Real arrow function — fully type-checked. The chainable
@@ -125,7 +125,7 @@ export default createConfig({
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `evalInterval` | Duration | `1s` | `0` disables the ticker (test only). |
+| `evalInterval` | Duration | `15s` | How often the policy re-evaluates and the slot's cached ranking refreshes. The default plays well with the default `scoreMetricsWindowSize: 60s` (4 samples per metric window). Drop to `1-5s` for faster reactivity at the cost of CPU (the JS interpreter runs at this rate per slot); raise above `30s` only if you've also widened your metric/probe windows. `0` disables the ticker (test only). |
 | `evalTimeout` | Duration | `100ms` | Must be `< evalInterval`. Prior cache retained on timeout. |
 | `evalScope` | `'network'` \| `'network-method'` \| `'network-finality'` \| `'network-method-finality'` | `'network'` | Picks the grain at which the policy evaluates AND the matching health-tracker grain. `network` = one ranking per network (cheapest, default); `network-method` = per-(network, method) — same `getLogs` ranking can differ from the `blockNumber` ranking; `network-finality` = per-(network, finality bucket); `network-method-finality` = full granularity. Slots are lazy-created on first request — cold buckets cost nothing. The TypeScript SDK exports `NETWORK` / `NETWORK_METHOD` / `NETWORK_FINALITY` / `NETWORK_METHOD_FINALITY` consts with these same string values. |
 | `evalFunc` | string \| function | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. In `.ts` configs pass a real arrow function — it gets stringified at load time via `Function.prototype.toString()`. Omit to apply the [default policy](#the-default-policy). |

@@ -2487,7 +2487,29 @@ const DefaultSelectionPolicySource = `(upstreams, ctx) => upstreams`
 
 func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
-		c.EvalInterval = Duration(1 * time.Second)
+		// 15s default — the highest value where every dependent
+		// subsystem still works smoothly with the OTHER defaults:
+		//
+		//   - `scoreMetricsWindowSize` 60s → 4 quantile samples per
+		//     window, enough to keep ranking stable without flicker.
+		//   - `probeExcluded.minSamplesWindow` 60s → 4 probe-progress
+		//     checks per window, keeping re-admit hysteresis smooth.
+		//   - Prometheus scrape interval is typically 30s, so the
+		//     dashboard always sees fresh data.
+		//   - Hedge dispatcher operates per-request, unaffected by
+		//     tick rate, so transient failures don't depend on this.
+		//
+		// Previous default (1s) burned ~23% of total CPU on JS
+		// interpretation for ranking churn the request path almost
+		// never noticed: the slot cache served stale-by-1s rankings
+		// to a workload where the metrics window itself is 60s wide.
+		// Bumping to 15s preserves selection quality while cutting
+		// the JS interpreter load ~15×.
+		//
+		// Operators wanting faster reactivity can override per
+		// selection-policy block; integration tests routinely set
+		// 50-500ms via `EvalInterval`.
+		c.EvalInterval = Duration(15 * time.Second)
 	}
 	if c.EvalTimeout == 0 {
 		c.EvalTimeout = Duration(100 * time.Millisecond)

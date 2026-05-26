@@ -24,7 +24,7 @@ networks:
     evm: { chainId: 1 }
 
     selectionPolicy:
-      evalInterval: 1s          # tick frequency.                 default: 1s
+      evalInterval: 15s         # tick frequency.                 default: 15s
       evalPerMethod: false      # maintain a cache per method.    default: false
       evalTimeout: 100ms        # per-tick eval hard cap.         default: 100ms
       evalFunc: |
@@ -38,7 +38,7 @@ networks:
 
 | Field | Type | Description |
 |---|---|---|
-| `evalInterval` | `Duration` | How often the eval runs. Default `1s`. |
+| `evalInterval` | `Duration` | How often the eval runs. Default `15s`. Tuned to play well with the default `scoreMetricsWindowSize: 60s` (4 metric samples per window). |
 | `evalPerMethod` | `bool` | If true, separate eval + cache per `(network, method)`. Default false. |
 | `evalTimeout` | `Duration` | Hard wall-clock cap on each eval. Default `100ms`. |
 | `evalFunc` | `string` | JavaScript function body. Signature `(upstreams, ctx) => Upstream[]`. If omitted, the [default policy](#7-default-policy) applies. |
