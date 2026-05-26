@@ -216,7 +216,7 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 	}
 
 	for _, u := range excluded {
-		if !p.shouldProbe(u, cfg) {
+		if !p.tryReserveProbe(u, cfg) {
 			continue
 		}
 		p.wg.Add(1)
@@ -224,7 +224,27 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 	}
 }
 
-func (p *Prober) shouldProbe(u common.Upstream, cfg *ProbeConfig) bool {
+// tryReserveProbe runs every gate AND — if all pass — atomically
+// reserves the inflight slot before returning true. Both reservations
+// (inflight counter + minSamples window counter) MUST happen
+// synchronously here, NOT inside the spawned mirror() goroutine.
+//
+// Why this matters: the dispatcher runs sequentially, but goroutines
+// it spawns don't start synchronously. If the inflight increment
+// lived inside mirror() (`counter.Add(1)` AFTER `go p.mirror(...)`),
+// a burst of incoming requests could all see counter==0, all pass
+// the gate, and all spawn goroutines before ANY of them actually
+// increments the counter. At 10k RPS with an excluded upstream this
+// blew past `maxConcurrent=4` by orders of magnitude — runaway
+// goroutine creation that pegs CPU and climbs concurrency
+// unbounded. The mirror() goroutine now ONLY decrements; the
+// increment is here.
+//
+// The CAS loop on the inflight counter handles the (paranoid) case
+// of multiple dispatcher goroutines or future expansions where this
+// might be called concurrently. Today the dispatcher is single-
+// threaded so the loop usually completes on the first iteration.
+func (p *Prober) tryReserveProbe(u common.Upstream, cfg *ProbeConfig) bool {
 	if u == nil {
 		return false
 	}
@@ -241,12 +261,6 @@ func (p *Prober) shouldProbe(u common.Upstream, cfg *ProbeConfig) bool {
 	// enough samples to re-evaluate excludeIf predicates. Once the
 	// floor is satisfied, sampleRate kicks in to throttle ongoing
 	// probe traffic.
-	//
-	// We RESERVE the window slot here (incrementing the counter
-	// before the probe actually fires) so concurrent gate checks see
-	// each other's reservations. If we incremented only after
-	// mirror() completed, all in-flight gate checks would race and
-	// see "below floor," producing a burst far past MinSamples.
 	belowFloor := false
 	if cfg.MinSamples > 0 {
 		windowed := p.windowCount(u.Id(), cfg.MinSamplesWindow)
@@ -261,23 +275,26 @@ func (p *Prober) shouldProbe(u common.Upstream, cfg *ProbeConfig) bool {
 		return false
 	}
 
-	// Per-upstream concurrency cap. Applies to both floor-driven and
-	// sampleRate-driven probes — bounds the worst-case probe RPS
-	// against a single upstream regardless of how the request got past
-	// the upper gates.
+	// Per-upstream concurrency cap — atomic CAS reserves the slot
+	// synchronously. This is the gate that bounds worst-case probe
+	// traffic against any one upstream.
 	counter := p.getInflight(u.Id())
-	max := int64(cfg.MaxConcurrent)
-	if max <= 0 {
-		max = 4
+	maxC := int64(cfg.MaxConcurrent)
+	if maxC <= 0 {
+		maxC = 4
 	}
-	if counter.Load() >= max {
-		telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "max_concurrent").Inc()
-		return false
+	for {
+		cur := counter.Load()
+		if cur >= maxC {
+			telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "max_concurrent").Inc()
+			return false
+		}
+		if counter.CompareAndSwap(cur, cur+1) {
+			break
+		}
 	}
 
-	// All gates passed — reserve the window slot atomically. This
-	// must happen BEFORE returning true so the next gate check sees
-	// the updated count.
+	// Reservation succeeded — record the window sample too.
 	if cfg.MinSamples > 0 {
 		p.recordWindowSample(u.Id(), cfg.MinSamplesWindow)
 	}
@@ -360,8 +377,11 @@ func (p *Prober) getWindowCounter(id string) *windowCounter {
 func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *ProbeConfig) {
 	defer p.wg.Done()
 
+	// The inflight slot was already reserved synchronously by
+	// tryReserveProbe before this goroutine was spawned — so we ONLY
+	// release it here. Incrementing it again would double-count and
+	// reduce effective MaxConcurrent.
 	counter := p.getInflight(u.Id())
-	counter.Add(1)
 	defer counter.Add(-1)
 
 	timeout := cfg.Timeout

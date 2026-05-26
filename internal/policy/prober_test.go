@@ -228,7 +228,9 @@ func TestProber_RespectsMaxConcurrent(t *testing.T) {
 // TestProber_FeedsTracker — every successful probe call increments
 // the tracker's RequestsTotal for that (upstream, method). This is
 // the WHOLE POINT: those samples are what drive `excludeIf` to
-// naturally re-admit the upstream.
+// naturally re-admit the upstream. MaxConcurrent is bumped high so
+// the concurrency gate doesn't interfere with what we're measuring
+// here (correct behavior of MaxConcurrent has its own test).
 func TestProber_FeedsTracker(t *testing.T) {
 	deps := &stubEngine{}
 	dead := &stubProbeUpstream{id: "dead"}
@@ -236,7 +238,7 @@ func TestProber_FeedsTracker(t *testing.T) {
 
 	p, tracker := newTestProber(t, deps, &ProbeConfig{
 		SampleRate:    1.0,
-		MaxConcurrent: 4,
+		MaxConcurrent: 100, // way above the publish count — isolate "tracker gets fed" from "cap gates correctly"
 		Timeout:       5 * time.Second,
 	})
 	defer p.Stop()
@@ -307,7 +309,7 @@ func TestProber_MinSamplesFloorBypassesSampleRate(t *testing.T) {
 		SampleRate:       0.0, // rate gate fully closed
 		MinSamples:       5,   // but floor demands 5 probes
 		MinSamplesWindow: time.Minute,
-		MaxConcurrent:    4,
+		MaxConcurrent:    100, // high — this test is about the floor, not the cap (which has its own test)
 		Timeout:          5 * time.Second,
 	})
 	defer p.Stop()
@@ -392,4 +394,61 @@ func TestProber_UpdateConfigHotSwap(t *testing.T) {
 	got := waitForCalls(dead, 1, 1*time.Second)
 	assert.Equal(t, int64(1), got,
 		"after hot-swap to sampleRate=1, publishes must mirror")
+}
+
+// TestProber_HighRPSBurst_RespectsCapStrictly — regression for the
+// goroutine-runaway bug. Under the old code, the inflight counter
+// was incremented INSIDE the spawned mirror() goroutine AFTER the
+// gate check. The dispatcher runs sequentially but spawned goroutines
+// don't start synchronously, so a burst of publishes could ALL see
+// counter=0 and ALL get spawned before any actually incremented,
+// blowing past MaxConcurrent.
+//
+// This test publishes a large burst (1000 requests) against a stub
+// that BLOCKS on every Forward — so no goroutine ever completes to
+// drop the counter. With the fix (atomic CAS reserve before spawn),
+// exactly MaxConcurrent probes reach Forward; the other 998 are
+// rejected via the max_concurrent gate.
+func TestProber_HighRPSBurst_RespectsCapStrictly(t *testing.T) {
+	deps := &stubEngine{}
+	dead := &stubProbeUpstream{
+		id:         "dead",
+		blockUntil: make(chan struct{}), // every probe blocks
+	}
+	deps.setExcluded("evm:1", []common.Upstream{dead})
+
+	const cap = 4
+	p, _ := newTestProber(t, deps, &ProbeConfig{
+		SampleRate:    1.0,
+		MaxConcurrent: cap,
+		Timeout:       30 * time.Second,
+	})
+	defer func() {
+		close(dead.blockUntil)
+		p.Stop()
+	}()
+
+	// Burst — publishes happen faster than goroutines can run their
+	// `counter.Add(1)`. The old buggy code would spawn hundreds of
+	// goroutines here; the fix keeps it at exactly `cap`.
+	for i := 0; i < 1000; i++ {
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+	}
+
+	// Give the dispatcher plenty of time to drain its feed channel
+	// and spawn all the goroutines it's going to spawn.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if dead.calls.Load() >= int64(cap) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Brief settling window in case the dispatcher tries to spawn one
+	// more (the bug would manifest as the counter racing past cap).
+	time.Sleep(200 * time.Millisecond)
+
+	got := dead.calls.Load()
+	assert.Equal(t, int64(cap), got,
+		"high-RPS burst MUST stop at exactly MaxConcurrent=%d goroutines spawned; got %d (the goroutine-runaway bug would show way more)", cap, got)
 }
