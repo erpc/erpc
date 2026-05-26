@@ -74,6 +74,8 @@ func HandleNetworkPostForward(ctx context.Context, network common.Network, nq *c
 		return networkPostForward_eth_getBlockByNumber(ctx, network, nq, nr, re)
 	case "eth_getlogs":
 		return networkPostForward_eth_getLogs(ctx, network, nq, nr, re)
+	case "eth_sendrawtransaction":
+		return networkPostForward_eth_sendRawTransaction(ctx, network, nq, nr, re)
 	case "trace_filter", "arbtrace_filter":
 		return networkPostForward_trace_filter(ctx, network, nq, nr, re)
 	default:
