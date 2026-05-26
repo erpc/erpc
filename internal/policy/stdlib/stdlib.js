@@ -171,13 +171,24 @@
       // Only attribute / record array-in/array-out transitions. Non-array
       // outputs (e.g. `partition` returns a 2-tuple, `at_` returns a single
       // upstream) skip the trail — they're terminal-ish ops anyway.
-      if (Array.isArray(before) && Array.isArray(result)) {
+      const arrayInOut = Array.isArray(before) && Array.isArray(result);
+      // HOT-PATH GUARD — pprof on prod showed `_stepDropAttribute`
+      // and the supporting array/set work were the largest JS-side
+      // CPU consumer (the inner `.some()` / `.every()` shapes in the
+      // attribution + the `new Set()` allocation). Most chain steps
+      // in a healthy policy DON'T drop anyone (excludeIf passes
+      // everything, byTag matches all, etc.) — so when `result.length
+      // >= before.length`, there's nothing to attribute and the work
+      // is purely wasted. Skip the call entirely on the no-drop path.
+      if (arrayInOut && result.length < before.length) {
         // Always-on: low-cost step-name attribution for metrics.
         _stepDropAttribute(name, before, result);
-        // Diagnostic-only: full step trail with args / dropped / added.
-        if (globalThis.__policyStepLogEnabled) {
-          _recordStep(name, before, result, _captureArgs(arguments));
-        }
+      }
+      // Diagnostic-only: full step trail with args / dropped / added.
+      // Gated by `__policyStepLogEnabled` (debug-level or simulator);
+      // production never pays this cost.
+      if (arrayInOut && globalThis.__policyStepLogEnabled) {
+        _recordStep(name, before, result, _captureArgs(arguments));
       }
       return result;
     };
