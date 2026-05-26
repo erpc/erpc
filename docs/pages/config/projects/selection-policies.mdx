@@ -66,7 +66,7 @@ projects:
                 .removeCordoned()
                 .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
                 .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
+                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -108,7 +108,7 @@ export default createConfig({
             .removeCordoned()
             .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
             .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
+            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -160,7 +160,7 @@ one of them lets a degraded upstream keep receiving traffic:
     // samplesAbove(20) so the comparison sees real variance) OR p70 > 30 s (absolute,
     // unguarded — 30 s is catastrophic at any sample count). p70 matches the rank
     // axis below so exclusion and ranking agree on "fast".
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
     // Drop laggers: >16 blocks behind tip (chain-agnostic) OR >30 wall-clock seconds
     // (adapts to chain block-time via the tracker's EMA, no-op until ≥3 samples).
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
@@ -601,7 +601,7 @@ DEBUG logs + the simulator UI. Reason resolution:
 
 ```js
 .excludeIf(errorRateAbove(0.5))                                       // factory: auto-labels "errorRate>0.5"
-.excludeIf(any(latencyDeviationAbove(5), latencyAbove(30_000)))   // combinator: auto-labels "any(p70>5xFastest(geomean),p70>30000ms)"
+.excludeIf(any(latencyDeviationAbove(10), latencyAbove(30_000)))   // combinator: auto-labels "any(p70>10xFastest(geomean),p70>30000ms)"
 .excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor')         // inline: explicit reason
 ```
 
@@ -938,23 +938,24 @@ Trip when this upstream is significantly slower than the fastest peer,
 latency** so sub-perceptible micro-differences don't fire.
 
 ```ts
-// Default — p70, geomean across methods, ratio > 5, damping at 100ms
-latencyDeviationAbove(5)
+// Default — p70, geomean across methods, ratio > 10, damping at 30ms
+latencyDeviationAbove(10)
 
 // 2nd arg as a number is a quantile shorthand
-latencyDeviationAbove(5, 95)
+latencyDeviationAbove(10, 95)
 
 // Modes for resolving disagreement across methods
-latencyDeviationAbove(5, { mode: 'geomean' })   // default
-latencyDeviationAbove(5, { mode: 'majority' })
-latencyDeviationAbove(5, { mode: 'veto' })
+latencyDeviationAbove(10, { mode: 'geomean' })   // default
+latencyDeviationAbove(10, { mode: 'majority' })
+latencyDeviationAbove(10, { mode: 'veto' })
 
-// Tune the damping scale (default 100ms — methods well below this
-// have their ratio damped toward zero so 2ms vs 6ms doesn't trip)
-latencyDeviationAbove(5, { dampingMs: 50 })
+// Tune the damping scale (default 30ms — sub-30ms latencies have
+// their ratio damped so micro-differences below human perception
+// don't trip)
+latencyDeviationAbove(10, { dampingMs: 50 })
 
 // Combine
-latencyDeviationAbove(5, { quantile: 95, mode: 'majority', dampingMs: 200 })
+latencyDeviationAbove(10, { quantile: 95, mode: 'majority', dampingMs: 100 })
 ```
 
 **Why per-method**: an upstream's aggregate p<q> is a sample-count-
@@ -974,17 +975,27 @@ latency:
 effective_ratio = (my / peer) × (1 − exp(−my / dampingMs))
 ```
 
-| my latency (dampingMs=100) | damping factor | effective ratio (raw=5) |
+| my latency (dampingMs=30) | damping factor | effective ratio (raw=10) |
 |---|---|---|
-| 5ms | 0.05 | 0.25 — no trip |
-| 50ms | 0.39 | 1.97 — no trip |
-| 100ms | 0.63 | 3.16 — no trip |
-| 300ms | 0.95 | 4.75 — borderline |
-| 1000ms+ | ≈ 1.00 | 5.00 — full weight |
+| 5ms | 0.15 | 1.55 — no trip |
+| 30ms | 0.63 | 6.32 — no trip |
+| 70ms | 0.90 | 9.03 — borderline |
+| 150ms | 0.99 | 9.93 — borderline |
+| 500ms+ | ≈ 1.00 | 10.0 — full weight |
 
 Smooth transition — a slightly mis-tuned `dampingMs` degrades
 gracefully rather than flipping the predicate. Set `dampingMs: 0` to
 disable damping (raw ratios at all latencies).
+
+**Working example** — the default policy with `latencyDeviationAbove(10)`
++ `dampingMs=30` keeps two healthy vendor tiers in rotation while
+excluding a broken one:
+
+| Vendor tier | Latency range | Per-method ratio vs fastest | Effective ratio (geomean) | Trips? |
+|---|---|---|---|---|
+| Fast | 10-30ms | 1-3× | ~2 | No |
+| Decent | 70-150ms | 5-7× | ~7 | No |
+| Broken | 2-10s | 200-1000× | ~250 | **Yes** |
 
 **Modes** (when methods disagree):
 

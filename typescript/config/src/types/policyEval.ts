@@ -329,10 +329,14 @@ export type LatencyDeviationOptions = {
    * smooth: a slightly mis-tuned `dampingMs` degrades gracefully
    * rather than flipping the predicate.
    *
-   * Defaults to `100` (ms) — sub-perceptible latency differences
-   * (e.g. 2ms vs 6ms, raw 3× but invisible to users) don't
-   * contribute, while real UX deltas (e.g. 200ms vs 600ms) do. Set
-   * to `0` to disable damping entirely (raw ratios at all latencies).
+   * Defaults to `30` (ms) — at 30ms damping is 0.63 (significant);
+   * at 100ms damping is 0.96 (raw ratio mostly passes through). The
+   * 30ms choice keeps the predicate sensitive to truly slow
+   * upstreams (anything ≥100ms gets near-full ratio) while
+   * suppressing meaningless micro-differences (2ms vs 6ms damps to
+   * ~0.13× raw). Pair with a high multiplier (10+) so the mid-range
+   * 70-150ms tier still has breathing room. Set to `0` to disable
+   * damping entirely (raw ratios at all latencies).
    */
   dampingMs?: number;
 };

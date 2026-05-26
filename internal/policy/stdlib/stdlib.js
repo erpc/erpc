@@ -1307,24 +1307,27 @@
   }
   // `multiplier` first, `optsOrQuantile` second-and-optional.
   // Accepts:
-  //   • undefined → { quantile: 70, mode: 'geomean', minMethodSamples: 50, dampingMs: 100 }
+  //   • undefined → { quantile: 70, mode: 'geomean', minMethodSamples: 50, dampingMs: 30 }
   //   • a number  → quantile shorthand, defaults for the rest
   //   • an object → { quantile?, mode?, minMethodSamples?, dampingMs? }
   //
   // Defaults reflect the production lessons:
   //   • minMethodSamples=50 — per-method sample floor. Below this,
   //     the p<q> CI is too wide for cross-upstream comparison.
-  //   • dampingMs=100 — exponential damping scale (ms). Methods
-  //     where the candidate's p<q> is well below 100ms have their
-  //     ratio damped toward zero (1ms vs 5ms is human-invisible
-  //     regardless of raw ratio); methods at hundreds of ms get
-  //     full-weight ratios. The damping is smooth — scale is a
-  //     soft knob, not a cliff. Set to 0 to disable damping.
+  //   • dampingMs=30 — exponential damping scale (ms). At my=30ms
+  //     damping=0.63 (significant); at my=100ms damping=0.96 (raw
+  //     ratio mostly passes through). The choice of 30ms keeps the
+  //     comparison sensitive to genuinely slow upstreams (anything
+  //     >100ms is full-weight) while still suppressing meaningless
+  //     micro-differences (2ms vs 6ms damps to ~0.13× raw). Pair
+  //     with a high multiplier (default 10 in the chain) so the
+  //     mid-range still has plenty of breathing room. Set to 0 to
+  //     disable damping.
   globalThis.latencyDeviationAbove = function (multiplier, optsOrQuantile) {
     let quantile = 70;
     let mode = 'geomean';
     let minMethodSamples = 50;
-    let dampingMs = 100;
+    let dampingMs = 30;
     if (typeof optsOrQuantile === 'number') {
       quantile = optsOrQuantile;
     } else if (optsOrQuantile && typeof optsOrQuantile === 'object') {

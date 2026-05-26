@@ -7,15 +7,16 @@
     // consensus) already absorbs occasional failures.
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
     .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-    // Latency: drop if p70 is >5× the fastest peer's p70 across the
-    // majority of comparable methods (per-method comparison with a
-    // 50-sample-per-method floor — see latencyDeviationAbove's
-    // minMethodSamples) OR catastrophically slow (>30s). 5× tolerates
-    // natural variance between cloud RPC vendors on identical methods
-    // (typically 2-4×) while still catching genuinely-broken
-    // upstreams. Outer samplesAbove(20) gates on aggregate counts so
-    // the predicate doesn't even run on cold-start pods.
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(5)), latencyAbove(30_000)))
+    // Latency: drop if the geomean of per-method ratios (this
+    // upstream's p70 / fastest peer's p70 PER METHOD, exponentially
+    // damped by absolute latency at dampingMs=30) exceeds 10× —
+    // OR catastrophically slow (>30s absolute). The 10× threshold
+    // tolerates real cloud-vendor variance: an upstream serving
+    // ~70-150ms while peers serve ~10-30ms isn't broken, it's just
+    // a different vendor tier. A vendor at 2s+ is broken and trips.
+    // Outer samplesAbove(20) gates on aggregate counts so the
+    // predicate doesn't even run on cold-start pods.
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
     // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
     // Outage safety net: if everyone failed the health excludes, fall

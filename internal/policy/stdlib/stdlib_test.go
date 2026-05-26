@@ -1521,6 +1521,40 @@ func TestStdlib_LatencyDeviationAbove_ExponentialDamping_LowLatencyNoTrip(t *tes
 		"sub-100ms latencies must NOT trip a 5× raw ratio — exponential damping at dampingMs=100 reduces the effective ratio below the multiplier")
 }
 
+// TestStdlib_LatencyDeviationAbove_TwoHealthyTiersOneBroken locks in
+// the default-policy intent: two healthy tiers of vendors (fast
+// 10-30ms group + decent 70-150ms group) MUST both stay in rotation,
+// while a broken vendor (2-10s) MUST be excluded. With the defaults
+// (dampingMs=30, multiplier=10 in the chain), all three behaviors
+// are deterministic.
+func TestStdlib_LatencyDeviationAbove_TwoHealthyTiersOneBroken(t *testing.T) {
+	eval := `(upstreams, ctx) =>
+		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(10)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	// Fast tier: 10ms eth_call, 30ms eth_getLogs
+	// Decent tier: 70ms eth_call, 150ms eth_getLogs (5-7× fast)
+	// Broken tier: 2000ms eth_call, 10000ms eth_getLogs (200-333× fast)
+	ups := mkUps("fast", "decent", "broken")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	seedLatency(t, tracker, ups[0], "eth_call", 10*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[0], "eth_getLogs", 30*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[1], "eth_call", 70*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[1], "eth_getLogs", 150*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[2], "eth_call", 2000*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[2], "eth_getLogs", 10000*time.Millisecond, 100)
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.ElementsMatch(t, []string{"fast", "decent"}, got,
+		"fast (10-30ms) and decent (70-150ms) must stay in rotation; broken (2-10s) must be excluded")
+}
+
 // TestStdlib_LatencyDeviationAbove_ExponentialDamping_HighLatencyDoesTrip:
 // the SAME 5× raw ratio at HIGH absolute latencies (500ms vs 2500ms)
 // produces an effective ratio ≈ 5 × (1 - exp(-25)) ≈ 5 — fully
