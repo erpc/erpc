@@ -486,8 +486,6 @@ The selection policy emits one tick's worth of decision data into Prometheus on 
 
 | RPC | What it gives you |
 |---|---|
-| `erpc_selectionReeval({projectId, network, method})` | Force a tick |
-| `erpc_selectionDefaultPolicy()` | Source of the built-in default |
 | `erpc_cordonUpstream({projectId, upstream, method?, reason?})` | Manually take an upstream out — see [Cordoning](/operation/cordoning) |
 | `erpc_uncordonUpstream({projectId, upstream, method?, reason?})` | Put it back |
 | `erpc_listCordoned({projectId})` | List currently-cordoned upstreams |
