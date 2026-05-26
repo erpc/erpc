@@ -1534,7 +1534,12 @@ func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) 
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+		// Use the EIP-1559 fixture: its expectedEIP1559TxHash constant is the
+		// actual keccak256 of sampleEIP1559SignedTx. (The legacy sampleSignedTx
+		// + expectedTxHash pair is broken — see review finding P-1.) We need a
+		// fixture whose constant matches reality because the new postForward
+		// cross-checks the returned hash against the locally-derived hash.
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
 
 		// Every retry attempt to rpc1 returns HTTP 500. Persisted so all
 		// failsafe attempts hit the same outcome.
@@ -1560,9 +1565,10 @@ func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) 
 			BodyString("Internal Server Error")
 
 		// But the tx IS actually in the network — eth_getTransactionByHash on
-		// either upstream returns a non-null tx object. This simulates an
-		// upstream that silently accepted the broadcast despite returning 5xx,
-		// or a different upstream that already saw the tx in its mempool.
+		// either upstream returns a non-null tx object whose hash field matches
+		// the locally-derived hash. This simulates an upstream that silently
+		// accepted the broadcast despite returning 5xx, or a different upstream
+		// that already saw the tx in its mempool.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Persist().
@@ -1575,10 +1581,10 @@ func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) 
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result": map[string]interface{}{
-					"hash":        expectedTxHash,
+					"hash":        expectedEIP1559TxHash,
 					"blockNumber": "0x123",
 					"from":        "0x0000000000000000000000000000000000000001",
-					"to":          "0x3535353535353535353535353535353535353535",
+					"to":          "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
 				},
 			})
 		gock.New("http://rpc2.localhost").
@@ -1593,10 +1599,10 @@ func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) 
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result": map[string]interface{}{
-					"hash":        expectedTxHash,
+					"hash":        expectedEIP1559TxHash,
 					"blockNumber": "0x123",
 					"from":        "0x0000000000000000000000000000000000000001",
-					"to":          "0x3535353535353535353535353535353535353535",
+					"to":          "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
 				},
 			})
 
@@ -1626,10 +1632,7 @@ func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) 
 		require.NotNil(t, resp)
 		jrr, jrrErr := resp.JsonRpcResponse()
 		require.NoError(t, jrrErr)
-		// Actual keccak256 of the sample legacy signed tx (verified with `cast keccak`).
-		// Don't reuse the package-level `expectedTxHash` constant — it's stale.
-		const sampleSignedTxActualHash = "0x33469b22e9f636356c4160a87eb19df52b7412e8eac32a4a55ffe88ea8350788"
-		assert.Contains(t, jrr.GetResultString(), sampleSignedTxActualHash,
+		assert.Contains(t, jrr.GetResultString(), expectedEIP1559TxHash,
 			"synthetic success should carry the tx hash extracted from the signed bytes")
 		log.Info().Str("result", jrr.GetResultString()).Msg("STAGE 2: postForward returned synthetic success (the fix)")
 	})
@@ -1639,7 +1642,9 @@ func TestNetwork_SendRawTransaction_NetworkPostForwardIntegration(t *testing.T) 
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 
-		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+		// Same EIP-1559 fixture as the sibling subtest (matching pair of
+		// fixture + correct hash constant).
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
 
 		// All broadcast attempts 500.
 		gock.New("http://rpc1.localhost").
