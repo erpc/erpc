@@ -297,6 +297,14 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 			// would otherwise wrap it as ErrEndpointTransportFailure).
 			return nil, common.NewErrEndpointRequestTimeout(0, err)
 		}
+		// Caller-side cancellation is not a transport failure either.
+		// BoundedCall surfaces context.Canceled (via context.Cause) when
+		// the caller aborts while the underlying gRPC call is wedged;
+		// classify it accordingly so this doesn't show up as an upstream
+		// failure in metrics.
+		if errors.Is(err, context.Canceled) {
+			return nil, common.NewErrEndpointRequestCanceled(err)
+		}
 		return nil, c.normalizeGrpcError(err)
 	}
 	return resp, nil
@@ -1049,25 +1057,35 @@ func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, conn *bdsC
 
 	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryBlocks")
 	defer span.End()
-	stream, err := conn.queryClient.QueryBlocks(ctx, grpcReq)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
 
-	aggregated := &evm.QueryBlocksResponse{}
-	err = callBounded(ctx, func(ctx context.Context) error {
-		return recvQueryStream(stream.Recv, func(page *evm.QueryBlocksResponse) {
-			aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
-			if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
-				aggregated.FromBlock = page.GetFromBlock()
+	// Bound the whole stream lifecycle: open AND recv loop. Stream-open
+	// itself can wedge under H2 flow-control deadlock, so wrapping only
+	// the recv loop (the previous shape) didn't actually cap worst-case
+	// latency. Using BoundedCallT also avoids a leaked-goroutine race
+	// on the aggregated buffer: the leaked inner goroutine never shares
+	// state with the outer caller — the result is communicated only via
+	// the helper's channel.
+	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryBlocksResponse, error) {
+		stream, err := conn.queryClient.QueryBlocks(ctx, grpcReq)
+		if err != nil {
+			return nil, err
+		}
+		agg := &evm.QueryBlocksResponse{}
+		if err := recvQueryStream(stream.Recv, func(page *evm.QueryBlocksResponse) {
+			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
+			if agg.FromBlock == nil && page.GetFromBlock() != nil {
+				agg.FromBlock = page.GetFromBlock()
 			}
-			if aggregated.ToBlock == nil && page.GetToBlock() != nil {
-				aggregated.ToBlock = page.GetToBlock()
+			if agg.ToBlock == nil && page.GetToBlock() != nil {
+				agg.ToBlock = page.GetToBlock()
 			}
 			if page.GetCursorBlock() != nil {
-				aggregated.CursorBlock = page.GetCursorBlock()
+				agg.CursorBlock = page.GetCursorBlock()
 			}
-		})
+		}); err != nil {
+			return nil, err
+		}
+		return agg, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
@@ -1091,26 +1109,29 @@ func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, conn
 
 	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransactions")
 	defer span.End()
-	stream, err := conn.queryClient.QueryTransactions(ctx, grpcReq)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
 
-	aggregated := &evm.QueryTransactionsResponse{}
-	err = callBounded(ctx, func(ctx context.Context) error {
-		return recvQueryStream(stream.Recv, func(page *evm.QueryTransactionsResponse) {
-			aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
-			aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
-			if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
-				aggregated.FromBlock = page.GetFromBlock()
+	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryTransactionsResponse, error) {
+		stream, err := conn.queryClient.QueryTransactions(ctx, grpcReq)
+		if err != nil {
+			return nil, err
+		}
+		agg := &evm.QueryTransactionsResponse{}
+		if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransactionsResponse) {
+			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
+			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
+			if agg.FromBlock == nil && page.GetFromBlock() != nil {
+				agg.FromBlock = page.GetFromBlock()
 			}
-			if aggregated.ToBlock == nil && page.GetToBlock() != nil {
-				aggregated.ToBlock = page.GetToBlock()
+			if agg.ToBlock == nil && page.GetToBlock() != nil {
+				agg.ToBlock = page.GetToBlock()
 			}
 			if page.GetCursorBlock() != nil {
-				aggregated.CursorBlock = page.GetCursorBlock()
+				agg.CursorBlock = page.GetCursorBlock()
 			}
-		})
+		}); err != nil {
+			return nil, err
+		}
+		return agg, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
@@ -1134,27 +1155,30 @@ func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsCon
 
 	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryLogs")
 	defer span.End()
-	stream, err := conn.queryClient.QueryLogs(ctx, grpcReq)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
 
-	aggregated := &evm.QueryLogsResponse{}
-	err = callBounded(ctx, func(ctx context.Context) error {
-		return recvQueryStream(stream.Recv, func(page *evm.QueryLogsResponse) {
-			aggregated.Logs = append(aggregated.Logs, page.GetLogs()...)
-			aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
-			aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
-			if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
-				aggregated.FromBlock = page.GetFromBlock()
+	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryLogsResponse, error) {
+		stream, err := conn.queryClient.QueryLogs(ctx, grpcReq)
+		if err != nil {
+			return nil, err
+		}
+		agg := &evm.QueryLogsResponse{}
+		if err := recvQueryStream(stream.Recv, func(page *evm.QueryLogsResponse) {
+			agg.Logs = append(agg.Logs, page.GetLogs()...)
+			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
+			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
+			if agg.FromBlock == nil && page.GetFromBlock() != nil {
+				agg.FromBlock = page.GetFromBlock()
 			}
-			if aggregated.ToBlock == nil && page.GetToBlock() != nil {
-				aggregated.ToBlock = page.GetToBlock()
+			if agg.ToBlock == nil && page.GetToBlock() != nil {
+				agg.ToBlock = page.GetToBlock()
 			}
 			if page.GetCursorBlock() != nil {
-				aggregated.CursorBlock = page.GetCursorBlock()
+				agg.CursorBlock = page.GetCursorBlock()
 			}
-		})
+		}); err != nil {
+			return nil, err
+		}
+		return agg, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
@@ -1178,27 +1202,30 @@ func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsC
 
 	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTraces")
 	defer span.End()
-	stream, err := conn.queryClient.QueryTraces(ctx, grpcReq)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
 
-	aggregated := &evm.QueryTracesResponse{}
-	err = callBounded(ctx, func(ctx context.Context) error {
-		return recvQueryStream(stream.Recv, func(page *evm.QueryTracesResponse) {
-			aggregated.Traces = append(aggregated.Traces, page.GetTraces()...)
-			aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
-			aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
-			if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
-				aggregated.FromBlock = page.GetFromBlock()
+	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryTracesResponse, error) {
+		stream, err := conn.queryClient.QueryTraces(ctx, grpcReq)
+		if err != nil {
+			return nil, err
+		}
+		agg := &evm.QueryTracesResponse{}
+		if err := recvQueryStream(stream.Recv, func(page *evm.QueryTracesResponse) {
+			agg.Traces = append(agg.Traces, page.GetTraces()...)
+			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
+			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
+			if agg.FromBlock == nil && page.GetFromBlock() != nil {
+				agg.FromBlock = page.GetFromBlock()
 			}
-			if aggregated.ToBlock == nil && page.GetToBlock() != nil {
-				aggregated.ToBlock = page.GetToBlock()
+			if agg.ToBlock == nil && page.GetToBlock() != nil {
+				agg.ToBlock = page.GetToBlock()
 			}
 			if page.GetCursorBlock() != nil {
-				aggregated.CursorBlock = page.GetCursorBlock()
+				agg.CursorBlock = page.GetCursorBlock()
 			}
-		})
+		}); err != nil {
+			return nil, err
+		}
+		return agg, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
@@ -1222,27 +1249,30 @@ func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *b
 
 	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransfers")
 	defer span.End()
-	stream, err := conn.queryClient.QueryTransfers(ctx, grpcReq)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
 
-	aggregated := &evm.QueryTransfersResponse{}
-	err = callBounded(ctx, func(ctx context.Context) error {
-		return recvQueryStream(stream.Recv, func(page *evm.QueryTransfersResponse) {
-			aggregated.Transfers = append(aggregated.Transfers, page.GetTransfers()...)
-			aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
-			aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
-			if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
-				aggregated.FromBlock = page.GetFromBlock()
+	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryTransfersResponse, error) {
+		stream, err := conn.queryClient.QueryTransfers(ctx, grpcReq)
+		if err != nil {
+			return nil, err
+		}
+		agg := &evm.QueryTransfersResponse{}
+		if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransfersResponse) {
+			agg.Transfers = append(agg.Transfers, page.GetTransfers()...)
+			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
+			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
+			if agg.FromBlock == nil && page.GetFromBlock() != nil {
+				agg.FromBlock = page.GetFromBlock()
 			}
-			if aggregated.ToBlock == nil && page.GetToBlock() != nil {
-				aggregated.ToBlock = page.GetToBlock()
+			if agg.ToBlock == nil && page.GetToBlock() != nil {
+				agg.ToBlock = page.GetToBlock()
 			}
 			if page.GetCursorBlock() != nil {
-				aggregated.CursorBlock = page.GetCursorBlock()
+				agg.CursorBlock = page.GetCursorBlock()
 			}
-		})
+		}); err != nil {
+			return nil, err
+		}
+		return agg, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gRPC stream error: %w", err)
