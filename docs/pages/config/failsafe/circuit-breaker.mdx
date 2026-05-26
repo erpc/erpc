@@ -15,17 +15,18 @@ The selection policy runs on a tick (default every `1s`) and returns the ordered
 
 ```js
 upstreams
-  .excludeIf(errorRateAbove(0.5))                              // failing
-  .excludeIf(throttleRateAbove(0.3))                           // throttled
-  .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))      // slow
-  .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))   // lagging
+  .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))                     // failing
+  .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))                  // throttled
+  .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)),            // slow
+                 latencyAbove(30_000)))
+  .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))         // lagging
   ...
-  .readmitExcluded({ reAdmitAfter: '90s' })                    // probe back
+  .readmitExcluded({ reAdmitAfter: '90s' })                                  // probe back
 ```
 
 An excluded upstream stays out until the next tick — and is then re-admitted via `.readmitExcluded({ reAdmitAfter })`, which gives it organic traffic again after a cooldown. If the live metrics still trip the `excludeIf` chain, it's excluded again. Otherwise it earns its score-based position back.
 
-This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (50% error rate, 30% throttle rate, p70 > 30s OR 3× the fastest peer, head lag > 16 blocks OR 30s, 90s readmit) are tuned for production from day one.
+This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (70 % error rate / 40 % throttle rate, each gated on ≥ 10 samples; p70 > 30 s OR 3× the fastest peer gated on ≥ 20 samples; head lag > 16 blocks OR 30 s; 90 s readmit) are tuned for production from day one. The `samplesAbove(N)` guards on the error / throttle / relative-latency predicates exist so a single failing call on a fresh-pod tracker (errorRate = 1/1 = 1.0) cannot cascade-evict every upstream before the rolling window has meaningful denominator.
 
 ## State, mapped to selection-policy concepts
 
@@ -37,15 +38,15 @@ This is the **default policy** — you get it by omitting `selectionPolicy` enti
 
 ## Tuning the thresholds
 
-Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the network. Example — only trip when error rate is high AND we have enough samples to be confident (no flapping on cold upstreams that just received their first error):
+Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the network. Example — strict latency rule (p95 > 10 s on any sample count) for a workload that ALWAYS needs sub-10s responses:
 
 ```js
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
-    .excludeIf(all(errorRateAbove(0.5), samplesAbove(10)))
-    .excludeIf(throttleRateAbove(0.3))
-    .excludeIf(latencyAbove(10_000, 95))
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.5)))   // stricter error ceiling
+    .excludeIf(all(samplesAbove(10), throttleRateAbove(0.3)))
+    .excludeIf(latencyAbove(10_000, 95))                     // hard p95 floor, no guard
     .whenEmpty(() => upstreams)
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })

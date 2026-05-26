@@ -29,11 +29,11 @@ networks:
       evalTimeout: 100ms        # per-tick eval hard cap.         default: 100ms
       evalFunc: |
         return upstreams
-          .excludeIf(errorRateAbove(0.5),     { outFor: '30s' })
-          .excludeIf(blockNumberLagAbove(50), { outFor: '90s' })
-          .sortByScore(BALANCED)
-          .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
-          .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+          .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+          .excludeIf(blockNumberLagAbove(50))
+          .sortByScore(PREFER_FASTEST)
+          .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
+          .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })
 ```
 
 | Field | Type | Description |
@@ -70,18 +70,23 @@ type Upstream = {
 
   readonly metrics: UpstreamMetrics        // snapshot taken at the start of this tick
 
-  // Attached by std-lib steps; readable by subsequent steps and visible in decision records.
-  readonly score?: number                  // set by sortByScore (lower = better)
-  readonly penaltyBreakdown?: {            // set by sortByScore
-    errorRate: number
-    respLatency: number
-    throttledRate: number
-    blockHeadLag: number
-    finalizationLag: number
-    misbehaviors: number
-    overall: number
+  // Per-upstream score multipliers resolved for the current (network, method,
+  // finality) tick. Absent when the upstream has no matching entry under
+  // `routing.scoreMultipliers`. `sortByScore` reads this automatically per
+  // its `multipliers` option ('merge' | 'override' | 'off').
+  readonly scoreMultipliers?: {
+    errorRate?: number
+    respLatency?: number
+    throttledRate?: number
+    blockHeadLag?: number
+    finalizationLag?: number
+    misbehaviors?: number
+    overall?: number
   }
-  readonly annotations?: string[]          // set by .annotate() / .mark() / std-lib steps
+
+  // Attached by std-lib steps; readable by subsequent steps and visible in decision records.
+  readonly score?: number                  // set by sortByScore (HIGHER = better)
+  readonly annotations?: string[]          // set by std-lib steps
 }
 
 type UpstreamMetrics = {
@@ -155,16 +160,25 @@ Methods are exposed on the upstream array (and on every chain result) as instanc
 
 | Constant | Weights `{errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors}` |
 |---|---|
-| `BALANCED` | `8, 4, 3, 2, 1, 6` |
-| `PREFER_FASTER` | `4, 12, 4, 1, 0, 2` |
-| `PREFER_FEWER_ERRORS` | `15, 2, 6, 2, 1, 12` |
-| `PREFER_FRESHER_HEAD` | `4, 2, 2, 15, 8, 3` |
-| `PREFER_LESS_THROTTLED` | `8, 4, 15, 2, 1, 4` |
-| `PREFER_CHEAP` | (no weights — alias for `BALANCED`; intended pairing with `preferTag('tier:cheap')`) |
+| `PREFER_FASTEST` | `4, 15, 4, 1, 0, 2` |
+| `PREFER_FRESHEST` | `4, 2, 2, 15, 8, 3` |
+| `PREFER_LEAST_ERRORS` | `15, 2, 6, 2, 1, 12` |
 
-#### Finality states
+Each preset emphasizes ONE primary axis (`15`) while keeping the others balanced enough that an obviously bad upstream on a secondary signal still loses. `PREFER_FASTEST` is the default when `sortByScore` is called without a base weight map — the assumption is that the `excludeIf` chain has already dropped broken upstreams, so ranking reduces to "which of the healthy ones answers first?". Custom weight maps may be passed as an object literal.
 
-`REALTIME`, `UNFINALIZED`, `FINALIZED`, `UNKNOWN` — match values of `ctx.finality`.
+#### Finality bit-flags
+
+`REALTIME` (1), `UNFINALIZED` (2), `FINALIZED` (4), `UNKNOWN` (8) — powers of two intended for the `.when(mask, fn)` chainable, which runs its sub-chain only when the request's finality matches the bitwise-OR'd mask:
+
+```js
+.when(REALTIME | UNFINALIZED | UNKNOWN, u => u.stickyPrimary({ scope: NETWORK }))
+```
+
+For direct comparisons against `ctx.finality` use the string literals (`'realtime'`, `'unfinalized'`, `'finalized'`, `'unknown'`) — that's the value-type `ctx.finality` actually carries.
+
+#### `stickyPrimary` scope constants
+
+`NETWORK` (`'network'`), `NETWORK_METHOD` (`'network-method'`), `NETWORK_FINALITY` (`'network-finality'`), `NETWORK_METHOD_FINALITY` (`'network-method-finality'`). Slots mapped to the same scope value share a primary register and converge via `stickyPrimary`'s hysteresis + minSwitchInterval. The TS SDK exports the same CAPITAL_SNAKE_CASE names; an operator can write `scope: NETWORK` in both the eval function and (via the SDK) the YAML config.
 
 #### Reasons (for cordoning/exclusion annotations)
 
@@ -177,7 +191,7 @@ Methods are exposed on the upstream array (and on every chain result) as instanc
 Upstreams carry an open-ended `tags []string` slice. Recommended convention `<dimension>:<value>` (e.g. `tier:main`, `region:us-east`, `sequencer:op-base`). Bare strings (no prefix) work too.
 
 ```ts
-.where(filter: { id?, tag?, vendor?, type?, finality? })
+.where(filter: { id?, tag?, vendor?, type? })
 .whereNot(filter: same as above)
 .byId(id: string | string[])
 .excludeId(id: string | string[])
@@ -226,24 +240,21 @@ Convenience composite (soft-deprecated; prefer `excludeIf` + predicate factories
 
 ### 4.3a Admission control: `excludeIf` + predicate factories
 
-The composable replacement for `keepHealthy`. One primitive (`excludeIf`) plus a small library of predicate factories cover everything `keepHealthy` did AND enable per-rule cooldowns, compound conditions, and tier-scoped trips.
+The composable replacement for `keepHealthy`. One primitive (`excludeIf`) plus a small library of predicate factories cover everything `keepHealthy` did AND enable compound conditions and tier-scoped trips.
 
 #### Primitive
 
 ```ts
-.excludeIf(predicate: (u: Upstream) => boolean, opts?: {
-  outFor?: Duration,    // anti-flap memory: once dropped, hold dropped for ≥ this duration
-  reason?: string,      // annotation surfaced in decision records
-})
+.excludeIf(predicate: (u: Upstream) => boolean, reasonOverride?: string)
 ```
 
 Semantics:
 
 - If `predicate(u)` is **true** this tick → drop `u`.
-- If `outFor` is set AND `ctx.now - ctx.excludedSince[u.id] < outFor` → drop `u` even if the predicate no longer matches. This is the anti-flap layer.
-- Each rule maintains its own annotation (`opts.reason`) for diagnostics.
+- Drops are auto-annotated for diagnostics. Factory-built predicates (`errorRateAbove`, `latencyDeviationAbove`, `all`/`any`/`not`, …) stamp `policyReason` / `policySlug` metadata describing what they check; `excludeIf` surfaces those in `Decision.Output.Annotations[id]`, the simulator's policy-history pane, and DEBUG eRPC logs. Inline custom predicates can supply an explicit `reasonOverride` string as the optional 2nd positional arg.
+- `excludeIf` itself has NO cross-tick / cooldown memory. Once the predicate no longer matches, the upstream is admitted again on the next tick. Anti-flap timing is centralized in `readmitExcluded({ reAdmitAfter })` at the end of the chain — that primitive controls how long an excluded upstream stays out before it is allowed back into rotation, regardless of why it was excluded.
 
-The slot's existing `excludedSince` map provides the cross-tick state — no new persistence layer.
+The slot's existing `excludedSince` map (the input to `readmitExcluded`) is updated automatically based on whether an upstream survives the chain — no per-rule bookkeeping.
 
 #### Predicate factories (globals)
 
@@ -287,24 +298,25 @@ not(pred)       // NOT
 #### Examples
 
 ```js
-// Default trip rules:
-.excludeIf(errorRateAbove(0.5),     { outFor: '30s', reason: 'errorRate>50%' })
-.excludeIf(throttleRateAbove(0.3),  { outFor: '30s' })
-.excludeIf(latencyAbove(10_000, 95), { outFor: '30s' })
-.excludeIf(blockNumberLagAbove(16), { outFor: '90s' })
+// Health trip rules — pair with a single `readmitExcluded({ reAdmitAfter })`
+// at the end of the chain to control how long excluded upstreams stay out.
+.excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+.excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
+.excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
+.excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
 
 // Compound: trip only when errors AND latency are both bad
-.excludeIf(all(errorRateAbove(0.2), latencyAbove(2_000, 99)), { outFor: '60s' })
+.excludeIf(all(errorRateAbove(0.2), latencyAbove(2_000, 99)))
 
 // Sample-size guard: don't trip on noise from low-sample upstreams
-.excludeIf(all(errorRateAbove(0.3), not(samplesBelow(10))), { outFor: '30s' })
+.excludeIf(all(samplesAbove(10), errorRateAbove(0.3)))
 
 // Tier-scoped — free-tier upstreams get tighter SLO
-.excludeIf(all(u => u.is('tier:free'), errorRateAbove(0.1)), { outFor: '120s' })
+.excludeIf(all(u => u.is('tier:free'), errorRateAbove(0.1)))
 
-// Custom inline predicate — factories aren't required, just sugar
+// Custom inline predicate with a reason label
 .excludeIf(u => u.metrics.errorRate > 0.3 && u.metrics.latencyP(99) > 1_500,
-           { outFor: '45s' })
+           'errorRate>0.3 && p99>1.5s')
 ```
 
 #### Tag helpers on `Upstream`
@@ -325,8 +337,8 @@ function indexerStaleByBlocks(n) {
 }
 
 upstreams
-  .excludeIf(indexerStaleByBlocks(50), { outFor: '120s' })
-  .excludeIf(errorRateAbove(0.5),      { outFor: '30s' })
+  .excludeIf(indexerStaleByBlocks(50), 'indexer stale')
+  .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
 ```
 
 No registration required. Same surface as the stdlib factories.
@@ -336,23 +348,17 @@ No registration required. Same surface as the stdlib factories.
 ### 4.4 Generic functional
 
 ```ts
-.filter(fn: (u, idx, arr) => boolean, label?: string)
-.reject(fn: (u, idx, arr) => boolean, label?: string)         // inverse of .filter
-.find(fn: (u) => boolean) : Upstream | null
+.filter(fn: (u, idx, arr) => boolean)                         // JS Array.prototype.filter
+.reject(fn: (u, idx, arr) => boolean)                         // inverse of .filter
 .partition(fn: (u) => boolean) : [Upstream[], Upstream[]]     // [matching, non-matching]
 .unique(keyFn?: (u) => any)                                   // dedupe by id, or by keyFn
-.concat(other: Upstream[])                                    // append; allows duplicates
 .union(other: Upstream[])                                     // set union by id
 .intersect(other: Upstream[])                                 // set intersection by id
-.difference(other: Upstream[])                                // a \ b by id (alias: .except)
-.slice(start: number, end?: number)
-.reverse()
-.length : number       // accessor (zero-arg method also works)
-.isEmpty : boolean
-.toArray() : Upstream[]                                       // explicit conversion
+.difference(other: Upstream[])                                // a \ b by id
+.isEmpty : boolean                                            // accessor
 ```
 
-User-supplied `.filter` and `.reject` are auto-labeled by source position when no explicit label is given (e.g. `filter@evalLine:7`).
+JS Array prototype methods (`.find`, `.slice`, `.reverse`, `.concat`, `.length`, `.map`, `.forEach`, …) work as usual — the stdlib only ADDS chainable verbs.
 
 ---
 
@@ -362,12 +368,11 @@ The primary scoring entry point:
 
 ```ts
 .sortByScore(
-  weights: ScoreWeights | preset | ((u: Upstream) => ScoreWeights),
+  base?: ScoreWeights | preset | ((u: Upstream) => ScoreWeights),
   opts?: {
-    decay?: number              // EMA decay across ticks. default: 0.7
+    multipliers?: 'merge' | 'override' | 'off'    // default: 'merge'
     latencyQuantile?: 'p50'|'p70'|'p90'|'p95'|'p99'   // default: 'p70'
-    tieBreaker?: 'id' | 'random' | ((a, b) => number) // default: 'id'
-    overall?: (u: Upstream) => number   // per-upstream multiplier on final penalty (>1 = penalize more, <1 = boost)
+    overall?: (u: Upstream) => number             // per-upstream multiplicative dial folded on top of u.scoreMultipliers.overall
   }
 ) : Upstream[]
 ```
@@ -375,10 +380,16 @@ The primary scoring entry point:
 `ScoreWeights = { errorRate?, respLatency?, throttledRate?, blockHeadLag?, finalizationLag?, misbehaviors? }`. Missing keys default to 0. The first argument can be either:
 
 - a **flat weight map** applied to every upstream (e.g. `{ errorRate: 8, respLatency: 4 }`);
-- a **preset constant** like `BALANCED` or `PREFER_FASTER`;
-- a **function** `(u) => ScoreWeights` returning per-upstream weights (useful when different upstream types or vendors merit different metric emphasis, or for migrating per-upstream multiplier config).
+- a **preset constant** — `PREFER_FASTEST` (default if omitted), `PREFER_FRESHEST`, or `PREFER_LEAST_ERRORS`;
+- a **function** `(u) => ScoreWeights` returning per-upstream weights (useful when different upstream types or vendors merit different metric emphasis).
 
-`penalty = Σ(metric × weight(u)) × overall(u)`, EMA-smoothed across ticks. Lower penalty = higher rank. Each upstream's resulting `score` and `penaltyBreakdown` are attached and visible to subsequent steps and in decision records.
+`score(u) = overall(u) / (1 + Σ metricᵢ × weightᵢ)` — HIGHER score wins (the chain is best-first). A clean upstream (zero penalty) scores `overall` (default 1); accrued errors / latency / lag divide that back down. Per-upstream `routing.scoreMultipliers` (config) arrive as `u.scoreMultipliers` and combine with `base` per `opts.multipliers`:
+
+- `'merge'` (default) — per-upstream keys override matching base keys; unset keys inherit base. `overall` lifts the final score.
+- `'override'` — configured upstreams rank by THEIR weights only; upstreams without config use `base`.
+- `'off'` — ignore `u.scoreMultipliers` entirely; rank by `base`.
+
+Tiebreaker is alphabetical id, applied automatically. Each upstream's resulting `score` is attached and visible to subsequent steps and in decision records.
 
 Other sorts (ascending unless noted):
 
@@ -391,19 +402,6 @@ Other sorts (ascending unless noted):
 .sortByMisbehavior()
 .sortByHeadLag()
 .sortByFinalizationLag()
-.sortByRequestsTotal({ desc?: boolean = true })            // most experienced first by default
-.sortByTag(prefix: string, order: string[])// explicit ordering by the value of a tag-prefix; tags not in `order` go last
-.sortByVendor(order: string[])             // same idea for vendors
-.sortById(order: string[])                 // explicit id ordering
-```
-
-Manual score adjustments (must run after `sortByScore` — operate on the attached `score`):
-
-```ts
-.boostBy(fn: (u) => number)                // multiplies u.score by fn(u); re-sorts
-.penalizeBy(fn: (u) => number)             // divides u.score by fn(u); re-sorts
-.boostByTag(pattern: string, factor: number)
-.boostByVendor(name: string, factor: number)
 ```
 
 ---
@@ -412,9 +410,7 @@ Manual score adjustments (must run after `sortByScore` — operate on the attach
 
 ```ts
 .shuffle(seed?: number)
-.randomize(seed?: number)                  // alias of shuffle
 .rotateBy(n: number)                       // n may be derived from ctx.now for time-based RR
-.weightedRandom(weightFn: (u) => number, seed?: number)   // weighted permutation
 ```
 
 ---
@@ -423,23 +419,18 @@ Manual score adjustments (must run after `sortByScore` — operate on the attach
 
 ```ts
 .stickyPrimary({
-  hysteresis?: number = 0.10,          // challenger must be this fraction "better" (lower score)
+  scope?: 'network' | 'network-method' | 'network-finality' | 'network-method-finality',  // default 'network'
+  hysteresis?: number = 0.10,          // challenger's score must clear incumbent by this margin (HIGHER is better)
   minSwitchInterval?: Duration = '30s' // cooldown between switches
 })
-// Reads ctx.previousOrder[0] and ctx.lastSwitchAt. If a prior sortByScore ran,
-// uses the attached `score` for the comparison; otherwise uses position only.
-// Annotates the kept/switched primary with the reason.
-
-.stickyOrder({
-  hysteresis?: number = 0.05,
-  minSwitchInterval?: Duration = '15s'
-})
-// Stabilizes the FULL order (not just position 0). Useful when retries cascade
-// and you don't want positions 1, 2, 3 to flip-flop either.
-
-.keepRecentPrimary(duration: Duration)
-// If ctx.previousOrder[0] is still in the chain and within `duration` of
-// ctx.lastSwitchAt, force it to position 0 regardless of score.
+// Holds the previous primary across ticks unless BOTH
+//   (a) challenger.score > prev.score × (1 + hysteresis), AND
+//   (b) at least `minSwitchInterval` has elapsed since the last switch.
+// `scope` controls WHICH set of slots agree on this primary. Cross-method
+// scopes ('network', 'network-finality') score off the wildcard
+// `u.metricsAcrossMethods` aggregate so every participating slot reaches
+// the same hold/switch verdict; slot-grain scope reads the slot's own
+// per-method `u.score`.
 ```
 
 ---
@@ -501,12 +492,9 @@ primitive: one canonical spreader, one canonical data model.
 .pickBottom(n: number)                     // last n
 .dropTop(n: number)                        // skip first n
 .dropBottom(n: number)                     // skip last n
-.at(index: number) : Upstream | null
-.head : Upstream | null                    // accessor
-.tail : Upstream[]                         // all but head
-.last : Upstream | null
 .take(n)                                   // alias for pickTop
 .skip(n)                                   // alias for dropTop
+.at_(index: number) : Upstream | null      // single-upstream getter (avoids shadowing JS .at)
 ```
 
 ---
@@ -525,12 +513,15 @@ primitive: one canonical spreader, one canonical data model.
 // (oldest first if longestFirst), pick up to `maxConcurrent`, and insert at
 // the specified position so they receive traffic and their metrics refresh.
 //
-// Pairs with `excludeIf({ outFor })` — that primitive controls how long an
-// upstream STAYS out after being dropped; this one controls when and how
-// it comes BACK. Place this step at the END of the chain so re-admitted
-// upstreams land at the tail of the final ordering (lowest blast radius);
-// putting it earlier lets subsequent sort steps reorder them, which is the
-// aggressive variant.
+// This is the SINGLE anti-flap mechanism in the chain. `excludeIf` itself has
+// no cooldown — once a predicate stops tripping, the upstream would be
+// admitted again on the next tick. `readmitExcluded({reAdmitAfter})` is what
+// gates that re-entry: an upstream that fell out for ANY reason has to stay
+// out for at least `reAdmitAfter` before being eligible for re-admission, and
+// then only `maxConcurrent` candidates re-enter per tick. Place this step at
+// the END of the chain so re-admitted upstreams land at the tail of the final
+// ordering (lowest blast radius); putting it earlier lets subsequent sort
+// steps reorder them, which is the aggressive variant.
 //
 // Aliased as `probeExcluded` for backward compatibility.
 
@@ -551,12 +542,7 @@ primitive: one canonical spreader, one canonical data model.
 .cooldown(duration: Duration)
 // Removes upstreams whose ctx.excludedSince[id] is within `duration` of ctx.now.
 // I.e., once excluded, an upstream is held out for at least this long even if
-// its metrics recover. Pairs naturally with probeExcluded.
-
-.warmup(duration: Duration)
-// Removes upstreams whose ctx.excludedSince[id] is null OR re-admission
-// happened within `duration`. Use when you want new/recovered upstreams to
-// "prove themselves" via probe traffic before getting full ranking.
+// its metrics recover. Pairs naturally with readmitExcluded.
 ```
 
 ---
@@ -569,8 +555,15 @@ primitive: one canonical spreader, one canonical data model.
 .whenEmpty(fn: () => Upstream[])           // only invoke fn if chain currently empty
 .whenNotEmpty(fn: (arr) => Upstream[])
 .fallbackTo(arrOrFn: Upstream[] | ((ctx) => Upstream[]))   // if empty, replace with alternative
-.coalesce(...arrs: Upstream[][])                            // first non-empty wins; chain continues
 .ensureMin(n: number, fn: (arr) => Upstream[])              // if length < n, run fn to expand
+
+.when(mask: number, fn: (arr) => Upstream[])
+// Finality-conditional sub-chain. `mask` is a bitwise-OR of REALTIME |
+// UNFINALIZED | FINALIZED | UNKNOWN (each a power of two). When the
+// request's ctx.finality matches the mask, fn(this) runs; otherwise the
+// array passes through. Typical use:
+//   .when(REALTIME | UNFINALIZED | UNKNOWN,
+//     u => u.stickyPrimary({ scope: NETWORK }))
 
 .byFinality(handlers: {
   realtime?:    (arr) => Upstream[]
@@ -595,9 +588,7 @@ instead of nested `.if(ctx.finality === ..., ...)` calls.
 
 ```ts
 .tap(fn: (arr) => void)                    // side effect; returns arr unchanged
-.annotate(fn: (u) => string)               // attaches note to each upstream (visible in decision record)
 .label(name: string)                       // names this chain step for clearer decision-record labeling
-.mark(predicate: (u) => boolean, note: string)   // annotate only matching upstreams
 .dump(level?: 'debug'|'info'|'warn'|'error')     // log the current chain state via console
 ```
 
@@ -606,23 +597,14 @@ instead of nested `.if(ctx.finality === ..., ...)` calls.
 ### 4.14 Module-level helpers (free functions, available as globals)
 
 ```ts
-upstreamsFromIds(ids: string[]) : Upstream[]
-// Build a chainable from the original input set by ids.
-
 methodMatches(patternOrPatterns: string | string[]) : boolean
 // Test ctx.method against glob patterns. Sugar over manual ctx.method checks.
 
 isFinalityRequest() : boolean
-// Sugar for ctx.finality === FINALIZED.
-
-inWindow(start: string, end: string, tz?: string) : boolean
-// Time-of-day window check using ctx.now. Useful for cost/load scheduling.
+// Sugar for ctx.finality === 'finalized'.
 
 durationMs(d: Duration | string) : number
 // Parse a duration string into ms.
-
-weightedPickIndex(weights: number[], seed?: number) : number
-// Lower-level helper used by weightedRandom.
 ```
 
 **Predicate factories** (return a `(u) => boolean` predicate, used as the first argument to `.excludeIf` — full reference in §4.3a):
@@ -798,17 +780,15 @@ When `selectionPolicy.evalFunc` is omitted, the engine applies the production-ha
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()                                                     // 1
-    // 2 — health excludes, one per signal, with per-rule cooldowns
-    .excludeIf(errorRateAbove(0.5),       { outFor: '30s', reason: 'errorRate>50%' })
-    .excludeIf(throttleRateAbove(0.3),    { outFor: '30s', reason: 'throttled>30%' })
-    .excludeIf(latencyAbove(10_000, 95),  { outFor: '30s', reason: 'p95>10s'       })
-    .excludeIf(blockNumberLagAbove(16),   { outFor: '90s', reason: 'blockLag>16'   })
+    // 2 — health excludes, one per signal, all gated on sample volume
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+    .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
+    .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
     .whenEmpty(() => upstreams)                                           // 3 — safety net
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })  // 4
-    .sortByScore(BALANCED)                                                // 5 — rank survivors
-    .if(ctx.finality === REALTIME,                                        // 6 — sticky for live-latest only
-        u => u.stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' }),
-        u => u)
+    .sortByScore(PREFER_FASTEST)                                          // 5 — rank survivors by p70 latency
+    .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })        // 6 — hold primary stable
     .readmitExcluded({                                                    // 7 — cautious re-admit
       reAdmitAfter:  '90s',
       maxConcurrent: 2,
@@ -820,27 +800,27 @@ When `selectionPolicy.evalFunc` is omitted, the engine applies the production-ha
 
 1. **Drop cordoned** — failsafe / circuit-breaker has explicitly marked the upstream bad.
 
-2. **Health excludes** — one `excludeIf` per signal, with its own cooldown via `outFor`. Each line is self-documenting and reads top-to-bottom: drop if `<signal>` exceeds threshold, hold dropped for at least `<duration>`. Different signals get different cooldowns because they recover on different timescales (errors clear fast as the rate-limit window resets; block-lag means the chain is reorging or the node is syncing, which takes longer):
-   - `errorRateAbove(0.5)` / `outFor: '30s'` — more than half-erroring is broken regardless of chain.
-   - `throttleRateAbove(0.3)` / `outFor: '30s'` — vendor is rate-limiting; reroute before quota burns.
-   - `latencyAbove(10_000, 95)` / `outFor: '30s'` — catches a slow vendor before its blended percentile poisons the pool's hedge / consensus timeouts.
-   - `blockNumberLagAbove(16)` / `outFor: '90s'` — ~1 min behind tip on Ethereum, ~32 s on a 2 s chain; clearly degraded.
+2. **Health excludes** — one `excludeIf` per signal. Each rule is intentionally loose: failsafe (retry / hedge / consensus) already absorbs routine error spurts, so the exclusion chain only needs to evict upstreams that are *fundamentally* broken. Anti-flap timing is centralized in step 7 (`readmitExcluded`) — every rule shares the same single re-admission window rather than carrying its own cooldown:
+   - `all(samplesAbove(10), errorRateAbove(0.7))` — gated on ≥10 samples so a single failed call on a fresh-pod tracker (errorRate=1.0 on one request) can't cascade-evict every upstream before the rolling window has a meaningful denominator. The 0.7 ceiling recognizes that anything below "more than 70% erroring" is something failsafe can paper over.
+   - `all(samplesAbove(10), throttleRateAbove(0.4))` — same sample guard. 0.4 catches a vendor visibly rate-limiting while letting the routine throttle-burst through.
+   - `any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000))` — relative branch (`latencyDeviationAbove(3)`) trips when this upstream's p70 is >3× the fastest peer's p70, gated on ≥20 samples so the comparison is meaningful. Absolute branch (`latencyAbove(30_000)`) is unguarded — 30 s is catastrophic at any sample count. Both branches use p70 (the predicate factories default), which is the same quantile `sortByScore(PREFER_FASTEST)` ranks by — exclusion axis and rank axis agree on what "fast" means.
+   - `any(blockNumberLagAbove(16), blockSecondsLagAbove(30))` — either 16 blocks OR 30 seconds behind tip is degraded. Block-count handles chains where wall-clock estimation isn't seeded yet; seconds-lag handles chains with wildly varying block times.
 
    Filtering on these signals (rather than only ranking via `sortByScore`) is the key defence against the "slow or erroring upstream still wins by score" class of incident.
 
 3. **Safety net** — if step 2 wiped everything (network-wide outage), serve from the raw set rather than fail closed.
 
-4. **Tier** — `group !== 'fallback'` is the primary tier; `group === 'fallback'` is the second tier. Adding a fallback upstream is one config line. The `!` glob is the canonical eRPC convention.
+4. **Tier** — `!tier:fallback` is the primary tier; `tier:fallback` is the second tier. Adding a fallback upstream is one config line. The `!` glob is the canonical eRPC convention.
 
-5. **Score** — `BALANCED` weights (errorRate=8, respLatency=4, throttledRate=3, blockHeadLag=2, finalizationLag=1, misbehaviors=6). Ranks the survivors of step 2.
+5. **Score** — `PREFER_FASTEST` weights (errorRate=4, respLatency=15, throttledRate=4, blockHeadLag=1, finalizationLag=0, misbehaviors=2). Ranks the survivors of step 2 by p70 latency, with the other dimensions as light tiebreakers.
 
-6. **Sticky primary, REALTIME only** — keep the current primary unless a challenger's score is ≥10% better AND 30 s have passed since the last switch. Finalized/unfinalized requests are reorg-tolerant and skip stickiness (no benefit during a real incident; only amplifies bad-primary impact).
+6. **Sticky primary** — keep the current primary unless a challenger's score is decisively better (≥30% margin) AND 30 s have passed since the last switch. The 0.30 hysteresis is wider than a naive flap-defender because the chain is best-first by score — without a meaningful margin the primary would oscillate every tick on noise.
 
 7. **Readmit excluded** — re-admit up to two excluded upstreams every 90 s at the **tail** of the order so they get a chance to prove they've recovered without taking primary traffic. Matches typical transient-blip recovery windows (rate-limit reset, regional networking dip). Placed at the end of the chain so subsequent sort/sticky steps can't reorder the probed upstreams off the tail.
 
-`BALANCED` weights are defined in §4.1.
+`PREFER_FASTEST` weights are defined in §4.1.
 
-**Loosening for low-traffic / dev environments.** Single-upstream setups, or environments where serving from a degraded upstream beats failing closed, can ship an explicit `evalFunc` that drops the `excludeIf` steps in favor of a single permissive `excludeIf(errorRateAbove(0.8), { outFor: '15s' })`. Pre-rewrite eRPC users who depended on permissive routing can recreate the old default via explicit `evalFunc`. The new default is "safe-for-most-prod"; we explicitly choose to surprise low-traffic users rather than let prod users suffer the inverse default.
+**Loosening for low-traffic / dev environments.** Single-upstream setups, or environments where serving from a degraded upstream beats failing closed, can ship an explicit `evalFunc` that drops the `excludeIf` steps in favor of a single permissive `excludeIf(errorRateAbove(0.8))`. Pre-rewrite eRPC users who depended on permissive routing can recreate the old default via explicit `evalFunc`. The new default is "safe-for-most-prod"; we explicitly choose to surprise low-traffic users rather than let prod users suffer the inverse default.
 
 ---
 
@@ -945,35 +925,21 @@ The "keep prior cache" property is critical: a single bad eval never causes a ro
 ```
 internal/policy/
   engine.go              # Engine: registry, lifecycle, hot-reload coordination
-  slot.go                # Slot: per-(network, method) state, cache, ticker, ring buffer
+  slot.go                # Slot: per-(network, method) state, cache, ticker
   eval.go                # execute one tick: snapshot → build ctx → run JS → validate
-  decision.go            # decision record types, diff, sparse retention
-  metrics.go             # prometheus emissions
-  admin.go               # /admin/selection/* HTTP handlers
-  default_policy.go      # //go:embed default_policy.js + presets
+  decision.go            # decision record types
+  default_policy.go      # //go:embed default_policy.js
   default_policy.js      # source of the default policy
+  sticky.go              # cross-slot sticky-primary register
+  runtime_pool.go        # pooled sobek runtimes
+  testing.go             # harness for tests
   errors.go
 
 internal/policy/stdlib/
-  install.go             # sobek wiring: install methods, constants, helpers
-  identity.go            # where, byId, byTag, byVendor, byType, ...
-  health.go              # removeBy*, keepHealthy
-  generic.go             # filter, reject, find, partition, set ops
-  sort.go                # sortByScore (the big one), sortBy*, boost/penalize
-  random.go              # shuffle, rotateBy, weightedRandom
-  sticky.go              # stickyPrimary, stickyOrder, keepRecentPrimary
-  tags.go                # preferTag, spreadAcrossTags
-  limit.go               # pickTop, dropTop, at, head, tail, ...
-  probe.go               # probeExcluded, forceInclude
-  cooldown.go            # cooldown, warmup
-  combinator.go          # if, unless, whenEmpty, fallbackTo, coalesce, ensureMin
-  debug.go               # tap, annotate, label, mark, dump
-  helpers.go             # methodMatches, upstreamsFromIds, durationMs, ...
-  presets.go             # BALANCED, PREFER_*, REASON_*, finality constants
-
-internal/policy/testing/
-  harness.go             # EngineHarness for integration tests
-  fixtures.go            # synthetic upstream+metric scenarios
+  install.go             # sobek wiring: install presets, REASON_*, finality bits,
+                         #   scope constants, durationMs; run stdlib.js
+  stdlib.js              # all chainable Array.prototype methods + predicate
+                         #   factories + combinators (single source of truth)
 
 common/config.go                  # SelectionPolicyConfig type
 common/defaults.go                # SelectionPolicyConfig.SetDefaults
@@ -1051,7 +1017,7 @@ The default policy is exercised against canonical fixtures:
 | Primary degrades (error rate spikes) | Sticky retains until hysteresis exceeded, then switches |
 | Primary recovers within minSwitchInterval | No switch back |
 | All `tier:default` upstreams unhealthy, `tier:fallback` healthy | `preferTag('!tier:fallback', { fallback: 'tier:fallback' })` switches to fallback |
-| Lag spike on one upstream | `removeByLag` excludes it; resampling re-admits later |
+| Lag spike on one upstream | `excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))` excludes it; `readmitExcluded` re-admits later |
 | Eval throws | Cache preserved, error metric emitted |
 | Eval times out | Same |
 | New upstream added | Re-eval triggered, new upstream appears in next cache |
@@ -1089,7 +1055,7 @@ For each fixture scenario, snapshot the decision record to `testdata/decisions/<
 return upstreams
   .removeByLag({ blockHead: 10 })
   .preferTag('tier:cheap', { minHealthy: 2, fallback: 'tier:premium' })
-  .sortByScore(BALANCED)
+  .sortByScore(PREFER_FASTEST)
   .stickyPrimary({ hysteresis: 0.15, minSwitchInterval: '1m' })
 ```
 
@@ -1106,7 +1072,7 @@ selectionPolicy:
         .sortByLatency('p95')
         .pickTop(3)
     }
-    return upstreams.sortByScore(BALANCED).stickyPrimary()
+    return upstreams.sortByScore(PREFER_FASTEST).stickyPrimary()
 ```
 
 ### 12.3 Pure round-robin (zero scoring overhead)
@@ -1121,7 +1087,7 @@ Tag your upstreams with `vendor:<name>` and:
 
 ```js
 return upstreams
-  .sortByScore(BALANCED)
+  .sortByScore(PREFER_FASTEST)
   .spreadAcrossTags('vendor:')
   .stickyPrimary({ hysteresis: 0.10 })
 ```
@@ -1135,86 +1101,69 @@ const primaries = upstreams
   .removeByLag({ blockHead: 5 })
 
 if (primaries.length > 0) {
-  return primaries.sortByScore(BALANCED).stickyPrimary()
+  return primaries.sortByScore(PREFER_FASTEST).stickyPrimary()
 }
-return upstreams.byTag('tier:fallback').sortByScore(PREFER_FASTER)
+return upstreams.byTag('tier:fallback').sortByScore(PREFER_FASTEST)
 ```
 
 ### 12.6 Canary in rotation
 
 ```js
 return upstreams
-  .sortByScore(BALANCED)
+  .sortByScore(PREFER_FASTEST)
   .forceInclude('canary-node', 'tail')        // always probe, even if score is bad
   .stickyPrimary()
 ```
 
-### 12.7 Boost a specific vendor
+### 12.7 Time-of-day routing
 
 ```js
-return upstreams
-  .sortByScore(BALANCED)
-  .boostByVendor('alchemy', 0.5)              // 2x preference (penalty × 0.5)
-  .stickyPrimary()
-```
-
-### 12.8 Time-of-day routing
-
-```js
-const cheap = inWindow('00:00', '06:00', 'UTC')
+const hourUTC = new Date(ctx.now).getUTCHours()
+const cheap = hourUTC >= 0 && hourUTC < 6
 return upstreams
   .if(cheap,
     arr => arr.preferTag('tier:cheap',   { fallback: 'tier:premium' }),
     arr => arr.preferTag('tier:premium'))
-  .sortByScore(BALANCED)
+  .sortByScore(PREFER_FASTEST)
   .stickyPrimary()
 ```
 
-### 12.9 Holdout for newly-added upstream
-
-```js
-return upstreams
-  .warmup('5m')                               // exclude upstreams added in last 5 min
-  .sortByScore(BALANCED)
-  .stickyPrimary()
-```
-
-### 12.10 Cooldown after exclusion
+### 12.8 Cooldown after exclusion
 
 ```js
 return upstreams
   .removeByErrorRate(0.2)
   .cooldown('1m')                             // once excluded, hold out at least 1 min
-  .sortByScore(BALANCED)
+  .sortByScore(PREFER_FASTEST)
   .stickyPrimary()
-  .probeExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+  .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
 ```
 
-### 12.11 Multi-tier with explicit ordering
+### 12.9 Multi-tier with explicit ordering
 
 ```js
 // Each upstream is tagged `tier:primary` / `tier:secondary` / `tier:fallback`.
 const priority = { 'tier:primary': 0, 'tier:secondary': 1, 'tier:fallback': 2 }
 return upstreams
   .removeCordoned()
-  .sortByScore(BALANCED)
+  .sortByScore(PREFER_FASTEST)
   .sortBy(u => {
     for (const t of u.tags || []) {
       if (priority[t] != null) return priority[t]
     }
     return 99
   })
-  .stickyOrder({ hysteresis: 0.10, minSwitchInterval: '30s' })
+  .stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '30s' })
 ```
 
-### 12.12 Fully imperative escape hatch
+### 12.10 Fully imperative escape hatch
 
 ```js
-const sorted = upstreams.sortByScore(BALANCED)
+const sorted = upstreams.sortByScore(PREFER_FASTEST)
 const result = []
 for (const u of sorted) {
   if (u.metrics.errorRate > 0.5) continue
-  if ((u.tags || []).includes('tier:experimental') && ctx.finality === FINALIZED) continue
+  if ((u.tags || []).includes('tier:experimental') && ctx.finality === 'finalized') continue
   result.push(u)
 }
 return result
@@ -1238,6 +1187,6 @@ return result
 - **Decision** — The structured record of one tick's evaluation: ordered list + excluded list with reasons + sticky decisions.
 - **Sticky primary** — A position-0 upstream kept across ticks even if a marginally-better challenger appears, to avoid flapping.
 - **Probe / resample** — Periodic re-admission of an excluded upstream so its metrics refresh.
-- **Penalty** — Output of `sortByScore`: weighted sum of metric values. Lower = better.
-- **Score** — Synonym for penalty in the decision record (lower = better). Naming is "score" externally for legibility; internally the math is penalty.
+- **Penalty** — Intermediate quantity inside `sortByScore`: weighted sum of metric values. Lower = healthier.
+- **Score** — Final per-upstream rank value attached by `sortByScore`: `overall(u) / (1 + penalty(u))`. HIGHER = better; the chain is sorted best-first.
 

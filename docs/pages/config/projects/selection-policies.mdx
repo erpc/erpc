@@ -64,9 +64,9 @@ projects:
             (upstreams, ctx) =>
               upstreams
                 .removeCordoned()
-                .excludeIf(errorRateAbove(0.5))
-                .excludeIf(throttleRateAbove(0.3))
-                .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))
+                .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+                .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
+                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -106,9 +106,9 @@ export default createConfig({
         evalFunc: (upstreams, ctx) =>
           upstreams
             .removeCordoned()
-            .excludeIf(errorRateAbove(0.5))
-            .excludeIf(throttleRateAbove(0.3))
-            .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))
+            .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+            .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
+            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -148,39 +148,48 @@ one of them lets a degraded upstream keep receiving traffic:
 ```js
 (upstreams, ctx) =>
   upstreams
-    .removeCordoned()                                                              // 1
-    .excludeIf(errorRateAbove(0.5))                                                // 2
-    .excludeIf(throttleRateAbove(0.3))                                             // 3
-    .excludeIf(any(latencyDeviationAbove(3), latencyAbove(30_000)))                // 4
-    .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))             // 5
-    .whenEmpty(() => upstreams)                                                    // 6 — safety net
-    .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })     // 7 — tier
-    .sortByScore(PREFER_FASTEST)                                                         // 8 — rank survivors
-    .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })                 // 9 — anti-flap
-    .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' }) // 10 — fast re-admit
+    // Honour operator [cordon](/operation/cordoning) — intent-driven, sticky, ignores metrics until uncordoned.
+    .removeCordoned()
+    // Drop if >70 % errors over the rolling window. Gated on samplesAbove(10) so a single
+    // failed call on a fresh-pod tracker (errorRate = 1/1 = 1.0) cannot cascade-evict
+    // every upstream before the window has meaningful denominator.
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+    // Drop if >40 % throttled — vendor is rate-limiting us; reroute before quota burns.
+    // Same samplesAbove(10) guard as the error rule, same reason.
+    .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
+    // Drop latency outliers: either 3× the fastest peer's p70 (relative, gated on
+    // samplesAbove(20) so the comparison sees real variance) OR p70 > 30 s (absolute,
+    // unguarded — 30 s is catastrophic at any sample count). p70 matches the rank
+    // axis below so exclusion and ranking agree on "fast".
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)), latencyAbove(30_000)))
+    // Drop laggers: >16 blocks behind tip (chain-agnostic) OR >30 wall-clock seconds
+    // (adapts to chain block-time via the tracker's EMA, no-op until ≥3 samples).
+    .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+    // Safety net: if all health excludes wiped the pool (project-wide outage), serve
+    // from the raw set rather than fail closed. Only step ABOVE here can drop to
+    // empty; everything BELOW only reorders or adds.
+    .whenEmpty(() => upstreams)
+    // Tier split: primary = NOT tier:fallback. Falls through to tier:fallback when no
+    // primary survives.
+    .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
+    // Rank survivors by PREFER_FASTEST (weights: errorRate 4, respLatency 15,
+    // throttledRate 4, blockHeadLag 1, finalizationLag 0, misbehaviors 2). Latency
+    // dominates because excludes already dropped the bad apples; among survivors,
+    // "how fast does this answer?" is the operator's strongest signal. Per-upstream
+    // routing.scoreMultipliers flow through here automatically.
+    .sortByScore(PREFER_FASTEST)
+    // Anti-flap: challenger needs score > incumbent × 1.30 AND ≥30 s since last
+    // switch. Cuts flap on close calls; the cost of churn (connection setup, cache
+    // locality) outweighs marginal ranking gains.
+    .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
+    // Cool-down recovery: every tick, restore up to 2 previously-excluded upstreams
+    // whose 90 s cooldown has elapsed, appended at the tail (lowest blast radius).
+    // They prove themselves over the next few ticks; if still bad, the excludes
+    // above drop them again.
+    .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })
 ```
 
-Step-by-step:
-
-1. **Drop cordoned** — an operator has [manually cordoned](/operation/cordoning) the upstream via the admin RPC. Cordon is intent-driven and sticky: it stays out of rotation regardless of metrics until uncordoned.
-
-2. **Drop high error rate** — anything erroring more than half the time is broken on any chain.
-
-3. **Drop heavily throttled** — the vendor is rate-limiting us; reroute before quota burns.
-
-4. **Drop latency outliers** — either an upstream that's 3× the fastest peer (relative; adapts to chain baseline) OR > 30 s p70 (absolute floor for "all upstreams slow" scenarios). The relative check catches "this vendor is dragging" on any chain; the absolute floor catches catastrophic latency. Both predicates default to p70 — the same quantile `sortByScore(PREFER_FASTEST)` ranks on, so exclusion and ranking agree on what "fast" means.
-
-5. **Drop laggers** — > 16 blocks behind tip OR > 30 wall-clock seconds. The block-count check is chain-agnostic; the seconds check adapts to the chain's actual block time via the tracker's EMA, but no-ops until the EMA accumulates ≥ 3 samples, so the count check carries the load at cold-start.
-
-6. **Safety net** — if steps 2-5 wiped everything (project-wide outage), serve from the raw set rather than fail closed. *Anywhere in the chain BEFORE this point can drop to empty; everything AFTER only reorders or adds, so one safety net is sufficient.*
-
-7. **Tier** — primary tier = NOT `tier:fallback`. Falls through to fallback tier if no primary survives.
-
-8. **Score** — `PREFER_FASTEST` weights: `errorRate: 4, respLatency: 15, throttledRate: 4, blockHeadLag: 1, finalizationLag: 0, misbehaviors: 2`. Latency dominates because step 2-5 already dropped degraded upstreams; among survivors the operator's strongest signal is "how fast does this answer?". A 50 ms upstream with one stray 2% error beats a 400 ms upstream with a clean record. Higher score = primary. Any per-upstream [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) flow through this step automatically (merged over the preset).
-
-9. **Sticky primary** — across all finalities. The challenger needs `score > incumbent × (1 + 0.30)` (i.e. 30% higher) AND ≥ 30 s since the last switch. Cuts flap on close calls; flapping every tick costs more in connection setup + cache locality than the marginal ranking gain.
-
-10. **Re-admit excluded** — every tick, restore up to 2 previously-excluded upstreams whose 90 s cooldown has elapsed, appended at the tail. They prove themselves over the next few ticks; if still bad, step 2-5 drop them again. Typical transient-blip windows (rate-limit reset, regional networking dip) recover in 60-90 s.
+**Why error / throttle are tolerant (0.7 / 0.4) and latency is tight (3×).** Failure costs are asymmetric: error and throttle blips are already absorbed by retry / hedge / consensus (the failsafe layer). A slow upstream, by contrast, poisons tail latency on every request routed through it before falling back. Excluding a marginally-slow upstream costs at most one degraded reply; NOT excluding one poisons every call. So latency uses a tighter threshold than the other rules.
 
 Source served at `GET /admin/selection/default-policy`.
 
