@@ -21,7 +21,7 @@ upstreams
                  latencyAbove(30_000)))
   .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))         // lagging
   ...
-  .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4 })                      // shadow-mirror real traffic at excluded upstreams
+  .probeExcluded({ sampleRate: 0.1, minSamples: 10 })                        // shadow-mirror real traffic at excluded upstreams
 ```
 
 An excluded upstream stays out until its tracker metrics improve below the same `excludeIf` thresholds — there is **no separate readmit timer**. The `probeExcluded` step subscribes the network's probe subsystem to the request feed; the prober shadow-mirrors a sampled stream of real requests against any currently-excluded upstream, feeding the same tracker counters as real traffic. Once those counters cross back below the threshold, the upstream falls out of the excluded set on the next tick and re-enters rotation.

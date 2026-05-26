@@ -19,11 +19,27 @@ import (
 // so the prober for this network stays asleep.
 type ProbeConfig struct {
 	// SampleRate is the per-(request, excluded-upstream) probability of
-	// mirroring (0.0–1.0). Default 1.0 — mirror every published request
-	// up to the concurrency cap.
+	// mirroring (0.0–1.0). Default 0.1 — only 10% of incoming requests
+	// are considered probe candidates. The per-upstream floor below
+	// (`MinSamples`) kicks in when this rate would yield too few
+	// probes (low-traffic networks).
 	SampleRate float64
+	// MinSamples is the floor on probe traffic per excluded upstream.
+	// While the upstream has accumulated fewer than this many probes
+	// in the rolling `MinSamplesWindow`, the prober bypasses
+	// `SampleRate` and considers every incoming request — so even on
+	// low-RPS networks an excluded upstream gets enough samples to
+	// re-evaluate the excludeIf predicates. Default 10. Pair with
+	// `samplesAbove(N)` on the chain's excludeIf — the floor here
+	// should be ≥ the guard threshold.
+	MinSamples int
+	// MinSamplesWindow is the rolling window over which `MinSamples`
+	// is counted. Default 60s (matches the typical
+	// `scoreMetricsWindowSize`).
+	MinSamplesWindow time.Duration
 	// MaxConcurrent is the in-flight probe cap PER excluded upstream.
-	// Default 4 — this is the primary throttle.
+	// Default 4 — bounds worst-case probe-traffic per upstream
+	// independently of the sample rate.
 	MaxConcurrent int
 	// Timeout is the per-probe deadline. Probes that overrun are
 	// cancelled and counted as failures in the tracker (so a hung
@@ -62,6 +78,15 @@ type Prober struct {
 	inflightMu sync.Mutex
 	inflight   map[string]*atomic.Int64
 
+	// windows tracks probes fired per upstream within the current
+	// `MinSamplesWindow`. While `count < MinSamples`, the sampleRate
+	// gate is bypassed so the floor is satisfied even on low-traffic
+	// networks. Discrete fixed-window scheme (epoch = unix_seconds
+	// // window_seconds) — cheap and accurate enough for the floor's
+	// purpose.
+	windowMu sync.Mutex
+	windows  map[string]*windowCounter
+
 	feed   chan *common.NormalizedRequest
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -96,6 +121,7 @@ func newProber(
 		engine:    engine,
 		tracker:   tracker,
 		inflight:  make(map[string]*atomic.Int64),
+		windows:   make(map[string]*windowCounter),
 		feed:      make(chan *common.NormalizedRequest, probeFeedBufferSize),
 	}
 	p.config.Store(cfg)
@@ -209,13 +235,32 @@ func (p *Prober) shouldProbe(u common.Upstream, cfg *ProbeConfig) bool {
 		return false
 	}
 
-	// Probabilistic sampling.
-	if cfg.SampleRate < 1.0 && rand.Float64() > cfg.SampleRate {
+	// Sample-rate gate, with a minSamples floor: when the per-upstream
+	// rolling-window probe count is BELOW MinSamples, bypass the
+	// sampleRate dice roll so even low-traffic networks accumulate
+	// enough samples to re-evaluate excludeIf predicates. Once the
+	// floor is satisfied, sampleRate kicks in to throttle ongoing
+	// probe traffic.
+	//
+	// We RESERVE the window slot here (incrementing the counter
+	// before the probe actually fires) so concurrent gate checks see
+	// each other's reservations. If we incremented only after
+	// mirror() completed, all in-flight gate checks would race and
+	// see "below floor," producing a burst far past MinSamples.
+	belowFloor := false
+	if cfg.MinSamples > 0 {
+		windowed := p.windowCount(u.Id(), cfg.MinSamplesWindow)
+		belowFloor = windowed < int64(cfg.MinSamples)
+	}
+	if !belowFloor && cfg.SampleRate < 1.0 && rand.Float64() > cfg.SampleRate {
 		telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "sampled_out").Inc()
 		return false
 	}
 
-	// Per-upstream concurrency cap.
+	// Per-upstream concurrency cap. Applies to both floor-driven and
+	// sampleRate-driven probes — bounds the worst-case probe RPS
+	// against a single upstream regardless of how the request got past
+	// the upper gates.
 	counter := p.getInflight(u.Id())
 	max := int64(cfg.MaxConcurrent)
 	if max <= 0 {
@@ -224,6 +269,13 @@ func (p *Prober) shouldProbe(u common.Upstream, cfg *ProbeConfig) bool {
 	if counter.Load() >= max {
 		telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "max_concurrent").Inc()
 		return false
+	}
+
+	// All gates passed — reserve the window slot atomically. This
+	// must happen BEFORE returning true so the next gate check sees
+	// the updated count.
+	if cfg.MinSamples > 0 {
+		p.recordWindowSample(u.Id(), cfg.MinSamplesWindow)
 	}
 
 	return true
@@ -237,6 +289,62 @@ func (p *Prober) getInflight(id string) *atomic.Int64 {
 	}
 	c := new(atomic.Int64)
 	p.inflight[id] = c
+	return c
+}
+
+// windowCounter is the per-upstream probe-count tracker used by the
+// minSamples floor. Discrete fixed-window — `epoch` is
+// `unix_seconds / windowSeconds`, `count` resets on rollover.
+type windowCounter struct {
+	mu    sync.Mutex
+	epoch int64
+	count int64
+}
+
+// windowCount returns the probe count for `id` within the current
+// `window`. A new window rolls over the counter to 0 implicitly.
+func (p *Prober) windowCount(id string, window time.Duration) int64 {
+	if window <= 0 {
+		window = time.Minute
+	}
+	wc := p.getWindowCounter(id)
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	now := time.Now().Unix() / int64(window.Seconds())
+	if wc.epoch != now {
+		wc.epoch = now
+		wc.count = 0
+	}
+	return wc.count
+}
+
+// recordWindowSample increments the per-upstream probe counter for the
+// current window. Called from `mirror` after the probe Forward
+// completes (success or failure — every fired probe counts toward
+// the floor).
+func (p *Prober) recordWindowSample(id string, window time.Duration) {
+	if window <= 0 {
+		window = time.Minute
+	}
+	wc := p.getWindowCounter(id)
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	now := time.Now().Unix() / int64(window.Seconds())
+	if wc.epoch != now {
+		wc.epoch = now
+		wc.count = 0
+	}
+	wc.count++
+}
+
+func (p *Prober) getWindowCounter(id string) *windowCounter {
+	p.windowMu.Lock()
+	defer p.windowMu.Unlock()
+	if c, ok := p.windows[id]; ok {
+		return c
+	}
+	c := &windowCounter{}
+	p.windows[id] = c
 	return c
 }
 

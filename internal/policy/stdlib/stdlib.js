@@ -957,15 +957,26 @@
   //
   // Options:
   //   sampleRate    — 0.0–1.0, per-(request, excluded-upstream) probability
-  //                    of mirroring. Default 1.0 (mirror every request,
-  //                    capped by `maxConcurrent`). Use < 1.0 to thin
-  //                    probe traffic on high-RPS networks where you don't
-  //                    want every request fanning out.
+  //                    of mirroring. Default 0.1 — 10% of incoming
+  //                    requests are probe candidates. At high RPS this
+  //                    keeps probe-traffic cost bounded; at low RPS the
+  //                    `minSamples` floor below kicks in to ensure
+  //                    enough samples accumulate for re-admission.
+  //   minSamples    — per-upstream floor on probes within
+  //                    `minSamplesWindow`. While the upstream has
+  //                    fewer than this many probes in the rolling
+  //                    window, the sampleRate gate is bypassed and
+  //                    every incoming request is considered — so
+  //                    low-traffic networks aren't starved out of
+  //                    probe activity. Default 10. Pair with the
+  //                    excludeIf chain's `samplesAbove(N)` guard:
+  //                    `minSamples` should be ≥ that N so the
+  //                    re-admission criterion is reachable.
+  //   minSamplesWindow — rolling window for `minSamples` (default
+  //                    '60s', matches typical scoreMetricsWindowSize).
   //   maxConcurrent — concurrent in-flight probes per excluded upstream
-  //                    (default 4). When at the cap, additional incoming
-  //                    requests are dropped from the probe feed. This is
-  //                    the primary throttle — operators usually only
-  //                    need to tune this.
+  //                    (default 4). Bounds worst-case per-upstream
+  //                    probe RPS independently of sampleRate.
   //   timeout       — per-probe deadline (default '10s'). Probes that
   //                    overrun are cancelled and counted as failures so
   //                    a hung upstream registers as bad in the tracker.
@@ -977,9 +988,11 @@
   function probeExcludedFn(opts) {
     opts = opts || {};
     globalThis.__probeConfig = {
-      sampleRate:    opts.sampleRate    != null ? opts.sampleRate    : 1.0,
-      maxConcurrent: opts.maxConcurrent != null ? opts.maxConcurrent : 4,
-      timeout:       opts.timeout       != null ? opts.timeout       : '10s',
+      sampleRate:       opts.sampleRate       != null ? opts.sampleRate       : 0.1,
+      minSamples:       opts.minSamples       != null ? opts.minSamples       : 10,
+      minSamplesWindow: opts.minSamplesWindow != null ? opts.minSamplesWindow : '60s',
+      maxConcurrent:    opts.maxConcurrent    != null ? opts.maxConcurrent    : 4,
+      timeout:          opts.timeout          != null ? opts.timeout          : '10s',
     };
     return this.slice();
   }

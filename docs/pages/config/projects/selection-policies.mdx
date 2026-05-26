@@ -72,7 +72,7 @@ projects:
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
                 .sortByScore(PREFER_FASTEST)
                 .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-                .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' })
+                .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })
 ```
 </Tab>
 <Tab>
@@ -114,7 +114,7 @@ export default createConfig({
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
             .sortByScore(PREFER_FASTEST)
             .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-            .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' }),
+            .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' }),
       },
     }],
   }],
@@ -200,7 +200,7 @@ one of them lets a degraded upstream keep receiving traffic:
     // excludeIf predicates above, they fall out of the excluded set on the
     // next tick — no time-based readmit timer needed. Per-upstream opt-out
     // via routing.probe: 'off'.
-    .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' })
+    .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })
 ```
 
 **Why error / throttle are tolerant (0.7 / 0.4) and latency is tight (3×).** Failure costs are asymmetric: error and throttle blips are already absorbed by retry / hedge / consensus (the failsafe layer). A slow upstream, by contrast, poisons tail latency on every request routed through it before falling back. Excluding a marginally-slow upstream costs at most one degraded reply; NOT excluding one poisons every call. So latency uses a tighter threshold than the other rules.
@@ -773,9 +773,11 @@ the request is reorg-tolerant.
 
 ```ts
 .probeExcluded({
-  sampleRate?: number = 1.0,        // 0.0–1.0, per-(request, excluded-upstream) probability
-  maxConcurrent?: number = 4,       // in-flight probes per excluded upstream
-  timeout?: Duration = '10s',       // per-probe deadline
+  sampleRate?: number = 0.1,           // 0.0–1.0, per-(request, excluded-upstream) probability
+  minSamples?: number = 10,            // per-upstream floor on probes within minSamplesWindow
+  minSamplesWindow?: Duration = '60s', // rolling window for minSamples
+  maxConcurrent?: number = 4,          // in-flight probes per excluded upstream
+  timeout?: Duration = '10s',          // per-probe deadline
 })
 ```
 
@@ -787,6 +789,29 @@ traffic, so the upstream is re-admitted **implicitly** on the next
 tick once its metrics improve enough to clear the chain's `excludeIf`
 predicates. There is no time-based readmit timer — the criteria for
 re-admission is exactly the criteria for exclusion, in reverse.
+
+**Rate control: `sampleRate` + `minSamples`.** Two complementary
+gates that work together to balance probe-traffic cost against
+re-admission speed:
+
+- **`sampleRate`** is the throttle for high-RPS networks. At 10k RPS
+  with `sampleRate=0.1`, only ~1k requests/sec are probe candidates
+  (vs 10k at `sampleRate=1.0`) — saves CPU in the dispatcher AND
+  bounds quota burn on pay-per-call upstreams that are excluded.
+- **`minSamples`** is the floor for low-RPS networks. While an
+  excluded upstream has accumulated fewer than this many probes in
+  the last `minSamplesWindow`, the `sampleRate` gate is bypassed
+  entirely — every incoming request is considered. Once the floor
+  is satisfied, `sampleRate` resumes throttling. Result: low-traffic
+  networks always reach the `samplesAbove(N)` thresholds the chain
+  needs to re-evaluate.
+- **`maxConcurrent`** caps worst-case concurrent probes per upstream
+  regardless of how the request got past the upper gates — bounds
+  the absolute peak load on a single (potentially broken) upstream.
+
+Pair `minSamples` with your chain's `samplesAbove(N)` excludeIf
+guards: `minSamples` should be ≥ that `N` so the re-admission
+criterion is reachable.
 
 `probeExcluded` is a **no-op transform** on the upstream array
 itself. Its real work is in the Go-side prober, which subscribes to

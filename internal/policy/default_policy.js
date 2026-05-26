@@ -26,8 +26,10 @@
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
     // Shadow-mirror sampled real traffic to currently-excluded
     // upstreams in the background so they accumulate fresh tracker
-    // samples without touching real user traffic. Once their metrics
-    // improve enough to clear the excludeIf predicates above, they
-    // fall out of the excluded set on the next tick and re-enter
-    // rotation naturally. Per-upstream opt-out via `routing.probe: off`.
-    .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' })
+    // samples without touching real user traffic. sampleRate=0.1
+    // bounds the per-excluded-upstream probe RPS on high-RPS
+    // networks; minSamples=10 ensures even low-traffic networks
+    // probe enough to clear the chain's `samplesAbove(N)` gates on
+    // re-admission. maxConcurrent=4 is the absolute concurrent cap
+    // per upstream. Per-upstream opt-out via `routing.probe: off`.
+    .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })

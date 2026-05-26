@@ -246,16 +246,32 @@ export type StickyPrimaryOptions = {
 export type ProbeExcludedOptions = {
   /**
    * Per-(request, excluded-upstream) probability of mirroring
-   * (0.0–1.0). Default 1.0 — mirror every published request, capped
-   * by `maxConcurrent`. Drop below 1.0 to thin probe traffic on
-   * high-RPS networks where every request fanning out is too much.
+   * (0.0–1.0). Default 0.1 — only 10% of incoming requests are probe
+   * candidates. Throttles probe-traffic cost on high-RPS networks
+   * while the `minSamples` floor below ensures low-RPS networks
+   * aren't starved.
    */
   sampleRate?: number;
   /**
+   * Per-upstream floor on probes within `minSamplesWindow`. While the
+   * upstream has fewer than this many probes accumulated in the
+   * rolling window, the prober bypasses `sampleRate` and considers
+   * every incoming request — so even low-traffic networks accumulate
+   * enough samples for re-admission. Default 10. Pair with the
+   * chain's `samplesAbove(N)` guards: `minSamples` should be ≥ that
+   * N so the re-admission criterion is reachable.
+   */
+  minSamples?: number;
+  /**
+   * Rolling window for `minSamples` (default `'60s'`, matches typical
+   * `scoreMetricsWindowSize`).
+   */
+  minSamplesWindow?: Duration;
+  /**
    * Concurrent in-flight probes per excluded upstream (default 4).
-   * The primary throttle — operators usually only need to tune this.
-   * When at the cap, additional incoming requests are dropped from
-   * the probe feed.
+   * Bounds worst-case per-upstream probe RPS independently of
+   * sampleRate. When at the cap, additional incoming requests are
+   * dropped from the probe feed.
    */
   maxConcurrent?: number;
   /**

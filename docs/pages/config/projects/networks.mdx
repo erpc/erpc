@@ -329,7 +329,7 @@ selectionPolicy:
         .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
         .sortByScore(PREFER_FASTEST)
         .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-        .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' })
+        .probeExcluded({ sampleRate: 0.1, minSamples: 10, maxConcurrent: 4, timeout: '10s' })
 ```
 
 `evalFunc` returns an **ordered** `Upstream[]`: position 0 is the primary, the rest are retry order, anything missing is excluded. Use the chainable stdlib (`removeCordoned`, `excludeIf`, `whenEmpty`, `preferTag`, `sortByScore`, `stickyPrimary`, `probeExcluded`, …) — see [Selection policy](/config/projects/selection-policies) for the full DSL + every method.

@@ -292,6 +292,73 @@ func TestProber_PublishNonBlockingOnFullBus(t *testing.T) {
 	}
 }
 
+// TestProber_MinSamplesFloorBypassesSampleRate — at sampleRate=0 the
+// floor still fires probes until the per-upstream window count
+// reaches minSamples, then sampleRate=0 kicks in and probing stops.
+// This is the low-RPS-rescue path: even with the rate gate fully
+// closed, the floor guarantees we accumulate samples to re-evaluate
+// the excludeIf predicates.
+func TestProber_MinSamplesFloorBypassesSampleRate(t *testing.T) {
+	deps := &stubEngine{}
+	dead := &stubProbeUpstream{id: "dead"}
+	deps.setExcluded("evm:1", []common.Upstream{dead})
+
+	p, _ := newTestProber(t, deps, &ProbeConfig{
+		SampleRate:       0.0, // rate gate fully closed
+		MinSamples:       5,   // but floor demands 5 probes
+		MinSamplesWindow: time.Minute,
+		MaxConcurrent:    4,
+		Timeout:          5 * time.Second,
+	})
+	defer p.Stop()
+
+	// Publish enough requests that the floor would clear several times
+	// over if it weren't bounded. Expect EXACTLY MinSamples probes to
+	// fire (after that the floor is satisfied and sampleRate=0
+	// suppresses subsequent ones).
+	for i := 0; i < 50; i++ {
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+	}
+
+	// Wait for floor to be reached. We expect ~5 calls.
+	got := waitForCalls(dead, 5, 2*time.Second)
+	require.Equal(t, int64(5), got,
+		"floor must fire exactly MinSamples=5 probes despite sampleRate=0")
+
+	// Give the dispatcher a beat to confirm no MORE probes fire — once
+	// floor is satisfied and sampleRate=0, every subsequent publish
+	// should hit the sampled_out gate.
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, int64(5), dead.calls.Load(),
+		"after floor is satisfied, sampleRate=0 must suppress further probes")
+}
+
+// TestProber_MinSamplesZeroDisablesFloor — minSamples=0 explicitly
+// disables the floor, leaving sampleRate as the sole gate. Verifies
+// operators can opt out of the floor entirely if they want sampleRate
+// to be authoritative.
+func TestProber_MinSamplesZeroDisablesFloor(t *testing.T) {
+	deps := &stubEngine{}
+	dead := &stubProbeUpstream{id: "dead"}
+	deps.setExcluded("evm:1", []common.Upstream{dead})
+
+	p, _ := newTestProber(t, deps, &ProbeConfig{
+		SampleRate:       0.0,
+		MinSamples:       0, // floor disabled
+		MinSamplesWindow: time.Minute,
+		MaxConcurrent:    4,
+		Timeout:          5 * time.Second,
+	})
+	defer p.Stop()
+
+	for i := 0; i < 20; i++ {
+		p.Publish(makeProbeReq(t, "eth_getBalance"))
+	}
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, int64(0), dead.calls.Load(),
+		"minSamples=0 + sampleRate=0 must suppress all probes")
+}
+
 // TestProber_UpdateConfigHotSwap — calling UpdateConfig with new
 // values takes effect on subsequent publishes without restarting
 // the prober.

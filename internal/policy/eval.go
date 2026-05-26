@@ -608,9 +608,11 @@ func readProbeConfig(vm *sobek.Runtime) *ProbeConfig {
 		return nil
 	}
 	cfg := &ProbeConfig{
-		SampleRate:    1.0,
-		MaxConcurrent: 4,
-		Timeout:       10 * time.Second,
+		SampleRate:       0.1,
+		MinSamples:       10,
+		MinSamplesWindow: 60 * time.Second,
+		MaxConcurrent:    4,
+		Timeout:          10 * time.Second,
 	}
 	if srVal := obj.Get("sampleRate"); srVal != nil && !sobek.IsUndefined(srVal) && !sobek.IsNull(srVal) {
 		sr := srVal.ToFloat()
@@ -620,6 +622,25 @@ func readProbeConfig(vm *sobek.Runtime) *ProbeConfig {
 			sr = 1
 		}
 		cfg.SampleRate = sr
+	}
+	if msVal := obj.Get("minSamples"); msVal != nil && !sobek.IsUndefined(msVal) && !sobek.IsNull(msVal) {
+		ms := int(msVal.ToInteger())
+		if ms < 0 {
+			ms = 0
+		}
+		cfg.MinSamples = ms
+	}
+	if mswVal := obj.Get("minSamplesWindow"); mswVal != nil && !sobek.IsUndefined(mswVal) && !sobek.IsNull(mswVal) {
+		switch mswVal.ExportType().String() {
+		case "string":
+			if d, err := time.ParseDuration(mswVal.String()); err == nil && d > 0 {
+				cfg.MinSamplesWindow = d
+			}
+		default:
+			if ms := mswVal.ToInteger(); ms > 0 {
+				cfg.MinSamplesWindow = time.Duration(ms) * time.Millisecond
+			}
+		}
 	}
 	if mcVal := obj.Get("maxConcurrent"); mcVal != nil && !sobek.IsUndefined(mcVal) && !sobek.IsNull(mcVal) {
 		mc := int(mcVal.ToInteger())
