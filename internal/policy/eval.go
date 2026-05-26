@@ -110,6 +110,108 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 // in the slot tick hot path — once per (upstream, method) per tick).
 var quantileFractions = [5]float64{0.50, 0.70, 0.90, 0.95, 0.99}
 
+// sharedHelperLatencyP / sharedHelperHasTag are the property names
+// `installSharedHelpers` registers on the VM's globalThis. The build
+// helpers (`buildJSUpstreams`, `buildMetricsObject`) Get these once
+// per tick and reuse the resulting sobek.Value for every upstream /
+// metrics object — eliminating per-tick native-closure allocations.
+const (
+	sharedHelperLatencyP = "__sharedLatencyP"
+	sharedHelperHasTag   = "__sharedHasTag"
+)
+
+// installSharedHelpers registers per-VM singleton implementations of
+// `u.hasTag(tag)` (aliased as `u.is(tag)`) and `u.metrics.latencyP(q)`.
+// Called ONCE per sobek runtime (by the pool's acquire) — the runtime
+// outlives many ticks, so the closures here are amortized over
+// thousands of slot evals.
+//
+// Each function uses sobek's `call.This` to read fields off the
+// receiver object (the upstream or metrics view that the JS code
+// invokes it on). That lets one function value serve every object
+// the build helpers produce: instead of
+//
+//	mObj.Set("latencyP", func(call) { ... captures m.P50..m.P99 ... })  // alloc per tick × per object
+//
+// we do
+//
+//	mObj.Set("latencyP", sharedLatencyP)  // same value reused
+//
+// and `sharedLatencyP` reads `this.p50ResponseSeconds` etc. when
+// invoked. Per-tick allocation cost for these two helpers drops to
+// zero in steady state.
+func installSharedHelpers(rt *common.Runtime) error {
+	vm := rt.VM()
+	latencyP := func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) == 0 || call.This == nil {
+			return vm.ToValue(0.0)
+		}
+		this := call.This.ToObject(vm)
+		if this == nil {
+			return vm.ToValue(0.0)
+		}
+		q := call.Argument(0).ToFloat()
+		if q > 1 {
+			q = q / 100.0
+		}
+		var key string
+		switch {
+		case q <= 0.50:
+			key = "p50ResponseSeconds"
+		case q <= 0.70:
+			key = "p70ResponseSeconds"
+		case q <= 0.90:
+			key = "p90ResponseSeconds"
+		case q <= 0.95:
+			key = "p95ResponseSeconds"
+		default:
+			key = "p99ResponseSeconds"
+		}
+		v := this.Get(key)
+		if v == nil {
+			return vm.ToValue(0.0)
+		}
+		return vm.ToValue(v.ToFloat() * 1000.0)
+	}
+	hasTag := func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) == 0 || call.This == nil {
+			return vm.ToValue(false)
+		}
+		this := call.This.ToObject(vm)
+		if this == nil {
+			return vm.ToValue(false)
+		}
+		target := call.Argument(0).String()
+		tagsV := this.Get("tags")
+		if tagsV == nil || sobek.IsUndefined(tagsV) || sobek.IsNull(tagsV) {
+			return vm.ToValue(false)
+		}
+		tagsObj := tagsV.ToObject(vm)
+		if tagsObj == nil {
+			return vm.ToValue(false)
+		}
+		lenV := tagsObj.Get("length")
+		if lenV == nil {
+			return vm.ToValue(false)
+		}
+		n := int(lenV.ToInteger())
+		for i := 0; i < n; i++ {
+			elem := tagsObj.Get(strconv.Itoa(i))
+			if elem != nil && elem.String() == target {
+				return vm.ToValue(true)
+			}
+		}
+		return vm.ToValue(false)
+	}
+	if err := vm.GlobalObject().Set(sharedHelperLatencyP, latencyP); err != nil {
+		return err
+	}
+	if err := vm.GlobalObject().Set(sharedHelperHasTag, hasTag); err != nil {
+		return err
+	}
+	return nil
+}
+
 // convertTrackedMetrics is the per-method counterpart of
 // readUpstreamMetrics — given an ALREADY-LOADED *TrackedMetrics
 // pointer (from `tracker.GetUpstreamMetrics`), produces the same
@@ -178,7 +280,7 @@ func convertTrackedMetrics(tr healthTracker, u common.Upstream, m *health.Tracke
 // shape. Pulled out of `buildJSUpstreams` so we can build BOTH the
 // slot-local view (`u.metrics`) and the cross-method aggregate
 // (`u.metricsAcrossMethods`) without duplicating ~30 lines of Set calls.
-func buildMetricsObject(vm *sobek.Runtime, m UpstreamMetrics) *sobek.Object {
+func buildMetricsObject(vm *sobek.Runtime, m UpstreamMetrics, latencyPFn sobek.Value) *sobek.Object {
 	mObj := vm.NewObject()
 	_ = mObj.Set("errorRate", m.ErrorRate)
 	_ = mObj.Set("errorsTotal", m.ErrorsTotal)
@@ -197,47 +299,34 @@ func buildMetricsObject(vm *sobek.Runtime, m UpstreamMetrics) *sobek.Object {
 	if m.CordonedReason != "" {
 		_ = mObj.Set("cordonedReason", m.CordonedReason)
 	}
-	// latencyP(quantile) → ms. See `u.metrics.latencyP` doc in
-	// `buildJSUpstreams` — same snap-to-bucket behavior, just bound to
-	// THIS metrics object's quantiles. Closure captures the precomputed
-	// values for this tick.
-	p50, p70, p90, p95, p99 := m.P50ResponseSeconds, m.P70ResponseSeconds, m.P90ResponseSeconds, m.P95ResponseSeconds, m.P99ResponseSeconds
-	_ = mObj.Set("latencyP", func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) == 0 {
-			return vm.ToValue(0.0)
-		}
-		q := call.Argument(0).ToFloat()
-		if q > 1 {
-			q = q / 100.0
-		}
-		var sec float64
-		switch {
-		case q <= 0.50:
-			sec = p50
-		case q <= 0.70:
-			sec = p70
-		case q <= 0.90:
-			sec = p90
-		case q <= 0.95:
-			sec = p95
-		default:
-			sec = p99
-		}
-		return vm.ToValue(sec * 1000.0)
-	})
+	// latencyP(quantile) → ms. Shared VM-singleton; reads
+	// `this.p{50|70|90|95|99}ResponseSeconds` and snaps to bucket.
+	// Same surface as before — just no per-object closure allocation
+	// (installed once by the pool, see `installSharedHelpers`).
+	if latencyPFn != nil {
+		_ = mObj.Set("latencyP", latencyPFn)
+	}
 	return mObj
 }
 
 func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics, metricsAcrossMethods map[string]UpstreamMetrics, metricsByMethod map[string]map[string]UpstreamMetrics, evalCtx EvalContext) sobek.Value {
+	// Resolve the per-VM singleton helpers once per tick — these are
+	// installed by `installSharedHelpers` at pool acquire time and
+	// reused for every upstream + metrics object below. nil-tolerant
+	// so tests that build a bare sobek.Runtime without the pool keep
+	// working.
+	hasTagFn := vm.GlobalObject().Get(sharedHelperHasTag)
+	latencyPFn := vm.GlobalObject().Get(sharedHelperLatencyP)
+
 	arr := vm.NewArray()
 	for i, u := range ups {
 		obj := vm.NewObject()
 		_ = obj.Set("id", u.Id())
 		_ = obj.Set("vendor", u.VendorName())
 
-		// Tags: copy once and capture by reference. The hasTag/is
-		// closures below close over this slice — sobek won't see them
-		// mutate (we never mutate `tags` from JS).
+		// Tags: expose the upstream's tag slice. `hasTag`/`is` (the
+		// shared helpers) read it via `this.tags`, so we just expose
+		// the data — no per-upstream closure capture needed.
 		var tags []string
 		if cfg := u.Config(); cfg != nil {
 			_ = obj.Set("type", string(cfg.Type))
@@ -247,22 +336,14 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		}
 		_ = obj.Set("tags", vm.ToValue(tags))
 
-		// hasTag(tag) → bool; `is` is an alias. Shared closure so we
-		// allocate one function per upstream, not two.
-		hasTagFn := func(call sobek.FunctionCall) sobek.Value {
-			if len(call.Arguments) == 0 {
-				return vm.ToValue(false)
-			}
-			target := call.Argument(0).String()
-			for _, t := range tags {
-				if t == target {
-					return vm.ToValue(true)
-				}
-			}
-			return vm.ToValue(false)
+		// hasTag(tag) → bool; `is` is an alias. Shared VM-singleton
+		// installed by the pool — same function value for every
+		// upstream, reads `this.tags`. Zero alloc per tick (vs N native
+		// closures before).
+		if hasTagFn != nil {
+			_ = obj.Set("hasTag", hasTagFn)
+			_ = obj.Set("is", hasTagFn)
 		}
-		_ = obj.Set("hasTag", hasTagFn)
-		_ = obj.Set("is", hasTagFn)
 
 		// Metrics — slot-local (`u.metrics`) and the cross-method
 		// wildcard aggregate (`u.metricsAcrossMethods`) the
@@ -271,12 +352,12 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		// are the SAME snapshot (snapshotMetrics returns a shared map
 		// ref), so we expose the same object under both names to keep
 		// the JS surface uniform.
-		mObj := buildMetricsObject(vm, metrics[u.Id()])
+		mObj := buildMetricsObject(vm, metrics[u.Id()], latencyPFn)
 		_ = obj.Set("metrics", mObj)
 		if metricsAcrossMethods == nil {
 			_ = obj.Set("metricsAcrossMethods", mObj)
 		} else if &metricsAcrossMethods != &metrics {
-			_ = obj.Set("metricsAcrossMethods", buildMetricsObject(vm, metricsAcrossMethods[u.Id()]))
+			_ = obj.Set("metricsAcrossMethods", buildMetricsObject(vm, metricsAcrossMethods[u.Id()], latencyPFn))
 		} else {
 			_ = obj.Set("metricsAcrossMethods", mObj)
 		}
@@ -568,13 +649,22 @@ func runEval(
 	}
 	// Step-log scaffolding — the stdlib wrapper around `define(name, fn)`
 	// pushes one entry per chainable step when this flag is true.
-	// Always reset the log to a fresh array each tick so a previous
-	// tick's entries don't leak into this one if the runtime is reused.
+	// When disabled (production default — gated by debug-level logger
+	// or simulator), skip the per-tick `NewArray` allocation entirely;
+	// the stdlib never reads `__policyStepLog` while `Enabled=false`
+	// so it can stay undefined. Reset (rather than left over from a
+	// previous enabled tick) so a flag flip doesn't leak old entries.
 	if err := vm.GlobalObject().Set("__policyStepLogEnabled", stepLogEnabled); err != nil {
 		return nil, err
 	}
-	if err := vm.GlobalObject().Set("__policyStepLog", vm.NewArray()); err != nil {
-		return nil, err
+	if stepLogEnabled {
+		if err := vm.GlobalObject().Set("__policyStepLog", vm.NewArray()); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := vm.GlobalObject().Set("__policyStepLog", sobek.Undefined()); err != nil {
+			return nil, err
+		}
 	}
 	// Per-upstream leaf-reason slugs populated by `excludeIf`. Reset to
 	// a fresh empty object each tick. Drives the

@@ -69,6 +69,15 @@ func (p *runtimePool) acquire() (*common.Runtime, error) {
 			return nil, fmt.Errorf("evaluate user TS config in policy runtime: %w", err)
 		}
 	}
+	// Install the per-VM singleton helpers — `u.hasTag(...)` /
+	// `u.is(...)` / `u.metrics.latencyP(q)`. Previously these were
+	// closures allocated per (upstream, metrics-object) every tick;
+	// installing them once and binding via `this` lets
+	// `buildJSUpstreams` attach the SAME function value to every
+	// object. Eliminates ~3N native-closure allocations per tick.
+	if err := installSharedHelpers(rt); err != nil {
+		return nil, fmt.Errorf("install policy shared helpers: %w", err)
+	}
 	return rt, nil
 }
 
