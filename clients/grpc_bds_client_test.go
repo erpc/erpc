@@ -2,10 +2,13 @@ package clients
 
 import (
 	"context"
+	"io"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -87,17 +90,26 @@ func TestBuildTopicFiltersRejectsInvalidHex(t *testing.T) {
 
 // TestGrpcBdsClientQueryMethodsDoNotShortCircuit verifies that query methods
 // are routed to the streaming QueryService handlers rather than being
-// rejected outright by SendRequest. With no live queryClient wired in, the
-// handler surfaces a clear error — but critically NOT ErrEndpointUnsupported
-// which would disqualify the upstream from carrying eth_query* traffic.
+// rejected outright by SendRequest. Against a non-existent target the
+// handler surfaces a transport-failure error — but critically NOT
+// ErrEndpointUnsupported, which would disqualify the upstream from carrying
+// eth_query* traffic.
 func TestGrpcBdsClientQueryMethodsDoNotShortCircuit(t *testing.T) {
-	parsedURL, err := url.Parse("grpc://localhost:0")
+	parsedURL, err := url.Parse("grpc://127.0.0.1:1")
 	require.NoError(t, err)
 
-	client := &GenericGrpcBdsClient{Url: parsedURL}
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	require.NoError(t, err)
+
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks","params":[{"fromBlock":"0x1","toBlock":"0x2","limit":1}]}`))
 
-	_, err = client.SendRequest(context.Background(), req)
+	// Tight deadline so we don't wait for connect-timeout retries.
+	callCtx, cancelCall := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancelCall()
+	_, err = client.SendRequest(callCtx, req)
 	require.Error(t, err)
 	require.False(
 		t,
