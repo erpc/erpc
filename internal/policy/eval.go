@@ -75,11 +75,16 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 		FinalizationLag: m.FinalizationLag.Load(),
 	}
 	if m.ResponseQuantiles != nil {
-		out.P50ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.50).Seconds()
-		out.P70ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.70).Seconds()
-		out.P90ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.90).Seconds()
-		out.P95ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.95).Seconds()
-		out.P99ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.99).Seconds()
+		// One merge → five reads. GetQuantile calls mergedSnapshot
+		// internally and each call rebuilds an ephemeral DDSketch from
+		// all sub-buckets — pprof had 5× redundant merges from this
+		// exact 5-line block. GetQuantiles shares the merge once.
+		qs := m.ResponseQuantiles.GetQuantiles(quantileFractions[:])
+		out.P50ResponseSeconds = qs[0].Seconds()
+		out.P70ResponseSeconds = qs[1].Seconds()
+		out.P90ResponseSeconds = qs[2].Seconds()
+		out.P95ResponseSeconds = qs[3].Seconds()
+		out.P99ResponseSeconds = qs[4].Seconds()
 	}
 	// Convert block-count lag to wall-clock seconds using the network's
 	// EMA-estimated block time. Zero until the tracker has enough
@@ -97,6 +102,13 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 	}
 	return out
 }
+
+// quantileFractions is the canonical p50/p70/p90/p95/p99 set
+// `UpstreamMetrics` exposes. Declared once so `readUpstreamMetrics`
+// and `convertTrackedMetrics` can pass the same backing array to
+// `GetQuantiles` without re-allocating per call (this function runs
+// in the slot tick hot path — once per (upstream, method) per tick).
+var quantileFractions = [5]float64{0.50, 0.70, 0.90, 0.95, 0.99}
 
 // convertTrackedMetrics is the per-method counterpart of
 // readUpstreamMetrics — given an ALREADY-LOADED *TrackedMetrics
@@ -122,11 +134,15 @@ func convertTrackedMetrics(tr healthTracker, u common.Upstream, m *health.Tracke
 		FinalizationLag: m.FinalizationLag.Load(),
 	}
 	if m.ResponseQuantiles != nil {
-		out.P50ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.50).Seconds()
-		out.P70ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.70).Seconds()
-		out.P90ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.90).Seconds()
-		out.P95ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.95).Seconds()
-		out.P99ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.99).Seconds()
+		// Single merge for all 5 quantiles — see comment in
+		// `readUpstreamMetrics`. This callsite multiplies by every
+		// (upstream, method) in the slot, so the savings stack hard.
+		qs := m.ResponseQuantiles.GetQuantiles(quantileFractions[:])
+		out.P50ResponseSeconds = qs[0].Seconds()
+		out.P70ResponseSeconds = qs[1].Seconds()
+		out.P90ResponseSeconds = qs[2].Seconds()
+		out.P95ResponseSeconds = qs[3].Seconds()
+		out.P99ResponseSeconds = qs[4].Seconds()
 	}
 	if bt := tr.GetNetworkBlockTime(u.NetworkId()); bt > 0 {
 		btSec := bt.Seconds()

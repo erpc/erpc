@@ -95,6 +95,34 @@ func (q *QuantileTracker) GetQuantile(qtile float64) time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
+// GetQuantiles returns the requested quantiles in one shot, sharing
+// ONE merged snapshot across all queries. Drop-in replacement for a
+// loop of `GetQuantile(q[i])` calls — same result, 1/Nth the merge
+// cost. Use this whenever you need ≥2 quantiles off the same tracker.
+//
+// HOT PATH — `policy.snapshotMetrics` reads p50/p70/p90/p95/p99 per
+// (upstream, method) per slot tick. Calling `GetQuantile` five times
+// in a row hit pprof at 90% of GetQuantile's cum time in
+// `mergedSnapshot`, which allocates a fresh DDSketch and merges all
+// ring-buffer buckets EVERY call. With per-method snapshots at
+// e.g. 5 upstreams × 30 methods × 5 quantiles per tick, that's 750
+// redundant merges per network tick.
+//
+// Result slice matches the input slice 1:1; an empty/zero-bucket
+// sketch yields a zero Duration in every slot.
+func (q *QuantileTracker) GetQuantiles(qtiles []float64) []time.Duration {
+	out := make([]time.Duration, len(qtiles))
+	if len(qtiles) == 0 {
+		return out
+	}
+	merged := q.mergedSnapshot()
+	for i, qt := range qtiles {
+		seconds := quantileSeconds(q.logger, merged, qt)
+		out[i] = time.Duration(seconds * float64(time.Second))
+	}
+	return out
+}
+
 // mergedSnapshot returns an ephemeral DDSketch holding the union of
 // all sub-buckets. Holds the read lock for the duration of the merge —
 // concurrent Adds may briefly block, but DDSketch.MergeWith is fast
