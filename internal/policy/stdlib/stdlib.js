@@ -1216,6 +1216,12 @@
   // detects the slow one against its peer correctly.
   function _latencyDeviationAbove(quantile, multiplier, mode, minMethodSamples, dampingMs) {
     const ups = globalThis.__policyAllUpstreams || [];
+    // metricsByMethod entries expose raw quantile fields (no closure)
+    // for performance — compute the right field name once. Snap to the
+    // nearest pre-computed bucket, matching the closure-based
+    // `latencyP` semantic on `u.metrics`.
+    const q = quantile <= 50 ? 50 : quantile <= 70 ? 70 : quantile <= 90 ? 90 : quantile <= 95 ? 95 : 99;
+    const field = 'p' + q + 'ms';
     // Pre-compute top-2 fastest p<quantile> PER METHOD across the
     // pool, so the per-upstream closure can pick "fastest PEER (not
     // me)" in O(1).
@@ -1250,7 +1256,7 @@
       for (const m in byMethod) {
         const mm = byMethod[m];
         if (minMethodSamples > 0 && mm.requestsTotal < minMethodSamples) continue;
-        const v = mm.latencyP(quantile);
+        const v = mm[field];
         if (v <= 0) continue;
         const entry = topByMethod[m] || { v1: Infinity, id1: null, v2: Infinity };
         if (v < entry.v1) {
@@ -1270,7 +1276,7 @@
       for (const m in byMethod) {
         const mm = byMethod[m];
         if (minMethodSamples > 0 && mm.requestsTotal < minMethodSamples) continue;
-        const my = mm.latencyP(quantile);
+        const my = mm[field];
         if (my <= 0) continue;                       // no signal on this method
         const top = topByMethod[m];
         if (!top) continue;                          // method filtered out by samples gate

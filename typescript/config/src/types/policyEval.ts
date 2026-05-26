@@ -108,6 +108,27 @@ export type PolicyEvalUpstream = {
   readonly metrics: PolicyEvalUpstreamMetrics;
 
   /**
+   * Per-method latency snapshot for this upstream — keyed by method
+   * name, values are a minimal `{ requestsTotal, p50ms, …, p99ms }`
+   * shape used by `latencyDeviationAbove` to compare apples-to-apples
+   * per method. Only methods with ≥1 recorded sample appear. The
+   * shape is intentionally light (no full PolicyEvalUpstreamMetrics
+   * per entry) — at 50+ networks × dozens of methods, the per-tick
+   * allocation cost would otherwise dominate the policy engine's CPU.
+   * Most operators don't read this directly; the predicate handles it.
+   */
+  readonly metricsByMethod: {
+    readonly [method: string]: {
+      readonly requestsTotal: number;
+      readonly p50ms: number;
+      readonly p70ms: number;
+      readonly p90ms: number;
+      readonly p95ms: number;
+      readonly p99ms: number;
+    };
+  };
+
+  /**
    * Per-upstream score multipliers resolved from `routing.scoreMultipliers`
    * for THIS tick's (network, method, finality). Absent when the upstream
    * has no matching entry. `sortByScore` reads this automatically — you

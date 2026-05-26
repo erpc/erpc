@@ -265,17 +265,34 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 			_ = obj.Set("metricsAcrossMethods", mObj)
 		}
 
-		// metricsByMethod — { "eth_call": {...}, "eth_getLogs": {...}}
-		// Each value is a fresh metrics object with the same
-		// `latencyP(q)`, `errorRate`, etc. shape as `u.metrics`. Used
-		// by per-method-aware predicates (`latencyDeviationAbove`) to
-		// compare upstreams on the same method without distribution-
-		// mix bias. Only methods with ≥1 recorded sample appear here
-		// (zero-sample methods are filtered out by snapshotMetrics).
+		// metricsByMethod — { "eth_call": {p70ms, p95ms, ...}, ... }
+		// Per-method-aware predicates (`latencyDeviationAbove`) read
+		// this to compare upstreams apples-to-apples on the same
+		// method. Only methods with ≥1 recorded sample appear here.
+		//
+		// Cost-critical hot path: at 50 networks × 5 upstreams × 30
+		// methods × 1 tick/sec, the previous shape (full
+		// buildMetricsObject + latencyP closure per entry) generated
+		// hundreds of thousands of sobek allocations per second and
+		// sustained 60-80% CPU + GC pressure in prod. This minimal
+		// shape exposes only what latencyDeviationAbove actually
+		// reads: requestsTotal + the precomputed quantile fields as
+		// plain numbers (no closure). 4 Set calls per method instead
+		// of 14+closure. Users who need other per-method fields
+		// (errorRate per method, etc.) can ask for an extension —
+		// every additional field re-introduces a non-trivial chunk
+		// of allocation pressure.
 		byMethodObj := vm.NewObject()
 		if perMethod := metricsByMethod[u.Id()]; perMethod != nil {
 			for methodName, mm := range perMethod {
-				_ = byMethodObj.Set(methodName, buildMetricsObject(vm, mm))
+				entry := vm.NewObject()
+				_ = entry.Set("requestsTotal", mm.RequestsTotal)
+				_ = entry.Set("p50ms", mm.P50ResponseSeconds*1000.0)
+				_ = entry.Set("p70ms", mm.P70ResponseSeconds*1000.0)
+				_ = entry.Set("p90ms", mm.P90ResponseSeconds*1000.0)
+				_ = entry.Set("p95ms", mm.P95ResponseSeconds*1000.0)
+				_ = entry.Set("p99ms", mm.P99ResponseSeconds*1000.0)
+				_ = byMethodObj.Set(methodName, entry)
 			}
 		}
 		_ = obj.Set("metricsByMethod", byMethodObj)
