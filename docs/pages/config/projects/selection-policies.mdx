@@ -38,8 +38,8 @@ projects:
   - id: main
     # Health-tracker rolling window for per-upstream metrics
     # (errorRate, latency quantiles, throttledRate, lag). 10 sub-buckets
-    # slide forward every windowSize/10. Default 10s.
-    scoreMetricsWindowSize: 10s
+    # slide forward every windowSize/10. Default 1m.
+    scoreMetricsWindowSize: 1m
     upstreamDefaults:
       evm:
         # State-poller cadence. Each upstream gets eth_blockNumber +
@@ -82,7 +82,7 @@ import { createConfig } from "@erpc-cloud/config";
 export default createConfig({
   projects: [{
     id: "main",
-    scoreMetricsWindowSize: "10s",
+    scoreMetricsWindowSize: "1m",
     upstreamDefaults: {
       evm: { statePollerInterval: "2s" },
     },
@@ -125,11 +125,11 @@ export default createConfig({
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `evalInterval` | Duration | `15s` | How often the policy re-evaluates and the slot's cached ranking refreshes. The default plays well with the default `scoreMetricsWindowSize: 60s` (4 samples per metric window). Drop to `1-5s` for faster reactivity at the cost of CPU (the JS interpreter runs at this rate per slot); raise above `30s` only if you've also widened your metric/probe windows. `0` disables the ticker (test only). |
+| `evalInterval` | Duration | `15s` | How often the policy re-evaluates and the slot's cached ranking refreshes. The default plays well with the default `scoreMetricsWindowSize: 1m` (4 samples per metric window). Drop to `1-5s` for faster reactivity at the cost of CPU (the JS interpreter runs at this rate per slot); raise above `30s` only if you've also widened your metric/probe windows. `0` disables the ticker (test only). |
 | `evalTimeout` | Duration | `100ms` | Must be `< evalInterval`. Prior cache retained on timeout. |
 | `evalScope` | `'network'` \| `'network-method'` \| `'network-finality'` \| `'network-method-finality'` | `'network'` | Picks the grain at which the policy evaluates AND the matching health-tracker grain. `network` = one ranking per network (cheapest, default); `network-method` = per-(network, method) — same `getLogs` ranking can differ from the `blockNumber` ranking; `network-finality` = per-(network, finality bucket); `network-method-finality` = full granularity. Slots are lazy-created on first request — cold buckets cost nothing. The TypeScript SDK exports `NETWORK` / `NETWORK_METHOD` / `NETWORK_FINALITY` / `NETWORK_METHOD_FINALITY` consts with these same string values. |
 | `evalFunc` | string \| function | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. In `.ts` configs pass a real arrow function — it gets stringified at load time via `Function.prototype.toString()`. Omit to apply the [default policy](#the-default-policy). |
-| `scoreMetricsWindowSize` | Duration | `10s` | Project-level. How long per-upstream rolling counters live. See [health-tracker window](#health-tracker-rolling-window). |
+| `scoreMetricsWindowSize` | Duration | `1m` | Project-level. How long per-upstream rolling counters live. See [health-tracker window](#health-tracker-rolling-window) and [Advanced tuning](#advanced-tuning-coupling-between-evalinterval-scoremetricswindowsize--probe-window). |
 
 > **Investigations.** Per-tick reasoning is exposed via OTLP tracing
 > spans and the `erpc_selection_*` Prometheus metric family (selection
@@ -284,16 +284,20 @@ standard ECMAScript.
 
 Every observed per-upstream metric (errorRate, latency quantiles,
 throttledRate, misbehaviorRate, request counts) lives in a **10-bucket
-sliding window** of duration `scoreMetricsWindowSize` (default `10s`).
-Every `windowSize / 10` (= 1 s at 10 s), one bucket rotates out and a
+sliding window** of duration `scoreMetricsWindowSize` (default `1m`).
+Every `windowSize / 10` (= 6 s at 1 m), one bucket rotates out and a
 fresh one opens. Data drips out continuously — no tumble cliff.
 
-| `scoreMetricsWindowSize` | Reaction time | Sample density / cost |
+The DDSketch quantile estimator lives per sub-bucket and merges on
+read, so a longer window means more samples per sketch — tighter p70 /
+p95 / p99 estimates — but also more stale data anchoring the ranking.
+
+| `scoreMetricsWindowSize` | Reaction time | Best fit |
 |---|---|---|
-| `5s` | ≤ 5 s before old fast samples roll out | Fastest reaction. Doubles rotation rate — pick for hot/canary deployments where reaction wins over a few % of CPU. |
-| `10s` (default) | ≤ 10 s | Sweet spot for the typical multi-network deployment. 1 Hz rotation regardless of how many upstreams. |
-| `30s` | ≤ 30 s | Cheaper rotation, stable score chip at low RPS. Right for cold deployments or huge upstream counts. |
-| `5m` | ≤ 5 m | Production-classical stability. Use when reaction time isn't the bottleneck. |
+| `30s` | ≤ 30 s before stale samples age out | Hot canaries; reaction beats a few % CPU on bucket rotation. |
+| `1m` (default) | ≤ 1 m | Sweet spot for the typical multi-upstream / multi-network deployment. Aligns with the default `evalInterval: 15s` (4 samples per window) and the default `probeExcluded.minSamplesWindow: 60s` (probe and ranking windows symmetric). |
+| `2-3m` | ≤ 2-3 m | Mixed-RPS workloads where rare per-method buckets need more samples to stabilize. Bump `probeExcluded.minSamplesWindow` to match. |
+| `5m+` | ≤ 5 m+ | Low-RPS / dev / staging or huge upstream fleets where stability beats reactivity. Bump `probeExcluded.minSamplesWindow` to match. |
 
 **Pair with `statePollerInterval`.** The state poller (default 30 s,
 override per project via `upstreamDefaults.evm.statePollerInterval`)
@@ -302,6 +306,48 @@ client traffic AND regardless of selection-policy exclusion. Those calls
 feed the tracker, so an idle or excluded upstream still has fresh
 samples in the rolling window. Keep `statePollerInterval ≤ scoreMetricsWindowSize`
 so the window is never empty for a low-traffic upstream.
+
+### Advanced tuning: coupling between `evalInterval`, `scoreMetricsWindowSize` + probe window
+
+Three knobs interact and should be tuned together, not individually:
+
+| Knob | Default | What it does |
+|---|---|---|
+| `selectionPolicy.evalInterval` | `15s` | How often the policy JS re-evaluates and refreshes the slot's cached ranking. |
+| `scoreMetricsWindowSize` (project-level) | `1m` | Rolling window over which the tracker accumulates per-upstream metrics (error rate, latencies, throttle rate, counts) read by the eval. |
+| `probeExcluded.minSamplesWindow` | `60s` | Window over which the prober counts probe-traffic samples sent to excluded upstreams. The eval uses this to decide whether an excluded upstream has accumulated enough recovery signal to be re-admitted. |
+
+**The symmetry that makes the defaults work** —
+- `scoreMetricsWindowSize ≈ probeExcluded.minSamplesWindow` keeps re-admission decisions aligned with ranking decisions (the prober sees "enough samples to re-admit" at roughly the same time the ranking sees "enough recovery to actually re-admit").
+- `scoreMetricsWindowSize` should be ≥ ~3× `evalInterval` so each eval tick sees ≥3 fresh sub-buckets of samples (otherwise quantile estimates flicker between ticks).
+- `scoreMetricsWindowSize` should be ≤ `idleEvictionAfter` (default 30m), to ensure the tracker doesn't evict entries that are still contributing to the window.
+
+**Workload-aware recommendations:**
+
+| Workload | `evalInterval` | `scoreMetricsWindowSize` | `probeExcluded.minSamplesWindow` |
+|---|---|---|---|
+| **High-RPS aggregator** (sustained > 5k RPS per network, mostly stable upstreams) | `15s` (default) | `1m` (default) | `60s` (default) |
+| **Mixed-RPS with `evalScope: network-method`** (some methods rare, e.g. `debug_traceTransaction`) | `15s` | `2-3m` | match `scoreMetricsWindowSize` |
+| **Low-RPS / dev / staging / edge regions** | `15s` or `30s` | `5m+` | match `scoreMetricsWindowSize` |
+| **Aggressive reactivity** (hot canary, blast-radius investigations) | `1-5s` | `30s` | `30s` |
+
+**Pitfalls to avoid:**
+
+- **Long `scoreMetricsWindowSize` + short `probeExcluded.minSamplesWindow`** → the prober sees enough recovery samples to want to re-admit, but the ranking still has stale bad samples in its long window. Re-admission feels stuck.
+- **Short `scoreMetricsWindowSize` + per-method scope on rare methods** → small sample counts (1-10 samples per window for a rare method) → noisy quantile estimates → flickering exclusion. Use a wider window OR keep `evalScope: network` so all methods pool into one aggregate.
+- **`evalInterval` ≥ `scoreMetricsWindowSize`** → only one or two sample points per eval. Quantile reads jump between two halves of the window. Don't do this.
+- **Bumping `evalInterval` above `30s`** without also widening the metric window. The eval ends up reading nearly the same window each tick, but you've also delayed the slot-cache refresh — net effect is just slower reaction with no stability gain.
+
+**Pin `samplesAbove(N)` to your traffic shape.** The default policy uses `samplesAbove(10)` (per-upstream-per-window guard against "1 bad request out of 3 → 33% error rate → excluded" flakiness). For per-method workloads with `evalScope: network-method`, set this threshold to at least `5%` of typical method traffic in your `scoreMetricsWindowSize`:
+
+```js
+// Example for a network seeing ~200 req/s of eth_call with
+// scoreMetricsWindowSize=1m. 200 × 60 × 0.05 = 600 samples
+// before exclusion considers this upstream.
+upstreams.excludeIf(all(samplesAbove(600), errorRateAbove(0.7)))
+```
+
+For rare methods (e.g. `debug_*`), use a smaller absolute threshold like `samplesAbove(20)` — you'd never accumulate hundreds of samples in a window, so the guard becomes "10× typical method volume".
 
 ## Per-method routing
 
