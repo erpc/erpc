@@ -2,8 +2,62 @@ package failsafe
 
 import (
 	"context"
+	"sync"
 	"time"
 )
+
+// hedgeTimerPool reuses *time.Timer across requests. Each `RunHedged`
+// call allocates a Timer to schedule the NEXT hedge attempt; at high
+// RPS that's tens of thousands of allocs/sec just for the dispatcher.
+// Pooled timers must be carefully Stop()'d + drained on Put to avoid
+// the next consumer firing on a stale tick.
+//
+// Heap profile on prod showed `time.NewTimer` as a per-request alloc
+// site inside `RunHedged`. The pool eliminates it on the hot path
+// where the timer is short-lived and used exactly once.
+var hedgeTimerPool = sync.Pool{
+	New: func() any {
+		// `time.Hour` is arbitrary; we Reset to the real duration on
+		// every Get. Initialized then Stopped so the channel is empty
+		// when the first consumer pulls it from the pool.
+		t := time.NewTimer(time.Hour)
+		if !t.Stop() {
+			<-t.C
+		}
+		return t
+	},
+}
+
+// borrowHedgeTimer returns a *time.Timer ready to be Reset(d). The
+// caller MUST eventually call `releaseHedgeTimer(t)` to return it to
+// the pool — failing to do so just leaks the timer to the GC (still
+// correct, just slower).
+func borrowHedgeTimer(d time.Duration) *time.Timer {
+	t := hedgeTimerPool.Get().(*time.Timer)
+	t.Reset(d)
+	return t
+}
+
+// releaseHedgeTimer stops `t` (draining any pending tick on `t.C`)
+// and returns it to the pool. Safe to call multiple times. Pair with
+// `borrowHedgeTimer`.
+func releaseHedgeTimer(t *time.Timer) {
+	if t == nil {
+		return
+	}
+	// Stop + drain so the channel is empty for the next consumer.
+	// Stop returns false when the timer has already fired (or been
+	// stopped) — in either case we try to drain in case a tick is
+	// still queued. The `default` keeps us non-blocking when the
+	// channel is already empty.
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	hedgeTimerPool.Put(t)
+}
 
 // HedgeHooks lets the caller observe hedge events. OnFire fires when an
 // extra hedge attempt is spawned — useful for metric increments.
@@ -93,11 +147,13 @@ func RunHedged[R any](
 	var lastResult hedgeResult[R]
 	var lastResultSet bool
 
-	// Schedule next hedge timer if we have hedges left.
+	// Schedule next hedge timer if we have hedges left. Timer comes
+	// from `hedgeTimerPool` — at high RPS this `time.NewTimer` was
+	// a per-request alloc visible in the heap profile.
 	var hedgeTimer *time.Timer
 	resetHedgeTimer := func() {
 		if hedgeTimer != nil {
-			hedgeTimer.Stop()
+			releaseHedgeTimer(hedgeTimer)
 			hedgeTimer = nil
 		}
 		if fired-1 >= maxHedges {
@@ -111,9 +167,16 @@ func RunHedged[R any](
 		if d < 0 {
 			d = 0
 		}
-		hedgeTimer = time.NewTimer(d)
+		hedgeTimer = borrowHedgeTimer(d)
 	}
 	resetHedgeTimer()
+	// Final cleanup — release whichever timer is currently armed at
+	// loop exit (winner found / parent canceled / no candidates left).
+	defer func() {
+		if hedgeTimer != nil {
+			releaseHedgeTimer(hedgeTimer)
+		}
+	}()
 
 	getHedgeC := func() <-chan time.Time {
 		if hedgeTimer == nil {
@@ -129,9 +192,8 @@ func RunHedged[R any](
 	for pending > 0 || hedgeTimer != nil {
 		select {
 		case <-parentCtx.Done():
-			if hedgeTimer != nil {
-				hedgeTimer.Stop()
-			}
+			// Timer cleanup handled by the deferred release at function
+			// exit — no explicit Stop needed here.
 			cancelAll()
 			// Drain pending goroutines, releasing their results.
 			for pending > 0 {
@@ -173,7 +235,7 @@ func RunHedged[R any](
 				winnerSet = true
 				cancelAll()
 				if hedgeTimer != nil {
-					hedgeTimer.Stop()
+					releaseHedgeTimer(hedgeTimer)
 					hedgeTimer = nil
 				}
 				// Continue draining; remaining goroutines will be released.
