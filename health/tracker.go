@@ -1075,15 +1075,65 @@ func (t *Tracker) GetUpstreamMethodMetrics(up common.Upstream, method string, fi
 	return tm
 }
 
+// GetUpstreamMetrics returns the per-method *TrackedMetrics map for
+// `ups`, keyed by method name and exposing the all-finalities
+// aggregate bucket per method (the key getUpsKeys always populates).
+//
+// HOT PATH — invoked once per upstream per slot tick from
+// `policy.snapshotMetrics`. Earlier versions did `t.upsMetrics.Range`
+// over the GLOBAL sync.Map and filtered to the target upstream; under
+// a typical 50-network × 5-upstream × 30-method × 4-finality
+// deployment that map is tens of thousands of entries, and the
+// Range-then-`pk.ups.Id() == ups.Id()` filter consumed two thirds of
+// total process CPU in a real pprof capture (sync.Map.Range = 32%
+// flat, Upstream.Id = 22% flat, GetUpstreamMetrics.func1 = 10%
+// flat). This implementation uses the pre-built
+// `upstreamsByNetwork` index to scope the lookup to O(keys for
+// this network), then direct-loads each candidate.
+//
+// Semantics match the previous behavior: returned map keys are method
+// names, values are the all-finalities *TrackedMetrics (so callers
+// that don't care about finality see a single deterministic snapshot
+// per method).
 func (t *Tracker) GetUpstreamMetrics(ups common.Upstream) map[string]*TrackedMetrics {
-	out := map[string]*TrackedMetrics{}
-	t.upsMetrics.Range(func(k, v any) bool {
-		pk := k.(upstreamKey)
-		if pk.ups != nil && pk.ups.Id() == ups.Id() {
-			out[pk.method] = v.(*TrackedMetrics)
+	targetID := ups.Id()
+	net := ups.NetworkId()
+
+	t.mu.RLock()
+	relevantKeys := t.upstreamsByNetwork[net]
+	t.mu.RUnlock()
+
+	if len(relevantKeys) == 0 {
+		// Cold fallback — index not populated yet (no Record* has
+		// fed it). Identical semantics to the legacy walk; expected
+		// to fire only on the first eval after a tracker boot, never
+		// in steady state.
+		out := map[string]*TrackedMetrics{}
+		t.upsMetrics.Range(func(k, v any) bool {
+			pk := k.(upstreamKey)
+			if pk.ups != nil && pk.ups.Id() == targetID {
+				out[pk.method] = v.(*TrackedMetrics)
+			}
+			return true
+		})
+		return out
+	}
+
+	// Hot path: O(per-network keys). `upstreamsByNetwork[net]` is
+	// deduped on (ups_id, method) with an arbitrary finality stored
+	// per entry — we ignore the stored finality and direct-load the
+	// `DataFinalityStateAll` bucket, which `getUpsKeys` always
+	// populates alongside any per-finality writes.
+	out := make(map[string]*TrackedMetrics, len(relevantKeys))
+	for _, k := range relevantKeys {
+		if k.ups == nil || k.ups.Id() != targetID {
+			continue
 		}
-		return true
-	})
+		aggKey := upstreamKey{ups: ups, method: k.method, finality: common.DataFinalityStateAll}
+		if v, ok := t.upsMetrics.Load(aggKey); ok {
+			out[k.method] = v.(*TrackedMetrics)
+		}
+	}
 	return out
 }
 
