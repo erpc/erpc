@@ -255,6 +255,31 @@ export type ProbeExcludedOptions = {
      */
     timeout?: Duration;
 };
+/**
+ * Options for `latencyDeviationAbove` — controls how per-method
+ * ratios are collapsed into a single trip/no-trip decision per
+ * upstream. See the predicate's doc comment for the full rationale
+ * (distribution-skew defense via per-method comparison).
+ */
+export type LatencyDeviationOptions = {
+    /**
+     * Quantile to compare (`50` | `70` | `90` | `95` | `99`, also
+     * accepts 0..1 fractions). Default `70`.
+     */
+    quantile?: number;
+    /**
+     * Resolution mode when methods disagree:
+     * - `'geomean'` (default) — geometric mean of per-method ratios.
+     *   Trips when the typical ratio across methods is ≥ multiplier.
+     *   Self-protective against single-method outliers.
+     * - `'majority'` — trips when ≥50% of compared methods show the
+     *   upstream as ≥ multiplier× slower.
+     * - `'veto'` — trips when ANY single method shows the upstream as
+     *   ≥ multiplier× slower. Most aggressive; false-positive prone
+     *   on specialty methods.
+     */
+    mode?: "geomean" | "majority" | "veto";
+};
 /** Options for `byFinality` — per-finality branch handlers. */
 export type ByFinalityHandlers = {
     realtime?: (u: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray;
@@ -433,7 +458,7 @@ declare global {
     function throttleRateBelow(rate: number): PolicyEvalPredicate;
     function misbehaviorRateAbove(rate: number): PolicyEvalPredicate;
     function latencyAbove(ms: number, quantile?: number): PolicyEvalPredicate;
-    function latencyDeviationAbove(multiplier: number, quantile?: number): PolicyEvalPredicate;
+    function latencyDeviationAbove(multiplier: number, optsOrQuantile?: number | LatencyDeviationOptions): PolicyEvalPredicate;
     function blockNumberLagAbove(blocks: number): PolicyEvalPredicate;
     function finalizationLagAbove(blocks: number): PolicyEvalPredicate;
     function blockSecondsLagAbove(seconds: number): PolicyEvalPredicate;

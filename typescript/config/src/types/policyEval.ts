@@ -282,6 +282,32 @@ export type ProbeExcludedOptions = {
   timeout?: Duration;
 };
 
+/**
+ * Options for `latencyDeviationAbove` — controls how per-method
+ * ratios are collapsed into a single trip/no-trip decision per
+ * upstream. See the predicate's doc comment for the full rationale
+ * (distribution-skew defense via per-method comparison).
+ */
+export type LatencyDeviationOptions = {
+  /**
+   * Quantile to compare (`50` | `70` | `90` | `95` | `99`, also
+   * accepts 0..1 fractions). Default `70`.
+   */
+  quantile?: number;
+  /**
+   * Resolution mode when methods disagree:
+   * - `'geomean'` (default) — geometric mean of per-method ratios.
+   *   Trips when the typical ratio across methods is ≥ multiplier.
+   *   Self-protective against single-method outliers.
+   * - `'majority'` — trips when ≥50% of compared methods show the
+   *   upstream as ≥ multiplier× slower.
+   * - `'veto'` — trips when ANY single method shows the upstream as
+   *   ≥ multiplier× slower. Most aggressive; false-positive prone
+   *   on specialty methods.
+   */
+  mode?: "geomean" | "majority" | "veto";
+};
+
 /** Options for `byFinality` — per-finality branch handlers. */
 export type ByFinalityHandlers = {
   realtime?: (u: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray;
@@ -557,15 +583,42 @@ declare global {
   function latencyAbove(ms: number, quantile?: number): PolicyEvalPredicate;
 
   // Latency-deviation predicate factory — trips when this upstream's
-  // p<quantile> exceeds the FASTEST peer's p<quantile> by the given
-  // multiplier. Same `(value, quantile?)` ordering as `latencyAbove`;
-  // `quantile` defaults to p70.
-  //   latencyDeviationAbove(3)    → "out if p70 > 3× fastest peer's p70"
-  //   latencyDeviationAbove(3, 95) → "out if p95 > 3× fastest peer's p95"
-  // Self is excluded from the baseline (a tiny pool of {10ms, 12s}
-  // treats the slow one's 10ms peer as the baseline, not the 6s
-  // average).
-  function latencyDeviationAbove(multiplier: number, quantile?: number): PolicyEvalPredicate;
+  // p<quantile> exceeds the fastest peer's p<quantile>, compared
+  // APPLES-TO-APPLES PER METHOD and collapsed across methods via the
+  // configured mode.
+  //
+  // Per-method comparison is required because an upstream's aggregate
+  // p<quantile> is a sample-count-weighted percentile of whatever
+  // methods landed in its bucket — a primary serving 95% fast
+  // eth_call and a runner-up serving only hedge-fired eth_getLogs
+  // look 20-40× apart at the aggregate level even when their
+  // per-method latencies are identical. The predicate eliminates the
+  // distribution bias by computing per-method ratios first, then
+  // collapsing via:
+  //   • 'geomean' (default) — geometric mean of per-method ratios;
+  //     self-protective against single-method outliers
+  //   • 'majority' — trips when ≥50% of compared methods are slow
+  //   • 'veto'    — trips when ANY single method is slow (most
+  //     aggressive; false-positive prone on specialty methods)
+  //
+  // The 2nd argument may be a numeric quantile (legacy 2-arg form)
+  // OR an options object. `latencyDeviationAbove(3, 95)` continues
+  // to work and is equivalent to `latencyDeviationAbove(3, { quantile: 95 })`
+  // (mode defaults to 'geomean').
+  //
+  //   latencyDeviationAbove(3)                              → geomean of p70 ratios > 3
+  //   latencyDeviationAbove(3, 95)                          → geomean of p95 ratios > 3 (legacy)
+  //   latencyDeviationAbove(3, { mode: 'veto' })            → ANY method 3× slower
+  //   latencyDeviationAbove(3, { mode: 'majority', quantile: 90 })
+  //
+  // Self is excluded from each method's peer baseline — when an
+  // upstream IS the fastest on a method, its peer comparison uses
+  // the runner-up's p<quantile>, so a 2-pool of {10ms, 12s} treats
+  // the slow one's 10ms peer as baseline (not the 6s average).
+  function latencyDeviationAbove(
+    multiplier: number,
+    optsOrQuantile?: number | LatencyDeviationOptions,
+  ): PolicyEvalPredicate;
 
   // Lag predicate factories ───────────────────────────────────────────
   function blockNumberLagAbove(blocks: number): PolicyEvalPredicate;

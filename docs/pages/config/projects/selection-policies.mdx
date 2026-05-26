@@ -322,12 +322,12 @@ Set `evalScope: 'network-method'` to run the policy separately per `(network,
 method)` instead of one ranking for the whole network. Each method's
 slot snapshots metrics for THAT specific method, so:
 
-- `latencyDeviationAbove(3)` compares same-method p70s across upstreams.
-- A slow-`eth_getLogs` upstream can still serve `eth_blockNumber`.
+- A slow-`eth_getLogs` upstream can still serve `eth_blockNumber` from a different primary.
+- `u.metrics` references the method-specific bucket (not the aggregate).
 - Slots are created lazily on first request for a method; the wildcard
   `"*"` slot answers until the method-specific slot's first tick lands.
 
-Default is `evalScope: 'network'` — most workloads benefit from one aggregate ranking and the per-method overhead (one eval per method per tick) isn't free.
+Default is `evalScope: 'network'` — most workloads benefit from one aggregate ranking and the per-method overhead (one eval per method per tick) isn't free. Predicates that need apples-to-apples per-method comparison (`latencyDeviationAbove`) handle that internally via `u.metricsByMethod` regardless of evalScope.
 
 ## Per-finality routing
 
@@ -944,33 +944,53 @@ latencyAbove(ms, quantile?)
 </details>
 
 <details>
-<summary>**Latency, relative deviation from peers**</summary>
+<summary>**Latency, relative deviation from peers** (per-method-aware)</summary>
 
-Trip when this upstream's p<q> exceeds the FASTEST peer's p<q> by the
-given multiplier (self excluded from the baseline). Reads like English:
-`latencyDeviationAbove(4, 85)` = "out if p85 is more than 4× the
-fastest peer's p85"; `latencyDeviationAbove(3)` = "out if p70 is more
-than 3× the fastest peer's p70" (p70 is the default quantile).
-
-Fastest-of-others (not median) tracks the user's actual quality
-ceiling: if three upstreams answer at 200 ms and one drifts to 800 ms,
-the slow one sits at 4× the achievable best — exactly what the
-operator cares about. In small pools this also gives clean semantics —
-with one fast (10 ms) and one slow (12 s) upstream, the slow one sits
-at 1 200× the achievable best and trips at any multiplier ≥ 1.
-
-When the selection policy runs per-method, the per-upstream metric is
-that method's quantile — so the same predicate compares same-method
-quantiles across upstreams.
+Trip when this upstream is significantly slower than the fastest peer,
+**compared apples-to-apples per method** and then collapsed across
+methods via the configured mode.
 
 ```ts
-// multiplier is the first arg; quantile is optional (defaults to p70).
-// quantile accepts a 0..1 fraction or 0..100 number.
-latencyDeviationAbove(multiplier, quantile?)
+// Default — p70, geomean of per-method ratios > 3
+latencyDeviationAbove(3)
+
+// Legacy 2-arg form (2nd arg as a number is a quantile shorthand)
+latencyDeviationAbove(3, 95)
+
+// Modes for resolving disagreement across methods
+latencyDeviationAbove(3, { mode: 'geomean' })   // default
+latencyDeviationAbove(3, { mode: 'majority' })
+latencyDeviationAbove(3, { mode: 'veto' })
+
+// Combine with non-default quantile
+latencyDeviationAbove(3, { quantile: 95, mode: 'majority' })
 ```
 
-Zero-sample upstreams (no traffic, no quantile yet) are excluded from
-the baseline AND can never trip themselves.
+**Why per-method**: an upstream's aggregate p<q> is a sample-count-
+weighted percentile of whatever methods landed in its bucket. A primary
+that serves 95% fast `eth_call` and a runner-up that only sees
+hedge-fired `eth_getLogs` look 20-40× apart at the aggregate level
+even when their per-method latencies are identical. The predicate
+eliminates this distribution bias by computing per-method ratios first,
+then collapsing them.
+
+**Modes** (when methods disagree):
+
+| Mode | Rule | When to use |
+|---|---|---|
+| `'geomean'` (default) | Trips when the geometric mean of per-method ratios is ≥ multiplier. `geomean({1, 5}) = √5 ≈ 2.24` < 3 → no trip | The safe default. Self-protective against single-method outliers; one bad method out of many doesn't trip a vendor that's otherwise healthy |
+| `'majority'` | Trips when ≥50% of compared methods show the upstream as ≥ multiplier× slower | Strikes a middle ground — multiple bad methods needed, but not all |
+| `'veto'` | Trips when ANY single method shows the upstream as ≥ multiplier× slower | Most aggressive: one bad method casts a vote-out. False-positive prone on specialty methods (vendor good at most things, bad on one) |
+
+**Peer baseline**: for each method, the "fastest peer" is the minimum
+p<q> among OTHER upstreams (self excluded). When this upstream IS the
+fastest, its peer is the runner-up. So a 2-pool with one fast (10ms)
+and one slow (12s) upstream still trips the slow one against the fast
+one's 10ms.
+
+Methods with no peer-data on either side are skipped (not counted in
+the ratio). Upstreams alone in the pool (no peers with data on the
+same methods) never trip.
 
 </details>
 

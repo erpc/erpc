@@ -176,7 +176,7 @@ func (s *Slot) tickOnce() {
 	ups := s.upstreamsFn()
 
 	// 1. Snapshot metrics for every upstream.
-	metrics, metricsAcrossMethods := snapshotMetrics(s.engine.tracker, ups, s.method, parseFinality(s.finality))
+	metrics, metricsAcrossMethods, metricsByMethod := snapshotMetrics(s.engine.tracker, ups, s.method, parseFinality(s.finality))
 
 	// 2. Build EvalContext from cross-tick state.
 	s.mu.Lock()
@@ -220,7 +220,7 @@ func (s *Slot) tickOnce() {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, evalCtx, stepLogEnabled, s.engine.sticky)
+		evalRes, evalErr = runEval(s.engine.pool, s.cfg, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx, stepLogEnabled, s.engine.sticky)
 	}()
 
 	if timeout > 0 {
@@ -603,19 +603,49 @@ func (s *Slot) emitMetrics(d *Decision, prevState DecisionState) {
 // identically. When the slot itself runs at method="*" + finality=All
 // the two slices share the same map by reference (no separate
 // aggregate needed).
-func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string, finality common.DataFinalityState) (local, acrossMethods map[string]UpstreamMetrics) {
+//
+// `byMethod` is the per-(upstream, SPECIFIC-method, all-finalities)
+// view exposed as `u.metricsByMethod = {method: {...metrics...}}`.
+// Used by per-method-aware predicates (`latencyDeviationAbove`) to
+// compare upstreams on the same method without being biased by
+// per-upstream request-mix distribution. Built by walking the
+// tracker's per-upstream bucket map once (O(methods)). Methods with
+// zero samples are excluded.
+func snapshotMetrics(tr healthTracker, ups []common.Upstream, method string, finality common.DataFinalityState) (local, acrossMethods map[string]UpstreamMetrics, byMethod map[string]map[string]UpstreamMetrics) {
 	local = make(map[string]UpstreamMetrics, len(ups))
 	for _, u := range ups {
 		local[u.Id()] = readUpstreamMetrics(tr, u, method, finality)
 	}
 	if method == "*" && finality == common.DataFinalityStateAll {
-		return local, local
+		acrossMethods = local
+	} else {
+		acrossMethods = make(map[string]UpstreamMetrics, len(ups))
+		for _, u := range ups {
+			acrossMethods[u.Id()] = readUpstreamMetrics(tr, u, "*", common.DataFinalityStateAll)
+		}
 	}
-	acrossMethods = make(map[string]UpstreamMetrics, len(ups))
+	byMethod = make(map[string]map[string]UpstreamMetrics, len(ups))
 	for _, u := range ups {
-		acrossMethods[u.Id()] = readUpstreamMetrics(tr, u, "*", common.DataFinalityStateAll)
+		// Walk the tracker's per-method buckets for this upstream.
+		// Filter out the wildcard ("*") bucket — that's the aggregate
+		// already exposed as `u.metricsAcrossMethods` and including it
+		// here would double-weight aggregate samples in the per-method
+		// comparison.
+		raw := tr.GetUpstreamMetrics(u)
+		perMethod := make(map[string]UpstreamMetrics, len(raw))
+		for m, tm := range raw {
+			if m == "*" || tm == nil {
+				continue
+			}
+			um := convertTrackedMetrics(tr, u, tm)
+			if um.RequestsTotal == 0 {
+				continue
+			}
+			perMethod[m] = um
+		}
+		byMethod[u.Id()] = perMethod
 	}
-	return local, acrossMethods
+	return local, acrossMethods, byMethod
 }
 
 // parseFinality maps a slot's string finality (the canonical

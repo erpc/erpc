@@ -705,13 +705,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					// Hedge discards are accounted at the network layer
 					// via MetricNetworkHedgeDiscardsTotal.
 					//
-					// Latency IS still attributable: the elapsed-by-cancel
-					// time is a lower bound on the upstream's true
-					// completion time. We feed it to the latency quantile
-					// below (see `isCanceled` branch on ObserveDuration),
-					// otherwise a perpetually-slow upstream that always
-					// loses the hedge race would never accumulate samples
-					// and stay artificially top-ranked.
+					// Latency observation is also skipped (see the
+					// ObserveDuration call below) — elapsed-by-cancel is
+					// not a natural latency sample. Probe traffic from
+					// `probeExcluded` provides successful samples for
+					// upstreams that never win the hedge race.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
@@ -740,20 +738,36 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				}
 
-				// Two error classes feed the latency quantile:
-				//   * ExecutionException (EVM revert) — the upstream did
-				//     real work; the duration reflects actual response time.
-				//   * RequestCanceled (hedge-lost / client gave up / engine
-				//     timeout) — the elapsed-by-cancel time is a LOWER
-				//     BOUND on completion. Without this, an upstream that
-				//     never wins the hedge race accumulates zero latency
-				//     samples and the score chip stays optimistic forever.
+				// Only ExecutionException (EVM revert) feeds the latency
+				// quantile — the upstream did real work; the duration
+				// reflects actual response time.
+				//
+				// Cancellations (hedge-lost / client gave up / engine
+				// timeout) USED to feed the quantile with the rationale
+				// that the elapsed-by-cancel time is a lower bound on
+				// completion. That rationale broke under uneven hedge
+				// distribution: an upstream that only ever loses hedge
+				// races accumulates a quantile of 100% cancellation
+				// observations, biasing its p70 toward "however long the
+				// winner of the race took before cancellation" — which is
+				// not natural latency. Cross-upstream comparisons (e.g.
+				// `latencyDeviationAbove`) then trip on this artificial
+				// signal even when per-method latencies are identical.
+				//
+				// With probeExcluded in the chain (default), excluded
+				// upstreams accumulate real successful samples via shadow-
+				// mirrored traffic — the "stays optimistic forever"
+				// concern is mitigated without polluting the quantile.
+				// Without probeExcluded, rely on absolute thresholds
+				// (`latencyAbove(N)`) + non-latency signals (error rate,
+				// throttle rate, lag) — the same posture the policy
+				// already takes for upstreams with zero samples.
+				//
 				// All other errors fired before / instead of a meaningful
 				// response and would conflate "broken" with "slow" if
 				// counted; they stay out of the quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
-				isCanceled := common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled)
-				timer.ObserveDuration(isRevert || isCanceled)
+				timer.ObserveDuration(isRevert)
 				if isRevert {
 					nrq.ClearLastValidResponse()
 				}

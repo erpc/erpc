@@ -501,17 +501,23 @@ func TestStdlib_DefaultPolicy_DropsHighLatencyErrorFreeUpstream(t *testing.T) {
 
 	// rpc1: 100 requests, all SLOW (12s) → p95 ≈ 12s > 10s threshold.
 	// rpc2: 100 requests, all fast (10ms) → p95 ≈ 10ms.
+	// Seed under a real method name (eth_call) so the per-method
+	// tracker buckets get populated — latencyDeviationAbove now
+	// compares apples-to-apples per method, so empty per-method
+	// data means it can't fire. getUpsKeys fan-out propagates the
+	// write to the wildcard aggregate too, so the slot's u.metrics
+	// reads (at method="*") still see populated data.
 	for i := 0; i < 100; i++ {
-		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
-		tracker.RecordUpstreamDuration(ups[0], "*", 12*time.Second, true, "none", common.DataFinalityStateUnknown, "n/a")
-		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
-		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		tracker.RecordUpstreamRequest(ups[0], "eth_call", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "eth_call", 12*time.Second, true, "none", common.DataFinalityStateUnknown, "n/a")
+		tracker.RecordUpstreamRequest(ups[1], "eth_call", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[1], "eth_call", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 	}
 
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpc2"}, got,
-		"rpc1 has 0 errors but p95=12s > 10s → must be excluded by keepHealthy(maxP95Ms:10_000)")
+		"rpc1 has 0 errors but p70=12s vs rpc2's 10ms → 1200× ratio → latencyDeviationAbove trips")
 }
 
 // TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities verifies that
@@ -1256,4 +1262,159 @@ func TestStdlib_StepLog_DisabledByDefault(t *testing.T) {
 	require.NotEmpty(t, decisions)
 	d := decisions[len(decisions)-1]
 	require.Empty(t, d.Output.StepLog, "step log must stay empty by default")
+}
+
+// --- latencyDeviationAbove: per-method-aware modes ---
+//
+// These tests directly verify that the predicate compares
+// apples-to-apples per-method, defending against the distribution-
+// mix bug observed on Base prod where a primary upstream's aggregate
+// p70 looked 20-40× faster than runner-ups' aggregate p70 simply
+// because the primary served fast methods while the runner-ups only
+// got hedge-fired slow methods. Per-method comparison eliminates
+// the bias; the resolution-mode test cases cover the disagreement-
+// handling logic.
+
+// seedLatency is a small helper to feed a known per-method latency
+// snapshot into the tracker. method-specific writes propagate to the
+// wildcard ("*") aggregate via getUpsKeys fan-out automatically, so
+// the slot's u.metrics (which reads "*") sees them too.
+func seedLatency(t *testing.T, tr *health.Tracker, u common.Upstream, method string, dur time.Duration, samples int) {
+	t.Helper()
+	for i := 0; i < samples; i++ {
+		tr.RecordUpstreamRequest(u, method, common.DataFinalityStateUnknown)
+		tr.RecordUpstreamDuration(u, method, dur, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+}
+
+// TestStdlib_LatencyDeviationAbove_DistributionSkew_Defense:
+// reproduces the Base prod bug. Two upstreams have IDENTICAL
+// per-method latency (eth_call = 50ms on both, eth_getLogs = 2s on
+// both) but VERY different request distributions: A (primary) saw
+// mostly eth_call, B (runner-up) saw only eth_getLogs. Aggregate
+// p70 would be wildly different (~50ms vs ~2s). Per-method
+// comparison should report no slowness — both are equally fast on
+// each method they serve.
+func TestStdlib_LatencyDeviationAbove_DistributionSkew_Defense(t *testing.T) {
+	eval := `(upstreams, ctx) =>
+		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpcA", "rpcB")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// A: 9500 fast eth_call samples + 500 slow eth_getLogs samples
+	// B: 0 eth_call samples + 500 slow eth_getLogs samples
+	// PER METHOD they're identical: 50ms for eth_call, 2000ms for eth_getLogs.
+	seedLatency(t, tracker, ups[0], "eth_call", 50*time.Millisecond, 9500)
+	seedLatency(t, tracker, ups[0], "eth_getLogs", 2000*time.Millisecond, 500)
+	seedLatency(t, tracker, ups[1], "eth_getLogs", 2000*time.Millisecond, 500)
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.ElementsMatch(t, []string{"rpcA", "rpcB"}, got,
+		"per-method comparison: both upstreams have identical per-method latency, neither should be excluded despite the aggregate p70 looking 40× apart")
+}
+
+// TestStdlib_LatencyDeviationAbove_GenuinelySlowAcrossAllMethods:
+// when an upstream IS genuinely slower (5× on both eth_call and
+// eth_getLogs), all three modes should trip.
+func TestStdlib_LatencyDeviationAbove_GenuinelySlowAcrossAllMethods(t *testing.T) {
+	for _, mode := range []string{"geomean", "majority", "veto"} {
+		t.Run(mode, func(t *testing.T) {
+			eval := `(upstreams, ctx) =>
+				upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3, { mode: '` + mode + `' })))`
+			engine, _, tracker, cancel := newTestEngine(t, eval)
+			defer cancel()
+			defer engine.Stop()
+
+			ups := mkUps("rpcFast", "rpcSlow")
+			cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+			require.NoError(t, cfg.SetDefaults())
+			require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+			// Both upstreams serve same methods; rpcSlow is 5× slower on every one.
+			seedLatency(t, tracker, ups[0], "eth_call", 50*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[0], "eth_getLogs", 500*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[1], "eth_call", 250*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[1], "eth_getLogs", 2500*time.Millisecond, 100)
+
+			policy.TickForTest(engine, "evm:1", "*")
+			got := ids(engine.GetOrdered("evm:1", "*", "*"))
+			require.Equal(t, []string{"rpcFast"}, got,
+				"mode=%s: rpcSlow is 5× slower on every method, should be excluded", mode)
+		})
+	}
+}
+
+// TestStdlib_LatencyDeviationAbove_OneMethodSlow_ModesDifferentiate:
+// upstream is slow on ONE method (5× slower on eth_getLogs) but
+// healthy on another (1× on eth_call). Mode behavior differentiates:
+//   • geomean: √(1 × 5) = 2.24 < 3 → no trip
+//   • majority: 1/2 = 50% slow → ≥0.5 → trip (borderline majority)
+//   • veto: 1 slow method → trip
+func TestStdlib_LatencyDeviationAbove_OneMethodSlow_ModesDifferentiate(t *testing.T) {
+	cases := []struct {
+		mode      string
+		wantOrder []string
+		why       string
+	}{
+		{"geomean", []string{"rpcFast", "rpcMixed"}, "geomean of {1, 5} = √5 ≈ 2.24 < 3 → no trip"},
+		{"majority", []string{"rpcFast"}, "1 of 2 methods slow → 50% → majority threshold met → trip"},
+		{"veto", []string{"rpcFast"}, "any single method slow → veto-cast → trip"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			eval := `(upstreams, ctx) =>
+				upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3, { mode: '` + tc.mode + `' })))`
+			engine, _, tracker, cancel := newTestEngine(t, eval)
+			defer cancel()
+			defer engine.Stop()
+
+			ups := mkUps("rpcFast", "rpcMixed")
+			cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+			require.NoError(t, cfg.SetDefaults())
+			require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+			// rpcFast: 50ms on both methods.
+			// rpcMixed: 50ms on eth_call (same), 250ms on eth_getLogs (5×).
+			seedLatency(t, tracker, ups[0], "eth_call", 50*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[0], "eth_getLogs", 50*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[1], "eth_call", 50*time.Millisecond, 100)
+			seedLatency(t, tracker, ups[1], "eth_getLogs", 250*time.Millisecond, 100)
+
+			policy.TickForTest(engine, "evm:1", "*")
+			got := ids(engine.GetOrdered("evm:1", "*", "*"))
+			require.ElementsMatch(t, tc.wantOrder, got, "mode=%s: %s", tc.mode, tc.why)
+		})
+	}
+}
+
+// TestStdlib_LatencyDeviationAbove_LegacyQuantileShorthand:
+// `latencyDeviationAbove(3, 95)` (2nd arg is a number) must still
+// parse as quantile=95, mode=geomean.
+func TestStdlib_LatencyDeviationAbove_LegacyQuantileShorthand(t *testing.T) {
+	eval := `(upstreams, ctx) =>
+		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3, 95)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("rpcFast", "rpcSlow")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// rpcSlow has p95 = 5× rpcFast on every method → tripped under geomean.
+	seedLatency(t, tracker, ups[0], "eth_call", 50*time.Millisecond, 100)
+	seedLatency(t, tracker, ups[1], "eth_call", 250*time.Millisecond, 100)
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.Equal(t, []string{"rpcFast"}, got,
+		"legacy 2-arg form (multiplier, quantile=number) still excludes the slow upstream")
 }

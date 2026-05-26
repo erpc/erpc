@@ -1173,73 +1173,126 @@
     return _leaf(u => u.metrics.latencyP(quantile) > ms, 'p' + quantile + '>' + ms + 'ms', 'latency_p' + quantile + '_above');
   };
 
-  // latencyDeviationAbove(multiplier, quantile?) — trips when this
-  // upstream's p<quantile> exceeds the FASTEST peer's p<quantile> by
-  // the given multiplier.
+  // latencyDeviationAbove(multiplier, opts?) — trips when this
+  // upstream's latency is significantly above the fastest peer's,
+  // compared APPLES-TO-APPLES PER METHOD and then collapsed across
+  // methods via the configured mode.
   //
-  // Reads like English: `latencyDeviationAbove(85, 4)` = "p85 is more
-  // than 4× the fastest peer's p85." If the fastest peer answers at
-  // 250 ms p85, anyone above 1 s is gone.
+  // Why per-method: each upstream's aggregate p<quantile> is a sample-
+  // count-weighted percentile of WHATEVER methods landed in its
+  // bucket. A primary with 95% fast eth_call traffic + 5% slow
+  // eth_getLogs has an aggregate p70 of ~eth_call latency. A
+  // runner-up that only ever sees hedge-fired eth_getLogs has an
+  // aggregate p70 of ~eth_getLogs latency. They look 20-40× apart
+  // even when their PER-METHOD latencies are identical — the
+  // distribution skew is the entire delta. Per-method comparison
+  // eliminates this bias.
   //
-  // Why fastest-of-others (not median): tracks the user's actual
-  // quality ceiling. If three upstreams answer at 200 ms and one drifts
-  // to 800 ms, the slow one sits at 4× the achievable best — exactly
-  // what the operator cares about. Median-of-others would also work
-  // here (200 ms median), but in a 50/50 split (two fast, two slow)
-  // the median sits halfway and the worst outlier needs to be 4×
-  // SLOWER THAN THE MEDIAN, not 4× slower than the achievable best —
-  // a meaningfully looser bound. Fastest-of-others is the cleaner
-  // mental model and matches what `sortByScore(PREFER_FASTEST)` is
-  // optimizing for elsewhere in the chain.
+  // Resolution modes (when methods disagree):
+  //   • 'geomean' (DEFAULT) — geometric mean of per-method ratios.
+  //     Trips when the typical ratio across methods is ≥ multiplier.
+  //     Self-protective against single-method outliers (one slow
+  //     method out of many doesn't trip).
+  //   • 'majority' — trips when ≥50% of compared methods show the
+  //     upstream as ≥ multiplier× slower.
+  //   • 'veto' — trips when ANY single method shows the upstream as
+  //     ≥ multiplier× slower. Most aggressive: one bad method casts
+  //     a vote-out against the upstream. False-positive prone on
+  //     specialty methods (vendor good at most things, bad at one).
   //
-  // Stability: a single fast outlier can't tilt the baseline because
-  // `latencyP(q)` is already rolling-window smoothed inside the
-  // tracker — you don't get a single 5 ms sample dragging everyone
-  // else to "4× slower."
+  // Backward-compatible signature: the 2nd argument may also be a
+  // numeric quantile (legacy 2-arg form). `latencyDeviationAbove(3, 95)`
+  // continues to work and means `{quantile: 95, mode: 'geomean'}`.
   //
-  // Self-exclusion matters in tiny pools: a 2-pool with one at 10 ms
-  // and one at 12 s — the slow upstream sees the OTHER's 10 ms as the
-  // baseline (not its own 12 s averaged in) and trips at any
-  // multiplier ≥1.
+  // Examples:
+  //   `latencyDeviationAbove(3)`                              → geomean of p70 ratios > 3
+  //   `latencyDeviationAbove(3, 95)`                          → geomean of p95 ratios > 3 (legacy form)
+  //   `latencyDeviationAbove(3, { mode: 'veto' })`            → trips on ANY method 3× slower
+  //   `latencyDeviationAbove(3, { mode: 'majority', quantile: 90 })`
   //
-  // When `evalScope` includes method, `__policyAllUpstreams` carries
-  // that specific method's metrics, so the comparison is same-method
-  // (a slow `eth_getLogs` upstream isn't penalized against a fast
-  // `eth_blockNumber` peer).
-  //
-  // Zero-sample upstreams (no traffic, no quantile yet) are excluded
-  // from the baseline AND can never trip themselves (their own p[q]
-  // is 0, so any multiplier × any positive baseline > 0).
-  function _latencyDeviationAbove(quantile, multiplier) {
+  // Methods with no peer-data on either side are skipped (not
+  // counted). Upstreams alone in the pool (no peers with data on the
+  // same methods) never trip. Self is excluded from the per-method
+  // fastest-peer computation, so a 2-pool with one slow upstream
+  // detects the slow one against its peer correctly.
+  function _latencyDeviationAbove(quantile, multiplier, mode) {
     const ups = globalThis.__policyAllUpstreams || [];
-    // Pre-compute every upstream's quantile once so the per-predicate
-    // closure doesn't re-walk the full pool on each call.
-    const samplesById = {};
+    // Pre-compute top-2 fastest p<quantile> PER METHOD across the
+    // pool, so the per-upstream closure can pick "fastest PEER (not
+    // me)" in O(1). When an upstream IS the unique fastest, use the
+    // second-fastest as its peer baseline; when tied or not the
+    // fastest, use the global minimum. This makes the comparison
+    // ratio meaningful for every upstream, including the fastest
+    // one — its ratio will be 1.0 against the runner-up, contributing
+    // log(1)=0 to the geomean (a vote for "this upstream is fine").
+    const topByMethod = {}; // method → { v1, id1, v2 }
     for (const u of ups) {
-      const v = (u && u.metrics) ? u.metrics.latencyP(quantile) : 0;
-      if (v > 0) samplesById[u.id] = v;
+      if (!u) continue;
+      const byMethod = u.metricsByMethod || {};
+      for (const m in byMethod) {
+        const v = byMethod[m].latencyP(quantile);
+        if (v <= 0) continue;
+        const entry = topByMethod[m] || { v1: Infinity, id1: null, v2: Infinity };
+        if (v < entry.v1) {
+          entry.v2 = entry.v1;
+          entry.v1 = v;
+          entry.id1 = u.id;
+        } else if (v < entry.v2) {
+          entry.v2 = v;
+        }
+        topByMethod[m] = entry;
+      }
     }
     return function (u) {
-      const v = (u && u.metrics) ? u.metrics.latencyP(quantile) : 0;
-      if (v <= 0) return false; // no data → not enough signal to trip
-      let fastest = Infinity;
-      for (const id in samplesById) {
-        if (id === u.id) continue;
-        const ov = samplesById[id];
-        if (ov < fastest) fastest = ov;
+      if (!u) return false;
+      const byMethod = u.metricsByMethod || {};
+      let logSum = 0, geoCount = 0, slow = 0, compared = 0;
+      for (const m in byMethod) {
+        const my = byMethod[m].latencyP(quantile);
+        if (my <= 0) continue;                       // no signal on this method
+        const top = topByMethod[m];
+        if (!top) continue;                          // shouldn't happen — self IS in topByMethod
+        // Fastest peer = global minimum unless THIS upstream owns it,
+        // in which case the second-fastest is the peer baseline.
+        const fastestPeer = (top.id1 === u.id) ? top.v2 : top.v1;
+        if (!isFinite(fastestPeer)) continue;        // alone in pool on this method
+        const ratio = my / fastestPeer;
+        compared++;
+        if (ratio > multiplier) slow++;
+        if (mode === 'geomean' && ratio > 0) {
+          logSum += Math.log(ratio);
+          geoCount++;
+        }
       }
-      if (!isFinite(fastest)) return false; // alone in the pool — no peer to compare against
-      return v > fastest * multiplier;
+      if (compared < 1) return false;
+      switch (mode) {
+        case 'veto':
+          return slow > 0;
+        case 'majority':
+          return (slow / compared) >= 0.5;
+        case 'geomean':
+        default:
+          if (geoCount < 1) return false;
+          return Math.exp(logSum / geoCount) > multiplier;
+      }
     };
   }
-  // `multiplier` first, `quantile` second-and-optional (defaults to
-  // p70). `latencyDeviationAbove(3)` = "out if p70 is more than 3× the
-  // fastest peer's p70"; `latencyDeviationAbove(3, 95)` shifts both
-  // sides of the comparison to p95.
-  globalThis.latencyDeviationAbove = function (multiplier, quantile) {
-    if (quantile == null) quantile = 70;
-    return _leaf(_latencyDeviationAbove(quantile, multiplier),
-      'p' + quantile + '>' + multiplier + 'xFastest',
+  // `multiplier` first, `optsOrQuantile` second-and-optional.
+  // Accepts:
+  //   • undefined → { quantile: 70, mode: 'geomean' }
+  //   • a number  → quantile shorthand (legacy 2-arg form), mode='geomean'
+  //   • an object → { quantile?: 70, mode?: 'geomean'|'majority'|'any' }
+  globalThis.latencyDeviationAbove = function (multiplier, optsOrQuantile) {
+    let quantile = 70;
+    let mode = 'geomean';
+    if (typeof optsOrQuantile === 'number') {
+      quantile = optsOrQuantile;
+    } else if (optsOrQuantile && typeof optsOrQuantile === 'object') {
+      if (optsOrQuantile.quantile != null) quantile = optsOrQuantile.quantile;
+      if (optsOrQuantile.mode != null) mode = optsOrQuantile.mode;
+    }
+    return _leaf(_latencyDeviationAbove(quantile, multiplier, mode),
+      'p' + quantile + '>' + multiplier + 'xFastest(' + mode + ')',
       'latency_p' + quantile + '_deviation_above');
   };
 

@@ -50,6 +50,7 @@ func buildEvalContext(networkID, method string, state DecisionState) EvalContext
 // the correct conservative behavior on a freshly-booted engine.
 type healthTracker interface {
 	GetUpstreamMethodMetrics(up common.Upstream, method string, finality common.DataFinalityState) *health.TrackedMetrics
+	GetUpstreamMetrics(up common.Upstream) map[string]*health.TrackedMetrics
 	GetNetworkBlockTime(networkId string) time.Duration
 }
 
@@ -84,6 +85,49 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 	// EMA-estimated block time. Zero until the tracker has enough
 	// samples — policies that trip on `*LagSeconds` thresholds will be
 	// no-ops on a freshly-booted engine, by design.
+	if bt := tr.GetNetworkBlockTime(u.NetworkId()); bt > 0 {
+		btSec := bt.Seconds()
+		out.BlockHeadLagSeconds = float64(out.BlockHeadLag) * btSec
+		out.FinalizationLagSeconds = float64(out.FinalizationLag) * btSec
+	}
+	if m.Cordoned.Load() {
+		if r, ok := m.LastCordonedReason.Load().(string); ok {
+			out.CordonedReason = r
+		}
+	}
+	return out
+}
+
+// convertTrackedMetrics is the per-method counterpart of
+// readUpstreamMetrics — given an ALREADY-LOADED *TrackedMetrics
+// pointer (from `tracker.GetUpstreamMetrics`), produces the same
+// UpstreamMetrics view without re-reading from the tracker. Used by
+// `snapshotMetrics.byMethod` to build the per-(upstream, method) map
+// for the JS context's `u.metricsByMethod`.
+//
+// `tr` is needed for the per-network block-time lookup that converts
+// block-count lag to wall-clock seconds. `u.NetworkId()` provides the
+// network identity.
+func convertTrackedMetrics(tr healthTracker, u common.Upstream, m *health.TrackedMetrics) UpstreamMetrics {
+	if m == nil {
+		return UpstreamMetrics{}
+	}
+	out := UpstreamMetrics{
+		ErrorRate:       m.ErrorRate(),
+		ErrorsTotal:     m.ErrorsTotal.Load(),
+		RequestsTotal:   m.RequestsTotal.Load(),
+		ThrottledRate:   m.ThrottledRate(),
+		MisbehaviorRate: m.MisbehaviorRate(),
+		BlockHeadLag:    m.BlockHeadLag.Load(),
+		FinalizationLag: m.FinalizationLag.Load(),
+	}
+	if m.ResponseQuantiles != nil {
+		out.P50ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.50).Seconds()
+		out.P70ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.70).Seconds()
+		out.P90ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.90).Seconds()
+		out.P95ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.95).Seconds()
+		out.P99ResponseSeconds = m.ResponseQuantiles.GetQuantile(0.99).Seconds()
+	}
 	if bt := tr.GetNetworkBlockTime(u.NetworkId()); bt > 0 {
 		btSec := bt.Seconds()
 		out.BlockHeadLagSeconds = float64(out.BlockHeadLag) * btSec
@@ -168,7 +212,7 @@ func buildMetricsObject(vm *sobek.Runtime, m UpstreamMetrics) *sobek.Object {
 	return mObj
 }
 
-func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics, metricsAcrossMethods map[string]UpstreamMetrics, evalCtx EvalContext) sobek.Value {
+func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[string]UpstreamMetrics, metricsAcrossMethods map[string]UpstreamMetrics, metricsByMethod map[string]map[string]UpstreamMetrics, evalCtx EvalContext) sobek.Value {
 	arr := vm.NewArray()
 	for i, u := range ups {
 		obj := vm.NewObject()
@@ -220,6 +264,21 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 		} else {
 			_ = obj.Set("metricsAcrossMethods", mObj)
 		}
+
+		// metricsByMethod — { "eth_call": {...}, "eth_getLogs": {...}}
+		// Each value is a fresh metrics object with the same
+		// `latencyP(q)`, `errorRate`, etc. shape as `u.metrics`. Used
+		// by per-method-aware predicates (`latencyDeviationAbove`) to
+		// compare upstreams on the same method without distribution-
+		// mix bias. Only methods with ≥1 recorded sample appear here
+		// (zero-sample methods are filtered out by snapshotMetrics).
+		byMethodObj := vm.NewObject()
+		if perMethod := metricsByMethod[u.Id()]; perMethod != nil {
+			for methodName, mm := range perMethod {
+				_ = byMethodObj.Set(methodName, buildMetricsObject(vm, mm))
+			}
+		}
+		_ = obj.Set("metricsByMethod", byMethodObj)
 
 		// scoreMultipliers — per-upstream weight overrides resolved for
 		// THIS tick's (network, method, finality). Attached only when an
@@ -406,6 +465,7 @@ func runEval(
 	ups []common.Upstream,
 	metrics map[string]UpstreamMetrics,
 	metricsAcrossMethods map[string]UpstreamMetrics,
+	metricsByMethod map[string]map[string]UpstreamMetrics,
 	evalCtx EvalContext,
 	stepLogEnabled bool,
 	sticky *stickyStore,
@@ -461,7 +521,7 @@ func runEval(
 		}
 	}
 
-	upsValue := buildJSUpstreams(vm, ups, metrics, metricsAcrossMethods, evalCtx)
+	upsValue := buildJSUpstreams(vm, ups, metrics, metricsAcrossMethods, metricsByMethod, evalCtx)
 	ctxValue := vm.ToValue(evalCtx)
 
 	// Per-tick globals consumed by the stdlib (probeExcluded reads the full

@@ -26,6 +26,7 @@ export type {
   PreferOptions,
   StickyPrimaryOptions,
   ProbeExcludedOptions,
+  LatencyDeviationOptions,
   ByFinalityHandlers,
   WhereFilter,
   EvmNetworkConfigForDefaults,

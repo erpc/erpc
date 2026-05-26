@@ -30,6 +30,7 @@ export type {
     PreferOptions,
     StickyPrimaryOptions,
     ProbeExcludedOptions,
+    LatencyDeviationOptions,
     ByFinalityHandlers,
     WhereFilter,
   } from "./policyEval";
