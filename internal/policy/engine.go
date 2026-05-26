@@ -475,25 +475,30 @@ func (e *Engine) PublishRequest(networkID string, req *common.NormalizedRequest)
 // for every slot's next tick to produce nil (handled by the slot
 // reconcile in slot.go).
 func (e *Engine) reconcileProbeConfig(networkID string, cfg *ProbeConfig) {
-	e.proberMu.Lock()
-	defer e.proberMu.Unlock()
-
 	if cfg == nil {
-		// One slot's tick said "no probe step in chain." Stop the
-		// prober only if no slot has emitted a non-nil config this
-		// generation — tracked by a per-network counter would be
-		// nice, but the simpler rule is: a nil tick after a non-nil
-		// tick STILL tears down (operator removed the step). If they
-		// only removed it from one slot, they presumably want it
-		// gone everywhere — keeping a stale prober alive is worse
-		// than tearing it down.
-		if p, ok := e.probers[networkID]; ok {
-			p.Stop()
+		// Operator removed `probeExcluded` from this chain. Detach the
+		// prober from the map UNDER the lock, then call Stop() OUTSIDE
+		// the lock — Stop waits for in-flight mirror() goroutines (up
+		// to `timeout`, default 10s) and we must not block
+		// PublishRequest readers on that wait. PublishRequest takes a
+		// RLock for a microsecond-scale read; holding a write lock for
+		// a probe-timeout would stall the request hot path.
+		e.proberMu.Lock()
+		p, ok := e.probers[networkID]
+		if ok {
 			delete(e.probers, networkID)
+		}
+		e.proberMu.Unlock()
+		if ok {
+			p.Stop()
 		}
 		return
 	}
 
+	// Hot-swap or lazy-create. UpdateConfig is an atomic.Store; safe
+	// under the write lock with no in-flight blocking.
+	e.proberMu.Lock()
+	defer e.proberMu.Unlock()
 	if p, ok := e.probers[networkID]; ok {
 		p.UpdateConfig(cfg)
 		return
@@ -699,12 +704,21 @@ func (e *Engine) Stop() {
 	e.slots = make(map[slotKey]*Slot)
 	e.mu.Unlock()
 
+	// Snapshot probers under the lock; Stop() each OUTSIDE the lock.
+	// Stop() blocks on wg.Wait until all mirror() goroutines drain
+	// (up to per-probe timeout × in-flight count). Holding proberMu
+	// for that duration would freeze every concurrent PublishRequest
+	// — defensive even though Stop is shutdown-time.
 	e.proberMu.Lock()
+	probers := make([]*Prober, 0, len(e.probers))
 	for _, p := range e.probers {
-		p.Stop()
+		probers = append(probers, p)
 	}
 	e.probers = make(map[string]*Prober)
 	e.proberMu.Unlock()
+	for _, p := range probers {
+		p.Stop()
+	}
 
 	e.cancel()
 }

@@ -6805,7 +6805,7 @@
           ],
           "title": "Exclusions by Upstream & Reason",
           "type": "timeseries",
-          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: a `viction-drpc` row spiking on `error_rate_above` is a different problem from `kodiak-berachain` spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: \"c/s\" = exclusion events per second across the whole fleet (sum of all Fly machines × eval ticks where this upstream tripped this rule). With N machines × 1Hz eval interval, a sustained N c/s means every machine excludes this upstream every tick (always tripping); 1 c/s means roughly 1 in N machines excludes per tick (intermittent / borderline)."
+          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: an upstream spiking on `error_rate_above` is a different problem from one spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: exclusion events per second across all eRPC instances (sum of per-instance × per-tick increments where this upstream tripped this rule). With N instances × 1Hz eval interval, a sustained N events/sec means every instance excludes this upstream every tick (always tripping); 1 event/sec means roughly 1 in N instances excludes per tick (intermittent / borderline)."
         },
         {
           "datasource": {
@@ -12453,8 +12453,8 @@
     "list": [
       {
         "current": {
-          "text": "fly-prometheus",
-          "value": "eeud4a1fwxtkwa"
+          "text": "Prometheus",
+          "value": "prometheus"
         },
         "includeAll": false,
         "name": "datasource",

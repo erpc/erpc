@@ -207,9 +207,11 @@ func TestProber_RespectsMaxConcurrent(t *testing.T) {
 
 	// Release the held probes; they exit. Wait for the inflight
 	// counter to drain so the new publishes don't race ahead of the
-	// release.
+	// release. NOTE: closing the channel makes every subsequent
+	// `<-s.blockUntil` in Forward return immediately, so we don't
+	// need to (and must not — it'd race the stub's read) set the
+	// field to nil.
 	close(dead.blockUntil)
-	dead.blockUntil = nil // subsequent Forwards return immediately
 	counter := p.getInflight("dead")
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) && counter.Load() > 0 {
