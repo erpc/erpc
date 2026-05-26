@@ -210,19 +210,25 @@ func upstreamByID(t *testing.T, network *Network, id string) common.Upstream {
 // The goal is to put the tracker in the state a real prod incident would
 // have produced, fast and deterministically.
 type seedSpec struct {
-	method       string        // metric method bucket; "*" for all
-	successful   int           // count of successful requests
-	successAvgMs int           // duration in ms per successful request
-	failed       int           // count of failed requests
-	throttled    int           // count of throttled (429) responses
-	blockHeadLag int64         // direct block-head-lag value (atomic store)
-	misbehaviors int           // count of misbehaviors recorded
+	method       string // metric method bucket; defaults to "eth_call" — see helper
+	successful   int    // count of successful requests
+	successAvgMs int    // duration in ms per successful request
+	failed       int    // count of failed requests
+	throttled    int    // count of throttled (429) responses
+	blockHeadLag int64  // direct block-head-lag value (atomic store)
+	misbehaviors int    // count of misbehaviors recorded
 }
 
 func seedDegraded(tracker *health.Tracker, ups common.Upstream, s seedSpec) {
 	method := s.method
 	if method == "" {
-		method = "*"
+		// Seed under a real method (not "*") so the per-method
+		// tracker buckets get populated — latencyDeviationAbove
+		// reads u.metricsByMethod which excludes the "*" aggregate.
+		// getUpsKeys fan-out propagates the write to the wildcard
+		// aggregate too, so u.metrics (slot reads "*") still sees
+		// the data.
+		method = "eth_call"
 	}
 
 	for i := 0; i < s.successful; i++ {
