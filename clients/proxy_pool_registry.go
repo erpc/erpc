@@ -2,13 +2,13 @@ package clients
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -79,13 +79,8 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 			return nil, fmt.Errorf("invalid proxy URL '%s' in pool '%s': %w", proxyStr, poolCfg.ID, err)
 		}
 
-		// DialContext.KeepAlive — kernel-level TCP keepalive at 15s intervals
-		// (see clients/http_json_rpc_client.go for the rationale).
 		transport := &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 15 * time.Second,
-			}).DialContext,
+			DialContext:           util.DefaultOutboundDialer().DialContext,
 			MaxIdleConns:          1024,
 			MaxIdleConnsPerHost:   256,
 			MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)

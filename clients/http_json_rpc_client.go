@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -102,20 +101,13 @@ func NewGenericHttpJsonRpcClient(
 		errorExtractor:  extractor,
 	}
 
-	// Default fallback transport (no proxy)
-	// Optimized for high-latency, high-RPS scenarios to prevent connection churn.
-	//
-	// DialContext sets KeepAlive so the kernel sends TCP keepalive probes
-	// every 15s. Without this, Go falls back to the zero-value Dialer which
-	// uses the OS default tcp_keepalive_time (7200s = 2h on Linux), so
-	// wedged outbound flows can't be detected at the kernel layer. With
-	// 15s probes, a flow that loses connectivity is killed in ~45s
-	// (3 missed probes), which lets the application-level timeouts fire.
+	// Default fallback transport (no proxy). Optimized for high-latency,
+	// high-RPS scenarios to prevent connection churn. DialContext via
+	// util.DefaultOutboundDialer enables kernel-level TCP keepalive so
+	// wedged outbound flows are detected within ~45s (3 missed probes)
+	// instead of the OS default tcp_keepalive_time of 2h on Linux.
 	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 15 * time.Second,
-		}).DialContext,
+		DialContext:           util.DefaultOutboundDialer().DialContext,
 		MaxIdleConns:          1024,
 		MaxIdleConnsPerHost:   256,
 		MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)

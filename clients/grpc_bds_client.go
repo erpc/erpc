@@ -1042,10 +1042,38 @@ func recvQueryStream[T proto.Message](recv func() (T, error), onPage func(T)) er
 	}
 }
 
-func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	if conn == nil || conn.queryClient == nil {
-		return nil, fmt.Errorf("eth_queryBlocks: gRPC QueryService client not initialized")
+// queryPageRange is the structural interface every Query*Response type
+// satisfies — they all expose GetFromBlock/GetToBlock/GetCursorBlock
+// returning *evm.CursorBlock.
+type queryPageRange interface {
+	GetFromBlock() *evm.CursorBlock
+	GetToBlock() *evm.CursorBlock
+	GetCursorBlock() *evm.CursorBlock
+}
+
+// applyQueryRangeBounds propagates the From/To/CursorBlock fields from
+// a streaming page into the per-field aggregate slots. From/To use
+// "first wins" semantics (the upstream sets them on the opening page
+// and never changes them); CursorBlock uses "last wins" so each page
+// advances the cursor. Centralizing this avoids the 9-line repeat
+// across the five eth_query* handlers.
+func applyQueryRangeBounds(aggFrom, aggTo, aggCursor **evm.CursorBlock, page queryPageRange) {
+	if *aggFrom == nil {
+		if v := page.GetFromBlock(); v != nil {
+			*aggFrom = v
+		}
 	}
+	if *aggTo == nil {
+		if v := page.GetToBlock(); v != nil {
+			*aggTo = v
+		}
+	}
+	if v := page.GetCursorBlock(); v != nil {
+		*aggCursor = v
+	}
+}
+
+func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	rawParams, err := jsonRpcParamsFor(jrReq)
 	if err != nil {
 		return nil, err
@@ -1073,15 +1101,7 @@ func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, conn *bdsC
 		agg := &evm.QueryBlocksResponse{}
 		if err := recvQueryStream(stream.Recv, func(page *evm.QueryBlocksResponse) {
 			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			if agg.FromBlock == nil && page.GetFromBlock() != nil {
-				agg.FromBlock = page.GetFromBlock()
-			}
-			if agg.ToBlock == nil && page.GetToBlock() != nil {
-				agg.ToBlock = page.GetToBlock()
-			}
-			if page.GetCursorBlock() != nil {
-				agg.CursorBlock = page.GetCursorBlock()
-			}
+			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
 		}); err != nil {
 			return nil, err
 		}
@@ -1095,9 +1115,6 @@ func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, conn *bdsC
 }
 
 func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	if conn == nil || conn.queryClient == nil {
-		return nil, fmt.Errorf("eth_queryTransactions: gRPC QueryService client not initialized")
-	}
 	rawParams, err := jsonRpcParamsFor(jrReq)
 	if err != nil {
 		return nil, err
@@ -1119,15 +1136,7 @@ func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, conn
 		if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransactionsResponse) {
 			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
 			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			if agg.FromBlock == nil && page.GetFromBlock() != nil {
-				agg.FromBlock = page.GetFromBlock()
-			}
-			if agg.ToBlock == nil && page.GetToBlock() != nil {
-				agg.ToBlock = page.GetToBlock()
-			}
-			if page.GetCursorBlock() != nil {
-				agg.CursorBlock = page.GetCursorBlock()
-			}
+			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
 		}); err != nil {
 			return nil, err
 		}
@@ -1141,9 +1150,6 @@ func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, conn
 }
 
 func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	if conn == nil || conn.queryClient == nil {
-		return nil, fmt.Errorf("eth_queryLogs: gRPC QueryService client not initialized")
-	}
 	rawParams, err := jsonRpcParamsFor(jrReq)
 	if err != nil {
 		return nil, err
@@ -1166,15 +1172,7 @@ func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsCon
 			agg.Logs = append(agg.Logs, page.GetLogs()...)
 			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
 			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			if agg.FromBlock == nil && page.GetFromBlock() != nil {
-				agg.FromBlock = page.GetFromBlock()
-			}
-			if agg.ToBlock == nil && page.GetToBlock() != nil {
-				agg.ToBlock = page.GetToBlock()
-			}
-			if page.GetCursorBlock() != nil {
-				agg.CursorBlock = page.GetCursorBlock()
-			}
+			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
 		}); err != nil {
 			return nil, err
 		}
@@ -1188,9 +1186,6 @@ func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsCon
 }
 
 func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	if conn == nil || conn.queryClient == nil {
-		return nil, fmt.Errorf("eth_queryTraces: gRPC QueryService client not initialized")
-	}
 	rawParams, err := jsonRpcParamsFor(jrReq)
 	if err != nil {
 		return nil, err
@@ -1213,15 +1208,7 @@ func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsC
 			agg.Traces = append(agg.Traces, page.GetTraces()...)
 			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
 			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			if agg.FromBlock == nil && page.GetFromBlock() != nil {
-				agg.FromBlock = page.GetFromBlock()
-			}
-			if agg.ToBlock == nil && page.GetToBlock() != nil {
-				agg.ToBlock = page.GetToBlock()
-			}
-			if page.GetCursorBlock() != nil {
-				agg.CursorBlock = page.GetCursorBlock()
-			}
+			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
 		}); err != nil {
 			return nil, err
 		}
@@ -1235,9 +1222,6 @@ func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsC
 }
 
 func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	if conn == nil || conn.queryClient == nil {
-		return nil, fmt.Errorf("eth_queryTransfers: gRPC QueryService client not initialized")
-	}
 	rawParams, err := jsonRpcParamsFor(jrReq)
 	if err != nil {
 		return nil, err
@@ -1260,15 +1244,7 @@ func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *b
 			agg.Transfers = append(agg.Transfers, page.GetTransfers()...)
 			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
 			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			if agg.FromBlock == nil && page.GetFromBlock() != nil {
-				agg.FromBlock = page.GetFromBlock()
-			}
-			if agg.ToBlock == nil && page.GetToBlock() != nil {
-				agg.ToBlock = page.GetToBlock()
-			}
-			if page.GetCursorBlock() != nil {
-				agg.CursorBlock = page.GetCursorBlock()
-			}
+			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
 		}); err != nil {
 			return nil, err
 		}
