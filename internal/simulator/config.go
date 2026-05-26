@@ -31,8 +31,9 @@ func init() {
 // Health-based routing is the selection policy's job. Its excludeIf
 // chain drops upstreams whose tracker metrics cross thresholds
 // (errorRateAbove / throttleRateAbove / latencyAbove(_) /
-// blockNumberLagAbove), and readmitExcluded brings them back after
-// a cooldown.
+// blockNumberLagAbove), and probeExcluded shadow-mirrors sampled
+// real traffic to keep their counters refreshed so they re-admit
+// naturally once they heal.
 //
 // Endpoint URLs are placeholders. The simulator rewrites every upstream's
 // endpoint to its synthetic loopback (`http://<hub>/sim/<id>`) at boot,
@@ -65,9 +66,9 @@ projects:
     # 30s; the simulator runs it at 2s so even a fully-out upstream
     # gets ~2-3 samples per scoreMetricsWindow (eth_blockNumber +
     # eth_syncing). Without this, an upstream the policy excluded
-    # would have empty health metrics until readmitExcluded gave it
-    # another try — and you'd see "I excluded it but the metrics are
-    # frozen" in the upstream tooltip.
+    # would have empty health metrics if not for probeExcluded —
+    # both feed the tracker, and the policy uses those samples to
+    # decide when to re-admit.
     upstreamDefaults:
       evm:
         statePollerInterval: 2s

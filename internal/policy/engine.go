@@ -75,6 +75,15 @@ type Engine struct {
 	// wildcard slot alive forever.
 	idleEvictionAfter time.Duration
 
+	// probers owns the per-network shadow-probe subsystem (one
+	// `Prober` per networkID). Created lazily when a network's eval
+	// emits a non-nil `__probeConfig` and torn down when the eval
+	// stops emitting one. The request-path `PublishRequest` is
+	// wait-free under the read lock; reconciliation (create/update/
+	// stop) takes the write lock.
+	proberMu sync.RWMutex
+	probers  map[string]*Prober
+
 	appCtx context.Context
 	cancel context.CancelFunc
 }
@@ -151,6 +160,7 @@ func NewEngine(
 		networks:          make(map[string]*networkRegistration),
 		sticky:            newStickyStore(),
 		idleEvictionAfter: DefaultEngineIdleEvictionAfter,
+		probers:           make(map[string]*Prober),
 		appCtx:            ctx,
 		cancel:            cancel,
 	}
@@ -399,6 +409,99 @@ func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) 
 	return slot.recentDecisions(limit)
 }
 
+// GetExcluded returns the upstreams the slot's most recent successful
+// tick marked excluded (via `excludeIf` / `removeCordoned` / step-wise
+// drops). Returned slice is the same backing array the slot stores
+// atomically — callers MUST treat it as read-only.
+//
+// Resolution mirrors `GetOrdered`: narrow slot first, wildcard fallback
+// on cold-start. Returns nil when no tick has produced a result yet
+// (which means "nothing is excluded YET", not "something went wrong").
+//
+// Consumed by the per-network Prober: every published request reads
+// this to know which upstreams are currently "shadow re-probe
+// candidates."
+func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstream {
+	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
+	if slot != nil {
+		if excluded := slot.excludedCache.Load(); excluded != nil && len(*excluded) > 0 {
+			return *excluded
+		}
+	}
+	if wildcard != nil {
+		if excluded := wildcard.excludedCache.Load(); excluded != nil {
+			return *excluded
+		}
+	}
+	return nil
+}
+
+// PublishRequest hands a freshly-served request to the network's
+// probe-bus (if a Prober exists for this network). Non-blocking —
+// drops on bus overflow with a metric. Called from the request path
+// AFTER the primary upstream's response is determined; the probe
+// subsystem runs entirely on its own goroutines so the user's
+// response is never delayed.
+//
+// No-op when no Prober is registered for the network (the chain
+// doesn't include `probeExcluded` OR the engine hasn't ticked yet).
+func (e *Engine) PublishRequest(networkID string, req *common.NormalizedRequest) {
+	if req == nil {
+		return
+	}
+	e.proberMu.RLock()
+	p := e.probers[networkID]
+	e.proberMu.RUnlock()
+	if p != nil {
+		p.Publish(req)
+	}
+}
+
+// reconcileProbeConfig is called by each slot's tick after the eval
+// returns. It owns the lifecycle of the network's Prober: lazy-create
+// on first non-nil config, hot-swap on every subsequent non-nil
+// config, tear down when a tick produces nil (operator removed
+// `probeExcluded` from the chain).
+//
+// Multiple slots per network (network-method, network-finality, ...)
+// all call this with the SAME config in their JS (probeExcluded
+// doesn't branch per slot) — the engine just dedupes by overwriting
+// the active config atomically.
+//
+// Note: a single slot producing a nil ProbeConfig doesn't tear down
+// the prober — other slots in this network might still have the step
+// in their chain. The teardown path is via project shutdown
+// (Engine.Stop) or by removing all probeExcluded calls and waiting
+// for every slot's next tick to produce nil (handled by the slot
+// reconcile in slot.go).
+func (e *Engine) reconcileProbeConfig(networkID string, cfg *ProbeConfig) {
+	e.proberMu.Lock()
+	defer e.proberMu.Unlock()
+
+	if cfg == nil {
+		// One slot's tick said "no probe step in chain." Stop the
+		// prober only if no slot has emitted a non-nil config this
+		// generation — tracked by a per-network counter would be
+		// nice, but the simpler rule is: a nil tick after a non-nil
+		// tick STILL tears down (operator removed the step). If they
+		// only removed it from one slot, they presumably want it
+		// gone everywhere — keeping a stale prober alive is worse
+		// than tearing it down.
+		if p, ok := e.probers[networkID]; ok {
+			p.Stop()
+			delete(e.probers, networkID)
+		}
+		return
+	}
+
+	if p, ok := e.probers[networkID]; ok {
+		p.UpdateConfig(cfg)
+		return
+	}
+	netLg := e.logger.With().Str("networkId", networkID).Logger()
+	e.probers[networkID] = newProber(e.appCtx, networkID, &netLg, e, e.tracker, cfg)
+}
+
 // GetScores returns the per-upstream `score` map produced by the
 // slot's most recent successful tick. Entries are the EXACT values the
 // JS `sortByScore(...)` step assigned to each upstream, so anything
@@ -586,7 +689,8 @@ func (e *Engine) IsStepLogEnabled() bool {
 	return e.stepLogEnabled.Load()
 }
 
-// Stop cancels every slot's ticker and releases pooled runtimes.
+// Stop cancels every slot's ticker, tears down every per-network
+// Prober, and releases pooled runtimes.
 func (e *Engine) Stop() {
 	e.mu.Lock()
 	for _, slot := range e.slots {
@@ -594,5 +698,13 @@ func (e *Engine) Stop() {
 	}
 	e.slots = make(map[slotKey]*Slot)
 	e.mu.Unlock()
+
+	e.proberMu.Lock()
+	for _, p := range e.probers {
+		p.Stop()
+	}
+	e.probers = make(map[string]*Prober)
+	e.proberMu.Unlock()
+
 	e.cancel()
 }

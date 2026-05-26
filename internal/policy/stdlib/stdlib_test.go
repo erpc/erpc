@@ -582,14 +582,22 @@ func TestStdlib_DefaultPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 	}
 }
 
-// TestStdlib_DefaultPolicy_ProbeReadmitsAt90s (G4): an upstream
-// excluded by the filter is re-admitted at ~90s, not the prior 5m.
-// Verifies the default's `probeExcluded({ reAdmitAfter: '90s' })`.
+// TestStdlib_DefaultPolicy_ReadmitsWhenMetricsHeal verifies the new
+// probe-driven re-admission story: there is NO time-based readmit
+// timer. The same `excludeIf` predicates that excluded the upstream
+// are what re-admit it — when its tracker counters cross back below
+// the threshold (because probe traffic OR state-poller calls fed
+// healthy samples), it falls out of the excluded set on the next
+// tick.
 //
-// Setup: rpc1 errors hard, gets filtered out. We drive enough ticks at
-// frozen monotonic time to verify it isn't re-admitted in the first 89s
-// and IS re-admitted at 91s.
-func TestStdlib_DefaultPolicy_ProbeReadmitsAt90s(t *testing.T) {
+// Setup:
+//   1. Seed rpc1 with 80% error rate → excludeIf trips → excluded.
+//   2. Advance "time" arbitrarily — without metric improvement,
+//      rpc1 MUST stay excluded forever (no time-based readmit).
+//   3. Feed rpc1 with a fresh batch of clean samples that brings the
+//      rolling error rate below 0.7 → next tick, rpc1 is back in
+//      rotation.
+func TestStdlib_DefaultPolicy_ReadmitsWhenMetricsHeal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	logger := zerolog.Nop()
@@ -602,33 +610,60 @@ func TestStdlib_DefaultPolicy_ProbeReadmitsAt90s(t *testing.T) {
 	ups := mkUps("rpc1", "rpc2")
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
-	// rpc1 broken; rpc2 healthy.
-	for i := 0; i < 90; i++ {
+	// rpc1 broken: 80% error rate, comfortably above the default's 0.7
+	// excludeIf threshold AND above samplesAbove(10).
+	for i := 0; i < 20; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "")
+	}
+	for i := 0; i < 80; i++ {
 		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
 		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
 	}
+	// rpc2 healthy.
 	for i := 0; i < 100; i++ {
 		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
-		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "")
 	}
 
-	// Tick 1 — rpc1 excluded, excludedSince[rpc1] = now.
+	// Tick 1 — rpc1 excluded.
 	policy.TickForTest(engine, "evm:1", "*")
 	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*", "*")))
+	require.Contains(t, idsExcluded(engine.GetExcluded("evm:1", "*", "*")), "rpc1",
+		"rpc1 must be in the excluded set after tick 1")
 
-	// Advance virtual time 60s. probeExcluded(reAdmitAfter:'90s') must
-	// NOT re-admit yet (need > 90s).
-	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 60*time.Second)
+	// Advance virtual time arbitrarily. Without metric improvement,
+	// rpc1 MUST stay excluded — there is no time-based re-admit.
+	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 10*time.Minute)
 	policy.TickForTest(engine, "evm:1", "*")
 	require.Equal(t, []string{"rpc2"}, ids(engine.GetOrdered("evm:1", "*", "*")),
-		"at +60s rpc1 must still be excluded (reAdmitAfter='90s')")
+		"after 10m with no metric improvement rpc1 must STILL be excluded")
 
-	// Advance to +120s total (60s since registration + 60s more = 120s).
-	policy.AdvanceEvalNowForTest(engine, "evm:1", "*", 60*time.Second)
+	// Feed enough clean samples to drag rpc1's rolling error rate
+	// below the 0.7 threshold. With a 1m tracker window, the original
+	// 80 errors + 20 successes are still in the bucket, so we need to
+	// add many successes to dilute. Easier: reset the tracker bucket
+	// state for rpc1 by seeding a fresh batch that swamps the prior.
+	for i := 0; i < 2000; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "")
+	}
+
+	// Next tick should see fresh metrics and re-admit rpc1.
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Contains(t, got, "rpc1",
-		"at +120s rpc1 must be re-admitted (reAdmitAfter='90s' elapsed)")
+		"after metrics healed (clean samples diluted error rate) rpc1 must be re-admitted")
+}
+
+// idsExcluded — small helper to extract IDs from a []common.Upstream
+// returned by Engine.GetExcluded.
+func idsExcluded(ups []common.Upstream) []string {
+	out := make([]string, len(ups))
+	for i, u := range ups {
+		out[i] = u.Id()
+	}
+	return out
 }
 
 // TestStdlib_StickyPrimary_RetainsPriorPrimary verifies cross-tick stickiness.

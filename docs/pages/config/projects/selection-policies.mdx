@@ -72,7 +72,7 @@ projects:
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
                 .sortByScore(PREFER_FASTEST)
                 .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-                .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })
+                .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' })
 ```
 </Tab>
 <Tab>
@@ -114,7 +114,7 @@ export default createConfig({
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
             .sortByScore(PREFER_FASTEST)
             .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-            .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' }),
+            .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' }),
       },
     }],
   }],
@@ -194,11 +194,13 @@ one of them lets a degraded upstream keep receiving traffic:
     // switch. Cuts flap on close calls; the cost of churn (connection setup, cache
     // locality) outweighs marginal ranking gains.
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-    // Cool-down recovery: every tick, restore up to 2 previously-excluded upstreams
-    // whose 90 s cooldown has elapsed, appended at the tail (lowest blast radius).
-    // They prove themselves over the next few ticks; if still bad, the excludes
-    // above drop them again.
-    .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })
+    // Shadow-mirror probing: sampled real traffic gets fanned out to any
+    // currently-excluded upstream in the background. Their tracker counters
+    // get fed indistinguishably from real traffic. Once they pass the
+    // excludeIf predicates above, they fall out of the excluded set on the
+    // next tick — no time-based readmit timer needed. Per-upstream opt-out
+    // via routing.probe: 'off'.
+    .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' })
 ```
 
 **Why error / throttle are tolerant (0.7 / 0.4) and latency is tight (3×).** Failure costs are asymmetric: error and throttle blips are already absorbed by retry / hedge / consensus (the failsafe layer). A slow upstream, by contrast, poisons tail latency on every request routed through it before falling back. Excluding a marginally-slow upstream costs at most one degraded reply; NOT excluding one poisons every call. So latency uses a tighter threshold than the other rules.
@@ -219,7 +221,7 @@ closed — write an explicit `evalFunc`:
     .whenEmpty(() => upstreams)
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-    .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1, position: 'tail' })
+    .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
 ```
 
 ## Eval inputs
@@ -279,9 +281,7 @@ type EvalContext = {
 
   // Cross-tick state — the ONLY carrier of state between ticks.
   previousOrder: string[]
-  previousExcluded: string[]
   lastSwitchAt: number | null
-  excludedSince: { [id: string]: number }
   tickCount: number
 }
 ```
@@ -467,7 +467,7 @@ Switch how the config combines with the base via `opts.multipliers`:
     .shadowExcludeIf(any(blockSecondsLagAbove(15), latencyAbove(15_000, 95)))
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary()
-    .readmitExcluded()
+    .probeExcluded()
 ```
 
 Operator workflow:
@@ -476,7 +476,7 @@ Operator workflow:
 2. Once the shadow rate matches your expectation (no false positives, no over-firing), flip the call to `excludeIf` and redeploy.
 3. To audit removal of an existing rule: shadow what's currently real, deploy, confirm the shadow rate drops to zero on healthy upstreams before deleting it.
 
-Shadow trips never touch `excludedSince` / `stickyPrimary` / `readmitExcluded` — the upstream stays in rotation in its original position, so a shadow rule cannot accidentally affect routing.
+Shadow trips never touch `stickyPrimary` / `probeExcluded` — the upstream stays in rotation in its original position, so a shadow rule cannot accidentally affect routing.
 
 ## Observability
 
@@ -626,8 +626,14 @@ logs, and the simulator UI. Reason resolution:
 .excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor')         // inline: explicit reason
 ```
 
-Re-admission timing is owned by `readmitExcluded` at the end of the
-chain — the anti-flap layer.
+Re-admission is implicit: the same `excludeIf` predicates that drop
+an upstream are also what re-admit it. Once the upstream's tracker
+counters cross back below the threshold (because shadow-mirrored
+probe traffic OR state-poller calls have accumulated healthy
+samples), the upstream falls out of the excluded set on the next
+tick. Add `probeExcluded` to the chain to enable the shadow-mirror
+feed; omit it and excluded upstreams stay out until structural
+signals heal naturally.
 
 </details>
 
@@ -771,21 +777,48 @@ the request is reorg-tolerant.
 ### Probing & forced inclusion
 
 <details>
-<summary>**`readmitExcluded`** (alias: `probeExcluded`)</summary>
+<summary>**`probeExcluded`**</summary>
 
 ```ts
-.readmitExcluded({
-  reAdmitAfter: Duration,
-  maxConcurrent?: number = 1,
-  longestFirst?: boolean = true,
-  position?: 'tail' | 'head' | 'random' = 'tail',
+.probeExcluded({
+  sampleRate?: number = 1.0,        // 0.0–1.0, per-(request, excluded-upstream) probability
+  maxConcurrent?: number = 4,       // in-flight probes per excluded upstream
+  timeout?: Duration = '10s',       // per-probe deadline
 })
 ```
 
-Deterministic re-admission. Each tick, picks up to `maxConcurrent`
-upstreams whose `excludedSince` is older than `reAdmitAfter` (oldest
-first when `longestFirst`) and inserts them at `position`. Tail = lowest
-blast radius (only served if head fails).
+Opt-in **shadow-mirror** primitive. When this step appears in the
+chain, the network's probe subsystem mirrors a sampled stream of real
+incoming requests against any upstream currently in the excluded set.
+The mirrored calls feed the **same** health-tracker counters as real
+traffic, so the upstream is re-admitted **implicitly** on the next
+tick once its metrics improve enough to clear the chain's `excludeIf`
+predicates. There is no time-based readmit timer — the criteria for
+re-admission is exactly the criteria for exclusion, in reverse.
+
+`probeExcluded` is a **no-op transform** on the upstream array
+itself. Its real work is in the Go-side prober, which subscribes to
+the network's request feed when this step is present. Omit it from
+the chain to disable shadow probing entirely; excluded upstreams stay
+excluded until structural signals (state-poller-driven head lag,
+finalization lag, etc.) bring their counters back across the
+threshold OR an operator intervenes manually (cordon/uncordon admin
+RPC).
+
+**Per-upstream opt-out** via `routing.probe: 'off'` on any upstream
+config. Use for cost-sensitive vendors (pay-per-call providers, etc.)
+where shadow traffic shouldn't eat quota. That upstream stays in the
+excluded set forever once predicates trip, until manually uncordoned.
+
+**Safety gates** built into the prober:
+
+- **Write-method gate** — `eth_sendRawTransaction`, `eth_sendTransaction`,
+  `eth_sign*`, `personal_sign*` are never mirrored (mutability risk).
+- **Connection isolation** — probe traffic uses the same upstream
+  client as real traffic (no separate pool yet), but the per-upstream
+  `maxConcurrent` cap bounds the worst case.
+- **Cancellation** — probes run on a context detached from the user's
+  request, bounded by `timeout`. The user's response is never delayed.
 
 </details>
 
@@ -800,18 +833,6 @@ blast radius (only served if head fails).
 ```
 
 Always include matching upstreams, even if prior filters dropped them.
-
-</details>
-
-<details>
-<summary>**`cooldown(duration)`**</summary>
-
-```ts
-.cooldown(duration: Duration)
-```
-
-Drops upstreams whose `excludedSince[id]` is within `duration` of
-`ctx.now`. Pairs naturally with `readmitExcluded`.
 
 </details>
 
@@ -844,7 +865,7 @@ Drops upstreams whose `excludedSince[id]` is within `duration` of
 `whenEmpty` is the canonical "safety net" — place it once, after the
 LAST primitive in the chain that can drop to empty (typically the last
 `excludeIf` or `removeCordoned`). Steps after that (preferTag,
-sortByScore, stickyPrimary, readmitExcluded) only reorder or add, so a
+sortByScore, stickyPrimary, probeExcluded) only reorder or add, so a
 single safety net suffices.
 
 </details>
@@ -1091,7 +1112,7 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
     .excludeIf(errorRateAbove(0.5))
     .cooldown('1m')
     .sortByScore(PREFER_FASTEST)
-    .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+    .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
     .forceInclude('canary-rpc', 'tail')
 ```
 

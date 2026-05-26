@@ -31,11 +31,15 @@ func wrapLegacyEvalFunction(sp *selectionPolicy, latencyQuantile string) string 
 	b.WriteString("  let result = __legacyFn(__sorted, ctx.method);\n")
 
 	if sp.ResampleExcluded && sp.ResampleInterval > 0 {
-		// .probeExcluded preserves the spirit of legacy resampling.
-		b.WriteString(fmt.Sprintf(
-			"  result = result.probeExcluded({ reAdmitAfter: %s, maxConcurrent: 1, longestFirst: true });\n",
-			formatDuration(sp.ResampleInterval),
-		))
+		// .probeExcluded preserves the spirit of legacy resampling:
+		// the upstream gets shadow-mirrored sampled real traffic while
+		// excluded, and re-admits when its metrics improve. The legacy
+		// `ResampleInterval` no longer maps to a time-based readmit
+		// timer (the new primitive is sample-driven) — we keep
+		// maxConcurrent=1 to mirror the legacy "one at a time"
+		// cadence.
+		_ = sp.ResampleInterval
+		b.WriteString("  result = result.probeExcluded({ sampleRate: 1.0, maxConcurrent: 1, timeout: '10s' });\n")
 	}
 	b.WriteString("  return result;\n")
 	b.WriteString("}")
@@ -68,10 +72,10 @@ func synthesizeScoreBasedEval(prj WidenedProject, nw WidenedNetwork, latencyQuan
 
 	if nw.SelectionPolicy != nil && nw.SelectionPolicy.ResampleExcluded &&
 		nw.SelectionPolicy.ResampleInterval > 0 {
-		b.WriteString(fmt.Sprintf(
-			"  result = result.probeExcluded({ reAdmitAfter: %s, maxConcurrent: 1, longestFirst: true });\n",
-			formatDuration(nw.SelectionPolicy.ResampleInterval),
-		))
+		// See sibling synthesizeFunctionEval — legacy resample maps
+		// to the new sample-driven probeExcluded primitive.
+		_ = nw.SelectionPolicy.ResampleInterval
+		b.WriteString("  result = result.probeExcluded({ sampleRate: 1.0, maxConcurrent: 1, timeout: '10s' });\n")
 	}
 
 	b.WriteString("  return result;\n")

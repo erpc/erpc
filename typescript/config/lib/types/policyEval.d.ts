@@ -126,11 +126,7 @@ export type PolicyEvalContext = {
     readonly finality: "realtime" | "unfinalized" | "finalized" | "unknown";
     readonly now: number;
     readonly previousOrder: readonly string[];
-    readonly previousExcluded: readonly string[];
     readonly lastSwitchAt: number | null;
-    readonly excludedSince: {
-        readonly [id: string]: number;
-    };
     readonly tickCount: number;
 };
 /** Back-compat alias kept for users who already typed against the old name. */
@@ -209,12 +205,39 @@ export type StickyPrimaryOptions = {
     hysteresis?: number;
     minSwitchInterval?: Duration;
 };
-/** Options for `readmitExcluded` (alias `probeExcluded`). */
-export type ReadmitExcludedOptions = {
-    reAdmitAfter?: Duration;
+/**
+ * Options for `probeExcluded` — registers the per-network probe
+ * subsystem to shadow-mirror sampled real requests against any
+ * upstream currently in the excluded set. The mirrored calls feed the
+ * SAME health-tracker counters as real traffic, so the upstream
+ * re-enters rotation naturally once its metrics improve enough to
+ * clear the chain's `excludeIf` predicates. There is no time-based
+ * re-admission timer.
+ *
+ * Per-upstream opt-out: set `routing.probe: 'off'` on any upstream
+ * config to keep it out of probe traffic entirely.
+ */
+export type ProbeExcludedOptions = {
+    /**
+     * Per-(request, excluded-upstream) probability of mirroring
+     * (0.0–1.0). Default 1.0 — mirror every published request, capped
+     * by `maxConcurrent`. Drop below 1.0 to thin probe traffic on
+     * high-RPS networks where every request fanning out is too much.
+     */
+    sampleRate?: number;
+    /**
+     * Concurrent in-flight probes per excluded upstream (default 4).
+     * The primary throttle — operators usually only need to tune this.
+     * When at the cap, additional incoming requests are dropped from
+     * the probe feed.
+     */
     maxConcurrent?: number;
-    position?: "head" | "tail" | "random";
-    longestFirst?: boolean;
+    /**
+     * Per-probe deadline (default `'10s'`). Probes that overrun are
+     * cancelled and counted as failures so a hung upstream registers
+     * as bad in the tracker.
+     */
+    timeout?: Duration;
 };
 /** Options for `byFinality` — per-finality branch handlers. */
 export type ByFinalityHandlers = {
@@ -274,8 +297,8 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
      * Use when auditioning a new exclusion rule (or removal of an existing
      * one) in production: deploy with `shadowExcludeIf`, watch the shadow
      * counter for N days, then flip to `excludeIf` once the rate matches
-     * expectations. The upstream stays in rotation and `excludedSince` /
-     * `stickyPrimary` / `readmitExcluded` are untouched.
+     * expectations. The upstream stays in rotation and
+     * `stickyPrimary` / `probeExcluded` are untouched.
      */
     shadowExcludeIf(predicate: PolicyEvalPredicate, reasonOverride?: string): PolicyEvalUpstreamArray;
     reject(fn: (u: PolicyEvalUpstream, i: number, a: PolicyEvalUpstream[]) => unknown): PolicyEvalUpstreamArray;
@@ -317,9 +340,22 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
     take(n: number): PolicyEvalUpstreamArray;
     skip(n: number): PolicyEvalUpstreamArray;
     at_(i: number): PolicyEvalUpstream | null;
-    readmitExcluded(opts?: ReadmitExcludedOptions): PolicyEvalUpstreamArray;
-    /** Back-compat alias of `readmitExcluded`. */
-    probeExcluded(opts?: ReadmitExcludedOptions): PolicyEvalUpstreamArray;
+    /**
+     * Register the per-network probe subsystem. When this step is in
+     * the chain, sampled real requests are shadow-mirrored against any
+     * upstream currently in the excluded set; the mirrored calls feed
+     * the same health tracker counters as real traffic, so excluded
+     * upstreams re-admit naturally when their metrics improve enough
+     * to clear the chain's `excludeIf` predicates.
+     *
+     * This is a no-op transform on the upstream array — its real work
+     * is in the Go-side prober. Omitting it disables shadow probing
+     * (excluded upstreams stay excluded until structural signals like
+     * head lag bring their counters back, or an operator intervenes).
+     *
+     * Per-upstream opt-out via `routing.probe: 'off'`.
+     */
+    probeExcluded(opts?: ProbeExcludedOptions): PolicyEvalUpstreamArray;
     forceInclude(idOrFn: Pattern | ((u: PolicyEvalUpstream) => unknown), position?: "head" | "tail"): PolicyEvalUpstreamArray;
     cooldown(duration: Duration): PolicyEvalUpstreamArray;
     if(cond: boolean | ((arr: PolicyEvalUpstreamArray) => unknown), thenFn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray, elseFn?: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray): PolicyEvalUpstreamArray;

@@ -481,7 +481,7 @@ func TestTranslate_ScoreBased_WithResampleExcluded_AppendsProbe(t *testing.T) {
 	require.NoError(t, err)
 	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, ".probeExcluded(", "probeExcluded must be appended")
-	require.Contains(t, eval, "reAdmitAfter: '7m0s'", "reAdmitAfter must use the legacy interval")
+	require.Contains(t, eval, "sampleRate: 1.0", "translator emits the new sample-driven probeExcluded shape")
 }
 
 // resampleExcluded + evalFunction: probeExcluded is appended after the
@@ -504,7 +504,7 @@ func TestTranslate_EvalFunction_WithResampleExcluded_AppendsProbe(t *testing.T) 
 	eval := nwCfgs[0].SelectionPolicy.EvalFunc
 	require.Contains(t, eval, "const __legacyFn =", "legacy fn wrapped")
 	require.Contains(t, eval, ".probeExcluded(", "probeExcluded must be appended")
-	require.Contains(t, eval, "reAdmitAfter: '3m0s'", "reAdmitAfter from legacy interval")
+	require.Contains(t, eval, "sampleRate: 1.0", "translator emits the new sample-driven probeExcluded shape")
 }
 
 // Legacy selectionPolicy.evalInterval must flow into the new shape.

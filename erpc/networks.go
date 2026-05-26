@@ -510,6 +510,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
+	// Feed the per-network probe-bus AFTER we know the request is
+	// actually going to dispatch to an upstream (i.e. not a
+	// cache-hit / static-response / follower-multiplexer
+	// short-circuit, all of which returned earlier). The publish is
+	// non-blocking and drops on overflow — request latency is never
+	// affected. The Prober (if any) samples from this feed to mirror
+	// the request against currently-excluded upstreams so their
+	// tracker counters get refreshed without touching real traffic.
+	// No-op for networks whose policy chain doesn't include
+	// `probeExcluded`.
+	if n.policyEngine != nil {
+		n.policyEngine.PublishRequest(n.networkId, req)
+	}
+
 	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
 	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
 		if err != nil {

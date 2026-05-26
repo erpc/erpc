@@ -182,6 +182,35 @@ var (
 		Help:      "Ticks where `stickyPrimary` actively held the primary that would otherwise have flipped (challenger had a lower score AND/OR cooldown still in effect). The ratio against `selection_primary_switch_total` reveals how much smoothing the chain is doing.",
 	}, []string{"project", "network", "method", "upstream"})
 
+	// Probe family — shadow-mirror traffic the selection policy fires
+	// at currently-excluded upstreams via `probeExcluded(...)`. Cardinality:
+	// `network × upstream × method` for requests/errors; `network × reason`
+	// for skip/drop counters (reason is a small fixed enum).
+
+	MetricSelectionProbeRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_requests_total",
+		Help:      "Probe-mirror requests sent to a currently-excluded upstream. Drives the re-admission story: as `errorRateAbove` predicates see the upstream's fresh shadow samples improve, it falls out of the excluded set on the next tick. Pairs with `selection_probe_errors_total` for probe-side error rate.",
+	}, []string{"network", "upstream", "method"})
+
+	MetricSelectionProbeErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_errors_total",
+		Help:      "Probe-mirror requests that returned an error. Same upstream/method as requests; reason ∈ {timeout, throttled, auth, skipped, error}.",
+	}, []string{"network", "upstream", "method", "reason"})
+
+	MetricSelectionProbeSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_skipped_total",
+		Help:      "Probe candidates that were skipped before firing. reason ∈ {write_method, opt_out, sampled_out, max_concurrent, no_method}. `write_method` and `opt_out` are safety/policy gates; `sampled_out` and `max_concurrent` are throughput controls.",
+	}, []string{"network", "reason"})
+
+	MetricSelectionProbeDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_dropped_total",
+		Help:      "Probe-bus publishes that were dropped before reaching the dispatcher (the per-network feed channel was full). The request path NEVER blocks on the bus — overflow becomes a lost sample, not a stalled forward.",
+	}, []string{"network", "reason"})
+
 	MetricUpstreamCordonEventTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordon_event_total",

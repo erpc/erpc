@@ -35,6 +35,12 @@ type Slot struct {
 	// cache holds the most recent eval output. nil before the first tick.
 	cache atomic.Pointer[[]common.Upstream]
 
+	// excludedCache holds the upstreams the most recent tick marked
+	// excluded — same atomic-load contract as `cache`. Read by the
+	// network's Prober via `Engine.GetExcluded` to know which
+	// upstreams are shadow-probe candidates for incoming requests.
+	excludedCache atomic.Pointer[[]common.Upstream]
+
 	// lastAccessedAtMs is unix-millis of the last tick OR GetOrdered
 	// touching this slot. Drives the engine's idle-slot eviction —
 	// per-(method, finality) slots that haven't seen traffic in a
@@ -296,9 +302,18 @@ func (s *Slot) tickOnce() {
 	decision.Diff = diffAgainst(state.PreviousOrder, orderedIDs)
 	decision.Diff.StickyHeld = evalRes.StickyHeld
 
-	// 6. Atomic swap cache.
+	// 6. Atomic swap caches — included (request-path read) AND excluded
+	// (Prober read). Both are atomic.Pointer slices; consumers MUST
+	// treat the returned slice as read-only.
 	ordered2 := ordered
 	s.cache.Store(&ordered2)
+	excludedUps := materializeExcluded(ups, excluded)
+	s.excludedCache.Store(&excludedUps)
+
+	// 6b. Reconcile this network's probe subsystem against the
+	// eval-emitted `__probeConfig`. Non-nil → create/update Prober;
+	// nil → tear it down. The engine dedupes across slots.
+	s.engine.reconcileProbeConfig(s.networkID, evalRes.ProbeConfig)
 
 	// 7. Update cross-tick state.
 	s.mu.Lock()
@@ -717,6 +732,27 @@ func excludedIDs(ex []ExcludedUpstream) []string {
 	out := make([]string, len(ex))
 	for i, e := range ex {
 		out[i] = e.ID
+	}
+	return out
+}
+
+// materializeExcluded resolves a list of ExcludedUpstream (with IDs and
+// attribution) back to the concrete `common.Upstream` instances. Used
+// to populate the slot's `excludedCache` so the Prober can call
+// `Forward` against the excluded set without an extra ID→pointer hop.
+func materializeExcluded(ups []common.Upstream, excluded []ExcludedUpstream) []common.Upstream {
+	if len(excluded) == 0 {
+		return nil
+	}
+	index := make(map[string]common.Upstream, len(ups))
+	for _, u := range ups {
+		index[u.Id()] = u
+	}
+	out := make([]common.Upstream, 0, len(excluded))
+	for _, ex := range excluded {
+		if u, ok := index[ex.ID]; ok {
+			out = append(out, u)
+		}
 	}
 	return out
 }

@@ -14,27 +14,23 @@ import (
 // EvalContext mirrors the JS-side `ctx` argument (spec §3.2). Constructed
 // per-tick and passed by value into the sobek runtime.
 type EvalContext struct {
-	Network          string           `json:"network"`
-	Method           string           `json:"method"`
-	Finality         string           `json:"finality"`
-	Now              int64            `json:"now"`
-	PreviousOrder    []string         `json:"previousOrder,omitempty"`
-	PreviousExcluded []string         `json:"previousExcluded,omitempty"`
-	LastSwitchAt     *int64           `json:"lastSwitchAt,omitempty"`
-	ExcludedSince    map[string]int64 `json:"excludedSince,omitempty"`
-	TickCount        uint64           `json:"tickCount"`
+	Network       string   `json:"network"`
+	Method        string   `json:"method"`
+	Finality      string   `json:"finality"`
+	Now           int64    `json:"now"`
+	PreviousOrder []string `json:"previousOrder,omitempty"`
+	LastSwitchAt  *int64   `json:"lastSwitchAt,omitempty"`
+	TickCount     uint64   `json:"tickCount"`
 }
 
 func buildEvalContext(networkID, method string, state DecisionState) EvalContext {
 	ctx := EvalContext{
-		Network:          networkID,
-		Method:           method,
-		Finality:         "unknown",
-		Now:              time.Now().UnixMilli(),
-		PreviousOrder:    state.PreviousOrder,
-		PreviousExcluded: state.PreviousExcluded,
-		ExcludedSince:    state.ExcludedSince,
-		TickCount:        state.TickCount,
+		Network:       networkID,
+		Method:        method,
+		Finality:      "unknown",
+		Now:           time.Now().UnixMilli(),
+		PreviousOrder: state.PreviousOrder,
+		TickCount:     state.TickCount,
 	}
 	if state.LastSwitchAt != nil {
 		ms := state.LastSwitchAt.UnixMilli()
@@ -381,6 +377,12 @@ type EvalResult struct {
 	// ordering, but cooldown or hysteresis kept the incumbent). Drives
 	// `erpc_selection_sticky_hold_total{upstream=<held primary>}`.
 	StickyHeld bool
+	// ProbeConfig is the options object the chain's `probeExcluded(...)`
+	// step deposited on `__probeConfig` this tick, or nil if the step
+	// wasn't called. The engine reconciles a per-network Prober against
+	// this: non-nil → ensure a Prober exists with this config; nil
+	// (across all of the network's slots) → tear the Prober down.
+	ProbeConfig *ProbeConfig
 }
 
 // runEval executes the compiled eval program against the snapshot.
@@ -501,6 +503,12 @@ func runEval(
 	if err := vm.GlobalObject().Set("__policyStickyHeld", false); err != nil {
 		return nil, err
 	}
+	// Cleared each tick. `probeExcluded(opts)` deposits its options here;
+	// `readProbeConfig` drains it after the eval and the engine
+	// reconciles a per-network Prober against it.
+	if err := vm.GlobalObject().Set("__probeConfig", sobek.Undefined()); err != nil {
+		return nil, err
+	}
 	// Cross-slot sticky register: stickyPrimary({scope}) reads/writes
 	// this via two Go-side helpers installed below. Closes over `sticky`
 	// + the eval's network/method/finality so the JS caller only needs
@@ -542,6 +550,7 @@ func runEval(
 		_ = vm.GlobalObject().Set("__policyLeafReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyShadowReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyStickyHeld", false)
+		_ = vm.GlobalObject().Set("__probeConfig", sobek.Undefined())
 		// Stub the sticky helpers back to no-ops so the pooled runtime
 		// cannot leak a closure referencing this tick's store after
 		// release. (The next runEval reinstalls them.)
@@ -579,8 +588,60 @@ func runEval(
 	if heldVal := vm.GlobalObject().Get("__policyStickyHeld"); heldVal != nil && !sobek.IsUndefined(heldVal) && !sobek.IsNull(heldVal) {
 		out.StickyHeld = heldVal.ToBoolean()
 	}
+	out.ProbeConfig = readProbeConfig(vm)
 
 	return out, nil
+}
+
+// readProbeConfig drains the JS-side `__probeConfig` global into a Go
+// ProbeConfig. Returns nil when `probeExcluded(...)` wasn't called in
+// the chain. Tolerates malformed input (missing fields take defaults;
+// non-object value returns nil) — a misconfigured probe step
+// shouldn't fail the eval.
+func readProbeConfig(vm *sobek.Runtime) *ProbeConfig {
+	v := vm.GlobalObject().Get("__probeConfig")
+	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {
+		return nil
+	}
+	obj, ok := v.(*sobek.Object)
+	if !ok {
+		return nil
+	}
+	cfg := &ProbeConfig{
+		SampleRate:    1.0,
+		MaxConcurrent: 4,
+		Timeout:       10 * time.Second,
+	}
+	if srVal := obj.Get("sampleRate"); srVal != nil && !sobek.IsUndefined(srVal) && !sobek.IsNull(srVal) {
+		sr := srVal.ToFloat()
+		if sr < 0 {
+			sr = 0
+		} else if sr > 1 {
+			sr = 1
+		}
+		cfg.SampleRate = sr
+	}
+	if mcVal := obj.Get("maxConcurrent"); mcVal != nil && !sobek.IsUndefined(mcVal) && !sobek.IsNull(mcVal) {
+		mc := int(mcVal.ToInteger())
+		if mc < 1 {
+			mc = 1
+		}
+		cfg.MaxConcurrent = mc
+	}
+	if toVal := obj.Get("timeout"); toVal != nil && !sobek.IsUndefined(toVal) && !sobek.IsNull(toVal) {
+		// String duration ("10s") or numeric ms.
+		switch toVal.ExportType().String() {
+		case "string":
+			if d, err := time.ParseDuration(toVal.String()); err == nil && d > 0 {
+				cfg.Timeout = d
+			}
+		default:
+			if ms := toVal.ToInteger(); ms > 0 {
+				cfg.Timeout = time.Duration(ms) * time.Millisecond
+			}
+		}
+	}
+	return cfg
 }
 
 // readReasonsMap deserializes a JS-side `{ [upstreamId]: string[] }`

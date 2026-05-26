@@ -52,7 +52,7 @@ const _realisticConfig = createConfig({
                 .preferTag("!tier:fallback", { minHealthy: 1, fallback: "tier:fallback" })
                 .sortByScore(PREFER_FASTEST)
                 .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: "30s" })
-                .readmitExcluded({ reAdmitAfter: "90s", maxConcurrent: 2, position: "tail" }),
+                .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: "10s" }),
           },
         },
       ],
@@ -126,8 +126,11 @@ const _ctxFieldsTyped: SelectionPolicyEvalFunction = (upstreams, ctx) => {
   const _finality: "realtime" | "unfinalized" | "finalized" | "unknown" =
     ctx.finality;
   const _tick: number = ctx.tickCount;
-  const _excluded: readonly string[] = ctx.previousExcluded;
-  const _excludedSince: number | undefined = ctx.excludedSince["some-id"];
+  // previousExcluded / excludedSince fields were dropped from the
+  // EvalContext when readmitExcluded was replaced by probeExcluded
+  // (the new primitive doesn't need JS-side bookkeeping of
+  // excluded-set timestamps — re-admission is driven by tracker
+  // metrics, not elapsed time).
 
   if (ctx.finality === "finalized") {
     // Reorg-tolerant: no sticky needed.
@@ -259,8 +262,8 @@ createConfig({
             evalInterval: "1s",
             evalFunc: (upstreams) =>
               upstreams
-                // @ts-expect-error — `position` accepts only the literal union
-                .readmitExcluded({ position: "middle" })
+                // @ts-expect-error — `maxConcurrent` must be a number, not a string
+                .probeExcluded({ maxConcurrent: "lots" })
                 .sortByScore(PREFER_FASTEST),
           },
         },

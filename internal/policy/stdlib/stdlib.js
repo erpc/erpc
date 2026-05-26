@@ -380,9 +380,12 @@
   // row, and in DEBUG eRPC logs — so "which rule trips this upstream
   // out" is always one click / log line away.
   //
-  // Re-admission timing is controlled by `readmitExcluded({reAdmitAfter})`
-  // at the end of the chain — that's the anti-flap layer (stays out for N
-  // before being given another chance regardless of why excluded).
+  // Re-admission is implicit: an excluded upstream's tracker counters
+  // continue to be fed by `probeExcluded` (shadow-mirrored real traffic)
+  // and structural pollers (head-lag etc.); once those counters cross
+  // back below the excludeIf predicate's threshold the upstream falls
+  // out of the excluded set on the next tick. No separate cooldown
+  // timer — the same predicate that excluded it is what re-admits it.
   define('excludeIf', function (predicate, reasonOverride) {
     if (typeof predicate !== 'function') {
       // Graceful no-op for invalid first arg — keeps the chain alive
@@ -446,7 +449,7 @@
   // proposed rule is safe to promote.
   //
   // The upstream stays in the pool in its original position. No effect on
-  // `excludedSince`, `stickyPrimary`, or `readmitExcluded` — shadow trips
+  // `excludedSince`, `stickyPrimary`, or `probeExcluded` — shadow trips
   // never enter the cooldown bookkeeping.
   define('shadowExcludeIf', function (predicate, reasonOverride) {
     if (typeof predicate !== 'function') {
@@ -932,73 +935,55 @@
 
   // ─── 4.10 Probing & forced inclusion ────────────────────────────────────
 
-  // readmitExcluded — controlled re-introduction of upstreams that have
-  // been out of rotation for at least `reAdmitAfter`. The verb pairs with
-  // `excludeIf`: that primitive marks unhealthy upstreams as excluded;
-  // this one decides when (and how aggressively) to give them another
-  // chance. Same semantics as the legacy `probeExcluded` name — both are
-  // bound below for backward compatibility.
+  // probeExcluded — opt-in shadow-mirror primitive. When this step
+  // appears in the chain, the network's probe subsystem mirrors a
+  // sampled stream of real incoming requests against any upstream
+  // currently in the excluded set. The mirrored calls feed the SAME
+  // tracker counters as real traffic, so the upstream is re-admitted
+  // implicitly on the next tick once its metrics improve enough to
+  // clear the chain's `excludeIf` predicates. There is no
+  // "re-admission timer" — the criteria for re-admission is exactly
+  // the criteria for exclusion, in reverse: if `excludeIf` no longer
+  // trips against the upstream's fresh (shadow-fed) samples, it's
+  // back in rotation.
+  //
+  // This is a NO-OP transform on the upstream array — its real work
+  // is in the Go-side prober that subscribes to the network's request
+  // feed when this step is present. Omitting `probeExcluded` from the
+  // chain disables shadow probing entirely; excluded upstreams stay
+  // excluded until structural signals (head lag, state-poller results,
+  // etc.) bring their counters back across the threshold OR an
+  // operator intervenes manually.
   //
   // Options:
-  //   reAdmitAfter   — minimum time an upstream must have been excluded
-  //                     (default 5m). Pair with `excludeIf({outFor})`:
-  //                     the upstream's own rule keeps it out for `outFor`,
-  //                     and `readmitExcluded` decides when to re-admit it
-  //                     from the engine's previously-excluded pool.
-  //   maxConcurrent  — at most this many re-admits per tick (default 1).
-  //                     Limits blast radius when many upstreams cool down
-  //                     simultaneously.
-  //   position       — where in the returned array re-admitted upstreams
-  //                     land: 'tail' (default, cautious — only gets traffic
-  //                     via retry/hedge fallback), 'head' (aggressive —
-  //                     immediately becomes a candidate primary), 'random'
-  //                     (canary-style interleave).
-  //   longestFirst   — re-admit the upstream that's been excluded longest
-  //                     first (default true).
-  function readmitExcludedFn(opts) {
+  //   sampleRate    — 0.0–1.0, per-(request, excluded-upstream) probability
+  //                    of mirroring. Default 1.0 (mirror every request,
+  //                    capped by `maxConcurrent`). Use < 1.0 to thin
+  //                    probe traffic on high-RPS networks where you don't
+  //                    want every request fanning out.
+  //   maxConcurrent — concurrent in-flight probes per excluded upstream
+  //                    (default 4). When at the cap, additional incoming
+  //                    requests are dropped from the probe feed. This is
+  //                    the primary throttle — operators usually only
+  //                    need to tune this.
+  //   timeout       — per-probe deadline (default '10s'). Probes that
+  //                    overrun are cancelled and counted as failures so
+  //                    a hung upstream registers as bad in the tracker.
+  //
+  // Per-upstream opt-out: set `routing.probe: off` on any upstream
+  // config to exclude it from probe traffic entirely (cost-sensitive
+  // vendors, etc.). That upstream stays in the excluded set forever
+  // once predicates trip, until manually uncordoned.
+  function probeExcludedFn(opts) {
     opts = opts || {};
-    const ctx = globalThis.__policyCtx || {};
-    const reAdmitAfterMs = globalThis.durationMs(opts.reAdmitAfter != null ? opts.reAdmitAfter : '5m');
-    const maxConcurrent  = opts.maxConcurrent != null ? opts.maxConcurrent : 1;
-    const longestFirst   = opts.longestFirst !== false;
-    const position       = opts.position || 'tail';
-    const now = ctx.now || Date.now();
-    const excludedSince = ctx.excludedSince || {};
-    const currentIDs = new Set(toIDs(this));
-    // Find candidates from the input universe (not the chain so far) — we
-    // need the engine to expose them; for now, fall back to ctx.previousExcluded.
-    const candidatePool = (ctx.previousExcluded || []).filter(id => !currentIDs.has(id));
-    const eligible = [];
-    for (const id of candidatePool) {
-      const since = excludedSince[id];
-      if (since == null) continue;
-      if (now - since < reAdmitAfterMs) continue;
-      eligible.push({ id, since });
-    }
-    eligible.sort((a, b) => longestFirst ? (a.since - b.since) : (b.since - a.since));
-    const pick = eligible.slice(0, maxConcurrent).map(e => e.id);
-
-    if (pick.length === 0) return this.slice();
-
-    // Materialize the actual upstream objects for these ids; the engine
-    // exposes `__policyAllUpstreams` per-tick.
-    const all = globalThis.__policyAllUpstreams || [];
-    const byId = {};
-    for (const u of all) byId[u.id] = u;
-    const probed = pick.map(id => byId[id]).filter(Boolean);
-
-    if (position === 'head') return probed.concat(this);
-    if (position === 'random') {
-      const out = this.slice();
-      for (const p of probed) out.splice(Math.floor(Math.random() * (out.length + 1)), 0, p);
-      return out;
-    }
-    return this.concat(probed); // tail (default)
+    globalThis.__probeConfig = {
+      sampleRate:    opts.sampleRate    != null ? opts.sampleRate    : 1.0,
+      maxConcurrent: opts.maxConcurrent != null ? opts.maxConcurrent : 4,
+      timeout:       opts.timeout       != null ? opts.timeout       : '10s',
+    };
+    return this.slice();
   }
-  define('readmitExcluded', readmitExcludedFn);
-  // Backward-compat alias: existing policies using `probeExcluded` keep
-  // working unchanged. Documentation should reference `readmitExcluded`.
-  define('probeExcluded', readmitExcludedFn);
+  define('probeExcluded', probeExcludedFn);
 
   define('forceInclude', function (idOrFn, position) {
     const all = globalThis.__policyAllUpstreams || [];

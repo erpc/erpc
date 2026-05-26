@@ -186,8 +186,12 @@ func SetFinalityForTest(e *Engine, networkID, method, finality string) {
 // AdvanceEvalNowForTest adds `delta` to `ctx.now` on the slot's next
 // tick(s). The slot's `excludedSince` timestamps stay anchored to real
 // time, so this effectively simulates "wall clock has advanced by
-// `delta` since the upstream was excluded" — exactly what
-// `probeExcluded(reAdmitAfter:...)` reads.
+// `delta` since the upstream was excluded" — useful for testing
+// metrics that read `(now - excludedSince)` (telemetry's
+// `excluded_seconds` gauge etc.). With the new probe-driven
+// re-admission story, no stdlib primitive reads this directly — the
+// engine's own state ages naturally — but the helper survives for
+// tests that want to observe telemetry-side time-based gauges.
 //
 // Calls accumulate: two AdvanceEvalNowForTest(60s) bumps push ctx.now
 // forward by 120 s. Pass a negative delta to roll back.

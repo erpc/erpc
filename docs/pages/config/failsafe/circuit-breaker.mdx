@@ -21,12 +21,12 @@ upstreams
                  latencyAbove(30_000)))
   .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))         // lagging
   ...
-  .readmitExcluded({ reAdmitAfter: '90s' })                                  // probe back
+  .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4 })                      // shadow-mirror real traffic at excluded upstreams
 ```
 
-An excluded upstream stays out until the next tick — and is then re-admitted via `.readmitExcluded({ reAdmitAfter })`, which gives it organic traffic again after a cooldown. If the live metrics still trip the `excludeIf` chain, it's excluded again. Otherwise it earns its score-based position back.
+An excluded upstream stays out until its tracker metrics improve below the same `excludeIf` thresholds — there is **no separate readmit timer**. The `probeExcluded` step subscribes the network's probe subsystem to the request feed; the prober shadow-mirrors a sampled stream of real requests against any currently-excluded upstream, feeding the same tracker counters as real traffic. Once those counters cross back below the threshold, the upstream falls out of the excluded set on the next tick and re-enters rotation.
 
-This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (70 % error rate / 40 % throttle rate, each gated on ≥ 10 samples; p70 > 30 s OR 3× the fastest peer gated on ≥ 20 samples; head lag > 16 blocks OR 30 s; 90 s readmit) are tuned for production from day one. The `samplesAbove(N)` guards on the error / throttle / relative-latency predicates exist so a single failing call on a fresh-pod tracker (errorRate = 1/1 = 1.0) cannot cascade-evict every upstream before the rolling window has meaningful denominator.
+This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (70 % error rate / 40 % throttle rate, each gated on ≥ 10 samples; p70 > 30 s OR 3× the fastest peer gated on ≥ 20 samples; head lag > 16 blocks OR 30 s) are tuned for production from day one. The `samplesAbove(N)` guards on the error / throttle / relative-latency predicates exist so a single failing call on a fresh-pod tracker (errorRate = 1/1 = 1.0) cannot cascade-evict every upstream before the rolling window has meaningful denominator.
 
 ## State, mapped to selection-policy concepts
 
@@ -34,7 +34,7 @@ This is the **default policy** — you get it by omitting `selectionPolicy` enti
 |---|---|
 | **Closed** (upstream healthy) | Present in the eval's returned ordered list. `erpc_selection_position{upstream}` is `0` (primary) or `1+` (runner-up). |
 | **Open** (upstream excluded) | Missing from the returned list. `erpc_selection_position{upstream}` is `-1`. The reason ("errorRate>0.5", "p70>30000ms", "p70>3xFastest", ...) appears on the per-upstream annotation in `Decision.Output.Annotations[id]` and DEBUG logs. |
-| **Half-open** (probing recovery) | `readmitExcluded` re-admits previously-excluded upstreams at the tail of the returned list. Organic retry/hedge traffic probes them; if metrics still bad on the next tick, excluded again. |
+| **Half-open** (probing recovery) | `probeExcluded` shadow-mirrors sampled real traffic to currently-excluded upstreams in the background. The mirrored calls feed the same tracker counters as real traffic; once they cross back below the `excludeIf` thresholds, the upstream falls out of the excluded set on the next tick. No real user traffic is served by an excluded upstream during this — the probing is entirely behind the scenes. Per-upstream opt-out via `routing.probe: 'off'`. |
 
 ## Tuning the thresholds
 
@@ -50,7 +50,7 @@ Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the 
     .whenEmpty(() => upstreams)
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
-    .readmitExcluded({ reAdmitAfter: '5m', maxConcurrent: 1 })
+    .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
 ```
 
 See [Selection policies](/config/projects/selection-policies) for the full chainable vocabulary + every predicate factory.

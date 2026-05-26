@@ -29,7 +29,7 @@ export type {
     KeepHealthyOptions,
     PreferOptions,
     StickyPrimaryOptions,
-    ReadmitExcludedOptions,
+    ProbeExcludedOptions,
     ByFinalityHandlers,
     WhereFilter,
   } from "./policyEval";

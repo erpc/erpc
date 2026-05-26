@@ -61,6 +61,18 @@ func setupSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamConf
 	// only covers rpc1..rpc5.localhost; our tests use semantic IDs.
 	for _, c := range upstreamConfigs {
 		mockStatePollerForHost(c.Endpoint)
+		// Opt every test upstream OUT of probe traffic by default —
+		// the focused selection-policy tests in this file assert
+		// "excluded = zero gock HTTP hits", which would be falsified
+		// by the default policy's `probeExcluded` shadow-mirroring.
+		// Tests that explicitly exercise probe traffic build their
+		// own configs.
+		if c.Routing == nil {
+			c.Routing = &common.UpstreamRoutingConfig{}
+		}
+		if c.Routing.Probe == "" {
+			c.Routing.Probe = common.ProbeModeOff
+		}
 	}
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
@@ -768,15 +780,19 @@ func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 	}
 }
 
-// TestNetworkPolicy_ProbeReAdmit_AtNinetySeconds — an excluded upstream
-// returns to rotation at ~90s (down from the prior 5m). Verifies the
-// hardened default's `probeExcluded({reAdmitAfter:'90s'})`.
+// TestNetworkPolicy_NoTimeBasedReadmit_OnlyMetricsHeal — with the
+// new probe-driven re-admission model, an excluded upstream STAYS
+// excluded forever regardless of elapsed time, until its tracker
+// counters fall back below the excludeIf threshold. Verifies that:
+//   1. A degraded upstream is excluded on the first tick.
+//   2. Even after arbitrary virtual-time advancement, it stays excluded.
+//   3. Once clean samples drag its rolling error rate below 0.7, the
+//      next tick re-admits it.
 //
-// We use the in-engine virtual-time knob to fast-forward
-// `ctx.now`, leaving the upstream's real `excludedSince` anchored at
-// initial-tick time. probeExcluded reads (ctx.now - excludedSince) and
-// re-admits when that exceeds reAdmitAfter.
-func TestNetworkPolicy_ProbeReAdmit_AtNinetySeconds(t *testing.T) {
+// The probe subsystem itself feeds those clean samples in production
+// (mirrored real traffic); this test simulates that by directly
+// seeding the tracker, the same way a probe call would.
+func TestNetworkPolicy_NoTimeBasedReadmit_OnlyMetricsHeal(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -790,44 +806,45 @@ func TestNetworkPolicy_ProbeReAdmit_AtNinetySeconds(t *testing.T) {
 		{Type: common.UpstreamTypeEvm, Id: "dead", Endpoint: upstreamHostFromID("dead"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	})
 
-	// "dead" is currently broken; "alive" is healthy.
+	// "dead" is broken (90% error rate); "alive" is healthy.
 	seedDegraded(network.metricsTracker, upstreamByID(t, network, "alive"),
 		seedSpec{successful: 100, successAvgMs: 10})
 	seedDegraded(network.metricsTracker, upstreamByID(t, network, "dead"),
 		seedSpec{successful: 10, successAvgMs: 10, failed: 90})
 
-	// Tick 1 — dead excluded, excludedSince[dead] = now (real time).
+	// Tick 1 — dead excluded.
 	policy.TickForTest(network.policyEngine, network.networkId, "*")
+	require.Equal(t, []string{"alive"},
+		idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, "*", "*")))
 
-	// +60s virtual time — still under the 90s reAdmitAfter window.
-	policy.AdvanceEvalNowForTest(network.policyEngine, network.networkId, "*", 60*time.Second)
+	// Advance virtual time arbitrarily — dead MUST stay excluded since
+	// no metric improvement has occurred. The new probeExcluded has no
+	// time-based readmit.
+	policy.AdvanceEvalNowForTest(network.policyEngine, network.networkId, "*", 10*time.Minute)
 	policy.TickForTest(network.policyEngine, network.networkId, "*")
+	require.Equal(t, []string{"alive"},
+		idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, "*", "*")),
+		"dead must still be excluded after arbitrary time — no time-based readmit")
 
-	mockClean(t, upstreamHostFromID("alive"), "eth_getBalance", "0xalive")
-	mockClean(t, upstreamHostFromID("dead"), "eth_getBalance", "0xdead")
+	// Now simulate the prober feeding clean samples to "dead" — enough
+	// to swamp its prior 90 failures and drag the rolling error rate
+	// below the 0.7 threshold.
+	seedDegraded(network.metricsTracker, upstreamByID(t, network, "dead"),
+		seedSpec{successful: 2000, successAvgMs: 10})
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
-	_, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	assert.Equal(t, 0, gockHits(upstreamHostFromID("dead")),
-		"at +60s dead must still be excluded (reAdmitAfter='90s' not elapsed)")
-
-	// +120s total → past 90s. probeExcluded should re-admit dead.
-	policy.AdvanceEvalNowForTest(network.policyEngine, network.networkId, "*", 60*time.Second)
 	policy.TickForTest(network.policyEngine, network.networkId, "*")
-
-	// At this point the engine's order includes both upstreams. We can't
-	// observe re-admission via gock directly because alive (still
-	// healthier) will be position[0]. So instead we read the engine's
-	// order directly and assert dead is back in.
 	order := network.policyEngine.GetOrdered(network.networkId, "*", "*")
-	ids := make([]string, len(order))
-	for i, u := range order {
-		ids[i] = u.Id()
+	assert.Contains(t, idsFromUpstreams(order), "dead",
+		"once shadow-probe-fed samples healed dead's error rate, next tick must re-admit it")
+	assert.Contains(t, idsFromUpstreams(order), "alive")
+}
+
+func idsFromUpstreams(ups []common.Upstream) []string {
+	out := make([]string, len(ups))
+	for i, u := range ups {
+		out[i] = u.Id()
 	}
-	assert.Contains(t, ids, "dead",
-		"at +120s, probeExcluded(reAdmitAfter:'90s') must re-admit dead")
-	assert.Contains(t, ids, "alive")
+	return out
 }
 
 // TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade verifies

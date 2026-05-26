@@ -24,6 +24,10 @@
     // Hold the primary stable across ticks unless a meaningfully better
     // option exists for ≥30s.
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-    // Re-admit excluded upstreams once cooled down — at the tail, one
-    // at a time, lowest blast radius.
-    .readmitExcluded({ reAdmitAfter: '90s', maxConcurrent: 2, position: 'tail' })
+    // Shadow-mirror sampled real traffic to currently-excluded
+    // upstreams in the background so they accumulate fresh tracker
+    // samples without touching real user traffic. Once their metrics
+    // improve enough to clear the excludeIf predicates above, they
+    // fall out of the excluded set on the next tick and re-enter
+    // rotation naturally. Per-upstream opt-out via `routing.probe: off`.
+    .probeExcluded({ sampleRate: 1.0, maxConcurrent: 4, timeout: '10s' })

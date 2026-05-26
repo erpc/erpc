@@ -747,8 +747,9 @@ type UpstreamConfig struct {
 }
 
 // UpstreamRoutingConfig holds per-upstream routing hints. Today this is
-// the home of `scoreMultipliers` — per-upstream weight overrides the
-// selection policy folds into `sortByScore`.
+// the home of `scoreMultipliers` (per-upstream weight overrides folded
+// into `sortByScore`) and `probe` (per-upstream opt-out for the
+// selection policy's `probeExcluded` shadow-mirror traffic).
 type UpstreamRoutingConfig struct {
 	// ScoreMultipliers biases this upstream's rank. Each entry is a
 	// matcher (network/method/finality) plus weight overrides; the engine
@@ -760,7 +761,30 @@ type UpstreamRoutingConfig struct {
 	// score (e.g. 0.9 → p90). When unset, the policy's own
 	// `sortByScore({ latencyQuantile })` (default p70) applies.
 	ScoreLatencyQuantile float64 `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile,omitempty"`
+	// Probe gates whether the selection policy's `probeExcluded` step
+	// may shadow-mirror real requests to THIS upstream when it's
+	// currently in the excluded set. `"on"` (default) opts in; `"off"`
+	// disables probing entirely — the upstream stays excluded
+	// permanently once predicates trip until an operator intervenes
+	// (manual cordon/uncordon, or until the predicate stops matching
+	// via state-poller-driven structural metrics like head lag). Use
+	// `"off"` for pay-per-call vendors where shadow traffic eats quota.
+	Probe ProbeMode `yaml:"probe,omitempty" json:"probe,omitempty" tstype:"ProbeMode | \"on\" | \"off\""`
 }
+
+// ProbeMode is the per-upstream `routing.probe` enum.
+type ProbeMode string
+
+const (
+	// ProbeModeOn — default. The selection policy may mirror sampled
+	// real requests to this upstream while it's excluded so it
+	// accumulates fresh tracker samples for natural re-admission.
+	ProbeModeOn ProbeMode = "on"
+	// ProbeModeOff — never mirror. Upstream stays excluded after
+	// predicates trip; only structural signals (head lag, etc.) can
+	// drive re-admission.
+	ProbeModeOff ProbeMode = "off"
+)
 
 // ScoreMultiplierConfig is one per-upstream weight override. The matcher
 // fields (network/method/finality) scope the entry — leave them empty (or
