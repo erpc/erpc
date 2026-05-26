@@ -56,10 +56,14 @@ projects:
     # (= 1s here) the oldest bucket rotates out — data drips out
     # continuously, no tumble cliff. This is the upper bound on how
     # long a freshly-degraded upstream can keep its old healthy score.
-    # Mirrors the production-default value so the simulator
-    # demonstrates the actual rotation cadence operators get out of
-    # the box. Narrow per-project for hot deployments; widen for cold
-    # / huge-upstream-count workloads.
+    #
+    # Simulator-only: deliberately TIGHTER than the production
+    # default (1m). Operators using the simulator want to SEE
+    # health-driven ranking changes in seconds, not minutes. The
+    # production default trades reaction speed for stability — see
+    # the selection-policies docs "Advanced tuning" section for the
+    # coupling between this knob, evalInterval, and probeExcluded's
+    # minSamplesWindow.
     scoreMetricsWindowSize: 10s
     # The state poller is what keeps idle / excluded upstreams' metrics
     # populated even when no client traffic reaches them. Default is
@@ -127,6 +131,12 @@ projects:
         # to the backend. The backend also recognizes the placeholder as
         # a safety net (e.g. when an AI tool call sends raw template YAML).
         selectionPolicy:
+          # Simulator-only: tight cadence (1s) so operators see eval
+          # decisions land within a second of toggling a scenario.
+          # Production default is 15s — see the selection-policies
+          # docs "Advanced tuning" section for the coupling between
+          # this knob, scoreMetricsWindowSize, and probeExcluded's
+          # minSamplesWindow.
           evalInterval: 1s
           # Setting evalPerMethod: true would run the policy per
           # (method, network) instead of one ranking for the whole
