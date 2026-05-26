@@ -1394,10 +1394,11 @@ func TestStdlib_LatencyDeviationAbove_OneMethodSlow_ModesDifferentiate(t *testin
 	}
 }
 
-// TestStdlib_LatencyDeviationAbove_LegacyQuantileShorthand:
-// `latencyDeviationAbove(3, 95)` (2nd arg is a number) must still
-// parse as quantile=95, mode=geomean.
-func TestStdlib_LatencyDeviationAbove_LegacyQuantileShorthand(t *testing.T) {
+// TestStdlib_LatencyDeviationAbove_QuantileNumberShorthand:
+// `latencyDeviationAbove(3, 95)` (2nd arg as a number) parses as
+// quantile=95, mode=geomean — the polymorphic-arg convenience for
+// the common "just change the quantile" case.
+func TestStdlib_LatencyDeviationAbove_QuantileNumberShorthand(t *testing.T) {
 	eval := `(upstreams, ctx) =>
 		upstreams.excludeIf(all(samplesAbove(20), latencyDeviationAbove(3, 95)))`
 	engine, _, tracker, cancel := newTestEngine(t, eval)
@@ -1416,5 +1417,5 @@ func TestStdlib_LatencyDeviationAbove_LegacyQuantileShorthand(t *testing.T) {
 	policy.TickForTest(engine, "evm:1", "*")
 	got := ids(engine.GetOrdered("evm:1", "*", "*"))
 	require.Equal(t, []string{"rpcFast"}, got,
-		"legacy 2-arg form (multiplier, quantile=number) still excludes the slow upstream")
+		"polymorphic 2nd arg as a number is the quantile shorthand — still excludes the slow upstream")
 }

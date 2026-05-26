@@ -601,13 +601,14 @@ declare global {
   //   • 'veto'    — trips when ANY single method is slow (most
   //     aggressive; false-positive prone on specialty methods)
   //
-  // The 2nd argument may be a numeric quantile (legacy 2-arg form)
-  // OR an options object. `latencyDeviationAbove(3, 95)` continues
-  // to work and is equivalent to `latencyDeviationAbove(3, { quantile: 95 })`
-  // (mode defaults to 'geomean').
+  // The 2nd argument is polymorphic — pass a number for the common
+  // "just change the quantile" case, or an options object for full
+  // control. `latencyDeviationAbove(3, 95)` is equivalent to
+  // `latencyDeviationAbove(3, { quantile: 95 })` (mode defaults to
+  // 'geomean').
   //
   //   latencyDeviationAbove(3)                              → geomean of p70 ratios > 3
-  //   latencyDeviationAbove(3, 95)                          → geomean of p95 ratios > 3 (legacy)
+  //   latencyDeviationAbove(3, 95)                          → geomean of p95 ratios > 3
   //   latencyDeviationAbove(3, { mode: 'veto' })            → ANY method 3× slower
   //   latencyDeviationAbove(3, { mode: 'majority', quantile: 90 })
   //

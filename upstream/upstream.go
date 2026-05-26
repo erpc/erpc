@@ -743,25 +743,25 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				// reflects actual response time.
 				//
 				// Cancellations (hedge-lost / client gave up / engine
-				// timeout) USED to feed the quantile with the rationale
-				// that the elapsed-by-cancel time is a lower bound on
-				// completion. That rationale broke under uneven hedge
-				// distribution: an upstream that only ever loses hedge
-				// races accumulates a quantile of 100% cancellation
-				// observations, biasing its p70 toward "however long the
-				// winner of the race took before cancellation" — which is
-				// not natural latency. Cross-upstream comparisons (e.g.
-				// `latencyDeviationAbove`) then trip on this artificial
-				// signal even when per-method latencies are identical.
+				// timeout) are deliberately excluded: the elapsed-by-
+				// cancel time is not natural latency. An upstream that
+				// only ever loses hedge races (e.g. always sees
+				// hedge-fired slow methods because the primary handles
+				// the fast ones) would otherwise accumulate a quantile
+				// of 100% cancellation observations, biasing its p70
+				// toward "however long the winner of the race took
+				// before cancellation." Cross-upstream comparisons
+				// (e.g. `latencyDeviationAbove`) would trip on this
+				// artificial signal even when per-method latencies are
+				// identical.
 				//
 				// With probeExcluded in the chain (default), excluded
-				// upstreams accumulate real successful samples via shadow-
-				// mirrored traffic — the "stays optimistic forever"
-				// concern is mitigated without polluting the quantile.
-				// Without probeExcluded, rely on absolute thresholds
-				// (`latencyAbove(N)`) + non-latency signals (error rate,
-				// throttle rate, lag) — the same posture the policy
-				// already takes for upstreams with zero samples.
+				// upstreams accumulate real successful samples via
+				// shadow-mirrored traffic — so the "every-hedge-loser
+				// stays optimistic forever" concern is handled without
+				// polluting the quantile. Without probeExcluded, rely
+				// on absolute thresholds (`latencyAbove(N)`) +
+				// non-latency signals (error rate, throttle rate, lag).
 				//
 				// All other errors fired before / instead of a meaningful
 				// response and would conflate "broken" with "slow" if

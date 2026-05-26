@@ -1200,13 +1200,12 @@
   //     a vote-out against the upstream. False-positive prone on
   //     specialty methods (vendor good at most things, bad at one).
   //
-  // Backward-compatible signature: the 2nd argument may also be a
-  // numeric quantile (legacy 2-arg form). `latencyDeviationAbove(3, 95)`
-  // continues to work and means `{quantile: 95, mode: 'geomean'}`.
+  // The 2nd argument is polymorphic — pass a number for the common
+  // "just change the quantile" case, or an options object for full
+  // control:
   //
-  // Examples:
   //   `latencyDeviationAbove(3)`                              → geomean of p70 ratios > 3
-  //   `latencyDeviationAbove(3, 95)`                          → geomean of p95 ratios > 3 (legacy form)
+  //   `latencyDeviationAbove(3, 95)`                          → geomean of p95 ratios > 3
   //   `latencyDeviationAbove(3, { mode: 'veto' })`            → trips on ANY method 3× slower
   //   `latencyDeviationAbove(3, { mode: 'majority', quantile: 90 })`
   //
@@ -1280,8 +1279,8 @@
   // `multiplier` first, `optsOrQuantile` second-and-optional.
   // Accepts:
   //   • undefined → { quantile: 70, mode: 'geomean' }
-  //   • a number  → quantile shorthand (legacy 2-arg form), mode='geomean'
-  //   • an object → { quantile?: 70, mode?: 'geomean'|'majority'|'any' }
+  //   • a number  → quantile shorthand, mode='geomean'
+  //   • an object → { quantile?: 70, mode?: 'geomean'|'majority'|'veto' }
   globalThis.latencyDeviationAbove = function (multiplier, optsOrQuantile) {
     let quantile = 70;
     let mode = 'geomean';
