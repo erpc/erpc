@@ -21,10 +21,12 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
-// Hard-coded resilience constants. Kept inline (not config-driven) until
-// there's a real need for per-upstream tuning — flagging this surface as
-// config would invite drift / mis-tuning.
-const (
+// Hard-coded resilience tunables. Kept inline (not config-driven) until
+// there's a real need for per-upstream tuning — flagging this surface
+// as config would invite drift / mis-tuning. Declared as var (not
+// const) so tests can override without restructuring; production code
+// MUST NOT mutate these at runtime.
+var (
 	// bdsHardCallTimeout bounds the worst case for a single SendRequest.
 	// Big enough for the slowest legitimate eth_getLogs queries observed
 	// at the p99 (low single-digit seconds) with 2-3x headroom; small
@@ -68,9 +70,15 @@ type bdsPool struct {
 	creds         credentials.TransportCredentials
 	serviceConfig string
 
+	// poolMu protects every read/write of p.conns. Pick takes RLock so
+	// the hot path stays cheap; replaceConn and Shutdown take Lock when
+	// mutating slot pointers. Without this, Pick could race the slot
+	// swap in replaceConn — even though pointer writes are atomic on
+	// 64-bit, Go's race detector flags it and a future slice resize
+	// could turn it into a real bug.
+	poolMu sync.RWMutex
 	conns  []*bdsConn
 	cursor atomic.Uint64
-	poolMu sync.Mutex // serializes conn replacement
 
 	projectId  string
 	upstreamId string
@@ -144,6 +152,8 @@ func (p *bdsPool) dial() (*bdsConn, error) {
 
 // Pick returns the next pool slot in round-robin order.
 func (p *bdsPool) Pick() *bdsConn {
+	p.poolMu.RLock()
+	defer p.poolMu.RUnlock()
 	if len(p.conns) == 0 {
 		return nil
 	}
@@ -182,7 +192,10 @@ func (p *bdsPool) recordStuck(c *bdsConn) bool {
 	return len(c.stuckTimes) >= bdsStuckCallThreshold
 }
 
-// replaceConn force-closes c and dials a new conn into c's slot.
+// replaceConn dials a new conn and atomically swaps it into c's slot,
+// then closes the old one. Dialing FIRST means a transient dial
+// failure (e.g. DNS hiccup) leaves the existing conn in place rather
+// than parking the slot with a permanently-closed *grpc.ClientConn.
 // Skipped if the slot was replaced within bdsReplacementDedupWindow.
 func (p *bdsPool) replaceConn(c *bdsConn) {
 	p.poolMu.Lock()
@@ -201,27 +214,36 @@ func (p *bdsPool) replaceConn(c *bdsConn) {
 	if last := c.closedAt.Load(); last > 0 && time.Since(time.Unix(0, last)) < bdsReplacementDedupWindow {
 		return
 	}
-	c.closedAt.Store(time.Now().UnixNano())
 
+	// Dial first. If dial fails, leave the old conn in place — it's
+	// likely still broken but at least grpc-go can keep retrying
+	// through it (with its own reconnect backoff), which is strictly
+	// better than parking the slot with a closed conn that's already
+	// suppressed from re-replacement by the closedAt dedup.
+	replacement, err := p.dial()
+	if err != nil {
+		p.logger.Error().Err(err).Str("target", p.target).Msg("BDS watchdog: failed to dial replacement; old conn left in place for grpc-go to reconnect")
+		return
+	}
+
+	// Dial succeeded — commit the swap and close the old conn.
+	c.closedAt.Store(time.Now().UnixNano())
 	p.logger.Warn().
 		Str("target", p.target).
 		Str("upstream.id", p.upstreamId).
 		Int("slot", slot).
-		Msg("BDS watchdog: force-closing wedged connection")
+		Msg("BDS watchdog: replacing wedged connection")
 	telemetry.MetricGrpcBdsConnReplacementsTotal.WithLabelValues(p.projectId, p.upstreamId).Inc()
 
+	p.conns[slot] = replacement
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
-	replacement, err := p.dial()
-	if err != nil {
-		p.logger.Error().Err(err).Str("target", p.target).Msg("BDS watchdog: failed to dial replacement; slot left closed")
-		return
-	}
-	p.conns[slot] = replacement
 }
 
 // Shutdown closes every connection in the pool. Idempotent.
+// Takes the write lock to serialize with any in-flight replaceConn
+// (so we don't close a conn that's just been swapped out).
 func (p *bdsPool) Shutdown() {
 	p.poolMu.Lock()
 	defer p.poolMu.Unlock()

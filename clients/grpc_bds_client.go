@@ -263,22 +263,40 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, err
 	}
 
-	// The wedged-stream signal: ctx fired. callBounded/callBoundedT
-	// guarantee they surface ctx.Err() over any racing gRPC error.
-	// Feed it to the pool watchdog so a consistently-wedged conn is
-	// force-closed and replaced.
-	if err != nil && errors.Is(err, context.DeadlineExceeded) {
-		c.logger.Warn().
-			Err(err).
-			Str("network.id", req.NetworkId()).
-			Str("upstream.id", c.upstreamId).
-			Str("method", jrReq.Method).
-			Interface("request.id", req.ID()).
-			Msg("BDS hard-timeout fired — caller abandoned wedged gRPC call")
-		c.pool.OnBoundedTimeout(conn, jrReq.Method)
-	}
-
+	// Classify any timeout-class error and decide whether to trigger
+	// the watchdog. We distinguish two cases via context.Cause():
+	//
+	//   - OUR bdsHardCallTimeout fired:
+	//       cause is common.ErrDynamicTimeoutExceeded (the cause we set
+	//       on the inner WithTimeoutCause). This is the wedged-stream
+	//       signal — feed it to the pool watchdog so a consistently
+	//       wedged conn is force-closed and replaced.
+	//
+	//   - The caller's parent ctx fired before our cap:
+	//       cause is the parent's cause (or generic DeadlineExceeded).
+	//       This is a normal caller-side timeout, NOT a wedge. Do NOT
+	//       trigger the watchdog — that would inflate metrics and
+	//       cause spurious conn churn during legitimate slow paths.
 	if err != nil {
+		ourHardCap := errors.Is(err, common.ErrDynamicTimeoutExceeded)
+		anyTimeout := ourHardCap || errors.Is(err, context.DeadlineExceeded)
+		if anyTimeout {
+			c.logger.Warn().
+				Err(err).
+				Str("network.id", req.NetworkId()).
+				Str("upstream.id", c.upstreamId).
+				Str("method", jrReq.Method).
+				Interface("request.id", req.ID()).
+				Bool("our_hardcap", ourHardCap).
+				Msg("BDS bounded-wait timeout fired")
+			if ourHardCap {
+				c.pool.OnBoundedTimeout(conn, jrReq.Method)
+			}
+			// Classify the error so callers see it as a request-timeout
+			// rather than a generic transport failure (normalizeGrpcError
+			// would otherwise wrap it as ErrEndpointTransportFailure).
+			return nil, common.NewErrEndpointRequestTimeout(0, err)
+		}
 		return nil, c.normalizeGrpcError(err)
 	}
 	return resp, nil

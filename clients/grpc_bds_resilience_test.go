@@ -128,7 +128,19 @@ func TestGrpcBdsClient_HardTimeoutFreesGoroutineWithinCap(t *testing.T) {
 // TestGrpcBdsClient_WatchdogReplacesWedgedConn verifies that after
 // enough stuck calls accumulate on a single connection, the pool
 // force-closes it and dials a replacement.
+//
+// Drives our OWN hardCap (bdsHardCallTimeout) rather than a caller-
+// supplied deadline — the watchdog now only fires when WE choose to
+// abandon (cause == ErrDynamicTimeoutExceeded), not when a parent
+// ctx fires (which is a normal caller-side timeout, not a wedge).
 func TestGrpcBdsClient_WatchdogReplacesWedgedConn(t *testing.T) {
+	// Temporarily shrink the hard cap for this test — otherwise we'd
+	// wait 20s per stuck call. Restored on cleanup so it doesn't bleed
+	// into sibling tests.
+	origHardCap := bdsHardCallTimeout
+	bdsHardCallTimeout = 250 * time.Millisecond
+	t.Cleanup(func() { bdsHardCallTimeout = origHardCap })
+
 	addr, _, stop := startWedgedServer(t)
 	defer stop()
 
@@ -143,28 +155,63 @@ func TestGrpcBdsClient_WatchdogReplacesWedgedConn(t *testing.T) {
 	require.NoError(t, err)
 	gen := client.(*GenericGrpcBdsClient)
 
-	// Pin to a single pool slot for determinism.
+	// Pin to a single pool slot for determinism (single-threaded mutation).
 	gen.pool.conns = gen.pool.conns[:1]
 
-	conn := gen.pool.Pick()
-	require.NotNil(t, conn)
-	originalConn := conn.conn
+	originalConn := gen.pool.Pick().conn
+	require.NotNil(t, originalConn)
 
-	// Fire enough stuck calls to trip bdsStuckCallThreshold (= 3 by
-	// default). Each call uses a short caller-deadline so we don't
-	// wait the full bdsHardCallTimeout per call.
+	// Use context.Background() so OUR hardCap (not a caller deadline)
+	// is the proximate cause of cancellation. Each call wedges for
+	// 250ms (our cap), then OnBoundedTimeout records a stuck call.
 	for i := 0; i < bdsStuckCallThreshold+1; i++ {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
+		_, _ = client.SendRequest(context.Background(), req)
+	}
+
+	require.Eventually(t, func() bool {
+		current := gen.pool.Pick().conn
+		return current != originalConn
+	}, 2*time.Second, 20*time.Millisecond,
+		"pool slot should have been replaced after threshold stuck calls")
+}
+
+// TestGrpcBdsClient_WatchdogIgnoresCallerDeadline verifies the second
+// half of the cause-distinguishing fix: when the CALLER's parent
+// context fires (not our hardCap), the watchdog must NOT trigger.
+// Otherwise routine slow-path caller timeouts would churn the pool.
+func TestGrpcBdsClient_WatchdogIgnoresCallerDeadline(t *testing.T) {
+	addr, _, stop := startWedgedServer(t)
+	defer stop()
+
+	parsedURL, err := url.Parse(fmt.Sprintf("grpc://%s", addr))
+	require.NoError(t, err)
+
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	require.NoError(t, err)
+	gen := client.(*GenericGrpcBdsClient)
+	gen.pool.conns = gen.pool.conns[:1]
+	originalConn := gen.pool.Pick().conn
+
+	// Caller-supplied 250ms deadline. bdsHardCallTimeout is 20s here,
+	// so the caller's deadline fires first. The watchdog must NOT
+	// trigger because the cause is the caller's, not ours.
+	for i := 0; i < bdsStuckCallThreshold+2; i++ {
 		callCtx, cancelCall := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
 		_, _ = client.SendRequest(callCtx, req)
 		cancelCall()
 	}
 
-	require.Eventually(t, func() bool {
-		current := gen.pool.conns[0].conn
-		return current != originalConn
-	}, 2*time.Second, 20*time.Millisecond,
-		"pool slot should have been replaced after threshold stuck calls")
+	// Give the watchdog a chance to (wrongly) fire if it's going to.
+	time.Sleep(200 * time.Millisecond)
+	current := gen.pool.Pick().conn
+	require.Same(t, originalConn, current,
+		"caller-deadline timeouts must NOT trigger conn replacement")
 }
 
 // TestCallBoundedReturnsOnCtxCancel proves the bounded-wait primitive
