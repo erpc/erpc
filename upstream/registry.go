@@ -510,6 +510,13 @@ type networkTaskSummary struct {
 
 // summarizeNetworkTasks computes provider completion/fatality and presence of any ongoing
 // per-network or unknown upstream tasks in a single pass.
+//
+// Called from `PrepareUpstreamsForNetwork`'s 200ms bootstrap-wait ticker.
+// Previously walked `Initializer.Status()` which materializes a
+// `[]TaskStatus` (growslice + per-task struct alloc) every call —
+// pprof showed this at ~10% CPU during the bootstrap-wait window.
+// Now uses the allocation-free `RangeTaskStates` streaming API since
+// we only need name + state.
 func (u *UpstreamsRegistry) summarizeNetworkTasks(networkId string) networkTaskSummary {
 	provPrefix := "network/" + networkId + "/provider/"
 	upsPrefix := "network/" + networkId + "/upstream/"
@@ -518,11 +525,9 @@ func (u *UpstreamsRegistry) summarizeNetworkTasks(networkId string) networkTaskS
 	providersAllTerminal := true
 	hasOngoing := false
 
-	st := u.initializer.Status()
-	for _, ts := range st.Tasks {
-		name := ts.Name
+	u.initializer.RangeTaskStates(func(name string, state util.TaskState) bool {
 		if strings.HasPrefix(name, provPrefix) {
-			switch ts.State {
+			switch state {
 			case util.TaskSucceeded, util.TaskFatal:
 				// terminal
 			case util.TaskPending, util.TaskRunning, util.TaskFailed, util.TaskTimedOut:
@@ -531,15 +536,16 @@ func (u *UpstreamsRegistry) summarizeNetworkTasks(networkId string) networkTaskS
 			default:
 				providersAllTerminal = false
 			}
-			continue
+			return true
 		}
 		if strings.HasPrefix(name, upsPrefix) || strings.HasPrefix(name, unknownUpsPrefix) {
-			switch ts.State {
+			switch state {
 			case util.TaskPending, util.TaskRunning, util.TaskFailed, util.TaskTimedOut:
 				hasOngoing = true
 			}
 		}
-	}
+		return true
+	})
 	return networkTaskSummary{
 		providersAllTerminal: providersAllTerminal,
 		hasOngoing:           hasOngoing,
