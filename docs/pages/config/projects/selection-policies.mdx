@@ -130,19 +130,6 @@ export default createConfig({
 | `evalScope` | `'network'` \| `'network-method'` \| `'network-finality'` \| `'network-method-finality'` | `'network'` | Picks the grain at which the policy evaluates AND the matching health-tracker grain. `network` = one ranking per network (cheapest, default); `network-method` = per-(network, method) — same `getLogs` ranking can differ from the `blockNumber` ranking; `network-finality` = per-(network, finality bucket); `network-method-finality` = full granularity. Slots are lazy-created on first request — cold buckets cost nothing. The TypeScript SDK exports `NETWORK` / `NETWORK_METHOD` / `NETWORK_FINALITY` / `NETWORK_METHOD_FINALITY` consts with these same string values. |
 | `evalFunc` | string \| function | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. In `.ts` configs pass a real arrow function — it gets stringified at load time via `Function.prototype.toString()`. Omit to apply the [default policy](#the-default-policy). |
 | `scoreMetricsWindowSize` | Duration | `10s` | Project-level. How long per-upstream rolling counters live. See [health-tracker window](#health-tracker-rolling-window). |
-| `evalPerMethod` | bool | — | **DEPRECATED.** Use `evalScope: 'network-method'` instead. If both are set, `evalScope` wins and a warning logs at config-load time. If only the legacy bools are set, they translate automatically — `true` becomes the corresponding `evalScope` value. |
-| `evalPerFinality` | bool | — | **DEPRECATED.** Use `evalScope: 'network-finality'` (or `'network-method-finality'` paired with `evalPerMethod: true`'s replacement) instead. Same translation + warning behavior as `evalPerMethod`. |
-
-### Migrating from `evalPerMethod` / `evalPerFinality`
-
-| Old config | New config |
-|---|---|
-| (neither set, or both false) | `evalScope: 'network'` (default — can be omitted entirely) |
-| `evalPerMethod: true` | `evalScope: 'network-method'` |
-| `evalPerFinality: true` | `evalScope: 'network-finality'` |
-| `evalPerMethod: true` + `evalPerFinality: true` | `evalScope: 'network-method-finality'` |
-
-The legacy bools still work — a deprecation warning logs at startup and they translate automatically. Drop them from your config at your convenience; an explicit `evalScope` always wins over the bools when both are set.
 
 > **Investigations.** Per-tick reasoning is exposed via OTLP tracing
 > spans and the `erpc_selection_*` Prometheus metric family (selection

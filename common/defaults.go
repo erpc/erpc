@@ -2492,58 +2492,45 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalTimeout == 0 {
 		c.EvalTimeout = Duration(100 * time.Millisecond)
 	}
-	// Resolve EvalScope. The new `evalScope` enum is the single
-	// runtime source of truth — the deprecated `evalPerMethod` /
-	// `evalPerFinality` *bool fields only exist to translate older
-	// configs and emit a deprecation warning. After SetDefaults, both
-	// legacy fields are NILED OUT; engine + downstream code never read
-	// them again. This is the boundary the config layer protects:
-	// legacy lives only here.
+	// Resolve EvalScope. `evalScope` is the canonical knob; the
+	// `evalPerMethod` / `evalPerFinality` pointer-bool fields are a
+	// config-load-time alias kept so older YAML/TS configs from main
+	// keep working when users upgrade. After SetDefaults the bool
+	// fields are NILED OUT — engine + downstream code only consult
+	// EvalScope. The boundary lives entirely in the config layer.
 	//
-	// Pointer-typed legacy fields let us distinguish three states:
-	//   nil          → operator didn't write the key at all
-	//   *(false)     → operator wrote `evalPerMethod: false` explicitly
-	//   *(true)      → operator wrote `evalPerMethod: true` explicitly
-	// The second case still counts as "deprecated key set" and gets
-	// the same warning, because the operator is touching legacy
-	// surface — they should migrate.
-	legacyMethodSet := c.EvalPerMethod != nil
-	legacyFinalitySet := c.EvalPerFinality != nil
-	legacyMethod := legacyMethodSet && *c.EvalPerMethod
-	legacyFinality := legacyFinalitySet && *c.EvalPerFinality
+	// Pointer-typed bools let us distinguish three states:
+	//   nil          → key absent
+	//   *(false)     → key explicitly false
+	//   *(true)      → key explicitly true
+	// Explicit-false counts as "operator set the key" for purposes of
+	// the "both alias and canonical set" branch below — operator
+	// intent is unambiguous either way.
+	aliasMethodSet := c.EvalPerMethod != nil
+	aliasFinalitySet := c.EvalPerFinality != nil
+	aliasMethod := aliasMethodSet && *c.EvalPerMethod
+	aliasFinality := aliasFinalitySet && *c.EvalPerFinality
 
 	if c.EvalScope == "" {
-		// No explicit evalScope — translate from the legacy bools (or
+		// No explicit evalScope — translate from the alias bools (or
 		// fall back to the default `network`).
 		switch {
-		case legacyMethod && legacyFinality:
+		case aliasMethod && aliasFinality:
 			c.EvalScope = EvalScopeNetworkMethodFinality
-		case legacyMethod:
+		case aliasMethod:
 			c.EvalScope = EvalScopeNetworkMethod
-		case legacyFinality:
+		case aliasFinality:
 			c.EvalScope = EvalScopeNetworkFinality
 		default:
 			c.EvalScope = EvalScopeNetwork
 		}
-		if legacyMethodSet || legacyFinalitySet {
-			log.Warn().
-				Bool("evalPerMethod", legacyMethod).
-				Bool("evalPerFinality", legacyFinality).
-				Str("evalScope", string(c.EvalScope)).
-				Msg("selectionPolicy: evalPerMethod / evalPerFinality are deprecated — use `evalScope` (translated automatically; drop the legacy bools)")
-		}
-	} else if legacyMethodSet || legacyFinalitySet {
-		// Operator set BOTH the canonical enum AND a legacy bool — the
-		// enum wins, but tell them loudly so they clean up.
-		log.Warn().
-			Bool("evalPerMethod", legacyMethod).
-			Bool("evalPerFinality", legacyFinality).
-			Str("evalScope", string(c.EvalScope)).
-			Msg("selectionPolicy: evalScope overrides deprecated evalPerMethod / evalPerFinality — drop the legacy bools from your config")
 	}
+	// If BOTH evalScope and the alias bools are set, evalScope wins
+	// (it's the canonical surface). No warning — silent translation
+	// is the contract for the alias path.
 	switch c.EvalScope {
 	case EvalScopeNetworkMethodFinality, EvalScopeNetworkMethod, EvalScopeNetworkFinality, EvalScopeNetwork:
-		// Valid; clear the legacy fields so no downstream consumer
+		// Valid; clear the alias fields so no downstream consumer
 		// can accidentally read stale data.
 		c.EvalPerMethod = nil
 		c.EvalPerFinality = nil
@@ -2552,6 +2539,8 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 			"network / network-method / network-finality / network-method-finality",
 			c.EvalScope)
 	}
+	_ = aliasMethodSet
+	_ = aliasFinalitySet
 	if c.EvalFunc == "" {
 		c.EvalFunc = DefaultSelectionPolicySource
 	}

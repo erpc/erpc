@@ -568,8 +568,9 @@ export interface UpstreamConfig {
 }
 /**
  * UpstreamRoutingConfig holds per-upstream routing hints. Today this is
- * the home of `scoreMultipliers` — per-upstream weight overrides the
- * selection policy folds into `sortByScore`.
+ * the home of `scoreMultipliers` (per-upstream weight overrides folded
+ * into `sortByScore`) and `probe` (per-upstream opt-out for the
+ * selection policy's `probeExcluded` shadow-mirror traffic).
  */
 export interface UpstreamRoutingConfig {
   /**
@@ -586,7 +587,34 @@ export interface UpstreamRoutingConfig {
    * `sortByScore({ latencyQuantile })` (default p70) applies.
    */
   scoreLatencyQuantile?: number /* float64 */;
+  /**
+   * Probe gates whether the selection policy's `probeExcluded` step
+   * may shadow-mirror real requests to THIS upstream when it's
+   * currently in the excluded set. `"on"` (default) opts in; `"off"`
+   * disables probing entirely — the upstream stays excluded
+   * permanently once predicates trip until an operator intervenes
+   * (manual cordon/uncordon, or until the predicate stops matching
+   * via state-poller-driven structural metrics like head lag). Use
+   * `"off"` for pay-per-call vendors where shadow traffic eats quota.
+   */
+  probe?: ProbeMode | "on" | "off";
 }
+/**
+ * ProbeMode is the per-upstream `routing.probe` enum.
+ */
+export type ProbeMode = string;
+/**
+ * ProbeModeOn — default. The selection policy may mirror sampled
+ * real requests to this upstream while it's excluded so it
+ * accumulates fresh tracker samples for natural re-admission.
+ */
+export const ProbeModeOn: ProbeMode = "on";
+/**
+ * ProbeModeOff — never mirror. Upstream stays excluded after
+ * predicates trip; only structural signals (head lag, etc.) can
+ * drive re-admission.
+ */
+export const ProbeModeOff: ProbeMode = "off";
 /**
  * ScoreMultiplierConfig is one per-upstream weight override. The matcher
  * fields (network/method/finality) scope the entry — leave them empty (or
@@ -1242,21 +1270,6 @@ export interface SelectionPolicyConfig {
    * genuinely (method, finality)-specific health.
    */
   evalScope?: EvalScope | "network" | "network-method" | "network-finality" | "network-method-finality";
-  /**
-   * EvalPerMethod is DEPRECATED — use EvalScope instead.
-   * Pointer-typed so the config layer can distinguish "operator
-   * didn't set this" (nil) from "operator explicitly set false"
-   * (deref to false). Translated into EvalScope by SetDefaults and
-   * then niled out — the engine + downstream code only ever consults
-   * EvalScope, never these legacy fields. A zerolog warning is
-   * emitted at translation time pointing the operator at evalScope.
-   */
-  evalPerMethod?: boolean | undefined;
-  /**
-   * EvalPerFinality is DEPRECATED — use EvalScope instead. Same
-   * pointer semantics + translation behavior as EvalPerMethod.
-   */
-  evalPerFinality?: boolean | undefined;
   evalTimeout?: Duration;
   /**
    * EvalFunc is the per-tick evaluation function. In YAML it's a JS
@@ -1446,6 +1459,16 @@ export const DataFinalityStateRealtime: DataFinalityState = 2;
  * Most often it is safe to cache this data for longer as they're access when block hash is provided directly.
  */
 export const DataFinalityStateUnknown: DataFinalityState = 3;
+/**
+ * DataFinalityStateAll is the internal wildcard sentinel used by the
+ * health tracker to key its cross-finality aggregate rollups. NOT a
+ * valid user-facing finality — never set on a request, never returned
+ * from `Finality()`. Lives here so the tracker (health/) and the
+ * policy engine (internal/policy/) can both reference it without a
+ * cycle. Negative-valued so it sorts before any real finality bucket
+ * and doesn't collide with the iota-based enum values.
+ */
+export const DataFinalityStateAll: DataFinalityState = -1;
 export type CacheEmptyBehavior = number /* int */;
 export const CacheEmptyBehaviorIgnore: CacheEmptyBehavior = 0;
 export const CacheEmptyBehaviorAllow: CacheEmptyBehavior = 1;
@@ -1660,7 +1683,12 @@ export const ScopeNetwork: Scope = "network";
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
 /**
- * HealthTracker is an interface for tracking upstream health metrics
+ * HealthTracker is an interface for tracking upstream health metrics.
+ * `finality` is the DataFinalityState the request resolved to —
+ * `DataFinalityStateAll` when the caller can't determine finality
+ * (legacy call sites, internal probes, batch retries). Cordon/Uncordon
+ * stay finality-agnostic because cordoning is an admin-level decision
+ * about an entire (upstream, method) pair, not a per-finality bucket.
  */
 export type HealthTracker = any;
 export type Upstream = any;

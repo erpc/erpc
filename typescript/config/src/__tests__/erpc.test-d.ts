@@ -37,7 +37,7 @@ const _realisticConfig = createConfig({
           selectionPolicy: {
             evalInterval: "1s",
             evalTimeout: "100ms",
-            evalPerMethod: false,
+            evalScope: "network",
             // Real arrow function — NOT a string. This is the whole point
             // of `.ts` config: every chainable method + predicate factory
             // is type-checked here.

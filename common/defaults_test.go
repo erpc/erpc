@@ -2,9 +2,7 @@ package common
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -1230,18 +1228,17 @@ func captureWarnings(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestSetDefaults_SelectionPolicy_EvalScope covers the deprecation
-// translation for the legacy `evalPerMethod` / `evalPerFinality`
-// *bool fields. Three invariants:
+// TestSetDefaults_SelectionPolicy_EvalScope covers the config-load-
+// time translation from the `evalPerMethod` / `evalPerFinality` alias
+// bools to the canonical `evalScope` enum. Three invariants:
 //
-//  1. legacy bools alone (modern `evalScope` absent) map to the
-//     matching enum value.
-//  2. SetDefaults nils out the legacy fields after translation —
+//  1. Alias bools alone (no explicit `evalScope`) map to the matching
+//     enum value.
+//  2. SetDefaults nils out the alias fields after translation —
 //     downstream code MUST NOT see stale values.
-//  3. setting any legacy bool emits a single deprecation warning at
-//     log.Warn level with both the offending fields and the
-//     translated `evalScope` value, so the operator can copy-paste
-//     the migration.
+//  3. Translation is SILENT — no warnings, no log noise. The aliases
+//     are a config-shape convenience for backward compat on configs
+//     from main; we don't browbeat operators about using them.
 func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
 	t.Run("default — nothing set", func(t *testing.T) {
 		c := &SelectionPolicyConfig{}
@@ -1251,15 +1248,15 @@ func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
 		assert.Nil(t, c.EvalPerFinality)
 	})
 
-	t.Run("legacy bools translate + nil out + warn", func(t *testing.T) {
+	t.Run("alias bools translate + nil out + stay silent", func(t *testing.T) {
 		for name, tc := range map[string]struct {
 			perMethod, perFinality *bool
 			wantScope              EvalScope
 		}{
-			"perMethod only":     {boolPtr(true), nil, EvalScopeNetworkMethod},
-			"perFinality only":   {nil, boolPtr(true), EvalScopeNetworkFinality},
-			"both true":          {boolPtr(true), boolPtr(true), EvalScopeNetworkMethodFinality},
-			"perMethod=false":    {boolPtr(false), nil, EvalScopeNetwork}, // still warns because the deprecated key was touched
+			"perMethod only":      {boolPtr(true), nil, EvalScopeNetworkMethod},
+			"perFinality only":    {nil, boolPtr(true), EvalScopeNetworkFinality},
+			"both true":           {boolPtr(true), boolPtr(true), EvalScopeNetworkMethodFinality},
+			"perMethod=false":     {boolPtr(false), nil, EvalScopeNetwork},
 			"both explicit false": {boolPtr(false), boolPtr(false), EvalScopeNetwork},
 		} {
 			t.Run(name, func(t *testing.T) {
@@ -1272,30 +1269,18 @@ func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
 				})
 				assert.Equal(t, tc.wantScope, c.EvalScope,
 					"resolved EvalScope after translation")
-				assert.Nil(t, c.EvalPerMethod, "legacy field niled after translation")
-				assert.Nil(t, c.EvalPerFinality, "legacy field niled after translation")
-				// Deprecation warning must carry both the offending
-				// fields AND the resolved enum so operators can copy
-				// the migration into their config.
-				var msg struct {
-					Level    string `json:"level"`
-					Message  string `json:"message"`
-					Scope    string `json:"evalScope"`
-				}
-				require.NotEmpty(t, warnings,
-					"setting any legacy bool MUST emit a warning (test case %q)", name)
-				require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(strings.Split(warnings, "\n")[0])), &msg))
-				assert.Equal(t, "warn", msg.Level)
-				assert.Contains(t, msg.Message, "deprecated")
-				assert.Equal(t, string(tc.wantScope), msg.Scope)
+				assert.Nil(t, c.EvalPerMethod, "alias field niled after translation")
+				assert.Nil(t, c.EvalPerFinality, "alias field niled after translation")
+				assert.Empty(t, warnings,
+					"alias-bool translation is silent — no deprecation noise")
 			})
 		}
 	})
 
-	t.Run("explicit evalScope wins over legacy bools (with warning)", func(t *testing.T) {
+	t.Run("explicit evalScope wins silently over alias bools", func(t *testing.T) {
 		c := &SelectionPolicyConfig{
 			EvalScope:       EvalScopeNetworkFinality, // explicit
-			EvalPerMethod:   boolPtr(true),            // legacy — should be ignored
+			EvalPerMethod:   boolPtr(true),            // alias — ignored
 			EvalPerFinality: boolPtr(false),
 		}
 		warnings := captureWarnings(t, func() {
@@ -1303,10 +1288,10 @@ func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
 		})
 		assert.Equal(t, EvalScopeNetworkFinality, c.EvalScope,
 			"explicit evalScope wins")
-		assert.Nil(t, c.EvalPerMethod, "legacy field niled after override")
-		assert.Nil(t, c.EvalPerFinality, "legacy field niled after override")
-		assert.Contains(t, warnings, "deprecated",
-			"warn even on override so operator cleans up the stale bools")
+		assert.Nil(t, c.EvalPerMethod, "alias field niled after override")
+		assert.Nil(t, c.EvalPerFinality, "alias field niled after override")
+		assert.Empty(t, warnings,
+			"silent translation — no warning even when both are set")
 	})
 
 	t.Run("no warning when only modern evalScope is set", func(t *testing.T) {
@@ -1315,7 +1300,7 @@ func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
 			require.NoError(t, c.SetDefaults())
 		})
 		assert.Empty(t, warnings,
-			"no legacy fields touched → no deprecation noise")
+			"no alias fields touched → no log noise")
 	})
 
 	t.Run("invalid evalScope rejects", func(t *testing.T) {
