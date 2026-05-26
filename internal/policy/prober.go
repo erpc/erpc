@@ -252,6 +252,10 @@ func (p *Prober) shouldProbe(u common.Upstream, cfg *ProbeConfig) bool {
 		windowed := p.windowCount(u.Id(), cfg.MinSamplesWindow)
 		belowFloor = windowed < int64(cfg.MinSamples)
 	}
+	// math/rand is correct here — sampling decision for shadow probes,
+	// not a cryptographic context. crypto/rand would add a syscall per
+	// request for zero security benefit.
+	// #nosec G404 -- non-cryptographic sampling decision
 	if !belowFloor && cfg.SampleRate < 1.0 && rand.Float64() > cfg.SampleRate {
 		telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "sampled_out").Inc()
 		return false
