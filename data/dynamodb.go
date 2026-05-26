@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -59,8 +60,18 @@ func (l *dynamoLock) IsNil() bool {
 	return l == nil || l.connector == nil
 }
 
+// dynamoDialer enables kernel-level TCP keepalive at 15s intervals so the
+// kernel detects dead conns within ~45s (3 missed probes). Without this,
+// the zero-value Dialer uses the OS default tcp_keepalive_time (7200s on
+// Linux), making wedged outbound flows invisible to kernel-level cleanup.
+var dynamoDialer = &net.Dialer{
+	Timeout:   10 * time.Second,
+	KeepAlive: 15 * time.Second,
+}
+
 var sharedReadClient = &http.Client{
 	Transport: &http.Transport{
+		DialContext:         dynamoDialer.DialContext,
 		MaxIdleConns:        2048,
 		MaxIdleConnsPerHost: 2048,
 		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory
@@ -69,6 +80,7 @@ var sharedReadClient = &http.Client{
 }
 var sharedWriteClient = &http.Client{
 	Transport: &http.Transport{
+		DialContext:         dynamoDialer.DialContext,
 		MaxIdleConns:        256,
 		MaxIdleConnsPerHost: 256,
 		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory

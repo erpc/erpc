@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
@@ -232,68 +232,18 @@ func (p *bdsPool) Shutdown() {
 	}
 }
 
-// callBounded runs fn in a goroutine and waits up to ctx.Done() for it
-// to complete. If ctx fires first, returns ctx.Err() and lets the
-// goroutine "leak" — grpc-go cleans it up when (a) it eventually honors
-// the context, or (b) the watchdog closes the conn.
+// callBounded / callBoundedT are package-local aliases for the shared
+// helpers in util/ — kept so the BDS resilience code (and its tests)
+// don't need to rename every call site after the helpers moved.
 //
-// Without this, grpc-go's clientStream.RecvMsg may not wake on context
-// cancel when the H2 stream is wedged at the transport layer (TCP-alive
-// but stream-stuck). The select guarantees the CALLER returns within
-// ctx's deadline regardless of grpc-go's internal state.
+// The pattern itself is documented on util.BoundedCall.
+
 func callBounded(ctx context.Context, fn func(context.Context) error) error {
-	done := make(chan error, 1)
-	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				done <- fmt.Errorf("BDS goroutine panic: %v\n%s", rec, debug.Stack())
-			}
-		}()
-		done <- fn(ctx)
-	}()
-	select {
-	case err := <-done:
-		// If ctx fired simultaneously, the gRPC layer may have race-won
-		// with a Canceled status — but the proximate cause is still our
-		// deadline. Surface that so the caller treats it as a timeout.
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return util.BoundedCall(ctx, fn)
 }
 
-// callBoundedT is the typed wrapper for unary gRPC calls. Sends the
-// concrete return through a channel so the caller and the (possibly
-// abandoned) inner goroutine never race on a shared variable.
 func callBoundedT[T any](ctx context.Context, fn func(context.Context) (T, error)) (T, error) {
-	type result struct {
-		v   T
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				done <- result{err: fmt.Errorf("BDS goroutine panic: %v\n%s", rec, debug.Stack())}
-			}
-		}()
-		v, err := fn(ctx)
-		done <- result{v: v, err: err}
-	}()
-	select {
-	case r := <-done:
-		if ctx.Err() != nil {
-			var zero T
-			return zero, ctx.Err()
-		}
-		return r.v, r.err
-	case <-ctx.Done():
-		var zero T
-		return zero, ctx.Err()
-	}
+	return util.BoundedCallT(ctx, fn)
 }
 
 // pickTargetForBDS extracts the host:port + TLS choice from an upstream URL.
