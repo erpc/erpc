@@ -243,7 +243,6 @@ type Upstream = {
 
   // Attached by std-lib steps:
   readonly score?: number                  // sortByScore (higher = better)
-  readonly annotations?: string[]          // step reasons (auto-set by excludeIf etc.)
 
   // Per-upstream weight overrides resolved from routing.scoreMultipliers
   // for this tick's (network, method, finality). sortByScore reads it.
@@ -456,7 +455,7 @@ Switch how the config combines with the base via `opts.multipliers`:
 
 ### Auditioning a new rule with `shadowExcludeIf`
 
-`shadowExcludeIf` is the dry-run counterpart of `excludeIf`. The predicate runs every tick, but no upstream is actually dropped — every would-have-been-excluded trip is surfaced as `erpc_selection_shadow_exclusion_total{upstream, reason=<leaf-slug>}` (same per-leaf attribution as the real counter) plus a `shadow:<reason>` annotation. Use it to safely roll out a new exclusion rule (or audit the impact of removing an existing one) before flipping the call to `excludeIf` for real.
+`shadowExcludeIf` is the dry-run counterpart of `excludeIf`. The predicate runs every tick, but no upstream is actually dropped — every would-have-been-excluded trip is surfaced as `erpc_selection_shadow_exclusion_total{upstream, reason=<leaf-slug>}` (same per-leaf attribution as the real counter). Use it to safely roll out a new exclusion rule (or audit the impact of removing an existing one) before flipping the call to `excludeIf` for real.
 
 ```js
 (upstreams, ctx) =>
@@ -554,12 +553,6 @@ Three explicit profiles. Each emphasizes ONE primary axis (weight `15`) while ke
 
 </details>
 
-<details>
-<summary>**Reasons** — string codes for annotations / metric labels</summary>
-
-`REASON_LAG` · `REASON_ERROR_RATE` · `REASON_LATENCY` · `REASON_THROTTLING` · `REASON_MISBEHAVIOR` · `REASON_CORDONED` · `REASON_GROUP` · `REASON_VENDOR` · `REASON_USER_FILTER`
-
-</details>
 
 ### Identity & label selection
 
@@ -610,9 +603,10 @@ metrics until the operator uncordons.
 .excludeIf(predicate: (u) => boolean, reason?: string)
 ```
 
-Drops upstreams matching `predicate`. The dropped upstream gets a
-`policyReason` annotation visible in the decision record, eRPC DEBUG
-logs, and the simulator UI. Reason resolution:
+Drops upstreams matching `predicate`. The reason is captured on the
+per-tick `Decision.Output.Excluded[i]` entry (as `Reason` for display
++ `LeafReasons[]` for the stable metric slug) and surfaced in eRPC
+DEBUG logs + the simulator UI. Reason resolution:
 
 1. Explicit string passed as the 2nd argument (use for inline custom predicates).
 2. `predicate.policyReason` — factory-built predicates self-label (see [predicate factories](#predicate-factories)).
@@ -897,8 +891,10 @@ upstreams.byFinality({
 
 Predicates are functions `(u) => boolean` consumed by `excludeIf` and
 combinators. Every factory below stamps a `policyReason` string on the
-returned closure so `excludeIf` auto-labels the dropped upstream's
-annotation.
+returned closure so `excludeIf` auto-labels the dropped upstream with
+both a stable leaf slug (drives `selection_exclusion_total{reason}`)
+and a human-readable display string (visible in DEBUG logs +
+`Decision.Output.Excluded[].Reason`).
 
 <details>
 <summary>**Rate-based** (errorRate, throttledRate, misbehaviorRate — fractions in `0..1`)</summary>
@@ -999,7 +995,7 @@ not(pred)        // NOT
 ```
 
 Composed predicates carry a joined `policyReason` —
-`any(errorRateAbove(0.5), latencyAbove(30_000))` annotates as
+`any(errorRateAbove(0.5), latencyAbove(30_000))` displays as
 `any(errorRate>0.5,p70>30000ms)` (p70 is the default-quantile slug).
 
 </details>
@@ -1031,22 +1027,23 @@ Set operations dedupe by `id`.
 
 </details>
 
-### Debug & annotations
+### Debug helpers
 
 <details>
 <summary>**Inspection helpers**</summary>
 
 ```ts
 .tap(fn)                               // side effect; returns arr unchanged
-.label(name)                           // name this step in the decision record
-.annotate(fn)                          // attach a note to each upstream
-.mark(predicate, note)                 // annotate only matching upstreams
 .dump(level?: 'debug' | 'info' | 'warn' | 'error')
 ```
 
-`label(...)` makes each step's rejections show `step: "<name>"` in the
-decision record + Prometheus metric labels. Useful for splitting up
-compound filters during incident investigation.
+`tap` is useful for ad-hoc inspection during incident investigation
+(`console.log` into the eRPC log stream from inside the eval).
+
+`dump` emits the chain's intermediate state at the named log level —
+upstream IDs at this point in the chain, plus the eval's currently-
+attached `__probeConfig`, `__policyLeafReasons`, etc. See the
+[Debug a flaky decision](#worked-examples) recipe.
 
 </details>
 
@@ -1101,14 +1098,13 @@ durationMs(d: Duration | string): number              // parse '5m' → 300000
 </details>
 
 <details>
-<summary>**Canary with cooldown**</summary>
+<summary>**Canary with shadow probing**</summary>
 
 ```js
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
     .excludeIf(errorRateAbove(0.5))
-    .cooldown('1m')
     .sortByScore(PREFER_FASTEST)
     .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
     .forceInclude('canary-rpc', 'tail')

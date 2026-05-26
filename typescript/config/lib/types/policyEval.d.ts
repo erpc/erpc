@@ -357,7 +357,6 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
      */
     probeExcluded(opts?: ProbeExcludedOptions): PolicyEvalUpstreamArray;
     forceInclude(idOrFn: Pattern | ((u: PolicyEvalUpstream) => unknown), position?: "head" | "tail"): PolicyEvalUpstreamArray;
-    cooldown(duration: Duration): PolicyEvalUpstreamArray;
     if(cond: boolean | ((arr: PolicyEvalUpstreamArray) => unknown), thenFn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray, elseFn?: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray): PolicyEvalUpstreamArray;
     unless(cond: boolean | ((arr: PolicyEvalUpstreamArray) => unknown), fn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray): PolicyEvalUpstreamArray;
     whenEmpty(fn: () => readonly PolicyEvalUpstream[]): PolicyEvalUpstreamArray;

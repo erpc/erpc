@@ -430,10 +430,7 @@ export interface PolicyEvalUpstreamArray
     position?: "head" | "tail",
   ): PolicyEvalUpstreamArray;
 
-  // ─── 4.11 Cooldown & warmup ───────────────────────────────────────────
-  cooldown(duration: Duration): PolicyEvalUpstreamArray;
-
-  // ─── 4.12 Combinators ─────────────────────────────────────────────────
+  // ─── 4.11 Combinators ─────────────────────────────────────────────────
   if(
     cond: boolean | ((arr: PolicyEvalUpstreamArray) => unknown),
     thenFn: (arr: PolicyEvalUpstreamArray) => PolicyEvalUpstreamArray,

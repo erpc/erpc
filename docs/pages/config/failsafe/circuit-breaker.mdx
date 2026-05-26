@@ -33,7 +33,7 @@ This is the **default policy** — you get it by omitting `selectionPolicy` enti
 | Concept | Surfaced as |
 |---|---|
 | **Closed** (upstream healthy) | Present in the eval's returned ordered list. `erpc_selection_position{upstream}` is `0` (primary) or `1+` (runner-up). |
-| **Open** (upstream excluded) | Missing from the returned list. `erpc_selection_position{upstream}` is `-1`. The reason ("errorRate>0.5", "p70>30000ms", "p70>3xFastest", ...) appears on the per-upstream annotation in `Decision.Output.Annotations[id]` and DEBUG logs. |
+| **Open** (upstream excluded) | Missing from the returned list. `erpc_selection_position{upstream}` is `-1`. The reason ("errorRate>0.7", "p70>30000ms", "p70>3xFastest", ...) appears on the per-tick `Decision.Output.Excluded[]` entry (as `Reason` for display + `LeafReasons[]` slugs that drive `selection_exclusion_total{reason}`) and in DEBUG logs. |
 | **Half-open** (probing recovery) | `probeExcluded` shadow-mirrors sampled real traffic to currently-excluded upstreams in the background. The mirrored calls feed the same tracker counters as real traffic; once they cross back below the `excludeIf` thresholds, the upstream falls out of the excluded set on the next tick. No real user traffic is served by an excluded upstream during this — the probing is entirely behind the scenes. Per-upstream opt-out via `routing.probe: 'off'`. |
 
 ## Tuning the thresholds

@@ -159,7 +159,7 @@ Returns `{ projectId, cordoned: [{ upstream, reason }, ...] }`. Only lists wildc
 | Prometheus | `erpc_upstream_cordon_duration_seconds{project,network,upstream}` — histogram observed on every uncordon. Long tail = real outages; very short cordons usually indicate operator mis-fires you want to review. |
 | Prometheus | `erpc_selection_excluded_seconds{upstream}` — once `.removeCordoned()` drops the cordoned upstream the selection policy reports it excluded; this gauge climbs every tick while it's out. Combined with the cordon-duration histogram you get both the live "how long has it been" and the post-mortem "how long was it" views. |
 | Logs (DEBUG) | `msg="cordoning upstream to disable routing" upstream=... method=... reason=...` on cordon, and `"uncordoning..."` on uncordon. |
-| Selection policy | The eval's per-tick `Decision.Output.Annotations[id]` includes the cordon reason on the excluded row. Surfaces in the simulator's policy-history modal as a pill. |
+| Selection policy | The eval's per-tick `Decision.Output.Excluded[]` entry for the cordoned upstream carries `Step: "removeCordoned"` and `Reason: "cordoned"`. Surfaces in the simulator's policy-history modal and in DEBUG logs. |
 
 <Callout type="info">
   The `erpc_upstream_cordoned` gauge is what powers the healthcheck `all:activeUpstreams` eval — see [Healthcheck](/operation/healthcheck). Probes that depend on every upstream being active will fail while any are cordoned, which is usually what you want during an incident.

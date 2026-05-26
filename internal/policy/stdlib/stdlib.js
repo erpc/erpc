@@ -996,21 +996,7 @@
     return (position === 'head') ? adds.concat(this) : this.concat(adds);
   });
 
-  // ─── 4.11 Cooldown & warmup ─────────────────────────────────────────────
-
-  define('cooldown', function (duration) {
-    const ctx = globalThis.__policyCtx || {};
-    const ms = globalThis.durationMs(duration);
-    const since = ctx.excludedSince || {};
-    const now = ctx.now || Date.now();
-    return this.filter(u => {
-      const t = since[u.id];
-      if (t == null) return true;
-      return (now - t) >= ms;
-    });
-  });
-
-  // ─── 4.12 Combinators ───────────────────────────────────────────────────
+  // ─── 4.11 Combinators ───────────────────────────────────────────────────
 
   define('if', function (cond, thenFn, elseFn) {
     const c = (typeof cond === 'function') ? cond(this) : !!cond;
