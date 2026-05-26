@@ -261,9 +261,19 @@ func seedDegraded(tracker *health.Tracker, ups common.Upstream, s seedSpec) {
 		tracker.RecordUpstreamMisbehavior(ups, method, common.DataFinalityStateUnknown)
 	}
 	if s.blockHeadLag > 0 {
+		// Direct atomic store doesn't fan out the way Record* does, so
+		// we explicitly write to BOTH the per-method bucket (eth_call)
+		// AND the wildcard ("*") aggregate. The slot's u.metrics reads
+		// "*" by default at evalScope=network; per-method-aware
+		// predicates read the eth_call bucket via u.metricsByMethod.
 		m := tracker.GetUpstreamMethodMetrics(ups, method, common.DataFinalityStateAll)
 		require.NotNilf(nilTBOnPanic{}, m, "tracker has no metrics for %s/%s yet", ups.Id(), method)
 		m.BlockHeadLag.Store(s.blockHeadLag)
+		if method != "*" {
+			if mAgg := tracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll); mAgg != nil {
+				mAgg.BlockHeadLag.Store(s.blockHeadLag)
+			}
+		}
 	}
 }
 
