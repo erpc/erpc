@@ -7,23 +7,38 @@
     // consensus) already absorbs occasional failures.
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
     .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-    // Latency: drop only if MORE THAN HALF of per-method comparisons
-    // exceed 10× the fastest peer (this upstream's p70 / fastest peer's
-    // p70 PER METHOD, exponentially damped at dampingMs=30) — OR
-    // catastrophically slow (>30s absolute).
+    // Latency: only exclude when the upstream is BOTH absolutely slow
+    // AND consistently slower than peers across most of what it
+    // serves. Two-stage check:
     //
-    // `mode: 'majority'` is the operator-stated intent of "exclude
-    // only on crazy outlier incidents, not just 'slightly slower than
-    // others'". Production data showed `geomean` mode tripping on
-    // upstreams at only 5× the fastest peer because a single rare-
-    // method per-tick p70 spike pushed the geometric mean over 10.
-    // With `majority`, a slow upstream needs to be consistently slow
-    // across the majority of what it serves — small per-method
-    // outliers don't dominate, and scoring/hedge handle the rest.
+    //   1. `latencyAbove(3000)` — absolute-latency floor. Drops the
+    //      deviation predicate entirely for upstreams below 3s p70.
+    //      Sub-3s upstreams stay in rotation regardless of how they
+    //      compare to a faster peer; `sortByScore(PREFER_FASTEST)` puts
+    //      them later in the ordered list and hedge catches the slack
+    //      on the request path. The 3s threshold is the "user-visible
+    //      pain" boundary — anything below is recoverable via hedge,
+    //      anything above starts hitting tail-latency SLOs.
     //
-    // Outer samplesAbove(20) gates on aggregate counts so the
+    //   2. `latencyDeviationAbove(3, majority)` — only AFTER passing
+    //      the absolute floor, also check the upstream is consistently
+    //      slower than peers. `mode: 'majority'` (more than half of the
+    //      per-method comparisons exceed 3×) keeps the predicate robust
+    //      against per-tick spikes on a single rare method that
+    //      would otherwise push a geomean over the threshold. The
+    //      lower multiplier (3 vs the older 10) is intentional — once
+    //      we've established the upstream is absolutely slow, a 3×
+    //      ratio is a strong "consistently behind peers" signal.
+    //
+    // Outer `latencyAbove(10_000)` is the catastrophic safety net
+    // (>10s absolute, unconditional exclusion regardless of peers or
+    // sample count). Lower than the previous 30s — at this PR the
+    // operator-stated intent is "3-4s+ is broken", so 10s is well
+    // past any reasonable user tolerance.
+    //
+    // Outer `samplesAbove(20)` gates on aggregate counts so the
     // predicate doesn't even run on cold-start pods.
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
+    .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
     // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
     // Outage safety net: if everyone failed the health excludes, fall

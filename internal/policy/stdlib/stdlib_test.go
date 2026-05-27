@@ -662,6 +662,62 @@ func TestStdlib_DefaultPolicy_ReadmitsWhenMetricsHeal(t *testing.T) {
 		"after metrics healed (clean samples diluted error rate) rpc1 must be re-admitted")
 }
 
+// TestStdlib_DefaultPolicy_KeepsModeratelySlowUpstreamInRotation
+// pins the operator-stated intent post-prod-tuning: an upstream that
+// is "merely slower than peers" (5×, 25×) but still well under the
+// 3s absolute floor MUST stay in rotation. scoring (PREFER_FASTEST)
+// ranks it lower; hedge handles latency on the request path. Only
+// upstreams that are BOTH absolutely slow (≥3s) AND consistently
+// slower than peers should get excluded by the deviation predicate.
+//
+// Setup mirrors prod data (2026-05-27 audit on prod erpc-aggregator):
+//   - rpc-fast: 20ms p70 (fast-tier vendor)
+//   - rpc-slow: 500ms p70 (25× the fast peer, but well below 3s)
+//
+// Before this tuning, `latencyDeviationAbove(10, majority)` excluded
+// rpc-slow because 25× > 10× on the majority of methods. The audit
+// surfaced that this was harming user experience (a moderately slow
+// vendor was being kicked out entirely when scoring + hedge would
+// have handled it correctly).
+//
+// After tuning: rpc-slow stays in rotation. The default policy's
+// chain reads `all(samplesAbove(20), latencyAbove(3000),
+// latencyDeviationAbove(3, majority))` — `latencyAbove(3000)` short-
+// circuits the deviation check for sub-3s upstreams.
+func TestStdlib_DefaultPolicy_KeepsModeratelySlowUpstreamInRotation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	cfg := &common.SelectionPolicyConfig{}
+	require.NoError(t, cfg.SetDefaults())
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
+	defer engine.Stop()
+
+	ups := mkUps("rpc-fast", "rpc-slow")
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// Seed under a real method so the per-method tracker buckets are
+	// populated — latencyDeviationAbove compares apples-to-apples per
+	// method, so empty per-method data means the predicate can't fire.
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "eth_call", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "eth_call", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		tracker.RecordUpstreamRequest(ups[1], "eth_call", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[1], "eth_call", 500*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	got := ids(engine.GetOrdered("evm:1", "*", "*"))
+	require.ElementsMatch(t, []string{"rpc-fast", "rpc-slow"}, got,
+		"rpc-slow at 500ms p70 (25× the fast peer) is sub-3s — must STAY in "+
+			"rotation; scoring puts it later and hedge handles the latency. "+
+			"The 3s absolute floor in the default policy gates the deviation "+
+			"predicate so moderately-slow vendors don't get excluded.")
+	require.Equal(t, "rpc-fast", got[0],
+		"rpc-fast is faster → sortByScore(PREFER_FASTEST) ranks it first")
+}
+
 // idsExcluded — small helper to extract IDs from a []common.Upstream
 // returned by Engine.GetExcluded.
 func idsExcluded(ups []common.Upstream) []string {

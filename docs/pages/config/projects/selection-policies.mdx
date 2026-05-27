@@ -66,7 +66,7 @@ projects:
                 .removeCordoned()
                 .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
                 .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
+                .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -108,7 +108,7 @@ export default createConfig({
             .removeCordoned()
             .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
             .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
+            .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -156,11 +156,17 @@ one of them lets a degraded upstream keep receiving traffic:
     // Drop if >40 % throttled — vendor is rate-limiting us; reroute before quota burns.
     // Same samplesAbove(10) guard as the error rule, same reason.
     .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-    // Drop latency outliers: either 3× the fastest peer's p70 (relative, gated on
-    // samplesAbove(20) so the comparison sees real variance) OR p70 > 30 s (absolute,
-    // unguarded — 30 s is catastrophic at any sample count). p70 matches the rank
-    // axis below so exclusion and ranking agree on "fast".
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
+    // Drop latency outliers — TWO-STAGE gate:
+    //   1. `latencyAbove(3000)` — absolute floor. Sub-3s upstreams stay in rotation
+    //      regardless of how they compare to a faster peer; scoring puts them later
+    //      and hedge catches the latency on the request path.
+    //   2. `latencyDeviationAbove(3, majority)` — relative check, only after passing
+    //      the floor. Excludes only when >50% of per-method comparisons are >3× the
+    //      fastest peer, which is robust to per-tick spikes on a single rare method.
+    // OR `latencyAbove(10_000)` — catastrophic safety net regardless of peers or
+    // sample count. p70 matches the rank axis below so exclusion and ranking agree
+    // on "fast".
+    .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
     // Drop laggers: >16 blocks behind tip (chain-agnostic) OR >30 wall-clock seconds
     // (adapts to chain block-time via the tracker's EMA, no-op until ≥3 samples).
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
@@ -190,7 +196,12 @@ one of them lets a degraded upstream keep receiving traffic:
     .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })
 ```
 
-**Why error / throttle are tolerant (0.7 / 0.4) and latency is tight (3×).** Failure costs are asymmetric: error and throttle blips are already absorbed by retry / hedge / consensus (the failsafe layer). A slow upstream, by contrast, poisons tail latency on every request routed through it before falling back. Excluding a marginally-slow upstream costs at most one degraded reply; NOT excluding one poisons every call. So latency uses a tighter threshold than the other rules.
+**Why error / throttle are tolerant (0.7 / 0.4) and the latency check is two-stage.** Failure costs are asymmetric:
+
+- Error / throttle blips are already absorbed by retry / hedge / consensus (the failsafe layer). A 70 % / 40 % rolling rate is the threshold for "this isn't a blip, this is broken".
+- Latency exclusion would over-trigger on a single-multiplier check: a moderately slow vendor (e.g. 500 ms p70 vs a fast peer's 20 ms — a 25× ratio) is not user-visibly broken — hedge catches it within ~200 ms. The two-stage gate (`latencyAbove(3000)` AND `latencyDeviationAbove(3, majority)`) lets scoring + hedge handle sub-3s upstreams while still catching upstreams that are BOTH absolutely slow AND consistently slower than their peers. The `latencyAbove(10_000)` catastrophic outer is the unconditional safety net (>10 s is broken regardless of peers).
+
+Production tuning data: prod metrics on 2026-05-27 showed the previous `latencyDeviationAbove(10, majority)` excluding 100-500 ms vendors against 20 ms peers — exactly the case where scoring + hedge would have handled it correctly. The two-stage gate restores the operator-stated intent of "only exclude crazy outliers".
 
 Source served at `GET /admin/selection/default-policy`.
 
