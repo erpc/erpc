@@ -7,16 +7,23 @@
     // consensus) already absorbs occasional failures.
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
     .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-    // Latency: drop if the geomean of per-method ratios (this
-    // upstream's p70 / fastest peer's p70 PER METHOD, exponentially
-    // damped by absolute latency at dampingMs=30) exceeds 10× —
-    // OR catastrophically slow (>30s absolute). The 10× threshold
-    // tolerates real cloud-vendor variance: an upstream serving
-    // ~70-150ms while peers serve ~10-30ms isn't broken, it's just
-    // a different vendor tier. A vendor at 2s+ is broken and trips.
+    // Latency: drop only if MORE THAN HALF of per-method comparisons
+    // exceed 10× the fastest peer (this upstream's p70 / fastest peer's
+    // p70 PER METHOD, exponentially damped at dampingMs=30) — OR
+    // catastrophically slow (>30s absolute).
+    //
+    // `mode: 'majority'` is the operator-stated intent of "exclude
+    // only on crazy outlier incidents, not just 'slightly slower than
+    // others'". Production data showed `geomean` mode tripping on
+    // upstreams at only 5× the fastest peer because a single rare-
+    // method per-tick p70 spike pushed the geometric mean over 10.
+    // With `majority`, a slow upstream needs to be consistently slow
+    // across the majority of what it serves — small per-method
+    // outliers don't dominate, and scoring/hedge handle the rest.
+    //
     // Outer samplesAbove(20) gates on aggregate counts so the
     // predicate doesn't even run on cold-start pods.
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
     // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
     // Outage safety net: if everyone failed the health excludes, fall

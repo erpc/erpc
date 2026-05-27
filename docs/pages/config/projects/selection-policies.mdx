@@ -66,7 +66,7 @@ projects:
                 .removeCordoned()
                 .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
                 .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
+                .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
                 .whenEmpty(() => upstreams)
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -108,7 +108,7 @@ export default createConfig({
             .removeCordoned()
             .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
             .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
+            .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
             .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
             .whenEmpty(() => upstreams)
             .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
@@ -160,7 +160,7 @@ one of them lets a degraded upstream keep receiving traffic:
     // samplesAbove(20) so the comparison sees real variance) OR p70 > 30 s (absolute,
     // unguarded — 30 s is catastrophic at any sample count). p70 matches the rank
     // axis below so exclusion and ranking agree on "fast".
-    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10)), latencyAbove(30_000)))
+    .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(10, { mode: 'majority' })), latencyAbove(30_000)))
     // Drop laggers: >16 blocks behind tip (chain-agnostic) OR >30 wall-clock seconds
     // (adapts to chain block-time via the tracker's EMA, no-op until ≥3 samples).
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
