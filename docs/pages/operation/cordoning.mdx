@@ -46,7 +46,7 @@ Result:
 }}
 ```
 
-Within one [`evalInterval`](/config/projects/selection-policies) (default `15s`) the selection policy re-evaluates and the cordoned upstream is dropped from the ordered list. Traffic flips to the next-best upstream; the cordoned one stays out until you uncordon. Note that the cordon flag itself is honored on the request path immediately — only the ordered-cache refresh waits for the next eval tick.
+Within one [`evalInterval`](/config/projects/selection-policies) (default `1s`, production-tuned `15s`) the selection policy re-evaluates and the cordoned upstream is dropped from the ordered list. Traffic flips to the next-best upstream; the cordoned one stays out until you uncordon. Note that the cordon flag itself is honored on the request path immediately — only the ordered-cache refresh waits for the next eval tick.
 
 Uncordon:
 
