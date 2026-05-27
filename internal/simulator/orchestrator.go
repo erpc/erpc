@@ -863,9 +863,8 @@ func copyIntMap(m map[string]int) map[string]int {
 //             carries a tag the chain steered away from).
 //
 // Position changes only when the policy re-evaluates (every
-// `evalInterval`, default 1s; production-tuned often 15s). The
-// ordering stays stable when the simulator is paused — no traffic
-// doesn't trigger a re-rank.
+// `evalInterval`, default 15s). The ordering stays stable when the
+// simulator is paused — no traffic doesn't trigger a re-rank.
 //
 // All health metrics (errorRate, throttledRate, misbehaviorRate, p50,
 // p90, p95, blockHeadLag, finalizationLag, cordoned) come from

@@ -317,7 +317,7 @@ networks:
 
 ```yaml
 selectionPolicy:
-  evalInterval: 15s           # how often to re-evaluate eligibility (default 1s; bump to 15s for production CPU savings — see selection-policies docs)
+  evalInterval: 15s           # how often to re-evaluate eligibility (default 15s)
   evalTimeout: 100ms          # per-tick eval deadline (must be < evalInterval; prior cache retained on timeout)
   evalScope: network          # 'network' (default) | 'network-method' | 'network-finality' | 'network-method-finality'
   evalFunc: |

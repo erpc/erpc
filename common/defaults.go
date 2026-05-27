@@ -2487,19 +2487,20 @@ const DefaultSelectionPolicySource = `(upstreams, ctx) => upstreams`
 
 func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
-		// Default 1s for backward-compat with the integration test
-		// suite (many shard tests rely on sub-second eval reactivity
-		// to observe policy decisions within their assertion windows).
+		// 15s default — the JS interpreter doesn't need sub-second
+		// re-evaluation for production-stable ranking. With the
+		// default `scoreMetricsWindowSize: 1m` you get 4 quantile
+		// samples per window — enough for stable rankings without
+		// between-tick flicker. The probeExcluded re-admission flow
+		// (`minSamplesWindow: 60s`) lines up too. See the
+		// selection-policies docs "Advanced tuning" section.
 		//
-		// PRODUCTION OPERATORS: bump this to `15s` in your config
-		// to cut policy JS-interpreter CPU ~15×. The default 60s
-		// `scoreMetricsWindowSize` gives 4 quantile samples per
-		// window at 15s — enough for stable rankings without
-		// between-tick flicker. See selection-policies docs
-		// "Advanced tuning" for the full coupling between
-		// `evalInterval`, `scoreMetricsWindowSize`, and
-		// `probeExcluded.minSamplesWindow`.
-		c.EvalInterval = Duration(1 * time.Second)
+		// Tests requiring sub-second eval reactivity to observe
+		// policy decisions inside their assertion windows MUST set
+		// `EvalInterval` explicitly (most already do; the few that
+		// relied on the implicit 1s default were updated when this
+		// default moved to 15s).
+		c.EvalInterval = Duration(15 * time.Second)
 	}
 	if c.EvalTimeout == 0 {
 		c.EvalTimeout = Duration(100 * time.Millisecond)
