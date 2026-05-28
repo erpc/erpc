@@ -1,13 +1,19 @@
 package common
 
 import (
+	"bytes"
 	"net/url"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func boolPtr(b bool) *bool { return &b }
 
 func TestSetDefaults_NetworkConfig(t *testing.T) {
 	sysDefCfg := NewDefaultNetworkConfig(nil)
@@ -1196,3 +1202,112 @@ func TestSetDefaults_ConsensusWaitCaps(t *testing.T) {
 		assert.Equal(t, Duration(800*time.Millisecond), c.MaxWaitOnEmpty.Base)
 	})
 }
+
+// captureWarnings rebinds the package-level zerolog `log.Logger` to a
+// JSON-encoded buffer for the duration of `fn`, then restores the
+// prior logger. Used to assert that `SetDefaults` emits a deprecation
+// warning when the operator wrote the legacy `evalPerMethod` /
+// `evalPerFinality` bools.
+//
+// `util.ConfigureTestLogger` (init_test.go) sets the global level to
+// Disabled when `LOG_LEVEL` is unset — which suppresses every log
+// regardless of which logger is configured. We temporarily lift the
+// global level to Warn so our capture sees the warning, then restore.
+func captureWarnings(t *testing.T, fn func()) string {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prevLogger := log.Logger
+	prevLevel := zerolog.GlobalLevel()
+	log.Logger = zerolog.New(buf)
+	zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	defer func() {
+		log.Logger = prevLogger
+		zerolog.SetGlobalLevel(prevLevel)
+	}()
+	fn()
+	return buf.String()
+}
+
+// TestSetDefaults_SelectionPolicy_EvalScope covers the config-load-
+// time translation from the `evalPerMethod` / `evalPerFinality` alias
+// bools to the canonical `evalScope` enum. Three invariants:
+//
+//  1. Alias bools alone (no explicit `evalScope`) map to the matching
+//     enum value.
+//  2. SetDefaults nils out the alias fields after translation —
+//     downstream code MUST NOT see stale values.
+//  3. Translation is SILENT — no warnings, no log noise. The aliases
+//     are a config-shape convenience for backward compat on configs
+//     from main; we don't browbeat operators about using them.
+func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
+	t.Run("default — nothing set", func(t *testing.T) {
+		c := &SelectionPolicyConfig{}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, EvalScopeNetwork, c.EvalScope)
+		assert.Nil(t, c.EvalPerMethod)
+		assert.Nil(t, c.EvalPerFinality)
+	})
+
+	t.Run("alias bools translate + nil out + stay silent", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			perMethod, perFinality *bool
+			wantScope              EvalScope
+		}{
+			"perMethod only":      {boolPtr(true), nil, EvalScopeNetworkMethod},
+			"perFinality only":    {nil, boolPtr(true), EvalScopeNetworkFinality},
+			"both true":           {boolPtr(true), boolPtr(true), EvalScopeNetworkMethodFinality},
+			"perMethod=false":     {boolPtr(false), nil, EvalScopeNetwork},
+			"both explicit false": {boolPtr(false), boolPtr(false), EvalScopeNetwork},
+		} {
+			t.Run(name, func(t *testing.T) {
+				c := &SelectionPolicyConfig{
+					EvalPerMethod:   tc.perMethod,
+					EvalPerFinality: tc.perFinality,
+				}
+				warnings := captureWarnings(t, func() {
+					require.NoError(t, c.SetDefaults())
+				})
+				assert.Equal(t, tc.wantScope, c.EvalScope,
+					"resolved EvalScope after translation")
+				assert.Nil(t, c.EvalPerMethod, "alias field niled after translation")
+				assert.Nil(t, c.EvalPerFinality, "alias field niled after translation")
+				assert.Empty(t, warnings,
+					"alias-bool translation is silent — no deprecation noise")
+			})
+		}
+	})
+
+	t.Run("explicit evalScope wins silently over alias bools", func(t *testing.T) {
+		c := &SelectionPolicyConfig{
+			EvalScope:       EvalScopeNetworkFinality, // explicit
+			EvalPerMethod:   boolPtr(true),            // alias — ignored
+			EvalPerFinality: boolPtr(false),
+		}
+		warnings := captureWarnings(t, func() {
+			require.NoError(t, c.SetDefaults())
+		})
+		assert.Equal(t, EvalScopeNetworkFinality, c.EvalScope,
+			"explicit evalScope wins")
+		assert.Nil(t, c.EvalPerMethod, "alias field niled after override")
+		assert.Nil(t, c.EvalPerFinality, "alias field niled after override")
+		assert.Empty(t, warnings,
+			"silent translation — no warning even when both are set")
+	})
+
+	t.Run("no warning when only modern evalScope is set", func(t *testing.T) {
+		c := &SelectionPolicyConfig{EvalScope: EvalScopeNetworkMethod}
+		warnings := captureWarnings(t, func() {
+			require.NoError(t, c.SetDefaults())
+		})
+		assert.Empty(t, warnings,
+			"no alias fields touched → no log noise")
+	})
+
+	t.Run("invalid evalScope rejects", func(t *testing.T) {
+		c := &SelectionPolicyConfig{EvalScope: "bogus"}
+		err := c.SetDefaults()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "evalScope")
+	})
+}
+

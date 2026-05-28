@@ -189,7 +189,7 @@ func TestNetworkForward_ConsensusErrorPathClearsLVRWithoutDoubleFree(t *testing.
 	upstreams := createTestUpstreams(3)
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx, &log.Logger, "prjA", upstreams,
-		ssr, nil, vr, pr, nil, mt, 1*time.Second, nil, nil,
+		ssr, nil, vr, pr, nil, mt, nil,
 	)
 
 	consensusCfg := &common.ConsensusPolicyConfig{
@@ -211,13 +211,15 @@ func TestNetworkForward_ConsensusErrorPathClearsLVRWithoutDoubleFree(t *testing.
 			},
 		},
 		nil, upsReg, mt,
+		nil,
 	)
 	require.NoError(t, err)
 
 	upsReg.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 	require.NoError(t, upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	upstream.ReorderUpstreams(upsReg)
+	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
+	upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
 	time.Sleep(200 * time.Millisecond)
 
 	// All 3 upstreams return JSON-RPC errors (execution reverts)

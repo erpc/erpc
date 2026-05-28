@@ -328,14 +328,17 @@ func newTestQueryExecutor(t *testing.T, method string, upstreams ...*upstreampkg
 
 func newTestUpstreamsRegistry(t *testing.T, networkID, method string, upstreams ...*upstreampkg.Upstream) *upstreampkg.UpstreamsRegistry {
 	t.Helper()
+	_ = method // method parameter retained for callsite parity; new registry is method-agnostic.
 
 	registry := &upstreampkg.UpstreamsRegistry{}
 	setUnexportedField(t, registry, "upstreamsMu", &sync.RWMutex{})
-	setUnexportedField(t, registry, "sortedUpstreams", map[string]map[string][]*upstreampkg.Upstream{
-		networkID: {
-			method: upstreams,
-		},
+	setUnexportedField(t, registry, "networkUpstreams", map[string][]*upstreampkg.Upstream{
+		networkID: upstreams,
 	})
+	// Also populate the atomic snapshot so GetNetworkUpstreams' fast path works.
+	atomicMap := &sync.Map{}
+	atomicMap.Store(networkID, upstreams)
+	setUnexportedField(t, registry, "networkUpstreamsAtomic", *atomicMap)
 	return registry
 }
 

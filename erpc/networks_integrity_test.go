@@ -55,13 +55,14 @@ func setupIntegrityTestNetwork(t *testing.T, ctx context.Context, upstreams []*c
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", upstreams, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", upstreams, ssr, rlr, vr, pr, nil, mt, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
+	network.PinUpstreamOrderForTest()
 
 	return network, upr
 }

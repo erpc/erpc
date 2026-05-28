@@ -1,11 +1,16 @@
 # Version control
 .git
 .gitignore
+.claude/
+.cursor/
+.github/
+.vscode/
 
 # Build artifacts
 bin/
 dist/
 build/
+temp/
 *.exe
 *.dll
 *.so

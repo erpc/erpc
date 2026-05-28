@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -24,41 +25,197 @@ import (
 )
 
 type Network struct {
-	networkId                string
-	networkLabel             string
-	projectId                string
-	logger                   *zerolog.Logger
-	bootstrapOnce            sync.Once
-	appCtx                   context.Context
-	cfg                      *common.NetworkConfig
-	inFlightRequests         *sync.Map
-	failsafeExecutors        []*networkExecutor
-	rateLimitersRegistry     *upstream.RateLimitersRegistry
-	cacheDal                 common.CacheDAL
-	metricsTracker           *health.Tracker
-	upstreamsRegistry        *upstream.UpstreamsRegistry
-	selectionPolicyEvaluator *PolicyEvaluator
-	initializer              *util.Initializer
+	networkId            string
+	networkLabel         string
+	projectId            string
+	logger               *zerolog.Logger
+	bootstrapOnce        sync.Once
+	appCtx               context.Context
+	cfg                  *common.NetworkConfig
+	inFlightRequests     *sync.Map
+	failsafeExecutors    []*networkExecutor // main: failsafe rename FailsafeExecutor → networkExecutor
+	rateLimitersRegistry *upstream.RateLimitersRegistry
+	cacheDal             common.CacheDAL
+	metricsTracker       *health.Tracker
+	upstreamsRegistry    *upstream.UpstreamsRegistry
+	// policyEngine replaces the legacy `selectionPolicyEvaluator *PolicyEvaluator` field
+	// (and the `erpc/policy_evaluator.go` per-request `AcquirePermit` gating it owned).
+	// The engine pre-computes the ordered upstream list per (network, method) tick;
+	// the request path consumes the head via `policyEngine.GetOrdered`, so per-attempt
+	// permit-acquisition is no longer needed.
+	policyEngine *policy.Engine
+	initializer  *util.Initializer
 }
 
+// Bootstrap registers this network with the policy engine. The engine kicks
+// off the slot's ticker and runs an initial synchronous eval so request-path
+// reads through `policyEngine.GetOrdered` always see a populated cache.
+//
+// The upstream list is supplied as a closure so newly-bootstrapped upstreams
+// become visible to the engine each tick without a re-register.
 func (n *Network) Bootstrap(ctx context.Context) error {
-	// Initialize policy evaluator if configured
-	if n.cfg.SelectionPolicy != nil {
-		evaluator, e := NewPolicyEvaluator(n.networkId, n.logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
-		if e != nil {
-			return fmt.Errorf("failed to create selection policy evaluator: %w", e)
-		}
-		if e := evaluator.Start(ctx); e != nil {
-			return fmt.Errorf("failed to start selection policy evaluator: %w", e)
-		}
-		n.selectionPolicyEvaluator = evaluator
+	if n.policyEngine == nil {
+		return nil
 	}
+	cfg := n.cfg.SelectionPolicy
+	if cfg == nil {
+		cfg = &common.SelectionPolicyConfig{}
+		n.cfg.SelectionPolicy = cfg
+	}
+	// Defensive: callers may have set Eval but skipped SetDefaults (common
+	// in tests that build Config as Go struct literals). Compile here so
+	// the engine never sees a nil program.
+	if cfg.CompiledProgram == nil {
+		if err := cfg.SetDefaults(); err != nil {
+			return fmt.Errorf("selectionPolicy SetDefaults: %w", err)
+		}
+	}
+	upstreamsFn := func() []common.Upstream {
+		ptrs := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+		out := make([]common.Upstream, len(ptrs))
+		for i, u := range ptrs {
+			out[i] = u
+		}
+		return out
+	}
+	return n.policyEngine.RegisterNetwork(n.networkId, n.Label(), upstreamsFn, cfg)
+}
 
-	return nil
+// PinUpstreamOrderForTest pins the upstream ordering for this network to
+// the given IDs (or alphabetical-by-id if `ids` is empty). Affects both
+// the underlying registry (so cold-start reads see the pinned order) and
+// the policy engine's cache when one is wired up. Test-only.
+func (n *Network) PinUpstreamOrderForTest(ids ...string) {
+	if n.upstreamsRegistry != nil {
+		n.upstreamsRegistry.OverrideOrderForTest(n.networkId, ids...)
+	}
+	if n.policyEngine != nil {
+		policy.OverrideOrderForTest(n.policyEngine, n.networkId, ids...)
+	}
 }
 
 func (n *Network) Id() string {
 	return n.networkId
+}
+
+// MetricsTracker returns the network's shared health tracker. Exposed
+// so diagnostic tooling (the erpc-simulator, admin readouts) can read
+// per-upstream observed metrics — the same numbers the selection
+// policy's `keepHealthy` / `sortByScore` filters consume.
+func (n *Network) MetricsTracker() *health.Tracker {
+	return n.metricsTracker
+}
+
+// AllUpstreams returns every upstream configured on the network, in
+// no particular order. Diagnostic tooling uses this to walk upstreams
+// for tracker lookups without needing to know the routing order.
+func (n *Network) AllUpstreams() []*upstream.Upstream {
+	if n.upstreamsRegistry == nil {
+		return nil
+	}
+	return n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId)
+}
+
+// PolicyScores returns the per-upstream `score` map produced by the
+// selection-policy engine's most recent tick for `(networkID, method)`,
+// or nil if the engine isn't wired up. Source of truth for "what does
+// the policy rank this upstream at?" — never re-implement the PREFER_FASTEST
+// weight formula client-side; read from here.
+func (n *Network) PolicyScores(method string) map[string]float64 {
+	if n.policyEngine == nil {
+		return nil
+	}
+	if method == "" {
+		method = "*"
+	}
+	return n.policyEngine.GetScores(n.networkId, method, "*")
+}
+
+// RecentPolicyDecisions returns up to `limit` most-recent policy
+// engine Decisions for `(networkID, method)`, OLDEST-first. Diagnostic
+// tooling uses this to render a tick-by-tick replay panel. Returns nil
+// if no engine is wired up.
+func (n *Network) RecentPolicyDecisions(method string, limit int) []*policy.Decision {
+	if n.policyEngine == nil {
+		return nil
+	}
+	if method == "" {
+		method = "*"
+	}
+	return n.policyEngine.RecentDecisions(n.networkId, method, "*", limit)
+}
+
+// PolicyLastSwitchAt returns when the primary upstream last changed
+// for `(networkID, method)`. Used by diagnostics to render the
+// `stickyPrimary` cooldown countdown ("primary held for Xs").
+func (n *Network) PolicyLastSwitchAt(method string) time.Time {
+	if n.policyEngine == nil {
+		return time.Time{}
+	}
+	if method == "" {
+		method = "*"
+	}
+	return n.policyEngine.LastSwitchAt(n.networkId, method, "*")
+}
+
+// PolicyOrderedUpstreams returns the IDs of upstreams in the order the
+// selection-policy engine currently has them ordered for the given
+// method. The slot's cache is read lock-free — this is the same source
+// of truth `Forward` uses to pick attempts. Returns nil if no policy
+// engine is wired up or the slot hasn't ticked yet.
+//
+// Diagnostics tooling (the simulator, admin endpoints) uses this to
+// render "position pills" that reflect the policy's real verdict —
+// NOT a guess derived from per-second selection counts.
+func (n *Network) PolicyOrderedUpstreams(method string) []string {
+	if n.policyEngine == nil {
+		return nil
+	}
+	if method == "" {
+		method = "*"
+	}
+	ups := n.policyEngine.GetOrdered(n.networkId, method, "*")
+	if len(ups) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ups))
+	for _, u := range ups {
+		out = append(out, u.Id())
+	}
+	return out
+}
+
+// SetPolicyEnginePaused gates the per-slot ticker on this network's
+// selection-policy engine. While paused every slot still wakes on each
+// tick but skips `tickOnce`, so the cached ordering — what `Forward`
+// reads via `policyEngine.GetOrdered` — stays frozen at the last
+// verdict. No-op if no policy engine is wired up (test-only networks,
+// or YAML without a `selectionPolicy` block).
+//
+// Wired up so the eRPC simulator's pause button can stop the policy
+// engine churning while traffic generation is halted. Production
+// callers shouldn't need this — leave the engine running.
+func (n *Network) SetPolicyEnginePaused(paused bool) {
+	if n.policyEngine == nil {
+		return
+	}
+	n.policyEngine.SetPaused(paused)
+}
+
+// SetPolicyStepLogEnabled toggles per-tick capture of the selection
+// policy's chain trail. While enabled the engine's `Decision` carries
+// `Output.StepLog` (the chain timeline) and DEBUG-level logs print one
+// line per step + one per excluded upstream.
+//
+// Off by default in production (zero overhead beyond a function-call
+// indirection per stdlib step). Flipped on by the simulator at boot so
+// the policy-history drawer has data; production callers running with
+// DEBUG-level logs may also want to enable it for incident triage.
+func (n *Network) SetPolicyStepLogEnabled(enabled bool) {
+	if n.policyEngine == nil {
+		return
+	}
+	n.policyEngine.SetStepLogEnabled(enabled)
 }
 
 func (n *Network) Label() string {
@@ -111,15 +268,6 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 			continue
 		}
 
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_blockNumber" as it's a common method that would be used to get latest block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_blockNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest latest block calculation")
-				continue
-			}
-		}
-
 		// Use effective latest block which considers blockAvailability.upper config
 		// (e.g., if upstream has latestBlockMinus: 5, use latest-5 instead of latest)
 		upBlock := u.EvmEffectiveLatestBlock()
@@ -149,15 +297,6 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest finalized block calculation")
 			continue
-		}
-
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest finalized block calculation")
-				continue
-			}
 		}
 
 		// Use effective finalized block which considers blockAvailability.upper config
@@ -190,15 +329,6 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for lowest finalized block calculation")
 			continue
-		}
-
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for lowest finalized block calculation")
-				continue
-			}
 		}
 
 		// Use effective finalized block which considers blockAvailability.upper config
@@ -340,25 +470,36 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
-	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
-	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
+	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
+	var upsList []common.Upstream
+	if n.policyEngine != nil {
+		// Pass the request's actual finality so per-finality slots
+		// (when EvalPerFinality is on) resolve to the bucket-specific
+		// ordering. Networks not configured per-finality see "*" and
+		// resolve to the wildcard slot regardless.
+		upsList = n.policyEngine.GetOrdered(n.networkId, method, req.Finality(ctx).String())
+	}
+	if len(upsList) == 0 {
+		// Cold-start fallback: serve the raw registration order until the
+		// engine's first tick completes for this slot.
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			upsList = append(upsList, u)
+		}
+	}
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
-		entries := make([]string, len(upsList))
+		ids := make([]string, len(upsList))
 		for i, u := range upsList {
-			bd := n.upstreamsRegistry.GetUpstreamScoreBreakdown(u, n.networkId, method)
-			entries[i] = fmt.Sprintf("%s(score=%.4f pen=%.4f err=%.3f lat=%.4fs thr=%.3f blag=%.0f flag=%.0f mis=%.3f cor=%v)",
-				u.Id(), bd.Score, bd.Penalty, bd.ErrorRate, bd.Latency, bd.ThrottledRate,
-				bd.BlockHeadLag, bd.FinalizationLag, bd.MisbehaviorRate, bd.Cordoned,
-			)
+			ids[i] = u.Id()
 		}
 		upstreamSpan.SetAttributes(
-			attribute.String("upstreams.sorted", strings.Join(entries, ", ")),
+			attribute.String("upstreams.sorted", strings.Join(ids, ", ")),
 		)
 	}
 	upstreamSpan.End()
 
-	if err != nil {
+	if len(upsList) == 0 {
+		err := common.NewErrNoUpstreamsFound(n.projectId, n.networkId)
 		common.SetTraceSpanError(forwardSpan, err)
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)
@@ -368,6 +509,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
+
+	// Feed the per-network probe-bus AFTER we know the request is
+	// actually going to dispatch to an upstream (i.e. not a
+	// cache-hit / static-response / follower-multiplexer
+	// short-circuit, all of which returned earlier). The publish is
+	// non-blocking and drops on overflow — request latency is never
+	// affected. The Prober (if any) samples from this feed to mirror
+	// the request against currently-excluded upstreams so their
+	// tracker counters get refreshed without touching real traffic.
+	// No-op for networks whose policy chain doesn't include
+	// `probeExcluded`.
+	if n.policyEngine != nil {
+		n.policyEngine.PublishRequest(n.networkId, req)
+	}
 
 	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
 	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
@@ -428,10 +583,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Int("retry", retry).Msgf("trying to forward request to upstream")
 
-		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
-			return nil, err
-		}
-
+		// Selection-policy permit acquisition (legacy `acquireSelectionPolicyPermit`)
+		// is gone — the new policy engine pre-computes the ordered upstream list
+		// per (network, method) and the request path just consumes it. We still
+		// thread isHedgeAttempt down so per-upstream rate counters aren't
+		// inflated by hedge fan-out.
 		resp, err = n.doForward(ctx, u, req, false, isHedgeAttempt)
 
 		if err != nil && !common.IsNull(err) {
@@ -540,11 +696,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				attempted[u.Id()] = struct{}{}
 
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
-				if common.IsTracingDetailed {
-					loopSpan.SetAttributes(
-						attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
-					)
-				}
 				if eu, ok := u.(common.EvmUpstream); ok {
 					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 						loopSpan.SetAttributes(
@@ -863,10 +1014,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 			// Wrong-empty is a misbehavior (data disagreement with other upstreams),
 			// not an error. The upstream responded correctly, it just lacked data
-			// that others had. Only record misbehavior, not failure.
+			// that others had. Only record misbehavior, not failure. `finality` was
+			// resolved a few lines up for the wrong-empty telemetry metric — reuse it
+			// here so per-(method, finality) misbehavior counters stratify
+			// consistently with the rest of the tracker writes.
 			if upstream != nil {
 				if mt := upstream.MetricsTracker(); mt != nil {
-					mt.RecordUpstreamMisbehavior(upstream, method)
+					mt.RecordUpstreamMisbehavior(upstream, method, finality)
 				}
 			}
 			return true
@@ -1268,30 +1422,6 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 		return blockErr, false
 	}
 	return nil, false
-}
-
-func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.Logger, ups common.Upstream, req *common.NormalizedRequest) error {
-	if n.cfg.SelectionPolicy == nil {
-		return nil
-	}
-	_, span := common.StartDetailSpan(ctx, "Network.AcquireSelectionPolicyPermit")
-	defer span.End()
-
-	method, err := req.Method()
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return err
-	}
-
-	if dr := req.Directives(); dr != nil {
-		// If directive is instructed to use specific upstream(s), bypass selection policy evaluation
-		if dr.UseUpstream != "" {
-			span.SetAttributes(attribute.String("force_use_upstream", dr.UseUpstream))
-			return nil
-		}
-	}
-
-	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {

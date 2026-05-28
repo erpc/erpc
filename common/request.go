@@ -1250,6 +1250,23 @@ func (r *NormalizedRequest) UpstreamsCount() int {
 	return len(r.upstreamList)
 }
 
+// Upstreams returns a snapshot copy of the ordered upstream list set for
+// this request. Safe for concurrent use; mutating the returned slice does
+// not affect the request (use SetUpstreams to install a new order).
+func (r *NormalizedRequest) Upstreams() []Upstream {
+	if r == nil {
+		return nil
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	if len(r.upstreamList) == 0 {
+		return nil
+	}
+	out := make([]Upstream, len(r.upstreamList))
+	copy(out, r.upstreamList)
+	return out
+}
+
 // UserId returns the user ID from the user object, or "n/a" if not available
 func (r *NormalizedRequest) UserId() string {
 	if r == nil {

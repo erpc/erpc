@@ -1,0 +1,231 @@
+/* ===== Flow stage v2 — top-down layout ===== */
+.flow-wrap {
+  flex: 1; position: relative;
+  background:
+    radial-gradient(ellipse at 50% 22%, color-mix(in oklab, var(--acc-blue) 4%, transparent), transparent 50%),
+    radial-gradient(ellipse at 50% 85%, color-mix(in oklab, var(--ok) 3%, transparent), transparent 50%),
+    var(--bg-1);
+  overflow: hidden; min-height: 0;
+}
+.flow-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
+
+.flow-layout {
+  position: absolute; inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 22px 18px 18px;
+  gap: 0;
+  pointer-events: none;
+}
+.flow-layout > * { pointer-events: auto; }
+
+/* Top row: source */
+.fl-source-row { display: flex; justify-content: center; }
+.fl-source {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--bd-1);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklab, var(--bg-2) 90%, transparent);
+  backdrop-filter: blur(8px);
+  width: 280px;
+}
+.fl-source .label { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.fl-source .label .nm {
+  font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; color: var(--tx-0);
+}
+.fl-source .label .sub { font-size: 9.5px; color: var(--tx-3); letter-spacing: 0.04em; text-transform: uppercase; margin-top: 1px; }
+.fl-source .rate {
+  flex-shrink: 0;
+  display: flex; align-items: baseline; gap: 4px;
+  font-family: var(--font-mono);
+}
+.fl-source .rate .v {
+  font-size: 18px; font-weight: 600; color: var(--tx-0);
+  font-variant-numeric: tabular-nums;
+  min-width: 64px;
+  text-align: right;
+}
+.fl-source .rate .u { font-size: 9.5px; color: var(--tx-3); }
+.fl-source .icon {
+  width: 22px; height: 22px; border-radius: 5px;
+  background: linear-gradient(135deg, var(--acc-blue), var(--ok));
+  position: relative; flex-shrink: 0;
+}
+.fl-source .icon::after {
+  content: ""; position: absolute; inset: 4px; background: var(--bg-1); border-radius: 2px;
+}
+
+/* Middle row: core */
+.fl-core-row {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 60px;
+}
+.fl-core {
+  display: flex; flex-direction: column;
+  align-items: center;
+  padding: 10px 18px;
+  border: 1px solid var(--bd-2);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklab, var(--bg-2) 92%, transparent);
+  backdrop-filter: blur(8px);
+  min-width: 220px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.25), inset 0 1px 0 color-mix(in oklab, var(--acc-blue) 8%, transparent);
+}
+.fl-core .hd { display: flex; align-items: center; gap: 8px; }
+.fl-core .glyph {
+  width: 14px; height: 14px; border-radius: 3px;
+  background: conic-gradient(from 200deg, var(--acc-blue), var(--ok), var(--hot), var(--acc-blue));
+  position: relative;
+}
+.fl-core .glyph::after { content: ""; position: absolute; inset: 3px; background: var(--bg-2); border-radius: 1.5px; }
+.fl-core .nm { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--tx-0); letter-spacing: -0.01em; }
+.fl-core .badge {
+  font-size: 9px; font-family: var(--font-mono);
+  padding: 1px 5px; border-radius: 999px;
+  background: var(--ok-d); color: var(--ok);
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+.fl-core .sub {
+  display: flex; gap: 10px; margin-top: 4px;
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--tx-3);
+}
+.fl-core .sub .k { color: var(--tx-3); }
+.fl-core .sub .v { color: var(--tx-1); font-weight: 500; }
+
+/* Bottom row: upstream nodes */
+.fl-ups-row {
+  display: flex; gap: 5px;
+  justify-content: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.fl-node {
+  flex: 1 1 70px;
+  min-width: 64px;
+  max-width: 96px;
+  padding: 6px 7px 7px;
+  background: color-mix(in oklab, var(--bg-2) 88%, transparent);
+  border: 1px solid var(--bd-1);
+  border-top: 2px solid var(--dim);
+  border-radius: var(--r-sm);
+  position: relative;
+  cursor: pointer;
+  transition: all 0.16s;
+  backdrop-filter: blur(8px);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.fl-node:hover { border-color: var(--bd-2); background: color-mix(in oklab, var(--bg-3) 92%, transparent); transform: translateY(-1px); cursor: pointer; }
+/* Focus mode — clicking a node highlights it and dims the rest. */
+.fl-node.focused {
+  border-color: var(--acc-blue) !important;
+  background: color-mix(in oklab, var(--acc-blue-d) 60%, transparent) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--acc-blue) 50%, transparent),
+    0 0 28px color-mix(in oklab, var(--acc-blue) 40%, transparent);
+  transform: translateY(-2px);
+  z-index: 2;
+}
+.fl-node.focused .nm { color: var(--tx-0); font-weight: 600; }
+.fl-node.focused .pos-pill { background: var(--acc-blue); color: white; border-color: var(--acc-blue); }
+.fl-node.dimmed { opacity: 0.32; }
+.fl-node.dimmed:hover { opacity: 0.6; }
+.fl-node.pos-0 { border-top-color: var(--ok); }
+.fl-node.pos-1 { border-top-color: oklch(0.70 0.12 145); }
+.fl-node.pos-2 { border-top-color: var(--warn); }
+.fl-node.pos-x { border-top-color: var(--dim); opacity: 0.55; }
+.fl-node .nm {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
+  color: var(--tx-0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fl-node .vendor {
+  font-size: 8.5px; color: var(--tx-3);
+  letter-spacing: 0.04em; text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Per-node "share of last-second attempts" meter. The bar fills
+   left-to-right to `share = sel / totalSel`. Color tier comes from the
+   REAL tracker error rate (green ≤5%, amber ≤20%, red >20%). A small
+   numeric label is positioned above the bar so the operator can read
+   the actual share without hovering for the tooltip. */
+.fl-node .meter {
+  margin-top: 4px;
+  height: 5px; background: var(--bg-1); border-radius: 2px;
+  position: relative; overflow: visible;
+}
+.fl-node .meter .fill {
+  position: absolute; inset: 0;
+  background: var(--ok); transform-origin: left;
+  transition: transform 0.25s, background-color 0.2s;
+  border-radius: 2px;
+}
+.fl-node .meter .meter-label {
+  position: absolute;
+  right: 0; top: -12px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--tx-3);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.fl-node .meter.warn .fill { background: var(--warn); }
+.fl-node .meter.warn .meter-label { color: var(--warn); }
+.fl-node .meter.bad .fill { background: var(--bad); }
+.fl-node .meter.bad .meter-label { color: var(--bad); }
+.fl-node .pos-pill {
+  position: absolute; top: -6px; right: 6px;
+  font-family: var(--font-mono); font-size: 8.5px; font-weight: 600;
+  padding: 1px 4px; border-radius: 2px;
+  background: var(--bg-3); border: 1px solid var(--bd-1); color: var(--tx-1);
+  line-height: 1.2;
+}
+.fl-node.pos-0 .pos-pill { background: var(--ok); color: black; border-color: var(--ok); }
+/* "out" label needs to be uppercased and slightly emphasized; the
+   tooltip explains what "out" means on hover. */
+.fl-node.pos-x .pos-pill {
+  background: var(--bad); color: white; border-color: var(--bad);
+  text-transform: uppercase; letter-spacing: 0.05em; cursor: help;
+}
+/* lane labels (small, side) */
+.fl-lane-label {
+  position: absolute;
+  left: 12px;
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tx-4);
+  font-family: var(--font-mono);
+  pointer-events: none;
+  background: var(--bg-1);
+  padding: 0 4px;
+}
+.fl-lane-label.l-source { top: 32px; }
+.fl-lane-label.l-core { top: 50%; transform: translateY(-50%); }
+.fl-lane-label.l-ups { bottom: 14px; }
+
+/* Focus banner — top-right of the flow stage when an upstream is focused. */
+.focus-banner {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--acc-blue);
+  background: color-mix(in oklab, var(--acc-blue-d) 75%, var(--bg-1));
+  border: 1px solid var(--acc-blue);
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.focus-banner b { color: var(--tx-0); }
+.focus-banner .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--acc-blue); animation: pulse-soft 1.4s ease-in-out infinite; }
+.focus-banner .kbd { font-size: 9.5px; padding: 1px 4px; border: 1px solid color-mix(in oklab, var(--acc-blue) 45%, transparent); border-radius: 3px; color: var(--tx-1); }
+.focus-banner .clear { font-size: 9.5px; color: var(--tx-2); text-transform: uppercase; letter-spacing: 0.06em; }
+.focus-banner:hover .clear { color: var(--tx-0); }

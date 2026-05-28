@@ -230,7 +230,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 tried first, then rpc2 on retry
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x123"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -671,7 +671,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 first
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -763,8 +763,6 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
 		nil,
 	)
 
@@ -772,7 +770,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -780,9 +778,10 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
-	upstream.ReorderUpstreams(upstreamsRegistry)
-
+	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
+	upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
 	return network
 }
 
@@ -840,8 +839,6 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
 		nil,
 	)
 
@@ -849,7 +846,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -857,6 +854,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	return network
 }

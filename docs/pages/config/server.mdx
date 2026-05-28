@@ -154,7 +154,6 @@ server:
 | `listenV6` | `*bool` | `false` | Enable the IPv6 HTTP listener. |
 | `httpHostV6` | `*string` | `"[::]"` | IPv6 bind host. |
 | `httpPortV6` | `*int` | `4000` | IPv6 HTTP port. |
-| `httpPort` | `*int` | — | **Deprecated** — alias for `httpPortV4`. Still accepted for backwards compatibility; migrate to the explicit V4/V6 fields. |
 | `grpcEnabled` | `*bool` | `false` | Enable the parallel gRPC server. Used by streaming methods (`eth_getLogs`, `trace_filter`). |
 | `grpcHostV4` | `*string` | `"0.0.0.0"` | gRPC IPv4 bind host. |
 | `grpcPortV4` | `*int` | `4100` | gRPC IPv4 port. |

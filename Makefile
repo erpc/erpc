@@ -4,13 +4,14 @@ help:
 	@echo "Usage: make [command]"
 	@echo
 	@echo "Commands:"
-	@echo " build                         Build the eRPC server"
+	@echo " build                         Build the eRPC server + simulator"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
 	@echo
 	@echo " run-k6                        Run k6 tests"
 	@echo " run-pprof                     Run the eRPC server with pprof"
 	@echo " run-fake-rpcs                 Run fake RPCs"
+	@echo " run-simulator                 Run the eRPC traffic simulator (http://127.0.0.1:8080)"
 	@echo " up                            Up docker services"
 	@echo " down                          Down docker services"
 	@echo " fmt                           Format source code"
@@ -45,6 +46,11 @@ run-k6-evm-historical-randomized:
 build:
 	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
 	@CGO_ENABLED=0 go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-simulator ./cmd/erpc-simulator
+
+.PHONY: run-simulator
+run-simulator:
+	@go run ./cmd/erpc-simulator
 
 .PHONY: test
 test:

@@ -22,11 +22,17 @@ const (
 
 type UpstreamType string
 
-// HealthTracker is an interface for tracking upstream health metrics
+// HealthTracker is an interface for tracking upstream health metrics.
+//
+// `finality` is the DataFinalityState the request resolved to —
+// `DataFinalityStateAll` when the caller can't determine finality
+// (legacy call sites, internal probes, batch retries). Cordon/Uncordon
+// stay finality-agnostic because cordoning is an admin-level decision
+// about an entire (upstream, method) pair, not a per-finality bucket.
 type HealthTracker interface {
-	RecordUpstreamMisbehavior(up Upstream, method string)
-	RecordUpstreamRequest(up Upstream, method string)
-	RecordUpstreamFailure(up Upstream, method string, err error)
+	RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState)
+	RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState)
+	RecordUpstreamFailure(up Upstream, method string, finality DataFinalityState, err error)
 	Cordon(upstream Upstream, method string, reason string)
 	Uncordon(upstream Upstream, method string, reason string)
 }

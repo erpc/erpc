@@ -16,12 +16,19 @@ import (
 // Key Types
 // ------------------------------------
 
-// upstreamKey represents "upstream × method".
-// A nil Upstream means the "all-upstreams" aggregate
-// and method "*" means the "all-methods" aggregate.
+// upstreamKey represents "upstream × method × finality".
+// A nil Upstream means the "all-upstreams" aggregate;
+// method "*" means the "all-methods" aggregate;
+// finality `DataFinalityStateAll` (-1) means the "all-finalities"
+// aggregate. The finality axis is only populated when the tracker's
+// `trackByFinality` flag is on — see `Tracker.EnableFinalityTracking`.
+// When the flag is off, only the all-finalities slot is ever written
+// to, and reads of a specific-finality key transparently fall back to
+// it via `GetUpstreamMethodMetrics`.
 type upstreamKey struct {
-	ups    common.Upstream
-	method string
+	ups      common.Upstream
+	method   string
+	finality common.DataFinalityState
 }
 
 // networkKey represents "network × method".
@@ -83,16 +90,72 @@ func (t *Timer) ObserveDuration(isSuccess bool) {
 // TrackedMetrics
 // ------------------------------------
 
+// TrackedMetrics is the per-(upstream, method) rolling-window
+// observation set the policy engine reads on every eval. Every
+// counter + the quantile sketch is sliding-window (rollingBuckets
+// sub-buckets each), so degradations show up within
+// windowSize/rollingBuckets seconds (a few hundred ms at the
+// production default) rather than the full window-tumble cliff the
+// previous single-bucket design produced.
+//
+// `BlockHeadLag` / `FinalizationLag` stay as plain atomic.Int64 —
+// they're STATE metrics fed continuously by state pollers, not
+// counts, so rolling-window semantics don't apply.
 type TrackedMetrics struct {
 	ResponseQuantiles      *QuantileTracker `json:"responseQuantiles"`
-	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
-	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
-	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
-	MisbehaviorsTotal      atomic.Int64     `json:"misbehaviorsTotal"`
+	ErrorsTotal            *RollingCounter  `json:"errorsTotal"`
+	RemoteRateLimitedTotal *RollingCounter  `json:"remoteRateLimitedTotal"`
+	RequestsTotal          *RollingCounter  `json:"requestsTotal"`
+	MisbehaviorsTotal      *RollingCounter  `json:"misbehaviorsTotal"`
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
 	Cordoned               atomic.Bool      `json:"cordoned"`
 	LastCordonedReason     atomic.Value     `json:"lastCordonedReason"`
+	// CordonedAtMs is unix-millis when Cordoned was last flipped true.
+	// `0` means not cordoned (or never cordoned). Read by Uncordon to
+	// observe the cordon-duration histogram for dashboards.
+	CordonedAtMs atomic.Int64 `json:"cordonedAtMs"`
+
+	// LastAccessedAtMs is unix-millis of the last Record* or Get*
+	// touching this entry. Drives the tracker's idle-sweep — entries
+	// that haven't been touched in `idleAfter` get evicted from the
+	// `upsMetrics` / `ntwMetrics` maps + their matching Prometheus
+	// MetricVec label sets.
+	//
+	// Defends against method-flood: a hostile client hitting random
+	// JSON-RPC method names (`eth_random1`, `eth_random2`, ...) could
+	// otherwise grow the per-method map without bound. With idle
+	// sweep, stale methods drop out shortly after the attack stops.
+	//
+	// Set once on construction (so freshly-allocated entries don't
+	// look idle to the very next sweep tick) and refreshed on every
+	// hot-path write.
+	LastAccessedAtMs atomic.Int64 `json:"-"`
+}
+
+// newTrackedMetrics constructs an empty TrackedMetrics with all
+// rolling-window components initialized. Used at every sync.Map insert
+// in the tracker so callers never see a half-built record.
+func newTrackedMetrics(logger *zerolog.Logger) *TrackedMetrics {
+	tm := &TrackedMetrics{
+		ResponseQuantiles:      NewQuantileTracker(logger),
+		ErrorsTotal:            NewRollingCounter(),
+		RemoteRateLimitedTotal: NewRollingCounter(),
+		RequestsTotal:          NewRollingCounter(),
+		MisbehaviorsTotal:      NewRollingCounter(),
+	}
+	// Seed LastAccessedAtMs to "now" so a brand-new entry doesn't
+	// look idle to a sweep that fires before the first hot-path write.
+	tm.LastAccessedAtMs.Store(time.Now().UnixMilli())
+	return tm
+}
+
+// touch refreshes the per-entry idle timestamp. Called from every
+// Record* and Get* path. Cheap: one atomic store; avoids time.Now()
+// when the millisecond hasn't advanced (a request burst within the
+// same ms keeps the same value).
+func (m *TrackedMetrics) touch(nowMs int64) {
+	m.LastAccessedAtMs.Store(nowMs)
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
@@ -141,19 +204,33 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// Reset zeroes out counters for the next window.
-// Note: blockHeadLag and finalizationLag are NOT reset because they are
-// state metrics that represent current conditions, not cumulative counts.
-func (m *TrackedMetrics) Reset() {
-	m.ErrorsTotal.Store(0)
-	m.RequestsTotal.Store(0)
-	m.RemoteRateLimitedTotal.Store(0)
-	m.MisbehaviorsTotal.Store(0)
-	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
-	// DO NOT reset m.FinalizationLag - it's a state metric, not cumulative
-	m.ResponseQuantiles.Reset()
+// Rotate advances every rolling-window component forward by one
+// sub-bucket: the OLDEST bucket gets zeroed (its slice of the window
+// drops out) and a fresh slot opens at the newest position for
+// incoming samples. Called periodically by the tracker's
+// rotateMetricsLoop at windowSize/rollingBuckets cadence.
+//
+// State metrics (BlockHeadLag, FinalizationLag) and Cordoned status
+// are untouched — they reflect deliberate decisions or current chain
+// conditions, not cumulative counts. Cordoning in particular is the
+// strongest "do not use" signal and must be cleared explicitly via
+// `Uncordon()`, not by a tick of the clock.
+func (m *TrackedMetrics) Rotate() {
+	m.ErrorsTotal.RotateOldest()
+	m.RequestsTotal.RotateOldest()
+	m.RemoteRateLimitedTotal.RotateOldest()
+	m.MisbehaviorsTotal.RotateOldest()
+	m.ResponseQuantiles.RotateOldest()
+}
 
-	// Optionally uncordon
+// Reset wipes every counter and the quantile sketch fully. Test/admin
+// helper — the request path uses Rotate.
+func (m *TrackedMetrics) Reset() {
+	m.ErrorsTotal.Wipe()
+	m.RequestsTotal.Wipe()
+	m.RemoteRateLimitedTotal.Wipe()
+	m.MisbehaviorsTotal.Wipe()
+	m.ResponseQuantiles.Reset()
 	m.Cordoned.Store(false)
 	m.LastCordonedReason.Store("")
 }
@@ -173,6 +250,36 @@ type Tracker struct {
 
 	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
 	mu                 sync.RWMutex             // Protect the map
+
+	// trackByFinality switches Record* between a 2-key write (current
+	// behavior — only the all-finalities aggregate) and a 4-key write
+	// (per-finality + all-finalities + cross-method finality rollups).
+	// The policy engine flips this to true via EnableFinalityTracking
+	// at network-registration time when any network's `EvalScope`
+	// includes finality. Once true it stays true — flipping back
+	// would orphan partially-populated keys and confuse the eval.
+	//
+	// Reads are atomic.Bool (1 cycle in the request path) so the
+	// off-path stays as cheap as today; the cost only shows up for
+	// projects that opted into per-finality scoping.
+	trackByFinality atomic.Bool
+
+	// idleEvictionAfter is the duration past which an unaccessed
+	// (upstream, method, finality) or (network, method) entry gets
+	// evicted from upsMetrics / ntwMetrics. Defaults to 30 min — well
+	// above any realistic `scoreMetricsWindowSize` (10s simulator …
+	// 5m production) so we never evict an entry that's still
+	// contributing to the rolling window. Zero disables sweeping.
+	//
+	// Defends against method-flood: a hostile client hammering
+	// random JSON-RPC method names (`eth_random1`, `eth_random2`,
+	// ...) would otherwise grow the per-method map without bound.
+	// With idle sweep, stale method buckets drop out a few sweep
+	// intervals after the attack stops, the matching Prometheus
+	// MetricVec label-sets get explicitly deleted, and steady-state
+	// memory tracks ACTUAL request patterns rather than peak
+	// adversarial cardinality.
+	idleEvictionAfter time.Duration
 
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
@@ -200,6 +307,29 @@ type urdoKey struct {
 	user      string
 }
 
+// cachedObserver wraps a Prometheus Observer with an idle timestamp so
+// the tracker's sweep loop can evict label-sets that haven't received
+// an observation in `idleEvictionAfter` — and call
+// `MetricVec.DeleteLabelValues(...)` to release the matching series
+// from the Prometheus registry. Without this, every unique label
+// combination a request EVER triggers stays in the registry forever
+// (Prometheus's append-only model).
+//
+// Hot-path overhead: one atomic.Int64 store per cache hit. The cache
+// itself is sync.Map (LoadOrStore on miss, Load on hit) — same as
+// before, just unwrapping a pointer.
+type cachedObserver struct {
+	obs              prometheus.Observer
+	lastAccessedAtMs atomic.Int64
+}
+
+// cachedCounter is the parallel wrapper for the rate-limited counter
+// cache — same idle-tracking story, different Prom type.
+type cachedCounter struct {
+	ctr              prometheus.Counter
+	lastAccessedAtMs atomic.Int64
+}
+
 func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method, composite string, finality common.DataFinalityState, userId string) prometheus.Observer {
 	key := urdoKey{
 		project:   t.projectId,
@@ -211,14 +341,20 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 		finality:  finality.String(),
 		user:      userId,
 	}
+	nowMs := time.Now().UnixMilli()
 	if v, ok := t.urdObsCache.Load(key); ok {
-		return v.(prometheus.Observer)
+		co := v.(*cachedObserver)
+		co.lastAccessedAtMs.Store(nowMs)
+		return co.obs
 	}
-	obs := telemetry.MetricUpstreamRequestDuration.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
-	)
-	actual, _ := t.urdObsCache.LoadOrStore(key, obs)
-	return actual.(prometheus.Observer)
+	co := &cachedObserver{
+		obs: telemetry.MetricUpstreamRequestDuration.WithLabelValues(
+			key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
+		),
+	}
+	co.lastAccessedAtMs.Store(nowMs)
+	actual, _ := t.urdObsCache.LoadOrStore(key, co)
+	return actual.(*cachedObserver).obs
 }
 
 // Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
@@ -235,25 +371,31 @@ type rrltKey struct {
 
 func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName, finality string) prometheus.Counter {
 	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName, finality}
+	nowMs := time.Now().UnixMilli()
 	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
-		return v.(prometheus.Counter)
+		cc := v.(*cachedCounter)
+		cc.lastAccessedAtMs.Store(nowMs)
+		return cc.ctr
 	}
-	c := telemetry.MetricRateLimitsTotal.WithLabelValues(
-		key.project,   // project
-		key.network,   // network
-		key.vendor,    // vendor
-		key.upstream,  // upstream
-		key.category,  // category
-		key.finality,  // finality
-		key.user,      // user
-		key.agentName, // agent_name
-		"<remote>",    // budget
-		"remote",      // scope (remote upstream)
-		"",            // auth
-		"upstream",    // origin
-	)
-	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, c)
-	return actual.(prometheus.Counter)
+	cc := &cachedCounter{
+		ctr: telemetry.MetricRateLimitsTotal.WithLabelValues(
+			key.project,   // project
+			key.network,   // network
+			key.vendor,    // vendor
+			key.upstream,  // upstream
+			key.category,  // category
+			key.finality,  // finality
+			key.user,      // user
+			key.agentName, // agent_name
+			"<remote>",    // budget
+			"remote",      // scope (remote upstream)
+			"",            // auth
+			"upstream",    // origin
+		),
+	}
+	cc.lastAccessedAtMs.Store(nowMs)
+	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, cc)
+	return actual.(*cachedCounter).ctr
 }
 
 type ubKey struct {
@@ -336,6 +478,14 @@ func (t *Tracker) getRollbackGauge(up common.Upstream) prometheus.Gauge {
 	return actual.(prometheus.Gauge)
 }
 
+// DefaultIdleEvictionAfter is the conservative idle threshold the
+// tracker uses for sweeping stale (method/network)-keyed entries when
+// the caller doesn't override it. Long enough to safely survive a
+// quiet period in production (5m scoreMetricsWindowSize) without
+// evicting still-rotating buckets, short enough to bound memory
+// under a method-flood that runs for hours.
+const DefaultIdleEvictionAfter = 30 * time.Minute
+
 // NewTracker constructs a new Tracker, using sync.Map for concurrency.
 func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Duration) *Tracker {
 	return &Tracker{
@@ -343,47 +493,242 @@ func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Durati
 		projectId:          projectId,
 		windowSize:         windowSize,
 		upstreamsByNetwork: make(map[string][]upstreamKey),
+		idleEvictionAfter:  DefaultIdleEvictionAfter,
 	}
 }
 
-// Bootstrap starts the goroutine that periodically resets the metrics.
-func (t *Tracker) Bootstrap(ctx context.Context) {
-	go t.resetMetricsLoop(ctx)
+// SetIdleEvictionAfter overrides the default idle eviction threshold.
+// Pass `0` to disable sweeping entirely (matches pre-fix behavior).
+// Used by tests that want to exercise eviction without waiting 30
+// minutes, and by operators who want a tighter bound for
+// high-cardinality-method workloads.
+func (t *Tracker) SetIdleEvictionAfter(d time.Duration) {
+	t.idleEvictionAfter = d
 }
 
-// resetMetricsLoop periodically resets metrics each windowSize.
-func (t *Tracker) resetMetricsLoop(ctx context.Context) {
-	ticker := time.NewTicker(t.windowSize)
+// Bootstrap starts the goroutine that rotates rolling-window buckets.
+func (t *Tracker) Bootstrap(ctx context.Context) {
+	go t.rotateMetricsLoop(ctx)
+}
+
+// rotateMetricsLoop advances every tracked metric's sliding window by
+// one sub-bucket on each tick. The tick interval is
+// windowSize / rollingBuckets — so a 5s window with 10 buckets
+// rotates every 500ms, dropping ~10% of the accumulated data per
+// rotation. Compared to the previous "wipe everything every
+// windowSize" tumble, a freshly-degraded upstream's metrics start
+// reflecting the new state within one rotation interval rather than
+// waiting (worst case) the full windowSize.
+func (t *Tracker) rotateMetricsLoop(ctx context.Context) {
+	interval := t.windowSize / rollingBuckets
+	if interval <= 0 {
+		// Defensive — a misconfigured tracker (windowSize < rollingBuckets
+		// or negative) would otherwise panic on time.NewTicker(0). Snap
+		// to a 1ms floor; the caller almost certainly meant "fast".
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// Tick counter so we can schedule the idle sweep at a coarser
+	// cadence than rotation (every Nth tick) — sweep work is O(map size)
+	// and shouldn't run every 100ms when rotation does.
+	var rotationCount uint64
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Range over sync.Map to reset all known metrics
 			t.upsMetrics.Range(func(key, value any) bool {
 				if tm, ok := value.(*TrackedMetrics); ok {
-					tm.Reset()
+					tm.Rotate()
 				}
-				return true // keep iterating
+				return true
 			})
 			t.ntwMetrics.Range(func(key, value any) bool {
 				if tm, ok := value.(*TrackedMetrics); ok {
-					tm.Reset()
+					tm.Rotate()
 				}
-				return true // keep iterating
+				return true
 			})
+
+			// Idle eviction: every `sweepEveryRotations` ticks (roughly
+			// every `windowSize`), walk both maps and drop entries that
+			// haven't been touched in `idleEvictionAfter`. Skipped when
+			// the threshold is 0 (sweep disabled) or the rotation
+			// counter hasn't reached the next sweep boundary yet.
+			rotationCount++
+			if t.idleEvictionAfter > 0 && rotationCount%sweepEveryRotations == 0 {
+				t.sweepIdle()
+			}
 		}
 	}
 }
 
-// For real-time aggregator updates, we store expansions of the key:
-func (t *Tracker) getUpsKeys(upstream common.Upstream, method string) []upstreamKey {
-	return []upstreamKey{
-		{upstream, method},
-		{upstream, "*"}, // any-method for this upstream
+// sweepEveryRotations sets how often (in rotation ticks) the idle
+// sweep runs. With rollingBuckets=10, sweep fires once per full
+// rolling window — a 30 min threshold against a 1 min window means
+// up to ~30 sweep passes between an entry going idle and being
+// evicted (acceptable; the goal is bounded memory, not
+// minute-precision eviction).
+const sweepEveryRotations = uint64(rollingBuckets)
+
+// sweepIdle removes (upstream, method, finality) and (network, method)
+// entries from the in-memory tracker maps when they haven't been
+// touched in `idleEvictionAfter`. Bounds memory under method-flood
+// attacks while leaving steady-state hot keys alone.
+//
+// Skipped buckets:
+//
+//   - All-finalities wildcard (`(*, "*", All)`) — only the most-narrow
+//     buckets are user-controllable; the wildcard rollups are bounded
+//     by the upstream count and serve as the read-path fallback.
+//   - Method "*" wildcard — same reasoning: the cross-method aggregate
+//     is bounded; we evict the narrow per-method buckets only.
+//   - Cordoned entries — admin-set state must not be evicted, ever.
+//     If a cordoned upstream has been silent for 30 min the cordon
+//     would otherwise vanish on the next request.
+//
+// Prometheus side: idle entries in the urdObsCache /
+// remoteRateLimitedCounterCache get DeleteLabelValues'd on their
+// parent MetricVec, releasing the registered series so the
+// `/metrics` endpoint stops re-emitting stale label combos. Without
+// this, even with the in-memory cache evicted, the Prometheus
+// registry would keep the series forever (append-only model).
+func (t *Tracker) sweepIdle() {
+	cutoffMs := time.Now().Add(-t.idleEvictionAfter).UnixMilli()
+
+	t.upsMetrics.Range(func(key, value any) bool {
+		k := key.(upstreamKey)
+		if k.method == "*" {
+			return true // never evict the per-upstream wildcard rollup
+		}
+		tm := value.(*TrackedMetrics)
+		if tm.Cordoned.Load() {
+			return true // preserve admin-set cordon state
+		}
+		if tm.LastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		t.upsMetrics.Delete(key)
+		return true
+	})
+
+	t.ntwMetrics.Range(func(key, value any) bool {
+		k := key.(networkKey)
+		if k.method == "*" {
+			return true
+		}
+		tm := value.(*TrackedMetrics)
+		if tm.LastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		t.ntwMetrics.Delete(key)
+		return true
+	})
+
+	t.sweepIdleObservers(cutoffMs)
+}
+
+// sweepIdleObservers drops idle Prometheus observer/counter cache
+// entries AND deletes their underlying MetricVec label-sets so the
+// registry side of the cardinality blow-up actually shrinks. The
+// cache key IS the label tuple — we reuse it directly for the
+// DeleteLabelValues call, which is why the labels stayed structured
+// throughout (the audit found the cache, the cache held the labels,
+// the labels are what we now release).
+func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
+	t.urdObsCache.Range(func(key, value any) bool {
+		co := value.(*cachedObserver)
+		if co.lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		k := key.(urdoKey)
+		t.urdObsCache.Delete(key)
+		telemetry.MetricUpstreamRequestDuration.DeleteLabelValues(
+			k.project, k.vendor, k.network, k.upstream, k.category, k.composite, k.finality, k.user,
+		)
+		return true
+	})
+
+	t.remoteRateLimitedCounterCache.Range(func(key, value any) bool {
+		cc := value.(*cachedCounter)
+		if cc.lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		k := key.(rrltKey)
+		t.remoteRateLimitedCounterCache.Delete(key)
+		telemetry.MetricRateLimitsTotal.DeleteLabelValues(
+			k.project, k.network, k.vendor, k.upstream, k.category, k.finality, k.user, k.agentName,
+			"<remote>", "remote", "", "upstream",
+		)
+		return true
+	})
+}
+
+// getUpsKeys expands a (upstream, method, finality) record into the
+// set of bucket keys the Record* hot path must increment. When the
+// engine hasn't opted into finality tracking, only the
+// all-finalities rollups exist — that's the current behavior.
+//
+// Off (`trackByFinality == false`) — 2 keys:
+//
+//	(ups, method,    All)        — current per-method aggregate
+//	(ups, "*",       All)        — current any-method aggregate
+//
+// On (`trackByFinality == true`)  — 4 keys:
+//
+//	(ups, method,    finality)   — most specific
+//	(ups, method,    All)        — cross-finality rollup per method
+//	(ups, "*",       finality)   — cross-method rollup per finality
+//	(ups, "*",       All)        — full wildcard (== off-mode any-method)
+//
+// Off-mode behavior is identical to pre-finality tracker — same key
+// count, same key shapes (with finality=All filling the slot that
+// used to be implicit).
+func (t *Tracker) getUpsKeys(upstream common.Upstream, method string, finality common.DataFinalityState) []upstreamKey {
+	if !t.trackByFinality.Load() {
+		return []upstreamKey{
+			{upstream, method, common.DataFinalityStateAll},
+			{upstream, "*", common.DataFinalityStateAll},
+		}
 	}
+	// Avoid a 4th identical write when the caller passed All directly
+	// (no specific finality known). Falls back to the 2-key set with
+	// the per-method + any-method aggregates.
+	if finality == common.DataFinalityStateAll {
+		return []upstreamKey{
+			{upstream, method, common.DataFinalityStateAll},
+			{upstream, "*", common.DataFinalityStateAll},
+		}
+	}
+	return []upstreamKey{
+		{upstream, method, finality},
+		{upstream, method, common.DataFinalityStateAll},
+		{upstream, "*", finality},
+		{upstream, "*", common.DataFinalityStateAll},
+	}
+}
+
+// EnableFinalityTracking flips the tracker into 4-key mode so
+// subsequent Record* writes populate per-(method, finality) entries
+// in addition to the all-finalities rollups. Idempotent + monotonic
+// — once on, stays on, because flipping back would orphan partial
+// keys and starve the eval that depends on them. Safe to call
+// concurrently with Record* via atomic.Bool semantics; a flip races
+// with at most one in-flight Record* which will see the old value
+// and write 2 keys instead of 4 (a single missing tick of
+// per-finality data on the boundary, indistinguishable from the
+// natural sliding-window noise).
+func (t *Tracker) EnableFinalityTracking() {
+	t.trackByFinality.Store(true)
+}
+
+// IsFinalityTracked reports whether the tracker is currently writing
+// per-finality keys. Used by diagnostic surfaces (admin, simulator)
+// to label their output with the active grain.
+func (t *Tracker) IsFinalityTracked() bool {
+	return t.trackByFinality.Load()
 }
 
 func (t *Tracker) getNtwKeys(up common.Upstream, method string) []networkKey {
@@ -409,7 +754,7 @@ func (t *Tracker) getUpsMetrics(k upstreamKey) *TrackedMetrics {
 	if v, ok := t.upsMetrics.Load(k); ok {
 		return v.(*TrackedMetrics)
 	}
-	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker(t.logger)}
+	tm := newTrackedMetrics(t.logger)
 	actual, _ := t.upsMetrics.LoadOrStore(k, tm)
 	// Track this upstreamKey under its network for efficient global updates
 	if k.ups != nil {
@@ -436,7 +781,7 @@ func (t *Tracker) getNtwMetrics(k networkKey) *TrackedMetrics {
 	if v, ok := t.ntwMetrics.Load(k); ok {
 		return v.(*TrackedMetrics)
 	}
-	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker(t.logger)}
+	tm := newTrackedMetrics(t.logger)
 	actual, _ := t.ntwMetrics.LoadOrStore(k, tm)
 	return actual.(*TrackedMetrics)
 }
@@ -452,9 +797,22 @@ func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
 		Str("reason", reason).
 		Msg("cordoning upstream to disable routing")
 
-	tm := t.getUpsMetrics(upstreamKey{upstream, method})
-	tm.Cordoned.Store(true)
+	// Cordon state is finality-agnostic — operators cordon "drpc for
+	// eth_call", not "drpc for eth_call when reading finalized data".
+	// Store on the all-finalities key so every finality-specific
+	// lookup sees the same cordon flag.
+	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
+	wasCordoned := tm.Cordoned.Swap(true)
 	tm.LastCordonedReason.Store(reason)
+	if !wasCordoned {
+		// Only record the start timestamp on the OFF→ON transition so
+		// repeated cordons (e.g. operator updating the reason) don't
+		// reset the duration accounting mid-cordon.
+		tm.CordonedAtMs.Store(time.Now().UnixMilli())
+		telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			t.projectId, upstream.NetworkId(), upstream.Id(), "cordon",
+		).Inc()
+	}
 
 	t.getCordonedGauge(upstream, method, reason).Set(1)
 }
@@ -465,36 +823,87 @@ func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason strin
 		Str("method", method).
 		Msg("uncordoning upstream to enable routing")
 
-	tm := t.getUpsMetrics(upstreamKey{upstream, method})
-	tm.Cordoned.Store(false)
+	// Cordon state is finality-agnostic — operators cordon "drpc for
+	// eth_call", not "drpc for eth_call when reading finalized data".
+	// Store on the all-finalities key so every finality-specific
+	// lookup sees the same cordon flag.
+	tm := t.getUpsMetrics(upstreamKey{upstream, method, common.DataFinalityStateAll})
+	wasCordoned := tm.Cordoned.Swap(false)
 	tm.LastCordonedReason.Store("")
+	if wasCordoned {
+		startedMs := tm.CordonedAtMs.Swap(0)
+		if startedMs > 0 {
+			dur := time.Duration(time.Now().UnixMilli()-startedMs) * time.Millisecond
+			if dur > 0 {
+				telemetry.MetricUpstreamCordonDurationSeconds.WithLabelValues(
+					t.projectId, upstream.NetworkId(), upstream.Id(),
+				).Observe(dur.Seconds())
+			}
+		}
+		telemetry.MetricUpstreamCordonEventTotal.WithLabelValues(
+			t.projectId, upstream.NetworkId(), upstream.Id(), "uncordon",
+		).Inc()
+	}
 
 	t.getCordonedGauge(upstream, method, reason).Set(0)
 }
 
 // IsCordoned checks if (ups, network, method) or (ups, network, "*") is cordoned.
+// Cordon flags live on the all-finalities key (see Cordon).
 func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
-	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*"}); ok {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok {
 		if val.(*TrackedMetrics).Cordoned.Load() {
 			return true
 		}
 	}
-	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method}); ok {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
 		return val.(*TrackedMetrics).Cordoned.Load()
 	}
 	return false
+}
+
+// CordonedReason returns the cordon reason and whether the (upstream,
+// method) is currently cordoned. Falls back to the wildcard (`"*"`)
+// cordon if the specific method scope isn't cordoned. Used by admin
+// endpoints + tooling to surface "why is this upstream out" without
+// going through the metrics-snapshot JSON path.
+func (t *Tracker) CordonedReason(upstream common.Upstream, method string) (string, bool) {
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, "*", common.DataFinalityStateAll}); ok {
+		tm := val.(*TrackedMetrics)
+		if tm.Cordoned.Load() {
+			if r, ok := tm.LastCordonedReason.Load().(string); ok {
+				return r, true
+			}
+			return "", true
+		}
+	}
+	if val, ok := t.upsMetrics.Load(upstreamKey{upstream, method, common.DataFinalityStateAll}); ok {
+		tm := val.(*TrackedMetrics)
+		if tm.Cordoned.Load() {
+			if r, ok := tm.LastCordonedReason.Load().(string); ok {
+				return r, true
+			}
+			return "", true
+		}
+	}
+	return "", false
 }
 
 // ------------------------------------
 // Basic Request & Failure Tracking
 // ------------------------------------
 
-func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
-	for _, k := range t.getUpsKeys(up, method) {
-		t.getUpsMetrics(k).RequestsTotal.Add(1)
+func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string, finality common.DataFinalityState) {
+	nowMs := time.Now().UnixMilli()
+	for _, k := range t.getUpsKeys(up, method, finality) {
+		tm := t.getUpsMetrics(k)
+		tm.RequestsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).RequestsTotal.Add(1)
+		tm := t.getNtwMetrics(nk)
+		tm.RequestsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 }
 
@@ -519,13 +928,25 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 	}
 	sec := d.Seconds()
 	if isSuccess {
-		// We must calculate response time quantiles for successful requests only,
-		// Otherwise we might falsely attribute "best latency" to an upstream that's just failing fast.
-		for _, k := range t.getUpsKeys(up, method) {
-			t.getUpsMetrics(k).ResponseQuantiles.Add(sec)
+		// Feed the quantile only when `isSuccess` — the caller already
+		// filtered to outcomes whose duration is a real latency signal:
+		// successful responses, EVM reverts (upstream did real work),
+		// and canceled-by-hedge / client-disconnect / engine-timeout
+		// observations (lower-bound on completion time, important for
+		// scoring upstreams that lose every hedge race).
+		// Hard upstream errors (connection refused, server 5xx,
+		// throttling) stay out so an upstream that's failing fast
+		// doesn't get crowned "fastest in the pool".
+		nowMs := time.Now().UnixMilli()
+		for _, k := range t.getUpsKeys(up, method, finality) {
+			tm := t.getUpsMetrics(k)
+			tm.ResponseQuantiles.Add(sec)
+			tm.touch(nowMs)
 		}
 		for _, nk := range t.getNtwKeys(up, method) {
-			t.getNtwMetrics(nk).ResponseQuantiles.Add(sec)
+			tm := t.getNtwMetrics(nk)
+			tm.ResponseQuantiles.Add(sec)
+			tm.touch(nowMs)
 		}
 	}
 	// Use cached observer to avoid per-request MetricVec lookups/locks.
@@ -533,7 +954,7 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 	obs.Observe(sec)
 }
 
-func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
+func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, finality common.DataFinalityState, err error) {
 	// Ignore errors that do not reflect upstream quality:
 	// - ExecutionException: valid blockchain state (e.g. revert)
 	// - ExcludedByPolicy / RequestSkipped / Shadowing: internal routing decisions
@@ -561,61 +982,158 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 		return
 	}
 
-	for _, k := range t.getUpsKeys(up, method) {
-		t.getUpsMetrics(k).ErrorsTotal.Add(1)
+	nowMs := time.Now().UnixMilli()
+	for _, k := range t.getUpsKeys(up, method, finality) {
+		tm := t.getUpsMetrics(k)
+		tm.ErrorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).ErrorsTotal.Add(1)
+		tm := t.getNtwMetrics(nk)
+		tm.ErrorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 }
 
-func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
-	for _, k := range t.getUpsKeys(up, method) {
-		t.getUpsMetrics(k).MisbehaviorsTotal.Add(1)
+func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string, finality common.DataFinalityState) {
+	nowMs := time.Now().UnixMilli()
+	for _, k := range t.getUpsKeys(up, method, finality) {
+		tm := t.getUpsMetrics(k)
+		tm.MisbehaviorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).MisbehaviorsTotal.Add(1)
+		tm := t.getNtwMetrics(nk)
+		tm.MisbehaviorsTotal.Add(1)
+		tm.touch(nowMs)
 	}
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common.Upstream, method string, req *common.NormalizedRequest) {
-	for _, k := range t.getUpsKeys(up, method) {
-		t.getUpsMetrics(k).RemoteRateLimitedTotal.Add(1)
-	}
-	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
-	}
-
-	var userId, agentName, finality string
+	var finality common.DataFinalityState
+	var userId, agentName, finalityStr string
 	if req != nil {
 		userId = req.UserId()
 		agentName = req.AgentName()
-		finality = req.Finality(ctx).String()
+		finality = req.Finality(ctx)
+		finalityStr = finality.String()
 	} else {
 		userId = "n/a"
 		agentName = "unknown"
+		finality = common.DataFinalityStateAll
 	}
 
-	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finality).Inc()
+	nowMs := time.Now().UnixMilli()
+	for _, k := range t.getUpsKeys(up, method, finality) {
+		tm := t.getUpsMetrics(k)
+		tm.RemoteRateLimitedTotal.Add(1)
+		tm.touch(nowMs)
+	}
+	for _, nk := range t.getNtwKeys(up, method) {
+		tm := t.getNtwMetrics(nk)
+		tm.RemoteRateLimitedTotal.Add(1)
+		tm.touch(nowMs)
+	}
+
+	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finalityStr).Inc()
 }
 
 // --------------------------------------------
 // Accessors
 // --------------------------------------------
 
-func (t *Tracker) GetUpstreamMethodMetrics(up common.Upstream, method string) *TrackedMetrics {
-	return t.getUpsMetrics(upstreamKey{up, method})
+// GetUpstreamMethodMetrics returns the rolling-window metrics for the
+// (upstream, method, finality) bucket. When per-finality tracking is
+// off OR the specific bucket has no recorded data, the lookup
+// transparently falls back to the all-finalities aggregate so the
+// eval is never starved of signal. Pass `DataFinalityStateAll` to
+// request the rollup directly.
+//
+// Touches `LastAccessedAtMs` so an actively-read entry (the policy
+// engine's per-tick eval reads every upstream's metrics) is treated
+// as "alive" by the idle sweep — otherwise a chain with all writes
+// going to the wildcard slot could see specific-bucket entries
+// evicted out from under the read path.
+func (t *Tracker) GetUpstreamMethodMetrics(up common.Upstream, method string, finality common.DataFinalityState) *TrackedMetrics {
+	nowMs := time.Now().UnixMilli()
+	if finality == common.DataFinalityStateAll || !t.trackByFinality.Load() {
+		tm := t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
+		tm.touch(nowMs)
+		return tm
+	}
+	// Use the LIVE map (don't lazy-create) for the specific-finality
+	// bucket — if no Record* has fed it yet, fall through to the
+	// aggregate rather than handing the eval an empty
+	// counters/quantile sketch.
+	if v, ok := t.upsMetrics.Load(upstreamKey{up, method, finality}); ok {
+		tm := v.(*TrackedMetrics)
+		tm.touch(nowMs)
+		return tm
+	}
+	tm := t.getUpsMetrics(upstreamKey{up, method, common.DataFinalityStateAll})
+	tm.touch(nowMs)
+	return tm
 }
 
+// GetUpstreamMetrics returns the per-method *TrackedMetrics map for
+// `ups`, keyed by method name and exposing the all-finalities
+// aggregate bucket per method (the key getUpsKeys always populates).
+//
+// HOT PATH — invoked once per upstream per slot tick from
+// `policy.snapshotMetrics`. Earlier versions did `t.upsMetrics.Range`
+// over the GLOBAL sync.Map and filtered to the target upstream; under
+// a typical 50-network × 5-upstream × 30-method × 4-finality
+// deployment that map is tens of thousands of entries, and the
+// Range-then-`pk.ups.Id() == ups.Id()` filter consumed two thirds of
+// total process CPU in a real pprof capture (sync.Map.Range = 32%
+// flat, Upstream.Id = 22% flat, GetUpstreamMetrics.func1 = 10%
+// flat). This implementation uses the pre-built
+// `upstreamsByNetwork` index to scope the lookup to O(keys for
+// this network), then direct-loads each candidate.
+//
+// Semantics match the previous behavior: returned map keys are method
+// names, values are the all-finalities *TrackedMetrics (so callers
+// that don't care about finality see a single deterministic snapshot
+// per method).
 func (t *Tracker) GetUpstreamMetrics(ups common.Upstream) map[string]*TrackedMetrics {
-	out := map[string]*TrackedMetrics{}
-	t.upsMetrics.Range(func(k, v any) bool {
-		pk := k.(upstreamKey)
-		if pk.ups != nil && pk.ups.Id() == ups.Id() {
-			out[pk.method] = v.(*TrackedMetrics)
+	targetID := ups.Id()
+	net := ups.NetworkId()
+
+	t.mu.RLock()
+	relevantKeys := t.upstreamsByNetwork[net]
+	t.mu.RUnlock()
+
+	if len(relevantKeys) == 0 {
+		// Cold fallback — index not populated yet (no Record* has
+		// fed it). Identical semantics to the legacy walk; expected
+		// to fire only on the first eval after a tracker boot, never
+		// in steady state.
+		out := map[string]*TrackedMetrics{}
+		t.upsMetrics.Range(func(k, v any) bool {
+			pk := k.(upstreamKey)
+			if pk.ups != nil && pk.ups.Id() == targetID {
+				out[pk.method] = v.(*TrackedMetrics)
+			}
+			return true
+		})
+		return out
+	}
+
+	// Hot path: O(per-network keys). `upstreamsByNetwork[net]` is
+	// deduped on (ups_id, method) with an arbitrary finality stored
+	// per entry — we ignore the stored finality and direct-load the
+	// `DataFinalityStateAll` bucket, which `getUpsKeys` always
+	// populates alongside any per-finality writes.
+	out := make(map[string]*TrackedMetrics, len(relevantKeys))
+	for _, k := range relevantKeys {
+		if k.ups == nil || k.ups.Id() != targetID {
+			continue
 		}
-		return true
-	})
+		aggKey := upstreamKey{ups: ups, method: k.method, finality: common.DataFinalityStateAll}
+		if v, ok := t.upsMetrics.Load(aggKey); ok {
+			out[k.method] = v.(*TrackedMetrics)
+		}
+	}
 	return out
 }
 

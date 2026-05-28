@@ -118,6 +118,76 @@ The repo includes ready-made templates. See [erpc/monitoring](https://github.com
 
 <AISection title="Copy for your AI assistant — full monitoring & metrics reference">
 
+| Metric                                             | Type      | Description                                                                                                                                                                                   |
+| -------------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| erpc_upstream_request_total                        | Counter   | Total number of actual requests to upstreams.                                                                                                                                                 |
+| erpc_upstream_request_duration_seconds             | Histogram | Duration of requests to upstreams.                                                                                                                                                            |
+| erpc_upstream_request_errors_total                 | Counter   | Total number of errors for requests to upstreams.                                                                                                                                             |
+| erpc_upstream_request_self_rate_limited_total      | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.                                                                                                               |
+| erpc_upstream_request_remote_rate_limited_total    | Counter   | Total number of remote rate limited requests by upstreams.                                                                                                                                    |
+| erpc_upstream_request_skipped_total                | Counter   | Total number of requests skipped by upstreams.                                                                                                                                                |
+| erpc_upstream_request_missing_data_error_total     | Counter   | Total number of requests where upstream is missing data or not synced yet.                                                                                                                    |
+| erpc_upstream_request_empty_response_total         | Counter   | Total number of empty responses from upstreams.                                                                                                                                               |
+| erpc_upstream_block_head_lag                       | Gauge     | Total number of blocks (head) behind the most up-to-date upstream.                                                                                                                            |
+| erpc_upstream_finalization_lag                     | Gauge     | Total number of finalized blocks behind the most up-to-date upstream.                                                                                                                         |
+| erpc_selection_position                            | Gauge     | Selection-policy output position for an upstream: 0 = primary, 1+ = runner-up, -1 = excluded this tick. Labels: project, network, method, upstream.                                            |
+| erpc_selection_rejection_total                     | Counter   | Number of ticks each upstream was rejected by a specific std-lib step. Labels: project, network, method, upstream, step.                                                                       |
+| erpc_selection_primary_switch_total                | Counter   | Primary-upstream changes. Labels: project, network, method, from, to.                                                                                                                          |
+| erpc_selection_eval_duration_seconds               | Histogram | Per-tick eval latency. Labels: project, network, method.                                                                                                                                       |
+| erpc_selection_eval_errors_total                   | Counter   | Eval failures by kind (timeout, throw, invalid_return, fallback_default). Labels: project, network, method, kind.                                                                              |
+| erpc_selection_eligible_upstreams                  | Gauge     | Count of upstreams returned by the most recent tick. Labels: project, network, method.                                                                                                         |
+| erpc_selection_score                               | Gauge     | Per-upstream score from `sortByScore`. Higher = better. Missing for upstreams that bypassed scoring (probeExcluded/forceInclude additions). Labels: project, network, method, upstream.         |
+| erpc_selection_exclusion_total                     | Counter   | Per-leaf-predicate exclusion events. `reason` is a stable slug — `error_rate_above`, `latency_p95_above`, `block_head_lag_above`, `not_<slug>`, `custom`, .... Compound predicates (`any`/`all`/`not`) increment ONE leaf slug per child that actually tripped, not the combinator. Labels: project, network, method, upstream, reason. |
+| erpc_selection_excluded_seconds                    | Gauge     | Wall-clock seconds the upstream has been continuously excluded. `0` when in rotation. Alert on `> 600` for "stuck excluded > 10m". Labels: project, network, method, upstream.                  |
+| erpc_selection_readmit_total                       | Counter   | Times an upstream transitioned excluded → in-rotation (driven by `excludeIf` no longer tripping — usually because shadow-mirrored probe traffic from `probeExcluded` accumulated healthy samples in the tracker). Labels: project, network, method, upstream.                            |
+| erpc_selection_probe_requests_total                | Counter   | Shadow-mirror probe requests sent to a currently-excluded upstream by `probeExcluded`. Drives the re-admission story: as the `errorRateAbove` / `latencyAbove` predicates see the upstream's fresh shadow samples improve, it falls out of the excluded set on the next tick. Labels: network, upstream, method.                                                                                                                                          |
+| erpc_selection_probe_errors_total                  | Counter   | Probe-mirror requests that returned an error. Labels: network, upstream, method, reason ∈ \{timeout, throttled, auth, skipped, error\}.                                                                                                                                                                                                                                                                                                                  |
+| erpc_selection_probe_skipped_total                 | Counter   | Probe candidates skipped before firing. Labels: network, reason ∈ \{write_method, opt_out, sampled_out, max_concurrent, no_method\}. `write_method` + `opt_out` are safety/policy gates; `sampled_out` + `max_concurrent` are throughput controls.                                                                                                                                                                                                          |
+| erpc_selection_probe_dropped_total                 | Counter   | Probe-bus publishes dropped before reaching the dispatcher (per-network feed channel was full). The request path NEVER blocks on the bus — overflow becomes a lost sample, not a stalled forward. Labels: network, reason ∈ \{bus_full\}.                                                                                                                                                                                                                  |
+| erpc_selection_readmit_age_seconds                 | Histogram | Distribution of `now - excludedSince` at readmit. Left tail = readmitting too eagerly (likely flap); right tail = readmit cooldown too generous. Labels: project, network, method.              |
+| erpc_selection_sticky_hold_total                   | Counter   | Ticks where `stickyPrimary` actively held the previous primary against a challenger (cooldown active or hysteresis not exceeded). Ratio against `selection_primary_switch_total` shows smoothing intensity. Labels: project, network, method, upstream. |
+| erpc_upstream_cordon_event_total                   | Counter   | Admin-driven cordon transitions. `action` ∈ `cordon`/`uncordon`. Labels: project, network, upstream, action.                                                                                   |
+| erpc_upstream_cordon_duration_seconds              | Histogram | Time an upstream stayed cordoned, observed on each uncordon. Labels: project, network, upstream.                                                                                              |
+| erpc_upstream_latest_block_number                  | Gauge     | Latest block number of upstreams.                                                                                                                                                             |
+| erpc_upstream_finalized_block_number               | Gauge     | Finalized block number of upstreams.                                                                                                                                                          |
+| erpc_network_latest_block_timestamp_distance_seconds | Gauge   | Distance in seconds between the latest block timestamp and current time for a network.                                                                                                        |
+| erpc_upstream_cordoned                             | Gauge     | `1` while an operator has [manually cordoned](/operation/cordoning) the upstream via `erpc_cordonUpstream`; `0` otherwise. The reason is exposed via the gauge label. Independent of metric-driven exclusion (which uses `erpc_selection_position`).                                                  |
+| erpc_upstream_stale_latest_block_total             | Counter   | Total number of times an upstream returned a stale latest block number (vs others).                                                                                                           |
+| erpc_upstream_stale_finalized_block_total          | Counter   | Total number of times an upstream returned a stale finalized block number (vs others).                                                                                                        |
+| erpc_upstream_evm_get_logs_stale_upper_bound_total | Counter   | Total number of times eth_getLogs was skipped due to upstream latest block being less than requested toBlock.                                                                                 |
+| erpc_upstream_evm_get_logs_stale_lower_bound_total | Counter   | Total number of times eth_getLogs was skipped due to fromBlock being less than upstream's available block range.                                                                              |
+| erpc_upstream_evm_get_logs_range_exceeded_auto_splitting_threshold_total | Counter   | Total number of times eth_getLogs request exceeded the block range threshold and needed splitting (based on upstream config for "upstream.evm.getLogsAutoSplittingRangeThreshold"). |
+| erpc_upstream_evm_get_logs_forced_splits_total            | Counter   | Total number of eth_getLogs request splits by dimension (block_range, addresses, topics), due to a complain/error from upstream (e.g. "Returned too many results use a smaller block range"). |
+| erpc_upstream_evm_get_logs_split_success_total     | Counter   | Total number of successful split eth_getLogs sub-requests.                                                                                                                                    |
+| erpc_upstream_evm_get_logs_split_failure_total     | Counter   | Total number of failed split eth_getLogs sub-requests.                                                                                                                                        |
+| erpc_network_evm_trace_filter_range_requested      | Histogram | Requested block-range sizes for `trace_filter` / `arbtrace_filter`. Labeled by `method` (the specific variant).                                                                               |
+| erpc_network_evm_trace_filter_forced_splits_total  | Counter   | Total number of `trace_filter` / `arbtrace_filter` request splits by dimension (block_range, from_address, to_address). Labeled by `method` and `dimension`.                                  |
+| erpc_network_evm_trace_filter_split_success_total  | Counter   | Total number of successful split `trace_filter` / `arbtrace_filter` sub-requests. Labeled by `method`.                                                                                        |
+| erpc_network_evm_trace_filter_split_failure_total  | Counter   | Total number of failed split `trace_filter` / `arbtrace_filter` sub-requests. Labeled by `method`.                                                                                            |
+| erpc_upstream_latest_block_polled_total            | Counter   | Total number of times the latest block was pro-actively polled from an upstream.                                                                                                              |
+| erpc_upstream_finalized_block_polled_total         | Counter   | Total number of times the finalized block was pro-actively polled from an upstream.                                                                                                           |
+| erpc_network_request_received_total                | Counter   | Total number of requests received by the network.                                                                                                                                             |
+| erpc_network_multiplexed_request_total             | Counter   | Total number of multiplexed requests received by the network.                                                                                                                                 |
+| erpc_network_failed_request_total                  | Counter   | Total number of failed requests received by the network.                                                                                                                                      |
+| erpc_network_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.                                                                                                               |
+| erpc_network_successful_request_total              | Counter   | Total number of successful requests received by the network.                                                                                                                                  |
+| erpc_network_cache_hits_total                      | Counter   | Total number of cache hits for requests received by the network.                                                                                                                              |
+| erpc_network_cache_misses_total                    | Counter   | Total number of cache misses for requests received by the network.                                                                                                                            |
+| erpc_network_request_duration_seconds              | Histogram | Duration of requests received by the network.                                                                                                                                                 |
+| erpc_project_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests towards the project.                                                                                                                       |
+| erpc_rate_limiter_budget_max_count                 | Gauge     | Maximum number of requests allowed per second for a rate limiter budget                                                                                                                       |
+| erpc_auth_request_self_rate_limited_total          | Counter   | Total number of self-imposed rate limited requests due to auth config for a project.                                                                                                          |
+| erpc_cache_set_success_total                       | Counter   | Total number of cache set operations.                                                                                                                                                         |
+| erpc_cache_set_error_total                         | Counter   | Total number of cache set errors.                                                                                                                                                             |
+| erpc_cache_set_skipped_total                       | Counter   | Total number of cache set skips.                                                                                                                                                              |
+| erpc_cache_get_success_hit_total                   | Counter   | Total number of cache get hits.                                                                                                                                                               |
+| erpc_cache_get_success_miss_total                  | Counter   | Total number of cache get misses.                                                                                                                                                             |
+| erpc_cache_get_error_total                         | Counter   | Total number of cache get errors.                                                                                                                                                             |
+| erpc_cache_get_skipped_total                       | Counter   | Total number of cache get skips (i.e. no matching policy found).                                                                                                                              |
+| erpc_cors_requests_total                           | Counter   | Total number of CORS requests received.                                                                                                                                                       |
+| erpc_cors_preflight_requests_total                 | Counter   | Total number of CORS preflight requests received.                                                                                                                                             |
+| erpc_cors_disallowed_origin_total                  | Counter   | Total number of CORS requests from disallowed origins.                                                                                                                                        |
+
 ### `MetricsConfig` — every field
 
 | Field | Type | Default | Notes |
@@ -148,9 +218,48 @@ Emitted by the [failsafe](/config/failsafe) executor. Use these to size retry bu
 | `erpc_network_hedge_delay_seconds` | Histogram | Computed hedge fire delay (from `quantile`-driven config). |
 | `erpc_network_timeout_fired_total{scope}` | Counter | Timeouts firing per scope (`network` / `upstream`). |
 | `erpc_network_timeout_duration_seconds` | Histogram | Quantile-derived timeout values actually used. |
-| `erpc_upstream_breaker_state_change_total{upstream,transition}` | Counter | Circuit-breaker state churn (`closed_to_open`, `open_to_half_open`, `half_open_to_closed`, ...). |
 | `erpc_consensus_short_circuit_total{reason}` | Counter | Consensus rounds resolved before all participants returned. |
 | `erpc_consensus_wait_capped_total{trigger}` | Counter | Consensus `maxWaitOnResult` / `maxWaitOnEmpty` firings — high rates flag a slow upstream that should be tightened or dropped. |
+
+#### Selection-policy decision metrics
+
+Emitted by the [selection policy](/config/projects/selection-policies) engine on every tick. These answer *why* each upstream is in/out of rotation, what its current score is, how long it's been excluded, whether sticky is biasing decisions, and how often each leaf predicate trips. Bounded cardinality — labels are limited to `(project, network, method, upstream)` plus a small `reason` slug enum on the exclusion counter.
+
+| Metric | Type | Description |
+|---|---|---|
+| `erpc_selection_position{upstream}` | Gauge | `0` = primary, `1+` = runner-up, `-1` = excluded. |
+| `erpc_selection_score{upstream}` | Gauge | Score from `sortByScore`. **Higher = better.** Missing for upstreams added after the scoring step. |
+| `erpc_selection_exclusion_total{upstream,reason}` | Counter | One increment **per leaf** predicate that tripped (`error_rate_above`, `latency_p95_above`, `block_head_lag_above`, `not_<slug>`, `custom`, …). Compound predicates (`any`/`all`/`not`) attribute to leaves, not the combinator. |
+| `erpc_selection_excluded_seconds{upstream}` | Gauge | Time stuck excluded (`0` in rotation). Alert on `> 600` for "stuck > 10 min". |
+| `erpc_selection_readmit_total{upstream}` | Counter | Excluded → in-rotation transitions. |
+| `erpc_selection_readmit_age_seconds` | Histogram | How long the upstream was out at readmit. Short tail = readmitting too eagerly. |
+| `erpc_selection_sticky_hold_total{upstream}` | Counter | Ticks where sticky actively held the previous primary. Ratio against `selection_primary_switch_total` = smoothing intensity. |
+| `erpc_selection_primary_switch_total{from,to}` | Counter | Primary changes. |
+| `erpc_selection_rejection_total{upstream,step}` | Counter | Per-step rejection. Use `_exclusion_total` for `excludeIf` attribution; this one covers `removeCordoned`, `removeByErrorRate`, etc. |
+| `erpc_selection_eligible_upstreams` | Gauge | Pool size after the chain. |
+| `erpc_selection_eval_duration_seconds` | Histogram | Per-tick eval latency. |
+| `erpc_selection_eval_errors_total{kind}` | Counter | `timeout`/`throw`/`invalid_return`/`fallback_default`. |
+| `erpc_upstream_cordon_event_total{upstream,action}` | Counter | Admin cordon/uncordon events. |
+| `erpc_upstream_cordon_duration_seconds{upstream}` | Histogram | Observed on uncordon — how long the cordon was active. |
+
+**Useful queries** (PromQL):
+
+```promql
+# Smoothing intensity — high = sticky is actively biasing decisions
+sum by (network, method) (rate(erpc_selection_sticky_hold_total[5m]))
+/ (sum by (network, method) (rate(erpc_selection_sticky_hold_total[5m]))
+   + sum by (network, method) (rate(erpc_selection_primary_switch_total[5m])))
+
+# Score gap between primary and best runner-up (negative = sticky holds back a challenger)
+min by (network, method) (erpc_selection_score)
+  / min by (network, method) (erpc_selection_score{...,!= position 0})
+
+# Top "why is this upstream out" reasons last hour
+topk(10, sum by (reason) (increase(erpc_selection_exclusion_total[1h])))
+
+# Stuck-excluded alert
+max by (project, network, upstream) (erpc_selection_excluded_seconds) > 600
+```
 
 #### Per-request execution trace
 
@@ -188,7 +297,7 @@ Every response carries the full attempt log as `X-ERPC-*` headers (`X-ERPC-Upstr
 | `erpc_network_cache_misses_total` | Counter | Cache misses for network requests. |
 | `erpc_network_request_duration_seconds` | Histogram | End-to-end request duration at the network level. |
 | `erpc_project_request_self_rate_limited_total` | Counter | Requests self-rate-limited at the project level. |
-| `erpc_rate_limits_total` | Counter | Unified rate-limiting events (remote limits and budget decisions). Replaces deprecated `erpc_budget_decision_total`. |
+| `erpc_rate_limits_total` | Counter | Unified rate-limiting events — both remote 429s and self-imposed budget decisions. Labels distinguish source. |
 | `erpc_rate_limiter_budget_max_count` | Gauge | Maximum requests/sec for a rate limiter budget. |
 | `erpc_rate_limiter_failopen_total` | Counter | Rate-limiter fail-open events (requests allowed due to errors/timeouts). |
 | `erpc_rate_limiter_remote_inflight` | Gauge | In-flight remote rate-limit checks (e.g. Redis) per budget. Rising without bound signals Redis overload. |
@@ -271,7 +380,7 @@ When the x402 payment middleware is enabled, eRPC emits additional counters for 
 
 ### Rate-limit monitoring
 
-`erpc_rate_limits_total` is the unified counter for all rate-limiting events. It replaces the deprecated `erpc_budget_decision_total` (which is still emitted for backward compatibility but should not be used for new dashboards).
+`erpc_rate_limits_total` is the unified counter for all rate-limiting events — local budget decisions, remote 429 responses, network-/upstream-/auth-scope limits.
 
 | Metric | Type | Labels | What it tells you |
 |---|---|---|---|
@@ -438,8 +547,20 @@ max(erpc_upstream_finalization_lag) by (network) > 5
 max(erpc_upstream_latest_block_number) by (network) -
 min(erpc_upstream_latest_block_number) by (network)
 
-# Overall upstream health scores
-avg(erpc_upstream_score_overall) by (network, upstream)
+# Which upstream is primary for each (network, method)
+min(erpc_selection_position) by (network, method, upstream)
+
+# Primary-switch rate (5-min rolling)
+sum(rate(erpc_selection_primary_switch_total[5m])) by (network, method)
+
+# Per-step rejection rate (which std-lib filter is dropping which upstream)
+sum(rate(erpc_selection_rejection_total[5m])) by (network, upstream, step)
+
+# Per-tick eval latency (p95)
+histogram_quantile(0.95, sum(rate(erpc_selection_eval_duration_seconds_bucket[5m])) by (network, method, le))
+
+# Eval errors broken down by kind (timeout, throw, invalid_return, fallback_default)
+sum(rate(erpc_selection_eval_errors_total[5m])) by (network, method, kind)
 
 # CORS disallowed origins
 sum(rate(erpc_cors_disallowed_origin_total{}[5m])) by (project, origin)

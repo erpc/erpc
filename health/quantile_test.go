@@ -203,3 +203,96 @@ func TestGetQuantile_NaNGuard(t *testing.T) {
 		t.Errorf("Reset tracker should not return NaN/Inf, got %v", result)
 	}
 }
+
+// TestGetQuantiles_MatchesIndividualCalls — semantic equivalence of
+// the batched API. Adding the same data must produce identical
+// per-quantile results whether queried via 5× GetQuantile or one
+// GetQuantiles call. This is the safety net for the policy-side
+// optimization in `internal/policy/eval.go` that uses GetQuantiles
+// to amortize the `mergedSnapshot` cost across all 5 percentiles.
+func TestGetQuantiles_MatchesIndividualCalls(t *testing.T) {
+	qt := NewQuantileTracker(&log.Logger)
+	// Spread of values so quantile estimates differ at each bucket.
+	for _, v := range []float64{
+		0.001, 0.005, 0.010, 0.020, 0.030,
+		0.050, 0.080, 0.120, 0.200, 0.350,
+		0.500, 0.750, 1.000, 1.500, 2.500,
+	} {
+		qt.Add(v)
+	}
+
+	qs := []float64{0.50, 0.70, 0.90, 0.95, 0.99}
+	batched := qt.GetQuantiles(qs)
+	for i, q := range qs {
+		individual := qt.GetQuantile(q)
+		if batched[i] != individual {
+			t.Errorf("GetQuantiles[%v]=%v but GetQuantile(%v)=%v — must match",
+				q, batched[i], q, individual)
+		}
+	}
+}
+
+// TestGetQuantiles_EmptyInput — len(qtiles)==0 must return an empty
+// slice and skip the merge entirely (the merge is the expensive
+// part — we shouldn't pay for it when no quantiles are asked for).
+func TestGetQuantiles_EmptyInput(t *testing.T) {
+	qt := NewQuantileTracker(&log.Logger)
+	qt.Add(0.5) // make sure there's data so empty-input != empty-sketch
+	out := qt.GetQuantiles(nil)
+	if len(out) != 0 {
+		t.Errorf("GetQuantiles(nil) must return empty slice, got %v", out)
+	}
+	out = qt.GetQuantiles([]float64{})
+	if len(out) != 0 {
+		t.Errorf("GetQuantiles([]) must return empty slice, got %v", out)
+	}
+}
+
+// TestGetQuantiles_EmptySketch — when no samples have been added,
+// every requested quantile must come back as zero Duration (mirrors
+// per-call GetQuantile's empty-sketch behavior).
+func TestGetQuantiles_EmptySketch(t *testing.T) {
+	qt := NewQuantileTracker(&log.Logger)
+	out := qt.GetQuantiles([]float64{0.50, 0.90, 0.99})
+	if len(out) != 3 {
+		t.Fatalf("expected len 3, got %d", len(out))
+	}
+	for i, d := range out {
+		if d != 0 {
+			t.Errorf("empty sketch quantile[%d] must be 0, got %v", i, d)
+		}
+	}
+}
+
+// BenchmarkGetQuantiles_BatchedVsLoop — pins the policy-side speedup.
+// Calling GetQuantile 5 times rebuilds the merged DDSketch 5 times;
+// GetQuantiles merges once and reads 5. At the snapshotMetrics
+// callsite (5 upstreams × 30 methods per tick) the batched form
+// turns 750 merges into 150.
+func BenchmarkGetQuantiles_BatchedVsLoop(b *testing.B) {
+	logger := log.Logger
+	qt := NewQuantileTracker(&logger)
+	// Sample population sized to be representative of a ~1k-RPS
+	// upstream over a 60s rolling window.
+	for i := 0; i < 1000; i++ {
+		qt.Add(0.001 + float64(i%200)*0.005)
+	}
+
+	qs := []float64{0.50, 0.70, 0.90, 0.95, 0.99}
+
+	b.Run("Loop_5xGetQuantile", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			for _, q := range qs {
+				_ = qt.GetQuantile(q)
+			}
+		}
+	})
+
+	b.Run("Batched_GetQuantiles", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = qt.GetQuantiles(qs)
+		}
+	})
+}

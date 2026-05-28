@@ -2120,13 +2120,15 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		// still complete. We poll instead of sleeping a fixed interval
 		// because CI runners (especially with -race + parallel sibling
 		// suites scheduled on shared workers) can add several seconds of
-		// slack on top of the 500 ms mock delay. Empirically 3 s was tight
-		// enough to flake on GitHub Actions ubuntu-latest runners; 10 s
-		// keeps the happy path fast (typically returns in ~600 ms) while
-		// staying well within the package-level test timeout.
+		// slack on top of the 500 ms mock delay. History on this assertion:
+		//   - 3 s → flaked on GitHub Actions ubuntu-latest
+		//   - 10 s → still flaked (run 25819607169 took 10.70 s before failing)
+		//   - 30 s → current ceiling. The happy path typically returns in
+		//     ~600 ms, so this only kicks in when the runner is heavily
+		//     contended; it's still well inside the package-level timeout.
 		require.Eventually(t, func() bool {
 			return len(gock.Pending()) == util.EvmBlockTrackerMocks
-		}, 10*time.Second, 50*time.Millisecond,
+		}, 30*time.Second, 50*time.Millisecond,
 			"all sendRawTx mocks should be consumed - background requests must complete even after parent context cancelled")
 	})
 
@@ -2207,10 +2209,11 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		// Poll for ALL background requests to complete despite parent
 		// cancellation. Polling (instead of a fixed sleep) avoids flaking
 		// on loaded CI runners where the slowest 700 ms mock can miss a
-		// tight fixed window.
+		// tight fixed window. Same history as the sibling assertion above
+		// — 30 s is the conservative ceiling for race-loaded CI.
 		require.Eventually(t, func() bool {
 			return len(gock.Pending()) == util.EvmBlockTrackerMocks
-		}, 3*time.Second, 50*time.Millisecond,
+		}, 30*time.Second, 50*time.Millisecond,
 			"fire-and-forget must broadcast to all nodes even when parent cancelled before short-circuit")
 	})
 }
@@ -2461,8 +2464,6 @@ func setupSendRawTxNetwork(t *testing.T, ctx context.Context, upstreamConfigs []
 		pr,
 		nil,
 		metricsTracker,
-		1*time.Second,
-		nil,
 		nil,
 	)
 
@@ -2474,6 +2475,7 @@ func setupSendRawTxNetwork(t *testing.T, ctx context.Context, upstreamConfigs []
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	require.NoError(t, err)
 

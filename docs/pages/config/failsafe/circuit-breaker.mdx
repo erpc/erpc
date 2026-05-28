@@ -1,170 +1,73 @@
 ---
 title: Circuit breaker
-description: Temporarily remove an upstream from rotation after sustained failure — three-state breaker with rolling-window thresholds.
+description: How eRPC trips a failing upstream out of rotation — via the Selection Policy's excludeIf chain.
 ---
 
 import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../../components";
 
-# Circuit breaker policy
+# Circuit breaker
 
-<LLMsTxtLink />
-
-The circuit breaker cordons off an unhealthy upstream so failures stop wasting latency on a bad endpoint. Three states: **closed** (normal traffic), **open** (instant rejection), **half-open** (limited probe traffic to test recovery). Only valid at the **upstream** level — at the network level, the selection policy already routes around open breakers.
-
-## Full configuration
-
-<ConfigTabs
-	path="projects > upstreams[] > failsafe[] > circuitBreaker"
-	focus="7-22"
-	yaml={`projects:
-  - id: main
-    upstreams:
-      - id: my-upstream
-        endpoint: https://rpc.example.com
-        failsafe:
-          - matchMethod: "*"              # applies to all methods; narrow with "!eth_call" to exclude noisy ones
-            # matchFinality: [finalized]  # optional: scope to specific finality states
-            circuitBreaker:
-              failureThresholdCount: 160      # trip after 160 failures...
-              failureThresholdCapacity: 200   # ...out of the most recent 200 requests (80% failure rate)
-              halfOpenAfter: 5m               # stay open for 5 min before allowing probes
-              successThresholdCount: 3        # close again after 3 consecutive successes...
-              successThresholdCapacity: 10    # ...within a 10-sample probe window`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    upstreams: [{
-      id: "my-upstream",
-      endpoint: "https://rpc.example.com",
-      failsafe: [{
-        matchMethod: "*",          // applies to all methods; narrow with "!eth_call" to exclude noisy ones
-        // matchFinality: ["finalized"],  // optional: scope to specific finality states
-        circuitBreaker: {
-          failureThresholdCount: 160,      // trip after 160 failures...
-          failureThresholdCapacity: 200,   // ...out of the most recent 200 requests (80% failure rate)
-          halfOpenAfter: "5m",             // stay open for 5 min before allowing probes
-          successThresholdCount: 3,        // close again after 3 consecutive successes...
-          successThresholdCapacity: 10,    // ...within a 10-sample probe window
-        },
-      }],
-    }],
-  }],
-});`}
-/>
-
-Use `matchMethod` and `matchFinality` to scope a breaker to a specific method group. An upstream can have multiple `failsafe[]` entries — each creates an independent breaker with its own state and counters.
+In eRPC, *"trip a bad upstream out of rotation"* is the [Selection Policy](/config/projects/selection-policies)'s job — not a separate failsafe policy. One unified mechanism covers every kind of "bad": failing, slow, throttled, lagging. Exclusion lives at the network level; the per-upstream-state-machine model has no separate home.
 
 ## How it works
 
-### State machine
+The selection policy runs on a tick (default every `1s`) and returns the ordered list of upstreams eligible to serve requests on that network. **Order is law; missing means excluded.** Each tick the policy can drop an upstream based on any signal in its rolling-window health metrics:
 
-1. **Closed** (normal) — every request goes through. Failures and successes both count toward the rolling sample window. When `failureThresholdCount` failures land within the most recent `failureThresholdCapacity` samples, the breaker transitions to **open**.
-2. **Open** — every request is rejected immediately with a breaker-open error. The network's selection policy routes to the next-best upstream. The breaker stays open for `halfOpenAfter` duration.
-3. **Half-open** — after `halfOpenAfter` elapses, the next request is allowed through as a probe. Probes continue (concurrently, capped at `successThresholdCapacity`) until `successThresholdCount` succeed — then transition back to **closed**. Any failure during half-open transitions back to **open** and restarts the `halfOpenAfter` timer.
-
-### Rolling windows
-
-Both `failureThreshold*` and `successThreshold*` use sample counters, not time windows. A 160/200 failure threshold means "trip when 160 of the most recent 200 outcomes were failures" — regardless of how long that took. For sparse traffic the window naturally extends over longer wall-clock time.
-
-### What counts as a failure
-
-The breaker uses the same retryable-error classification as `retry`: HTTP 5xx, 408, 429, network errors, transport timeouts, and missing-data conditions. HTTP 4xx (non-408/429) and successful responses — including legitimate empty results — do **not** count as failures.
-
-### Hedge interaction
-
-Hedge attempts are **never counted** toward the breaker's failure or success windows. Speculation would distort the health signal — if the primary is just slow but eventually succeeds, the hedge race itself should not open the breaker.
-
-### Network-level behavior
-
-When an upstream's breaker opens, the network's selection policy marks that upstream as cordoned (`erpc_upstream_cordoned{state=1}`) and treats it as inactive until the breaker closes. The network routes to the next healthy upstream automatically — no manual intervention required.
-
-## Defaults
-
-All fields have defaults applied when `circuitBreaker: {}` is set. The breaker is opt-in — you must explicitly add a `circuitBreaker` block for it to take effect.
-
-| Field | Default | Notes |
-|---|---|---|
-| `failureThresholdCount` | `20` | Failures required to open. |
-| `failureThresholdCapacity` | `80` | Rolling sample window size. Default ratio: 25% failure rate. |
-| `halfOpenAfter` | `5m` | How long to stay open before probing. |
-| `successThresholdCount` | `8` | Successes required to close from half-open. |
-| `successThresholdCapacity` | `10` | Probe window in half-open state. |
-
-<Callout type="info">
-  The default thresholds (20/80 = 25% failure rate) are deliberately sensitive. Tune upward (`160/200`) for upstreams that experience legitimate transient errors under load.
-</Callout>
-
-## Gotchas
-
-- **Network-level `circuitBreaker` is silently ignored** — the config parser accepts it but it has no effect at network scope. Only upstream-level breakers trip.
-- **Threshold ratio, not absolute count** — set `failureThresholdCount` and `failureThresholdCapacity` together. `160/200` = 80% failure rate. `1/10` = 10% — much more sensitive to any fault.
-- **`halfOpenAfter` too short** — the upstream gets probed before it has time to recover, immediately opens again, and oscillates. Start at `5m` for real outages; lower only when tuning in a staging environment.
-- **Per-method scoping for noisy methods** — if a method legitimately returns errors often (e.g. `eth_call` on contracts that revert), use `matchMethod: "!eth_call"` so those failures don't open the breaker for unrelated traffic.
-- **Hedge attempts are excluded** from the failure window — by design. Counting hedge outcomes would cause false positives on slow-but-functional upstreams.
-- **Open breaker doesn't disable scoring** — the upstream's latency and health scores continue to be tracked (it just receives zero traffic while open). On close, scoring resumes from where it left off.
-- **One breaker per `failsafe[]` entry** — without `matchMethod`/`matchFinality` scoping, a single bad method group opens the breaker for the entire upstream.
-
-<Callout type="warning">
-  If you use both `retry` and `circuitBreaker` on the same upstream entry, retries happen first. A failed retry sequence counts as a single failure against the breaker — not one failure per attempt.
-</Callout>
-
-## Metrics
-
-- `erpc_upstream_cordoned` (gauge) — `0` = active, `1` = cordoned by open breaker or selection policy.
-- `erpc_upstream_request_total{outcome="breaker_open"}` (counter) — rejections while the breaker is open.
-
-PromQL — alert when any upstream has been cordoned for more than 10 minutes:
-
-```promql
-avg_over_time(erpc_upstream_cordoned[10m]) > 0.95
+```js
+upstreams
+  .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))                     // failing
+  .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))                  // throttled
+  .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)),            // slow
+                 latencyAbove(30_000)))
+  .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))         // lagging
+  ...
+  .probeExcluded({ sampleRate: 0.1, minSamples: 10 })                        // shadow-mirror real traffic at excluded upstreams
 ```
 
-<AISection title="Copy for your AI assistant — circuit breaker reference">
+An excluded upstream stays out until its tracker metrics improve below the same `excludeIf` thresholds — there is **no separate readmit timer**. The `probeExcluded` step subscribes the network's probe subsystem to the request feed; the prober shadow-mirrors a sampled stream of real requests against any currently-excluded upstream, feeding the same tracker counters as real traffic. Once those counters cross back below the threshold, the upstream falls out of the excluded set on the next tick and re-enters rotation.
 
-### `CircuitBreakerPolicyConfig` — every field
+This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (70 % error rate / 40 % throttle rate, each gated on ≥ 10 samples; p70 > 30 s OR 3× the fastest peer gated on ≥ 20 samples; head lag > 16 blocks OR 30 s) are tuned for production from day one. The `samplesAbove(N)` guards on the error / throttle / relative-latency predicates exist so a single failing call on a fresh-pod tracker (errorRate = 1/1 = 1.0) cannot cascade-evict every upstream before the rolling window has meaningful denominator.
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `failureThresholdCount` | uint | `20` | Number of failures within the rolling window required to open the breaker. |
-| `failureThresholdCapacity` | uint | `80` | Size of the rolling sample window (total outcomes tracked). Trip ratio = `failureThresholdCount / failureThresholdCapacity`. |
-| `halfOpenAfter` | Duration | `5m` | How long to remain in open state before transitioning to half-open and allowing probe requests. |
-| `successThresholdCount` | uint | `8` | Number of successful probe responses required to close the breaker from half-open. |
-| `successThresholdCapacity` | uint | `10` | Size of the probe window in half-open state. Any failure resets the probe counter and transitions back to open. |
+## State, mapped to selection-policy concepts
 
-Only valid at the **upstream** level. Setting `circuitBreaker` on a network `failsafe[]` entry is accepted by the config parser but has no runtime effect.
+| Concept | Surfaced as |
+|---|---|
+| **Closed** (upstream healthy) | Present in the eval's returned ordered list. `erpc_selection_position{upstream}` is `0` (primary) or `1+` (runner-up). |
+| **Open** (upstream excluded) | Missing from the returned list. `erpc_selection_position{upstream}` is `-1`. The reason ("errorRate>0.7", "p70>30000ms", "p70>3xFastest", ...) appears on the per-tick `Decision.Output.Excluded[]` entry (as `Reason` for display + `LeafReasons[]` slugs that drive `selection_exclusion_total{reason}`) and in DEBUG logs. |
+| **Half-open** (probing recovery) | `probeExcluded` shadow-mirrors sampled real traffic to currently-excluded upstreams in the background. The mirrored calls feed the same tracker counters as real traffic; once they cross back below the `excludeIf` thresholds, the upstream falls out of the excluded set on the next tick. No real user traffic is served by an excluded upstream during this — the probing is entirely behind the scenes. Per-upstream opt-out via `routing.probe: 'off'`. |
 
-**Hedge attempts are never counted** toward the breaker's failure or success windows — they are speculative fan-out and would otherwise distort the health signal.
+## Tuning the thresholds
 
-### State transitions
+Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the network. Example — strict latency rule (p95 > 10 s on any sample count) for a workload that ALWAYS needs sub-10s responses:
 
-| From | To | Trigger |
-|---|---|---|
-| Closed | Open | `failureThresholdCount` failures within `failureThresholdCapacity` samples. |
-| Open | Half-open | `halfOpenAfter` duration elapses. |
-| Half-open | Closed | `successThresholdCount` successes within `successThresholdCapacity` probe samples. |
-| Half-open | Open | Any single failure during probing; `halfOpenAfter` timer restarts. |
+```js
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.5)))   // stricter error ceiling
+    .excludeIf(all(samplesAbove(10), throttleRateAbove(0.3)))
+    .excludeIf(latencyAbove(10_000, 95))                     // hard p95 floor, no guard
+    .whenEmpty(() => upstreams)
+    .sortByScore(PREFER_FASTEST)
+    .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
+    .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
+```
 
-### What counts as a failure
+See [Selection policies](/config/projects/selection-policies) for the full chainable vocabulary + every predicate factory.
 
-Same classifier as `retry`: HTTP 5xx, 408, 429, network/transport errors, timeout, missing-data conditions. HTTP 4xx (non-408/429) and successful responses — including empty results — are not failures.
+## Manual exclusion
 
-### Scoping
+For operator-driven exclusion that doesn't depend on metrics — *"this vendor's status page just went red, take it out now"*, planned maintenance windows, forced failover testing — use the [admin cordon RPC](/operation/cordoning). Cordon is independent of the metric-driven `excludeIf` chain: it sets a sticky flag the policy's `.removeCordoned()` step honors, and it stays until you uncordon.
 
-Use `matchMethod` and `matchFinality` to create independent breakers per method group on the same upstream. Each `failsafe[]` entry with a `circuitBreaker` block maintains its own state machine and counters.
+## Observability
 
-</AISection>
+| Where | Signal |
+|---|---|
+| Prometheus | `erpc_selection_position{project,network,method,upstream}` — `0` = primary, `1+` = runner-up, `-1` = excluded. `erpc_selection_rejection_total{...,step}` — per-step rejection counter. `erpc_selection_primary_switch_total{...,from,to}` — primary changes. |
+| OTLP | Per-tick eval span on the network with selected upstream + tick id. |
+| Logs (DEBUG) | One line per `excludeIf` rejection with the upstream id and the predicate's `policyReason` (e.g. `errorRate>0.5`, `p70>30000ms`, `p70>3xFastest`, `blockHeadLag>16`). |
+| Simulator | The policy-history pane shows the per-step trail (every chainable method's input → output → dropped/added/reordered) with timestamps. |
 
-## See also
-
-- [Failsafe overview](/config/failsafe) — scoping rules and per-attempt observability
-- [Retry](/config/failsafe/retry) — the breaker uses the same "what's a failure" classifier
-- [Selection policies](/config/projects/selection-policies) — how the network routes around an open breaker
-- [Production guidelines](/operation/production) — recommended thresholds for production deployments
+<Callout type="info">
+  The cordon admin endpoint (`erpc_cordonUpstream`) is the ONLY way to manually exclude an upstream. Everything else — health-based exclusion, recovery probing, primary changes — lives in the selection policy and is driven by live metrics. See [Selection policies](/config/projects/selection-policies) for the full picture and [Cordoning](/operation/cordoning) for the operator runbook.
+</Callout>

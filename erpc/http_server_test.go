@@ -26,6 +26,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -2694,7 +2695,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		statusCode2, _, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, map[string]string{
 			"X-ERPC-Use-Upstream": "rpc2",
@@ -3729,10 +3730,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3783,10 +3784,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3814,10 +3815,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3845,10 +3846,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3886,10 +3887,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				}
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -3917,15 +3918,15 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
+				metrics := mtk.GetUpstreamMethodMetrics(up, "*", common.DataFinalityStateAll)
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(5) // 5% error rate
 
@@ -3956,15 +3957,15 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
+				metrics := mtk.GetUpstreamMethodMetrics(up, "*", common.DataFinalityStateAll)
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(99) // 99% error rate
 
@@ -4004,20 +4005,20 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, upBad}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, upBad}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, upBad}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
 				ups1 := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*")
+				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*", common.DataFinalityStateAll)
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(5) // 5% error rate
 
 				upsBad := pp.upstreamsRegistry.GetAllUpstreams()[1]
-				metricsBad := mtk.GetUpstreamMethodMetrics(upsBad, "*")
+				metricsBad := mtk.GetUpstreamMethodMetrics(upsBad, "*", common.DataFinalityStateAll)
 				metricsBad.RequestsTotal.Store(100)
 				metricsBad.ErrorsTotal.Store(99) // 99% error rate
 
@@ -4051,7 +4052,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 
 				// Correct chain ID
@@ -4065,7 +4066,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)
 
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4105,10 +4106,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				authReg, _ := auth.NewAuthRegistry(ctx, logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 					{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Value: "test-secret"}},
@@ -4149,10 +4150,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4181,10 +4182,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4213,10 +4214,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4246,10 +4247,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4280,10 +4281,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{}, Providers: []*common.ProviderConfig{}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4318,10 +4319,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				}
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4350,10 +4351,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
 
@@ -4388,10 +4389,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}, Providers: []*common.ProviderConfig{{Id: "test-provider", Vendor: "alchemy"}}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4438,10 +4439,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, up2}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, up2}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, up2}, ssr, nil, vr, pr, nil, mtk, nil),
 				}
 				pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -5571,7 +5572,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5650,7 +5651,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5739,7 +5740,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5836,7 +5837,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -5934,7 +5935,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to learn highest block across both upstreams
 		time.Sleep(500 * time.Millisecond)
@@ -6038,7 +6039,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
@@ -6227,7 +6228,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -6419,7 +6420,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
@@ -6492,7 +6493,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6566,7 +6567,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6657,7 +6658,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6719,7 +6720,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6860,7 +6861,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Allow poller to initialize
 		time.Sleep(500 * time.Millisecond)
@@ -6942,7 +6943,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and populate highest finalized
 		time.Sleep(500 * time.Millisecond)
@@ -7164,7 +7165,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Give state poller time to initialize and learn about finalized blocks
 		time.Sleep(1 * time.Second)
@@ -7417,7 +7418,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		defer shutdown()
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		userRequest := `{
 			"jsonrpc": "2.0",
@@ -7547,7 +7548,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		defer shutdown()
 		userRequest := `{
@@ -7697,7 +7698,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		userRequest := `{
 			"jsonrpc": "2.0",

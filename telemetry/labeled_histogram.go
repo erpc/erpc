@@ -138,6 +138,35 @@ func (lh *LabeledHistogram) WithLabelValues(vals ...string) prometheus.Observer 
 
 func (lh *LabeledHistogram) Reset() { lh.vec.Reset() }
 
+// DeleteLabelValues removes the series for the given label set from the
+// underlying HistogramVec — wrapper around `prometheus.HistogramVec.DeleteLabelValues`
+// that honors the same FULL-schema convention as WithLabelValues. The
+// active-filter projection has to match exactly with what was used at
+// creation time; passing the full schema in schema-order is how every
+// call site already does it.
+//
+// Returns true if a series existed and was deleted, false if no such
+// label combination was registered (idempotent / safe-to-call-twice).
+//
+// Used by the health tracker's idle-sweep loop to release Prometheus
+// series for label combinations (method × userId × agentName, …) that
+// haven't been observed in `idleEvictionAfter` — bounds the
+// `/metrics` page's cardinality under method-flood attacks.
+func (lh *LabeledHistogram) DeleteLabelValues(vals ...string) bool {
+	if len(vals) != len(lh.schema) {
+		panic(fmt.Sprintf("labeled_histogram: %s expected %d label values (%v), got %d",
+			lh.metricName, len(lh.schema), lh.schema, len(vals)))
+	}
+	if len(lh.activeIdx) == len(lh.schema) {
+		return lh.vec.DeleteLabelValues(vals...)
+	}
+	active := make([]string, len(lh.activeIdx))
+	for i, idx := range lh.activeIdx {
+		active[i] = vals[idx]
+	}
+	return lh.vec.DeleteLabelValues(active...)
+}
+
 // ActiveLabelValues projects full-schema values down to the retained subset.
 // Useful for callers that want to key their own caches on the effective
 // (post-filter) labels so multiple full-label tuples that resolve to the same

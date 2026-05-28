@@ -127,7 +127,10 @@ projects:
             hedge:
               delay: 500ms
               maxCount: 1
-            # circuitBreaker is upstream-scope only — see upstreams.failsafe below.
+            # Trip degraded upstreams out of rotation via the Selection Policy
+            # (excludeIf chain), not failsafe — see
+            # /config/projects/selection-policies. Operator-driven manual
+            # exclusion lives in /operation/cordoning.
       - architecture: evm
         evm:
           chainId: 42161
@@ -162,14 +165,11 @@ projects:
               backoffMaxDelay: 3s
               backoffFactor: 1.2
               jitter: 0ms
-            # Per-upstream circuit breaker — opens on 80% failure rate over the
-            # last 200 reqs, probes every 5m, closes on 3 consecutive successes.
-            circuitBreaker:
-              failureThresholdCount:    160
-              failureThresholdCapacity: 200
-              halfOpenAfter:            5m
-              successThresholdCount:    3
-              successThresholdCapacity: 3
+            # NOTE: "trip a bad upstream out of rotation" is the
+            # Selection Policy's job — the default policy already drops
+            # upstreams with errorRate > 50%, throttling > 30%, p95 > 30s,
+            # or block-head lag > 16 blocks. Just leave the defaults on
+            # and use /operation/cordoning for manual operator overrides.
       - id: alchemy-multi-chain
         endpoint: alchemy://\${ALCHEMY_API_KEY}
         rateLimitBudget: global
@@ -287,10 +287,9 @@ export default createConfig({
         timeout: { duration: "30s" },
         retry: { maxAttempts: 3, delay: "0ms" },
         hedge: { delay: "500ms", maxCount: 1 },
-        circuitBreaker: {
-          failureThresholdCount: 160, failureThresholdCapacity: 200,
-          halfOpenAfter: "5m", successThresholdCount: 3, successThresholdCapacity: 3,
-        },
+        // Tripping a bad upstream out of rotation is the Selection
+        // Policy's job — see /config/projects/selection-policies. The
+        // default policy already covers errorRate / throttle / p95 / lag.
       }],
     }],
     upstreams: [
@@ -331,7 +330,9 @@ export default createConfig({
 - [Networks](/config/projects/networks) — per-chain failsafe, integrity checks, static responses
 - [Upstreams](/config/projects/upstreams) — RPC endpoints, vendor shorthands, batching, block availability
 - [Rate limiters](/config/rate-limiters) — shared budgets, per-method rules, `waitTime`
-- [Failsafe](/config/failsafe) — timeout, retry, hedge, circuit-breaker in depth
+- [Failsafe](/config/failsafe) — timeout, retry, hedge, consensus, integrity in depth
+- [Selection policy](/config/projects/selection-policies) — how degraded upstreams get tripped out of rotation (replaces the old `circuitBreaker`)
+- [Cordoning](/operation/cordoning) — manual operator-driven exclusion via admin RPC
 
 <AISection title="Copy for your AI assistant — exhaustive eRPC config reference">
 
@@ -558,12 +559,6 @@ networks:
         hedge:
           delay: 1000ms
           maxCount: 2
-        circuitBreaker:
-          failureThresholdCount: 160   # trips at 80% errors (160/200)
-          failureThresholdCapacity: 200
-          halfOpenAfter: 5m
-          successThresholdCount: 3
-          successThresholdCapacity: 3
 ```
 
 **`failsafe[]` — per-policy fields:**
@@ -579,13 +574,10 @@ networks:
 | `retry.jitter` | Random jitter added to each delay. |
 | `hedge.delay` | After this delay without a response, fire a parallel request to a second upstream. |
 | `hedge.maxCount` | Maximum simultaneous hedged requests. |
-| `circuitBreaker.failureThresholdCount` | Number of failures within `failureThresholdCapacity` samples to trip. |
-| `circuitBreaker.failureThresholdCapacity` | Rolling sample window size. |
-| `circuitBreaker.halfOpenAfter` | How long to wait in open state before attempting a half-open probe. |
-| `circuitBreaker.successThresholdCount` | Successes needed in half-open to close the breaker. |
-| `circuitBreaker.successThresholdCapacity` | Sample window for the half-open probe. |
 
 **Hedge is strongly recommended at the network level.** It fires a second upstream request after `hedge.delay` if the first hasn't responded, returning whichever comes back first. This dramatically reduces tail latency without extra retries.
+
+**To trip a degraded upstream out of rotation** (the old `circuitBreaker`), use the [Selection Policy](/config/projects/selection-policies)'s `excludeIf` chain — the default policy already drops upstreams whose errorRate, throttling, p95 latency, or block-head lag cross sensible thresholds. For manual operator-driven exclusion (planned maintenance, incident response), use the [admin cordon RPC](/operation/cordoning).
 
 ---
 

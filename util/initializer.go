@@ -500,6 +500,23 @@ func (i *Initializer) tasksStatus() []TaskStatus {
 	return statuses
 }
 
+// RangeTaskStates calls fn(name, state) for each registered task. Return
+// false from fn to stop iteration early.
+//
+// Allocation-free streaming alternative to `Status().Tasks` for callers
+// that only need (name, state) and don't want to materialize the full
+// `[]TaskStatus`. Pprof on prod showed `tasksStatus`'s growslice +
+// per-task TaskStatus allocs at ~10% CPU during the bootstrap-wait
+// window, where `summarizeNetworkTasks` was calling Status() every
+// 200ms and immediately throwing away the Err / LastAttempt / Attempts
+// fields it didn't need.
+func (i *Initializer) RangeTaskStates(fn func(name string, state TaskState) bool) {
+	i.tasks.Range(func(_, value any) bool {
+		t := value.(*BootstrapTask)
+		return fn(t.Name, TaskState(t.state.Load()))
+	})
+}
+
 type InitializerStatus struct {
 	State     InitializationState
 	LastError error

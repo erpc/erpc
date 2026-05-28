@@ -98,6 +98,18 @@ func makeBreakerTransitionHook(projectId, upstreamId string) func(failsafe.State
 	}
 }
 
+// AttemptErrorDetailMaxLen bounds the per-attempt error string that
+// `RecordUpstreamAttempt` stores on the request's `ExecState`. The
+// stored value powers diagnostics surfaces (admin endpoints, traces,
+// the simulator's lifecycle drawer) — it does NOT affect the error
+// the caller receives, which is always the full chain.
+//
+// 200 is the production default — it keeps the per-request execution
+// log compact under high RPS. Tooling that wants the full nested
+// `caused by` chain (e.g. cmd/erpc-simulator) can raise this via an
+// `init()`-time write or zero it out to disable truncation entirely.
+var AttemptErrorDetailMaxLen = 200
+
 type Upstream struct {
 	ProjectId string
 	Client    clients.ClientInterface
@@ -292,6 +304,32 @@ func (u *Upstream) Tracker() common.HealthTracker {
 		return nil
 	}
 	return u.metricsTracker
+}
+
+// CircuitBreakerState returns the live state of the circuit breaker on
+// the catch-all (`matchMethod: "*"`) failsafe executor, or
+// `StateClosed` if no such executor / breaker is configured. Read
+// directly from the breaker's atomic state — no simulator-side cache.
+// Diagnostic tooling (admin endpoints, simulator panels) consumes this
+// for the "circuit" pill so the UI never drifts from reality.
+//
+// Per-method breakers exist when a config declares method-specific
+// failsafe blocks, but for the simulator's per-upstream "row" view a
+// single canonical state is what the operator wants — we surface the
+// catch-all because that's what serves the vast majority of methods.
+func (u *Upstream) CircuitBreakerState() failsafe.State {
+	if u == nil {
+		return failsafe.StateClosed
+	}
+	for _, fe := range u.failsafeExecutors {
+		if fe.MatchMethod() == "*" && len(fe.MatchFinality()) == 0 {
+			if br := fe.Breaker(); br != nil {
+				return br.State()
+			}
+			return failsafe.StateClosed
+		}
+	}
+	return failsafe.StateClosed
 }
 
 func (u *Upstream) Logger() *zerolog.Logger {
@@ -490,8 +528,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				if retErr != nil {
 					errCode = string(common.ErrorFingerprint(retErr))
 					es := retErr.Error()
-					if len(es) > 200 {
-						es = es[:200]
+					if max := AttemptErrorDetailMaxLen; max > 0 && len(es) > max {
+						es = es[:max]
 					}
 					errDetail = es
 				}
@@ -547,13 +585,31 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			// isHedgeAttempt is the OR of the explicit network-passed flag
 			// and any hedge fan-out from the upstream's own executor.
 			hedgeAttempt := isHedgeAttempt || isHedge
+			finality := nrq.Finality(ctx)
 			if !hedgeAttempt {
 				u.metricsTracker.RecordUpstreamRequest(
 					u,
 					method,
+					finality,
 				)
 			}
-			finality := nrq.Finality(ctx)
+			// TODO(memory): this and the matching MetricUpstreamErrorTotal /
+			// MetricUpstreamWrongEmptyResponseTotal / MetricUpstreamCanceledTotal
+			// sites in this file + erpc/networks.go all emit label-sets
+			// keyed by user-controlled inputs (method, finality, userId,
+			// agentName, etc.) WITHOUT going through a tracker cache, so
+			// the Prometheus registry accumulates one series per unique
+			// combo forever — even after the in-memory caches added in
+			// the 826df9f5 idle-sweep get cleared.
+			//
+			// The fix is parallel to the urdObsCache / remoteRateLimited
+			// pattern: wrap each WithLabelValues call in a cached*-style
+			// indirection that remembers the label tuple + a
+			// lastAccessedAtMs, then sweep on idle with
+			// MetricVec.DeleteLabelValues. Each direct call site needs the
+			// same retrofit. Out of scope for this PR — flagged for a
+			// follow-up titled "sweep direct Prom emissions in
+			// upstream/erpc hot paths".
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
@@ -642,11 +698,18 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
-					// Cancelled request (e.g. hedge lost the race, or client
-					// disconnected). Not attributable to upstream quality from
-					// this layer — skip failure recording and the generic error
-					// metric. Hedge discards are accounted at the network layer
+					// Cancelled request (hedge lost the race or client
+					// disconnected). Not attributable to upstream quality
+					// from THIS layer for the error-rate counter — skip
+					// RecordUpstreamFailure and the generic error metric.
+					// Hedge discards are accounted at the network layer
 					// via MetricNetworkHedgeDiscardsTotal.
+					//
+					// Latency observation is also skipped (see the
+					// ObserveDuration call below) — elapsed-by-cancel is
+					// not a natural latency sample. Probe traffic from
+					// `probeExcluded` provides successful samples for
+					// upstreams that never win the hedge race.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
@@ -655,6 +718,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						u.metricsTracker.RecordUpstreamFailure(
 							u,
 							method,
+							finality,
 							errCall,
 						)
 					}
@@ -674,8 +738,34 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				}
 
-				// ExecutionException is a valid blockchain response (e.g. revert) — count its latency.
-				// All other errors should NOT contribute to the latency quantile.
+				// Only ExecutionException (EVM revert) feeds the latency
+				// quantile — the upstream did real work; the duration
+				// reflects actual response time.
+				//
+				// Cancellations (hedge-lost / client gave up / engine
+				// timeout) are deliberately excluded: the elapsed-by-
+				// cancel time is not natural latency. An upstream that
+				// only ever loses hedge races (e.g. always sees
+				// hedge-fired slow methods because the primary handles
+				// the fast ones) would otherwise accumulate a quantile
+				// of 100% cancellation observations, biasing its p70
+				// toward "however long the winner of the race took
+				// before cancellation." Cross-upstream comparisons
+				// (e.g. `latencyDeviationAbove`) would trip on this
+				// artificial signal even when per-method latencies are
+				// identical.
+				//
+				// With probeExcluded in the chain (default), excluded
+				// upstreams accumulate real successful samples via
+				// shadow-mirrored traffic — so the "every-hedge-loser
+				// stays optimistic forever" concern is handled without
+				// polluting the quantile. Without probeExcluded, rely
+				// on absolute thresholds (`latencyAbove(N)`) +
+				// non-latency signals (error rate, throttle rate, lag).
+				//
+				// All other errors fired before / instead of a meaningful
+				// response and would conflate "broken" with "slow" if
+				// counted; they stay out of the quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
 				timer.ObserveDuration(isRevert)
 				if isRevert {
@@ -1457,29 +1547,6 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 	return nil, false
 }
 
-func (u *Upstream) getScoreMultipliers(networkId, method string, finalities []common.DataFinalityState) *common.ScoreMultiplierConfig {
-	if u.config.Routing != nil {
-		for _, mul := range u.config.Routing.ScoreMultipliers {
-			matchNet, err := common.WildcardMatch(mul.Network, networkId)
-			if err != nil {
-				continue
-			}
-			matchMeth, err := common.WildcardMatch(mul.Method, method)
-			if err != nil {
-				continue
-			}
-
-			matchFin := common.MatchFinalities(mul.Finality, finalities)
-
-			if matchNet && matchMeth && matchFin {
-				return mul
-			}
-		}
-	}
-
-	return common.DefaultScoreMultiplier
-}
-
 func (u *Upstream) MarshalJSON() ([]byte, error) {
 	type upstreamPublic struct {
 		Id        string                            `json:"id"`
@@ -1504,4 +1571,10 @@ func (u *Upstream) Cordon(method string, reason string) {
 
 func (u *Upstream) Uncordon(method string, reason string) {
 	u.metricsTracker.Uncordon(u, method, reason)
+}
+
+// CordonedReason returns the cordon reason and whether the (upstream,
+// method) is currently cordoned. Pass `"*"` for the wildcard scope.
+func (u *Upstream) CordonedReason(method string) (string, bool) {
+	return u.metricsTracker.CordonedReason(u, method)
 }

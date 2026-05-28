@@ -59,7 +59,7 @@ export default createConfig({
 />
 
 <Callout type="info">
-	The legacy single-object `failsafe:` form (one object instead of an array) is still accepted, but the array form with `matchMethod: "*"` is the canonical shape and lets you grow into per-method tuning.
+	The single-object `failsafe:` form (one object instead of an array) is accepted as shorthand for an array with one entry. The array form with `matchMethod: "*"` is what you want as soon as you need per-method scoping.
 </Callout>
 
 ## Production config — network-level failsafe + selection + rate limit
@@ -239,7 +239,7 @@ projects:
 | `evm` | object | EVM-specific config — see "evm.* fields". |
 | `alias` | string | Friendly URL segment for this network (`ethereum`, `arbitrum`). Only applies to static networks. Allowed characters: alphanumeric, `-`, `_`. |
 | `failsafe` | array | Per-network failsafe policies. Wraps the full request lifecycle (including any upstream-level retries). Accepts `matchMethod` and `matchFinality` per entry. |
-| `selectionPolicy` | object | JS eval that filters which upstreams handle each request. See "selectionPolicy fields". |
+| `selectionPolicy` | object | `evalFunc` (JS, run on `evalInterval`) returning the ordered list of upstreams to use. Order IS the routing decision — position 0 = primary, missing = excluded. See "selectionPolicy fields". |
 | `directiveDefaults` | object | Default request directives applied if the request doesn't override them via header/query. |
 | `rateLimitBudget` | string | Bind to a budget from `rateLimiters.budgets[]`. Enforced **before** any upstream is contacted. |
 | `methods` | object | Per-network override of cacheable-method classification — see "Per-network method overrides". |
@@ -266,7 +266,6 @@ projects:
 | `traceFilterSplitOnError` | `false` | Same idea as `getLogsSplitOnError` for `trace_filter` / `arbtrace_filter`. |
 | `traceFilterSplitConcurrency` | `10` | Parallelism cap for trace-filter splits. |
 | `enforceBlockAvailability` | nil (= `true`) | Network-level toggle for block-availability enforcement. `nil` or `true` means upstreams are skipped when the requested block falls outside their `evm.blockAvailability` bounds. Set `false` to globally disable the filter for this network — upstreams will be tried regardless of their declared availability bounds. For per-method control, override `enforceBlockAvailability` inside `methods.definitions.<methodName>`. |
-| `integrity.*` | (see deprecation note below) | **Deprecated** — use `directiveDefaults.enforce*Block*` instead. |
 
 ### Per-network method overrides — `methods.*`
 
@@ -318,28 +317,24 @@ networks:
 
 ```yaml
 selectionPolicy:
-  evalInterval: 1m            # how often to re-evaluate eligibility
-  evalPerMethod: false        # if true, run the evalFunction per (network, method) pair
-  decisionHistory: 1h         # how long to retain decisions for the admin-API ring buffer
-  resampleExcluded: false     # if true, give excluded upstreams a chance to recover periodically
-  resampleInterval: 5m        # cadence for resampling excluded upstreams
-  resampleCount: 10           # how many sample requests an excluded upstream gets when resampled
-  evalFunction: |
-    (upstreams, method) => {
-      // Free-form JS executed in a sobek runtime. Inputs:
-      //   upstreams: array of {config, metrics}
-      //   method: the RPC method name (when evalPerMethod is true)
-      // Return the SUBSET of upstreams to include for this network/method.
-      const healthy = upstreams.filter(
-        u => u.metrics.errorRate < 0.7 && u.metrics.blockHeadLag < 10
-      );
-      return healthy.length > 0 ? healthy : upstreams;
-    }
+  evalInterval: 15s           # how often to re-evaluate eligibility (default 15s)
+  evalTimeout: 100ms          # per-tick eval deadline (must be < evalInterval; prior cache retained on timeout)
+  evalScope: network          # 'network' (default) | 'network-method' | 'network-finality' | 'network-method-finality'
+  evalFunc: |
+    (upstreams, ctx) =>
+      upstreams
+        .removeCordoned()
+        .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+        .whenEmpty(() => upstreams)
+        .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
+        .sortByScore(PREFER_FASTEST)
+        .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
+        .probeExcluded({ sampleRate: 0.1, minSamples: 10, maxConcurrent: 4, timeout: '10s' })
 ```
 
-Default policy: if any upstream has `group: "fallback"`, eRPC auto-creates the policy above, parameterized by `ROUTING_POLICY_*` env vars (`ROUTING_POLICY_MAX_ERROR_RATE`, `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG`, `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD`).
+`evalFunc` returns an **ordered** `Upstream[]`: position 0 is the primary, the rest are retry order, anything missing is excluded. Use the chainable stdlib (`removeCordoned`, `excludeIf`, `whenEmpty`, `preferTag`, `sortByScore`, `stickyPrimary`, `probeExcluded`, …) — see [Selection policy](/config/projects/selection-policies) for the full DSL + every method.
 
-See [Selection policies](/config/projects/selection-policies) for the full DSL and exposed metric/config fields.
+Default policy: omitting `selectionPolicy` (or `evalFunc`) applies a production-hardened chain-agnostic default — `removeCordoned` + `excludeIf` filters (error / throttle rates each gated on ≥ 10 samples, p70 latency deviation gated on ≥ 20 samples, block-head lag) + tier-based fallback via `preferTag('!tier:fallback')` + `sortByScore(PREFER_FASTEST)` + sticky primary + `probeExcluded` shadow-mirroring (gives excluded upstreams a chance to heal via background traffic). See the [full default-policy chain](/config/projects/selection-policies#the-default-policy) for thresholds and rationale. Investigations are exposed via OTLP tracing and the `erpc_selection_*` Prometheus metric family.
 
 ### `directiveDefaults` — request directives at network level
 
@@ -450,33 +445,6 @@ networks:
 ```
 
 By default, empty responses on most methods are valid data (caching them is safe). Use this only when an empty value indicates the upstream lacks the data.
-
-### Deprecated: `evm.integrity.*` block
-
-The old `network.evm.integrity` block with `enforceHighestBlock` / `enforceGetLogsBlockRange` / `enforceNonNullTaggedBlocks` is **deprecated**. Use `directiveDefaults.enforce*` instead (same behavior, broader vocabulary).
-
-```yaml
-# Old (still works, deprecation warning):
-networks:
-  - architecture: evm
-    evm:
-      chainId: 1
-      integrity:
-        enforceHighestBlock: true
-        enforceGetLogsBlockRange: true
-        enforceNonNullTaggedBlocks: true
-
-# New:
-networks:
-  - architecture: evm
-    evm: { chainId: 1 }
-    directiveDefaults:
-      enforceHighestBlock: true
-      enforceGetLogsBlockRange: true
-      enforceNonNullTaggedBlocks: true
-```
-
-The `directiveDefaults` form is a superset — it adds receipt/log/transaction validation fields the old `integrity` block didn't cover.
 
 ### Static-response error variant
 

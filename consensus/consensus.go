@@ -32,7 +32,8 @@ func NewConsensus(cfg *common.ConsensusPolicyConfig, logger *zerolog.Logger) (*C
 		WithLogger(logger).
 		WithFireAndForget(cfg.FireAndForget).
 		WithMaxWaitOnResult(cfg.MaxWaitOnResult).
-		WithMaxWaitOnEmpty(cfg.MaxWaitOnEmpty)
+		WithMaxWaitOnEmpty(cfg.MaxWaitOnEmpty).
+		WithRequiredParticipants(cfg.RequiredParticipants)
 
 	if cfg.MisbehaviorsDestination != nil {
 		b = b.WithMisbehaviorsDestination(cfg.MisbehaviorsDestination)

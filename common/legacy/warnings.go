@@ -1,0 +1,59 @@
+package legacy
+
+import "fmt"
+
+// Warning message templates. Each anchors at the migration guide
+// (docs/pages/migration/selection-policy.mdx) so operators can find the
+// full context.
+const migrationDoc = "https://docs.erpc.cloud/migration/selection-policy"
+
+func warnRoutingStrategy(strategy string) string {
+	return fmt.Sprintf(
+		"[deprecated config] routingStrategy=%q is deprecated; translated to selectionPolicy.eval. See %s#routing-strategy",
+		strategy, migrationDoc,
+	)
+}
+
+func warnScoreMetricsMode(mode string) string {
+	return fmt.Sprintf(
+		"[deprecated config] scoreMetricsMode=%q is no longer used; the new erpc_selection_* metrics have fixed cardinality. See %s#score-metrics-mode",
+		mode, migrationDoc,
+	)
+}
+
+// WarnLegacySelectionPolicy emits a warning when a network used the
+// legacy selectionPolicy.evalFunction field.
+func WarnLegacySelectionPolicy() string {
+	return fmt.Sprintf(
+		"[deprecated config] selectionPolicy.evalFunction is deprecated; wrapped into the new selectionPolicy.eval shape. Migrate manually for clarity (the new chainable stdlib is more expressive). See %s#eval-function",
+		migrationDoc,
+	)
+}
+
+// WarnResampleExcluded emits a warning when a network used resampleExcluded.
+func WarnResampleExcluded() string {
+	return fmt.Sprintf(
+		"[deprecated config] selectionPolicy.resampleExcluded is deprecated; translated to .probeExcluded() (deterministic time-based re-admission). See %s#resample-excluded",
+		migrationDoc,
+	)
+}
+
+// WarnRoutingPolicyEnvVars emits a warning when the implicit
+// `ROUTING_POLICY_*` env-var fallback policy is in play.
+func WarnRoutingPolicyEnvVars() string {
+	return fmt.Sprintf(
+		"[deprecated config] ROUTING_POLICY_* env vars are deprecated; values were inlined into the synthesized selectionPolicy.eval. See %s#routing-policy-env-vars",
+		migrationDoc,
+	)
+}
+
+// warnInertField emits a deprecation warning for a project-level
+// legacy field that has NO behavioral mapping in the new system. The
+// translator must NOT synthesize an eval on account of these fields —
+// they're warning-only so the canonical default policy stays in place.
+func warnInertField(field, replacement string) string {
+	return fmt.Sprintf(
+		"[deprecated config] %s is no longer used (%s). Remove from your config; see %s",
+		field, replacement, migrationDoc,
+	)
+}

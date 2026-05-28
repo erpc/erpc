@@ -311,33 +311,6 @@ Two per-upstream flags gate which checks run locally on that upstream's response
 - `evm.integrity.eth_getBlockReceipts.checkLogsBloom` (**upstream level**) — checks that the bloom union computed from the receipts' logs equals the block header's `logsBloom`. Fires on `eth_getBlockReceipts` responses only. Catches upstreams that return receipts with missing or truncated log entries.
 - `directiveDefaults.validateLogsBloomMatch` (**network level**) — checks that the addresses and topics in `eth_getLogs` results are consistent with the block headers' bloom filters. Fires on `eth_getLogs` responses. Catches upstreams that drop log entries from a getLogs response without reflecting that in the bloom.
 
-### Deprecated: `evm.integrity` block
-
-The old `network.evm.integrity` block is **deprecated**. It is still accepted but emits a deprecation warning. Migrate to `directiveDefaults`:
-
-```yaml
-# Old (deprecated — still works):
-networks:
-  - architecture: evm
-    evm:
-      chainId: 1
-      integrity:
-        enforceHighestBlock: true
-        enforceGetLogsBlockRange: true
-        enforceNonNullTaggedBlocks: true
-
-# New (use this):
-networks:
-  - architecture: evm
-    evm: { chainId: 1 }
-    directiveDefaults:
-      enforceHighestBlock: true
-      enforceGetLogsBlockRange: true
-      enforceNonNullTaggedBlocks: true
-```
-
-The `directiveDefaults` form is a superset — it exposes all transaction, log, and receipt validation fields that the old `integrity` block never covered. See [Networks](/config/projects/networks) for the full `directiveDefaults` reference.
-
 ### Common pitfalls
 
 - **Validation directives are off by default** — they add JSON-parsing overhead on every response. Enable only what you actually need. For most non-indexer use-cases, the block-tracking directives (`enforceHighestBlock`, `enforceGetLogsBlockRange`) are sufficient.
@@ -346,7 +319,6 @@ The `directiveDefaults` form is a superset — it exposes all transaction, log, 
 - **`emptyResultConfidence: finalizedBlock` is more conservative** — empties on unfinalized blocks are still retried even for methods in `emptyResultAccept`. Use `blockHead` (default) unless you specifically need finalized-only trust.
 - **`blockUnavailableDelay` static value is rarely needed** — the dynamic block-time estimate takes over within the first few seconds. Only set it if your use-case requires a specific floor during the warmup window.
 - **`enforceNonNullTaggedBlocks: false` for zkSync-style chains** — some L2s legitimately return null for certain block tags (e.g. `"pending"` on chains without a mempool). Disable only for those specific networks.
-- **Using deprecated `evm.integrity` with new `directiveDefaults`** — if both are present, `directiveDefaults` takes precedence and the `integrity` block is ignored. Migrate fully.
 
 </AISection>
 
