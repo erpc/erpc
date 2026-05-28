@@ -53,17 +53,13 @@ type Network struct {
 	// will never return a value < N for the lifetime of this Network. Backed
 	// by the same CounterInt64SharedVariable primitive each per-upstream
 	// poller uses, so the guarantee also holds across pods sharing a backing
-	// store.
-	//
-	// Lazy-initialized via servedTipInitOnce because the SharedStateRegistry
-	// reference comes through upstreamsRegistry (not as a constructor arg).
-	// The atomic update timestamps feed the velocity-gate's elapsed input
-	// in evm.ComputeServedTipCandidate.
+	// store. The atomic update timestamps feed the velocity-gate's elapsed
+	// input in evm.ComputeServedTipCandidate and are updated inline when
+	// TryUpdate advances the counter — no callback subscription needed.
 	servedLatestBlockShared    data.CounterInt64SharedVariable
 	servedFinalizedBlockShared data.CounterInt64SharedVariable
 	servedLatestUpdatedAtMs    atomic.Int64
 	servedFinalizedUpdatedAtMs atomic.Int64
-	servedTipInitOnce          sync.Once
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -269,43 +265,6 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-// initServedTipSharedOnce lazily wires the network-level served-tip shared
-// variables. We can't initialize them in NewNetwork because the constructor
-// signature is shared across many call sites and doesn't take a
-// SharedStateRegistry directly — we reach it via the upstreams registry.
-//
-// GetCounterInt64 is itself idempotent (LoadOrStore on a sync.Map), but we
-// guard with sync.Once because OnValue subscribes a callback that would
-// otherwise be registered multiple times.
-func (n *Network) initServedTipSharedOnce() {
-	n.servedTipInitOnce.Do(func() {
-		if n.upstreamsRegistry == nil {
-			return
-		}
-		ssr := n.upstreamsRegistry.SharedStateRegistry()
-		if ssr == nil {
-			return
-		}
-		n.servedLatestBlockShared = ssr.GetCounterInt64(
-			"servedLatestBlock/"+n.networkId,
-			evm.DefaultToleratedBlockHeadRollback,
-		)
-		n.servedFinalizedBlockShared = ssr.GetCounterInt64(
-			"servedFinalizedBlock/"+n.networkId,
-			evm.DefaultToleratedBlockHeadRollback,
-		)
-		// Track the last-update wall-clock so the velocity gate has a real
-		// elapsed input. OnValue fires after a successful TryUpdate, so the
-		// stored timestamp matches the moment the served tip actually moved.
-		n.servedLatestBlockShared.OnValue(func(_ int64) {
-			n.servedLatestUpdatedAtMs.Store(time.Now().UnixMilli())
-		})
-		n.servedFinalizedBlockShared.OnValue(func(_ int64) {
-			n.servedFinalizedUpdatedAtMs.Store(time.Now().UnixMilli())
-		})
-	})
-}
-
 // gatherEvmTipInputs collects per-upstream tip observations for either the
 // latest or finalized axis, applying the same syncing-state and zero-tip
 // filters consistent with the prior MAX-based implementation but in a form
@@ -360,8 +319,6 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
 
-	n.initServedTipSharedOnce()
-
 	tips := n.gatherEvmTipInputs(ctx, false)
 	cfg := n.buildServedTipConfig()
 
@@ -379,9 +336,15 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 
 	// Apply the monotonic clamp via TryUpdate. A 0 candidate (no valid
 	// inputs) means we have no new information — fall through to the
-	// existing GetValue, which keeps the last served tip intact.
+	// existing GetValue, which keeps the last served tip intact. When
+	// TryUpdate actually advances the counter, refresh the updatedAt
+	// timestamp inline so the next velocity-gate calculation has a recent
+	// anchor.
 	if res.Candidate > 0 && n.servedLatestBlockShared != nil {
 		n.servedLatestBlockShared.TryUpdate(ctx, res.Candidate)
+		if cur := n.servedLatestBlockShared.GetValue(); cur > lastServed {
+			n.servedLatestUpdatedAtMs.Store(time.Now().UnixMilli())
+		}
 	}
 
 	if n.servedLatestBlockShared != nil {
@@ -401,8 +364,6 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	))
 	defer span.End()
 
-	n.initServedTipSharedOnce()
-
 	tips := n.gatherEvmTipInputs(ctx, true)
 	cfg := n.buildServedTipConfig()
 
@@ -420,6 +381,9 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 
 	if res.Candidate > 0 && n.servedFinalizedBlockShared != nil {
 		n.servedFinalizedBlockShared.TryUpdate(ctx, res.Candidate)
+		if cur := n.servedFinalizedBlockShared.GetValue(); cur > lastServed {
+			n.servedFinalizedUpdatedAtMs.Store(time.Now().UnixMilli())
+		}
 	}
 
 	if n.servedFinalizedBlockShared != nil {
