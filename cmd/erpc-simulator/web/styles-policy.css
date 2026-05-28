@@ -1,0 +1,259 @@
+/* ===== Selection Policy editor ===== */
+.sp-wrap {
+  display: flex; flex-direction: column;
+  flex: 1; min-height: 0; overflow: hidden;
+}
+.sp-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--bd-0);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.sp-meta {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.sp-meta-k {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tx-3);
+}
+.sp-meta-v {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--tx-0);
+  font-variant-numeric: tabular-nums;
+}
+.sp-sig {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--tx-1);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  padding: 2px 7px;
+  border-radius: var(--r-sm);
+}
+
+.sp-body {
+  flex: 1; min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 280px;
+}
+.sp-editor {
+  display: flex;
+  background: var(--bg-2);
+  border-right: 1px solid var(--bd-0);
+  overflow: hidden;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  position: relative;
+}
+.sp-side {
+  background: var(--bg-1);
+  padding: 12px 14px;
+  font-size: 11px;
+  color: var(--tx-1);
+  overflow: auto;
+  min-width: 0;
+}
+.sp-side-section { margin-bottom: 14px; }
+.sp-side-section:last-child { margin-bottom: 0; }
+.sp-side-lbl {
+  font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--tx-2);
+  margin-bottom: 6px;
+}
+.sp-type {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--tx-1);
+  background: var(--bg-2);
+  border: 1px solid var(--bd-0);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  margin: 0;
+  white-space: pre;
+  overflow: auto;
+}
+.sp-notes {
+  margin: 0; padding-left: 16px;
+  font-size: 10.5px;
+  color: var(--tx-2);
+  line-height: 1.55;
+}
+.sp-notes li { margin-bottom: 4px; }
+.sp-live-stat {
+  display: flex; justify-content: space-between;
+  padding: 2px 0;
+  font-size: 10.5px;
+  align-items: baseline;
+}
+
+/* Reuse YAML token styles + add a few JS-specific ones */
+.tk-kw { color: oklch(0.74 0.13 320); }
+.tk-prop { color: oklch(0.80 0.10 215); }
+
+.sp-foot {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--bd-0);
+  background: var(--bg-1);
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--tx-2);
+}
+.sp-foot .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+}
+.sp-ok {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ok);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.sp-ok .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ok) 18%, transparent); }
+.sp-error {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--bad);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  min-width: 0;
+}
+.sp-error .dot { background: var(--bad); }
+.sp-error code {
+  background: color-mix(in oklab, var(--bad-d) 60%, var(--bg-2));
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
+}
+/* The whole error chip is now a button so the user can click to open
+   a popup with the full text. Reset button defaults so it still looks
+   like an inline status pill, not a chunky form control. */
+button.sp-err-toggle {
+  appearance: none;
+  background: transparent;
+  border: 1px solid color-mix(in oklab, var(--bad) 28%, transparent);
+  border-radius: var(--r-sm);
+  padding: 2px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+button.sp-err-toggle:hover { background: color-mix(in oklab, var(--bad-d) 18%, transparent); }
+button.sp-err-toggle.on { background: color-mix(in oklab, var(--bad-d) 28%, transparent); }
+.sp-err-caret { opacity: 0.6; font-size: 9px; margin-left: 4px; }
+
+/* Floating popup with the FULL compile error. Portaled to <body> so it
+   isn't clipped by the editor pane's overflow:hidden. Positioned via
+   inline style (left + bottom) computed from the anchor's rect. */
+.sp-err-popup {
+  position: fixed;
+  z-index: 9999;
+  min-width: 420px;
+  max-width: min(720px, 90vw);
+  max-height: min(420px, 60vh);
+  background: var(--bg-1);
+  border: 1px solid var(--bad);
+  border-radius: var(--r-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sp-err-popup-hd {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: color-mix(in oklab, var(--bad-d) 28%, var(--bg-2));
+  border-bottom: 1px solid var(--bd-0);
+  flex-shrink: 0;
+}
+.sp-err-popup-title {
+  color: var(--bad);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sp-err-popup-x {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--tx-2);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.sp-err-popup-x:hover { color: var(--tx-0); }
+.sp-err-popup-body {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--tx-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+.sp-dirty {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--warn);
+}
+.sp-dirty .dot { background: var(--warn); animation: pulse-soft 2s ease-in-out infinite; }
+.sp-hint {
+  color: var(--ok);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+/* ===== Policy history panel ===== */
+.sp-history-panel {
+  border-bottom: 1px solid var(--bd-0);
+  background: var(--bg-2);
+  max-height: 200px;
+  overflow: auto;
+}
+.sp-history-empty {
+  padding: 12px;
+  color: var(--tx-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: center;
+}
+.sp-history-list { display: flex; flex-direction: column; }
+.sp-history-row {
+  display: grid;
+  grid-template-columns: 80px 80px 1fr;
+  gap: 10px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--bd-0);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+  color: var(--tx-1);
+}
+.sp-history-row:hover { background: var(--hov); }
+.sp-history-row.active { background: color-mix(in oklab, var(--acc-blue) 14%, var(--bg-2)); border-left: 2px solid var(--acc-blue); padding-left: 10px; }
+.sp-history-row .ts { color: var(--tx-2); }
+.sp-history-row .src {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tx-3);
+}
+.sp-history-row .preview {
+  color: var(--tx-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

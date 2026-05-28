@@ -871,8 +871,15 @@ func calculateConfigStats(cfg *common.Config) ConfigStats {
 			if upstream.Id != "" {
 				projectStats.Upstreams = append(projectStats.Upstreams, upstream.Id)
 			} else {
+				// Upstream has no explicit Id; synthesise a display name
+				// from its type + vendor (used by metrics/analytics; not a
+				// stable identifier).
+				vn := upstream.VendorName
+				if vn == "" {
+					vn = "unknown"
+				}
 				projectStats.Upstreams = append(projectStats.Upstreams,
-					fmt.Sprintf("%s-%s", upstream.Type, upstream.Group))
+					fmt.Sprintf("%s-%s", upstream.Type, vn))
 			}
 
 			if upstream.RateLimitBudget != "" {

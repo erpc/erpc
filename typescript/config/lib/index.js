@@ -40,12 +40,22 @@ __export(index_exports, {
   DataFinalityStateRealtime: () => DataFinalityStateRealtime,
   DataFinalityStateUnfinalized: () => DataFinalityStateUnfinalized,
   DataFinalityStateUnknown: () => DataFinalityStateUnknown,
+  EvalScopeNetwork: () => EvalScopeNetwork,
+  EvalScopeNetworkFinality: () => EvalScopeNetworkFinality,
+  EvalScopeNetworkMethod: () => EvalScopeNetworkMethod,
+  EvalScopeNetworkMethodFinality: () => EvalScopeNetworkMethodFinality,
   EvmNodeTypeArchive: () => EvmNodeTypeArchive,
   EvmNodeTypeFull: () => EvmNodeTypeFull,
   EvmNodeTypeUnknown: () => EvmNodeTypeUnknown,
   EvmSyncingStateNotSyncing: () => EvmSyncingStateNotSyncing,
   EvmSyncingStateSyncing: () => EvmSyncingStateSyncing,
   EvmSyncingStateUnknown: () => EvmSyncingStateUnknown,
+  FINALIZED: () => FINALIZED,
+  NETWORK: () => NETWORK,
+  NETWORK_FINALITY: () => NETWORK_FINALITY,
+  NETWORK_METHOD: () => NETWORK_METHOD,
+  NETWORK_METHOD_FINALITY: () => NETWORK_METHOD_FINALITY,
+  REALTIME: () => REALTIME,
   RateLimitPeriodDay: () => RateLimitPeriodDay,
   RateLimitPeriodHour: () => RateLimitPeriodHour,
   RateLimitPeriodMinute: () => RateLimitPeriodMinute,
@@ -55,6 +65,8 @@ __export(index_exports, {
   RateLimitPeriodYear: () => RateLimitPeriodYear,
   ScopeNetwork: () => ScopeNetwork,
   ScopeUpstream: () => ScopeUpstream,
+  UNFINALIZED: () => UNFINALIZED,
+  UNKNOWN: () => UNKNOWN,
   UpstreamTypeEvm: () => UpstreamTypeEvm,
   createConfig: () => createConfig
 });
@@ -83,6 +95,10 @@ var RateLimitPeriodDay = 3;
 var RateLimitPeriodWeek = 4;
 var RateLimitPeriodMonth = 5;
 var RateLimitPeriodYear = 6;
+var EvalScopeNetwork = "network";
+var EvalScopeNetworkMethod = "network-method";
+var EvalScopeNetworkFinality = "network-finality";
+var EvalScopeNetworkMethodFinality = "network-method-finality";
 var AuthTypeSecret = "secret";
 var AuthTypeJwt = "jwt";
 var AuthTypeSiwe = "siwe";
@@ -97,6 +113,16 @@ var CacheEmptyBehaviorOnly = 2;
 var ArchitectureEvm = "evm";
 var ScopeNetwork = "network";
 var ScopeUpstream = "upstream";
+
+// src/constants.ts
+var NETWORK = EvalScopeNetwork;
+var NETWORK_METHOD = EvalScopeNetworkMethod;
+var NETWORK_FINALITY = EvalScopeNetworkFinality;
+var NETWORK_METHOD_FINALITY = EvalScopeNetworkMethodFinality;
+var REALTIME = 1 << 0;
+var UNFINALIZED = 1 << 1;
+var FINALIZED = 1 << 2;
+var UNKNOWN = 1 << 3;
 
 // src/index.ts
 var createConfig = (cfg) => {
@@ -124,12 +150,22 @@ var createConfig = (cfg) => {
   DataFinalityStateRealtime,
   DataFinalityStateUnfinalized,
   DataFinalityStateUnknown,
+  EvalScopeNetwork,
+  EvalScopeNetworkFinality,
+  EvalScopeNetworkMethod,
+  EvalScopeNetworkMethodFinality,
   EvmNodeTypeArchive,
   EvmNodeTypeFull,
   EvmNodeTypeUnknown,
   EvmSyncingStateNotSyncing,
   EvmSyncingStateSyncing,
   EvmSyncingStateUnknown,
+  FINALIZED,
+  NETWORK,
+  NETWORK_FINALITY,
+  NETWORK_METHOD,
+  NETWORK_METHOD_FINALITY,
+  REALTIME,
   RateLimitPeriodDay,
   RateLimitPeriodHour,
   RateLimitPeriodMinute,
@@ -139,6 +175,8 @@ var createConfig = (cfg) => {
   RateLimitPeriodYear,
   ScopeNetwork,
   ScopeUpstream,
+  UNFINALIZED,
+  UNKNOWN,
   UpstreamTypeEvm,
   createConfig
 });

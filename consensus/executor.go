@@ -33,6 +33,12 @@ type metricsLabels struct {
 	networkId   string
 	projectId   string
 	finalityStr string
+	// finality is the enum form of `finalityStr` — needed for tracker
+	// writes (RecordUpstreamMisbehavior) which now stratify per
+	// (method, finality) when the engine has opted in via
+	// EnableFinalityTracking. Kept alongside the string form to avoid
+	// re-parsing on the hot path.
+	finality common.DataFinalityState
 }
 
 // participantInfo represents a single upstream's participation details in consensus
@@ -121,6 +127,19 @@ func (e *executor) Run(
 		return in(ctx, originalReq)
 	}
 
+	// Tag-based participant quota (opt-in). Front-load enough tag-matching
+	// upstreams so the first maxParticipants drawn by the slots below
+	// include the configured minimum from each required group. Runs at the
+	// very top of consensus, before any participant slot consumes an
+	// upstream (req.UpstreamIdx is still 0), so the reorder takes effect.
+	// Best-effort: shortfalls fall through to lowParticipantsBehavior /
+	// agreementThreshold like organic low participation.
+	if len(e.config.requiredParticipants) > 0 {
+		if reordered := reorderForParticipantQuota(originalReq.Upstreams(), e.config.requiredParticipants); len(reordered) > 0 {
+			originalReq.SetUpstreams(reordered)
+		}
+	}
+
 	labels := e.extractMetricsLabels(ctx, originalReq)
 	ctx, consensusSpan := e.startConsensusSpan(ctx, labels)
 	defer consensusSpan.End()
@@ -203,6 +222,15 @@ func (e *executor) executeConsensus(
 	maxToSpawn := e.maxParticipants
 	if maxToSpawn <= 0 {
 		maxToSpawn = 1
+	}
+	// Record on the request's ExecState that THIS request went through
+	// the consensus executor and how many participants we spawned. Read
+	// downstream by diagnostic surfaces (admin endpoints, response
+	// headers, the simulator's lifecycle drawer) so operators can tell
+	// "this request was a consensus race" from "this was a hedge race"
+	// — the two look similar in the per-attempt log otherwise.
+	if st := originalReq.ExecState(); st != nil {
+		st.ConsensusSlots.Add(int32(maxToSpawn))
 	}
 	responseChan := make(chan *execResult, maxToSpawn)
 	// Per-slot cancellable child contexts let us cancel losers explicitly.
@@ -948,9 +976,13 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 							largerThanConsensusStr,
 						).Inc()
 
-					// Record misbehavior in tracker for score calculation
+					// Record misbehavior in tracker for score calculation.
+					// Consensus reasoning happens after the per-attempt
+					// finality is captured into `labels` — pass it through
+					// so per-(method, finality) misbehavior counters
+					// stratify correctly when finality tracking is on.
 					if result.Upstream != nil && result.Upstream.Tracker() != nil {
-						result.Upstream.Tracker().RecordUpstreamMisbehavior(result.Upstream, labels.method)
+						result.Upstream.Tracker().RecordUpstreamMisbehavior(result.Upstream, labels.method, labels.finality)
 					}
 
 					// Apply punishment only if configured and conditions are met
@@ -1235,12 +1267,14 @@ func (e *executor) extractMetricsLabels(ctx context.Context, req *common.Normali
 	if req.Network() != nil {
 		projectId = req.Network().ProjectId()
 	}
+	finality := req.Finality(ctx)
 	return metricsLabels{
 		method:      method,
 		category:    method,
 		networkId:   req.NetworkLabel(),
 		projectId:   projectId,
-		finalityStr: req.Finality(ctx).String(),
+		finalityStr: finality.String(),
+		finality:    finality,
 	}
 }
 

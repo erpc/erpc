@@ -28,6 +28,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/internal/policy"
+	policystdlib "github.com/erpc/erpc/internal/policy/stdlib"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -113,8 +115,7 @@ func setupTwoUpstreamNetworkForSkip(
 	upr := upstream.NewUpstreamsRegistry(
 		ctx, &log.Logger, "test",
 		[]*common.UpstreamConfig{up1, up2},
-		ssr, rlr, vr, pr, nil, mt,
-		1*time.Second, nil, nil,
+		ssr, rlr, vr, pr, nil, mt, nil,
 	)
 
 	networkCfg := &common.NetworkConfig{
@@ -126,7 +127,13 @@ func setupTwoUpstreamNetworkForSkip(
 		SelectionPolicy: selectionPolicy,
 	}
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkCfg, rlr, upr, mt)
+	// Build a real policy engine so subtests that pass a non-nil
+	// `selectionPolicy` (e.g. SelectionPolicyCordoned) actually have an
+	// eval running. Subtests that pass nil `selectionPolicy` get the
+	// default policy — harmless here since the default policy filters
+	// only on observed metrics, and these tests don't seed any.
+	pe := policy.NewEngine(ctx, &log.Logger, "test", mt, policystdlib.Install, nil)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkCfg, rlr, upr, mt, pe)
 	require.NoError(t, err)
 
 	upr.Bootstrap(ctx)
@@ -134,7 +141,26 @@ func setupTwoUpstreamNetworkForSkip(
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
-	upstream.ReorderUpstreams(upr)
+	if selectionPolicy == nil {
+		// No custom policy → tests want a deterministic registration
+		// order (rpc1 before rpc2). Pre-rewrite this was
+		// `upstream.ReorderUpstreams(upr)`; the new equivalent is
+		// `PinUpstreamOrderForTest()` which also stops the engine's
+		// ticker so the cached order can't drift mid-test.
+		//
+		// Pin twice with a brief drain between: a late upstream-
+		// registration goroutine from Bootstrap can race-overwrite
+		// `networkUpstreamsAtomic` after the first pin, which has
+		// surfaced as flakes under CI parallelism (BreakerOpen,
+		// AutoIgnoreUnsupportedMethods seeing [rpc2, rpc1] instead
+		// of the pinned [rpc1, rpc2]).
+		network.PinUpstreamOrderForTest()
+		time.Sleep(50 * time.Millisecond)
+		network.PinUpstreamOrderForTest()
+	}
+	// If a selectionPolicy IS set, we leave the engine ticking so its
+	// eval can take effect (the SelectionPolicyCordoned subtest
+	// explicitly sleeps to wait for the first tick).
 	return network
 }
 
@@ -375,18 +401,16 @@ func TestNetworkSkip(t *testing.T) {
 			})
 
 		// Selection policy: keep only upstreams whose id is rpc2.
-		evalFn, err := common.CompileFunction(`
-			(upstreams) => upstreams.filter(u => u.id === 'rpc2')
-		`)
-		require.NoError(t, err)
-
+		// (Legacy `EvalFunction` + `Resample*` fields are gone — the new
+		// shape uses `Eval string` with `(upstreams, ctx) => …`, and
+		// rotation/re-admission is expressed via `.probeExcluded()` in
+		// the eval chain. This test doesn't need probe behavior, so the
+		// chain is just the filter.)
 		policy := &common.SelectionPolicyConfig{
-			EvalInterval:     common.Duration(50 * time.Millisecond),
-			EvalPerMethod:    false,
-			EvalFunction:     evalFn,
-			ResampleInterval: common.Duration(10 * time.Minute),
-			ResampleCount:    0,
-			ResampleExcluded: false,
+			EvalInterval: common.Duration(50 * time.Millisecond),
+			// EvalScope defaults to `network` (single wildcard slot) —
+			// no method/finality scoping needed for this test.
+			EvalFunc: `(upstreams, ctx) => upstreams.filter(u => u.id === 'rpc2')`,
 		}
 
 		network := setupTwoUpstreamNetworkForSkip(t, ctx,

@@ -46,9 +46,9 @@ The translator passes when:
 | # | Scenario | Legacy feature(s) | Notes |
 |---|---|---|---|
 | 01 | round-robin | `routingStrategy: round-robin` | Synthesizes `return upstreams.rotateBy(ctx.tickCount)` |
-| 02 | score-based-basic | `routingStrategy: score-based` (defaults) | Synthesizes default `sortByScore(BALANCED)` |
-| 03 | score-multipliers-per-method | `upstream.routing.scoreMultipliers` with method patterns | Per-upstream weight function passed to `sortByScore` |
-| 04 | score-multipliers-per-network | `upstream.routing.scoreMultipliers` with `network: evm:1` | Function selects weights based on `ctx.network` |
+| 02 | score-based-basic | `routingStrategy: score-based` (defaults) | Synthesizes default `sortByScore(PREFER_FASTEST)` |
+| 03 | score-multipliers-per-method | `upstream.routing.scoreMultipliers` with method patterns | First-class config — attached at runtime as `u.scoreMultipliers`; flows through the default policy (no synthesis) |
+| 04 | score-multipliers-per-network | `upstream.routing.scoreMultipliers` with `network: evm:1` | First-class config — resolved per (network, method, finality) into `u.scoreMultipliers` |
 | 05 | score-multipliers-per-finality | `upstream.routing.scoreMultipliers` with `finality: [finalized]` | Function selects weights based on `ctx.finality` |
 | 06 | legacy-eval-function | `selectionPolicy.evalFunction` (custom JS) | Wrapped into `eval: const __legacyFn = (...) => {...}; return __legacyFn(upstreams, ctx.method);` |
 | 07 | resample-excluded | `selectionPolicy.resampleExcluded: true` + `resampleInterval` | Appends `.probeExcluded({ reAdmitAfter: M, maxConcurrent: 1, longestFirst: true })` to the synthesized chain |

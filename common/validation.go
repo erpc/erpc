@@ -581,36 +581,6 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
 	}
-	if p.RoutingStrategy != "" {
-		switch strings.ToLower(strings.TrimSpace(p.RoutingStrategy)) {
-		case "score-based", "round-robin":
-			// ok
-		default:
-			return fmt.Errorf("project.*.routingStrategy must be one of: score-based, round-robin")
-		}
-	}
-	if p.ScoreGranularity != "" {
-		switch strings.ToLower(strings.TrimSpace(p.ScoreGranularity)) {
-		case "upstream", "method":
-			// ok
-		default:
-			return fmt.Errorf("project.*.scoreGranularity must be one of: upstream, method")
-		}
-	}
-	if p.ScorePenaltyDecayRate > 1 {
-		return fmt.Errorf("project.*.scorePenaltyDecayRate must be <= 1 (use negative to disable EMA memory)")
-	}
-	if p.ScoreSwitchHysteresis > 1 {
-		return fmt.Errorf("project.*.scoreSwitchHysteresis must be <= 1 (use negative to disable stickiness)")
-	}
-	if p.ScoreMetricsMode != "" {
-		switch strings.ToLower(strings.TrimSpace(p.ScoreMetricsMode)) {
-		case "compact", "detailed", "none":
-			// ok
-		default:
-			return fmt.Errorf("project.*.scoreMetricsMode must be one of: compact, detailed, none")
-		}
-	}
 	if len(p.Providers) > 0 {
 		existingIds := make(map[string]bool)
 		for _, provider := range p.Providers {
@@ -671,9 +641,6 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
-	}
-	if p.ScoreMetricsWindowSize == 0 {
-		return fmt.Errorf("project.*.scoreMetricsWindowSize is required")
 	}
 	return nil
 }
@@ -810,13 +777,6 @@ func (c *CORSConfig) Validate() error {
 	return nil
 }
 
-func (h *DeprecatedProjectHealthCheckConfig) Validate() error {
-	if h.ScoreMetricsWindowSize == 0 {
-		return fmt.Errorf("project.*.healthCheck.scoreMetricsWindowSize is required")
-	}
-	return nil
-}
-
 func (u *ProviderConfig) Validate(c *Config) error {
 	if u.Id == "" {
 		return fmt.Errorf("project.*.providers.*.id is required")
@@ -877,11 +837,6 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	}
 	if u.RateLimitAutoTune != nil {
 		if err := u.RateLimitAutoTune.Validate(); err != nil {
-			return err
-		}
-	}
-	if u.Routing != nil {
-		if err := u.Routing.Validate(); err != nil {
 			return err
 		}
 	}
@@ -1127,6 +1082,21 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	for i, rp := range c.RequiredParticipants {
+		if rp == nil {
+			return fmt.Errorf("consensus.requiredParticipants[%d] must not be null", i)
+		}
+		if strings.TrimSpace(rp.Tag) == "" {
+			return fmt.Errorf("consensus.requiredParticipants[%d].tag is required", i)
+		}
+		if rp.MinParticipants <= 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minParticipants must be greater than 0", i)
+		}
+		if rp.MinParticipants > c.MaxParticipants {
+			return fmt.Errorf("consensus.requiredParticipants[%d].minParticipants (%d) cannot exceed maxParticipants (%d)", i, rp.MinParticipants, c.MaxParticipants)
+		}
+	}
+
 	return nil
 }
 
@@ -1262,20 +1232,6 @@ func (r *RateLimitAutoTuneConfig) Validate() error {
 	return nil
 }
 
-func (r *RoutingConfig) Validate() error {
-	if len(r.ScoreMultipliers) > 0 {
-		for _, multiplier := range r.ScoreMultipliers {
-			if err := multiplier.Validate(); err != nil {
-				return err
-			}
-		}
-	}
-	if r.ScoreLatencyQuantile < 0 || r.ScoreLatencyQuantile > 1 {
-		return fmt.Errorf("upstream.*.routing.scoreLatencyQuantile must be between 0 and 1")
-	}
-	return nil
-}
-
 func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Architecture == "" {
 		return fmt.Errorf("network.*.architecture is required")
@@ -1356,46 +1312,36 @@ func (e *EvmNetworkConfig) Validate() error {
 	return nil
 }
 
+// Validate checks the SelectionPolicyConfig against the new spec.
+//
+//   - All durations must be strictly positive.
+//   - EvalTimeout must be < EvalInterval (otherwise a slow eval would never
+//     finish before the next tick fires).
+//   - The eval must compile under sobek; SetDefaults populates CompiledProgram
+//     so a non-nil program here implies a clean compile.
 func (c *SelectionPolicyConfig) Validate() error {
 	if c.EvalInterval <= 0 {
 		return fmt.Errorf("selectionPolicy.evalInterval must be greater than 0")
 	}
-	if c.EvalFunction == nil {
-		return fmt.Errorf("selectionPolicy.evalFunction is required")
+	if c.EvalTimeout <= 0 {
+		return fmt.Errorf("selectionPolicy.evalTimeout must be greater than 0")
 	}
-	// ResampleInterval and ResampleCount are only required when ResampleExcluded is true
-	if c.ResampleExcluded {
-		if c.ResampleInterval <= 0 {
-			return fmt.Errorf("selectionPolicy.resampleInterval must be greater than 0 when resampleExcluded is true")
-		}
-		if c.ResampleCount <= 0 {
-			return fmt.Errorf("selectionPolicy.resampleCount must be greater than 0 when resampleExcluded is true")
-		}
+	if c.EvalTimeout >= c.EvalInterval {
+		return fmt.Errorf("selectionPolicy.evalTimeout (%s) must be less than evalInterval (%s)",
+			c.EvalTimeout.Duration(), c.EvalInterval.Duration())
 	}
-	return nil
-}
-
-func (p *ScoreMultiplierConfig) Validate() error {
-	if p.Overall == nil || *p.Overall <= 0 {
-		return fmt.Errorf("priorityMultipliers.*.overall multiplier must be greater than 0")
+	if c.EvalFunc == "" {
+		return fmt.Errorf("selectionPolicy.evalFunc is required")
 	}
-	if p.ErrorRate == nil || *p.ErrorRate < 0 {
-		return fmt.Errorf("priorityMultipliers.*.errorRate multiplier must be greater than or equal to 0")
+	// TS-loaded configs carry a `__ts_fn__:<id>` sentinel instead of a
+	// compiled Program — the function lives natively on the user-script
+	// runtime's `globalThis.__erpcFns` and is resolved at eval time.
+	// See loadConfigFromTypescript for the full lifecycle.
+	if IsTSFunctionSentinel(c.EvalFunc) {
+		return nil
 	}
-	if p.RespLatency == nil || *p.RespLatency < 0 {
-		return fmt.Errorf("priorityMultipliers.*.respLatency multiplier must be greater than or equal to 0")
-	}
-	if p.TotalRequests == nil || *p.TotalRequests < 0 {
-		return fmt.Errorf("priorityMultipliers.*.totalRequests multiplier must be greater than or equal to 0")
-	}
-	if p.ThrottledRate == nil || *p.ThrottledRate < 0 {
-		return fmt.Errorf("priorityMultipliers.*.throttledRate multiplier must be greater than or equal to 0")
-	}
-	if p.BlockHeadLag == nil || *p.BlockHeadLag < 0 {
-		return fmt.Errorf("priorityMultipliers.*.blockHeadLag multiplier must be greater than or equal to 0")
-	}
-	if p.FinalizationLag == nil || *p.FinalizationLag < 0 {
-		return fmt.Errorf("priorityMultipliers.*.finalizationLag multiplier must be greater than or equal to 0")
+	if c.CompiledProgram == nil {
+		return fmt.Errorf("selectionPolicy.evalFunc failed to compile (CompiledProgram is nil)")
 	}
 	return nil
 }

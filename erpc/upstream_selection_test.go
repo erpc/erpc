@@ -194,7 +194,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 
 			// Setup network with the failsafe config
 			network := setupTestNetworkForTiming(t, ctx, tc.failsafeConfig)
-			upstream.ReorderUpstreams(network.upstreamsRegistry)
+			network.PinUpstreamOrderForTest()
 
 			// Create request
 			req := common.NewNormalizedRequest([]byte(`{
@@ -502,7 +502,7 @@ func TestMixedResponseTypes(t *testing.T) {
 			network := setupTestNetworkForTiming(t, ctx, failsafeConfig)
 
 			time.Sleep(100 * time.Millisecond)
-			upstream.ReorderUpstreams(network.upstreamsRegistry)
+			network.PinUpstreamOrderForTest()
 
 			// Create request with retryEmpty directive
 			req := common.NewNormalizedRequest([]byte(`{
@@ -620,7 +620,7 @@ func TestFourAttemptScenario(t *testing.T) {
 	}
 
 	network := setupTestNetworkWithFourUpstreams(t, ctx, failsafeConfig)
-	upstream.ReorderUpstreams(network.upstreamsRegistry)
+	network.PinUpstreamOrderForTest()
 
 	// Create request
 	req := common.NewNormalizedRequest([]byte(`{
@@ -838,8 +838,6 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		pr,
 		nil,
 		metricsTracker,
-		1*time.Second,
-		nil,
 		nil,
 	)
 
@@ -859,6 +857,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -870,6 +869,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	// Set up state pollers
 	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))

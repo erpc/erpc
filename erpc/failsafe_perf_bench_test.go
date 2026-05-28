@@ -166,8 +166,7 @@ func setupBenchNetwork(b testing.TB, fsCfg []*common.FailsafeConfig, mocks []*be
 
 	upr := upstream.NewUpstreamsRegistry(
 		ctx, &log.Logger, "benchProject",
-		upCfgs, ssr, rlr, vr, pr, nil, mt,
-		1*time.Second, nil, nil,
+		upCfgs, ssr, rlr, vr, pr, nil, mt, nil,
 	)
 	upr.Bootstrap(ctx)
 	time.Sleep(300 * time.Millisecond)
@@ -183,7 +182,7 @@ func setupBenchNetwork(b testing.TB, fsCfg []*common.FailsafeConfig, mocks []*be
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Failsafe:     fsCfg,
 		},
-		rlr, upr, mt,
+		rlr, upr, mt, nil,
 	)
 	if err != nil {
 		cancel()

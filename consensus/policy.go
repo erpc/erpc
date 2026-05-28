@@ -27,6 +27,7 @@ type config struct {
 	fireAndForget           bool
 	maxWaitOnResult         *common.AdaptiveDuration
 	maxWaitOnEmpty          *common.AdaptiveDuration
+	requiredParticipants    []*common.ConsensusRequiredParticipant
 }
 
 // builder is the internal builder used by NewConsensus.
@@ -99,6 +100,10 @@ func (b *builder) WithMaxWaitOnResult(d *common.AdaptiveDuration) *builder {
 }
 func (b *builder) WithMaxWaitOnEmpty(d *common.AdaptiveDuration) *builder {
 	b.cfg.maxWaitOnEmpty = d
+	return b
+}
+func (b *builder) WithRequiredParticipants(v []*common.ConsensusRequiredParticipant) *builder {
+	b.cfg.requiredParticipants = v
 	return b
 }
 

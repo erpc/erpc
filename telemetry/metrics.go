@@ -58,18 +58,6 @@ var (
 		Help:      "Total number of finalized blocks behind the most up-to-date upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
-	MetricUpstreamScoreOverall = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_score_overall",
-		Help:      "Overall score of upstreams used for ordering during routing. Higher is better: 1/(1+penalty). Controlled by scoreMetricsMode (compact/detailed/none).",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
-
-	MetricUpstreamRoutingPriority = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_routing_priority",
-		Help:      "Sort position of upstream in routing order (1 = primary). Summary with category='*' always emitted; per-method detail added in detailed scoreMetricsMode.",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
-
 	MetricUpstreamLatestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_latest_block_number",
@@ -99,6 +87,142 @@ var (
 		Name:      "upstream_cordoned",
 		Help:      "Whether upstream is un/cordoned (excluded from routing by selection policy).",
 	}, []string{"project", "vendor", "network", "upstream", "category", "reason"})
+
+	// ── Selection-policy engine metrics (see internal/policy + spec §8.2).
+	// Cardinality is fixed (no per-method category like the legacy
+	// scoreMetricsMode knob); operators don't get to dial it down per project.
+
+	MetricSelectionPosition = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_position",
+		Help:      "Selection-policy output position for an upstream: 0 = primary, 1+ = runner-up, -1 = excluded this tick.",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionRejectionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_rejection_total",
+		Help:      "Number of ticks each upstream was rejected by a specific std-lib step.",
+	}, []string{"project", "network", "method", "upstream", "step"})
+
+	MetricSelectionPrimarySwitchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_primary_switch_total",
+		Help:      "Primary-upstream changes per (project, network, method, from, to).",
+	}, []string{"project", "network", "method", "from", "to"})
+
+	MetricSelectionEvalDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "selection_eval_duration_seconds",
+		Help:      "Per-tick eval latency for the selection policy.",
+		Buckets:   []float64{0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+	}, []string{"project", "network", "method"})
+
+	MetricSelectionEvalErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_eval_errors_total",
+		Help:      "Eval failures by kind (timeout, throw, invalid_return, fallback_default).",
+	}, []string{"project", "network", "method", "kind"})
+
+	MetricSelectionEligibleUpstreams = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_eligible_upstreams",
+		Help:      "Count of upstreams returned by the most recent tick.",
+	}, []string{"project", "network", "method"})
+
+	// ── Selection-policy detail metrics. Bounded cardinality:
+	//   * `score`, `excluded_seconds`, `readmit_total`, `sticky_hold_total`:
+	//     per (project, network, method, upstream).
+	//   * `exclusion_total`: same plus a `reason` slug bounded by the set of
+	//     predicate factories. Compound predicates (`any`/`all`/`not`) emit
+	//     one increment per LEAF reason that tripped, attributing exclusion
+	//     to the actual signal rather than the compound boilerplate.
+	//   * `readmit_age_seconds`: per (project, network, method) only — the
+	//     per-upstream "how long out before readmit" lives in spans/logs.
+
+	MetricSelectionScore = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_score",
+		Help:      "Per-upstream score produced by `sortByScore`. Lower = better. Missing for upstreams that bypassed scoring (probeExcluded/forceInclude additions and policies without a sortByScore step).",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionExclusionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_exclusion_total",
+		Help:      "Per-upstream exclusion events labelled by the leaf-predicate slug that tripped (`error_rate_above`, `latency_p95_above`, `block_head_lag_above`, ...). Compound predicates emit one increment per leaf — exclusion is attributed to the actual signal, not the combinator.",
+	}, []string{"project", "network", "method", "upstream", "reason"})
+
+	MetricSelectionShadowExclusionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_shadow_exclusion_total",
+		Help:      "Per-upstream WOULD-HAVE-BEEN-EXCLUDED events from `shadowExcludeIf` predicates. Same leaf-slug attribution as `selection_exclusion_total`, but the upstream stays in rotation — meant for safely auditioning a new (or removed) exclusion rule in production before promoting it to a real `excludeIf`.",
+	}, []string{"project", "network", "method", "upstream", "reason"})
+
+	MetricSelectionExcludedSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "selection_excluded_seconds",
+		Help:      "Wall-clock seconds the upstream has been continuously excluded. `0` when in rotation. Alert on `> 600` for `stuck excluded > 10m`.",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionReadmitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_readmit_total",
+		Help:      "Times an upstream was readmitted into rotation after a period of exclusion (transition from excluded → in-list).",
+	}, []string{"project", "network", "method", "upstream"})
+
+	MetricSelectionReadmitAgeSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "selection_readmit_age_seconds",
+		Help:      "Distribution of `now - excludedSince` at readmit time. Tall left tail = readmitting too eagerly (probable flap); tall right tail = readmit cooldown too generous.",
+		Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
+	}, []string{"project", "network", "method"})
+
+	MetricSelectionStickyHoldTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_sticky_hold_total",
+		Help:      "Ticks where `stickyPrimary` actively held the primary that would otherwise have flipped (challenger had a lower score AND/OR cooldown still in effect). The ratio against `selection_primary_switch_total` reveals how much smoothing the chain is doing.",
+	}, []string{"project", "network", "method", "upstream"})
+
+	// Probe family — shadow-mirror traffic the selection policy fires
+	// at currently-excluded upstreams via `probeExcluded(...)`. Cardinality:
+	// `network × upstream × method` for requests/errors; `network × reason`
+	// for skip/drop counters (reason is a small fixed enum).
+
+	MetricSelectionProbeRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_requests_total",
+		Help:      "Probe-mirror requests sent to a currently-excluded upstream. Drives the re-admission story: as `errorRateAbove` predicates see the upstream's fresh shadow samples improve, it falls out of the excluded set on the next tick. Pairs with `selection_probe_errors_total` for probe-side error rate.",
+	}, []string{"network", "upstream", "method"})
+
+	MetricSelectionProbeErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_errors_total",
+		Help:      "Probe-mirror requests that returned an error. Same upstream/method as requests; reason ∈ {timeout, throttled, auth, skipped, error}.",
+	}, []string{"network", "upstream", "method", "reason"})
+
+	MetricSelectionProbeSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_skipped_total",
+		Help:      "Probe candidates that were skipped before firing. reason ∈ {write_method, opt_out, sampled_out, max_concurrent, no_method}. `write_method` and `opt_out` are safety/policy gates; `sampled_out` and `max_concurrent` are throughput controls.",
+	}, []string{"network", "reason"})
+
+	MetricSelectionProbeDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "selection_probe_dropped_total",
+		Help:      "Probe-bus publishes that were dropped before reaching the dispatcher (the per-network feed channel was full). The request path NEVER blocks on the bus — overflow becomes a lost sample, not a stalled forward.",
+	}, []string{"network", "reason"})
+
+	MetricUpstreamCordonEventTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_cordon_event_total",
+		Help:      "Admin-driven cordon transitions. `action` ∈ {`cordon`,`uncordon`}.",
+	}, []string{"project", "network", "upstream", "action"})
+
+	MetricUpstreamCordonDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "upstream_cordon_duration_seconds",
+		Help:      "Time an upstream stayed cordoned, observed on each uncordon. Long tails are typically real outages; very short cordons are usually manual mis-fires.",
+		Buckets:   []float64{1, 10, 60, 300, 900, 1800, 3600, 7200, 21600, 86400},
+	}, []string{"project", "network", "upstream"})
 
 	MetricUpstreamStaleLatestBlock = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -558,41 +682,6 @@ var (
 	MetricRateLimiterRemoteDuration           *LabeledHistogram
 	MetricUpstreamResponseSizeBytes           *LabeledHistogram
 )
-
-// ScoreMetricsMode controls how score metrics are emitted.
-//
-//	"compact" (default):
-//	  score_overall       — emitted with upstream="n/a", category="n/a" (low cardinality)
-//	  routing_priority    — not emitted (requires upstream identity)
-//	"detailed":
-//	  score_overall       — emitted per upstream + per method
-//	  routing_priority    — emitted per upstream + per method, plus an averaged summary
-//	"none":
-//	  all score metrics suppressed
-type ScoreMetricsMode string
-
-const (
-	ScoreModeCompact  ScoreMetricsMode = "compact"
-	ScoreModeDetailed ScoreMetricsMode = "detailed"
-	ScoreModeNone     ScoreMetricsMode = "none"
-)
-
-var currentScoreMetricsMode = ScoreModeCompact
-
-func SetScoreMetricsMode(v string) {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "detailed":
-		currentScoreMetricsMode = ScoreModeDetailed
-	case "none":
-		currentScoreMetricsMode = ScoreModeNone
-	default:
-		currentScoreMetricsMode = ScoreModeCompact
-	}
-}
-
-func GetScoreMetricsMode() ScoreMetricsMode {
-	return currentScoreMetricsMode
-}
 
 // buildFilterAwareHistograms creates every LabeledHistogram using the current
 // filter. It does NOT register them — SetHistogramBuckets does that. init()

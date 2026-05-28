@@ -1,0 +1,724 @@
+package policy
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
+	"github.com/grafana/sobek"
+	"github.com/rs/zerolog"
+)
+
+// Engine is the per-project unified selection engine. It owns one Slot per
+// active (network, method) pair plus the sobek runtime pool. Request-path
+// reads go through Engine.GetOrdered, which is wait-free.
+type Engine struct {
+	projectID string
+	logger    *zerolog.Logger
+	tracker   *health.Tracker
+	pool      *runtimePool
+
+	mu    sync.RWMutex
+	slots map[slotKey]*Slot
+
+	// networks holds the registered (networkId → []Upstream, cfg) so newly
+	// referenced methods can lazily spin up additional slots under
+	// `evalPerMethod=true`.
+	networks map[string]*networkRegistration
+
+	// paused gates the per-slot ticker. Read every tick via
+	// `s.engine.paused.Load()`. When true the ticker still wakes up but
+	// returns immediately without running tickOnce, so the cache (and
+	// the request path that reads it) stays frozen at the last verdict.
+	// Wired up so the simulator's "pause" button stops the policy
+	// engine from churning while traffic generation is halted — without
+	// this, the policy would happily continue re-evaluating against
+	// drifting tracker metrics, and the operator's "what was the last
+	// verdict?" snapshot wouldn't be stable while paused.
+	//
+	// Request-path GetOrdered is intentionally NOT gated by paused: a
+	// late-arriving request mid-pause still gets a deterministic order
+	// rather than nil. This matches the simulator's contract (Execute
+	// itself drops requests when paused, so this is belt-and-braces).
+	paused atomic.Bool
+
+	// stepLogEnabled gates the JS-side per-step chain trail (one entry
+	// per chainable stdlib step invoked). When false (production
+	// default), the JS wrapper around `define` skips `_recordStep` —
+	// zero overhead beyond the call indirection. When true, the slot's
+	// Decision carries `StepLog` and the simulator / DEBUG eRPC logs
+	// surface it. Toggled via `SetStepLogEnabled`.
+	stepLogEnabled atomic.Bool
+
+	// sticky is the cross-slot primary register that backs
+	// `stickyPrimary({scope: NETWORK | NETWORK_FINALITY | ...})`. Keyed
+	// by the scope-resolved tuple (`network`, `method` or "*",
+	// `finality` or "*"); each entry holds the currently-selected
+	// primary upstream id + the unix-millis of the last switch.
+	//
+	// Per-tick stickyPrimary reads its own scope's entry via the
+	// `__getSharedSticky` Go fn installed in runEval; on a switch
+	// decision it writes back via `__setSharedSticky`. The store is the
+	// ONLY surface that crosses slot boundaries — slots otherwise
+	// remain independent.
+	sticky *stickyStore
+
+	// idleEvictionAfter is the duration past which a narrow
+	// (method, finality)-keyed slot or sticky entry gets evicted.
+	// Defaults to `DefaultEngineIdleEvictionAfter`. Zero disables
+	// the engine's sweep entirely. Same defense as the tracker's
+	// idle sweep — bounds the slot map under a method-flood by
+	// dropping silent narrow slots while keeping the network's
+	// wildcard slot alive forever.
+	idleEvictionAfter time.Duration
+
+	// probers owns the per-network shadow-probe subsystem (one
+	// `Prober` per networkID). Created lazily when a network's eval
+	// emits a non-nil `__probeConfig` and torn down when the eval
+	// stops emitting one. The request-path `PublishRequest` is
+	// wait-free under the read lock; reconciliation (create/update/
+	// stop) takes the write lock.
+	proberMu sync.RWMutex
+	probers  map[string]*Prober
+
+	appCtx context.Context
+	cancel context.CancelFunc
+}
+
+// DefaultEngineIdleEvictionAfter is the conservative idle threshold the
+// engine uses for sweeping silent narrow slots + sticky entries when
+// the caller doesn't override it. Longer than the tracker's idle
+// threshold because slot eviction also tears down a live ticker —
+// flapping eviction on/off across the slot lifecycle is more
+// disruptive than just dropping a tracker bucket.
+const DefaultEngineIdleEvictionAfter = 1 * time.Hour
+
+// slotKey identifies one slot in the engine. The wildcard for an
+// unspecified dimension is `"*"`. Which dimensions are wildcarded is
+// driven by `SelectionPolicyConfig.EvalScope`:
+//
+//   - `network`                 → only `("*", "*")` per network
+//   - `network-method`          → `(method, "*")` lazy-created per request
+//   - `network-finality`        → `("*", finality)` lazy-created per request
+//   - `network-method-finality` → `(method, finality)` lazy-created per request
+//
+// The `("*", "*")` wildcard always exists per network and serves
+// cold-start traffic before a finer-grained slot has produced its first
+// tick. The legacy `EvalPerMethod` / `EvalPerFinality` config fields
+// are translated into `EvalScope` by `SetDefaults` and never reach the
+// engine — the engine reads `EvalScope` exclusively.
+type slotKey struct {
+	network  string
+	method   string
+	finality string
+}
+
+type networkRegistration struct {
+	// upstreamsFn is queried at every tick so newly-bootstrapped upstreams
+	// become visible to the engine without a re-register. Static fixtures
+	// can use a closure that returns a frozen slice.
+	upstreamsFn func() []common.Upstream
+	cfg         *common.SelectionPolicyConfig
+	// networkLabel is the human-friendly alias (e.g. "base", "mainnet")
+	// used on Prometheus labels. Distinct from the canonical `networkID`
+	// (e.g. "evm:8453") which stays the engine's internal key. Defaults
+	// to networkID when the caller passes "".
+	networkLabel string
+}
+
+// NewEngine constructs an Engine. `tracker` is read-only from the engine's
+// perspective — the engine snapshots metrics from it once per tick. The
+// `runtimePrimer` is invoked on each freshly-created sobek runtime; pass
+// nil to skip primings (the default policy works against the bare runtime).
+//
+// `userScript` is the compiled program of the user's TS config file
+// (when the config was loaded from `.ts`/`.js`; nil for YAML). When
+// non-nil, the pool evaluates it in every freshly-created runtime AFTER
+// the primer — that materializes the user's helpers + imports + the
+// `__erpcFns` registry natively in each runtime, so `EvalFunc` sentinels
+// resolve to real sobek functions whose closure scope is the user's
+// module.
+func NewEngine(
+	parentCtx context.Context,
+	logger *zerolog.Logger,
+	projectID string,
+	tracker *health.Tracker,
+	runtimePrimer func(*common.Runtime) error,
+	userScript *sobek.Program,
+) *Engine {
+	ctx, cancel := context.WithCancel(parentCtx)
+	lg := logger.With().Str("component", "policy-engine").Str("projectId", projectID).Logger()
+	e := &Engine{
+		projectID:         projectID,
+		logger:            &lg,
+		tracker:           tracker,
+		pool:              newRuntimePool(runtimePrimer, userScript),
+		slots:             make(map[slotKey]*Slot),
+		networks:          make(map[string]*networkRegistration),
+		sticky:            newStickyStore(),
+		idleEvictionAfter: DefaultEngineIdleEvictionAfter,
+		probers:           make(map[string]*Prober),
+		appCtx:            ctx,
+		cancel:            cancel,
+	}
+	go e.idleSweepLoop()
+	return e
+}
+
+// SetIdleEvictionAfter overrides the default engine idle-eviction
+// threshold for narrow slots + sticky entries. Pass `0` to disable
+// engine-side sweeping (tracker sweep is independent). Tests use this
+// to exercise eviction without waiting an hour.
+func (e *Engine) SetIdleEvictionAfter(d time.Duration) {
+	e.idleEvictionAfter = d
+}
+
+// idleSweepLoop runs once per `engineSweepInterval` and drops narrow
+// slots + sticky-store entries that haven't been touched in
+// `idleEvictionAfter`. Wildcard slots ("*", "*") are never evicted —
+// the engine guarantees a network always has at least its wildcard
+// slot to serve cold-start traffic.
+//
+// Stops cleanly on `e.appCtx.Done()` (engine.Stop / project teardown).
+func (e *Engine) idleSweepLoop() {
+	ticker := time.NewTicker(engineSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.appCtx.Done():
+			return
+		case <-ticker.C:
+			if e.idleEvictionAfter <= 0 {
+				continue
+			}
+			e.sweepIdleSlots()
+			e.sweepIdleSticky()
+		}
+	}
+}
+
+// engineSweepInterval — fires often enough that an idle slot evicts
+// within a couple of intervals of its threshold elapsing, infrequent
+// enough that the per-network Range() walk doesn't measurably show
+// up in CPU profiles. 1 minute is a comfortable default — operators
+// caring about precision will set a tighter `idleEvictionAfter`.
+const engineSweepInterval = 1 * time.Minute
+
+// sweepIdleSlots stops and removes per-(method, finality) slots that
+// haven't been read OR ticked in `idleEvictionAfter`. The wildcard
+// (`("*", "*")`) slot is exempt; only narrow slots that lazy-created
+// in response to specific-method traffic are evictable.
+func (e *Engine) sweepIdleSlots() {
+	cutoffMs := time.Now().Add(-e.idleEvictionAfter).UnixMilli()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for k, slot := range e.slots {
+		if k.method == "*" && k.finality == "*" {
+			continue // never evict the network's wildcard slot
+		}
+		if slot.lastAccessedAtMs.Load() >= cutoffMs {
+			continue
+		}
+		slot.stop() // tear down the ticker goroutine
+		delete(e.slots, k)
+	}
+}
+
+// sweepIdleSticky drops shared-primary register entries whose
+// scope-key hasn't been written in `idleEvictionAfter`. The store
+// tracks `LastSwitchAt` per entry, which doubles as a "last write"
+// timestamp — sticky writes happen on switch AND on confirm, so a
+// quiet scope stops updating it and ages out naturally.
+func (e *Engine) sweepIdleSticky() {
+	cutoffMs := time.Now().Add(-e.idleEvictionAfter).UnixMilli()
+	e.sticky.evictIdle(cutoffMs)
+}
+
+// RegisterNetwork creates (or replaces) the "*" slot for the given network
+// and starts its ticker. If `cfg.EvalPerMethod` is true, additional slots
+// are created lazily when GetOrdered is called with a specific method.
+//
+// The `upstreamsFn` callback is invoked at every tick so newly-bootstrapped
+// upstreams become visible to the engine without a re-register. For static
+// configurations a closure returning a frozen slice is fine.
+//
+// If `cfg.EvalFunc` is the placeholder identity policy
+// (`common.DefaultSelectionPolicySource`), this method upgrades it to
+// the embedded rich default (sortByScore + preferTag + stickyPrimary
+// + probeExcluded).
+//
+// `networkLabel` is the human-friendly alias used on Prometheus labels —
+// pass `Network.Label()` from the caller. When the caller passes "" it
+// falls back to `networkID` so test/fixture callers don't have to plumb
+// a label they don't care about.
+//
+// The initial eval runs synchronously so callers can rely on a non-empty
+// cache being present once RegisterNetwork returns.
+func (e *Engine) RegisterNetwork(networkID, networkLabel string, upstreamsFn func() []common.Upstream, cfg *common.SelectionPolicyConfig) error {
+	if err := upgradeDefaultPolicy(cfg); err != nil {
+		return err
+	}
+	if upstreamsFn == nil {
+		upstreamsFn = func() []common.Upstream { return nil }
+	}
+	if networkLabel == "" {
+		networkLabel = networkID
+	}
+
+	// Opt the project's health tracker into per-finality writes if THIS
+	// network's evalScope needs them. The tracker flag is monotonic
+	// (once on, stays on) — other networks' Record* calls now pay the
+	// extra 2 sub-key writes, but the cost only kicks in for projects
+	// that actually have a finality-scoped network in the mix.
+	if cfg != nil && e.tracker != nil {
+		if _, needsFinality := scopeAxes(cfg.EvalScope); needsFinality {
+			e.tracker.EnableFinalityTracking()
+		}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.networks[networkID] = &networkRegistration{
+		upstreamsFn:  upstreamsFn,
+		cfg:          cfg,
+		networkLabel: networkLabel,
+	}
+
+	// Tear down any pre-existing slots for this network so reconfiguration
+	// is atomic from the request-path's perspective.
+	for k, slot := range e.slots {
+		if k.network == networkID {
+			slot.stop()
+			delete(e.slots, k)
+		}
+	}
+
+	wildcard := newSlot(e, networkID, networkLabel, "*", "*", upstreamsFn, cfg)
+	e.slots[slotKey{networkID, "*", "*"}] = wildcard
+
+	// Initial eval is synchronous so the first request sees a populated cache.
+	wildcard.tickOnce()
+	wildcard.start(e.appCtx)
+
+	return nil
+}
+
+// UnregisterNetwork stops every slot for the given network and clears the
+// registration.
+func (e *Engine) UnregisterNetwork(networkID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for k, slot := range e.slots {
+		if k.network == networkID {
+			slot.stop()
+			delete(e.slots, k)
+		}
+	}
+	delete(e.networks, networkID)
+}
+
+// GetOrdered returns the cached eligible upstreams for
+// `(networkID, method, finality)`, in policy-chosen order. The lookup
+// is wait-free in the common path.
+//
+// `method` and `finality` are "narrowing" hints — the engine resolves
+// them against the slot map according to the network's `EvalScope`:
+//
+//   - `network`                 → only `("*", "*")` slot exists;
+//     `method`/`finality` are ignored.
+//   - `network-method`          → slots keyed by method; `finality` ignored.
+//   - `network-finality`        → slots keyed by finality; `method` ignored.
+//   - `network-method-finality` → slots keyed by `(method, finality)`.
+//
+// On a cold-start miss (slot just lazy-created, no tick yet) the
+// wildcard slot's cache is returned as a fallback. The returned slice
+// is the SAME backing array the slot stores atomically — callers MUST
+// treat it as read-only.
+func (e *Engine) GetOrdered(networkID, method, finality string) []common.Upstream {
+	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
+	// Refresh both slots' idle timestamps — a request hitting THIS
+	// (method, finality) keeps both the narrow slot AND the wildcard
+	// fallback alive against the engine's sweep.
+	nowMs := time.Now().UnixMilli()
+	if slot != nil {
+		slot.lastAccessedAtMs.Store(nowMs)
+		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
+			return *ordered
+		}
+	}
+	if wildcard != nil {
+		wildcard.lastAccessedAtMs.Store(nowMs)
+		if ordered := wildcard.cache.Load(); ordered != nil {
+			return *ordered
+		}
+	}
+	return nil
+}
+
+// LastEvalAt returns the wall-clock timestamp of the slot's most recent
+// successful tick, or the zero value if the slot is unknown / has never
+// produced a decision.
+func (e *Engine) LastEvalAt(networkID, method, finality string) time.Time {
+	slot := e.lookupSlot(networkID, method, finality)
+	if slot == nil {
+		return time.Time{}
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	return slot.lastEvalAt
+}
+
+// LastSwitchAt returns the timestamp of the most recent primary-change
+// the slot recorded (used by `stickyPrimary` to enforce the
+// `minSwitchInterval` cooldown). Zero value if no switch has happened.
+// Diagnostics consume this to render "primary held for Xs / sticky
+// locked for Ys".
+func (e *Engine) LastSwitchAt(networkID, method, finality string) time.Time {
+	slot := e.lookupSlot(networkID, method, finality)
+	if slot == nil {
+		return time.Time{}
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.lastSwitchAt == nil {
+		return time.Time{}
+	}
+	return *slot.lastSwitchAt
+}
+
+// RecentDecisions returns up to `limit` of the most-recent decisions
+// the slot has produced, OLDEST-first. `limit <= 0` returns all
+// retained entries (currently capped at `decisionsRingSize`). Returns
+// nil if the slot is unknown / no ticks yet.
+//
+// Diagnostic tooling consumes this to render a tick-by-tick replay
+// ("why did the order change at T=4.2s?"). For production
+// observability, see the Prometheus `policy_selection_*` families and
+// per-request traces.
+func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) []*Decision {
+	slot := e.lookupSlot(networkID, method, finality)
+	if slot == nil {
+		return nil
+	}
+	return slot.recentDecisions(limit)
+}
+
+// GetExcluded returns the upstreams the slot's most recent successful
+// tick marked excluded (via `excludeIf` / `removeCordoned` / step-wise
+// drops). Returned slice is the same backing array the slot stores
+// atomically — callers MUST treat it as read-only.
+//
+// Resolution mirrors `GetOrdered`: narrow slot first, wildcard fallback
+// on cold-start. Returns nil when no tick has produced a result yet
+// (which means "nothing is excluded YET", not "something went wrong").
+//
+// Consumed by the per-network Prober: every published request reads
+// this to know which upstreams are currently "shadow re-probe
+// candidates."
+func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstream {
+	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
+	if slot != nil {
+		if excluded := slot.excludedCache.Load(); excluded != nil && len(*excluded) > 0 {
+			return *excluded
+		}
+	}
+	if wildcard != nil {
+		if excluded := wildcard.excludedCache.Load(); excluded != nil {
+			return *excluded
+		}
+	}
+	return nil
+}
+
+// PublishRequest hands a freshly-served request to the network's
+// probe-bus (if a Prober exists for this network). Non-blocking —
+// drops on bus overflow with a metric. Called from the request path
+// AFTER the primary upstream's response is determined; the probe
+// subsystem runs entirely on its own goroutines so the user's
+// response is never delayed.
+//
+// No-op when no Prober is registered for the network (the chain
+// doesn't include `probeExcluded` OR the engine hasn't ticked yet).
+func (e *Engine) PublishRequest(networkID string, req *common.NormalizedRequest) {
+	if req == nil {
+		return
+	}
+	e.proberMu.RLock()
+	p := e.probers[networkID]
+	e.proberMu.RUnlock()
+	if p != nil {
+		p.Publish(req)
+	}
+}
+
+// reconcileProbeConfig is called by each slot's tick after the eval
+// returns. It owns the lifecycle of the network's Prober: lazy-create
+// on first non-nil config, hot-swap on every subsequent non-nil
+// config, tear down when a tick produces nil (operator removed
+// `probeExcluded` from the chain).
+//
+// Multiple slots per network (network-method, network-finality, ...)
+// all call this with the SAME config in their JS (probeExcluded
+// doesn't branch per slot) — the engine just dedupes by overwriting
+// the active config atomically.
+//
+// Note: a single slot producing a nil ProbeConfig doesn't tear down
+// the prober — other slots in this network might still have the step
+// in their chain. The teardown path is via project shutdown
+// (Engine.Stop) or by removing all probeExcluded calls and waiting
+// for every slot's next tick to produce nil (handled by the slot
+// reconcile in slot.go).
+func (e *Engine) reconcileProbeConfig(networkID string, cfg *ProbeConfig) {
+	if cfg == nil {
+		// Operator removed `probeExcluded` from this chain. Detach the
+		// prober from the map UNDER the lock, then call Stop() OUTSIDE
+		// the lock — Stop waits for in-flight mirror() goroutines (up
+		// to `timeout`, default 10s) and we must not block
+		// PublishRequest readers on that wait. PublishRequest takes a
+		// RLock for a microsecond-scale read; holding a write lock for
+		// a probe-timeout would stall the request hot path.
+		e.proberMu.Lock()
+		p, ok := e.probers[networkID]
+		if ok {
+			delete(e.probers, networkID)
+		}
+		e.proberMu.Unlock()
+		if ok {
+			p.Stop()
+		}
+		return
+	}
+
+	// Hot-swap or lazy-create. UpdateConfig is an atomic.Store; safe
+	// under the write lock with no in-flight blocking.
+	e.proberMu.Lock()
+	defer e.proberMu.Unlock()
+	if p, ok := e.probers[networkID]; ok {
+		p.UpdateConfig(cfg)
+		return
+	}
+	netLg := e.logger.With().Str("networkId", networkID).Logger()
+	e.probers[networkID] = newProber(e.appCtx, networkID, &netLg, e, e.tracker, cfg)
+}
+
+// GetScores returns the per-upstream `score` map produced by the
+// slot's most recent successful tick. Entries are the EXACT values the
+// JS `sortByScore(...)` step assigned to each upstream, so anything
+// comparing scores (UIs, admin endpoints, sorting checks) gets the
+// engine's authoritative ranking — no duplicated formula, no drift.
+//
+// Returns nil if the slot is unknown, has never produced a tick, or
+// the running policy doesn't include a scoring step.
+func (e *Engine) GetScores(networkID, method, finality string) map[string]float64 {
+	slot := e.lookupSlot(networkID, method, finality)
+	if slot == nil {
+		return nil
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if len(slot.lastScores) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(slot.lastScores))
+	for id, v := range slot.lastScores {
+		out[id] = v
+	}
+	return out
+}
+
+// effectiveKey collapses the caller's `(method, finality)` hint to the
+// slot-key shape the network is configured for, per `cfg.EvalScope`.
+// Empty / "*" inputs are preserved as wildcards. A nil cfg or empty
+// scope degrades to the all-wildcard key (`("*", "*")`).
+//
+// The deprecated `EvalPerMethod` / `EvalPerFinality` bools are NEVER
+// consulted here — `SetDefaults` already translated them into
+// `EvalScope` and niled the legacy fields. If the engine were to read
+// them again it would risk seeing the post-translation zero values
+// and silently degrade to the wrong grain.
+func effectiveKey(cfg *common.SelectionPolicyConfig, networkID, method, finality string) slotKey {
+	m, f := "*", "*"
+	if cfg != nil {
+		perMethod, perFinality := scopeAxes(cfg.EvalScope)
+		if perMethod && method != "" && method != "*" {
+			m = method
+		}
+		if perFinality && finality != "" && finality != "*" {
+			f = finality
+		}
+	}
+	return slotKey{networkID, m, f}
+}
+
+// scopeAxes decomposes the `EvalScope` enum back into the two axis
+// bits the slot-key builder needs. Tracker-grain plumbing will read
+// the same helper once finality lands on the tracker side.
+func scopeAxes(s common.EvalScope) (perMethod, perFinality bool) {
+	switch s {
+	case common.EvalScopeNetworkMethodFinality:
+		return true, true
+	case common.EvalScopeNetworkMethod:
+		return true, false
+	case common.EvalScopeNetworkFinality:
+		return false, true
+	default: // network or empty → all-wildcard
+		return false, false
+	}
+}
+
+// lookupSlot is the shared resolver used by per-slot accessors that
+// want a single slot to read from (admin endpoints, diagnostics):
+// exact `(network, method, finality)` match falls back to the network's
+// wildcard slot. Does NOT lazy-create — those are read-only paths.
+func (e *Engine) lookupSlot(networkID, method, finality string) *Slot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	reg := e.networks[networkID]
+	var cfg *common.SelectionPolicyConfig
+	if reg != nil {
+		cfg = reg.cfg
+	}
+	if slot, ok := e.slots[effectiveKey(cfg, networkID, method, finality)]; ok {
+		return slot
+	}
+	return e.slots[slotKey{networkID, "*", "*"}]
+}
+
+// lookupSlotWithFallback is the request-path resolver used by
+// `GetOrdered`. Differs from `lookupSlot` in two ways:
+//
+//  1. Returns BOTH the exact slot AND the wildcard so the caller can
+//     fall back to wildcard while a freshly-created per-bucket slot's
+//     cache is still empty (between creation and first tickOnce).
+//  2. Lazy-creates the per-(method, finality) slot if `EvalPerMethod`
+//     and/or `EvalPerFinality` is on AND no slot exists yet. The new
+//     slot inherits the same `upstreamsFn` + cfg as the wildcard and
+//     starts its own ticker — subsequent requests for this bucket get
+//     a bucket-specific ranking.
+//
+// First call for a fresh bucket pays a brief write-lock; later calls
+// are wait-free RLock reads like the rest of the request path.
+func (e *Engine) lookupSlotWithFallback(networkID, method, finality string) (slot *Slot, wildcard *Slot) {
+	e.mu.RLock()
+	reg, hasReg := e.networks[networkID]
+	var cfg *common.SelectionPolicyConfig
+	if hasReg {
+		cfg = reg.cfg
+	}
+	wildcard = e.slots[slotKey{networkID, "*", "*"}]
+	key := effectiveKey(cfg, networkID, method, finality)
+	// No-narrowing case: key == wildcard, just return.
+	if key.method == "*" && key.finality == "*" {
+		e.mu.RUnlock()
+		return wildcard, wildcard
+	}
+	if s, ok := e.slots[key]; ok {
+		e.mu.RUnlock()
+		return s, wildcard
+	}
+	e.mu.RUnlock()
+
+	if !hasReg || cfg == nil {
+		return nil, wildcard
+	}
+
+	// Upgrade to write lock + double-check (another goroutine may have
+	// won the race while we waited).
+	e.mu.Lock()
+	if s, ok := e.slots[key]; ok {
+		e.mu.Unlock()
+		return s, wildcard
+	}
+	// Pass the resolved key's method/finality (with wildcards collapsed)
+	// to the new slot so its ticker emits ctx.finality / metric labels
+	// at the right scope. `reg.networkLabel` was set at RegisterNetwork
+	// time — falls back to networkID if the caller didn't supply one.
+	label := reg.networkLabel
+	if label == "" {
+		label = networkID
+	}
+	s := newSlot(e, networkID, label, key.method, key.finality, reg.upstreamsFn, reg.cfg)
+	e.slots[key] = s
+	e.mu.Unlock()
+	// Start the slot's ticker asynchronously so this request-path call
+	// returns immediately. The slot's cache stays nil until the first
+	// tick completes, hence the wildcard fallback in `GetOrdered`.
+	s.start(e.appCtx)
+	return s, wildcard
+}
+
+// SetPaused gates every slot's ticker. While paused, the goroutine still
+// wakes on each tick but skips `tickOnce`, so:
+//   - the cache (atomically swapped at the end of `tickOnce`) is frozen
+//     at the last successful verdict — request-path readers see a stable
+//     ordering for the duration of the pause
+//   - cross-tick state (excludedSince map, lastSwitchAt, decision ring,
+//     tracker EMA) doesn't drift relative to the frozen verdict
+//
+// Edge-triggered: callers wanting "advance one tick under pause" must
+// SetPaused(false), wait, SetPaused(true) — or call TickForTest on each
+// slot. Used by the simulator's pause button to freeze the engine alongside
+// frontend traffic generation; production callers shouldn't need this.
+func (e *Engine) SetPaused(p bool) {
+	e.paused.Store(p)
+}
+
+// IsPaused reports whether the per-slot ticker is currently gated.
+func (e *Engine) IsPaused() bool {
+	return e.paused.Load()
+}
+
+// SetStepLogEnabled toggles per-tick step-log capture. While enabled,
+// each Decision the engine produces carries `StepLog` — the
+// chronological trail of stdlib steps invoked (step name, args,
+// in/out IDs, dropped/added).
+//
+// This is the input the simulator's "policy history" detail view
+// consumes and the source DEBUG-level eRPC logs use for per-step
+// breakdowns. Off by default to keep production-path overhead at
+// "one extra function call indirection per stdlib step". Callers that
+// flip this on should mirror their toggle to the engine's log level
+// (debug → on, info+ → off) so log volume stays sane.
+func (e *Engine) SetStepLogEnabled(enabled bool) {
+	e.stepLogEnabled.Store(enabled)
+}
+
+// IsStepLogEnabled reports whether per-step trail capture is active.
+func (e *Engine) IsStepLogEnabled() bool {
+	return e.stepLogEnabled.Load()
+}
+
+// Stop cancels every slot's ticker, tears down every per-network
+// Prober, and releases pooled runtimes.
+func (e *Engine) Stop() {
+	e.mu.Lock()
+	for _, slot := range e.slots {
+		slot.stop()
+	}
+	e.slots = make(map[slotKey]*Slot)
+	e.mu.Unlock()
+
+	// Snapshot probers under the lock; Stop() each OUTSIDE the lock.
+	// Stop() blocks on wg.Wait until all mirror() goroutines drain
+	// (up to per-probe timeout × in-flight count). Holding proberMu
+	// for that duration would freeze every concurrent PublishRequest
+	// — defensive even though Stop is shutdown-time.
+	e.proberMu.Lock()
+	probers := make([]*Prober, 0, len(e.probers))
+	for _, p := range e.probers {
+		probers = append(probers, p)
+	}
+	e.probers = make(map[string]*Prober)
+	e.proberMu.Unlock()
+	for _, p := range probers {
+		p.Stop()
+	}
+
+	e.cancel()
+}

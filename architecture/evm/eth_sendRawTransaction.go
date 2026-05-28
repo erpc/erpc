@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -13,6 +14,36 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// networkPostForwardVerifyTimeout caps how long the on-chain verification
+// probe (eth_getTransactionByHash) is allowed to run independently of the
+// caller's deadline. The probe sits on the error path after failsafe has
+// already burned its retry budget, so the parent deadline is usually
+// near-expired. Without an independent budget the probe would either fail
+// immediately on ctx.Err() (silent no-op for the feature) or, if the caller
+// has no deadline, run an unbounded failsafe loop against degraded upstreams.
+const networkPostForwardVerifyTimeout = 3 * time.Second
+
+// isIdempotentBroadcastDisabled reports whether the network has explicitly
+// opted out of eth_sendRawTransaction idempotency handling. A nil config or
+// nil pointer means "not disabled" (the default).
+func isIdempotentBroadcastDisabled(n common.Network) bool {
+	cfg := n.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.IdempotentTransactionBroadcast == nil {
+		return false
+	}
+	return !*cfg.Evm.IdempotentTransactionBroadcast
+}
+
+// buildGetTransactionByHashRequest constructs a fresh internal eth_getTransactionByHash
+// request used by both the per-upstream and network-level postForward verification paths.
+func buildGetTransactionByHashRequest(txHash string) *common.NormalizedRequest {
+	return common.NewNormalizedRequest([]byte(fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":%d,"method":"eth_getTransactionByHash","params":[%q]}`,
+		util.RandomID(),
+		txHash,
+	)))
+}
 
 // upstreamPostForward_eth_sendRawTransaction handles idempotency for eth_sendRawTransaction.
 // It converts "already known" errors into success and verifies "nonce too low" errors
@@ -31,7 +62,7 @@ func upstreamPostForward_eth_sendRawTransaction(
 	lg := n.Logger().With().Str("hook", "eth_sendRawTransaction").Logger()
 
 	// Check if idempotent transaction broadcast is disabled
-	if cfg := n.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.IdempotentTransactionBroadcast != nil && !*cfg.Evm.IdempotentTransactionBroadcast {
+	if isIdempotentBroadcastDisabled(n) {
 		span.SetAttributes(attribute.Bool("idempotent_broadcast_disabled", true))
 		lg.Debug().Msg("idempotent transaction broadcast is disabled, skipping")
 		return rs, re
@@ -179,11 +210,7 @@ func verifyAndHandleNonceTooLow(
 
 	// Create a request for eth_getTransactionByHash
 	// Use a new random ID since this is an internal verification request
-	getTxReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":%d,"method":"eth_getTransactionByHash","params":[%q]}`,
-		util.RandomID(),
-		txHash,
-	)))
+	getTxReq := buildGetTransactionByHashRequest(txHash)
 
 	lg.Debug().Str("txHash", txHash).Str("upstream", u.Id()).Msg("sending eth_getTransactionByHash to verify tx exists")
 
@@ -226,6 +253,142 @@ func verifyAndHandleNonceTooLow(
 	lg.Info().Str("txHash", txHash).Msg("tx FOUND on-chain - converting 'nonce too low' to idempotent success")
 
 	return createSyntheticSuccessResponse(ctx, rq, txHash)
+}
+
+// networkPostForward_eth_sendRawTransaction is the LAST-LINE idempotency check.
+//
+// Context: upstreamPostForward_eth_sendRawTransaction only fires when an upstream
+// returns a recognized nonce exception ("already known" / "nonce too low") via the
+// string-match list in error_normalizer.go. When upstreams are degraded and return
+// generic HTTP 5xx, transport errors, or vendor-specific wordings outside that list,
+// the per-upstream hook is bypassed. The failsafe loop then exhausts all retries
+// and surfaces ErrUpstreamsExhausted (-32603 "all upstream attempts failed") to the
+// client — even though the tx may already be in mempool or mined on some upstream.
+//
+// This network-level hook runs once after the failsafe loop has finished. If the
+// final error is an exhausted-class failure, it issues a single eth_getTransactionByHash
+// against the network: if the tx is present anywhere, the broadcast effectively
+// succeeded and we return a synthetic success. If the tx is genuinely missing,
+// the original error propagates unchanged.
+func networkPostForward_eth_sendRawTransaction(
+	ctx context.Context,
+	n common.Network,
+	nq *common.NormalizedRequest,
+	nr *common.NormalizedResponse,
+	re error,
+) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward.eth_sendRawTransaction")
+	defer span.End()
+
+	// No error — let the response flow through untouched.
+	if re == nil {
+		return nr, nil
+	}
+
+	lg := n.Logger().With().Str("hook", "eth_sendRawTransaction").Logger()
+
+	// Only intervene on exhausted-class failures. Clean client-side rejections
+	// (insufficient funds, replacement underpriced, normalized -32003 nonce-too-low
+	// where on-chain verification already happened, etc.) must propagate as-is —
+	// and we shouldn't even consult the network config to make that decision, so
+	// this gate runs before any other inspection.
+	//
+	// FailsafeTimeoutExceeded is included alongside UpstreamsExhausted and
+	// FailsafeRetryExceeded: when the network-scope timeout policy fires before
+	// retries exhaust, the broadcast may still have reached an upstream's mempool
+	// before the deadline. Same "we don't know whether it landed" semantics →
+	// same verification probe applies.
+	if !common.HasErrorCode(re,
+		common.ErrCodeUpstreamsExhausted,
+		common.ErrCodeFailsafeRetryExceeded,
+		common.ErrCodeFailsafeTimeoutExceeded,
+	) {
+		lg.Debug().Str("errorCode", string(common.ErrorFingerprint(re))).Msg("error is not exhausted-class, skipping verification")
+		return nr, re
+	}
+
+	// Respect the same opt-out as the per-upstream hook. When idempotent broadcast
+	// is explicitly disabled, do not synthesize success from a verification probe.
+	if isIdempotentBroadcastDisabled(n) {
+		span.SetAttributes(attribute.Bool("idempotent_broadcast_disabled", true))
+		lg.Debug().Msg("idempotent transaction broadcast is disabled, skipping network verification")
+		return nr, re
+	}
+
+	span.SetAttributes(attribute.Bool("exhausted_class_error", true))
+
+	// Extract the tx hash from the request (deterministic from signed bytes).
+	txHash, err := extractTxHashFromSendRawTransaction(ctx, nq)
+	if err != nil {
+		span.SetAttributes(attribute.String("parse_error", err.Error()))
+		lg.Debug().Err(err).Msg("failed to extract txHash for verification, returning original error")
+		return nr, re
+	}
+	span.SetAttributes(attribute.String("tx_hash", txHash))
+
+	// Probe the network for the tx. Use the same network-level Forward so the
+	// query is routed through normal upstream selection (any healthy upstream
+	// — including ones that just rejected the broadcast — can answer this read).
+	//
+	// The probe runs with an INDEPENDENT timeout budget (context.WithoutCancel
+	// drops the parent's deadline and cancellation), capped at
+	// networkPostForwardVerifyTimeout. Without this, a caller whose deadline
+	// was already burned by the failsafe loop would always see the probe
+	// instantly fail on ctx.Err() — silently negating the entire feature.
+	// Tracing/values propagate through WithoutCancel; only cancellation does not.
+	//
+	// Note: defer Release() fires after all reads from verifyResp complete.
+	// The synthetic-success path returns only txHash (extracted before this
+	// probe) and the hash extracted via PeekStringByPath, so no jrr fields
+	// cross the release boundary in raw form. If a future maintainer adds a
+	// jrr.Result-derived value to the success return, copy it to a local
+	// before the function returns.
+	verifyCtx, cancelVerify := context.WithTimeout(context.WithoutCancel(ctx), networkPostForwardVerifyTimeout)
+	defer cancelVerify()
+	getTxReq := buildGetTransactionByHashRequest(txHash)
+	verifyResp, verifyErr := n.Forward(verifyCtx, getTxReq)
+	if verifyResp != nil {
+		defer verifyResp.Release()
+	}
+	if verifyErr != nil {
+		span.SetAttributes(attribute.String("verify_error", verifyErr.Error()))
+		lg.Debug().Err(verifyErr).Str("txHash", txHash).Msg("network verification failed, returning original error")
+		return nr, re
+	}
+	if verifyResp == nil || verifyResp.IsResultEmptyish(verifyCtx) {
+		span.SetAttributes(attribute.Bool("tx_found", false))
+		lg.Debug().Str("txHash", txHash).Msg("tx not found in network, returning original error")
+		return nr, re
+	}
+	jrr, jrrErr := verifyResp.JsonRpcResponse()
+	if jrrErr != nil || jrr == nil || jrr.Error != nil {
+		span.SetAttributes(attribute.Bool("verify_response_invalid", true))
+		lg.Debug().Str("txHash", txHash).Msg("network verification response invalid, returning original error")
+		return nr, re
+	}
+
+	// Cross-check: the returned tx object's "hash" field MUST equal the hash
+	// we derived from the signed bytes locally. Without this check, a byzantine
+	// or buggy upstream that returns *any* non-null tx object (wrong hash, wrong
+	// from/to, fabricated entirely) would trigger a false synthetic success and
+	// mislead the caller into believing a tx landed when it did not.
+	returnedHash, peekErr := jrr.PeekStringByPath(verifyCtx, "hash")
+	if peekErr != nil {
+		span.SetAttributes(attribute.String("verify_peek_error", peekErr.Error()))
+		lg.Debug().Err(peekErr).Str("txHash", txHash).Msg("could not extract hash field from verification response, returning original error")
+		return nr, re
+	}
+	if !strings.EqualFold(returnedHash, txHash) {
+		span.SetAttributes(attribute.String("verify_hash_mismatch", returnedHash))
+		lg.Warn().Str("expectedTxHash", txHash).Str("returnedHash", returnedHash).Msg("verification response carries a different tx hash than submitted — refusing synthetic success")
+		return nr, re
+	}
+
+	// Tx is present and matches. The broadcast effectively succeeded — return a synthetic success.
+	span.SetAttributes(attribute.Bool("tx_found", true))
+	span.SetAttributes(attribute.Bool("synthetic_success", true))
+	lg.Info().Str("txHash", txHash).Msg("exhausted error overridden: tx found in network, returning synthetic success")
+	return createSyntheticSuccessResponse(ctx, nq, txHash)
 }
 
 // createNormalizedNonceTooLowError creates a normalized error for nonce-too-low mismatch cases.

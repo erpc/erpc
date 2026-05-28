@@ -47,7 +47,40 @@ type Config struct {
 	Metrics      *MetricsConfig     `yaml:"metrics,omitempty" json:"metrics"`
 	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
+
+	// UserScript is the compiled program of the user's TS/JS config file
+	// (the WHOLE thing — imports, helpers, the createConfig call). Set
+	// by `loadConfigFromTypescript`; nil for YAML configs.
+	//
+	// Each policy-engine pool runtime runs this program once on primer
+	// (via the pool's primer hook), which:
+	//   * Evaluates the user's helpers and imports natively in the
+	//     runtime so closures referenced by `evalFunc` actually exist.
+	//   * Populates `globalThis.__erpcFns` with the runtime-native
+	//     function values discovered in the default export. The
+	//     SelectionPolicy's `EvalFunc` carries the lookup ID
+	//     (`__ts_fn__:fn_<n>`) rather than a stringified function
+	//     source — so the function never round-trips through
+	//     `.toString()` + recompile.
+	//
+	// Never serialized; opaque to YAML/JSON.
+	UserScript *sobek.Program `yaml:"-" json:"-"`
 }
+
+// LegacyTranslateFn is the post-decode migration hook invoked by
+// LoadConfig before SetDefaults. nil = no migration (canonical configs
+// only). cmd/erpc/main.go wires this to legacy.TranslateFromConfig
+// during init; tests that exercise legacy YAML must set it explicitly.
+//
+// Decoupled via a package var to avoid a circular import: this package
+// owns the runtime types, and common/legacy depends on those types to
+// describe the legacy shape — so legacy imports common, not the other
+// way around. The hook lets common stay free of the legacy package.
+var LegacyTranslateFn func(*Config) ([]string, error)
+
+// LegacyTranslateLogger lets the caller observe deprecation warnings
+// emitted by LegacyTranslateFn. If nil, warnings are dropped silently.
+var LegacyTranslateLogger func(warning string)
 
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
@@ -72,6 +105,18 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 		err = decoder.Decode(&cfg)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	if LegacyTranslateFn != nil {
+		warnings, err := LegacyTranslateFn(&cfg)
+		if err != nil {
+			return nil, fmt.Errorf("legacy config migration: %w", err)
+		}
+		if LegacyTranslateLogger != nil {
+			for _, w := range warnings {
+				LegacyTranslateLogger(w)
+			}
 		}
 	}
 
@@ -460,46 +505,77 @@ func (a *AwsAuthConfig) MarshalYAML() (interface{}, error) {
 }
 
 type ProjectConfig struct {
-	Id                     string            `yaml:"id" json:"id"`
-	Auth                   *AuthConfig       `yaml:"auth,omitempty" json:"auth"`
-	CORS                   *CORSConfig       `yaml:"cors,omitempty" json:"cors"`
-	Providers              []*ProviderConfig `yaml:"providers,omitempty" json:"providers"`
-	UpstreamDefaults       *UpstreamConfig   `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
-	Upstreams              []*UpstreamConfig `yaml:"upstreams,omitempty" json:"upstreams"`
-	NetworkDefaults        *NetworkDefaults  `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
-	Networks               []*NetworkConfig  `yaml:"networks,omitempty" json:"networks"`
-	RateLimitBudget        string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	ScoreMetricsWindowSize Duration          `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
-	ScoreRefreshInterval   Duration          `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
-	// RoutingStrategy selects the upstream ordering algorithm.
-	// "score-based" (default): penalty-based sticky routing.
-	// "round-robin": time-rotating equal distribution across upstreams.
-	RoutingStrategy string `yaml:"routingStrategy,omitempty" json:"routingStrategy"`
-	// ScoreGranularity controls whether penalties are computed per-upstream or per-method.
-	// "upstream" (default): one penalty across all methods using aggregate metrics.
-	// "method": separate penalty per (upstream, method) pair.
-	ScoreGranularity string `yaml:"scoreGranularity,omitempty" json:"scoreGranularity"`
-	// ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
-	// Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
-	// Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
-	ScorePenaltyDecayRate float64 `yaml:"scorePenaltyDecayRate,omitempty" json:"scorePenaltyDecayRate"`
-	// ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
-	// must be at least this fraction lower than the current primary's penalty to
-	// trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
-	ScoreSwitchHysteresis float64 `yaml:"scoreSwitchHysteresis,omitempty" json:"scoreSwitchHysteresis"`
-	// ScoreMinSwitchInterval is the cooldown between primary upstream switches.
-	ScoreMinSwitchInterval Duration `yaml:"scoreMinSwitchInterval,omitempty" json:"scoreMinSwitchInterval" tstype:"Duration"`
-	// ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
-	// Allowed values:
-	// - "compact": emit compact series by setting upstream and category labels to 'n/a'
-	// - "detailed": emit full project/vendor/network/upstream/category series
-	ScoreMetricsMode      string                              `yaml:"scoreMetricsMode,omitempty" json:"scoreMetricsMode"`
-	DeprecatedHealthCheck *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	Id               string            `yaml:"id" json:"id"`
+	Auth             *AuthConfig       `yaml:"auth,omitempty" json:"auth"`
+	CORS             *CORSConfig       `yaml:"cors,omitempty" json:"cors"`
+	Providers        []*ProviderConfig `yaml:"providers,omitempty" json:"providers"`
+	UpstreamDefaults *UpstreamConfig   `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
+	Upstreams        []*UpstreamConfig `yaml:"upstreams,omitempty" json:"upstreams"`
+	NetworkDefaults  *NetworkDefaults  `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks         []*NetworkConfig  `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget  string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	// Configure user agent tracking at the project level
 	UserAgentMode  UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
 	ForwardHeaders []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
 	IgnoreMethods  []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods   []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
+
+	// ScoreMetricsWindowSize is the tumbling window the per-upstream
+	// health tracker uses for its rolling counters (errorRate, p50/p70/
+	// p95 latency, throttledRate, misbehaviorRate). At each tick the
+	// counters reset and start re-accumulating, so this knob effectively
+	// controls how fast a degraded upstream's metrics start reflecting
+	// the new reality. Short windows (e.g. 30s) react quickly but give
+	// noisier ranking; long windows (5–10m) give stable averages but
+	// hide spikes for longer. Defaults to 10m when zero — production
+	// systems typically leave it default; the eRPC simulator overrides
+	// to 30s so knob changes show up in the UI within seconds.
+	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize"`
+
+	// LegacyProject captures deprecated project-level scoring / routing
+	// keys that used to live directly on ProjectConfig. Consumed by the
+	// legacy translator hook in LoadConfig, then cleared. Never serialized.
+	LegacyProject *LegacyProjectFields `yaml:"-" json:"-"`
+}
+
+// LegacyProjectFields collects the deprecated project-level scoring +
+// routing keys. The translator inspects these to synthesize a
+// `selectionPolicy.eval` for each network and to emit deprecation
+// warnings. All fields are zero-valued for a clean modern config.
+//
+// `scoreMetricsWindowSize` was previously listed here as inert; it is
+// now a first-class field on ProjectConfig (above) — operators
+// control the health tracker window directly.
+type LegacyProjectFields struct {
+	RoutingStrategy        string   `yaml:"routingStrategy,omitempty"`
+	ScoreGranularity       string   `yaml:"scoreGranularity,omitempty"`
+	ScorePenaltyDecayRate  float64  `yaml:"scorePenaltyDecayRate,omitempty"`
+	ScoreSwitchHysteresis  float64  `yaml:"scoreSwitchHysteresis,omitempty"`
+	ScoreMinSwitchInterval Duration `yaml:"scoreMinSwitchInterval,omitempty"`
+	ScoreMetricsMode       string   `yaml:"scoreMetricsMode,omitempty"`
+	ScoreRefreshInterval   Duration `yaml:"scoreRefreshInterval,omitempty"`
+}
+
+// UnmarshalYAML captures legacy project-level scoring / routing keys
+// alongside the canonical schema. The legacy fields are stashed in
+// LegacyProject; the load-time translator hook reads them and
+// synthesizes the equivalent selectionPolicy.eval per network.
+func (p *ProjectConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type canonicalProjectConfig ProjectConfig
+	type shadow struct {
+		canonicalProjectConfig `yaml:",inline"`
+		LegacyProjectFields    `yaml:",inline"`
+	}
+	var s shadow
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	*p = ProjectConfig(s.canonicalProjectConfig)
+	if s.LegacyProjectFields != (LegacyProjectFields{}) {
+		lf := s.LegacyProjectFields
+		p.LegacyProject = &lf
+	}
+	return nil
 }
 
 // UserAgentTrackingMode controls how user agents are recorded for metrics/labels
@@ -624,9 +700,29 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 }
 
 type UpstreamConfig struct {
-	Id                           string                   `yaml:"id,omitempty" json:"id"`
-	Type                         UpstreamType             `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
-	Group                        string                   `yaml:"group,omitempty" json:"group"`
+	Id   string       `yaml:"id,omitempty" json:"id"`
+	Type UpstreamType `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
+	// Tags is the single canonical user-applied label set. Convention is
+	// `<dimension>:<value>` so a single upstream can carry orthogonal labels:
+	//
+	//   tags:
+	//     - tier:main               # used by .preferTag for tiering
+	//     - region:us-east          # used by .spreadAcrossTags('region:')
+	//     - sequencer:op-base       # shared-fate label
+	//
+	// Bare strings (no prefix) work too. Patterns supported by every
+	// stdlib tag method: glob (`*`, `?`) and `!negation`.
+	//
+	// Tier convention: `tier:fallback` declares a fallback-tier upstream
+	// (matches the long-standing eRPC convention; the default policy
+	// looks for `!tier:fallback` as the primary tier).
+	//
+	// The legacy `group: X` / `cohort: Y` YAML keys are accepted at
+	// load time only — UnmarshalYAML rewrites them as `tier:X` /
+	// `cohort:Y` tags and forgets them. There is no Go-level Group or
+	// Cohort field; programmatic code uses Tags directly.
+	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
@@ -637,38 +733,128 @@ type UpstreamConfig struct {
 	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
-	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
 	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
+
+	// Routing holds per-upstream routing hints consumed by the selection
+	// policy. `scoreMultipliers` bias this upstream's rank inside
+	// `sortByScore` (see SelectionPolicyConfig): the engine resolves the
+	// matching entry for each (network, method, finality) tick and exposes
+	// the resulting weight map to the eval function as `u.scoreMultipliers`.
+	// When the upstream omits its own `routing` block, `ApplyDefaults`
+	// inherits the project-level `upstreamDefaults.routing` (all-or-nothing,
+	// matching the Tags inheritance pattern).
+	Routing *UpstreamRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
 }
 
-// UnmarshalYAML provides backward compatibility for old single failsafe object format
-func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// Define a type alias to avoid recursion
-	type rawUpstreamConfig UpstreamConfig
-	raw := (*rawUpstreamConfig)(u)
+// UpstreamRoutingConfig holds per-upstream routing hints. Today this is
+// the home of `scoreMultipliers` (per-upstream weight overrides folded
+// into `sortByScore`) and `probe` (per-upstream opt-out for the
+// selection policy's `probeExcluded` shadow-mirror traffic).
+type UpstreamRoutingConfig struct {
+	// ScoreMultipliers biases this upstream's rank. Each entry is a
+	// matcher (network/method/finality) plus weight overrides; the engine
+	// resolves the first matching entry per tick and hands it to the eval
+	// function as `u.scoreMultipliers`. `sortByScore` merges it over the
+	// base weights by default (see its `multipliers` option).
+	ScoreMultipliers []*ScoreMultiplierConfig `yaml:"scoreMultipliers,omitempty" json:"scoreMultipliers,omitempty"`
+	// ScoreLatencyQuantile selects which response-time quantile feeds the
+	// score (e.g. 0.9 → p90). When unset, the policy's own
+	// `sortByScore({ latencyQuantile })` (default p70) applies.
+	ScoreLatencyQuantile float64 `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile,omitempty"`
+	// Probe gates whether the selection policy's `probeExcluded` step
+	// may shadow-mirror real requests to THIS upstream when it's
+	// currently in the excluded set. `"on"` (default) opts in; `"off"`
+	// disables probing entirely — the upstream stays excluded
+	// permanently once predicates trip until an operator intervenes
+	// (manual cordon/uncordon, or until the predicate stops matching
+	// via state-poller-driven structural metrics like head lag). Use
+	// `"off"` for pay-per-call vendors where shadow traffic eats quota.
+	Probe ProbeMode `yaml:"probe,omitempty" json:"probe,omitempty" tstype:"ProbeMode | \"on\" | \"off\""`
+}
 
-	// Try unmarshaling normally first
-	err := unmarshal(raw)
+// ProbeMode is the per-upstream `routing.probe` enum.
+type ProbeMode string
+
+const (
+	// ProbeModeOn — default. The selection policy may mirror sampled
+	// real requests to this upstream while it's excluded so it
+	// accumulates fresh tracker samples for natural re-admission.
+	ProbeModeOn ProbeMode = "on"
+	// ProbeModeOff — never mirror. Upstream stays excluded after
+	// predicates trip; only structural signals (head lag, etc.) can
+	// drive re-admission.
+	ProbeModeOff ProbeMode = "off"
+)
+
+// ScoreMultiplierConfig is one per-upstream weight override. The matcher
+// fields (network/method/finality) scope the entry — leave them empty (or
+// `"*"`) for an entry that applies to every request. Weight fields are
+// pointers so "unset" is distinct from "zero": an unset weight inherits
+// from the policy's base weights (merge mode), a zero weight removes that
+// metric's contribution. `overall` scales the upstream's FINAL score — a
+// preference dial where >1 prefers this upstream and <1 avoids it.
+type ScoreMultiplierConfig struct {
+	Network         string              `yaml:"network,omitempty" json:"network,omitempty"`
+	Method          string              `yaml:"method,omitempty" json:"method,omitempty"`
+	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
+	Overall         *float64            `yaml:"overall,omitempty" json:"overall,omitempty"`
+	ErrorRate       *float64            `yaml:"errorRate,omitempty" json:"errorRate,omitempty"`
+	RespLatency     *float64            `yaml:"respLatency,omitempty" json:"respLatency,omitempty"`
+	ThrottledRate   *float64            `yaml:"throttledRate,omitempty" json:"throttledRate,omitempty"`
+	BlockHeadLag    *float64            `yaml:"blockHeadLag,omitempty" json:"blockHeadLag,omitempty"`
+	FinalizationLag *float64            `yaml:"finalizationLag,omitempty" json:"finalizationLag,omitempty"`
+	Misbehaviors    *float64            `yaml:"misbehaviors,omitempty" json:"misbehaviors,omitempty"`
+	// TotalRequests is accepted for backward compatibility but no longer
+	// influences scoring (the score is computed from rolling-window rates,
+	// not absolute request counts).
+	TotalRequests *float64 `yaml:"totalRequests,omitempty" json:"totalRequests,omitempty"`
+}
+
+// UnmarshalYAML accepts the current canonical schema, plus three legacy
+// shapes for backward compatibility at load time only:
+//
+//  1. `failsafe:` as a single object (pre-list shape).
+//  2. `group:` / `cohort:` keys at the top level — rewritten as
+//     `tier:<value>` / `cohort:<value>` entries in `tags`.
+//
+// The `routing:` block (`scoreMultipliers`, `scoreLatencyQuantile`) is a
+// first-class field (`u.Routing`) — it parses straight through the
+// canonical schema and survives to runtime; the `group`/`cohort` keys are
+// the only load-time-only rewrites left here.
+func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Strict-schema shadow: inlines the canonical config and adds the
+	// deprecated yaml-only keys. yaml v3 ignores `json:"-"` so this is safe.
+	type canonicalUpstreamConfig UpstreamConfig
+	type shadow struct {
+		canonicalUpstreamConfig `yaml:",inline"`
+		Group                   string `yaml:"group,omitempty"`
+		Cohort                  string `yaml:"cohort,omitempty"`
+	}
+
+	var s shadow
+	err := unmarshal(&s)
 	if err == nil {
+		*u = UpstreamConfig(s.canonicalUpstreamConfig)
+		mergeLegacyLabelKeysIntoTags(u, s.Group, s.Cohort)
 		return nil
 	}
 
-	// Save the original error - it might be more informative
 	originalErr := err
-
-	// Check if the error is about unknown fields - if so, return it as is
-	// This preserves errors like "field maxCount not found in type"
 	errStr := err.Error()
+	// Unknown-field errors are real schema bugs; surface them as-is.
 	if strings.Contains(errStr, "not found in type") ||
 		strings.Contains(errStr, "unknown field") {
 		return originalErr
 	}
 
-	// If that fails, try the old format with single failsafe object
-	type oldUpstreamConfig struct {
+	// Legacy shape: `failsafe:` as a single object instead of a list.
+	type oldShadow struct {
 		Id                           string                   `yaml:"id,omitempty"`
 		Type                         UpstreamType             `yaml:"type,omitempty"`
+		Tags                         []string                 `yaml:"tags,omitempty"`
 		Group                        string                   `yaml:"group,omitempty"`
+		Cohort                       string                   `yaml:"cohort,omitempty"`
+		Routing                      *UpstreamRoutingConfig   `yaml:"routing,omitempty"`
 		VendorName                   string                   `yaml:"vendorName,omitempty"`
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
@@ -679,21 +865,17 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty"`
 		RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty"`
 		RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty"`
-		Routing                      *RoutingConfig           `yaml:"routing,omitempty"`
 		Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty"`
 	}
 
-	var old oldUpstreamConfig
+	var old oldShadow
 	if err := unmarshal(&old); err != nil {
-		// If both formats fail, return the original error as it's likely more informative
-		// about the actual problem (like invalid field names)
 		return originalErr
 	}
 
-	// Convert old format to new format
 	u.Id = old.Id
 	u.Type = old.Type
-	u.Group = old.Group
+	u.Tags = old.Tags
 	u.VendorName = old.VendorName
 	u.Endpoint = old.Endpoint
 	u.Evm = old.Evm
@@ -703,18 +885,55 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
 	u.RateLimitBudget = old.RateLimitBudget
 	u.RateLimitAutoTune = old.RateLimitAutoTune
-	u.Routing = old.Routing
 	u.Shadow = old.Shadow
 
 	if old.Failsafe != nil {
-		// Ensure MatchMethod has a default value for backward compatibility
 		if old.Failsafe.MatchMethod == "" {
 			old.Failsafe.MatchMethod = "*"
 		}
 		u.Failsafe = []*FailsafeConfig{old.Failsafe}
 	}
 
+	mergeLegacyLabelKeysIntoTags(u, old.Group, old.Cohort)
+	if old.Routing != nil {
+		u.Routing = old.Routing
+	}
 	return nil
+}
+
+// HasTag returns true if `u.Tags` contains the given exact tag. For
+// glob / prefix matching, do it at the call site or in JS via `byTag`.
+func (u *UpstreamConfig) HasTag(tag string) bool {
+	for _, t := range u.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeLegacyLabelKeysIntoTags appends `tier:<group>` / `cohort:<cohort>`
+// to u.Tags for the deprecated yaml-only keys, deduplicating against
+// what's already there. Called once from UnmarshalYAML; not exported.
+func mergeLegacyLabelKeysIntoTags(u *UpstreamConfig, group, cohort string) {
+	has := func(tag string) bool {
+		for _, t := range u.Tags {
+			if t == tag {
+				return true
+			}
+		}
+		return false
+	}
+	if group != "" {
+		if t := "tier:" + group; !has(t) {
+			u.Tags = append(u.Tags, t)
+		}
+	}
+	if cohort != "" {
+		if t := "cohort:" + cohort; !has(t) {
+			u.Tags = append(u.Tags, t)
+		}
+	}
 }
 
 func (c *UpstreamConfig) Copy() *UpstreamConfig {
@@ -736,9 +955,6 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 	if c.JsonRpc != nil {
 		copied.JsonRpc = c.JsonRpc.Copy()
-	}
-	if c.Routing != nil {
-		copied.Routing = c.Routing.Copy()
 	}
 	if c.RateLimitAutoTune != nil {
 		copied.RateLimitAutoTune = c.RateLimitAutoTune.Copy()
@@ -806,56 +1022,6 @@ func (c *UpstreamIntegrityEthGetBlockReceiptsConfig) Copy() *UpstreamIntegrityEt
 	}
 
 	return copyCfg
-}
-
-type RoutingConfig struct {
-	ScoreMultipliers     []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
-	ScoreLatencyQuantile float64                  `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile"`
-}
-
-func (c *RoutingConfig) Copy() *RoutingConfig {
-	if c == nil {
-		return nil
-	}
-
-	copied := &RoutingConfig{}
-
-	if c.ScoreMultipliers != nil {
-		copied.ScoreMultipliers = make([]*ScoreMultiplierConfig, len(c.ScoreMultipliers))
-		for i, multiplier := range c.ScoreMultipliers {
-			copied.ScoreMultipliers[i] = multiplier.Copy()
-		}
-	}
-
-	return copied
-}
-
-type ScoreMultiplierConfig struct {
-	Network         string              `yaml:"network,omitempty" json:"network,omitempty"`
-	Method          string              `yaml:"method,omitempty" json:"method,omitempty"`
-	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
-	Overall         *float64            `yaml:"overall" json:"overall"`
-	ErrorRate       *float64            `yaml:"errorRate" json:"errorRate"`
-	RespLatency     *float64            `yaml:"respLatency" json:"respLatency"`
-	TotalRequests   *float64            `yaml:"totalRequests" json:"totalRequests"`
-	ThrottledRate   *float64            `yaml:"throttledRate" json:"throttledRate"`
-	BlockHeadLag    *float64            `yaml:"blockHeadLag" json:"blockHeadLag"`
-	FinalizationLag *float64            `yaml:"finalizationLag" json:"finalizationLag"`
-	Misbehaviors    *float64            `yaml:"misbehaviors" json:"misbehaviors"`
-}
-
-func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
-	if c == nil {
-		return nil
-	}
-	copied := &ScoreMultiplierConfig{}
-	*copied = *c
-	// Deep copy the Finality array
-	if c.Finality != nil {
-		copied.Finality = make([]DataFinalityState, len(c.Finality))
-		copy(copied.Finality, c.Finality)
-	}
-	return copied
 }
 
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
@@ -1428,6 +1594,31 @@ type ConsensusPolicyConfig struct {
 	//
 	// Same shape as MaxWaitOnResult; defaults applied when consensus is set.
 	MaxWaitOnEmpty *AdaptiveDuration `yaml:"maxWaitOnEmpty,omitempty" json:"maxWaitOnEmpty,omitempty" tstype:"Duration | AdaptiveDuration"`
+
+	// RequiredParticipants enforces a minimum number of consensus
+	// participants carrying a given tag. Each entry says "at least
+	// `minParticipants` of the upstreams that participate must match
+	// `tag`". The engine front-loads enough tag-matching upstreams into
+	// the participant set so the first `maxParticipants` drawn satisfy
+	// every entry — without changing `maxParticipants` itself.
+	//
+	// Best-effort and governed by the EXISTING consensus behaviors: if a
+	// required group has fewer healthy upstreams than requested (or the
+	// quotas can't all fit within `maxParticipants`), consensus simply
+	// runs with what it can promote and the resulting participation is
+	// handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
+	// like any other low-participation tick. Empty (default) = disabled.
+	RequiredParticipants []*ConsensusRequiredParticipant `yaml:"requiredParticipants,omitempty" json:"requiredParticipants,omitempty"`
+}
+
+// ConsensusRequiredParticipant is one tag-quota entry for
+// `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
+// matched against each upstream's `tags`; `MinParticipants` is the minimum
+// number of matching upstreams that must be in the consensus participant
+// set. A single upstream can satisfy multiple entries it matches.
+type ConsensusRequiredParticipant struct {
+	Tag             string `yaml:"tag" json:"tag"`
+	MinParticipants int    `yaml:"minParticipants" json:"minParticipants"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1463,6 +1654,17 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 
 	copied.MaxWaitOnResult = c.MaxWaitOnResult.Copy()
 	copied.MaxWaitOnEmpty = c.MaxWaitOnEmpty.Copy()
+
+	if c.RequiredParticipants != nil {
+		copied.RequiredParticipants = make([]*ConsensusRequiredParticipant, len(c.RequiredParticipants))
+		for i, rp := range c.RequiredParticipants {
+			if rp == nil {
+				continue
+			}
+			rpCopy := *rp
+			copied.RequiredParticipants[i] = &rpCopy
+		}
+	}
 
 	return copied
 }
@@ -1748,10 +1950,6 @@ type ProxyPoolConfig struct {
 	Urls []string `yaml:"urls" json:"urls"`
 }
 
-type DeprecatedProjectHealthCheckConfig struct {
-	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
-}
-
 type MethodsConfig struct {
 	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
 	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
@@ -2007,91 +2205,119 @@ type EvmIntegrityConfig struct {
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 }
 
-type SelectionPolicyConfig struct {
-	EvalInterval     Duration       `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
-	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
-	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
-	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
-	ResampleInterval Duration       `yaml:"resampleInterval,omitempty" json:"resampleInterval" tstype:"Duration"`
-	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount"`
+// EvalScope picks the grain at which the selection policy evaluates AND
+// at which the health tracker stores per-upstream metrics. One knob
+// covers what `evalPerMethod` + `evalPerFinality` used to cover as two
+// bools — and pulls the tracker's metric grain in lockstep so a
+// predicate like `errorRateAbove(0.5)` in a (method, finality)-grained
+// slot sees genuinely (method, finality)-specific error rate, not the
+// per-method aggregate.
+//
+// Values are kebab-case strings so they round-trip through YAML / JSON
+// / Go enum literals cleanly. The TS SDK exports the same names in
+// CAPITAL_SNAKE_CASE with these same string values, so `evalScope:
+// NETWORK` in a TS config and `evalScope: network` in a YAML config
+// produce identical Go state.
+type EvalScope string
 
-	evalFunctionOriginal string `yaml:"-" json:"-"`
+const (
+	// EvalScopeNetwork — single slot per network. Methods + finalities
+	// share. Default. Lowest cardinality + lowest tracker memory.
+	EvalScopeNetwork EvalScope = "network"
+	// EvalScopeNetworkMethod — slot per (network, method). Finalities
+	// share. Useful when one upstream is fast on `eth_call` but slow on
+	// `trace_filter`.
+	EvalScopeNetworkMethod EvalScope = "network-method"
+	// EvalScopeNetworkFinality — slot per (network, finality). Methods
+	// share. Useful when realtime reads weight freshness differently
+	// from finalized reads.
+	EvalScopeNetworkFinality EvalScope = "network-finality"
+	// EvalScopeNetworkMethodFinality — slot per (network, method,
+	// finality). Most granular routing. Cardinality scales linearly;
+	// each slot's ticker only spins up after the first request for
+	// that bucket lands.
+	EvalScopeNetworkMethodFinality EvalScope = "network-method-finality"
+)
+
+// SelectionPolicyConfig declares the per-network upstream selection policy.
+//
+// The eval function is JavaScript that receives `upstreams` and `ctx` and
+// returns the ordered list of upstreams that should serve traffic for the
+// network/method scope. The chainable std-lib (see internal/policy/stdlib)
+// provides the building blocks (sortByScore, removeByLag, stickyPrimary,
+// probeExcluded, etc.) — see specs/selection-policy/feature.md.
+type SelectionPolicyConfig struct {
+	EvalInterval Duration `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
+	// EvalScope picks the slot grain — and the matching tracker grain
+	// (see `EvalScope` doc). Default `network` (one slot per network).
+	// Tighter scopes let predicates like `errorRateAbove(0.5)` see
+	// genuinely (method, finality)-specific health.
+	EvalScope EvalScope `yaml:"evalScope,omitempty" json:"evalScope" tstype:"EvalScope | \"network\" | \"network-method\" | \"network-finality\" | \"network-method-finality\""`
+	// EvalPerMethod is a config-load-time alias that translates to
+	// EvalScope. Pointer-typed so SetDefaults can distinguish "key
+	// absent" (nil) from "key explicitly false". Niled out after
+	// translation — the engine + downstream code only ever consult
+	// EvalScope. Kept out of the public TS surface (`tstype:"-"`); the
+	// canonical knob is `evalScope`.
+	EvalPerMethod *bool `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty" tstype:"-"`
+	// EvalPerFinality — same shape and translation behavior as
+	// EvalPerMethod, for the finality axis.
+	EvalPerFinality *bool    `yaml:"evalPerFinality,omitempty" json:"evalPerFinality,omitempty" tstype:"-"`
+	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
+	// EvalFunc is the per-tick evaluation function. In YAML it's a JS
+	// source string; in TS configs it's a real arrow function compiled
+	// into `CompiledProgram` at config load.
+	// Signature: `(upstreams, ctx) => Upstream[]`.
+	// See specs/selection-policy/feature.md for the stdlib reference.
+	EvalFunc string `yaml:"evalFunc,omitempty" json:"evalFunc" tstype:"SelectionPolicyEvalFunction | string"`
+
+	// DisableTickerForTest skips spawning the per-slot ticker goroutine.
+	// Tests that don't need background re-eval set this to avoid
+	// accumulating goroutines across hundreds of sub-tests + the per-tick
+	// JS overhead that pushes the race-detector CI past budget. Tests
+	// that need to step the engine call `policy.TickForTest` instead.
+	DisableTickerForTest bool `yaml:"-" json:"-"`
+
+	// CompiledProgram is set by SetDefaults/Validate; never marshalled.
+	CompiledProgram *sobek.Program `yaml:"-" json:"-"`
+	// EvalFuncOriginal preserves the source for diagnostics + tooling.
+	EvalFuncOriginal string `yaml:"-" json:"-"`
+
+	// LegacySelectionPolicy stashes deprecated `evalFunction` / resample*
+	// keys captured at config-load time. The legacy translator wraps
+	// the legacy eval function into a modern `Eval` and emits warnings.
+	// Never serialized.
+	LegacySelectionPolicy *LegacySelectionPolicyFields `yaml:"-" json:"-"`
 }
 
-func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawSelectionPolicyConfig struct {
-		EvalInterval     Duration `yaml:"evalInterval"`
-		EvalPerMethod    bool     `yaml:"evalPerMethod"`
-		EvalFunction     string   `yaml:"evalFunction"`
-		ResampleInterval Duration `yaml:"resampleInterval"`
-		ResampleCount    int      `yaml:"resampleCount"`
-		ResampleExcluded bool     `yaml:"resampleExcluded"`
-	}
-	raw := rawSelectionPolicyConfig{}
+// LegacySelectionPolicyFields mirrors the deprecated keys that used to
+// live on SelectionPolicyConfig. None survive translation.
+type LegacySelectionPolicyFields struct {
+	EvalFunction     string   `yaml:"evalFunction,omitempty"`
+	ResampleExcluded bool     `yaml:"resampleExcluded,omitempty"`
+	ResampleInterval Duration `yaml:"resampleInterval,omitempty"`
+	ResampleCount    int      `yaml:"resampleCount,omitempty"`
+}
 
-	if err := unmarshal(&raw); err != nil {
+// UnmarshalYAML captures legacy selectionPolicy keys (`evalFunction`,
+// resampleExcluded, resampleInterval, resampleCount) into
+// LegacySelectionPolicy for the post-decode translator hook.
+func (s *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type canonicalSelectionPolicyConfig SelectionPolicyConfig
+	type shadow struct {
+		canonicalSelectionPolicyConfig `yaml:",inline"`
+		LegacySelectionPolicyFields    `yaml:",inline"`
+	}
+	var sh shadow
+	if err := unmarshal(&sh); err != nil {
 		return err
 	}
-	*c = SelectionPolicyConfig{
-		EvalInterval:     raw.EvalInterval,
-		EvalFunction:     nil,
-		EvalPerMethod:    raw.EvalPerMethod,
-		ResampleInterval: raw.ResampleInterval,
-		ResampleCount:    raw.ResampleCount,
-		ResampleExcluded: raw.ResampleExcluded,
+	*s = SelectionPolicyConfig(sh.canonicalSelectionPolicyConfig)
+	if sh.LegacySelectionPolicyFields != (LegacySelectionPolicyFields{}) {
+		lf := sh.LegacySelectionPolicyFields
+		s.LegacySelectionPolicy = &lf
 	}
-
-	if raw.EvalFunction != "" {
-		evalFunction, err := CompileFunction(raw.EvalFunction)
-		c.EvalFunction = evalFunction
-		c.evalFunctionOriginal = raw.EvalFunction
-		if err != nil {
-			return fmt.Errorf("failed to compile selectionPolicy.evalFunction: %v", err)
-		}
-	}
-
 	return nil
-}
-
-func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
-	evf := ""
-	if c.evalFunctionOriginal != "" {
-		evf = c.evalFunctionOriginal
-	} else if c.EvalFunction != nil {
-		evf = "<function>"
-	}
-	m := map[string]interface{}{
-		"evalPerMethod":    c.EvalPerMethod,
-		"resampleExcluded": c.ResampleExcluded,
-		"resampleCount":    c.ResampleCount,
-	}
-	if c.EvalInterval != 0 {
-		m["evalInterval"] = c.EvalInterval
-	}
-	if c.ResampleInterval != 0 {
-		m["resampleInterval"] = c.ResampleInterval
-	}
-	if evf != "" {
-		m["evalFunction"] = evf
-	}
-	return m, nil
-}
-
-func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
-	evf := "<undefined>"
-	if c.evalFunctionOriginal != "" {
-		evf = c.evalFunctionOriginal
-	} else if c.EvalFunction != nil {
-		evf = "<function>"
-	}
-	return sonic.Marshal(map[string]interface{}{
-		"evalInterval":     c.EvalInterval,
-		"evalPerMethod":    c.EvalPerMethod,
-		"evalFunction":     evf,
-		"resampleInterval": c.ResampleInterval,
-		"resampleCount":    c.ResampleCount,
-		"resampleExcluded": c.ResampleExcluded,
-	})
 }
 
 type AuthType string
@@ -2266,34 +2492,178 @@ func (c *NetworkConfig) NetworkId() string {
 	}
 }
 
+// tsFunctionSentinelPrefix marks a SelectionPolicy.EvalFunc whose actual
+// implementation lives as a real sobek function in `globalThis.__erpcFns`
+// (populated by running `Config.UserScript` inside the policy-engine pool
+// runtime). The suffix is the function's lookup id. Sentinels NEVER hit
+// `sobek.Compile` and the function is never stringified — when the engine
+// needs to evaluate, it pulls the runtime-native function out of the
+// registry and calls it directly. This preserves closures + module-level
+// helpers that the user wrote in the TS config alongside the function.
+const tsFunctionSentinelPrefix = "__ts_fn__:"
+
+// tsLoaderWalker is JS that runs INSIDE the user script. After the user's
+// `createConfig(...)` builds the default export, the walker:
+//
+//   - assigns a stable sequential id to each function-typed leaf
+//     in the default export's object tree;
+//   - registers that function on `globalThis.__erpcFns[id]` so the
+//     engine can look it up natively in this runtime;
+//   - stamps `fn.__erpcFnId = id` on the function value so the
+//     LOAD-time JSON.stringify replacer can substitute the sentinel
+//     string `"__ts_fn__:<id>"` into the serialized form (which then
+//     becomes the value of `SelectionPolicyConfig.EvalFunc` in Go).
+//
+// The walk is order-deterministic, so the same user script produces the
+// same ids in every pool runtime that subsequently runs it. That's what
+// keeps the load-time sentinel ids and the pool-runtime registry ids in
+// lockstep without sharing state across runtimes.
+const tsLoaderWalker = `
+;(function () {
+  if (!globalThis.__erpcFns) globalThis.__erpcFns = {};
+  var __counter = 0;
+  function walk(node) {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i++) walk(node[i]);
+      return;
+    }
+    if (typeof node !== 'object') return;
+    for (var k in node) {
+      if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+      var v = node[k];
+      if (typeof v === 'function') {
+        var id = 'fn_' + (__counter++);
+        globalThis.__erpcFns[id] = v;
+        try { Object.defineProperty(v, '__erpcFnId', { value: id, enumerable: false, configurable: true, writable: false }); } catch (_) {}
+      } else if (v && typeof v === 'object') {
+        walk(v);
+      }
+    }
+  }
+  if (typeof exports !== 'undefined' && exports && exports.default) {
+    walk(exports.default);
+  }
+})();
+`
+
+// loadConfigFromTypescript compiles the user's TS/JS config and produces
+// (a) the decoded Config struct, with each function-typed leaf replaced
+// by a `__ts_fn__:<id>` sentinel string in the corresponding string field
+// (e.g. `SelectionPolicyConfig.EvalFunc`); and (b) a compiled *sobek.Program
+// of the user's whole script, attached to `cfg.UserScript`.
+//
+// The policy-engine runtime pool runs `cfg.UserScript` once per acquired
+// runtime (via the primer). That evaluates the user's helpers + imports
+// natively in the runtime AND populates `globalThis.__erpcFns` with the
+// real function values. At per-tick eval time, the engine looks up the
+// function in that registry and invokes it directly — no `.toString()`,
+// no `sobek.Compile`, no JSON-string round-trip.
+//
+// This means closures, imports, and module-level helpers in the user's
+// TS file flow naturally into the evalFunc:
+//
+//   const weights = { hot: { errorRate: 8 }, cold: { errorRate: 4 } };
+//   selectionPolicy: { evalFunc: (u, ctx) => u.sortByScore((u) => weights[u.id] || PREFER_FASTEST) }
+//
+// works as written, because `weights` exists in the same module scope
+// as the function in every pool runtime.
+//
+// Non-function fields still flow through JSON+YAML so the existing
+// `UnmarshalYAML` hooks (strict-schema validation, back-compat shadows
+// for `routing:` / `group:` / `cohort:`) keep firing identically to the
+// .yaml path.
 func loadConfigFromTypescript(filename string) (*Config, error) {
-	contents, err := CompileTypeScript(filename)
+	jsSource, err := CompileTypeScript(filename)
 	if err != nil {
 		return nil, err
 	}
 
+	// Append the walker so it runs in EVERY runtime that evaluates this
+	// program — including the temp runtime used here AND each policy-
+	// engine pool runtime later (via primer.RunProgram). Same source =
+	// same deterministic id assignment, so the sentinel ids encoded into
+	// the Config struct line up with the registry the pool builds.
+	wrapped := jsSource + "\n" + tsLoaderWalker
+	userScript, err := sobek.Compile(filename, wrapped, false)
+	if err != nil {
+		return nil, fmt.Errorf("compile ts config: %w", err)
+	}
+
+	// Run once in a temp runtime to (a) walk the default export and (b)
+	// pull out the non-function fields. The temp runtime is discarded
+	// after this; the pool will recreate the same state via the primer.
 	runtime, err := NewRuntime()
 	if err != nil {
 		return nil, err
 	}
-	_, err = runtime.Evaluate(contents)
-	if err != nil {
+	if _, err := runtime.VM().RunProgram(userScript); err != nil {
 		return nil, err
 	}
 
 	defaultExport := runtime.Exports().Get("default")
-
-	// Get the config object default-exported from the TS code
-	v := defaultExport.(*sobek.Object)
-	if v == nil {
+	if defaultExport == nil || sobek.IsUndefined(defaultExport) || sobek.IsNull(defaultExport) {
 		return nil, fmt.Errorf("config object must be default exported from TypeScript code AND must be the last statement in the file")
 	}
 
-	var cfg Config
-	err = MapJavascriptObjectToGo(v, &cfg)
+	// JSON.stringify with a replacer that converts each function value
+	// to its `__ts_fn__:<id>` sentinel string (the walker stamped
+	// `__erpcFnId` on the function). NO `.toString()` is involved —
+	// the function lives on as a real sobek value in `__erpcFns`, and
+	// the sentinel is just a lookup key.
+	if err := runtime.VM().GlobalObject().Set("__erpcConfigToMarshal", defaultExport); err != nil {
+		return nil, fmt.Errorf("ts config marshal setup: %w", err)
+	}
+	defer func() {
+		_ = runtime.VM().GlobalObject().Delete("__erpcConfigToMarshal")
+	}()
+	jsonValue, err := runtime.VM().RunString(`
+		JSON.stringify(__erpcConfigToMarshal, (k, v) => {
+			if (typeof v === 'function') {
+				if (v.__erpcFnId) return ` + "`" + tsFunctionSentinelPrefix + `${v.__erpcFnId}` + "`" + `;
+				// Function the walker didn't catch (orphaned reference,
+				// inside an Array.prototype method, etc.). Fall through
+				// to undefined so JSON.stringify omits it rather than
+				// emitting a function-as-string blob.
+				return undefined;
+			}
+			return v;
+		})
+	`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ts config json-stringify: %w", err)
+	}
+	if jsonValue == nil || sobek.IsUndefined(jsonValue) || sobek.IsNull(jsonValue) {
+		return nil, fmt.Errorf("config default export serialized to null/undefined")
+	}
+	jsonBytes := []byte(jsonValue.String())
+
+	// yaml.v3 accepts JSON (it's a subset of YAML) AND runs all
+	// UnmarshalYAML hooks during decode. Strict-decode so typos in TS
+	// configs surface the same way they do in YAML configs.
+	var cfg Config
+	decoder := yaml.NewDecoder(bytes.NewReader(jsonBytes))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("ts config decode: %w", err)
 	}
 
+	// Attach the compiled program — the policy engine's pool primer will
+	// run it once per acquired runtime to rebuild `__erpcFns` natively.
+	cfg.UserScript = userScript
+
 	return &cfg, nil
+}
+
+// IsTSFunctionSentinel reports whether a SelectionPolicyConfig.EvalFunc
+// string carries a TS-loader sentinel pointing into `globalThis.__erpcFns`
+// (as opposed to a YAML-style JS source string the engine should compile).
+func IsTSFunctionSentinel(s string) bool {
+	return strings.HasPrefix(s, tsFunctionSentinelPrefix)
+}
+
+// TSFunctionSentinelID extracts the `__erpcFns` lookup id from a sentinel
+// EvalFunc value. Caller-checks `IsTSFunctionSentinel` first.
+func TSFunctionSentinelID(s string) string {
+	return strings.TrimPrefix(s, tsFunctionSentinelPrefix)
 }

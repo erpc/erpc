@@ -74,6 +74,7 @@ func NewERPC(
 		rateLimitersRegistry,
 		vendorsRegistry,
 		proxyPoolRegistry,
+		cfg.UserScript,
 	)
 	if err != nil {
 		return nil, err

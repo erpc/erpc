@@ -103,15 +103,15 @@ links to its `.llms.txt` companion.
   - [Networks](https://docs.erpc.cloud/config/projects/networks.llms.txt) — A network is a chain (`evm:1`, `evm:42161`, …) and how eRPC serves it — failsafe, selection, integrity, static responses, aliasing.
   - [Upstreams](https://docs.erpc.cloud/config/projects/upstreams.llms.txt) — An upstream is one or more RPC endpoints that serve one or more EVM networks — with failsafe, rate limits, scoring, block-availability bounds, and per-method filters.
   - [Providers](https://docs.erpc.cloud/config/projects/providers.llms.txt) — One-line endpoints that fan out across every chain a third-party RPC vendor supports.
-  - [Selection policies](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — Selection policies control which upstreams are eligible to serve traffic by running a JS eval function on a periodic interval — like a healthcheck that gates routing.
+  - [Selection policy](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — One JavaScript function per network decides which upstreams serve which methods, in what order. Order is law — missing means excluded.
   - [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Configure Cross-Origin Resource Sharing (CORS) per project so browser-based frontends can call eRPC directly — control which origins, methods, and headers are permitted.
 - **Failsafe**
   - [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Bound how long a request may take — fixed or quantile-adaptive, with per-method and per-finality scoping.
   - [Retry](https://docs.erpc.cloud/config/failsafe/retry.llms.txt) — Replay transient failures with backoff — empty-result handling, network-scope failover, per-method scoping.
   - [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — Race a backup request to a second upstream when the primary is slow — quantile-adaptive delay with min/max guard rails.
-  - [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — Temporarily remove an upstream from rotation after sustained failure — three-state breaker with rolling-window thresholds.
   - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Consensus policy compares responses from multiple upstreams and returns the agreed result, detecting misbehaving nodes and providing deterministic behavior during faults.
   - [Integrity](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
+  - [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — How eRPC trips a failing upstream out of rotation — via the Selection Policy's excludeIf chain.
 - **Database**
   - [Drivers](https://docs.erpc.cloud/config/database/drivers.llms.txt) — Drivers define the storage backend for the eRPC cache — memory, Redis, PostgreSQL, DynamoDB. Each driver has its own timing, pool, and lock-retry knobs.
   - [EVM Cache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Cache JSON-RPC responses across one or more storage backends — non-blocking, finality-aware, reorg-safe.
@@ -137,6 +137,7 @@ links to its `.llms.txt` companion.
 - [Monitoring](https://docs.erpc.cloud/operation/monitoring.llms.txt) — Prometheus metrics for eRPC — enabling the metrics endpoint, cardinality reduction, custom histogram buckets, and the full available metrics reference.
 - [Tracing](https://docs.erpc.cloud/operation/tracing.llms.txt) — OpenTelemetry tracing for eRPC — OTLP export, sampling, force-trace rules, custom resource attributes.
 - [Admin](https://docs.erpc.cloud/operation/admin.llms.txt) — JSON-RPC admin endpoint for runtime introspection of eRPC's config, project health, and API-key management.
+- [Cordoning](https://docs.erpc.cloud/operation/cordoning.llms.txt) — Manually take an upstream out of rotation (and put it back) via the admin RPC — the operator's escape hatch for incident response, vendor maintenance windows, and forced failover testing.
 - [CLI & env vars](https://docs.erpc.cloud/operation/cli.llms.txt) — eRPC command-line flags, subcommands, and the environment variables that influence runtime behavior.
 - **Presets**
   - [DVN (LayerZero)](https://docs.erpc.cloud/presets/dvn-ready.llms.txt) — Minimal eRPC config for DVN operators — multi-provider unanimous consensus on the RPC methods cross-chain message verification depends on.
@@ -153,8 +154,8 @@ follow the hierarchy:
 - [evmJsonRpcCache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Cache JSON-RPC responses across one or more storage backends — non-blocking, finality-aware, reorg-safe.
 - [sharedState](https://docs.erpc.cloud/config/database/shared-state.llms.txt) — Share critical blockchain state across multiple eRPC instances — eliminates redundant upstream polling and improves integrity checks in horizontal-scaling deployments.
 - [Complete config example](https://docs.erpc.cloud/config/example.llms.txt) — A tour of every top-level section in an eRPC config — logLevel, server, metrics, database, projects, upstreams, networks, failsafe, and rateLimiters — with minimal and full examples in YAML and TypeScript.
-- [Failsafe](https://docs.erpc.cloud/config/failsafe.llms.txt) — Per-network and per-upstream failsafe policies — timeout, retry, hedge, circuit breaker, consensus — with per-method and per-finality scoping plus per-attempt observability.
-- [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — Temporarily remove an upstream from rotation after sustained failure — three-state breaker with rolling-window thresholds.
+- [Failsafe](https://docs.erpc.cloud/config/failsafe.llms.txt) — Per-network and per-upstream failsafe policies — timeout, retry, hedge, consensus, integrity — with per-method and per-finality scoping plus per-attempt observability.
+- [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — How eRPC trips a failing upstream out of rotation — via the Selection Policy's excludeIf chain.
 - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Consensus policy compares responses from multiple upstreams and returns the agreed result, detecting misbehaving nodes and providing deterministic behavior during faults.
 - [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — Race a backup request to a second upstream when the primary is slow — quantile-adaptive delay with min/max guard rails.
 - [Integrity & Empty Data](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
@@ -165,7 +166,7 @@ follow the hierarchy:
 - [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Configure Cross-Origin Resource Sharing (CORS) per project so browser-based frontends can call eRPC directly — control which origins, methods, and headers are permitted.
 - [Networks](https://docs.erpc.cloud/config/projects/networks.llms.txt) — A network is a chain (`evm:1`, `evm:42161`, …) and how eRPC serves it — failsafe, selection, integrity, static responses, aliasing.
 - [Providers](https://docs.erpc.cloud/config/projects/providers.llms.txt) — One-line endpoints that fan out across every chain a third-party RPC vendor supports.
-- [Selection Policies](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — Selection policies control which upstreams are eligible to serve traffic by running a JS eval function on a periodic interval — like a healthcheck that gates routing.
+- [Selection policy](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — One JavaScript function per network decides which upstreams serve which methods, in what order. Order is law — missing means excluded.
 - [Upstreams](https://docs.erpc.cloud/config/projects/upstreams.llms.txt) — An upstream is one or more RPC endpoints that serve one or more EVM networks — with failsafe, rate limits, scoring, block-availability bounds, and per-method filters.
 - [Rate Limiters](https://docs.erpc.cloud/config/rate-limiters.llms.txt) — Define shared budgets with per-method rules and assign them to projects, networks, upstreams, or auth strategies. Backed by Redis (distributed) or memory (local).
 - [Server](https://docs.erpc.cloud/config/server.llms.txt) — HTTP + gRPC listeners, TLS, timeouts, shutdown grace, trusted-proxy IP detection, response headers, error-detail controls, and domain-based project aliasing.
@@ -179,6 +180,7 @@ follow the hierarchy:
 - [Admin API](https://docs.erpc.cloud/operation/admin.llms.txt) — JSON-RPC admin endpoint for runtime introspection of eRPC's config, project health, and API-key management.
 - [Batch requests](https://docs.erpc.cloud/operation/batch.llms.txt) — eRPC deduplicates, fans out, and reassembles JSON-RPC batch requests — both inbound arrays from clients and outbound batches to upstreams.
 - [CLI & env vars](https://docs.erpc.cloud/operation/cli.llms.txt) — eRPC command-line flags, subcommands, and the environment variables that influence runtime behavior.
+- [Cordoning](https://docs.erpc.cloud/operation/cordoning.llms.txt) — Manually take an upstream out of rotation (and put it back) via the admin RPC — the operator's escape hatch for incident response, vendor maintenance windows, and forced failover testing.
 - [Directives](https://docs.erpc.cloud/operation/directives.llms.txt) — Per-request hints that override eRPC behavior — set via HTTP header (X-ERPC-*) or query parameter on any request.
 - [Healthcheck](https://docs.erpc.cloud/operation/healthcheck.llms.txt) — Built-in /healthcheck endpoint for Kubernetes readiness probes, liveness probes, and custom upstream health evaluation.
 - [Monitoring & metrics](https://docs.erpc.cloud/operation/monitoring.llms.txt) — Prometheus metrics for eRPC — enabling the metrics endpoint, cardinality reduction, custom histogram buckets, and the full available metrics reference.

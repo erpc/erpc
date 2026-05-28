@@ -3,6 +3,7 @@ package util
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -649,4 +650,144 @@ func TestInitializer_SyncOncePatternNoGoroutineLeak(t *testing.T) {
 	// sync.Once ensures only 1 ExecuteTasks goroutine + initializer internals.
 	// Without it, 20 goroutines would pile up blocking in waitForTasks.
 	assert.Less(t, after-before, 5)
+}
+
+// TestInitializer_RangeTaskStates_YieldsAllRegistered — the streaming
+// alternative to `Status().Tasks` must visit every registered task
+// with its current (name, state). This is the alloc-free API
+// `summarizeNetworkTasks` uses on the 200ms bootstrap-wait ticker;
+// missing tasks would mean we'd never see "all providers terminal"
+// and the loop would burn until the 30s timeout.
+func TestInitializer_RangeTaskStates_YieldsAllRegistered(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   false,
+	})
+	defer init.Stop(nil)
+
+	tasks := []*BootstrapTask{
+		NewBootstrapTask("alpha", func(ctx context.Context) error { return nil }),
+		NewBootstrapTask("beta", func(ctx context.Context) error { return nil }),
+		NewBootstrapTask("gamma", func(ctx context.Context) error { return nil }),
+	}
+	require.NoError(t, init.ExecuteTasks(appCtx, tasks...))
+
+	seen := make(map[string]TaskState)
+	init.RangeTaskStates(func(name string, state TaskState) bool {
+		seen[name] = state
+		return true
+	})
+
+	require.Len(t, seen, 3, "every registered task must be visited")
+	for _, want := range []string{"alpha", "beta", "gamma"} {
+		state, ok := seen[want]
+		require.True(t, ok, "task %q must appear in Range", want)
+		assert.Equal(t, TaskSucceeded, state, "task %q state must reflect completion", want)
+	}
+}
+
+// TestInitializer_RangeTaskStates_EarlyStop — returning false from
+// the callback halts iteration. Callers that find what they need
+// early (e.g. "any task is still running") shouldn't pay the cost of
+// walking the rest of the map.
+func TestInitializer_RangeTaskStates_EarlyStop(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, nil)
+	defer init.Stop(nil)
+
+	tasks := []*BootstrapTask{
+		NewBootstrapTask("a", func(ctx context.Context) error { return nil }),
+		NewBootstrapTask("b", func(ctx context.Context) error { return nil }),
+		NewBootstrapTask("c", func(ctx context.Context) error { return nil }),
+		NewBootstrapTask("d", func(ctx context.Context) error { return nil }),
+	}
+	require.NoError(t, init.ExecuteTasks(appCtx, tasks...))
+
+	visits := 0
+	init.RangeTaskStates(func(name string, state TaskState) bool {
+		visits++
+		return false // stop after first
+	})
+	assert.Equal(t, 1, visits, "Range must stop when callback returns false")
+}
+
+// TestInitializer_RangeTaskStates_AgreesWithStatus — semantic
+// equivalence with the old Status().Tasks path on the fields the
+// caller (summarizeNetworkTasks) actually consults.
+func TestInitializer_RangeTaskStates_AgreesWithStatus(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   false,
+	})
+	defer init.Stop(nil)
+
+	expectedErr := errors.New("boom")
+	tasks := []*BootstrapTask{
+		NewBootstrapTask("ok-task", func(ctx context.Context) error { return nil }),
+		NewBootstrapTask("fail-task", func(ctx context.Context) error { return expectedErr }),
+	}
+	_ = init.ExecuteTasks(appCtx, tasks...)
+
+	statusMap := make(map[string]TaskState)
+	for _, ts := range init.Status().Tasks {
+		statusMap[ts.Name] = ts.State
+	}
+
+	rangeMap := make(map[string]TaskState)
+	init.RangeTaskStates(func(name string, state TaskState) bool {
+		rangeMap[name] = state
+		return true
+	})
+
+	assert.Equal(t, statusMap, rangeMap,
+		"RangeTaskStates must agree with Status().Tasks on (name, state) for every entry")
+}
+
+// BenchmarkInitializer_RangeTaskStates_vs_Status — measures the
+// allocation diff between the two APIs on a 200-task fleet (matches
+// production scale: ~50 networks × ~4 tasks each). RangeTaskStates
+// should report zero allocs/op; Status materializes a `[]TaskStatus`
+// with N elements.
+func BenchmarkInitializer_RangeTaskStates_vs_Status(b *testing.B) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	init := NewInitializer(appCtx, &logger, &InitializerConfig{
+		TaskTimeout: time.Second,
+	})
+	defer init.Stop(nil)
+
+	tasks := make([]*BootstrapTask, 200)
+	for i := range tasks {
+		i := i
+		tasks[i] = NewBootstrapTask(
+			fmt.Sprintf("network/evm:%d/provider/p", i),
+			func(ctx context.Context) error { return nil },
+		)
+	}
+	_ = init.ExecuteTasks(appCtx, tasks...)
+
+	b.Run("Status_AllocsFullSlice", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			st := init.Status()
+			_ = st.Tasks
+		}
+	})
+
+	b.Run("RangeTaskStates_Streaming", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			count := 0
+			init.RangeTaskStates(func(name string, state TaskState) bool {
+				count++
+				return true
+			})
+		}
+	})
 }

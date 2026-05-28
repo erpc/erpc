@@ -68,7 +68,7 @@ Set `delay` to a plain duration string (`"200ms"`). The hedge fires when the pri
 
 Set `delay.quantile` instead of a fixed scalar. The hedge delay becomes the percentile of observed primary latency for that method, clamped to `[delay.min, delay.max]`. As upstreams warm and cool the hedge delay tracks reality automatically.
 
-The `delay` field accepts either a plain scalar (`"200ms"`) or an `AdaptiveDuration` object (`{ quantile, min, max, base }`). The legacy flat form (`quantile: 0.95, minDelay: 50ms, maxDelay: 2s` as siblings of `hedge`) is still accepted — siblings are folded into `delay` at parse time.
+The `delay` field accepts either a plain scalar (`"200ms"`) or an `AdaptiveDuration` object (`{ quantile, min, max, base }`). The flat shorthand (`quantile: 0.95, minDelay: 50ms, maxDelay: 2s` as siblings of `hedge`) is also accepted — siblings are folded into `delay` at parse time.
 
 ### Per-method tracking
 
@@ -150,7 +150,7 @@ sum by (upstream) (rate(erpc_network_hedge_winner_total[5m]))
 | `delay.max` | Duration | `999s` (runtime default) | Ceiling and cold-start fallback. When the quantile tracker has no samples, `max` is used as the fixed delay. |
 | `maxCount` | int | `1` | Max hedges per request beyond the primary. |
 
-The legacy flat form — `quantile`, `minDelay`, `maxDelay` as siblings of the `hedge` key — is still accepted and folded into `delay` at parse time. Prefer the object form for new configs.
+The flat shorthand — `quantile`, `minDelay`, `maxDelay` as siblings of the `hedge` key — is also accepted and folded into `delay` at parse time. The object form is more explicit; both produce the same runtime behaviour.
 
 ### Behavior summary
 

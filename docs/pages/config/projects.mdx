@@ -141,19 +141,9 @@ export default createConfig({
 | `forwardHeaders` | `string[]` | List of HTTP header names to forward from the client request to the outbound upstream call. The standard hop-by-hop headers (`Host`, `Connection`, etc.) are stripped regardless. Use for tracing headers (`X-Request-ID`, `traceparent`) or app-defined context. |
 | `ignoreMethods` | `string[]` | Project-level method **denylist** (matcher syntax). Blocks methods across every upstream in this project. Combine with `allowMethods` for fine-grained control. |
 | `allowMethods` | `string[]` | Project-level method **allowlist** (matcher syntax). When set, blocks every method NOT in the list. Implicitly sets `ignoreMethods: ["*"]` when `ignoreMethods` is not set. |
-| `routingStrategy` | `"score-based"\|"round-robin"` | How upstreams are picked among eligible ones for a single request. `score-based` (default) uses the scoring model. `round-robin` rotates evenly regardless of health. |
-| `scoreGranularity` | `"upstream"\|"method"` | Scope of scoring. `upstream` (default) computes one score per upstream. `method` computes a separate score per (upstream, method) pair — useful when an upstream is fast for `eth_call` but slow for `trace_*`. |
-| `scoreRefreshInterval` | duration | How often scores are recomputed. Default `30s`. |
-| `scoreMetricsWindowSize` | duration | Time window for the rolling metrics that feed the score. Default `10m`. |
-| `scorePenaltyDecayRate` | float 0..1 | Smoothing factor applied to the previous score on each refresh tick. Higher = smoother / slower to react; lower = faster reaction. Default `0.95`. Use a negative value (e.g. `-1`) to disable smoothing entirely (only the latest window matters). |
-| `scoreSwitchHysteresis` | float 0..1 | A challenger must beat the current primary by this fraction to trigger a primary switch. Default `0.10` (must be 10% better). Use a negative value to disable stickiness and always use the highest-scoring upstream. |
-| `scoreMinSwitchInterval` | duration | Minimum cooldown between primary switches. Default `2m`. Use a negative value to disable. |
-| `scoreMetricsMode` | `"compact"\|"detailed"\|"none"` | Cardinality control for the per-upstream score metrics. `compact` (default) emits one series per upstream with the overall score. `detailed` adds per-metric breakdowns (error rate, latency quantiles, block-head lag). `none` disables score metrics entirely (the scoring still runs internally). |
-| `healthCheck` | — | **Deprecated.** Project-level health-check config is no longer active. Configure health checks at the network level via `networks[].healthCheck` or in `networkDefaults.healthCheck` instead. The field is still parsed to avoid config-load errors on existing files, but it has no effect. |
+| `scoreMetricsWindowSize` | duration | Rolling window the health tracker uses for its per-upstream counters (errorRate, p50/p70/p95 latency, throttledRate, misbehaviorRate). 10 sliding buckets spanning this duration. Default `1m`. Paired with the default `evalInterval: 15s` (4 metric samples per window) and `probeExcluded.minSamplesWindow: 60s` for symmetric ranking + re-admission behaviour. See [Health-tracker window](/config/projects/selection-policies#health-tracker-rolling-window) and [Advanced tuning](/config/projects/selection-policies#advanced-tuning-coupling-between-evalinterval-scoremetricswindowsize--probe-window) for the coupling between these three knobs. |
 
-<Callout type="warning">
-	`healthCheck` at the project level is **deprecated** and has no effect. Move health-check configuration to `networks[].healthCheck` or `networkDefaults.healthCheck`.
-</Callout>
+Routing behaviour (which upstream is primary, when to flip, when to exclude, hysteresis, cooldowns, …) lives in **[`networks[].selectionPolicy`](/config/projects/selection-policies)**. The default policy gives you production-grade routing out of the box.
 
 ### `clusterKey` — top-level (shares behavior across the project tree)
 
