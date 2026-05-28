@@ -318,18 +318,32 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	},
 	"eth_getBalance": {
 		ReqRefs: SecondParam,
+		// Preserve "latest"/"finalized" tags so the upstream returns current
+		// chain state at execution time. On instant-finality chains every
+		// numeric block ≤ tip gets classified as Finalized, so translation
+		// would pin the request to a stale poller block and route it into
+		// the long-TTL finalized cache. The cache layer's ResolveCacheBlockRef
+		// still keys tag-preserved requests by the network's current tip.
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getTransactionCount": {
-		ReqRefs: SecondParam,
+		ReqRefs:               SecondParam,
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getCode": {
 		ReqRefs: SecondParam,
 	},
 	"eth_call": {
-		ReqRefs: SecondParam,
+		ReqRefs:               SecondParam,
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_estimateGas": {
-		ReqRefs: SecondParam,
+		ReqRefs:               SecondParam,
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"trace_call": {
 		// Support both param orderings used in the wild:
