@@ -101,9 +101,13 @@ func NewGenericHttpJsonRpcClient(
 		errorExtractor:  extractor,
 	}
 
-	// Default fallback transport (no proxy)
-	// Optimized for high-latency, high-RPS scenarios to prevent connection churn
+	// Default fallback transport (no proxy). Optimized for high-latency,
+	// high-RPS scenarios to prevent connection churn. DialContext via
+	// util.DefaultOutboundDialer enables kernel-level TCP keepalive so
+	// wedged outbound flows are detected within ~45s (3 missed probes)
+	// instead of the OS default tcp_keepalive_time of 2h on Linux.
 	transport := &http.Transport{
+		DialContext:           util.DefaultOutboundDialer().DialContext,
 		MaxIdleConns:          1024,
 		MaxIdleConnsPerHost:   256,
 		MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)

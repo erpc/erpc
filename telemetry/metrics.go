@@ -308,6 +308,23 @@ var (
 		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
 
+	// MetricGrpcBdsHardTimeoutTotal counts how many BDS gRPC calls hit the
+	// hard per-call ceiling (the bounded-wait timeout in SendRequest). A
+	// non-zero rate is the smoking-gun indicator of wedged H2 streams.
+	MetricGrpcBdsHardTimeoutTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "grpc_bds_hard_timeout_total",
+		Help:      "Total number of BDS gRPC calls that hit the bounded-wait hard timeout (caller abandoned the call before grpc-go returned).",
+	}, []string{"project", "upstream", "method"})
+
+	// MetricGrpcBdsConnReplacementsTotal counts how many times a BDS pool
+	// connection was force-closed by the stuck-call watchdog.
+	MetricGrpcBdsConnReplacementsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "grpc_bds_conn_replacements_total",
+		Help:      "Total number of BDS pool connections force-closed by the stuck-call watchdog.",
+	}, []string{"project", "upstream"})
+
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_received_total",
