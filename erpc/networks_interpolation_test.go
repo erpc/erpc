@@ -82,21 +82,21 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 	return network, upr
 }
 
-// Test "latest" tag translation to hex number
+// Test "latest" tag translation to hex number for a method that still
+// translates by default (eth_getStorageAt). eth_getBalance and friends
+// preserve the tag — see TestInterpolation_StateMethods_PreserveLatestByDefault.
 func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	// Mock the forwarded request to check the translated value
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
-			// Should receive hex block number instead of "latest"
-			return strings.Contains(body, "eth_getBalance") &&
+			return strings.Contains(body, "eth_getStorageAt") &&
 				strings.Contains(body, "\"0x") &&
 				!strings.Contains(body, "\"latest\"")
 		}).
@@ -112,22 +112,19 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getStorageAt","params":["0xabc","0x0","latest"]}`))
 	req.SetNetwork(network)
 
-	// Normalize the request
 	jrq, err := req.JsonRpcRequest()
 	require.NoError(t, err)
 	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
 
-	// Verify "latest" was translated to hex
 	params := jrq.Params
-	require.Len(t, params, 2)
-	blockParam := params[1].(string)
+	require.Len(t, params, 3)
+	blockParam := params[2].(string)
 	assert.True(t, strings.HasPrefix(blockParam, "0x"), "Block param should be hex")
 	assert.NotEqual(t, "latest", blockParam, "Should not be 'latest' anymore")
 
-	// Forward to verify mock is hit
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
 	if resp != nil {
@@ -540,19 +537,21 @@ func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 }
 
 // Test "finalized" tag translation to hex number
+// "finalized" translation default-on path — exercised via eth_getStorageAt
+// (eth_call/eth_getBalance/eth_getTransactionCount/eth_estimateGas preserve
+// the tag by default; see TestInterpolation_StateMethods_PreserveLatestByDefault).
 func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	// Mock the forwarded request
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
-			return strings.Contains(body, "eth_call") &&
+			return strings.Contains(body, "eth_getStorageAt") &&
 				strings.Contains(body, "\"0x") &&
 				!strings.Contains(body, "\"finalized\"")
 		}).
@@ -560,7 +559,7 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 		JSON(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      1,
-			"result":  "0x",
+			"result":  "0x0",
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -568,7 +567,7 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"finalized"]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getStorageAt","params":["0xabc","0x0","finalized"]}`))
 	req.SetNetwork(network)
 
 	jrq, err := req.JsonRpcRequest()
@@ -576,8 +575,8 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
 
 	params := jrq.Params
-	require.Len(t, params, 2)
-	blockParam := params[1].(string)
+	require.Len(t, params, 3)
+	blockParam := params[2].(string)
 	assert.True(t, strings.HasPrefix(blockParam, "0x"), "Block param should be hex")
 	assert.NotEqual(t, "finalized", blockParam, "Should not be 'finalized' anymore")
 
@@ -1205,9 +1204,55 @@ func TestInterpolation_EthGetBlockByNumber_Finalized_NotInterpolated(t *testing.
 	assert.Equal(t, "finalized", blockParam, "eth_getBlockByNumber should NOT interpolate 'finalized'")
 }
 
-// Test that other methods like eth_getBalance STILL interpolate "latest".
-// This ensures our change to eth_getBlockByNumber doesn't affect other methods.
-func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
+// Test that state-reading methods preserve "latest" by default — same
+// rationale as eth_getBlockByNumber. Pinning "latest" to a translated
+// block number on instant-finality chains produces historical state via
+// the long-TTL finalized cache; preserving the tag lets the upstream
+// answer at execution time and the cache layer key by the network's
+// current tip via ResolveCacheBlockRef.
+func TestInterpolation_StateMethods_PreserveLatestByDefault(t *testing.T) {
+	cases := []struct {
+		method string
+		body   string
+	}{
+		{"eth_getBalance", `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`},
+		{"eth_getTransactionCount", `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xabc","latest"]}`},
+		{"eth_call", `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"latest"]}`},
+		{"eth_estimateGas", `{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"to":"0xabc"},"latest"]}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+			req := common.NewNormalizedRequest([]byte(tc.body))
+			req.SetNetwork(network)
+
+			jrq, err := req.JsonRpcRequest()
+			require.NoError(t, err)
+			evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+			params := jrq.Params
+			require.Len(t, params, 2)
+			blockParam, ok := params[1].(string)
+			require.True(t, ok, "second param should be the block tag string")
+			assert.Equal(t, "latest", blockParam,
+				"%s should NOT translate 'latest' by default — preserved tag flows through to upstream and cache layer", tc.method)
+		})
+	}
+}
+
+// Test that eth_getCode STILL interpolates "latest" by default. Bytecode
+// rarely changes, so caching a translated block's response is acceptable
+// and the cache hit rate benefit is worth keeping.
+func TestInterpolation_EthGetCode_StillInterpolatesLatest(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1216,15 +1261,12 @@ func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Set up mock BEFORE network initialization
-	// eth_getBalance should have "latest" interpolated to hex
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
-			// Should have hex block number, NOT "latest"
-			return strings.Contains(body, "eth_getBalance") &&
+			return strings.Contains(body, "eth_getCode") &&
 				strings.Contains(body, "\"0x") &&
 				!strings.Contains(body, "\"latest\"")
 		}).
@@ -1232,27 +1274,24 @@ func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 		JSON(map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      1,
-			"result":  "0x1234",
+			"result":  "0x",
 		})
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
 
-	// Normalize the request
 	jrq, err := req.JsonRpcRequest()
 	require.NoError(t, err)
 	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
 
-	// Verify "latest" WAS translated to hex for eth_getBalance
 	params := jrq.Params
 	require.Len(t, params, 2)
 	blockParam := params[1].(string)
-	assert.True(t, strings.HasPrefix(blockParam, "0x"), "eth_getBalance should interpolate 'latest' to hex")
-	assert.NotEqual(t, "latest", blockParam, "eth_getBalance should NOT have 'latest' anymore")
+	assert.True(t, strings.HasPrefix(blockParam, "0x"), "eth_getCode should interpolate 'latest' to hex")
+	assert.NotEqual(t, "latest", blockParam)
 
-	// Forward to verify mock is hit
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
 	if resp != nil {
@@ -1456,15 +1495,14 @@ func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
+			// eth_estimateGas preserves "latest" by default (no translation).
 			return strings.Contains(body, "eth_estimateGas") &&
-				!strings.Contains(body, "\"latest\"") &&
-				strings.Contains(body, "\"0x")
+				strings.Contains(body, "\"latest\"")
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{
@@ -1488,8 +1526,7 @@ func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 	params := jrq.Params
 	require.Len(t, params, 2)
 	blockParam := params[1].(string)
-	assert.True(t, strings.HasPrefix(blockParam, "0x"), "Second param should be hex")
-	assert.NotEqual(t, "latest", blockParam)
+	assert.Equal(t, "latest", blockParam, "eth_estimateGas should preserve 'latest' (TranslateLatestTag default false)")
 
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
@@ -1767,11 +1804,12 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 		expectedFilter func(body string) bool
 	}{
 		{
+			// eth_getBalance preserves "latest" (TranslateLatestTag default false).
 			name:   "eth_getBalance",
 			method: "eth_getBalance",
 			params: `["0xabc","latest"]`,
 			expectedFilter: func(body string) bool {
-				return strings.Contains(body, "eth_getBalance") && !strings.Contains(body, "\"latest\"")
+				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"latest\"")
 			},
 		},
 		{
@@ -1783,14 +1821,17 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 			},
 		},
 		{
+			// eth_getTransactionCount preserves "latest" (TranslateLatestTag default false).
 			name:   "eth_getTransactionCount",
 			method: "eth_getTransactionCount",
 			params: `["0xabc","latest"]`,
 			expectedFilter: func(body string) bool {
-				return strings.Contains(body, "eth_getTransactionCount") && !strings.Contains(body, "\"latest\"")
+				return strings.Contains(body, "eth_getTransactionCount") && strings.Contains(body, "\"latest\"")
 			},
 		},
 		{
+			// eth_getCode still translates "finalized" — bytecode rarely changes,
+			// keeping interpolation lets the long-TTL finalized cache work.
 			name:   "eth_getCode",
 			method: "eth_getCode",
 			params: `["0xabc","finalized"]`,
@@ -1799,19 +1840,21 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 			},
 		},
 		{
+			// eth_call preserves "latest" (TranslateLatestTag default false).
 			name:   "eth_call",
 			method: "eth_call",
 			params: `[{"to":"0xabc"},"latest"]`,
 			expectedFilter: func(body string) bool {
-				return strings.Contains(body, "eth_call") && !strings.Contains(body, "\"latest\"")
+				return strings.Contains(body, "eth_call") && strings.Contains(body, "\"latest\"")
 			},
 		},
 		{
+			// eth_estimateGas preserves "latest" (TranslateLatestTag default false).
 			name:   "eth_estimateGas",
 			method: "eth_estimateGas",
 			params: `[{"to":"0xabc"},"latest"]`,
 			expectedFilter: func(body string) bool {
-				return strings.Contains(body, "eth_estimateGas") && !strings.Contains(body, "\"latest\"")
+				return strings.Contains(body, "eth_estimateGas") && strings.Contains(body, "\"latest\"")
 			},
 		},
 		{
@@ -1921,13 +1964,17 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 		},
 	}
 
-	// Only set user mock for rpc3 (highest latest) - this should be used
+	// Only set user mock for rpc3 (highest latest) - this should be used.
+	// Use eth_getCode here because it still has TranslateLatestTag=true by
+	// default (eth_getBalance/eth_getTransactionCount/eth_call/eth_estimateGas
+	// preserve the tag instead, which would defeat the upstream-skipping
+	// path under test).
 	gock.New("http://rpc3.localhost").
 		Post("").
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
-			return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
+			return strings.Contains(body, "eth_getCode") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{
@@ -1971,7 +2018,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 	require.NoError(t, network.Bootstrap(ctx))
 
 	// Build request with 'latest' which will be interpolated to highest latest block (from rpc3)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
 
 	jrq, err := req.JsonRpcRequest()

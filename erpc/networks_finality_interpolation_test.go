@@ -18,24 +18,24 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// Test that finality is preserved as "realtime" when translating tags
+// Test that finality is "realtime" for eth_getBalance with "latest" — both
+// before and after normalization. With TranslateLatestTag=false (default
+// for state-reading methods), the literal tag is preserved on the wire and
+// Network.GetFinality classifies the request as Realtime end-to-end.
 func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
-			// Request will have translated hex value instead of "latest"
-			// The actual value depends on what the state poller returns
+			// Request must carry the literal "latest" tag — no translation.
 			return strings.Contains(body, "eth_getBalance") &&
-				!strings.Contains(body, "\"latest\"") && // Should NOT have "latest"
-				strings.Contains(body, "\"0x") // Should have hex value
+				strings.Contains(body, "\"latest\"")
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{
@@ -49,58 +49,50 @@ func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
-	// Create request with "latest" tag
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
 
-	// Check finality BEFORE normalization
 	finalityBefore := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityBefore, "Request with 'latest' tag should be realtime before translation")
+	assert.Equal(t, common.DataFinalityStateRealtime, finalityBefore, "Request with 'latest' tag should be realtime before normalization")
 
-	// Normalize the request (which will translate "latest" to hex)
 	jrq, err := req.JsonRpcRequest()
 	require.NoError(t, err)
 	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
 
-	// Verify the tag was translated
 	params := jrq.Params
 	require.Len(t, params, 2)
 	blockParam := params[1].(string)
-	assert.True(t, strings.HasPrefix(blockParam, "0x"), "latest should be translated to hex")
-	assert.NotEqual(t, "latest", blockParam, "Should not be 'latest' anymore")
+	assert.Equal(t, "latest", blockParam, "eth_getBalance should preserve 'latest' tag (TranslateLatestTag default is false)")
 
-	// Check finality AFTER normalization - this is the critical test
 	finalityAfter := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityAfter, "Request should STILL be realtime after tag translation")
+	assert.Equal(t, common.DataFinalityStateRealtime, finalityAfter, "Request should STILL be realtime after normalization")
 
-	// Forward the request and check response finality
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	defer resp.Release()
 
-	// Check response finality
 	respFinality := resp.Finality(ctx)
 	assert.Equal(t, common.DataFinalityStateRealtime, respFinality, "Response should also be realtime")
 }
 
-// Test that finality is preserved for finalized tag
+// Test that finality is "realtime" for eth_call with "finalized" tag,
+// both before and after normalization. eth_call has TranslateFinalizedTag
+// default false, so the literal tag flows through to the upstream.
 func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
-			// Should not have the original tag and should contain a hex block ref
+			// Request must carry the literal "finalized" tag — no translation.
 			return strings.Contains(body, "eth_call") &&
-				!strings.Contains(body, "\"finalized\"") &&
-				strings.Contains(body, "\"0x")
+				strings.Contains(body, "\"finalized\"")
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{
@@ -114,30 +106,29 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
-	// Create request with "finalized" tag
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"finalized"]}`))
 	req.SetNetwork(network)
 
-	// Check finality BEFORE normalization
 	finalityBefore := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityBefore, "Request with 'finalized' tag should be realtime before translation")
+	assert.Equal(t, common.DataFinalityStateRealtime, finalityBefore, "Request with 'finalized' tag should be realtime before normalization")
 
-	// Normalize the request
 	jrq, err := req.JsonRpcRequest()
 	require.NoError(t, err)
 	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
 
-	// Check finality AFTER normalization
-	finalityAfter := req.Finality(ctx)
-	assert.Equal(t, common.DataFinalityStateRealtime, finalityAfter, "Request should STILL be realtime after finalized tag translation")
+	params := jrq.Params
+	require.Len(t, params, 2)
+	blockParam := params[1].(string)
+	assert.Equal(t, "finalized", blockParam, "eth_call should preserve 'finalized' tag (TranslateFinalizedTag default is false)")
 
-	// Forward the request
+	finalityAfter := req.Finality(ctx)
+	assert.Equal(t, common.DataFinalityStateRealtime, finalityAfter, "Request should STILL be realtime after normalization")
+
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
 	if resp != nil {
 		defer resp.Release()
 
-		// Check response finality
 		respFinality := resp.Finality(ctx)
 		assert.Equal(t, common.DataFinalityStateRealtime, respFinality, "Response should also be realtime")
 	}
