@@ -1,0 +1,13 @@
+{
+  "$schema": "https://maestro.goldsky.com/maestrorc/schema",
+  "agent": {
+    "model": "opus",
+    "effort": "high"
+  },
+  "planning": {
+    "enabled": true
+  },
+  "security": {
+    "trusted_author_associations": ["OWNER", "MEMBER", "COLLABORATOR"]
+  }
+}
