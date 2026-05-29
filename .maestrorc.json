@@ -16,7 +16,7 @@
         "curl -fsSL https://go.dev/dl/go1.25.3.linux-amd64.tar.gz | tar -C /usr/local -xz && ln -sf /usr/local/go/bin/go /usr/local/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt",
         "corepack enable && corepack prepare pnpm@10.28.2 --activate",
         "go mod download",
-        "pnpm install --frozen-lockfile"
+        "pnpm install --frozen-lockfile --ignore-scripts"
       ]
     }
   }
