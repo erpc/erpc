@@ -6,7 +6,7 @@ Guidance for AI coding agents (Maestro, Codex, Cursor, Claude Code) working in t
 
 eRPC is a fault-tolerant EVM RPC proxy with re-org-aware permanent caching, written in Go. The `cmd/erpc` binary is the server; `erpc.yaml` is the user-facing config schema.
 
-- Language: Go 1.25.1 (see [go.mod](go.mod))
+- Language: Go (`go` directive `1.25.1`, `toolchain go1.25.3` — see [go.mod](go.mod))
 - Module: `github.com/erpc/erpc`
 - Auxiliary JS workspace: pnpm 10.28.2 (typed config under `@erpc-cloud/config`)
 - Docs: https://docs.erpc.cloud/
