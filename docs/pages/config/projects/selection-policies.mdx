@@ -1015,7 +1015,7 @@ latencyDeviationAbove(10, { dampingMs: 50 })
 latencyDeviationAbove(10, { quantile: 95, mode: 'majority', dampingMs: 100 })
 ```
 
-**Why per-method**: an upstream's aggregate p<q> is a sample-count-
+**Why per-method**: an upstream's aggregate `p<q>` is a sample-count-
 weighted percentile of whatever methods landed in its bucket. A primary
 that serves 95% fast `eth_call` and a runner-up that only sees
 hedge-fired `eth_getLogs` look 20-40× apart at the aggregate level
@@ -1065,11 +1065,11 @@ excluding a broken one:
 **Per-method samples gate** (`minMethodSamples`, default 50): methods
 with fewer than this many samples on an upstream are skipped from
 BOTH the peer-baseline pool AND the per-upstream ratio loop. Below
-~50 samples the p<q> CI is too wide to be a reliable comparison
+~50 samples the `p<q>` CI is too wide to be a reliable comparison
 signal; multiple unstable methods otherwise conspire on the geomean.
 
 **Peer baseline**: for each method, the "fastest peer" is the minimum
-p<q> among OTHER upstreams (self excluded). When this upstream IS the
+`p<q>` among OTHER upstreams (self excluded). When this upstream IS the
 fastest, its peer is the runner-up — so a 2-pool with one fast (10ms)
 and one slow (12s) upstream still trips the slow one against the fast
 one's 10ms (subject to damping).
