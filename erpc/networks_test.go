@@ -12269,7 +12269,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "test",
 			[]*common.UpstreamConfig{up}, ssr, rateLimitersRegistry, vr, pr, nil,
-			metricsTracker, 1*time.Second, nil, nil,
+			metricsTracker, nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -12277,7 +12277,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		}
 		network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
-			rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -12344,7 +12344,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			Type:     common.UpstreamTypeEvm,
 			Id:       "fallback-node",
 			Endpoint: "http://fallback.localhost",
-			Group:    "fallback",
+			Tags:     []string{common.TagTierFallback},
 			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 		}
 
@@ -12373,7 +12373,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "test",
 			[]*common.UpstreamConfig{primary, fallback}, ssr, rateLimitersRegistry, vr, pr, nil,
-			metricsTracker, 1*time.Second, nil, nil,
+			metricsTracker, nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -12381,7 +12381,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		}
 		network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
-			rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
@@ -12527,9 +12527,13 @@ func (m *minimalUpstream) Id() string                      { return m.id }
 func (m *minimalUpstream) Config() *common.UpstreamConfig  { return m.cfg }
 
 func newStubUpstream(id, group string) common.Upstream {
+	cfg := &common.UpstreamConfig{Id: id}
+	if group != "" {
+		cfg.Tags = []string{group}
+	}
 	return &minimalUpstream{
 		id:  id,
-		cfg: &common.UpstreamConfig{Id: id, Group: group},
+		cfg: cfg,
 	}
 }
 
@@ -12550,10 +12554,10 @@ func TestTierUpstreamsByGroup(t *testing.T) {
 		// Input order mixes default / fallback — simulates the score-sorted
 		// list the request loop receives before tiering.
 		in := []common.Upstream{
-			newStubUpstream("fallback-hi", common.UpstreamGroupFallback),
+			newStubUpstream("fallback-hi", common.TagTierFallback),
 			newStubUpstream("default-lo", ""),
 			newStubUpstream("default-hi", ""),
-			newStubUpstream("fallback-lo", common.UpstreamGroupFallback),
+			newStubUpstream("fallback-lo", common.TagTierFallback),
 		}
 		out := tierUpstreamsByGroup(in)
 		require.Len(t, out, 4)
@@ -12567,8 +12571,8 @@ func TestTierUpstreamsByGroup(t *testing.T) {
 
 	t.Run("only fallbacks still orders them after empty default tier", func(t *testing.T) {
 		in := []common.Upstream{
-			newStubUpstream("fb-1", common.UpstreamGroupFallback),
-			newStubUpstream("fb-2", common.UpstreamGroupFallback),
+			newStubUpstream("fb-1", common.TagTierFallback),
+			newStubUpstream("fb-2", common.TagTierFallback),
 		}
 		out := tierUpstreamsByGroup(in)
 		require.Len(t, out, 2)
@@ -12578,7 +12582,7 @@ func TestTierUpstreamsByGroup(t *testing.T) {
 
 	t.Run("unknown group treated as default", func(t *testing.T) {
 		in := []common.Upstream{
-			newStubUpstream("fb", common.UpstreamGroupFallback),
+			newStubUpstream("fb", common.TagTierFallback),
 			newStubUpstream("custom", "experimental"),
 			newStubUpstream("def", ""),
 		}

@@ -40,13 +40,13 @@ func setupRegistryWithFallbacks(t *testing.T, ctx context.Context) (*UpstreamsRe
 		{
 			Id: "fallback-1", Type: common.UpstreamTypeEvm,
 			Endpoint: "http://rpc3.localhost",
-			Group:    common.UpstreamGroupFallback,
+			Tags:     []string{common.TagTierFallback},
 			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 		},
 		{
 			Id: "fallback-2", Type: common.UpstreamTypeEvm,
 			Endpoint: "http://rpc4.localhost",
-			Group:    common.UpstreamGroupFallback,
+			Tags:     []string{common.TagTierFallback},
 			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 		},
 	}
@@ -65,8 +65,6 @@ func setupRegistryWithFallbacks(t *testing.T, ctx context.Context) (*UpstreamsRe
 
 	registry := NewUpstreamsRegistry(ctx, logger, "fb-test", upstreamConfigs,
 		ssr, nil, vr, pr, nil, metricsTracker,
-		1*time.Second,
-		&ScoringConfig{ScoreGranularity: "method", SwitchHysteresis: -1, MinSwitchInterval: -1},
 		nil,
 	)
 
@@ -191,8 +189,7 @@ func TestGetFallbackEscapeUpstreams_NoFallbacksReturnsEmpty(t *testing.T) {
 	})
 	require.NoError(t, err)
 	registry := NewUpstreamsRegistry(ctx, logger, "fb-test", upstreamConfigs,
-		ssr, nil, vr, pr, nil, metricsTracker, 1*time.Second,
-		&ScoringConfig{ScoreGranularity: "method", SwitchHysteresis: -1, MinSwitchInterval: -1},
+		ssr, nil, vr, pr, nil, metricsTracker,
 		nil,
 	)
 	registry.Bootstrap(ctx)
