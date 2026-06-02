@@ -54,11 +54,12 @@ func upstreamPostForward_markUnexpectedEmpty(
 }
 
 // emptyResultIsFutureBlock reports whether `rq` targets a concrete block number
-// more than one block beyond the network's served latest — a not-yet-produced
-// block for which every upstream legitimately returns empty. Exactly head+1 is
-// allowed (the next block may land on a retry); head+2 and beyond are "future".
-// Returns false (fail-open) when the head is unknown or the request does not
-// target a concrete numeric block (tags and block-hash lookups are never future).
+// beyond the network's served latest by more than MaxFutureBlockRetryDistance —
+// a not-yet-produced block for which every upstream legitimately returns empty.
+// The distance defaults to 1 (head and head+1 stay retryable); a negative
+// distance disables the guard. Returns false (fail-open) when the head is
+// unknown or the request does not target a concrete numeric block (tags and
+// block-hash lookups are never future).
 func emptyResultIsFutureBlock(ctx context.Context, rq *common.NormalizedRequest) bool {
 	if rq == nil {
 		return false
@@ -71,12 +72,24 @@ func emptyResultIsFutureBlock(ctx context.Context, rq *common.NormalizedRequest)
 	if nw == nil {
 		return false
 	}
+	cfg := nw.Config()
+	if cfg == nil || cfg.Evm == nil {
+		return false
+	}
+	distance := int64(1)
+	if cfg.Evm.MaxFutureBlockRetryDistance != nil {
+		distance = *cfg.Evm.MaxFutureBlockRetryDistance
+		if distance < 0 {
+			// Negative disables the bound: retry all empties (legacy behavior).
+			return false
+		}
+	}
 	head := nw.EvmHighestLatestBlockNumber(ctx)
 	if head <= 0 {
 		// Fail open: without a known head we cannot tell future from behind.
 		return false
 	}
-	return bn > head+1
+	return bn > head+distance
 }
 
 // normalizeEmptyArrayResponse returns a new NormalizedResponse with result `[]`,

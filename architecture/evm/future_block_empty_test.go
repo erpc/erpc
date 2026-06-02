@@ -38,3 +38,31 @@ func TestEmptyResultIsFutureBlock(t *testing.T) {
 	noHead := &queryTestNetwork{cfg: nw.cfg, latest: 0}
 	assert.False(t, emptyResultIsFutureBlock(ctx, mk(noHead, 9_000_000)), "unknown head → fail open")
 }
+
+// TestEmptyResultIsFutureBlock_ConfiguredDistance pins MaxFutureBlockRetryDistance:
+// 0 means only the head is retryable, a larger value widens the window, and a
+// negative value disables the guard (retry all empties).
+func TestEmptyResultIsFutureBlock_ConfiguredDistance(t *testing.T) {
+	ctx := context.Background()
+	mk := func(distance int64, bn int64) *common.NormalizedRequest {
+		nw := &queryTestNetwork{
+			cfg:    &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 1, MaxFutureBlockRetryDistance: &distance}},
+			latest: 1000,
+		}
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
+		req.SetNetwork(nw)
+		req.SetEvmBlockNumber(bn)
+		return req
+	}
+
+	// distance 0: only the head itself is retryable.
+	assert.False(t, emptyResultIsFutureBlock(ctx, mk(0, 1000)), "distance 0: head → not future")
+	assert.True(t, emptyResultIsFutureBlock(ctx, mk(0, 1001)), "distance 0: head+1 → future")
+
+	// distance 5: head..head+5 retryable.
+	assert.False(t, emptyResultIsFutureBlock(ctx, mk(5, 1005)), "distance 5: head+5 → not future")
+	assert.True(t, emptyResultIsFutureBlock(ctx, mk(5, 1006)), "distance 5: head+6 → future")
+
+	// negative distance disables the guard (retry all empties).
+	assert.False(t, emptyResultIsFutureBlock(ctx, mk(-1, 9_000_000)), "negative distance → guard disabled")
+}

@@ -346,17 +346,18 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
 
-	if !n.servedTipEnabled() {
+	if !n.servedTipEnabledFor("latest") {
 		return n.evmHighestBlockMax(ctx, false)
 	}
 	return n.clusteredServedTip(ctx, span, false, "latest", "*",
 		n.servedLatestBlockShared, &n.servedLatestUpdatedAtMs)
 }
 
-// servedTipEnabled reports whether the cluster-min served tip is enabled for
-// this (EVM) network. Default is the max mode — see EvmServedTipConfig.
-func (n *Network) servedTipEnabled() bool {
-	return n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTipEnabled()
+// servedTipEnabledFor reports whether the cluster-min served tip is enabled for
+// the given block tag ("latest"/"finalized") on this (EVM) network. Default is
+// the max mode for every tag — see EvmServedTipConfig.
+func (n *Network) servedTipEnabledFor(tag string) bool {
+	return n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTipEnabledFor(tag)
 }
 
 // evmHighestBlockMax returns the MAX effective latest/finalized block across the
@@ -447,7 +448,7 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	))
 	defer span.End()
 
-	if !n.servedTipEnabled() {
+	if !n.servedTipEnabledFor("finalized") {
 		return n.evmHighestBlockMax(ctx, true)
 	}
 	return n.clusteredServedTip(ctx, span, true, "finalized", "*",

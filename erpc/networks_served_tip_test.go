@@ -47,8 +47,7 @@ type servedTipFixture struct {
 //
 // Returns the network and the upstream slice in input order.
 func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
-	enabled := true
-	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{Enabled: &enabled})
+	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{EnabledFor: []string{"latest", "finalized"}})
 }
 
 func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
@@ -416,9 +415,8 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	assert.Equal(t, int64(99), nwA.EvmHighestLatestBlockNumber(ctx),
 		"without a guaranteed method, served = dominant cluster min 99 (u3=90 is an outlier)")
 
-	enabled := true
 	nwB, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
-		Enabled:           &enabled,
+		EnabledFor:        []string{"latest"},
 		GuaranteedMethods: []string{"trace_block"},
 	})
 	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),

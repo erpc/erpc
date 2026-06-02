@@ -1185,6 +1185,18 @@ export interface EvmNetworkConfig {
    * Set to false to disable this behavior and return raw upstream errors.
    */
   idempotentTransactionBroadcast?: boolean;
+  /**
+   * MaxFutureBlockRetryDistance bounds retry-on-empty for point-lookup methods
+   * (see MarkEmptyAsErrorMethods, and only when the RetryEmpty directive is on).
+   * An empty result for a concrete numeric block is treated as retryable
+   * missing-data only while the requested block is within this many blocks of the
+   * network's served latest. Beyond that the block is treated as not-yet-produced
+   * and the empty result is returned truthfully without retrying. Defaults to 1
+   * (the head and head+1 stay retryable); 0 means only the head itself; a
+   * negative value disables the bound (retry all empties). Tags and block-hash
+   * lookups are never treated as future; fails open when the head is unknown.
+   */
+  maxFutureBlockRetryDistance?: number /* int64 */;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
@@ -1192,15 +1204,18 @@ export interface EvmNetworkConfig {
  * In the default max mode the served tip is the MAX latest block across eligible
  * non-syncing upstreams — which can advertise a block only the single most-ahead
  * upstream has, causing "block not found" churn when requests route to a
- * slightly-behind upstream. With Enabled set, the served tip is instead the MIN
- * of the dominant agreement cluster among the eligible upstreams, so any upstream
- * in that cluster can serve the advertised block.
+ * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
+ * served value is instead the MIN of the dominant agreement cluster among the
+ * eligible upstreams, so any upstream in that cluster can serve the advertised
+ * block.
  */
 export interface EvmServedTipConfig {
   /**
-   * Enabled turns on the clustered served-tip for this network. Default false.
+   * EnabledFor lists the block tags whose served value uses the cluster-min tip
+   * instead of the default max. Valid entries: "latest" and "finalized" (the
+   * "safe" tag follows "finalized"). Empty selects the max mode for all tags.
    */
-  enabled?: boolean;
+  enabledFor?: string[];
   /**
    * ClusterDelta is the maximum block gap between adjacent sorted upstream heads
    * that still groups them into one cluster. 0 auto-derives from the network's
