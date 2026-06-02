@@ -1162,6 +1162,23 @@ export interface EvmNetworkConfig {
      */
     markEmptyAsErrorMethods?: string[];
     /**
+     * MaxFutureBlockRetryDistance bounds the MarkEmptyAsErrorMethods behavior by how far
+     * ahead of the chain head a request reaches. An empty/null result for a point-lookup is
+     * only treated as retryable missing-data while the requested block number is within this
+     * many blocks of the network's highest known latest block. When the requested block is
+     * further ahead than this distance, it almost certainly has not been produced yet, so the
+     * empty result is the truthful answer (e.g. a null block) and is returned as-is instead of
+     * being retried until timeout.
+     * Only concrete numeric block numbers are considered; tag-based references (latest, pending,
+     * finalized, ...) and block-hash lookups are never treated as future. The bound is ignored
+     * when the chain head is unknown (e.g. cold state poller), failing open to the existing
+     * retry-on-empty behavior.
+     * Nil disables the bound (default): empty results keep being marked as missing-data
+     * regardless of distance. A value of 0 means only the head block itself is considered
+     * present. Negative values are rejected during validation.
+     */
+    maxFutureBlockRetryDistance?: number;
+    /**
      * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
      * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
      * the estimated block time, preferring fresher data at the cost of slightly more

@@ -373,6 +373,14 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 					return ""
 				}
 			}
+			// A block beyond the known chain head has not been produced yet, so a
+			// missing-data result for it is truthful — retrying only burns latency
+			// until timeout. The post-forward hook normally keeps such empties from
+			// becoming missing-data at all; this guards paths that build the error
+			// independently.
+			if e.isFutureBlockEmpty(req) {
+				return ""
+			}
 			return "missing_data"
 		}
 		if common.IsRetryableTowardNetwork(err) {
@@ -394,6 +402,11 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	// RetryEmpty directive on emptyish responses.
 	if rds != nil && rds.RetryEmpty {
 		if resp.IsResultEmptyish() {
+			// A block beyond the known chain head has not been produced yet; its
+			// empty result is truthful, so accept it instead of retrying.
+			if e.isFutureBlockEmpty(req) {
+				return ""
+			}
 			// Respect EmptyResultMaxAttempts cap.
 			if e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.EmptyResultMaxAttempts > 0 {
 				if attempt+1 >= e.cfg.Retry.EmptyResultMaxAttempts {
@@ -426,6 +439,22 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	}
 
 	return ""
+}
+
+// isFutureBlockEmpty reports whether req targets a concrete block beyond the
+// network's known chain head by more than the configured distance, in which case
+// an empty/missing result is truthful and must not be retried. Returns false
+// (keep retrying) whenever the request has no network, no concrete block, the
+// feature is disabled, or the head is unknown. Safe to call with a nil request.
+func (e *networkExecutor) isFutureBlockEmpty(req *common.NormalizedRequest) bool {
+	if req == nil {
+		return false
+	}
+	n := req.Network()
+	if n == nil {
+		return false
+	}
+	return evm.EmptyResultTruthfulForFutureBlock(context.Background(), n, req)
 }
 
 func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) time.Duration {

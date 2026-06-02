@@ -140,7 +140,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	case "eth_getblockreceipts":
 		// First check for unexpected empty (if enabled for this method)
 		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, n, u, rq, rs, re)
 			if validationErr != nil {
 				break
 			}
@@ -151,7 +151,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	case "eth_getblockbynumber", "eth_getblockbyhash":
 		// First check for unexpected empty (if enabled for this method)
 		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, n, u, rq, rs, re)
 			if validationErr != nil {
 				break
 			}
@@ -165,7 +165,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	default:
 		// For other methods, only apply the mark empty check if configured
 		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, n, u, rq, rs, re)
 		}
 	}
 

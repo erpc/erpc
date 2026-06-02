@@ -11,7 +11,8 @@ import (
 
 // testNetwork is a simple test implementation of common.Network interface for this file
 type testNetwork struct {
-	cfg *common.NetworkConfig
+	cfg                *common.NetworkConfig
+	highestLatestBlock int64
 }
 
 func (t *testNetwork) Architecture() common.NetworkArchitecture {
@@ -51,7 +52,7 @@ func (t *testNetwork) Logger() *zerolog.Logger {
 }
 
 func (t *testNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	return 0
+	return t.highestLatestBlock
 }
 
 func (t *testNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {

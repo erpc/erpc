@@ -40,6 +40,12 @@ var (
 		Help:      "Total number of requests where upstream is missing data or not synced yet.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
 
+	MetricNetworkFutureBlockEmptyKeptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_future_block_empty_kept_total",
+		Help:      "Total number of empty results kept as-is (not marked as missing data) because the requested block is beyond the known chain head by more than the configured distance.",
+	}, []string{"network", "method"})
+
 	MetricUpstreamEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_empty_response_total",

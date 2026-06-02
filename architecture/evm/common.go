@@ -4,12 +4,14 @@ import (
 	"context"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 )
 
 // upstreamPostForward_markUnexpectedEmpty converts empty results for point-lookups
 // (blocks, transactions, receipts, traces, etc.) to missing-data so network retry can rotate.
 func upstreamPostForward_markUnexpectedEmpty(
 	ctx context.Context,
+	n common.Network,
 	u common.Upstream,
 	rq *common.NormalizedRequest,
 	rs *common.NormalizedResponse,
@@ -23,6 +25,20 @@ func upstreamPostForward_markUnexpectedEmpty(
 		if rd := rq.Directives(); rd != nil && !rd.RetryEmpty {
 			return rs, re
 		}
+	}
+
+	// When the request reaches for a block beyond the known chain head by more than the
+	// configured distance, the block has almost certainly not been produced yet: the empty
+	// result is truthful and must not be converted into retryable missing-data (which would
+	// otherwise retry across upstreams until the block lands or the request times out).
+	if EmptyResultTruthfulForFutureBlock(ctx, n, rq) {
+		method, _ := rq.Method()
+		var networkId string
+		if n != nil {
+			networkId = n.Id()
+		}
+		telemetry.MetricNetworkFutureBlockEmptyKeptTotal.WithLabelValues(networkId, method).Inc()
+		return rs, re
 	}
 
 	// Build a simple message and include raw result in details for diagnostics.

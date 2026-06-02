@@ -1309,6 +1309,9 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
+	if e.MaxFutureBlockRetryDistance != nil && *e.MaxFutureBlockRetryDistance < 0 {
+		return fmt.Errorf("network.*.evm.maxFutureBlockRetryDistance must be greater than or equal to 0")
+	}
 	return nil
 }
 
