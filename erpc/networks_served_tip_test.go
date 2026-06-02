@@ -31,10 +31,11 @@ import (
 // servedTipFixture is a compact description of one upstream's poller state
 // at test time. Used to drive the lighter setupServedTipNetwork helper.
 type servedTipFixture struct {
-	id           string
-	chainID      int64
-	latestBlock  int64
-	syncing      bool
+	id            string
+	chainID       int64
+	latestBlock   int64
+	syncing       bool
+	ignoreMethods []string
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -46,6 +47,11 @@ type servedTipFixture struct {
 //
 // Returns the network and the upstream slice in input order.
 func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedTipFixture) (*Network, []*upstream.Upstream) {
+	enabled := true
+	return setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{Enabled: &enabled})
+}
+
+func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []servedTipFixture, stCfg *common.EvmServedTipConfig) (*Network, []*upstream.Upstream) {
 	t.Helper()
 
 	if len(fixtures) == 0 {
@@ -65,9 +71,10 @@ func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedT
 		}
 		endpoint := "http://" + f.id + ".localhost"
 		upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       f.id,
-			Endpoint: endpoint,
+			Type:          common.UpstreamTypeEvm,
+			Id:            f.id,
+			Endpoint:      endpoint,
+			IgnoreMethods: f.ignoreMethods,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: cid,
 			},
@@ -123,7 +130,8 @@ func setupServedTipNetwork(t *testing.T, ctx context.Context, fixtures []servedT
 	networkConfig := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
 		Evm: &common.EvmNetworkConfig{
-			ChainId: chainID,
+			ChainId:   chainID,
+			ServedTip: stCfg,
 		},
 	}
 
@@ -331,4 +339,88 @@ func TestServedTip_AllSyncing_ReturnsZero(t *testing.T) {
 
 	served := network.EvmHighestLatestBlockNumber(ctx)
 	assert.Equal(t, int64(0), served, "all upstreams syncing → no candidates → 0")
+}
+
+// ----- opt-in gating + eligible-set sourcing -------------------------------
+
+// With the served-tip feature DISABLED (the default, nil config), the network
+// must preserve the legacy MAX-across-upstreams behavior.
+func TestServedTip_DisabledByDefault_ReturnsMax(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 99},
+		{id: "u3", chainID: 123, latestBlock: 98},
+	}, nil) // nil ServedTip config => feature disabled => legacy MAX
+
+	served := network.EvmHighestLatestBlockNumber(ctx)
+	assert.Equal(t, int64(100), served,
+		"served-tip clustering disabled (default) must return MAX(tips)=100, not cluster-min")
+}
+
+// A selection-policy-EXCLUDED upstream must drop out of the served tip — head
+// tracking and routing share one eligible set. Here u3 reports the cluster min
+// (98); once the policy keeps only {u1,u2} eligible, the served tip must move to
+// the eligible cluster min (99) and never reflect u3's block.
+func TestServedTip_ExcludedUpstreamDropsOutOfTip(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 99},
+		{id: "u3", chainID: 123, latestBlock: 98},
+	})
+
+	// Warm the policy slot (lazy-created on first GetOrdered), then restrict the
+	// eligible set so u3 is excluded.
+	_ = network.EvmHighestLatestBlockNumber(ctx)
+	network.PinUpstreamOrderForTest("u1", "u2")
+
+	served := network.EvmHighestLatestBlockNumber(ctx)
+	assert.Equal(t, int64(99), served,
+		"served tip must ignore policy-excluded u3 (block 98); eligible {100,99} → min 99")
+}
+
+// A configured guaranteed method clamps the global served tip down to what that
+// method's SUPPORTING upstreams can serve. u3 is the only trace_block-capable
+// upstream and it lags (90); u1/u2 (99/100) don't support trace_block. Without
+// the guarantee the served tip is the dominant cluster min (99, u3 an outlier);
+// with the guarantee it must drop to 90 so a trace_block("latest") request hits
+// a block u3 actually has.
+func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fixtures := []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100, ignoreMethods: []string{"trace_block"}},
+		{id: "u2", chainID: 123, latestBlock: 99, ignoreMethods: []string{"trace_block"}},
+		{id: "u3", chainID: 123, latestBlock: 90},
+	}
+
+	nwA, _ := setupServedTipNetwork(t, ctx, fixtures)
+	assert.Equal(t, int64(99), nwA.EvmHighestLatestBlockNumber(ctx),
+		"without a guaranteed method, served = dominant cluster min 99 (u3=90 is an outlier)")
+
+	enabled := true
+	nwB, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{
+		Enabled:           &enabled,
+		GuaranteedMethods: []string{"trace_block"},
+	})
+	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),
+		"trace_block supported only by u3 (90) clamps served down to 90")
 }

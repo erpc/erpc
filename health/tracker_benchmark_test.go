@@ -35,9 +35,10 @@ func (u *upstreamStub) Tracker() common.HealthTracker  { return nil }
 func (u *upstreamStub) Forward(_ context.Context, _ *common.NormalizedRequest, _ bool, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *upstreamStub) Cordon(string, string)   {}
-func (u *upstreamStub) Uncordon(string, string) {}
-func (u *upstreamStub) IgnoreMethod(string)     {}
+func (u *upstreamStub) Cordon(string, string)                   {}
+func (u *upstreamStub) Uncordon(string, string)                 {}
+func (u *upstreamStub) IgnoreMethod(string)                     {}
+func (u *upstreamStub) ShouldHandleMethod(string) (bool, error) { return true, nil }
 
 // labelCombo captures the full label set for MetricUpstreamRequestDuration
 type labelCombo struct {

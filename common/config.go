@@ -2142,11 +2142,18 @@ type EvmNetworkConfig struct {
 	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
 	FallbackStatePollerDebounce Duration            `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce" tstype:"Duration"`
 	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
-	GetLogsMaxAllowedRange      int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
-	GetLogsMaxAllowedAddresses  int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
-	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
-	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
-	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+
+	// ServedTip configures how the network derives the "latest"/"finalized"
+	// block it advertises to clients (and enforces via block-availability).
+	// Nil or disabled selects the default max mode (MAX latest across eligible
+	// upstreams); set Enabled to opt into the cluster-min tip. See
+	// EvmServedTipConfig.
+	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
+	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
+	GetLogsMaxAllowedAddresses int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
+	GetLogsMaxAllowedTopics    int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
+	GetLogsSplitOnError        *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
+	GetLogsSplitConcurrency    int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
 	// arbtrace_filter requests when the upstream returns a range-too-large error.
 	// Nil disables the feature.
@@ -2193,6 +2200,40 @@ type EvmNetworkConfig struct {
 	// to work safely with transaction broadcasting.
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
+}
+
+// EvmServedTipConfig controls how the network derives the "latest"/"finalized"
+// block it advertises (and enforces) from its upstreams.
+//
+// In the default max mode the served tip is the MAX latest block across eligible
+// non-syncing upstreams — which can advertise a block only the single most-ahead
+// upstream has, causing "block not found" churn when requests route to a
+// slightly-behind upstream. With Enabled set, the served tip is instead the MIN
+// of the dominant agreement cluster among the eligible upstreams, so any upstream
+// in that cluster can serve the advertised block.
+type EvmServedTipConfig struct {
+	// Enabled turns on the clustered served-tip for this network. Default false.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// ClusterDelta is the maximum block gap between adjacent sorted upstream heads
+	// that still groups them into one cluster. 0 auto-derives from the network's
+	// estimated block time (clamped to [2,10]).
+	ClusterDelta int64 `yaml:"clusterDelta,omitempty" json:"clusterDelta,omitempty"`
+
+	// GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
+	// "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
+	// serve the advertised latest. For a request on a matching method, "latest"
+	// resolves against the dominant cluster of only the upstreams that support it
+	// (membership auto-detected via ShouldHandleMethod — no per-upstream config).
+	// Empty means only the global (all-eligible) cluster is computed.
+	GuaranteedMethods []string `yaml:"guaranteedMethods,omitempty" json:"guaranteedMethods,omitempty"`
+}
+
+// ServedTipEnabled reports whether the cluster-min served-tip is enabled for
+// this network. Nil config or nil/false Enabled selects the default max mode
+// (MAX latest across eligible upstreams). Nil-receiver safe.
+func (c *EvmNetworkConfig) ServedTipEnabled() bool {
+	return c != nil && c.ServedTip != nil && c.ServedTip.Enabled != nil && *c.ServedTip.Enabled
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -2563,8 +2604,8 @@ const tsLoaderWalker = `
 // This means closures, imports, and module-level helpers in the user's
 // TS file flow naturally into the evalFunc:
 //
-//   const weights = { hot: { errorRate: 8 }, cold: { errorRate: 4 } };
-//   selectionPolicy: { evalFunc: (u, ctx) => u.sortByScore((u) => weights[u.id] || PREFER_FASTEST) }
+//	const weights = { hot: { errorRate: 8 }, cold: { errorRate: 4 } };
+//	selectionPolicy: { evalFunc: (u, ctx) => u.sortByScore((u) => weights[u.id] || PREFER_FASTEST) }
 //
 // works as written, because `weights` exists in the same module scope
 // as the function in every pool runtime.
