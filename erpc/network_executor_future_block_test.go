@@ -111,9 +111,21 @@ func TestShouldRetry_MissingData_FutureBlockNotRetried(t *testing.T) {
 	})
 }
 
-func TestShouldRetry_FutureBlock_BoundDisabled_RetriesAsBaseline(t *testing.T) {
+func TestShouldRetry_FutureBlock_DefaultOn_NotRetried(t *testing.T) {
 	e := fbNewExecutor(t)
-	net := fbNetworkConfig(nil, 1000) // bound disabled
+	net := fbNetworkConfig(nil, 1000) // unset -> default bound of 1 is active
+	missing := common.NewErrEndpointMissingData(errors.New("empty"), nil)
+
+	req := fbExecutorRequest(t, net, 5000)
+	resp := fbEmptyishResponse(t, req)
+
+	assert.Equal(t, "", e.shouldRetryWithReason(req, resp, nil, 0))
+	assert.Equal(t, "", e.shouldRetryWithReason(req, nil, missing, 0))
+}
+
+func TestShouldRetry_FutureBlock_LargeBoundOptsOut_RetriesAsBaseline(t *testing.T) {
+	e := fbNewExecutor(t)
+	net := fbNetworkConfig(i64ptr(1_000_000), 1000) // very large bound effectively opts out
 	missing := common.NewErrEndpointMissingData(errors.New("empty"), nil)
 
 	req := fbExecutorRequest(t, net, 5000)

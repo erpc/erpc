@@ -2041,6 +2041,13 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 	}
 }
 
+// DefaultMaxFutureBlockRetryDistance is the distance used when
+// EvmNetworkConfig.MaxFutureBlockRetryDistance is not set. With this default the
+// future-block bound is active for all EVM networks: an empty result for a
+// MarkEmptyAsErrorMethods method whose requested block is more than this many
+// blocks beyond the chain head is returned as-is rather than retried.
+const DefaultMaxFutureBlockRetryDistance int64 = 1
+
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth

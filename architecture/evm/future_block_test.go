@@ -26,7 +26,7 @@ func fbNetwork(distance *int64, head int64) *testNetwork {
 	}
 }
 
-// fbRequest builds an eth_getBlockByNumber request and, when blockNumber > 0,
+// fbRequest builds a request for the given method and, when blockNumber > 0,
 // pins the resolved numeric block so the predicate is exercised deterministically
 // without depending on param normalization.
 func fbRequest(method string, blockNumber int64) *common.NormalizedRequest {
@@ -46,7 +46,11 @@ func TestEmptyResultTruthfulForFutureBlock(t *testing.T) {
 		block    int64 // 0 => leave the request without a concrete numeric block
 		want     bool
 	}{
-		{"bound nil disables the check", nil, 5000, false},
+		// Unset bound falls back to the default of 1 (feature on by default).
+		{"nil bound (default 1): far ahead is future", nil, 5000, true},
+		{"nil bound (default 1): within default slack is not future", nil, 1001, false},
+		{"nil bound (default 1): two past head is future", nil, 1002, true},
+
 		{"below head is not future", fbI64(1), 999, false},
 		{"exactly at head is not future", fbI64(1), 1000, false},
 		{"inside the slack window is not future", fbI64(5), 1003, false},
@@ -56,6 +60,7 @@ func TestEmptyResultTruthfulForFutureBlock(t *testing.T) {
 		{"zero slack: head+1 is future", fbI64(0), 1001, true},
 		{"zero slack: head is not future", fbI64(0), 1000, false},
 		{"negative bound disables the check", fbI64(-1), 5000, false},
+		{"very large bound effectively disables the check", fbI64(1_000_000), 5000, false},
 		{"no concrete block (tag) is not future", fbI64(1), 0, false},
 	}
 
@@ -67,6 +72,14 @@ func TestEmptyResultTruthfulForFutureBlock(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestEmptyResultTruthfulForFutureBlock_NonMarkEmptyMethod(t *testing.T) {
+	// A method that is not in MarkEmptyAsErrorMethods is out of scope, even with the
+	// default bound active and a far-future block — its empty result is not "missing data".
+	n := fbNetwork(nil, 1000)
+	req := fbRequest("eth_getBalance", 5000)
+	assert.False(t, EmptyResultTruthfulForFutureBlock(context.Background(), n, req))
 }
 
 func TestEmptyResultTruthfulForFutureBlock_ColdHeadFailsOpen(t *testing.T) {
@@ -147,10 +160,23 @@ func TestHandleUpstreamPostForward_AtOrBelowHead_MarksMissingData(t *testing.T) 
 	}
 }
 
-func TestHandleUpstreamPostForward_FutureBlock_BoundDisabled_MarksMissingData(t *testing.T) {
-	// With the bound unset (default), behavior is unchanged: even a far-future
-	// block's empty result is marked missing-data.
+func TestHandleUpstreamPostForward_FutureBlock_DefaultOn_KeepsEmptyResult(t *testing.T) {
+	// With the bound unset, the default of 1 is active, so a far-future block's
+	// empty result is kept (not marked missing-data) for all EVM networks.
 	n := fbNetwork(nil, 1000)
+	req := fbBlockRequest(t, 5000)
+	resp := fbEmptyResponse(t, req)
+
+	out, err := HandleUpstreamPostForward(context.Background(), n, nil, req, resp, nil, false)
+
+	assert.NoError(t, err, "default bound should keep the future-block empty result")
+	assert.Equal(t, resp, out)
+}
+
+func TestHandleUpstreamPostForward_FutureBlock_LargeBoundOptsOut_MarksMissingData(t *testing.T) {
+	// A network can opt out by setting a very large bound: the block is no longer
+	// considered "far enough" ahead, so the prior mark-missing-data behavior returns.
+	n := fbNetwork(fbI64(1_000_000), 1000)
 	req := fbBlockRequest(t, 5000)
 	resp := fbEmptyResponse(t, req)
 

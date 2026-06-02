@@ -1184,9 +1184,11 @@ export interface EvmNetworkConfig {
    * finalized, ...) and block-hash lookups are never treated as future. The bound is ignored
    * when the chain head is unknown (e.g. cold state poller), failing open to the existing
    * retry-on-empty behavior.
-   * Nil disables the bound (default): empty results keep being marked as missing-data
-   * regardless of distance. A value of 0 means only the head block itself is considered
-   * present. Negative values are rejected during validation.
+   * When unset, this defaults to 1, so the bound is active for all EVM networks: an empty
+   * result for a block more than one block beyond the head is returned as-is instead of
+   * retried. A value of 0 means only the head block itself is considered present; larger
+   * values widen the window (and a sufficiently large value effectively disables the bound).
+   * Negative values are rejected during validation.
    */
   maxFutureBlockRetryDistance?: number /* int64 */;
   /**

@@ -21,7 +21,7 @@ func fbValidEvmNetworkConfig() *EvmNetworkConfig {
 func TestEvmNetworkConfig_Validate_MaxFutureBlockRetryDistance(t *testing.T) {
 	i64 := func(v int64) *int64 { return &v }
 
-	t.Run("nil is valid (feature disabled)", func(t *testing.T) {
+	t.Run("nil is valid (falls back to default)", func(t *testing.T) {
 		cfg := fbValidEvmNetworkConfig()
 		cfg.MaxFutureBlockRetryDistance = nil
 		assert.NoError(t, cfg.Validate())
