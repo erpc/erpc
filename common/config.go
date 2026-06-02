@@ -2244,14 +2244,19 @@ type EvmServedTipConfig struct {
 }
 
 // ServedTipEnabledFor reports whether the cluster-min served tip is enabled for
-// the given block tag ("latest" or "finalized"). Anything not listed uses the
-// default max mode. Nil-receiver safe.
+// the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
+// finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
+// Anything not listed uses the default max mode. Nil-receiver safe.
 func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
 	if c == nil || c.ServedTip == nil {
 		return false
 	}
 	for _, t := range c.ServedTip.EnabledFor {
 		if strings.EqualFold(t, tag) {
+			return true
+		}
+		// "safe" resolves to the finalized axis.
+		if strings.EqualFold(tag, "finalized") && strings.EqualFold(t, "safe") {
 			return true
 		}
 	}
