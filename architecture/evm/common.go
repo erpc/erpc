@@ -25,6 +25,15 @@ func upstreamPostForward_markUnexpectedEmpty(
 		}
 	}
 
+	// Future-block guard: do not retry an empty result for a concrete block more
+	// than one beyond the network's served latest — it is not yet produced, so
+	// every upstream legitimately returns empty. Return the truthful empty instead
+	// of churning retries until the request times out. Exactly head+1 is still
+	// retried (the next block may land on a retry).
+	if emptyResultIsFutureBlock(ctx, rq) {
+		return rs, re
+	}
+
 	// Build a simple message and include raw result in details for diagnostics.
 	method, _ := rq.Method()
 	details := map[string]interface{}{"method": method}
@@ -42,6 +51,32 @@ func upstreamPostForward_markUnexpectedEmpty(
 		),
 		u,
 	)
+}
+
+// emptyResultIsFutureBlock reports whether `rq` targets a concrete block number
+// more than one block beyond the network's served latest — a not-yet-produced
+// block for which every upstream legitimately returns empty. Exactly head+1 is
+// allowed (the next block may land on a retry); head+2 and beyond are "future".
+// Returns false (fail-open) when the head is unknown or the request does not
+// target a concrete numeric block (tags and block-hash lookups are never future).
+func emptyResultIsFutureBlock(ctx context.Context, rq *common.NormalizedRequest) bool {
+	if rq == nil {
+		return false
+	}
+	bn, ok := rq.EvmBlockNumber().(int64)
+	if !ok || bn <= 0 {
+		return false
+	}
+	nw := rq.Network()
+	if nw == nil {
+		return false
+	}
+	head := nw.EvmHighestLatestBlockNumber(ctx)
+	if head <= 0 {
+		// Fail open: without a known head we cannot tell future from behind.
+		return false
+	}
+	return bn > head+1
 }
 
 // normalizeEmptyArrayResponse returns a new NormalizedResponse with result `[]`,
