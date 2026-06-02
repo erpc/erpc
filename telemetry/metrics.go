@@ -647,6 +647,18 @@ var (
 		Name:      "network_evm_block_range_requested_total",
 		Help:      "Total requests observed by block-number buckets for heatmap.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
+
+	MetricX402FacilitatorRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "x402_facilitator_request_total",
+		Help:      "Total number of requests to x402 facilitator endpoints.",
+	}, []string{"project", "network", "facilitator", "operation", "status"})
+
+	MetricX402PaymentTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "x402_payment_total",
+		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
+	}, []string{"project", "network", "facilitator", "outcome"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -673,6 +685,7 @@ var (
 	MetricNetworkTimeoutDurationSeconds       *LabeledHistogram
 	MetricConsensusResponsesCollected         *LabeledHistogram
 	MetricConsensusAgreementCount             *LabeledHistogram
+	MetricX402FacilitatorRequestDuration      *LabeledHistogram
 	MetricConsensusDuration                   *LabeledHistogram
 	MetricCacheSetSuccessDuration             *LabeledHistogram
 	MetricCacheSetErrorDuration               *LabeledHistogram
@@ -748,6 +761,13 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "Number of upstreams agreeing on the most common result.",
 		Buckets:   prometheus.LinearBuckets(1, 1, 10),
 	}, []string{"project", "network", "category", "finality"})
+
+	MetricX402FacilitatorRequestDuration = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "x402_facilitator_request_duration_seconds",
+		Help:      "Duration of HTTP requests to x402 facilitator endpoints (verify, settle, supported).",
+		Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+	}, []string{"project", "network", "facilitator", "operation", "status"})
 
 	MetricConsensusDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -853,6 +873,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	MetricNetworkTimeoutDurationSeconds = registerOrReuse(MetricNetworkTimeoutDurationSeconds)
 	MetricConsensusResponsesCollected = registerOrReuse(MetricConsensusResponsesCollected)
 	MetricConsensusAgreementCount = registerOrReuse(MetricConsensusAgreementCount)
+	MetricX402FacilitatorRequestDuration = registerOrReuse(MetricX402FacilitatorRequestDuration)
 	MetricConsensusDuration = registerOrReuse(MetricConsensusDuration)
 	MetricCacheSetSuccessDuration = registerOrReuse(MetricCacheSetSuccessDuration)
 	MetricCacheSetErrorDuration = registerOrReuse(MetricCacheSetErrorDuration)
