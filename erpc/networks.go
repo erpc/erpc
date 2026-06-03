@@ -381,6 +381,54 @@ func (n *Network) evmHighestBlockMax(ctx context.Context, useFinalized bool) int
 	return maxBlock
 }
 
+// tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
+// `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
+// beyond every eligible upstream's head by more than MaxFutureBlockRetryDistance.
+// No upstream can serve such a block yet, so dispatching + hedging across all of
+// them only burns latency and load before they each return empty — returning the
+// null here skips that fan-out entirely.
+//
+// Safety: it compares against the MAX observed head across eligible upstreams
+// (not the cluster-min served tip), so it never nulls out a block the most-ahead
+// upstream actually has. It is gated on served-tip being enabled for the latest
+// axis — the same opt-in that makes the head trustworthy — and the synthesized
+// response is returned directly from Forward, so it is never written to cache
+// (the block will exist later). The post-forward empty guard remains as
+// defense-in-depth for the in-flight case where an upstream advances mid-request.
+func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, bool) {
+	if n.cfg == nil || n.cfg.Evm == nil || !n.servedTipEnabledFor("latest") {
+		return nil, false
+	}
+	if !strings.EqualFold(method, "eth_getBlockByNumber") {
+		return nil, false
+	}
+	distance := int64(0)
+	if d := n.cfg.Evm.MaxFutureBlockRetryDistance; d != nil {
+		if *d < 0 {
+			return nil, false // negative disables the bound
+		}
+		distance = *d
+	}
+	_, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
+	if err != nil || bn <= 0 {
+		// Tags ("latest"/"pending"/...), block-hash lookups, or unparseable
+		// params carry no concrete future number — never short-circuit.
+		return nil, false
+	}
+	maxHead := n.evmHighestBlockMax(ctx, false)
+	if maxHead <= 0 || bn <= maxHead+distance {
+		// Unknown head (fail open) or block within reach of some upstream.
+		return nil, false
+	}
+	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
+	if err != nil {
+		return nil, false
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	resp.SetEvmBlockNumber(bn)
+	return resp, true
+}
+
 // clusteredServedTip computes the cluster-MIN served tip for one axis over the
 // selection-policy-eligible upstreams for `method`, applies the strict-monotonic
 // clamp via the shared counter, and returns the clamped value. Shared by the
@@ -772,6 +820,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			return nil, err
 		}
+		if mlx != nil {
+			mlx.Close(ctx, resp, nil)
+		}
+		return resp, nil
+	}
+
+	// Future-block short-circuit: a concrete block number beyond every eligible
+	// upstream's head cannot be served yet — return the truthful null instead of
+	// dispatching + hedging across upstreams that will all return empty. Runs
+	// before rate limiting so a non-dispatched request consumes no permit.
+	if resp, ok := n.tryShortCircuitFutureBlock(ctx, req, method); ok {
+		forwardSpan.SetAttributes(attribute.Bool("future_block.short_circuit", true))
 		if mlx != nil {
 			mlx.Close(ctx, resp, nil)
 		}
