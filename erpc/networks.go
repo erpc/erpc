@@ -325,6 +325,12 @@ func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []co
 			return eligible
 		}
 	}
+	if n.upstreamsRegistry == nil {
+		// Defensive: a partially-initialized network (e.g. cache-only paths or tests
+		// that don't wire a registry) has none — report no candidates so the head
+		// accessors fail open (return 0) instead of dereferencing a nil registry.
+		return nil
+	}
 	raw := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 	out := make([]common.Upstream, 0, len(raw))
 	for _, u := range raw {
