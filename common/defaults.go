@@ -1877,6 +1877,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.TraceFilterSplitConcurrency == 0 && defaults.Evm.TraceFilterSplitConcurrency != 0 {
 				n.Evm.TraceFilterSplitConcurrency = defaults.Evm.TraceFilterSplitConcurrency
 			}
+			if n.Evm.ServedTip == nil && defaults.Evm.ServedTip != nil {
+				cp := *defaults.Evm.ServedTip
+				n.Evm.ServedTip = &cp
+			}
+			if n.Evm.MaxFutureBlockRetryDistance == nil && defaults.Evm.MaxFutureBlockRetryDistance != nil {
+				n.Evm.MaxFutureBlockRetryDistance = defaults.Evm.MaxFutureBlockRetryDistance
+			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
