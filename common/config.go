@@ -1310,12 +1310,11 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 }
 
 type RetryPolicyConfig struct {
-	MaxAttempts           int                   `yaml:"maxAttempts" json:"maxAttempts"`
-	Delay                 Duration              `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
-	BackoffMaxDelay       Duration              `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
-	BackoffFactor         float32               `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
-	Jitter                Duration              `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
-	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence"`
+	MaxAttempts     int      `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay           Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
+	BackoffMaxDelay Duration `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
+	BackoffFactor   float32  `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
+	Jitter          Duration `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 	// EmptyResultAccept lists methods for which an empty/null result is considered valid
 	// and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
 	EmptyResultAccept []string `yaml:"emptyResultAccept,omitempty" json:"emptyResultAccept"`
@@ -1323,20 +1322,21 @@ type RetryPolicyConfig struct {
 	EmptyResultIgnore []string `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
 	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
 	EmptyResultMaxAttempts int `yaml:"emptyResultMaxAttempts,omitempty" json:"emptyResultMaxAttempts"`
-	// EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
-	// When set, empty result retries wait this long instead of using the normal error delay/backoff.
+	// EmptyResultDelay is the fixed fallback delay before retrying when the requested
+	// data isn't on the upstream yet — an empty/missing-data point-lookup OR an
+	// ErrUpstreamBlockUnavailable (same root cause: the block/tx isn't produced or
+	// indexed yet). Retries prefer the dynamic block-time delay (EMA block time ×
+	// Evm.BlockUnavailableDelayMultiplier); this fixed value is used only before that
+	// estimate warms up. (Supersedes the now-deprecated BlockUnavailableDelay.)
 	EmptyResultDelay Duration `yaml:"emptyResultDelay,omitempty" json:"emptyResultDelay" tstype:"Duration"`
-	// EmptyResultDelayMultiplier, when > 0, makes the empty-result retry delay
-	// block-time-relative: the executor waits (EMA-estimated block time × this
-	// multiplier) between empty/missing-data retries instead of the fixed
-	// EmptyResultDelay, falling back to EmptyResultDelay before the block-time
-	// estimate warms up. Mirrors BlockUnavailableDelayMultiplier but scoped per
-	// failsafe policy, so only opted-in methods (e.g. tx lookups) are affected.
-	EmptyResultDelayMultiplier *float64 `yaml:"emptyResultDelayMultiplier,omitempty" json:"emptyResultDelayMultiplier,omitempty"`
-	// BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
-	// requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
-	// time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
-	BlockUnavailableDelay Duration `yaml:"blockUnavailableDelay,omitempty" json:"blockUnavailableDelay" tstype:"Duration"`
+
+	// Deprecated: merged into EmptyResultDelay (same purpose — fixed fallback delay for
+	// data-not-available retries). Retained as a yaml-only key so existing configs that
+	// still set `blockUnavailableDelay` keep loading; RetryPolicyConfig.SetDefaults
+	// migrates the value into EmptyResultDelay and clears this. Not read anywhere at
+	// runtime, and hidden from the generated TS types (json:"-") so new configs use
+	// emptyResultDelay.
+	BlockUnavailableDelay Duration `yaml:"blockUnavailableDelay,omitempty" json:"-"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
@@ -2194,11 +2194,11 @@ type EvmNetworkConfig struct {
 	// Default: 0.7 (30% under the estimated block time).
 	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
 
-	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive
-	// the retry delay when all upstreams return ErrUpstreamBlockUnavailable. When the
-	// dynamic block time is known, the delay is blockTime * this multiplier.
-	// Falls back to the static RetryPolicyConfig.BlockUnavailableDelay when block time
-	// is not yet available. Default: 0.8.
+	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
+	// retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
+	// or an empty/missing-data point-lookup). When the dynamic block time is known, the
+	// delay is blockTime * this multiplier. Falls back to the static
+	// RetryPolicyConfig.EmptyResultDelay when block time is not yet available. Default: 1.0.
 	BlockUnavailableDelayMultiplier *float64 `yaml:"blockUnavailableDelayMultiplier,omitempty" json:"blockUnavailableDelayMultiplier,omitempty"`
 
 	// IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
@@ -2208,18 +2208,21 @@ type EvmNetworkConfig struct {
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
 
-	// MaxFutureBlockRetryDistance bounds retry-on-empty for point-lookup methods
-	// (see MarkEmptyAsErrorMethods, and only when the RetryEmpty directive is on).
-	// An empty result for a concrete numeric block is treated as retryable
-	// missing-data only while the requested block is within this many blocks of the
-	// network's served latest. Beyond that the block is treated as not-yet-produced
-	// and the empty result is returned truthfully without retrying. Defaults to 0
-	// (only the head itself is retried; any block above the served head is returned
-	// empty without retrying). A positive value widens the window (e.g. 1 also
-	// retries head+1); a negative value disables the bound (retry all empties).
-	// Tags and block-hash lookups are never treated as future; fails open when the
-	// head is unknown.
-	MaxFutureBlockRetryDistance *int64 `yaml:"maxFutureBlockRetryDistance,omitempty" json:"maxFutureBlockRetryDistance,omitempty"`
+	// EmptyResultConfidence sets how confirmed a concrete numeric block must be for an
+	// empty/null point-lookup result to be treated as retryable missing-data, versus a
+	// truthful "not yet produced/confirmed" empty returned without retrying. Applies to
+	// MarkEmptyAsErrorMethods when the RetryEmpty directive is on; tags and block-hash
+	// lookups never qualify, and it fails open when the head is unknown.
+	//   - blockHead (default): retry empties for blocks at/below the latest head; a
+	//     block above the head isn't produced yet → return the empty truthfully.
+	//   - finalizedBlock: stricter — only retry empties for blocks at/below the
+	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
+	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
+
+	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
+	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
+	// numeric distance band is gone — use emptyResultConfidence instead.
+	MaxFutureBlockRetryDistance *int64 `yaml:"maxFutureBlockRetryDistance,omitempty" json:"-"`
 }
 
 // EvmServedTipConfig controls how the network derives the "latest"/"finalized"

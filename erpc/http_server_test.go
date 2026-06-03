@@ -7961,7 +7961,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 										Max:      common.Duration(10 * time.Second),
 									},
 								},
-								Retry:         &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultConfidence: common.AvailbilityConfidenceBlockHead, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
+								Retry:         &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
 								Consensus: &common.ConsensusPolicyConfig{
 									AgreementThreshold:      2,
 									MaxParticipants:         4,

@@ -289,7 +289,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Should return null without error for tagged blocks when enforcement is disabled
 		assert.NoError(t, err)
@@ -313,7 +313,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Numeric blocks ALWAYS return error when null, regardless of directive
 		// This is the key behavior: numeric null blocks indicate real data problems (pruned/missing)
@@ -338,7 +338,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Should return error for tagged blocks when enforcement is enabled
 		assert.Error(t, err)
@@ -362,7 +362,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Should return null without error for "latest" tag when enforcement is disabled
 		assert.NoError(t, err)
@@ -385,7 +385,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: When directives are nil, should NOT enforce (allow null)
 		// The defaults are applied at network level via DirectiveDefaults.SetDefaults()

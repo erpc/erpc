@@ -36,9 +36,6 @@ type networkExecutor struct {
 	emptyResultAccept []string
 
 	dynamicBlockUnavailableDelay func() time.Duration
-	// networkBlockTime returns the network's EMA-estimated block time (0 until
-	// warmup); used for block-time-relative empty-result delays.
-	networkBlockTime func() time.Duration
 }
 
 // consensusRunner is the minimal interface this package needs from
@@ -58,7 +55,6 @@ func NewNetworkExecutor(
 	logger *zerolog.Logger,
 	consensus consensusRunner,
 	dynamicBlockUnavailableDelay func() time.Duration,
-	networkBlockTime func() time.Duration,
 ) (*networkExecutor, error) {
 	if cfg == nil {
 		return &networkExecutor{
@@ -66,7 +62,6 @@ func NewNetworkExecutor(
 			logger:                       logger,
 			emptyResultAccept:            common.DefaultEmptyResultAccept(),
 			dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
-			networkBlockTime:             networkBlockTime,
 		}, nil
 	}
 
@@ -84,7 +79,6 @@ func NewNetworkExecutor(
 		finalities:                   cfg.MatchFinality,
 		consensus:                    consensus,
 		dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
-		networkBlockTime:             networkBlockTime,
 	}
 	if e.method == "" {
 		e.method = "*"
@@ -319,7 +313,7 @@ func (e *networkExecutor) runRetry(
 			bestResp = resp
 		}
 
-		d := e.computeDelay(req, resp, err)
+		d := e.computeDelay(req, resp, err, attempt)
 		if d > 0 {
 			if serr := failsafe.SleepCtx(ctx, d); serr != nil {
 				// SleepCtx returns ctx.Err(). Get the cause for typed wrapping.
@@ -347,6 +341,19 @@ func (e *networkExecutor) shouldRetry(req *common.NormalizedRequest, resp *commo
 	return e.shouldRetryWithReason(req, resp, err, attempt) != ""
 }
 
+// dataUnavailableCapReached reports whether the EmptyResultMaxAttempts cap — the
+// single bound on retries when the requested data simply isn't on the upstream yet
+// (empty/missing-data point-lookups, pending tx-lookups, and
+// ErrUpstreamBlockUnavailable) — has been reached. It is intentionally separate
+// from MaxAttempts, which governs genuine-error failover.
+func (e *networkExecutor) dataUnavailableCapReached(attempt int) bool {
+	if e.cfg == nil || e.cfg.Retry == nil {
+		return false
+	}
+	limit := e.cfg.Retry.EmptyResultMaxAttempts
+	return limit > 0 && attempt+1 >= limit
+}
+
 // shouldRetryWithReason returns the reason for retrying, or "" if no
 // retry should fire. The reason becomes the `reason` label of the
 // retry metric so operators can see which retry-path is busy.
@@ -367,6 +374,9 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			return ""
 		}
 		if common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+			if e.dataUnavailableCapReached(attempt) {
+				return ""
+			}
 			return "block_unavailable"
 		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
@@ -378,6 +388,9 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
 					return ""
 				}
+			}
+			if e.dataUnavailableCapReached(attempt) {
+				return ""
 			}
 			return "missing_data"
 		}
@@ -400,11 +413,9 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	// RetryEmpty directive on emptyish responses.
 	if rds != nil && rds.RetryEmpty {
 		if resp.IsResultEmptyish() {
-			// Respect EmptyResultMaxAttempts cap.
-			if e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.EmptyResultMaxAttempts > 0 {
-				if attempt+1 >= e.cfg.Retry.EmptyResultMaxAttempts {
-					return ""
-				}
+			// Respect the shared "data not available yet" cap.
+			if e.dataUnavailableCapReached(attempt) {
+				return ""
 			}
 			// If the method is in the empty-result-accept list, treat empty as valid.
 			method, _ := req.Method()
@@ -427,6 +438,9 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			"eth_getTransactionByHash",
 			"eth_getTransactionByBlockHashAndIndex",
 			"eth_getTransactionByBlockNumberAndIndex":
+			if e.dataUnavailableCapReached(attempt) {
+				return ""
+			}
 			return "pending_tx"
 		}
 	}
@@ -434,46 +448,39 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	return ""
 }
 
-func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) time.Duration {
+func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *common.NormalizedResponse, err error, attempt int) time.Duration {
 	if e.cfg == nil || e.cfg.Retry == nil {
 		return 0
 	}
 	cfg := e.cfg.Retry
-	// Special-case delays: block-unavailable and empty-result delays
-	// override normal backoff.
-	if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+	// "Data not yet available" retries — a block/tx the upstream hasn't indexed
+	// (ErrUpstreamBlockUnavailable), a point-lookup marked empty-as-missing
+	// (ErrEndpointMissingData), or a plain emptyish result — all want the same
+	// thing: wait about one block before retrying, since that's when the data
+	// usually appears. Use the EMA-block-time-relative delay
+	// (blockTime × BlockUnavailableDelayMultiplier) once it's warmed up, else the
+	// relevant fixed fallback. One mechanism covers both cases; there is no
+	// separate per-policy empty-result multiplier.
+	isBlockUnavailable := err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable)
+	isEmptyResult := (resp != nil && !resp.IsObjectNull() && resp.IsResultEmptyish()) ||
+		(err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+	if isBlockUnavailable || isEmptyResult {
 		if e.dynamicBlockUnavailableDelay != nil {
 			if d := e.dynamicBlockUnavailableDelay(); d > 0 {
 				return d
 			}
 		}
-		if fd := cfg.BlockUnavailableDelay.Duration(); fd > 0 {
-			return fd
-		}
-	}
-	// Empty-result / missing-data retries: block-time-relative delay (per-policy
-	// EmptyResultDelayMultiplier) when configured and the block time is known,
-	// else the fixed EmptyResultDelay. A not-yet-visible block/tx typically
-	// appears within ~one block, so this waits about that long instead of a
-	// hand-tuned constant — reusing the same EMA block-time the block-unavailable
-	// delay already relies on.
-	isEmptyResult := (resp != nil && !resp.IsObjectNull() && resp.IsResultEmptyish()) ||
-		(err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
-	if isEmptyResult {
-		if m := cfg.EmptyResultDelayMultiplier; m != nil && *m > 0 && e.networkBlockTime != nil {
-			if bt := e.networkBlockTime(); bt > 0 {
-				return time.Duration(float64(bt) * *m)
-			}
-		}
+		// Single fixed fallback before the block-time estimate warms up — covers
+		// both empty/missing-data and block-unavailable (same root cause).
 		if ed := cfg.EmptyResultDelay.Duration(); ed > 0 {
 			return ed
 		}
 	}
-	// Default: exponential backoff using ComputeBackoff (caller supplies
-	// the attempt index via a closure not exposed here; this function is
-	// invoked from inside the retry loop where attempt is implicit).
+	// Default: exponential backoff for genuine retryable errors, using the real
+	// 0-based attempt index (attempt 0 = first retry). Previously hardcoded to 0,
+	// which silently disabled backoffFactor / backoffMaxDelay on this path.
 	_ = req
-	return failsafe.ComputeBackoff(cfg, 0)
+	return failsafe.ComputeBackoff(cfg, attempt)
 }
 
 func (e *networkExecutor) runHedge(

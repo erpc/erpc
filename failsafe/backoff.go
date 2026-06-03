@@ -16,8 +16,8 @@ import (
 // result is 0 (no delay).
 //
 // This is a pure function — it has no knowledge of which error triggered
-// the retry. Special-case delays (EmptyResultDelay, BlockUnavailableDelay)
-// are the caller's responsibility; they bypass ComputeBackoff entirely.
+// the retry. The special-case EmptyResultDelay (data-not-available retries)
+// is the caller's responsibility; it bypasses ComputeBackoff entirely.
 func ComputeBackoff(cfg *common.RetryPolicyConfig, attempt int) time.Duration {
 	if cfg == nil {
 		return 0

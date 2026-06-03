@@ -1712,9 +1712,9 @@ func TestNetworkForward_BlockUnavailableDelay_AppliedAfterFullRound(t *testing.T
 		network := setupTestNetworkForMissingDataRetry(t, ctx,
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{
-				MaxAttempts:           3,
-				Delay:                 common.Duration(50 * time.Millisecond),
-				BlockUnavailableDelay: common.Duration(200 * time.Millisecond),
+				MaxAttempts:      3,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(200 * time.Millisecond),
 			},
 		)
 
@@ -2227,10 +2227,9 @@ func TestNetworkForward_BlockUnavailableDelay_TimingVerified(t *testing.T) {
 		network := setupTestNetworkForMissingDataRetry(t, ctx,
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{
-				MaxAttempts:           5,
-				Delay:                 common.Duration(50 * time.Millisecond),
-				EmptyResultDelay:      common.Duration(blockDelay),
-				BlockUnavailableDelay: common.Duration(blockDelay),
+				MaxAttempts:      5,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(blockDelay),
 			},
 		)
 		network.PinUpstreamOrderForTest("rpc1", "rpc2")
@@ -2623,16 +2622,14 @@ func TestNetworkForward_BlockUnavailableVsEmptyDelay_Priority(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		blockDelay := 400 * time.Millisecond
 		emptyDelay := 100 * time.Millisecond
 
 		network := setupTestNetworkForMissingDataRetry(t, ctx,
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{
-				MaxAttempts:           5,
-				Delay:                 common.Duration(50 * time.Millisecond),
-				EmptyResultDelay:      common.Duration(emptyDelay),
-				BlockUnavailableDelay: common.Duration(blockDelay),
+				MaxAttempts:      5,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(emptyDelay),
 			},
 		)
 		network.PinUpstreamOrderForTest("rpc1", "rpc2")

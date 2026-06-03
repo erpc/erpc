@@ -105,7 +105,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		}
 	}
 
-	return enforceNonNullBlock(nq, nr)
+	return enforceNonNullBlock(ctx, nq, nr)
 }
 
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
@@ -278,7 +278,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 // enforceNonNullBlock checks if the block result is null/empty and returns an appropriate error
 // This is now controlled by the EnforceNonNullTaggedBlocks directive
-func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+func enforceNonNullBlock(ctx context.Context, nq *common.NormalizedRequest, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
 	if nr != nil && !nr.IsObjectNull() && !nr.IsResultEmptyish() {
 		return nr, nil
 	}
@@ -305,6 +305,14 @@ func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResp
 			// Directive not set or disabled - allow null tagged blocks
 			return nr, nil
 		}
+	}
+
+	// A block beyond the network's confidence head (latest by default, or finalized)
+	// isn't produced/confirmed yet and legitimately returns null on every upstream —
+	// it isn't missing/pruned data, so don't convert it to an error and churn retries.
+	// Mirrors the upstream-level markUnexpectedEmpty guard so the two layers agree.
+	if emptyResultBeyondConfidence(ctx, nq) {
+		return nr, nil
 	}
 
 	// Create error for:

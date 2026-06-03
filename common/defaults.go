@@ -1881,8 +1881,8 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				cp := *defaults.Evm.ServedTip
 				n.Evm.ServedTip = &cp
 			}
-			if n.Evm.MaxFutureBlockRetryDistance == nil && defaults.Evm.MaxFutureBlockRetryDistance != nil {
-				n.Evm.MaxFutureBlockRetryDistance = defaults.Evm.MaxFutureBlockRetryDistance
+			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
+				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
 			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
@@ -1972,7 +1972,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
-const DefaultBlockUnavailableDelayMultiplier = 0.8
+const DefaultBlockUnavailableDelayMultiplier = 1.0
+
+// DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
+// upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
+// ErrUpstreamBlockUnavailable): one original attempt + one retry after ~one block.
+// Separate from MaxAttempts, which governs genuine-error failover.
+const DefaultEmptyResultMaxAttempts = 2
 
 // DefaultEmptyResultAccept returns a fresh copy of the methods for which an
 // empty/null/zero result is the canonical, final answer — NOT a "data is
@@ -2063,12 +2069,14 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		d := DefaultBlockUnavailableDelayMultiplier
 		e.BlockUnavailableDelayMultiplier = &d
 	}
-	if e.MaxFutureBlockRetryDistance == nil {
-		// Do not retry empty results for blocks above the network's served head —
-		// they are not yet produced. Tune per chain via config when a chain/client
-		// needs a wider window (e.g. 1 to also wait one block for head+1).
-		d := int64(0)
-		e.MaxFutureBlockRetryDistance = &d
+	if e.EmptyResultConfidence == 0 {
+		// Default: an empty point-lookup is retryable only for blocks at/below the
+		// latest head; a block above the head isn't produced yet → return it empty.
+		e.EmptyResultConfidence = AvailbilityConfidenceBlockHead
+	}
+	if e.MaxFutureBlockRetryDistance != nil {
+		log.Warn().Msg("config: evm.maxFutureBlockRetryDistance is deprecated and ignored; use evm.emptyResultConfidence (blockHead|finalizedBlock) instead")
+		e.MaxFutureBlockRetryDistance = nil
 	}
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}
@@ -2247,13 +2255,19 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 			r.Jitter = Duration(0 * time.Millisecond)
 		}
 	}
-	// Only set EmptyResultConfidence if provided through defaults
-	if r.EmptyResultConfidence == 0 && defaults != nil && defaults.EmptyResultConfidence != 0 {
-		r.EmptyResultConfidence = defaults.EmptyResultConfidence
-	}
 	// Backward compat: migrate deprecated EmptyResultIgnore → EmptyResultAccept
 	if r.EmptyResultAccept == nil && r.EmptyResultIgnore != nil {
 		r.EmptyResultAccept = r.EmptyResultIgnore
+	}
+	// Backward compat (config-loading only): deprecated blockUnavailableDelay was merged
+	// into emptyResultDelay (same purpose). Migrate an old value over, then clear the
+	// legacy field so nothing downstream ever reads it.
+	if r.BlockUnavailableDelay > 0 {
+		if r.EmptyResultDelay == 0 {
+			r.EmptyResultDelay = r.BlockUnavailableDelay
+		}
+		log.Warn().Msg("config: retry.blockUnavailableDelay is deprecated and has been merged into retry.emptyResultDelay; please update your config")
+		r.BlockUnavailableDelay = 0
 	}
 	// Inherit from defaults
 	if r.EmptyResultAccept == nil && defaults != nil {
@@ -2267,10 +2281,14 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		r.EmptyResultAccept = DefaultEmptyResultAccept()
 	}
 
-	// Default EmptyResultMaxAttempts to MaxAttempts if not set
+	// "Data not available yet" (empty/missing-data/block-unavailable) retries are all
+	// capped here — default one original + one retry (~one block apart). Separate from
+	// MaxAttempts, which governs genuine-error failover.
 	if r.EmptyResultMaxAttempts == 0 {
 		if defaults != nil && defaults.EmptyResultMaxAttempts != 0 {
 			r.EmptyResultMaxAttempts = defaults.EmptyResultMaxAttempts
+		} else {
+			r.EmptyResultMaxAttempts = DefaultEmptyResultMaxAttempts
 		}
 	}
 
@@ -2278,12 +2296,6 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	// When not set, the regular delay settings are used for empty result retries.
 	if r.EmptyResultDelay == 0 && defaults != nil && defaults.EmptyResultDelay != 0 {
 		r.EmptyResultDelay = defaults.EmptyResultDelay
-	}
-
-	// BlockUnavailableDelay inherits from defaults if provided, no hardcoded fallback.
-	// When not set, block-unavailable retries use the normal delay/backoff.
-	if r.BlockUnavailableDelay == 0 && defaults != nil && defaults.BlockUnavailableDelay != 0 {
-		r.BlockUnavailableDelay = defaults.BlockUnavailableDelay
 	}
 
 	return nil

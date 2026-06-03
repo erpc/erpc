@@ -383,7 +383,7 @@ func (n *Network) evmHighestBlockMax(ctx context.Context, useFinalized bool) int
 
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) when
 // `req` is a concrete-numbered eth_getBlockByNumber lookup whose target block is
-// beyond every eligible upstream's head by more than MaxFutureBlockRetryDistance.
+// beyond every eligible upstream's head (at the network's emptyResultConfidence level).
 // No upstream can serve such a block yet, so dispatching + hedging across all of
 // them only burns latency and load before they each return empty — returning the
 // null here skips that fan-out entirely.
@@ -402,21 +402,15 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	if !strings.EqualFold(method, "eth_getBlockByNumber") {
 		return nil, false
 	}
-	distance := int64(0)
-	if d := n.cfg.Evm.MaxFutureBlockRetryDistance; d != nil {
-		if *d < 0 {
-			return nil, false // negative disables the bound
-		}
-		distance = *d
-	}
 	_, bn, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
 	if err != nil || bn <= 0 {
 		// Tags ("latest"/"pending"/...), block-hash lookups, or unparseable
 		// params carry no concrete future number — never short-circuit.
 		return nil, false
 	}
-	maxHead := n.evmHighestBlockMax(ctx, false)
-	if maxHead <= 0 || bn <= maxHead+distance {
+	useFinalized := n.cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized
+	maxHead := n.evmHighestBlockMax(ctx, useFinalized)
+	if maxHead <= 0 || bn <= maxHead {
 		// Unknown head (fail open) or block within reach of some upstream.
 		return nil, false
 	}

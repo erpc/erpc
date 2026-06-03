@@ -25,12 +25,11 @@ func upstreamPostForward_markUnexpectedEmpty(
 		}
 	}
 
-	// Future-block guard: do not retry an empty result for a concrete block beyond
-	// the network's served latest (by more than maxFutureBlockRetryDistance, which
-	// defaults to 0) — it is not yet produced, so every upstream legitimately
-	// returns empty. Return the truthful empty instead of churning retries until
-	// the request times out.
-	if emptyResultIsFutureBlock(ctx, rq) {
+	// Confidence guard: do not retry an empty result for a concrete block beyond the
+	// network's required confidence head (latest by default, or finalized) — it isn't
+	// confirmed yet, so every upstream legitimately returns empty. Return the truthful
+	// empty instead of churning retries until the request times out.
+	if emptyResultBeyondConfidence(ctx, rq) {
 		return rs, re
 	}
 
@@ -53,14 +52,14 @@ func upstreamPostForward_markUnexpectedEmpty(
 	)
 }
 
-// emptyResultIsFutureBlock reports whether `rq` targets a concrete block number
-// beyond the network's served latest by more than MaxFutureBlockRetryDistance —
-// a not-yet-produced block for which every upstream legitimately returns empty.
-// The distance defaults to 0 (only the head itself is retried); a negative
-// distance disables the guard. Returns false (fail-open) when the head is
-// unknown or the request does not target a concrete numeric block (tags and
-// block-hash lookups are never future).
-func emptyResultIsFutureBlock(ctx context.Context, rq *common.NormalizedRequest) bool {
+// emptyResultBeyondConfidence reports whether `rq` targets a concrete block number
+// beyond the network's required confidence head — i.e. not yet confirmed enough for an
+// empty result to mean "missing data" rather than "not produced/finalized yet", so
+// every upstream legitimately returns empty. The head is the latest head for
+// EmptyResultConfidence=blockHead (the default) or the finalized head for
+// finalizedBlock. Returns false (fail-open) when the head is unknown or the request
+// does not target a concrete numeric block (tags and block-hash lookups never qualify).
+func emptyResultBeyondConfidence(ctx context.Context, rq *common.NormalizedRequest) bool {
 	if rq == nil {
 		return false
 	}
@@ -76,20 +75,17 @@ func emptyResultIsFutureBlock(ctx context.Context, rq *common.NormalizedRequest)
 	if cfg == nil || cfg.Evm == nil {
 		return false
 	}
-	distance := int64(0)
-	if cfg.Evm.MaxFutureBlockRetryDistance != nil {
-		distance = *cfg.Evm.MaxFutureBlockRetryDistance
-		if distance < 0 {
-			// Negative disables the bound: retry all empties (legacy behavior).
-			return false
-		}
+	var head int64
+	if cfg.Evm.EmptyResultConfidence == common.AvailbilityConfidenceFinalized {
+		head = nw.EvmHighestFinalizedBlockNumber(ctx)
+	} else {
+		head = nw.EvmHighestLatestBlockNumber(ctx)
 	}
-	head := nw.EvmHighestLatestBlockNumber(ctx)
 	if head <= 0 {
-		// Fail open: without a known head we cannot tell future from behind.
+		// Fail open: without a known head we cannot tell beyond-confidence from behind.
 		return false
 	}
-	return bn > head+distance
+	return bn > head
 }
 
 // normalizeEmptyArrayResponse returns a new NormalizedResponse with result `[]`,
