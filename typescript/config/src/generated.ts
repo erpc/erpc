@@ -1191,10 +1191,12 @@ export interface EvmNetworkConfig {
    * An empty result for a concrete numeric block is treated as retryable
    * missing-data only while the requested block is within this many blocks of the
    * network's served latest. Beyond that the block is treated as not-yet-produced
-   * and the empty result is returned truthfully without retrying. Defaults to 1
-   * (the head and head+1 stay retryable); 0 means only the head itself; a
-   * negative value disables the bound (retry all empties). Tags and block-hash
-   * lookups are never treated as future; fails open when the head is unknown.
+   * and the empty result is returned truthfully without retrying. Defaults to 0
+   * (only the head itself is retried; any block above the served head is returned
+   * empty without retrying). A positive value widens the window (e.g. 1 also
+   * retries head+1); a negative value disables the bound (retry all empties).
+   * Tags and block-hash lookups are never treated as future; fails open when the
+   * head is unknown.
    */
   maxFutureBlockRetryDistance?: number /* int64 */;
 }

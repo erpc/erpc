@@ -8,11 +8,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestEmptyResultIsFutureBlock pins the tight future-block rule for empty
-// results: a concrete block more than one beyond the network head is a
-// not-yet-produced block (return the truthful empty, do not retry), while the
-// head and head+1 stay retryable. Tags / unknown blocks and an unknown head
-// fail open (never treated as future).
+// TestEmptyResultIsFutureBlock pins the default future-block rule for empty
+// results (maxFutureBlockRetryDistance defaults to 0): any concrete block above
+// the network head is not-yet-produced (return the truthful empty, do not
+// retry), while the head and below stay retryable. Tags / unknown blocks and an
+// unknown head fail open (never treated as future).
 func TestEmptyResultIsFutureBlock(t *testing.T) {
 	ctx := context.Background()
 	nw := &queryTestNetwork{
@@ -29,7 +29,7 @@ func TestEmptyResultIsFutureBlock(t *testing.T) {
 
 	assert.False(t, emptyResultIsFutureBlock(ctx, mk(nw, 999)), "behind head → retryable, not future")
 	assert.False(t, emptyResultIsFutureBlock(ctx, mk(nw, 1000)), "exactly head → not future")
-	assert.False(t, emptyResultIsFutureBlock(ctx, mk(nw, 1001)), "head+1 (next block) → still retried, not future")
+	assert.True(t, emptyResultIsFutureBlock(ctx, mk(nw, 1001)), "head+1 → future, return empty (default distance 0)")
 	assert.True(t, emptyResultIsFutureBlock(ctx, mk(nw, 1002)), "head+2 → future, return empty")
 	assert.True(t, emptyResultIsFutureBlock(ctx, mk(nw, 9_000_000)), "far future → future")
 	assert.False(t, emptyResultIsFutureBlock(ctx, mk(nw, 0)), "no concrete block (tag/hash) → never future")

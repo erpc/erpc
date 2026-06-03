@@ -2057,9 +2057,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		e.BlockUnavailableDelayMultiplier = &d
 	}
 	if e.MaxFutureBlockRetryDistance == nil {
-		// Retry empty results only for the head and head+1 (the next block may land
-		// on a retry); further-future blocks are not yet produced.
-		d := int64(1)
+		// Do not retry empty results for blocks above the network's served head —
+		// they are not yet produced. Tune per chain via config when a chain/client
+		// needs a wider window (e.g. 1 to also wait one block for head+1).
+		d := int64(0)
 		e.MaxFutureBlockRetryDistance = &d
 	}
 	if e.Integrity == nil {
