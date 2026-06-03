@@ -486,6 +486,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			upsList = append(upsList, u)
 		}
 	}
+	// Honor the use-upstream directive at the pool level so every downstream
+	// consumer operates on the targeted upstream(s): the consensus participant
+	// fan-out (and its maxParticipants count), the sequential sweep, and the
+	// stateful-method guard. NextUpstream also enforces this per-slot; filtering
+	// here keeps the request's upstream set consistent with what is dispatched.
+	if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
+		upsList = filterUpstreamsByUseUpstream(upsList, dr.UseUpstream)
+	}
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
 		ids := make([]string, len(upsList))
