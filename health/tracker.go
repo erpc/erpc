@@ -1205,6 +1205,18 @@ func (t *Tracker) updateNetworkLagMetrics(
 				}
 				lag := networkValue - upsValue
 				setLag(tm, lag)
+				// Block-head/finalization lag is a per-upstream property, but the
+				// (ups,method) dedup index stores a single, arbitrary-finality key
+				// per method. Selection slots at the network and network-method
+				// grains read the {method, All} rollup; if the indexed key was a
+				// specific finality, that rollup is left starved and lag-based
+				// predicates/scoring silently no-op. Mirror onto the All rollup
+				// (which getUpsKeys always populates) so lag is seen at every grain.
+				if k.finality != common.DataFinalityStateAll {
+					if av, ok := t.upsMetrics.Load(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}); ok {
+						setLag(av.(*TrackedMetrics), lag)
+					}
+				}
 				gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
 				gauge.Set(float64(lag))
 			}
@@ -1244,6 +1256,13 @@ func (t *Tracker) updateSingleUpstreamLag(
 				if v, ok := t.upsMetrics.Load(k); ok {
 					tm := v.(*TrackedMetrics)
 					setLag(tm, lag)
+				}
+				// Mirror onto the {method, All} rollup the indexed key may not be
+				// (see updateNetworkLagMetrics) so per-method-grain slots see lag.
+				if k.finality != common.DataFinalityStateAll {
+					if av, ok := t.upsMetrics.Load(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}); ok {
+						setLag(av.(*TrackedMetrics), lag)
+					}
 				}
 			}
 		}
