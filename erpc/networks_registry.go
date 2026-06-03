@@ -112,6 +112,16 @@ func NewNetwork(
 		}
 	}
 
+	// Raw EMA-estimated block time (no multiplier) for per-policy block-time-
+	// relative empty-result delays (RetryPolicyConfig.EmptyResultDelayMultiplier).
+	var networkBlockTime func() time.Duration
+	if metricsTracker != nil {
+		networkId := nwCfg.NetworkId()
+		networkBlockTime = func() time.Duration {
+			return metricsTracker.GetNetworkBlockTime(networkId)
+		}
+	}
+
 	// Build one networkExecutor per Failsafe config entry, plus a no-op
 	// catch-all so unmatched (method, finality) pairs always resolve.
 	var failsafeExecutors []*networkExecutor
@@ -125,7 +135,7 @@ func NewNetwork(
 				}
 				cons = c
 			}
-			ex, err := NewNetworkExecutor(fsCfg, &lg, cons, dynamicBlockUnavailableDelay)
+			ex, err := NewNetworkExecutor(fsCfg, &lg, cons, dynamicBlockUnavailableDelay, networkBlockTime)
 			if err != nil {
 				return nil, err
 			}
@@ -134,7 +144,7 @@ func NewNetwork(
 	}
 
 	// Catch-all no-op executor.
-	noop, _ := NewNetworkExecutor(nil, &lg, nil, dynamicBlockUnavailableDelay)
+	noop, _ := NewNetworkExecutor(nil, &lg, nil, dynamicBlockUnavailableDelay, networkBlockTime)
 	failsafeExecutors = append(failsafeExecutors, noop)
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))

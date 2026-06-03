@@ -787,6 +787,15 @@ export interface RetryPolicyConfig {
    */
   emptyResultDelay?: Duration;
   /**
+   * EmptyResultDelayMultiplier, when > 0, makes the empty-result retry delay
+   * block-time-relative: the executor waits (EMA-estimated block time × this
+   * multiplier) between empty/missing-data retries instead of the fixed
+   * EmptyResultDelay, falling back to EmptyResultDelay before the block-time
+   * estimate warms up. Mirrors BlockUnavailableDelayMultiplier but scoped per
+   * failsafe policy, so only opted-in methods (e.g. tx lookups) are affected.
+   */
+  emptyResultDelayMultiplier?: number /* float64 */;
+  /**
    * BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
    * requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
    * time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.

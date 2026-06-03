@@ -36,6 +36,9 @@ type networkExecutor struct {
 	emptyResultAccept []string
 
 	dynamicBlockUnavailableDelay func() time.Duration
+	// networkBlockTime returns the network's EMA-estimated block time (0 until
+	// warmup); used for block-time-relative empty-result delays.
+	networkBlockTime func() time.Duration
 }
 
 // consensusRunner is the minimal interface this package needs from
@@ -55,6 +58,7 @@ func NewNetworkExecutor(
 	logger *zerolog.Logger,
 	consensus consensusRunner,
 	dynamicBlockUnavailableDelay func() time.Duration,
+	networkBlockTime func() time.Duration,
 ) (*networkExecutor, error) {
 	if cfg == nil {
 		return &networkExecutor{
@@ -62,6 +66,7 @@ func NewNetworkExecutor(
 			logger:                       logger,
 			emptyResultAccept:            common.DefaultEmptyResultAccept(),
 			dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
+			networkBlockTime:             networkBlockTime,
 		}, nil
 	}
 
@@ -79,6 +84,7 @@ func NewNetworkExecutor(
 		finalities:                   cfg.MatchFinality,
 		consensus:                    consensus,
 		dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
+		networkBlockTime:             networkBlockTime,
 	}
 	if e.method == "" {
 		e.method = "*"
@@ -445,11 +451,21 @@ func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *comm
 			return fd
 		}
 	}
-	if ed := cfg.EmptyResultDelay.Duration(); ed > 0 {
-		if resp != nil && !resp.IsObjectNull() && resp.IsResultEmptyish() {
-			return ed
+	// Empty-result / missing-data retries: block-time-relative delay (per-policy
+	// EmptyResultDelayMultiplier) when configured and the block time is known,
+	// else the fixed EmptyResultDelay. A not-yet-visible block/tx typically
+	// appears within ~one block, so this waits about that long instead of a
+	// hand-tuned constant — reusing the same EMA block-time the block-unavailable
+	// delay already relies on.
+	isEmptyResult := (resp != nil && !resp.IsObjectNull() && resp.IsResultEmptyish()) ||
+		(err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+	if isEmptyResult {
+		if m := cfg.EmptyResultDelayMultiplier; m != nil && *m > 0 && e.networkBlockTime != nil {
+			if bt := e.networkBlockTime(); bt > 0 {
+				return time.Duration(float64(bt) * *m)
+			}
 		}
-		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		if ed := cfg.EmptyResultDelay.Duration(); ed > 0 {
 			return ed
 		}
 	}
