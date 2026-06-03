@@ -10320,6 +10320,36 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.NotNil(t, resp)
 		resp.Release()
 
+		// network.Forward writes to the cache asynchronously in a background
+		// goroutine (see networks.go `go func(){ ... cacheDal.Set(...) }()`), so
+		// the middle range is NOT guaranteed to be persisted by the time Forward
+		// returns. Without an explicit barrier, the full-range request below can
+		// race ahead: its middle sub-request misses the still-empty cache, falls
+		// through to the upstream, and finds no mock (the middle-range mock has a
+		// default Counter of 1 and was already consumed above) -> "gock: cannot
+		// match any request" -> the sub-request errors -> Forward returns an
+		// error and resp is nil. This is rare locally but reproducible under CI
+		// load. Wait deterministically until the middle range is actually cached.
+		cacheProbe := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118100",
+				"toBlock": "0x111181ff",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`))
+		cacheProbe.SetNetwork(network)
+		require.Eventually(t, func() bool {
+			cached, gerr := network.cacheDal.Get(ctx, cacheProbe)
+			if gerr != nil || cached == nil {
+				return false
+			}
+			cjrr, jerr := cached.JsonRpcResponse()
+			return jerr == nil && cjrr != nil
+		}, 10*time.Second, 10*time.Millisecond, "middle getLogs range was not persisted to cache in time")
+
 		// Now make the full request that should be split into three parts
 		fullRangeRequest := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
