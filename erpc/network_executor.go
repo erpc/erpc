@@ -327,7 +327,6 @@ func (e *networkExecutor) runRetry(
 					method,
 					retryReason,
 					req.Finality(ctx).String(),
-					"upstream",
 				).Observe(d.Seconds())
 			}
 			if serr := failsafe.SleepCtx(ctx, d); serr != nil {
@@ -463,14 +462,16 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	return ""
 }
 
-// isDataUnavailableReason reports whether a retry reason is a "data not on the
-// source yet" catch-up wait (block/tx not yet indexed) rather than
-// genuine-error failover. These are the retries whose delay is block-time
-// relative; their wall-clock cost is attributed to chain catch-up via
-// network_data_unavailable_wait_seconds.
+// isDataUnavailableReason reports whether a retry reason is a "block not on the
+// upstream yet" catch-up wait rather than genuine-error failover. These are
+// exactly the reasons that take computeDelay's block-time-relative delay path
+// (isBlockUnavailable || isEmptyResult); their wall-clock cost is attributed to
+// chain catch-up via network_data_unavailable_wait_seconds. pending_tx is
+// deliberately excluded — it retries on exponential backoff, not the block-time
+// catch-up delay, so recording it here would mislabel backoff as catch-up.
 func isDataUnavailableReason(reason string) bool {
 	switch reason {
-	case "block_unavailable", "empty_result", "missing_data", "pending_tx":
+	case "block_unavailable", "empty_result", "missing_data":
 		return true
 	default:
 		return false
