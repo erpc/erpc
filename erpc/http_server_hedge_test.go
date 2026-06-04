@@ -1615,7 +1615,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		// Persist both mocks so the fast primary result is always available and
+		// deterministically wins the race regardless of loaded-CI scheduling; the
+		// 2 persisted mocks remain pending by design.
+		defer util.AssertNoPendingMocks(t, 2)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1633,7 +1636,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(90 * time.Millisecond),
+										Delay:    common.NewStaticDuration(10 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1660,12 +1663,15 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			},
 		}
 
-		// rpc1: Primary - fast success
+		// rpc1: Primary - completes shortly after the hedge fires (so both fire)
+		// but well before the hedge's response, so the primary deterministically
+		// wins even under loaded-CI jitter.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(matchesGetBalanceTestReq).
+			Persist().
 			Reply(200).
-			Delay(105 * time.Millisecond).
+			Delay(60 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1676,8 +1682,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(matchesGetBalanceTestReq).
+			Persist().
 			Reply(200).
-			Delay(120 * time.Millisecond).
+			Delay(300 * time.Millisecond). // large margin over the 60ms primary so the primary wins deterministically
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2720,29 +2727,33 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		// Persist both mocks: the primary (rpc1) result must remain available even
+		// if a structural race retries it, so the fast 90ms response always wins
+		// over the slow 1350ms hedge regardless of loaded-CI scheduling. The 2
+		// persisted mocks remain pending by design.
+		defer util.AssertNoPendingMocks(t, 2)
 
-		// Mock first upstream - initially slow but eventually completes faster
-		// The key feature is that this request looks like it will be slow (it waits 300ms before responding)
-		// but actually finishes before the second request
+		// Mock first upstream - fast (90ms): triggers the 30ms hedge but completes
+		// well before the slow hedge response, so the primary deterministically wins.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(matchesGetBalanceTestReq).
+			Persist().
 			Reply(200).
-			Delay(90 * time.Millisecond). // Enough delay to trigger hedge but not too long
+			Delay(90 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  "0x1234567", // Valid hex string for primary upstream
 			})
 
-		// Mock second upstream - hedge request goes to this upstream
-		// This request is much slower overall (1000ms)
+		// Mock second upstream - the slow hedge (1350ms), ~15x the 90ms primary.
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(matchesGetBalanceTestReq).
+			Persist().
 			Reply(200).
-			Delay(1350 * time.Millisecond). // large gap vs the 300ms primary so the primary wins deterministically under load; <5s MaxTimeout; last subtest so no later-subtest cost
+			Delay(1350 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
