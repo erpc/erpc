@@ -1321,7 +1321,7 @@ func (e *EvmNetworkConfig) Validate() error {
 			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
 		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
-			if _, err := WildcardMatch(m, "eth_probe"); err != nil {
+			if err := ValidatePattern(m); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
 			}
 		}
