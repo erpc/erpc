@@ -327,9 +327,12 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
 			g.mu.Lock()
 			g.latestByNetwork[nid] = num
-			if ts > 0 {
-				g.latestTsByNetwork[nid] = ts
-			}
+			// Store the timestamp in lockstep with the number (even when ts is 0/unknown) so the
+			// reported head timestamp always corresponds to the current latest block. Retaining a
+			// previous ts after the number advances would make CacheLatestBlockTimestamp report a
+			// stale head time; storing 0 instead makes it report "unknown" so the realtime guard
+			// fails open rather than judging an advanced head by an older block's timestamp.
+			g.latestTsByNetwork[nid] = ts
 			g.mu.Unlock()
 			telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, nid).Set(float64(num))
 			if ts > 0 {
