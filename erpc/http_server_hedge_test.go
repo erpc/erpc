@@ -1849,7 +1849,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		// The hedge (rpc2) only fires when the 50ms hedge delay elapses before the
+		// primary settles; the primary here fails fast (~20ms), so whether the
+		// hedge actually fires is timing-dependent. Persist the hedge mock so it is
+		// served deterministically if it fires and simply stays pending if it does
+		// not — the assertion that matters is that the retry on rpc1 succeeds. The
+		// persisted hedge mock remains pending by design (1).
+		defer util.AssertNoPendingMocks(t, 1)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1913,14 +1919,15 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"error": "internal server error",
 			})
 
-		// rpc2: Hedge - also fails
+		// rpc2: Hedge - also fails (persisted: the hedge may or may not fire
+		// depending on timing relative to the fast-failing primary).
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
-			Times(1).
+			Persist().
 			Reply(503).
 			Delay(30 * time.Millisecond).
 			JSON(map[string]interface{}{

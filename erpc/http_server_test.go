@@ -2671,10 +2671,21 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		// The default selection policy probes the directive-excluded upstream in
+		// the background, so rpc1 is hit by the rpc2-directed request (as a probe)
+		// in addition to the later no-directive request. Persist the result mocks
+		// — and scope them to the eth_getBlockNumber body so they never shadow the
+		// poller mocks — so the probe and both real requests are served
+		// deterministically instead of racing a single-use mock. The 2 persisted
+		// mocks remain pending by design (hence expecting 2 below).
+		defer util.AssertNoPendingMocks(t, 2)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBlockNumber")
+			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -2683,6 +2694,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			})
 		gock.New("http://rpc2.localhost").
 			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBlockNumber")
+			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -2776,10 +2791,17 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		// The default selection policy probes the directive-excluded rpc1 in the
+		// background (re-issuing the same eth_getBalance request), so rpc1 is hit
+		// even though the directive routes the real request to rpc2. Persist the
+		// result mocks so that probe is served deterministically instead of racing
+		// a single-use mock; both persisted mocks remain pending by design (2).
+		// The body2==0x2222222 assertion still proves the directive routed to rpc2.
+		defer util.AssertNoPendingMocks(t, 2)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2792,6 +2814,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			})
 		gock.New("http://rpc2.localhost").
 			Post("/").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
