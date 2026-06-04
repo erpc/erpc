@@ -15,6 +15,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// matchesGetBalanceTestReq matches a test's eth_getBalance request but NOT the
+// EVM state poller's archive-detection probe (eth_getBalance against the zero
+// address — see EvmStatePoller.checkCallStateProbe). SetupMocksForEvmStatePoller
+// does not mock that probe, so without this exclusion it races to consume the
+// single-use eth_getBalance mocks these hedge tests rely on — which flaked the
+// suite non-deterministically (wrong upstream wins / upstreams-exhausted /
+// pending-mock / request-timeout).
+func matchesGetBalanceTestReq(request *http.Request) bool {
+	body := util.SafeReadBody(request)
+	return strings.Contains(body, "eth_getBalance") &&
+		!strings.Contains(body, "0x0000000000000000000000000000000000000000")
+}
+
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
 		util.ResetGock()
@@ -76,10 +89,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(100 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -89,10 +99,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(20 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -189,10 +196,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary request - fails with 500 error
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fails before hedge delay (100ms)
 			JSON(map[string]interface{}{
@@ -203,10 +207,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// continues past rpc1's failure to rpc2 (fails) then rpc3 (succeeds).
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(503).
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
@@ -214,10 +215,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc3.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -313,10 +311,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary request - fails after hedge starts
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fails after hedge starts (30ms)
 			JSON(map[string]interface{}{
@@ -326,10 +321,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: First hedge - also fails
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(503).
 			Delay(40 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -339,10 +331,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc3: Second hedge - succeeds
 		gock.New("http://rpc3.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(50 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -394,7 +383,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(200 * time.Millisecond), // Hedge delay
+										// Large, never-fired hedge delay: the primary fails at
+										// ~10ms (before this), so the retry path is exercised
+										// without the hedge. A big value decouples the timing
+										// assertion below from loaded-CI jitter.
+										Delay: common.NewStaticDuration(500 * time.Millisecond),
 									},
 								},
 							},
@@ -432,10 +425,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: First attempt - fails immediately
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(10 * time.Millisecond). // Fails very quickly
 			JSON(map[string]interface{}{
@@ -445,10 +435,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: Retry attempt - succeeds
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(50 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -472,7 +459,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Total time: ~10ms (primary fail) + 50ms (retry execution) = ~60ms
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x222222")
-		assert.Less(t, elapsed, 150*time.Millisecond, "Should not wait for hedge delay")
+		assert.Less(t, elapsed, 400*time.Millisecond, "Should retry immediately, not wait for the 500ms hedge delay (400ms leaves loaded-CI headroom while staying below the hedge)")
 	})
 
 	t.Run("RetryWaitsForHedgeWhenHedgeIsRunning", func(t *testing.T) {
@@ -772,9 +759,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - succeeds quickly
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(50 * time.Millisecond). // Much faster than hedge delay
 			JSON(map[string]interface{}{
@@ -786,9 +771,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: Would be hedge but never called
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -966,10 +949,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - slow but succeeds
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(300 * time.Millisecond). // Slow
 			JSON(map[string]interface{}{
@@ -981,10 +961,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: Hedge - fast but fails
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fast fail
 			JSON(map[string]interface{}{
@@ -1066,10 +1043,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - fails quickly
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fast fail
 			JSON(map[string]interface{}{
@@ -1080,10 +1054,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// to rpc2 which succeeds.
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -1167,10 +1138,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - fails after hedge has started
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(100 * time.Millisecond). // Fails after hedge starts (50ms)
 			JSON(map[string]interface{}{
@@ -1180,10 +1148,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: Hedge - succeeds quickly
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(30 * time.Millisecond). // Quick success
 			JSON(map[string]interface{}{
@@ -1268,10 +1233,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - slow and fails
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(300 * time.Millisecond). // Slow fail
 			JSON(map[string]interface{}{
@@ -1364,10 +1326,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - fails before hedge starts
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fails before hedge delay (100ms)
 			JSON(map[string]interface{}{
@@ -1379,10 +1338,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// up with both errors in the exhausted wrapper.
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Persist().
 			Reply(503).
 			JSON(map[string]interface{}{
@@ -1471,10 +1427,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - fails after hedge starts
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(500).
 			Delay(800 * time.Millisecond). // Fails after hedge starts (500ms)
 			JSON(map[string]interface{}{
@@ -1484,10 +1437,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: Hedge - also fails
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(503).
 			Delay(900 * time.Millisecond). // Takes slightly longer
 			JSON(map[string]interface{}{
@@ -1625,10 +1575,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary request - slow but succeeds
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(200 * time.Millisecond). // Slow response
 			JSON(map[string]interface{}{
@@ -1703,10 +1650,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - fast success
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(350 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -1718,10 +1662,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: Hedge - slower success
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(400 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -1800,10 +1741,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - slow success
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(200 * time.Millisecond). // Would finish at 200ms
 			JSON(map[string]interface{}{
@@ -1815,10 +1753,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc2: Hedge - fast success
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(20 * time.Millisecond). // Finishes at 70ms (50ms hedge delay + 20ms)
 			JSON(map[string]interface{}{
@@ -1908,10 +1843,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// rpc1: Primary - fails fast
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Times(1).
 			Reply(500).
 			Delay(20 * time.Millisecond).
@@ -1923,10 +1855,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// depending on timing relative to the fast-failing primary).
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Persist().
 			Reply(503).
 			Delay(30 * time.Millisecond).
@@ -1937,10 +1866,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Second attempt (retry): succeeds
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Times(1).
 			Reply(200).
 			Delay(10 * time.Millisecond).
@@ -2018,10 +1944,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(100 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2031,10 +1954,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(20 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2255,10 +2175,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(200 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2269,10 +2186,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(20 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2375,10 +2289,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(402).
 			Delay(500 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2392,10 +2303,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(50 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2498,12 +2406,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(402).
-			Delay(5000 * time.Millisecond).
+			Delay(1500 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2515,10 +2420,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(150 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2703,10 +2605,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Mock #1 (faster) – "original request"
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(300 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2718,12 +2617,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Mock #2 (slower) – "hedge request"
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(5000 * time.Millisecond).
+			Delay(1500 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
@@ -2731,8 +2627,15 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Launch the test server with above config
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		// Pin upstream order so the primary is deterministically rpc1 (the fast,
+		// 300ms upstream). Without this, selection non-determinism can make the
+		// slow (5s) upstream primary, and its delay races the server timeout.
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0x1234"]}`
 
@@ -2807,10 +2710,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// but actually finishes before the second request
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(300 * time.Millisecond). // Enough delay to trigger hedge but not too long
 			JSON(map[string]interface{}{
@@ -2823,10 +2723,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// This request is much slower overall (1000ms)
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
+			Filter(matchesGetBalanceTestReq).
 			Reply(200).
 			Delay(1000 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2836,8 +2733,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Launch test server with config
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		// Pin upstream order so the primary is deterministically rpc1 (the
+		// initially-slow-but-faster 300ms upstream), not the 1000ms hedge target.
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		policy.OverrideAllForTest(prj.policyEngine)
 
 		// Time the request to verify we don't wait for the slower hedge
 		start := time.Now()
@@ -2851,8 +2754,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Check that response time is approximately equal to the first request latency
 		// and NOT waiting for the second request to finish (which would be ~1000ms)
 		// We add a small buffer for processing time
-		assert.Less(t, elapsed, 600*time.Millisecond,
-			"Response time should be close to first request latency (~300ms) and not wait for hedge request to complete (~1000ms)")
+		assert.Less(t, elapsed, 900*time.Millisecond,
+			"Response time should track the ~300ms primary, not the ~1000ms hedge (900ms leaves loaded-CI headroom while staying below the hedge completion)")
 		assert.GreaterOrEqual(t, elapsed, 300*time.Millisecond,
 			"Response time should be at least equal to the simulated primary upstream delay")
 
