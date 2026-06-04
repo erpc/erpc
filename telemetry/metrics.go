@@ -70,6 +70,42 @@ var (
 		Help:      "Finalized block number of upstreams.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	MetricCacheConnectorEarliestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "cache_connector_earliest_block_number",
+		Help:      "Earliest block number available in a read-through cache connector, per network.",
+	}, []string{"connector", "network"})
+
+	MetricCacheConnectorLatestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "cache_connector_latest_block_number",
+		Help:      "Latest block number available in a read-through cache connector, per network.",
+	}, []string{"connector", "network"})
+
+	MetricCacheConnectorFinalizedBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "cache_connector_finalized_block_number",
+		Help:      "Finalized block number available in a read-through cache connector, per network.",
+	}, []string{"connector", "network"})
+
+	MetricCacheConnectorEarliestBlockTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "cache_connector_earliest_block_timestamp_seconds",
+		Help:      "Unix timestamp (seconds) of the earliest block available in a read-through cache connector, per network.",
+	}, []string{"connector", "network"})
+
+	MetricCacheConnectorLatestBlockTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "cache_connector_latest_block_timestamp_seconds",
+		Help:      "Unix timestamp (seconds) of the latest block available in a read-through cache connector, per network.",
+	}, []string{"connector", "network"})
+
+	MetricCacheConnectorFinalizedBlockTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "cache_connector_finalized_block_timestamp_seconds",
+		Help:      "Unix timestamp (seconds) of the finalized block available in a read-through cache connector, per network.",
+	}, []string{"connector", "network"})
+
 	MetricNetworkLatestBlockTimestampDistance = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_latest_block_timestamp_distance_seconds",
