@@ -2505,7 +2505,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
 			}).
 			Reply(200).
-			Delay(300 * time.Millisecond). // This will be canceled if the hedge wins
+			Delay(1500 * time.Millisecond). // canceled when the 50ms hedge wins; large gap so the fast result wins deterministically under load (<2s MaxTimeout)
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
@@ -2619,7 +2619,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(1500 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
+			// Large fast≪slow gap (300ms fast vs 4s slow, <5s MaxTimeout): the fast
+			// result wins deterministically even when a loaded runner delays it, and
+			// since this is one of the last subtests the long slow delay costs no
+			// later subtest. This is the last hedge subtest group.
+			Delay(4000 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
@@ -2725,7 +2729,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(1000 * time.Millisecond).
+			Delay(4500 * time.Millisecond). // large gap vs the 300ms primary so the primary wins deterministically under load; <5s MaxTimeout; last subtest so no later-subtest cost
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2754,8 +2758,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Check that response time is approximately equal to the first request latency
 		// and NOT waiting for the second request to finish (which would be ~1000ms)
 		// We add a small buffer for processing time
-		assert.Less(t, elapsed, 900*time.Millisecond,
-			"Response time should track the ~300ms primary, not the ~1000ms hedge (900ms leaves loaded-CI headroom while staying below the hedge completion)")
+		assert.Less(t, elapsed, 3000*time.Millisecond,
+			"Response time should track the ~300ms primary, not the 4.5s hedge — 3s leaves generous loaded-CI headroom while staying well below the hedge completion")
 		assert.GreaterOrEqual(t, elapsed, 300*time.Millisecond,
 			"Response time should be at least equal to the simulated primary upstream delay")
 
