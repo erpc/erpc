@@ -103,6 +103,7 @@ type FailsafeConnector struct {
 }
 
 var _ Connector = (*FailsafeConnector)(nil)
+var _ CacheHeadReporter = (*FailsafeConnector)(nil)
 
 // NewFailsafeConnector constructs a FailsafeConnector backed by per-direction
 // cacheExecutor instances for Get vs Set/Delete operations.
@@ -203,6 +204,15 @@ func pickCacheExecutor(executors []*cacheExecutor, ctx context.Context) *cacheEx
 
 func (f *FailsafeConnector) Id() string {
 	return f.wrapped.Id()
+}
+
+// CacheLatestBlockTimestamp forwards to the wrapped connector when it is head-aware, so the realtime
+// cache age guard keeps working through the failsafe wrapper. Returns (0, false) otherwise.
+func (f *FailsafeConnector) CacheLatestBlockTimestamp(networkId string) (int64, bool) {
+	if r, ok := f.wrapped.(CacheHeadReporter); ok {
+		return r.CacheLatestBlockTimestamp(networkId)
+	}
+	return 0, false
 }
 
 func (f *FailsafeConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {

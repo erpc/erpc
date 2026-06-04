@@ -43,6 +43,8 @@ type GrpcConnector struct {
 	earliestByNetwork  map[string]uint64
 	latestByNetwork    map[string]uint64
 	finalizedByNetwork map[string]uint64
+	// unix timestamp (seconds) of the latest block per network (0 if unknown)
+	latestTsByNetwork map[string]int64
 	// headers to apply to all clients
 	headers     map[string]string
 	initializer *util.Initializer
@@ -50,6 +52,7 @@ type GrpcConnector struct {
 }
 
 var _ Connector = (*GrpcConnector)(nil)
+var _ CacheHeadReporter = (*GrpcConnector)(nil)
 
 // supportedMethods is a fast allowlist for methods served by gRPC BDS.
 var supportedMethods = map[string]struct{}{
@@ -99,6 +102,7 @@ func NewGrpcConnector(
 		earliestByNetwork:  make(map[string]uint64),
 		latestByNetwork:    make(map[string]uint64),
 		finalizedByNetwork: make(map[string]uint64),
+		latestTsByNetwork:  make(map[string]int64),
 		headers:            map[string]string{},
 		initializer:        util.NewInitializer(ctx, &lg, nil),
 		getTimeout:         cfg.GetTimeout.Duration(),
@@ -184,6 +188,17 @@ func NewGrpcConnector(
 }
 
 func (g *GrpcConnector) Id() string { return g.id }
+
+// CacheLatestBlockTimestamp reports the unix timestamp (seconds) of the latest block this
+// read-through cache currently has for networkId (refreshed by the background head poller), and
+// whether it is known. Implements CacheHeadReporter so the realtime cache age guard can be enforced
+// for responses that carry no block timestamp of their own.
+func (g *GrpcConnector) CacheLatestBlockTimestamp(networkId string) (int64, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	ts := g.latestTsByNetwork[networkId]
+	return ts, ts > 0
+}
 
 func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
 	span := trace.SpanFromContext(ctx)
@@ -312,6 +327,9 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
 			g.mu.Lock()
 			g.latestByNetwork[nid] = num
+			if ts > 0 {
+				g.latestTsByNetwork[nid] = ts
+			}
 			g.mu.Unlock()
 			telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, nid).Set(float64(num))
 			if ts > 0 {

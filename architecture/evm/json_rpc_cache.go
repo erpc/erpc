@@ -831,11 +831,13 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
-// shouldAcceptCachedResult checks if a cached result should be accepted based on its age
-// It compares the block timestamp against the policy's TTL to ensure freshness.
-// This validation only applies to realtime finality data (e.g., eth_gasPrice, latest block).
-// For finalized/unfinalized/unknown finality, block data is immutable and should always be accepted
-// regardless of how old the block timestamp is.
+// shouldAcceptCachedResult checks if a cached realtime result is still fresh enough to serve, by
+// comparing a block timestamp against the policy's TTL. The timestamp is taken from the response
+// when present; for responses that carry none (eth_blockNumber, eth_gasPrice, eth_getLogs) it falls
+// back to the serving connector's reported latest-block timestamp (read-through connectors that
+// implement data.CacheHeadReporter), so a lagging source is still caught for those methods.
+// Applies only to realtime finality — finalized/unfinalized/unknown block data is immutable and is
+// always accepted regardless of age.
 func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	ctx context.Context,
 	req *common.NormalizedRequest,
@@ -865,16 +867,26 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 	blockTimestamp, err := ExtractBlockTimestampFromResponse(ctx, nr)
 	if err != nil || blockTimestamp <= 0 {
-		// If we can't extract a timestamp (e.g., for methods that don't have block data),
-		// we can't enforce age-based validation, so accept the result
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			method, _ := req.Method()
-			c.logger.Trace().
-				Err(err).
-				Str("method", method).
-				Msg("cannot extract block timestamp for age validation, accepting cached result")
+		// The response carries no block timestamp (e.g. eth_blockNumber, eth_gasPrice, eth_getLogs).
+		// Fall back to the serving connector's reported latest-block timestamp so realtime freshness
+		// can still be enforced for these methods when the connector is head-aware (read-through).
+		blockTimestamp = 0
+		if reporter, ok := policy.GetConnector().(data.CacheHeadReporter); ok {
+			if ts, known := reporter.CacheLatestBlockTimestamp(req.NetworkId()); known && ts > 0 {
+				blockTimestamp = ts
+			}
 		}
-		return true
+		if blockTimestamp <= 0 {
+			// Still can't determine the age (connector not head-aware or head unknown), so accept.
+			if c.logger.GetLevel() <= zerolog.TraceLevel {
+				method, _ := req.Method()
+				c.logger.Trace().
+					Err(err).
+					Str("method", method).
+					Msg("cannot determine block timestamp for age validation, accepting cached result")
+			}
+			return true
+		}
 	}
 
 	// Calculate the age of the block
