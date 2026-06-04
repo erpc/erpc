@@ -265,17 +265,6 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-// gatherEvmTipInputs collects per-upstream tip observations for either the
-// latest or finalized axis, applying the same syncing-state and zero-tip
-// filters consistent with the prior MAX-based implementation but in a form
-// the cluster picker can consume directly.
-func (n *Network) gatherEvmTipInputs(
-	ctx context.Context,
-	useFinalized bool,
-) []evm.ServedTipInput {
-	return n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
-}
-
 // gatherEvmTipInputsForMethod builds the picker inputs from the upstreams that
 // the selection policy considers ELIGIBLE for `method` — so an upstream the
 // user (or an integrity guard) excluded/cordoned drops out of head tracking in

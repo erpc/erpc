@@ -58,8 +58,10 @@ type ServedTipResult struct {
 	// dominant cluster, or 0 if no valid candidates exist.
 	Candidate int64
 
-	// MaxObserved is the highest block number across all (non-velocity-
-	// rejected) inputs. Useful for the lag-vs-max telemetry gauge.
+	// MaxObserved is the highest block number across all inputs with
+	// BlockNumber > 0, computed BEFORE the velocity gate (so a velocity-rejected
+	// far-future tip still counts here). Useful for the lag-vs-max telemetry
+	// gauge.
 	MaxObserved int64
 
 	// ClusterCount is how many distinct clusters the inputs formed.

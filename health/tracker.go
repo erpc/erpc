@@ -1257,8 +1257,9 @@ func (t *Tracker) updateSingleUpstreamLag(
 					tm := v.(*TrackedMetrics)
 					setLag(tm, lag)
 				}
-				// Mirror onto the {method, All} rollup the indexed key may not be
-				// (see updateNetworkLagMetrics) so per-method-grain slots see lag.
+				// Also mirror onto the {method, All} rollup — the indexed key may be
+				// a per-finality slot rather than the {method, All} one (see
+				// updateNetworkLagMetrics) — so per-method-grain reads see the lag.
 				if k.finality != common.DataFinalityStateAll {
 					if av, ok := t.upsMetrics.Load(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}); ok {
 						setLag(av.(*TrackedMetrics), lag)
