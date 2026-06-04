@@ -52,7 +52,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(10 * time.Millisecond),
+										Delay:    common.NewStaticDuration(5 * time.Millisecond),
 									},
 								},
 							},
@@ -91,7 +91,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(100 * time.Millisecond).
+			Delay(30 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -101,7 +101,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(20 * time.Millisecond).
+			Delay(6 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -147,7 +147,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 2,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -198,7 +198,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(50 * time.Millisecond). // Fails before hedge delay (100ms)
+			Delay(15 * time.Millisecond). // Fails before hedge delay (100ms)
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -262,7 +262,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 2,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond), // Short delay
+										Delay:    common.NewStaticDuration(9 * time.Millisecond), // Short delay
 									},
 								},
 							},
@@ -313,7 +313,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(50 * time.Millisecond). // Fails after hedge starts (30ms)
+			Delay(15 * time.Millisecond). // Fails after hedge starts (30ms)
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -323,7 +323,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(503).
-			Delay(40 * time.Millisecond).
+			Delay(12 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
 			})
@@ -333,7 +333,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(50 * time.Millisecond).
+			Delay(15 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -387,7 +387,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 										// ~10ms (before this), so the retry path is exercised
 										// without the hedge. A big value decouples the timing
 										// assertion below from loaded-CI jitter.
-										Delay: common.NewStaticDuration(500 * time.Millisecond),
+										Delay: common.NewStaticDuration(150 * time.Millisecond),
 									},
 								},
 							},
@@ -427,7 +427,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(10 * time.Millisecond). // Fails very quickly
+			Delay(5 * time.Millisecond). // Fails very quickly
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -437,7 +437,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(50 * time.Millisecond).
+			Delay(15 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -459,7 +459,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Total time: ~10ms (primary fail) + 50ms (retry execution) = ~60ms
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x222222")
-		assert.Less(t, elapsed, 400*time.Millisecond, "Should retry immediately, not wait for the 500ms hedge delay (400ms leaves loaded-CI headroom while staying below the hedge)")
+		assert.Less(t, elapsed, 120*time.Millisecond, "Should retry immediately, not wait for the ~150ms hedge delay")
 	})
 
 	t.Run("RetryWaitsForHedgeWhenHedgeIsRunning", func(t *testing.T) {
@@ -492,7 +492,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(30 * time.Millisecond), // Short hedge delay
+										Delay:    common.NewStaticDuration(9 * time.Millisecond), // Short hedge delay
 									},
 								},
 							},
@@ -534,7 +534,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Times(1).
 			Reply(500).
-			Delay(200 * time.Millisecond). // Fails well after the 30ms hedge fires, so the hedge reliably runs (wide margin for loaded CI)
+			Delay(60 * time.Millisecond). // Fails well after the 30ms hedge fires, so the hedge reliably runs (wide margin for loaded CI)
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -546,7 +546,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Persist().
 			Reply(503).
-			Delay(100 * time.Millisecond). // Takes longer
+			Delay(30 * time.Millisecond). // Takes longer
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
 			})
@@ -557,7 +557,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Times(1).
 			Reply(200).
-			Delay(20 * time.Millisecond).
+			Delay(6 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -609,7 +609,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 2,
-										Delay:    common.NewStaticDuration(50 * time.Millisecond),
+										Delay:    common.NewStaticDuration(15 * time.Millisecond),
 									},
 								},
 							},
@@ -659,7 +659,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			Delay(75 * time.Millisecond). // Succeeds before second hedge
+			Delay(22 * time.Millisecond). // Succeeds before second hedge
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -671,7 +671,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Persist(). // Might be cancelled
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(60 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -683,7 +683,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Persist(). // Might be cancelled
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(60 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -728,7 +728,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(200 * time.Millisecond),
+										Delay:    common.NewStaticDuration(60 * time.Millisecond),
 									},
 								},
 							},
@@ -768,7 +768,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(50 * time.Millisecond). // Much faster than hedge delay
+			Delay(15 * time.Millisecond). // Much faster than hedge delay
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -823,7 +823,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -863,7 +863,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Persist(). // Might be cancelled
 			Reply(200).
-			Delay(500 * time.Millisecond). // Very slow
+			Delay(150 * time.Millisecond). // Very slow
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -874,7 +874,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			Delay(50 * time.Millisecond). // Fast
+			Delay(15 * time.Millisecond). // Fast
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -922,7 +922,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -963,7 +963,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Persist().
 			Reply(200).
-			Delay(300 * time.Millisecond). // Slow
+			Delay(90 * time.Millisecond). // Slow
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -976,7 +976,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Persist().
 			Reply(500).
-			Delay(50 * time.Millisecond). // Fast fail
+			Delay(15 * time.Millisecond). // Fast fail
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1018,7 +1018,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -1058,7 +1058,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(50 * time.Millisecond). // Fast fail
+			Delay(15 * time.Millisecond). // Fast fail
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1113,7 +1113,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(50 * time.Millisecond), // Hedge starts quickly
+										Delay:    common.NewStaticDuration(15 * time.Millisecond), // Hedge starts quickly
 									},
 								},
 							},
@@ -1153,7 +1153,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(100 * time.Millisecond). // Fails after hedge starts (50ms)
+			Delay(30 * time.Millisecond). // Fails after hedge starts (50ms)
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1163,7 +1163,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(30 * time.Millisecond). // Quick success
+			Delay(9 * time.Millisecond). // Quick success
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1208,7 +1208,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -1248,7 +1248,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(300 * time.Millisecond). // Slow fail
+			Delay(90 * time.Millisecond). // Slow fail
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1257,7 +1257,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			Delay(50 * time.Millisecond). // Fast success
+			Delay(15 * time.Millisecond). // Fast success
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1301,7 +1301,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -1341,7 +1341,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(50 * time.Millisecond). // Fails before hedge delay (100ms)
+			Delay(15 * time.Millisecond). // Fails before hedge delay (100ms)
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1402,7 +1402,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(500 * time.Millisecond), // Short delay
+										Delay:    common.NewStaticDuration(150 * time.Millisecond), // Short delay
 									},
 								},
 							},
@@ -1442,7 +1442,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(500).
-			Delay(800 * time.Millisecond). // Fails after hedge starts (500ms)
+			Delay(240 * time.Millisecond). // Fails after hedge starts (500ms)
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1452,7 +1452,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(503).
-			Delay(900 * time.Millisecond). // Takes slightly longer
+			Delay(270 * time.Millisecond). // Takes slightly longer
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
 			})
@@ -1496,7 +1496,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(50 * time.Millisecond),
+										Delay:    common.NewStaticDuration(15 * time.Millisecond),
 									},
 								},
 							},
@@ -1524,7 +1524,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			Delay(200 * time.Millisecond). // Slower than hedge delay
+			Delay(60 * time.Millisecond). // Slower than hedge delay
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1565,7 +1565,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(10 * time.Millisecond),
+										Delay:    common.NewStaticDuration(5 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1590,7 +1590,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(200 * time.Millisecond). // Slow response
+			Delay(60 * time.Millisecond). // Slow response
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1633,7 +1633,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(300 * time.Millisecond),
+										Delay:    common.NewStaticDuration(90 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1665,7 +1665,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(350 * time.Millisecond).
+			Delay(105 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1677,7 +1677,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(400 * time.Millisecond).
+			Delay(120 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1724,7 +1724,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(50 * time.Millisecond),
+										Delay:    common.NewStaticDuration(15 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1756,7 +1756,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(200 * time.Millisecond). // Would finish at 200ms
+			Delay(60 * time.Millisecond). // Would finish at 200ms
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1768,7 +1768,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(20 * time.Millisecond). // Finishes at 70ms (50ms hedge delay + 20ms)
+			Delay(6 * time.Millisecond). // Finishes at 70ms (50ms hedge delay + 20ms)
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1825,7 +1825,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 										Delay:       common.Duration(10 * time.Millisecond),
 									},
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.NewStaticDuration(50 * time.Millisecond),
+										Delay:    common.NewStaticDuration(15 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1859,7 +1859,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Times(1).
 			Reply(500).
-			Delay(20 * time.Millisecond).
+			Delay(6 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1871,7 +1871,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Persist().
 			Reply(503).
-			Delay(30 * time.Millisecond).
+			Delay(9 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
 			})
@@ -1882,7 +1882,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Filter(matchesGetBalanceTestReq).
 			Times(1).
 			Reply(200).
-			Delay(10 * time.Millisecond).
+			Delay(5 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1931,7 +1931,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(10 * time.Millisecond),
+										Delay:    common.NewStaticDuration(5 * time.Millisecond),
 									},
 								},
 							},
@@ -1959,7 +1959,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(100 * time.Millisecond).
+			Delay(30 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1969,7 +1969,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(20 * time.Millisecond).
+			Delay(6 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2010,7 +2010,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry:   nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -2073,7 +2073,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
 			}).
 			Reply(200).
-			Delay(1000 * time.Millisecond).
+			Delay(300 * time.Millisecond).
 			JSON([]interface{}{
 				map[string]interface{}{
 					"jsonrpc": "2.0",
@@ -2087,7 +2087,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
 			}).
 			Reply(200).
-			Delay(50 * time.Millisecond).
+			Delay(15 * time.Millisecond).
 			JSON([]interface{}{map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      111,
@@ -2127,10 +2127,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(50 * time.Millisecond),
+										Delay:    common.NewStaticDuration(15 * time.Millisecond),
 									},
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(1000 * time.Millisecond),
+										Duration: common.NewStaticDuration(300 * time.Millisecond),
 									},
 								},
 							},
@@ -2148,7 +2148,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(100 * time.Millisecond),
+										Duration: common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -2167,7 +2167,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(500 * time.Millisecond),
+										Duration: common.NewStaticDuration(150 * time.Millisecond),
 									},
 								},
 							},
@@ -2190,7 +2190,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(60 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2201,7 +2201,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(20 * time.Millisecond).
+			Delay(6 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2241,10 +2241,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(1000 * time.Millisecond),
+										Duration: common.NewStaticDuration(300 * time.Millisecond),
 									},
 								},
 							},
@@ -2262,7 +2262,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(1000 * time.Millisecond),
+										Duration: common.NewStaticDuration(300 * time.Millisecond),
 									},
 								},
 							},
@@ -2281,7 +2281,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(1000 * time.Millisecond),
+										Duration: common.NewStaticDuration(300 * time.Millisecond),
 									},
 								},
 							},
@@ -2304,7 +2304,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(402).
-			Delay(500 * time.Millisecond).
+			Delay(150 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2318,7 +2318,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(50 * time.Millisecond).
+			Delay(15 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2358,10 +2358,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(10 * time.Millisecond),
+										Delay:    common.NewStaticDuration(5 * time.Millisecond),
 									},
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(300 * time.Millisecond),
+										Duration: common.NewStaticDuration(90 * time.Millisecond),
 									},
 								},
 							},
@@ -2378,7 +2378,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(150 * time.Millisecond),
+										Duration: common.NewStaticDuration(45 * time.Millisecond),
 									},
 									Retry: nil,
 								},
@@ -2397,7 +2397,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Timeout: &common.TimeoutPolicyConfig{
-										Duration: common.NewStaticDuration(200 * time.Millisecond),
+										Duration: common.NewStaticDuration(60 * time.Millisecond),
 									},
 									Retry: nil,
 								},
@@ -2421,7 +2421,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(402).
-			Delay(1500 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
+			Delay(450 * time.Millisecond). // slow path; kept well under MaxTimeout to avoid timeout races + reduce lingering gock-sleep goroutines that starve later subtests
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2435,7 +2435,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(150 * time.Millisecond).
+			Delay(45 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2470,7 +2470,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(10 * time.Millisecond),
+										Delay:    common.NewStaticDuration(5 * time.Millisecond),
 									},
 								},
 							},
@@ -2518,7 +2518,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
 			}).
 			Reply(200).
-			Delay(1500 * time.Millisecond). // canceled when the 50ms hedge wins; large gap so the fast result wins deterministically under load (<2s MaxTimeout)
+			Delay(450 * time.Millisecond). // canceled when the 50ms hedge wins; large gap so the fast result wins deterministically under load (<2s MaxTimeout)
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
@@ -2533,7 +2533,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "FAST")
 			}).
 			Reply(200).
-			Delay(50 * time.Millisecond).
+			Delay(15 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
@@ -2575,7 +2575,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(10 * time.Millisecond),
+										Delay:    common.NewStaticDuration(5 * time.Millisecond),
 									},
 								},
 							},
@@ -2620,7 +2620,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(300 * time.Millisecond).
+			Delay(90 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
@@ -2636,7 +2636,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			// result wins deterministically even when a loaded runner delays it, and
 			// since this is one of the last subtests the long slow delay costs no
 			// later subtest. This is the last hedge subtest group.
-			Delay(4000 * time.Millisecond).
+			Delay(1200 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
@@ -2682,7 +2682,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.NewStaticDuration(100 * time.Millisecond),
+										Delay:    common.NewStaticDuration(30 * time.Millisecond),
 									},
 								},
 							},
@@ -2729,7 +2729,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(300 * time.Millisecond). // Enough delay to trigger hedge but not too long
+			Delay(90 * time.Millisecond). // Enough delay to trigger hedge but not too long
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2742,7 +2742,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			Post("").
 			Filter(matchesGetBalanceTestReq).
 			Reply(200).
-			Delay(4500 * time.Millisecond). // large gap vs the 300ms primary so the primary wins deterministically under load; <5s MaxTimeout; last subtest so no later-subtest cost
+			Delay(1350 * time.Millisecond). // large gap vs the 300ms primary so the primary wins deterministically under load; <5s MaxTimeout; last subtest so no later-subtest cost
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -2771,9 +2771,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Check that response time is approximately equal to the first request latency
 		// and NOT waiting for the second request to finish (which would be ~1000ms)
 		// We add a small buffer for processing time
-		assert.Less(t, elapsed, 3000*time.Millisecond,
-			"Response time should track the ~300ms primary, not the 4.5s hedge — 3s leaves generous loaded-CI headroom while staying well below the hedge completion")
-		assert.GreaterOrEqual(t, elapsed, 300*time.Millisecond,
+		assert.Less(t, elapsed, 900*time.Millisecond,
+			"Response time should track the ~90ms primary, not the ~1.35s hedge — 900ms leaves generous loaded-CI headroom while staying below the hedge completion")
+		assert.GreaterOrEqual(t, elapsed, 90*time.Millisecond,
 			"Response time should be at least equal to the simulated primary upstream delay")
 
 		// Make sure we don't return context canceled errors to the user
