@@ -426,6 +426,22 @@ var (
 		Help:      "Total network-scope retry attempts by reason (empty_result/pending_tx/retryable_error/block_unavailable/missing_data).",
 	}, []string{"project", "network", "category", "reason", "finality"})
 
+	// MetricNetworkDataUnavailableWaitSeconds measures the wall-clock delay
+	// deliberately spent waiting for not-yet-available data to appear (a
+	// "catch-up" wait) before a retry: the block-time-relative backoff applied
+	// when the requested block/tx isn't on the source yet (reasons
+	// block_unavailable / empty_result / missing_data / pending_tx). This is
+	// the duration companion to network_retry_attempt_total{reason} (the count)
+	// — together they show how much retry latency is chain catch-up vs
+	// genuine-error failover. source distinguishes the upstream read path from
+	// the cache (e.g. gRPC indexer) read path.
+	MetricNetworkDataUnavailableWaitSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "network_data_unavailable_wait_seconds",
+		Help:      "Wall-clock catch-up delay before a data-not-yet-available retry, by reason (block_unavailable/empty_result/missing_data/pending_tx) and source (upstream/cache).",
+		Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60},
+	}, []string{"project", "network", "category", "reason", "finality", "source"})
+
 	// MetricNetworkHedgeWinnerTotal counts hedge-race winners by
 	// upstream. Operators use this to detect skew: is one upstream
 	// consistently winning hedges (good — pick it as primary) or

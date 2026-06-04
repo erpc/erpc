@@ -315,6 +315,21 @@ func (e *networkExecutor) runRetry(
 
 		d := e.computeDelay(req, resp, err, attempt)
 		if d > 0 {
+			// Attribute deliberate catch-up waits (data-not-yet-available
+			// retries) so operators can see how much retry latency is chain
+			// catch-up vs genuine-error failover. The count side is
+			// network_retry_attempt_total{reason}; this is the duration side.
+			if isDataUnavailableReason(retryReason) && req != nil && req.Network() != nil {
+				method, _ := req.Method()
+				telemetry.MetricNetworkDataUnavailableWaitSeconds.WithLabelValues(
+					req.Network().ProjectId(),
+					req.NetworkLabel(),
+					method,
+					retryReason,
+					req.Finality(ctx).String(),
+					"upstream",
+				).Observe(d.Seconds())
+			}
 			if serr := failsafe.SleepCtx(ctx, d); serr != nil {
 				// SleepCtx returns ctx.Err(). Get the cause for typed wrapping.
 				if cause := context.Cause(ctx); cause != nil {
@@ -446,6 +461,20 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	}
 
 	return ""
+}
+
+// isDataUnavailableReason reports whether a retry reason is a "data not on the
+// source yet" catch-up wait (block/tx not yet indexed) rather than
+// genuine-error failover. These are the retries whose delay is block-time
+// relative; their wall-clock cost is attributed to chain catch-up via
+// network_data_unavailable_wait_seconds.
+func isDataUnavailableReason(reason string) bool {
+	switch reason {
+	case "block_unavailable", "empty_result", "missing_data", "pending_tx":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *common.NormalizedResponse, err error, attempt int) time.Duration {
