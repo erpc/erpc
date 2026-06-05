@@ -4411,13 +4411,13 @@
               "exemplar": false,
               "format": "table",
               "instant": false,
-              "expr": "(count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 1000 - (avg by (network, upstream) (erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}) or (count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 0)))\n== on(network) group_left()\nmax by (network) ((count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 1000 - (avg by (network, upstream) (erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}) or (count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 0))))",
+              "expr": "(sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0)))\n== on(network) group_left()\nmax by (network) ((sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0))))",
               "refId": "A"
             }
           ],
           "title": "Active Primary Upstream (per network)",
           "type": "state-timeline",
-          "description": "Fleet-majority PRIMARY upstream per network over time. Across all erpc replicas, the upstream most of them route as primary (position==0) wins each network; vote ties break toward the better (lower) selection_score, so each network resolves to exactly one upstream per moment and unchanged primaries render as one continuous block. Public RPC vendors get fixed colors; others use the per-network palette. Paginates when networks exceed the panel height.",
+          "description": "Fleet-majority PRIMARY upstream per network over time, smoothed over a 10m trailing window so brief replica churn collapses to the dominant upstream (one continuous block) while real fail-overs still show. Across replicas the most-routed upstream (position==0) wins; ties break toward the better selection_score. Public RPC vendors get fixed colors; others use the per-network palette; segment borders separate adjacent blocks. Paginates when networks exceed the panel height.",
           "transformations": [
             {
               "id": "organize",
@@ -4464,8 +4464,8 @@
                 "mode": "palette-classic"
               },
               "custom": {
-                "fillOpacity": 90,
-                "lineWidth": 0,
+                "fillOpacity": 80,
+                "lineWidth": 2,
                 "insertNulls": false,
                 "hideFrom": {
                   "legend": false,
@@ -4477,7 +4477,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "quicknode",
+                    "pattern": ".*quicknode.*",
                     "result": {
                       "color": "#3D85C6",
                       "index": 0
@@ -4487,7 +4487,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "alchemy",
+                    "pattern": ".*alchemy.*",
                     "result": {
                       "color": "#9B59B6",
                       "index": 1
@@ -4497,7 +4497,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "chainstack",
+                    "pattern": ".*chainstack.*",
                     "result": {
                       "color": "#E67E22",
                       "index": 2
@@ -4507,7 +4507,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "blockpi",
+                    "pattern": ".*blockpi.*",
                     "result": {
                       "color": "#27AE60",
                       "index": 3
@@ -4517,7 +4517,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "tenderly",
+                    "pattern": ".*tenderly.*",
                     "result": {
                       "color": "#E74C3C",
                       "index": 4
@@ -4527,7 +4527,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "caldera",
+                    "pattern": ".*caldera.*",
                     "result": {
                       "color": "#17BECF",
                       "index": 5
@@ -4537,7 +4537,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "thirdweb",
+                    "pattern": ".*thirdweb.*",
                     "result": {
                       "color": "#E377C2",
                       "index": 6
@@ -4547,7 +4547,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "ankr",
+                    "pattern": ".*ankr.*",
                     "result": {
                       "color": "#8C564B",
                       "index": 7
@@ -4557,7 +4557,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "drpc",
+                    "pattern": ".*drpc.*",
                     "result": {
                       "color": "#7F8C8D",
                       "index": 8
@@ -4567,7 +4567,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "llamarpc",
+                    "pattern": ".*llamarpc.*",
                     "result": {
                       "color": "#AEC7E8",
                       "index": 9
@@ -4577,7 +4577,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "infura",
+                    "pattern": ".*infura.*",
                     "result": {
                       "color": "#F1C40F",
                       "index": 10
@@ -4587,7 +4587,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "publicnode",
+                    "pattern": ".*publicnode.*",
                     "result": {
                       "color": "#16A085",
                       "index": 11
@@ -4597,7 +4597,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "erigon",
+                    "pattern": ".*erigon.*",
                     "result": {
                       "color": "#1ABC9C",
                       "index": 12
@@ -4607,7 +4607,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "reth",
+                    "pattern": ".*reth.*",
                     "result": {
                       "color": "#2980B9",
                       "index": 13
@@ -4617,7 +4617,7 @@
                 {
                   "type": "regex",
                   "options": {
-                    "pattern": "geth",
+                    "pattern": ".*geth.*",
                     "result": {
                       "color": "#34495E",
                       "index": 14
