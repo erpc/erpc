@@ -6478,10 +6478,10 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 1,
+        "h": 14,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 67
       },
       "id": 217,
       "panels": [
@@ -7020,7 +7020,7 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "short",
+              "unit": "s",
               "color": {
                 "mode": "thresholds"
               },
@@ -7065,7 +7065,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(15, sum by (network, upstream) (\n  increase(erpc_selection_exclusion_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[$__range])\n))",
+              "expr": "topk(15, max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}))",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -7073,9 +7073,9 @@
               "refId": "A"
             }
           ],
-          "title": "Top Excluded (last $__range)",
+          "title": "Top Excluded (current duration)",
           "type": "bargauge",
-          "description": "Top-15 upstreams by total exclusion events over the dashboard range. Helps pinpoint the worst offenders."
+          "description": "Top-15 upstreams by how long they are CURRENTLY continuously excluded (erpc_selection_excluded_seconds, wall-clock). 0 = in rotation. This is duration, not event count \u2014 pair with the 'Active Primary Upstream' timeline to see the exclusion windows."
         },
         {
           "datasource": {
@@ -7537,50 +7537,63 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "cps",
               "color": {
-                "mode": "palette-classic"
+                "mode": "thresholds"
               },
               "custom": {
-                "drawStyle": "line",
-                "fillOpacity": 25,
-                "lineWidth": 1,
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {
-                  "mode": "normal",
-                  "group": "A"
-                },
-                "axisLabel": "rejections / sec",
-                "axisPlacement": "auto",
-                "scaleDistribution": {
-                  "type": "linear"
+                "fillOpacity": 85,
+                "lineWidth": 0,
+                "insertNulls": false,
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
                 }
+              },
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "primary",
+                      "color": "green",
+                      "index": 0
+                    }
+                  }
+                }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
               }
             },
             "overrides": []
           },
           "gridPos": {
-            "h": 12,
+            "h": 14,
             "w": 24,
             "x": 0,
             "y": 67
           },
           "id": 217,
           "options": {
+            "alignValue": "left",
             "legend": {
-              "calcs": [
-                "mean",
-                "lastNotNull",
-                "max"
-              ],
-              "displayMode": "table",
+              "displayMode": "list",
               "placement": "bottom",
               "showLegend": true
             },
+            "mergeValues": true,
+            "rowHeight": 0.9,
+            "showValue": "never",
             "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
+              "mode": "single",
+              "sort": "none"
             }
           },
           "pluginVersion": "12.3.0",
@@ -7591,21 +7604,89 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (step) (\n  rate(erpc_selection_rejection_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{step}}",
+              "exemplar": false,
+              "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
+              "legendFormat": "{{network}} / {{upstream}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Rejection by Chain Step",
-          "type": "timeseries",
-          "description": "Per-primitive exclusion rate (stacked). Tells you WHICH stdlib step is dropping upstreams \u2014 `byTag` (tag mismatch), `excludeIf` (health predicate), `take` (limit-N cap), `removeCordoned` (admin cordon), etc. Bounded-cardinality: `step` is the primitive name, not annotation text. The orthogonal `Exclusions by Upstream & Reason` panel above shows the per-leaf-reason view. A `step=\"eval\"` line means the chain uses raw `Array.filter` (no stdlib wrapper), or no primitives ran \u2014 investigate the policy."
+          "title": "Active Primary Upstream (per network)",
+          "type": "state-timeline",
+          "description": "The selection-policy primary upstream for each network over time (erpc_selection_position == 0). One row per network/upstream that has been primary; a colored segment marks when that upstream was the primary. Watch the segment jump between upstream rows to see fail-overs. Tip: filter the $network variable to 1-3 networks for readability. (PromQL can't encode an upstream label as a numeric cell value, so the per-upstream-row layout is used rather than one row per network.)"
         }
       ],
-      "title": "Selection Policy",
-      "type": "row"
+      "title": "Active Primary Upstream (per network)",
+      "type": "state-timeline",
+      "description": "The selection-policy primary upstream for each network over time (erpc_selection_position == 0). One row per network/upstream that has been primary; a colored segment marks when that upstream was the primary. Watch the segment jump between upstream rows to see fail-overs. Tip: filter the $network variable to 1-3 networks for readability. (PromQL can't encode an upstream label as a numeric cell value, so the per-upstream-row layout is used rather than one row per network.)",
+      "options": {
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "never",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "fillOpacity": 85,
+            "lineWidth": 0,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "primary",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
+          "legendFormat": "{{network}} / {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
     },
     {
       "collapsed": true,
