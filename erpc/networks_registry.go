@@ -170,6 +170,25 @@ func NewNetwork(
 		nwCfg.Architecture = common.ArchitectureEvm
 	}
 
+	// Eagerly allocate the served-tip shared counters. GetCounterInt64 is
+	// idempotent (LoadOrStore on a sync.Map) so re-construction in tests is
+	// safe. We can do this here because UpstreamsRegistry now exposes
+	// SharedStateRegistry(); when upstreamsRegistry or its shared state is
+	// nil (legacy test paths) we leave the fields nil and the consumer
+	// methods fall back to returning the picker's raw candidate.
+	if upstreamsRegistry != nil {
+		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
+			network.servedLatestBlockShared = ssr.GetCounterInt64(
+				"servedLatestBlock/"+netId,
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+			network.servedFinalizedBlockShared = ssr.GetCounterInt64(
+				"servedFinalizedBlock/"+netId,
+				evm.DefaultToleratedBlockHeadRollback,
+			)
+		}
+	}
+
 	return network, nil
 }
 

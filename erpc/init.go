@@ -56,6 +56,26 @@ func Init(
 		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
 	}
 
+	// Install a global networkId -> alias resolver so network-labeled metrics from
+	// components that only know the raw networkId (e.g. the gRPC cache connector,
+	// which discovers networks by chainId) use the same alias as every other metric.
+	if cfg != nil {
+		aliasByNetworkId := make(map[string]string)
+		for _, p := range cfg.Projects {
+			if p == nil {
+				continue
+			}
+			for _, n := range p.Networks {
+				if n != nil && n.Evm != nil && n.Evm.ChainId != 0 && n.Alias != "" {
+					aliasByNetworkId[util.EvmNetworkId(n.Evm.ChainId)] = n.Alias
+				}
+			}
+		}
+		if len(aliasByNetworkId) > 0 {
+			common.SetNetworkAliasResolver(func(networkId string) string { return aliasByNetworkId[networkId] })
+		}
+	}
+
 	//
 	// 3) Initialize eRPC
 	//

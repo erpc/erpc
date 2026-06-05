@@ -694,7 +694,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			connector := policy.GetConnector()
 			ttl := policy.GetTTL()
 
-			shouldCache, err := shouldCacheResponse(lg, resp, rpcResp, policy)
+			shouldCache, err := shouldCacheResponse(ctx, lg, resp, rpcResp, policy)
 			if !shouldCache {
 				if err != nil {
 					telemetry.MetricCacheSetErrorTotal.WithLabelValues(
@@ -1040,6 +1040,7 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 }
 
 func shouldCacheResponse(
+	ctx context.Context,
 	lg zerolog.Logger,
 	resp *common.NormalizedResponse,
 	rpcResp *common.JsonRpcResponse,
@@ -1060,6 +1061,13 @@ func shouldCacheResponse(
 	result := rpcResp.GetResultBytes()
 	// Check if we should cache empty results
 	isEmpty := resp == nil || rpcResp == nil || result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
+	// Never cache an empty result for a not-yet-produced (future) block: the block
+	// will exist later, so a cached null would be served as a wrong answer until the
+	// TTL expires. This holds regardless of the policy's empty behavior.
+	if isEmpty && resp != nil && emptyResultBeyondConfidence(ctx, resp.Request()) {
+		lg.Debug().Msg("skip caching empty result for a not-yet-produced (future) block")
+		return false, nil
+	}
 	switch policy.EmptyState() {
 	case common.CacheEmptyBehaviorIgnore:
 		return !isEmpty, nil

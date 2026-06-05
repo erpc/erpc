@@ -39,9 +39,10 @@ func (m *MockUpstream) Tracker() common.HealthTracker  { return nil }
 func (m *MockUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (m *MockUpstream) Cordon(method string, reason string)   {}
-func (m *MockUpstream) Uncordon(method string, reason string) {}
-func (m *MockUpstream) IgnoreMethod(method string)            {}
+func (m *MockUpstream) Cordon(method string, reason string)            {}
+func (m *MockUpstream) Uncordon(method string, reason string)          {}
+func (m *MockUpstream) IgnoreMethod(method string)                     {}
+func (m *MockUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
 
 // BenchmarkTrackerRecordUpstreamRequest benchmarks the most frequently called method
 func BenchmarkTrackerRecordUpstreamRequest(b *testing.B) {

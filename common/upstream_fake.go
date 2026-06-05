@@ -149,6 +149,20 @@ func (u *FakeUpstream) Cordon(method string, reason string) {
 	u.lastCordonedReason = reason
 }
 
+// ShouldHandleMethod honors the upstream config's IgnoreMethods (glob patterns);
+// everything else is handled. Mirrors the concrete upstream's default-allow
+// behavior for tests.
+func (u *FakeUpstream) ShouldHandleMethod(method string) (bool, error) {
+	if u.config != nil {
+		for _, ig := range u.config.IgnoreMethods {
+			if m, err := WildcardMatch(ig, method); err == nil && m {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
 func (u *FakeUpstream) Uncordon(method string, reason string) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()

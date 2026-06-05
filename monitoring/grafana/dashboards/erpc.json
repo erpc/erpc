@@ -4029,6 +4029,605 @@
           ],
           "title": "Block Head Lag",
           "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Network-scope retries per second, split by reason. Catch-up reasons (block_unavailable / empty_result / missing_data / pending_tx) are 'waiting for not-yet-available data'; retryable_error / execution_exception_retryable are genuine-error failover. Source: network_retry_attempt_total.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 1012
+          },
+          "id": 218,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up Retries by Reason",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "p95 of the deliberate block-time-relative delay applied before each data-not-yet-available retry, by reason. Source: network_data_unavailable_wait_seconds histogram.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds",
+                "seriesBy": "last"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "area"
+                }
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "semi-dark-green",
+                    "value": 0
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 1
+                  },
+                  {
+                    "color": "orange",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 15
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 1012
+          },
+          "id": 219,
+          "interval": "1m",
+          "maxDataPoints": 500,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min",
+                "max",
+                "median"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "histogram_quantile(0.95, sum by (le, network, reason) (rate(erpc_network_data_unavailable_wait_seconds_bucket{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up Wait \u2014 p95 per Wait by Reason",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Aggregate catch-up wait time accrued per second (\u2248 number of requests simultaneously waiting to catch up), by reason. The direct 'how much of our retry latency is chain catch-up' signal \u2014 pair with the retry-count panel. Source: rate of network_data_unavailable_wait_seconds_sum.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 1022
+          },
+          "id": 220,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up Wait Pressure by Reason",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "h": 18,
+            "w": 24,
+            "x": 0,
+            "y": 1030
+          },
+          "id": 224,
+          "options": {
+            "alignValue": "left",
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "mergeValues": true,
+            "rowHeight": 0.85,
+            "showValue": "auto",
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "format": "table",
+              "instant": false,
+              "expr": "(sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0)))\n== on(network) group_left()\nmax by (network) ((sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0))))",
+              "refId": "A"
+            }
+          ],
+          "title": "Active Primary Upstream (per network)",
+          "type": "state-timeline",
+          "description": "Fleet-majority PRIMARY upstream per network over time, smoothed over a 10m trailing window so brief replica churn collapses to the dominant upstream (one continuous block) while real fail-overs still show. Across replicas the most-routed upstream (position==0) wins; ties break toward the better selection_score. Public RPC vendors get fixed colors; others use the per-network palette; segment borders separate adjacent blocks. Paginates when networks exceed the panel height.",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Value": true,
+                  "__name__": true,
+                  "project": true,
+                  "method": true,
+                  "cluster": true,
+                  "instance": true,
+                  "job": true,
+                  "namespace": true,
+                  "app": true,
+                  "host": true,
+                  "region": true,
+                  "vendor": true,
+                  "user": true,
+                  "agent_name": true
+                },
+                "includeByName": {},
+                "indexByName": {},
+                "renameByName": {
+                  "upstream": " "
+                }
+              }
+            },
+            {
+              "id": "partitionByValues",
+              "options": {
+                "fields": [
+                  "network"
+                ],
+                "keepFields": false,
+                "naming": {
+                  "asLabels": false
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "fillOpacity": 80,
+                "lineWidth": 2,
+                "insertNulls": false,
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "mappings": [
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*quicknode.*",
+                    "result": {
+                      "color": "#3D85C6",
+                      "index": 0
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*alchemy.*",
+                    "result": {
+                      "color": "#9B59B6",
+                      "index": 1
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*chainstack.*",
+                    "result": {
+                      "color": "#E67E22",
+                      "index": 2
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*blockpi.*",
+                    "result": {
+                      "color": "#27AE60",
+                      "index": 3
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*tenderly.*",
+                    "result": {
+                      "color": "#E74C3C",
+                      "index": 4
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*caldera.*",
+                    "result": {
+                      "color": "#17BECF",
+                      "index": 5
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*thirdweb.*",
+                    "result": {
+                      "color": "#E377C2",
+                      "index": 6
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*ankr.*",
+                    "result": {
+                      "color": "#8C564B",
+                      "index": 7
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*drpc.*",
+                    "result": {
+                      "color": "#7F8C8D",
+                      "index": 8
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*llamarpc.*",
+                    "result": {
+                      "color": "#AEC7E8",
+                      "index": 9
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*infura.*",
+                    "result": {
+                      "color": "#F1C40F",
+                      "index": 10
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*publicnode.*",
+                    "result": {
+                      "color": "#16A085",
+                      "index": 11
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*erigon.*",
+                    "result": {
+                      "color": "#1ABC9C",
+                      "index": 12
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*reth.*",
+                    "result": {
+                      "color": "#2980B9",
+                      "index": 13
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": ".*geth.*",
+                    "result": {
+                      "color": "#34495E",
+                      "index": 14
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          }
         }
       ],
       "title": "Networks - Advanced",
@@ -6677,7 +7276,7 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "short",
+              "unit": "s",
               "color": {
                 "mode": "thresholds"
               },
@@ -6722,7 +7321,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(15, sum by (network, upstream) (\n  increase(erpc_selection_exclusion_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[$__range])\n))",
+              "expr": "topk(15, max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}))",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -6730,9 +7329,9 @@
               "refId": "A"
             }
           ],
-          "title": "Top Excluded (last $__range)",
+          "title": "Top Excluded (current duration)",
           "type": "bargauge",
-          "description": "Top-15 upstreams by total exclusion events over the dashboard range. Helps pinpoint the worst offenders."
+          "description": "Top-15 upstreams by how long they are CURRENTLY continuously excluded (erpc_selection_excluded_seconds, wall-clock). 0 = in rotation. This is duration, not event count \u2014 pair with the 'Active Primary Upstream' timeline to see the exclusion windows."
         },
         {
           "datasource": {
@@ -6805,7 +7404,7 @@
           ],
           "title": "Exclusions by Upstream & Reason",
           "type": "timeseries",
-          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: an upstream spiking on `error_rate_above` is a different problem from one spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: exclusion events per second across all eRPC instances (sum of per-instance × per-tick increments where this upstream tripped this rule). With N instances × 1Hz eval interval, a sustained N events/sec means every instance excludes this upstream every tick (always tripping); 1 event/sec means roughly 1 in N instances excludes per tick (intermittent / borderline)."
+          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: an upstream spiking on `error_rate_above` is a different problem from one spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: exclusion events per second across all eRPC instances (sum of per-instance \u00d7 per-tick increments where this upstream tripped this rule). With N instances \u00d7 1Hz eval interval, a sustained N events/sec means every instance excludes this upstream every tick (always tripping); 1 event/sec means roughly 1 in N instances excludes per tick (intermittent / borderline)."
         },
         {
           "datasource": {
@@ -7186,79 +7785,6 @@
           "title": "Cordon Events (admin RPC)",
           "type": "timeseries",
           "description": "Manual `erpc_cordonUpstream` / `erpc_uncordonUpstream` admin RPC events. Action: `cordon` / `uncordon`. Spikes = operator intervention."
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "cps",
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "drawStyle": "line",
-                "fillOpacity": 25,
-                "lineWidth": 1,
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {
-                  "mode": "normal",
-                  "group": "A"
-                },
-                "axisLabel": "rejections / sec",
-                "axisPlacement": "auto",
-                "scaleDistribution": {
-                  "type": "linear"
-                }
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 12,
-            "w": 24,
-            "x": 0,
-            "y": 67
-          },
-          "id": 217,
-          "options": {
-            "legend": {
-              "calcs": [
-                "mean",
-                "lastNotNull",
-                "max"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "sum by (step) (\n  rate(erpc_selection_rejection_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{step}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Rejection by Chain Step",
-          "type": "timeseries",
-          "description": "Per-primitive exclusion rate (stacked). Tells you WHICH stdlib step is dropping upstreams — `byTag` (tag mismatch), `excludeIf` (health predicate), `take` (limit-N cap), `removeCordoned` (admin cordon), etc. Bounded-cardinality: `step` is the primitive name, not annotation text. The orthogonal `Exclusions by Upstream & Reason` panel above shows the per-leaf-reason view. A `step=\"eval\"` line means the chain uses raw `Array.filter` (no stdlib wrapper), or no primitives ran — investigate the policy."
         }
       ],
       "title": "Selection Policy",
@@ -9971,6 +10497,398 @@
             }
           ],
           "title": "Cache GET error duration",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Block range each read-through cache connector (e.g. gRPC indexer) currently serves, per network (PR #909): earliest / latest / finalized.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 7408
+          },
+          "id": 221,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "max by (network, connector) (erpc_cache_connector_earliest_block_number)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{connector}} earliest",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "max by (network, connector) (erpc_cache_connector_latest_block_number)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{connector}} latest",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "max by (network, connector) (erpc_cache_connector_finalized_block_number)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{connector}} finalized",
+              "range": true,
+              "refId": "C"
+            }
+          ],
+          "title": "Cache Connector Block Heads",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Blocks the cache connector holds beyond its finalized head (latest - finalized) per network/connector. A cross-network \"behind chain tip\" join is not possible here because cache_connector metrics key network by evm:<chainId> while upstream metrics key by the network alias.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds",
+                "seriesBy": "last"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "linearThreshold": 1,
+                  "log": 10,
+                  "type": "symlog"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "area"
+                }
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "semi-dark-green",
+                    "value": 0
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 10
+                  },
+                  {
+                    "color": "orange",
+                    "value": 50
+                  },
+                  {
+                    "color": "red",
+                    "value": 200
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 7408
+          },
+          "id": 222,
+          "interval": "1m",
+          "maxDataPoints": 500,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min",
+                "max",
+                "median"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "max by (network, connector) (erpc_cache_connector_latest_block_number) - max by (network, connector) (erpc_cache_connector_finalized_block_number)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{connector}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Cache Unfinalized Depth (latest - finalized)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Wall-clock age of the latest block each cache connector has ingested (now \u2212 its latest block timestamp). Self-contained cache catch-up signal; no join required. Source: cache_connector_latest_block_timestamp_seconds.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds",
+                "seriesBy": "last"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "area"
+                }
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "semi-dark-green",
+                    "value": 0
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 30
+                  },
+                  {
+                    "color": "orange",
+                    "value": 120
+                  },
+                  {
+                    "color": "red",
+                    "value": 600
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 7418
+          },
+          "id": 223,
+          "interval": "1m",
+          "maxDataPoints": 500,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min",
+                "max",
+                "median"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "time() - max by (network, connector) (erpc_cache_connector_latest_block_timestamp_seconds)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{connector}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Cache Latest-Block Age (staleness)",
           "type": "timeseries"
         }
       ],

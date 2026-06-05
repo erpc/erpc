@@ -299,13 +299,17 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 	g.mu.RUnlock()
 
 	for nid, cli := range snapshot {
+		// Label metrics by the network alias (e.g. "arbitrum-one") so they line up
+		// with every other metric; fall back to the raw networkId when no alias is
+		// configured. Internal map keys stay keyed by networkId.
+		lbl := common.NetworkAlias(nid)
 		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "earliest"); ok {
 			g.mu.Lock()
 			g.earliestByNetwork[nid] = num
 			g.mu.Unlock()
-			telemetry.MetricCacheConnectorEarliestBlockNumber.WithLabelValues(g.id, nid).Set(float64(num))
+			telemetry.MetricCacheConnectorEarliestBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
 			if ts > 0 {
-				telemetry.MetricCacheConnectorEarliestBlockTimestamp.WithLabelValues(g.id, nid).Set(float64(ts))
+				telemetry.MetricCacheConnectorEarliestBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
 			}
 		}
 
@@ -313,9 +317,9 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 			g.mu.Lock()
 			g.latestByNetwork[nid] = num
 			g.mu.Unlock()
-			telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, nid).Set(float64(num))
+			telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
 			if ts > 0 {
-				telemetry.MetricCacheConnectorLatestBlockTimestamp.WithLabelValues(g.id, nid).Set(float64(ts))
+				telemetry.MetricCacheConnectorLatestBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
 			}
 		}
 
@@ -323,9 +327,9 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 			g.mu.Lock()
 			g.finalizedByNetwork[nid] = num
 			g.mu.Unlock()
-			telemetry.MetricCacheConnectorFinalizedBlockNumber.WithLabelValues(g.id, nid).Set(float64(num))
+			telemetry.MetricCacheConnectorFinalizedBlockNumber.WithLabelValues(g.id, lbl).Set(float64(num))
 			if ts > 0 {
-				telemetry.MetricCacheConnectorFinalizedBlockTimestamp.WithLabelValues(g.id, nid).Set(float64(ts))
+				telemetry.MetricCacheConnectorFinalizedBlockTimestamp.WithLabelValues(g.id, lbl).Set(float64(ts))
 			}
 		}
 	}

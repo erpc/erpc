@@ -1257,8 +1257,9 @@ func (t *Tracker) updateSingleUpstreamLag(
 					tm := v.(*TrackedMetrics)
 					setLag(tm, lag)
 				}
-				// Mirror onto the {method, All} rollup the indexed key may not be
-				// (see updateNetworkLagMetrics) so per-method-grain slots see lag.
+				// Also mirror onto the {method, All} rollup — the indexed key may be
+				// a per-finality slot rather than the {method, All} one (see
+				// updateNetworkLagMetrics) — so per-method-grain reads see the lag.
 				if k.finality != common.DataFinalityStateAll {
 					if av, ok := t.upsMetrics.Load(upstreamKey{k.ups, k.method, common.DataFinalityStateAll}); ok {
 						setLag(av.(*TrackedMetrics), lag)
@@ -1359,6 +1360,16 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
 		)
 	}
+
+	// The dedup index (`upstreamsByNetwork`) is not guaranteed to carry the
+	// {*, All} wildcard aggregate for this upstream — it dedups per (id,
+	// method) and the aggregate can be created lazily (e.g. a policy read, or
+	// a poll firing before any request traffic indexes it). When it's absent,
+	// the index-driven writes above fill every per-method bucket but leave the
+	// {*, All} bucket — the one network-scope selection policies read — at 0,
+	// so blockNumberLagAbove silently never fires. Write it directly here, the
+	// same way request metrics always reach {*, All} via getUpsKeys.
+	t.getUpsMetrics(upstreamKey{upstream, "*", common.DataFinalityStateAll}).BlockHeadLag.Store(upsLag)
 }
 
 func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int64) {
@@ -1532,6 +1543,11 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
 		)
 	}
+
+	// Same {*, All} wildcard-aggregate guarantee as SetLatestBlockNumber (see
+	// the comment there): the dedup index may not carry the "*" rollup, so
+	// write it directly to keep finalization-lag-based scoring/predicates honest.
+	t.getUpsMetrics(upstreamKey{upstream, "*", common.DataFinalityStateAll}).FinalizationLag.Store(upsLag)
 }
 
 func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finality string, currentVal, newVal int64) {

@@ -143,6 +143,15 @@ func (u *UpstreamsRegistry) GetProvidersRegistry() *thirdparty.ProvidersRegistry
 	return u.providersRegistry
 }
 
+// SharedStateRegistry exposes the registry's shared-state backing store so
+// that consumers (e.g., Network) can register their own counters/values for
+// strict-monotonic coordination across pods. The registry is owned here
+// because UpstreamsRegistry is constructed with it; surfacing it via an
+// accessor is cheaper than threading it through Network's constructor.
+func (u *UpstreamsRegistry) SharedStateRegistry() data.SharedStateRegistry {
+	return u.sharedStateRegistry
+}
+
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, networkId string) error {
 	networkMu := u.getNetworkMutex(networkId)
 	networkMu.Lock()

@@ -1310,12 +1310,11 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 }
 
 type RetryPolicyConfig struct {
-	MaxAttempts           int                   `yaml:"maxAttempts" json:"maxAttempts"`
-	Delay                 Duration              `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
-	BackoffMaxDelay       Duration              `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
-	BackoffFactor         float32               `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
-	Jitter                Duration              `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
-	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence"`
+	MaxAttempts     int      `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay           Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
+	BackoffMaxDelay Duration `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
+	BackoffFactor   float32  `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
+	Jitter          Duration `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 	// EmptyResultAccept lists methods for which an empty/null result is considered valid
 	// and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
 	EmptyResultAccept []string `yaml:"emptyResultAccept,omitempty" json:"emptyResultAccept"`
@@ -1323,13 +1322,21 @@ type RetryPolicyConfig struct {
 	EmptyResultIgnore []string `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
 	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
 	EmptyResultMaxAttempts int `yaml:"emptyResultMaxAttempts,omitempty" json:"emptyResultMaxAttempts"`
-	// EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
-	// When set, empty result retries wait this long instead of using the normal error delay/backoff.
+	// EmptyResultDelay is the fixed fallback delay before retrying when the requested
+	// data isn't on the upstream yet — an empty/missing-data point-lookup OR an
+	// ErrUpstreamBlockUnavailable (same root cause: the block/tx isn't produced or
+	// indexed yet). Retries prefer the dynamic block-time delay (EMA block time ×
+	// Evm.BlockUnavailableDelayMultiplier); this fixed value is used only before that
+	// estimate warms up. (Supersedes the now-deprecated BlockUnavailableDelay.)
 	EmptyResultDelay Duration `yaml:"emptyResultDelay,omitempty" json:"emptyResultDelay" tstype:"Duration"`
-	// BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
-	// requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
-	// time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
-	BlockUnavailableDelay Duration `yaml:"blockUnavailableDelay,omitempty" json:"blockUnavailableDelay" tstype:"Duration"`
+
+	// Deprecated: merged into EmptyResultDelay (same purpose — fixed fallback delay for
+	// data-not-available retries). Retained as a yaml-only key so existing configs that
+	// still set `blockUnavailableDelay` keep loading; RetryPolicyConfig.SetDefaults
+	// migrates the value into EmptyResultDelay and clears this. Not read anywhere at
+	// runtime, and hidden from the generated TS types (json:"-") so new configs use
+	// emptyResultDelay.
+	BlockUnavailableDelay Duration `yaml:"blockUnavailableDelay,omitempty" json:"-"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
@@ -2142,11 +2149,18 @@ type EvmNetworkConfig struct {
 	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
 	FallbackStatePollerDebounce Duration            `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce" tstype:"Duration"`
 	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
-	GetLogsMaxAllowedRange      int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
-	GetLogsMaxAllowedAddresses  int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
-	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
-	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
-	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+
+	// ServedTip configures how the network derives the "latest"/"finalized"
+	// block it advertises to clients (and enforces via block-availability).
+	// Nil or disabled selects the default max mode (MAX latest across eligible
+	// upstreams); set Enabled to opt into the cluster-min tip. See
+	// EvmServedTipConfig.
+	ServedTip                  *EvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
+	GetLogsMaxAllowedRange     int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
+	GetLogsMaxAllowedAddresses int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
+	GetLogsMaxAllowedTopics    int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
+	GetLogsSplitOnError        *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
+	GetLogsSplitConcurrency    int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
 	// arbtrace_filter requests when the upstream returns a range-too-large error.
 	// Nil disables the feature.
@@ -2180,11 +2194,11 @@ type EvmNetworkConfig struct {
 	// Default: 0.7 (30% under the estimated block time).
 	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
 
-	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive
-	// the retry delay when all upstreams return ErrUpstreamBlockUnavailable. When the
-	// dynamic block time is known, the delay is blockTime * this multiplier.
-	// Falls back to the static RetryPolicyConfig.BlockUnavailableDelay when block time
-	// is not yet available. Default: 0.8.
+	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
+	// retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
+	// or an empty/missing-data point-lookup). When the dynamic block time is known, the
+	// delay is blockTime * this multiplier. Falls back to the static
+	// RetryPolicyConfig.EmptyResultDelay when block time is not yet available. Default: 1.0.
 	BlockUnavailableDelayMultiplier *float64 `yaml:"blockUnavailableDelayMultiplier,omitempty" json:"blockUnavailableDelayMultiplier,omitempty"`
 
 	// IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
@@ -2193,6 +2207,72 @@ type EvmNetworkConfig struct {
 	// to work safely with transaction broadcasting.
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
+
+	// EmptyResultConfidence sets how confirmed a concrete numeric block must be for an
+	// empty/null point-lookup result to be treated as retryable missing-data, versus a
+	// truthful "not yet produced/confirmed" empty returned without retrying. Applies to
+	// MarkEmptyAsErrorMethods when the RetryEmpty directive is on; tags and block-hash
+	// lookups never qualify, and it fails open when the head is unknown.
+	//   - blockHead (default): retry empties for blocks at/below the latest head; a
+	//     block above the head isn't produced yet → return the empty truthfully.
+	//   - finalizedBlock: stricter — only retry empties for blocks at/below the
+	//     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
+	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence,omitempty"`
+
+	// Deprecated: replaced by EmptyResultConfidence (blockHead). Retained as a yaml-only
+	// key so existing configs keep loading; SetDefaults warns and ignores it. The old
+	// numeric distance band is gone — use emptyResultConfidence instead.
+	MaxFutureBlockRetryDistance *int64 `yaml:"maxFutureBlockRetryDistance,omitempty" json:"-"`
+}
+
+// EvmServedTipConfig controls how the network derives the "latest"/"finalized"
+// block it advertises (and enforces) from its upstreams.
+//
+// In the default max mode the served tip is the MAX latest block across eligible
+// non-syncing upstreams — which can advertise a block only the single most-ahead
+// upstream has, causing "block not found" churn when requests route to a
+// slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
+// served value is instead the MIN of the dominant agreement cluster among the
+// eligible upstreams, so any upstream in that cluster can serve the advertised
+// block.
+type EvmServedTipConfig struct {
+	// EnabledFor lists the block tags whose served value uses the cluster-min tip
+	// instead of the default max. Valid entries: "latest" and "finalized" (the
+	// "safe" tag follows "finalized"). Empty selects the max mode for all tags.
+	EnabledFor []string `yaml:"enabledFor,omitempty" json:"enabledFor,omitempty"`
+
+	// ClusterDelta is the maximum block gap between adjacent sorted upstream heads
+	// that still groups them into one cluster. 0 auto-derives from the network's
+	// estimated block time (clamped to [2,10]).
+	ClusterDelta int64 `yaml:"clusterDelta,omitempty" json:"clusterDelta,omitempty"`
+
+	// GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
+	// "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
+	// serve the advertised latest. For a request on a matching method, "latest"
+	// resolves against the dominant cluster of only the upstreams that support it
+	// (membership auto-detected via ShouldHandleMethod — no per-upstream config).
+	// Empty means only the global (all-eligible) cluster is computed.
+	GuaranteedMethods []string `yaml:"guaranteedMethods,omitempty" json:"guaranteedMethods,omitempty"`
+}
+
+// ServedTipEnabledFor reports whether the cluster-min served tip is enabled for
+// the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
+// finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
+// Anything not listed uses the default max mode. Nil-receiver safe.
+func (c *EvmNetworkConfig) ServedTipEnabledFor(tag string) bool {
+	if c == nil || c.ServedTip == nil {
+		return false
+	}
+	for _, t := range c.ServedTip.EnabledFor {
+		if strings.EqualFold(t, tag) {
+			return true
+		}
+		// "safe" resolves to the finalized axis.
+		if strings.EqualFold(tag, "finalized") && strings.EqualFold(t, "safe") {
+			return true
+		}
+	}
+	return false
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -2563,8 +2643,8 @@ const tsLoaderWalker = `
 // This means closures, imports, and module-level helpers in the user's
 // TS file flow naturally into the evalFunc:
 //
-//   const weights = { hot: { errorRate: 8 }, cold: { errorRate: 4 } };
-//   selectionPolicy: { evalFunc: (u, ctx) => u.sortByScore((u) => weights[u.id] || PREFER_FASTEST) }
+//	const weights = { hot: { errorRate: 8 }, cold: { errorRate: 4 } };
+//	selectionPolicy: { evalFunc: (u, ctx) => u.sortByScore((u) => weights[u.id] || PREFER_FASTEST) }
 //
 // works as written, because `weights` exists in the same module scope
 // as the function in every pool runtime.

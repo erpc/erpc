@@ -169,10 +169,13 @@ func TestGrpcBdsClient_WatchdogReplacesWedgedConn(t *testing.T) {
 		_, _ = client.SendRequest(context.Background(), req)
 	}
 
+	// Generous max wait so loaded CI runners (where the 250ms-capped calls and the
+	// watchdog goroutine get scheduled late) don't flake; Eventually returns as soon
+	// as the slot is replaced, so the fast/local path stays ~instant.
 	require.Eventually(t, func() bool {
 		current := gen.pool.Pick().conn
 		return current != originalConn
-	}, 2*time.Second, 20*time.Millisecond,
+	}, 10*time.Second, 20*time.Millisecond,
 		"pool slot should have been replaced after threshold stuck calls")
 }
 

@@ -13,6 +13,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// "Data not available yet" retries (empty/missing-data/block-unavailable) default
+// to one original attempt + one retry, independent of MaxAttempts.
+func TestRetryPolicyConfig_DefaultEmptyResultMaxAttempts(t *testing.T) {
+	r := &RetryPolicyConfig{MaxAttempts: 6}
+	require.NoError(t, r.SetDefaults(nil))
+	assert.Equal(t, 2, r.EmptyResultMaxAttempts,
+		"EmptyResultMaxAttempts should default to 2 (one retry), separate from MaxAttempts")
+}
+
+// Deprecated blockUnavailableDelay migrates into emptyResultDelay at config-load time
+// only, then is cleared — old configs keep working without any runtime legacy.
+func TestRetryPolicyConfig_MigratesDeprecatedBlockUnavailableDelay(t *testing.T) {
+	r := &RetryPolicyConfig{MaxAttempts: 3, BlockUnavailableDelay: Duration(700 * time.Millisecond)}
+	require.NoError(t, r.SetDefaults(nil))
+	assert.Equal(t, Duration(700*time.Millisecond), r.EmptyResultDelay, "value migrated into emptyResultDelay")
+	assert.Equal(t, Duration(0), r.BlockUnavailableDelay, "legacy field cleared after migration")
+
+	// An explicitly-set emptyResultDelay is never clobbered by the legacy value.
+	r2 := &RetryPolicyConfig{
+		MaxAttempts:           3,
+		EmptyResultDelay:      Duration(200 * time.Millisecond),
+		BlockUnavailableDelay: Duration(700 * time.Millisecond),
+	}
+	require.NoError(t, r2.SetDefaults(nil))
+	assert.Equal(t, Duration(200*time.Millisecond), r2.EmptyResultDelay, "explicit emptyResultDelay wins")
+	assert.Equal(t, Duration(0), r2.BlockUnavailableDelay)
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 func TestSetDefaults_NetworkConfig(t *testing.T) {
@@ -111,12 +139,13 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.EqualValues(t, &FailsafeConfig{
 			MatchMethod: "*",
 			Retry: &RetryPolicyConfig{
-				MaxAttempts:       12345,
-				Delay:             Duration(0 * time.Millisecond),
-				BackoffMaxDelay:   Duration(3 * time.Second),
-				BackoffFactor:     1.2,
-				Jitter:            Duration(0 * time.Millisecond),
-				EmptyResultAccept: DefaultEmptyResultAccept(),
+				MaxAttempts:            12345,
+				Delay:                  Duration(0 * time.Millisecond),
+				BackoffMaxDelay:        Duration(3 * time.Second),
+				BackoffFactor:          1.2,
+				Jitter:                 Duration(0 * time.Millisecond),
+				EmptyResultAccept:      DefaultEmptyResultAccept(),
+				EmptyResultMaxAttempts: 2,
 			},
 		}, network.Failsafe[0])
 		assert.Nil(t, network.Failsafe[0].Timeout)
@@ -388,12 +417,13 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		// Verify failsafe retry is only applied to the first upstream
 		retry := cfg.Projects[0].Upstreams[0].Failsafe[0].Retry
 		assert.EqualValues(t, &RetryPolicyConfig{
-			MaxAttempts:       2,
-			BackoffMaxDelay:   Duration(10 * time.Second),
-			Delay:             Duration(1 * time.Second),
-			Jitter:            Duration(500 * time.Millisecond),
-			BackoffFactor:     1.2,
-			EmptyResultAccept: DefaultEmptyResultAccept(),
+			MaxAttempts:            2,
+			BackoffMaxDelay:        Duration(10 * time.Second),
+			Delay:                  Duration(1 * time.Second),
+			Jitter:                 Duration(500 * time.Millisecond),
+			BackoffFactor:          1.2,
+			EmptyResultAccept:      DefaultEmptyResultAccept(),
+			EmptyResultMaxAttempts: 2,
 		}, retry, "Retry policy should match expected values")
 
 		assert.Nil(t, cfg.Projects[0].Upstreams[0].Failsafe[0].CircuitBreaker, "Circuit breaker should be nil because this upstream has failsafe defined")
@@ -1310,4 +1340,3 @@ func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
 		assert.Contains(t, err.Error(), "evalScope")
 	})
 }
-

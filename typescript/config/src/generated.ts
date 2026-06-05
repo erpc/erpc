@@ -498,12 +498,6 @@ export interface NetworkDefaults {
   evm?: TsEvmNetworkConfigForDefaults;
   multiplexing?: boolean;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -642,13 +636,6 @@ export interface ScoreMultiplierConfig {
    */
   totalRequests?: number /* float64 */;
 }
-/**
- * Strict-schema shadow: inlines the canonical config and adds the
- * deprecated yaml-only keys. yaml v3 ignores `json:"-"` so this is safe.
- */
-/**
- * Legacy shape: `failsafe:` as a single object instead of a list.
- */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   sampleRate?: number /* float64 */;
@@ -780,7 +767,6 @@ export interface RetryPolicyConfig {
   backoffMaxDelay?: Duration;
   backoffFactor?: number /* float32 */;
   jitter?: Duration;
-  emptyResultConfidence?: AvailbilityConfidence;
   /**
    * EmptyResultAccept lists methods for which an empty/null result is considered valid
    * and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
@@ -795,16 +781,14 @@ export interface RetryPolicyConfig {
    */
   emptyResultMaxAttempts?: number /* int */;
   /**
-   * EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
-   * When set, empty result retries wait this long instead of using the normal error delay/backoff.
+   * EmptyResultDelay is the fixed fallback delay before retrying when the requested
+   * data isn't on the upstream yet — an empty/missing-data point-lookup OR an
+   * ErrUpstreamBlockUnavailable (same root cause: the block/tx isn't produced or
+   * indexed yet). Retries prefer the dynamic block-time delay (EMA block time ×
+   * Evm.BlockUnavailableDelayMultiplier); this fixed value is used only before that
+   * estimate warms up. (Supersedes the now-deprecated BlockUnavailableDelay.)
    */
   emptyResultDelay?: Duration;
-  /**
-   * BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
-   * requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
-   * time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
-   */
-  blockUnavailableDelay?: Duration;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
@@ -1064,12 +1048,6 @@ export interface StaticResponseErrorConfig {
   message: string;
   data?: any;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
@@ -1134,6 +1112,14 @@ export interface EvmNetworkConfig {
   fallbackFinalityDepth?: number /* int64 */;
   fallbackStatePollerDebounce?: Duration;
   integrity?: EvmIntegrityConfig;
+  /**
+   * ServedTip configures how the network derives the "latest"/"finalized"
+   * block it advertises to clients (and enforces via block-availability).
+   * Nil or disabled selects the default max mode (MAX latest across eligible
+   * upstreams); set Enabled to opt into the cluster-min tip. See
+   * EvmServedTipConfig.
+   */
+  servedTip?: EvmServedTipConfig;
   getLogsMaxAllowedRange?: number /* int64 */;
   getLogsMaxAllowedAddresses?: number /* int64 */;
   getLogsMaxAllowedTopics?: number /* int64 */;
@@ -1181,11 +1167,11 @@ export interface EvmNetworkConfig {
    */
   dynamicBlockTimeDebounceMultiplier?: number /* float64 */;
   /**
-   * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive
-   * the retry delay when all upstreams return ErrUpstreamBlockUnavailable. When the
-   * dynamic block time is known, the delay is blockTime * this multiplier.
-   * Falls back to the static RetryPolicyConfig.BlockUnavailableDelay when block time
-   * is not yet available. Default: 0.8.
+   * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
+   * retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
+   * or an empty/missing-data point-lookup). When the dynamic block time is known, the
+   * delay is blockTime * this multiplier. Falls back to the static
+   * RetryPolicyConfig.EmptyResultDelay when block time is not yet available. Default: 1.0.
    */
   blockUnavailableDelayMultiplier?: number /* float64 */;
   /**
@@ -1196,6 +1182,52 @@ export interface EvmNetworkConfig {
    * Set to false to disable this behavior and return raw upstream errors.
    */
   idempotentTransactionBroadcast?: boolean;
+  /**
+   * EmptyResultConfidence sets how confirmed a concrete numeric block must be for an
+   * empty/null point-lookup result to be treated as retryable missing-data, versus a
+   * truthful "not yet produced/confirmed" empty returned without retrying. Applies to
+   * MarkEmptyAsErrorMethods when the RetryEmpty directive is on; tags and block-hash
+   * lookups never qualify, and it fails open when the head is unknown.
+   *   - blockHead (default): retry empties for blocks at/below the latest head; a
+   *     block above the head isn't produced yet → return the empty truthfully.
+   *   - finalizedBlock: stricter — only retry empties for blocks at/below the
+   *     finalized head; an unfinalized block's empty is treated as not-yet-confirmed.
+   */
+  emptyResultConfidence?: AvailbilityConfidence;
+}
+/**
+ * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
+ * block it advertises (and enforces) from its upstreams.
+ * In the default max mode the served tip is the MAX latest block across eligible
+ * non-syncing upstreams — which can advertise a block only the single most-ahead
+ * upstream has, causing "block not found" churn when requests route to a
+ * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
+ * served value is instead the MIN of the dominant agreement cluster among the
+ * eligible upstreams, so any upstream in that cluster can serve the advertised
+ * block.
+ */
+export interface EvmServedTipConfig {
+  /**
+   * EnabledFor lists the block tags whose served value uses the cluster-min tip
+   * instead of the default max. Valid entries: "latest" and "finalized" (the
+   * "safe" tag follows "finalized"). Empty selects the max mode for all tags.
+   */
+  enabledFor?: string[];
+  /**
+   * ClusterDelta is the maximum block gap between adjacent sorted upstream heads
+   * that still groups them into one cluster. 0 auto-derives from the network's
+   * estimated block time (clamped to [2,10]).
+   */
+  clusterDelta?: number /* int64 */;
+  /**
+   * GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
+   * "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
+   * serve the advertised latest. For a request on a matching method, "latest"
+   * resolves against the dominant cluster of only the upstreams that support it
+   * (membership auto-detected via ShouldHandleMethod — no per-upstream config).
+   * Empty means only the global (all-eligible) cluster is computed.
+   */
+  guaranteedMethods?: string[];
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -1407,32 +1439,6 @@ export interface RateLimitStoreConfig {
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;
 }
-/**
- * tsFunctionSentinelPrefix marks a SelectionPolicy.EvalFunc whose actual
- * implementation lives as a real sobek function in `globalThis.__erpcFns`
- * (populated by running `Config.UserScript` inside the policy-engine pool
- * runtime). The suffix is the function's lookup id. Sentinels NEVER hit
- * `sobek.Compile` and the function is never stringified — when the engine
- * needs to evaluate, it pulls the runtime-native function out of the
- * registry and calls it directly. This preserves closures + module-level
- * helpers that the user wrote in the TS config alongside the function.
- */
-/**
- * tsLoaderWalker is JS that runs INSIDE the user script. After the user's
- * `createConfig(...)` builds the default export, the walker:
- *   - assigns a stable sequential id to each function-typed leaf
- *     in the default export's object tree;
- *   - registers that function on `globalThis.__erpcFns[id]` so the
- *     engine can look it up natively in this runtime;
- *   - stamps `fn.__erpcFnId = id` on the function value so the
- *     LOAD-time JSON.stringify replacer can substitute the sentinel
- *     string `"__ts_fn__:<id>"` into the serialized form (which then
- *     becomes the value of `SelectionPolicyConfig.EvalFunc` in Go).
- * The walk is order-deterministic, so the same user script produces the
- * same ids in every pool runtime that subsequently runs it. That's what
- * keeps the load-time sentinel ids and the pool-runtime registry ids in
- * lockstep without sharing state across runtimes.
- */
 
 //////////
 // source: data.go
@@ -1643,11 +1649,6 @@ export interface ExecStateSnapshot {
   consensuslowparticipants: number /* int */;
   startedat: any /* time.Time */;
 }
-/**
- * execStateOnce is embedded on NormalizedRequest to lazy-init the
- * ExecState struct without making every request pay the allocation when
- * the field is never accessed.
- */
 
 //////////
 // source: network.go

@@ -1309,6 +1309,23 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
+	if e.ServedTip != nil {
+		for _, tag := range e.ServedTip.EnabledFor {
+			switch strings.ToLower(strings.TrimSpace(tag)) {
+			case "latest", "finalized", "safe":
+			default:
+				return fmt.Errorf("network.*.evm.servedTip.enabledFor contains unknown tag %q (valid: latest, finalized, safe)", tag)
+			}
+		}
+		if e.ServedTip.ClusterDelta < 0 {
+			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
+		}
+		for _, m := range e.ServedTip.GuaranteedMethods {
+			if err := ValidatePattern(m); err != nil {
+				return fmt.Errorf("network.*.evm.servedTip.guaranteedMethods has invalid pattern %q: %w", m, err)
+			}
+		}
+	}
 	return nil
 }
 
