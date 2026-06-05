@@ -57,6 +57,17 @@ Both are network-scope and share labels `{project, network, category, reason, fi
   waiting before a data-not-yet-available retry. The **duration** side.
   Recorded **only** for the catch-up reasons below.
 
+> **Counting note — events vs. unique requests.** `_count` (and
+> `network_retry_attempt_total`) count catch-up *retry events*, not distinct
+> requests. One request can retry up to `emptyResultMaxAttempts - 1` times, so
+> "% of requests affected" (events ÷ total requests) is **exact only when
+> `emptyResultMaxAttempts ≤ 2`** (one retry). With higher caps it *overcounts*
+> unique affected requests — e.g. a network with `emptyResultMaxAttempts: 6` can
+> log up to 5 waits for a single stubborn request, inflating the apparent share.
+> Read it as "catch-up retry load per request"; for true unique-request counts
+> we'd need a per-request counter (not yet emitted). Lowering an oversized cap
+> fixes both the overcount *and* the wasted work.
+
 ### Reasons
 
 | reason | meaning | catch-up wait? |
@@ -72,13 +83,27 @@ the **Retries** panel (they're retries) but **not** in Wait/Pressure (their cost
 is backoff, not chain catch-up — mixing them would mislabel failover as
 freshness).
 
-### The `finality` label — read it
+### The `finality` label — read it first (it's the highest-signal split)
+
+Panel: **Catch-up by Finality**. Split every catch-up number by `finality`
+before drawing conclusions:
 
 - catch-up on `unfinalized` / `realtime` data = **normal** (tip reads race the
-  chain).
-- catch-up on **`finalized`** data = **red flag**. Finalized data should always
-  be present; `empty_result`/`missing_data` there means a genuinely missing
-  range or a misconfigured/archive-incomplete upstream — not a timing race.
+  chain — this is what catch-up is *for*).
+- catch-up on **`finalized`** data = **red flag, and the waits are wasted**.
+  Finalized data is permanent — waiting one block will **not** make it appear, so
+  a block-time wait here buys nothing. It means the upstream genuinely lacks the
+  data (incomplete archive / range gap) or the result is legitimately empty and
+  `RetryEmpty` is over-eager. The right response is **fail over immediately**, not
+  wait — so finalized catch-up is pure overhead. Expect it ≈ 0; if it dominates,
+  that's the bottleneck.
+- `unknown` = finality couldn't be classified; triage it like `finalized`.
+
+This interacts with the counting note above: a high `emptyResultMaxAttempts` on a
+network that empties on *finalized* data multiplies wasted waits — every empty is
+retried (with a block-time wait) several times for data that can't appear. Fixing
+such a network is usually **config** (drop `emptyResultMaxAttempts`, check the
+upstream's archive completeness) rather than tuning the wait.
 
 ## How the wait is computed (so you know what "normal" looks like)
 
