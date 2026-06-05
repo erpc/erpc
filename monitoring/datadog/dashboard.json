@@ -7856,7 +7856,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, connector) (erpc_cache_connector_earliest_block_number{network=~\"${network:regex}\"})",
+              "expr": "max by (network, connector) (erpc_cache_connector_earliest_block_number)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{connector}} earliest",
@@ -7870,7 +7870,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, connector) (erpc_cache_connector_latest_block_number{network=~\"${network:regex}\"})",
+              "expr": "max by (network, connector) (erpc_cache_connector_latest_block_number)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{connector}} latest",
@@ -7884,7 +7884,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, connector) (erpc_cache_connector_finalized_block_number{network=~\"${network:regex}\"})",
+              "expr": "max by (network, connector) (erpc_cache_connector_finalized_block_number)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{connector}} finalized",
@@ -7900,7 +7900,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks the cache connector's latest is behind the network tip: max(erpc_upstream_latest_block_number) \u2212 erpc_cache_connector_latest_block_number, joined on network. Positive = cache behind chain.",
+          "description": "Blocks the cache connector holds beyond its finalized head (latest - finalized) per network/connector. A cross-network \"behind chain tip\" join is not possible here because cache_connector metrics key network by evm:<chainId> while upstream metrics key by the network alias.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -8010,7 +8010,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network) (erpc_upstream_latest_block_number{network=~\"${network:regex}\",project=~\"${project:regex}\"})\n  - on (network) group_right()\nmax by (network, connector) (erpc_cache_connector_latest_block_number{network=~\"${network:regex}\"})",
+              "expr": "max by (network, connector) (erpc_cache_connector_latest_block_number) - max by (network, connector) (erpc_cache_connector_finalized_block_number)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{connector}}",
@@ -8018,7 +8018,7 @@
               "refId": "A"
             }
           ],
-          "title": "Cache Lag \u2014 Blocks Behind Tip",
+          "title": "Cache Unfinalized Depth (latest - finalized)",
           "type": "timeseries"
         },
         {
@@ -8136,7 +8136,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "time() - max by (network, connector) (erpc_cache_connector_latest_block_timestamp_seconds{network=~\"${network:regex}\"})",
+              "expr": "time() - max by (network, connector) (erpc_cache_connector_latest_block_timestamp_seconds)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{connector}}",
@@ -9307,7 +9307,7 @@
               "color": "rgba(255,0,255,0.7)"
             },
             "filterValues": {
-              "le": 1e-9
+              "le": 1e-09
             },
             "legend": {
               "show": true
