@@ -4372,6 +4372,262 @@
           ],
           "title": "Catch-up Wait Pressure by Reason",
           "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "h": 18,
+            "w": 24,
+            "x": 0,
+            "y": 1030
+          },
+          "id": 224,
+          "options": {
+            "alignValue": "left",
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "mergeValues": true,
+            "rowHeight": 0.85,
+            "showValue": "auto",
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "format": "table",
+              "instant": false,
+              "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
+              "refId": "A"
+            }
+          ],
+          "title": "Active Primary Upstream (per network)",
+          "type": "state-timeline",
+          "description": "One gap-free row per network; the band shows which upstream is the selection primary (position==0) over time and changes color/label on every fail-over. Public RPC vendors get fixed colors; other upstreams use the per-network palette. Grafana paginates when there are more networks than fit. Filter $network to narrow the set.",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Value": true,
+                  "__name__": true,
+                  "project": true,
+                  "method": true,
+                  "cluster": true,
+                  "instance": true,
+                  "job": true,
+                  "namespace": true,
+                  "app": true,
+                  "host": true,
+                  "region": true,
+                  "vendor": true,
+                  "user": true,
+                  "agent_name": true
+                },
+                "includeByName": {},
+                "indexByName": {},
+                "renameByName": {
+                  "upstream": " "
+                }
+              }
+            },
+            {
+              "id": "partitionByValues",
+              "options": {
+                "fields": [
+                  "network"
+                ],
+                "keepFields": false,
+                "naming": {
+                  "asLabels": false
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "fillOpacity": 90,
+                "lineWidth": 0,
+                "insertNulls": false,
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "mappings": [
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "quicknode",
+                    "result": {
+                      "color": "#3D85C6",
+                      "index": 0
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "alchemy",
+                    "result": {
+                      "color": "#9B59B6",
+                      "index": 1
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "chainstack",
+                    "result": {
+                      "color": "#E67E22",
+                      "index": 2
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "blockpi",
+                    "result": {
+                      "color": "#27AE60",
+                      "index": 3
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "tenderly",
+                    "result": {
+                      "color": "#E74C3C",
+                      "index": 4
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "caldera",
+                    "result": {
+                      "color": "#17BECF",
+                      "index": 5
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "thirdweb",
+                    "result": {
+                      "color": "#E377C2",
+                      "index": 6
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "ankr",
+                    "result": {
+                      "color": "#8C564B",
+                      "index": 7
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "drpc",
+                    "result": {
+                      "color": "#7F8C8D",
+                      "index": 8
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "llamarpc",
+                    "result": {
+                      "color": "#AEC7E8",
+                      "index": 9
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "infura",
+                    "result": {
+                      "color": "#F1C40F",
+                      "index": 10
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "publicnode",
+                    "result": {
+                      "color": "#16A085",
+                      "index": 11
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "erigon",
+                    "result": {
+                      "color": "#1ABC9C",
+                      "index": 12
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "reth",
+                    "result": {
+                      "color": "#2980B9",
+                      "index": 13
+                    }
+                  }
+                },
+                {
+                  "type": "regex",
+                  "options": {
+                    "pattern": "geth",
+                    "result": {
+                      "color": "#34495E",
+                      "index": 14
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          }
         }
       ],
       "title": "Networks - Advanced",
@@ -6478,10 +6734,10 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 16,
+        "h": 1,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 6
       },
       "id": 217,
       "panels": [
@@ -7529,200 +7785,10 @@
           "title": "Cordon Events (admin RPC)",
           "type": "timeseries",
           "description": "Manual `erpc_cordonUpstream` / `erpc_uncordonUpstream` admin RPC events. Action: `cordon` / `uncordon`. Spikes = operator intervention."
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "gridPos": {
-            "h": 16,
-            "w": 24,
-            "x": 0,
-            "y": 67
-          },
-          "id": 217,
-          "options": {
-            "alignValue": "left",
-            "legend": {
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "mergeValues": true,
-            "rowHeight": 0.9,
-            "showValue": "auto",
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "format": "table",
-              "instant": false,
-              "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
-              "refId": "A"
-            }
-          ],
-          "title": "Active Primary Upstream (per network)",
-          "type": "state-timeline",
-          "description": "One row per network; the colored band shows which upstream is the selection-policy PRIMARY (position==0) at each moment \u2014 it should be gap-free since there is always a primary, and the color/label changes on every fail-over. Built by partitioning the per-network primary by the `network` label so the `upstream` string becomes the timeline state. Filter $network to a handful of networks for readability.",
-          "transformations": [
-            {
-              "id": "organize",
-              "options": {
-                "excludeByName": {
-                  "Value": true,
-                  "__name__": true,
-                  "project": true,
-                  "method": true,
-                  "cluster": true,
-                  "instance": true,
-                  "job": true,
-                  "namespace": true,
-                  "app": true,
-                  "host": true,
-                  "region": true,
-                  "vendor": true,
-                  "user": true,
-                  "agent_name": true
-                },
-                "includeByName": {},
-                "indexByName": {},
-                "renameByName": {}
-              }
-            },
-            {
-              "id": "partitionByValues",
-              "options": {
-                "fields": [
-                  "network"
-                ],
-                "keepFields": false,
-                "naming": {
-                  "asLabels": false
-                }
-              }
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "fillOpacity": 90,
-                "lineWidth": 0,
-                "insertNulls": false,
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              },
-              "mappings": []
-            },
-            "overrides": []
-          }
         }
       ],
-      "title": "Active Primary Upstream (per network)",
-      "type": "state-timeline",
-      "description": "One row per network; the colored band shows which upstream is the selection-policy PRIMARY (position==0) at each moment \u2014 it should be gap-free since there is always a primary, and the color/label changes on every fail-over. Built by partitioning the per-network primary by the `network` label so the `upstream` string becomes the timeline state. Filter $network to a handful of networks for readability.",
-      "options": {
-        "alignValue": "left",
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "mergeValues": true,
-        "rowHeight": 0.9,
-        "showValue": "auto",
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "format": "table",
-          "instant": false,
-          "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
-          "refId": "A"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Value": true,
-              "__name__": true,
-              "project": true,
-              "method": true,
-              "cluster": true,
-              "instance": true,
-              "job": true,
-              "namespace": true,
-              "app": true,
-              "host": true,
-              "region": true,
-              "vendor": true,
-              "user": true,
-              "agent_name": true
-            },
-            "includeByName": {},
-            "indexByName": {},
-            "renameByName": {}
-          }
-        },
-        {
-          "id": "partitionByValues",
-          "options": {
-            "fields": [
-              "network"
-            ],
-            "keepFields": false,
-            "naming": {
-              "asLabels": false
-            }
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "fillOpacity": 90,
-            "lineWidth": 0,
-            "insertNulls": false,
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            }
-          },
-          "mappings": []
-        },
-        "overrides": []
-      }
+      "title": "Selection Policy",
+      "type": "row"
     },
     {
       "collapsed": true,
