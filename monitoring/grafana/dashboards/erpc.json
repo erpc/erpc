@@ -4045,7 +4045,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "",
+                "axisLabel": "catch-up retries / sec",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -4089,7 +4089,7 @@
                   }
                 ]
               },
-              "unit": "short"
+              "unit": "reqps"
             },
             "overrides": []
           },
@@ -4135,7 +4135,7 @@
               "refId": "A"
             }
           ],
-          "title": "Catch-up Retries by Reason",
+          "title": "Catch-up Retries by Reason (retries/s)",
           "type": "timeseries"
         },
         {
@@ -4155,7 +4155,7 @@
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
                 "axisGridShow": false,
-                "axisLabel": "",
+                "axisLabel": "wait per affected request",
                 "axisPlacement": "hidden",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -4276,7 +4276,7 @@
               "refId": "B"
             }
           ],
-          "title": "Catch-up Wait \u2014 p95 per Wait by Reason",
+          "title": "Catch-up Wait \u2014 avg & p95 per affected request (s)",
           "type": "timeseries"
         },
         {
@@ -4658,7 +4658,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "",
+                "axisLabel": "failover retries / sec",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -4702,7 +4702,7 @@
                   }
                 ]
               },
-              "unit": "short"
+              "unit": "reqps"
             },
             "overrides": []
           },
@@ -4748,7 +4748,7 @@
               "refId": "A"
             }
           ],
-          "title": "Failover Retries by Reason",
+          "title": "Failover Retries by Reason (retries/s)",
           "type": "timeseries"
         },
         {
@@ -4766,7 +4766,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "",
+                "axisLabel": "errors / sec",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -4810,7 +4810,7 @@
                   }
                 ]
               },
-              "unit": "short"
+              "unit": "reqps"
             },
             "overrides": []
           },
@@ -4856,7 +4856,7 @@
               "refId": "A"
             }
           ],
-          "title": "Upstream Errors by Type",
+          "title": "Upstream Errors by Type (errors/s)",
           "type": "timeseries"
         },
         {
@@ -4874,7 +4874,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "",
+                "axisLabel": "% of network requests",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -4982,7 +4982,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "",
+                "axisLabel": "ms added / request (amortized)",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -5090,7 +5090,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "",
+                "axisLabel": "catch-up retries / sec",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -5134,7 +5134,7 @@
                   }
                 ]
               },
-              "unit": "short"
+              "unit": "reqps"
             },
             "overrides": []
           },
@@ -5180,7 +5180,7 @@
               "refId": "A"
             }
           ],
-          "title": "Catch-up by Finality (finalized \u2248 red flag)",
+          "title": "Catch-up by Finality \u2014 retries/s (finalized \u2248 red flag)",
           "type": "timeseries"
         }
       ],
