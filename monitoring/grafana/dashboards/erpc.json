@@ -6478,7 +6478,7 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 14,
+        "h": 16,
         "w": 24,
         "x": 0,
         "y": 67
@@ -7535,47 +7535,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "custom": {
-                "fillOpacity": 85,
-                "lineWidth": 0,
-                "insertNulls": false,
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                }
-              },
-              "mappings": [
-                {
-                  "type": "value",
-                  "options": {
-                    "0": {
-                      "text": "primary",
-                      "color": "green",
-                      "index": 0
-                    }
-                  }
-                }
-              ],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
           "gridPos": {
-            "h": 14,
+            "h": 16,
             "w": 24,
             "x": 0,
             "y": 67
@@ -7590,7 +7551,7 @@
             },
             "mergeValues": true,
             "rowHeight": 0.9,
-            "showValue": "never",
+            "showValue": "auto",
             "tooltip": {
               "mode": "single",
               "sort": "none"
@@ -7605,20 +7566,77 @@
               },
               "editorMode": "code",
               "exemplar": false,
+              "format": "table",
+              "instant": false,
               "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
-              "legendFormat": "{{network}} / {{upstream}}",
-              "range": true,
               "refId": "A"
             }
           ],
           "title": "Active Primary Upstream (per network)",
           "type": "state-timeline",
-          "description": "The selection-policy primary upstream for each network over time (erpc_selection_position == 0). One row per network/upstream that has been primary; a colored segment marks when that upstream was the primary. Watch the segment jump between upstream rows to see fail-overs. Tip: filter the $network variable to 1-3 networks for readability. (PromQL can't encode an upstream label as a numeric cell value, so the per-upstream-row layout is used rather than one row per network.)"
+          "description": "One row per network; the colored band shows which upstream is the selection-policy PRIMARY (position==0) at each moment \u2014 it should be gap-free since there is always a primary, and the color/label changes on every fail-over. Built by partitioning the per-network primary by the `network` label so the `upstream` string becomes the timeline state. Filter $network to a handful of networks for readability.",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Value": true,
+                  "__name__": true,
+                  "project": true,
+                  "method": true,
+                  "cluster": true,
+                  "instance": true,
+                  "job": true,
+                  "namespace": true,
+                  "app": true,
+                  "host": true,
+                  "region": true,
+                  "vendor": true,
+                  "user": true,
+                  "agent_name": true
+                },
+                "includeByName": {},
+                "indexByName": {},
+                "renameByName": {}
+              }
+            },
+            {
+              "id": "partitionByValues",
+              "options": {
+                "fields": [
+                  "network"
+                ],
+                "keepFields": false,
+                "naming": {
+                  "asLabels": false
+                }
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "fillOpacity": 90,
+                "lineWidth": 0,
+                "insertNulls": false,
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "mappings": []
+            },
+            "overrides": []
+          }
         }
       ],
       "title": "Active Primary Upstream (per network)",
       "type": "state-timeline",
-      "description": "The selection-policy primary upstream for each network over time (erpc_selection_position == 0). One row per network/upstream that has been primary; a colored segment marks when that upstream was the primary. Watch the segment jump between upstream rows to see fail-overs. Tip: filter the $network variable to 1-3 networks for readability. (PromQL can't encode an upstream label as a numeric cell value, so the per-upstream-row layout is used rather than one row per network.)",
+      "description": "One row per network; the colored band shows which upstream is the selection-policy PRIMARY (position==0) at each moment \u2014 it should be gap-free since there is always a primary, and the color/label changes on every fail-over. Built by partitioning the per-network primary by the `network` label so the `upstream` string becomes the timeline state. Filter $network to a handful of networks for readability.",
       "options": {
         "alignValue": "left",
         "legend": {
@@ -7628,50 +7646,11 @@
         },
         "mergeValues": true,
         "rowHeight": 0.9,
-        "showValue": "never",
+        "showValue": "auto",
         "tooltip": {
           "mode": "single",
           "sort": "none"
         }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "fillOpacity": 85,
-            "lineWidth": 0,
-            "insertNulls": false,
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            }
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "primary",
-                  "color": "green",
-                  "index": 0
-                }
-              }
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
       },
       "targets": [
         {
@@ -7681,12 +7660,69 @@
           },
           "editorMode": "code",
           "exemplar": false,
+          "format": "table",
+          "instant": false,
           "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
-          "legendFormat": "{{network}} / {{upstream}}",
-          "range": true,
           "refId": "A"
         }
-      ]
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Value": true,
+              "__name__": true,
+              "project": true,
+              "method": true,
+              "cluster": true,
+              "instance": true,
+              "job": true,
+              "namespace": true,
+              "app": true,
+              "host": true,
+              "region": true,
+              "vendor": true,
+              "user": true,
+              "agent_name": true
+            },
+            "includeByName": {},
+            "indexByName": {},
+            "renameByName": {}
+          }
+        },
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "network"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": false
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "fillOpacity": 90,
+            "lineWidth": 0,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      }
     },
     {
       "collapsed": true,
