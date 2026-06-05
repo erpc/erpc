@@ -193,7 +193,7 @@ func TestSendRequest_HeadersPassedAsMetadata(t *testing.T) {
 }
 
 // TestSendRequest_ConfigHeadersReachWireAsMetadata closes the config→wire
-// seam: headers configured via jsonRpc.headers on the upstream (the path
+// seam: headers configured via grpc.headers on the upstream (the path
 // NewGrpcBdsClient wires) must reach the server as gRPC metadata. The other
 // tests cover config→headers map and SetHeaders→wire separately; this proves
 // the full chain end-to-end, mirroring the HTTP client's header test.
@@ -207,7 +207,7 @@ func TestSendRequest_ConfigHeadersReachWireAsMetadata(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	ups := common.NewFakeUpstream("test-ups", common.WithJsonRpcConfig(&common.JsonRpcUpstreamConfig{
+	ups := common.NewFakeUpstream("test-ups", common.WithGrpcConfig(&common.GrpcUpstreamConfig{
 		Headers: map[string]string{"authorization": "Bearer secret-token"},
 	}))
 	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL)
@@ -219,7 +219,7 @@ func TestSendRequest_ConfigHeadersReachWireAsMetadata(t *testing.T) {
 
 	md := server.snapshotMetadata()
 	require.Equal(t, []string{"Bearer secret-token"}, md.Get("authorization"),
-		"jsonRpc.headers configured on the upstream must reach the server as gRPC metadata")
+		"grpc.headers configured on the upstream must reach the server as gRPC metadata")
 }
 
 // TestSendRequest_ConcurrentRequests_AllSucceed fires many simultaneous

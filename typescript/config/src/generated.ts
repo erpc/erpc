@@ -547,6 +547,7 @@ export interface UpstreamConfig {
   endpoint?: string;
   evm?: EvmUpstreamConfig;
   jsonRpc?: JsonRpcUpstreamConfig;
+  grpc?: GrpcUpstreamConfig;
   ignoreMethods?: string[];
   allowMethods?: string[];
   autoIgnoreUnsupportedMethods?: boolean;
@@ -680,6 +681,15 @@ export interface JsonRpcUpstreamConfig {
   enableGzip?: boolean;
   headers?: { [key: string]: string};
   proxyPool?: string;
+}
+/**
+ * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+ * gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
+ * knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
+ * every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
+ */
+export interface GrpcUpstreamConfig {
+  headers?: { [key: string]: string};
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;

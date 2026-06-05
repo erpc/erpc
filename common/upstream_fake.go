@@ -56,11 +56,11 @@ func WithTags(tags ...string) func(*FakeUpstream) {
 	}
 }
 
-// WithJsonRpcConfig sets the upstream's jsonRpc config block (headers, batch
-// settings, etc.). Used by client tests that exercise jsonRpc.headers handling.
-func WithJsonRpcConfig(cfg *JsonRpcUpstreamConfig) func(*FakeUpstream) {
+// WithGrpcConfig sets the upstream's grpc config block (headers, etc.). Used by
+// client tests that exercise grpc.headers handling.
+func WithGrpcConfig(cfg *GrpcUpstreamConfig) func(*FakeUpstream) {
 	return func(u *FakeUpstream) {
-		u.config.JsonRpc = cfg
+		u.config.Grpc = cfg
 	}
 }
 

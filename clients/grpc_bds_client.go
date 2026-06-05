@@ -75,14 +75,14 @@ func NewGrpcBdsClient(
 		headers:         make(map[string]string),
 	}
 
-	// Apply any jsonRpc.headers configured on the upstream as gRPC metadata on
-	// every outbound request, mirroring the HTTP client
-	// (http_json_rpc_client.go) and the gRPC cache connector (data/grpc.go).
-	// This is how an edge-api auth key (authorization: Bearer <token>) reaches
-	// the wire for a grpc:// upstream.
+	// Apply any grpc.headers configured on the upstream as gRPC metadata on
+	// every outbound request, mirroring how the HTTP client applies
+	// jsonRpc.headers (http_json_rpc_client.go) and the gRPC cache connector
+	// applies its headers (data/grpc.go). This is how an edge-api auth key
+	// (authorization: Bearer <token>) reaches the wire for a grpc:// upstream.
 	if upstream != nil {
-		if cfg := upstream.Config(); cfg != nil && cfg.JsonRpc != nil {
-			client.SetHeaders(cfg.JsonRpc.Headers)
+		if cfg := upstream.Config(); cfg != nil && cfg.Grpc != nil {
+			client.SetHeaders(cfg.Grpc.Headers)
 		}
 	}
 

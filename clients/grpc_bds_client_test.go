@@ -94,7 +94,7 @@ func TestBuildTopicFiltersRejectsInvalidHex(t *testing.T) {
 // handler surfaces a transport-failure error — but critically NOT
 // ErrEndpointUnsupported, which would disqualify the upstream from carrying
 // eth_query* traffic.
-func TestGrpcBdsClientAppliesUpstreamJsonRpcHeaders(t *testing.T) {
+func TestGrpcBdsClientAppliesUpstreamGrpcHeaders(t *testing.T) {
 	parsedURL, err := url.Parse("grpc://127.0.0.1:1")
 	require.NoError(t, err)
 
@@ -102,7 +102,7 @@ func TestGrpcBdsClientAppliesUpstreamJsonRpcHeaders(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ups := common.NewFakeUpstream("test-ups", common.WithJsonRpcConfig(&common.JsonRpcUpstreamConfig{
+	ups := common.NewFakeUpstream("test-ups", common.WithGrpcConfig(&common.GrpcUpstreamConfig{
 		Headers: map[string]string{
 			"authorization":   "Bearer secret-token",
 			"x-goldsky-chain": "abstract",
@@ -118,7 +118,7 @@ func TestGrpcBdsClientAppliesUpstreamJsonRpcHeaders(t *testing.T) {
 	require.Equal(t, "abstract", gc.headers["x-goldsky-chain"])
 }
 
-// TestGrpcBdsClientNilUpstreamNoHeaders guards the nil-upstream and nil-JsonRpc
+// TestGrpcBdsClientNilUpstreamNoHeaders guards the nil-upstream and nil-Grpc
 // paths: construction must not panic and headers stay empty.
 func TestGrpcBdsClientNilUpstreamNoHeaders(t *testing.T) {
 	parsedURL, err := url.Parse("grpc://127.0.0.1:1")

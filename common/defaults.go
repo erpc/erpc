@@ -1557,6 +1557,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			Headers:       defaults.JsonRpc.Headers,
 		}
 	}
+	if u.Grpc == nil && defaults.Grpc != nil {
+		u.Grpc = defaults.Grpc.Copy()
+	}
 	// Integrity moved under Evm.Integrity
 	if u.Evm != nil && defaults.Evm != nil {
 		if u.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
