@@ -4035,7 +4035,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Network-scope retries per second, split by reason. Catch-up reasons (block_unavailable / empty_result / missing_data / pending_tx) are 'waiting for not-yet-available data'; retryable_error / execution_exception_retryable are genuine-error failover. Source: network_retry_attempt_total.",
+          "description": "Catch-up retries/sec by reason \u2014 ONLY the data-not-yet-available reasons (block_unavailable/empty_result/missing_data) that take the block-time wait. Failover retries (retryable_error/pending_tx) are in the separate 'Failover Retries' panel so they don't mask catch-up.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4127,7 +4127,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",reason=~\"block_unavailable|empty_result|missing_data\"}[$__rate_interval]))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{reason}}",
@@ -4143,7 +4143,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "p95 of the deliberate block-time-relative delay applied before each data-not-yet-available retry, by reason. Source: network_data_unavailable_wait_seconds histogram.",
+          "description": "p95 of the catch-up wait per reason. Reliable once the dedicated catch-up buckets ship (network_data_unavailable_wait_seconds); expect p95 \u2248 one block time per chain. If it looks pinned high, cross-check erpc_network_dynamic_block_time_milliseconds and the avg (rate(_sum)/rate(_count)) before blaming the EMA \u2014 coarse buckets used to make this misleading.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4628,6 +4628,222 @@
             },
             "overrides": []
           }
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Network-scope FAILOVER retries/sec (retryable_error/pending_tx) \u2014 genuine upstream errors / tx hunting, NOT chain catch-up. A spike here means upstreams are erroring; drill into 'Upstream Errors by Type'.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 1048
+          },
+          "id": 225,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",reason=~\"retryable_error|pending_tx\"}[$__rate_interval]))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Failover Retries by Reason",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Top upstream error sources by error CODE (ErrEndpointUnsupported, ErrEndpointCapacityExceeded, ...). The 'why' behind failover retries \u2014 e.g. an upstream sent methods it doesn't support, or rate-limited.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 1048
+          },
+          "id": 226,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(15, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{upstream}} / {{error}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Upstream Errors by Type",
+          "type": "timeseries"
         }
       ],
       "title": "Networks - Advanced",

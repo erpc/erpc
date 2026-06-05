@@ -699,6 +699,15 @@ var EvmBlockRangeBucketSize int64 = 100000
 // Histogram buckets for eth_getLogs requested block-range sizes
 var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 10000, 30000}
 
+// CatchUpWaitHistogramBuckets are dedicated buckets for the catch-up wait
+// histogram (network_data_unavailable_wait_seconds). Catch-up waits cluster at
+// ~one block time, which varies by chain from sub-second (fast L2s) to ~12s
+// (Ethereum mainnet), with tails when retries stack — a range the global
+// request-latency buckets resolve poorly (e.g. a 10s→30s gap puts mainnet's 12s
+// wait in one coarse bucket, making p95 meaningless). These ~log2 buckets bracket
+// the common block times and extend past 30s so long-wait tails stay visible.
+var CatchUpWaitHistogramBuckets = []float64{0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64}
+
 // Histograms are populated by SetHistogramBuckets so the label filter applies.
 var (
 	MetricUpstreamRequestDuration             *LabeledHistogram
@@ -784,7 +793,9 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Namespace: "erpc",
 		Name:      "network_data_unavailable_wait_seconds",
 		Help:      "Wall-clock catch-up delay before a data-not-yet-available retry, by reason (block_unavailable/empty_result/missing_data).",
-		Buckets:   buckets,
+		// Dedicated buckets (not the global request-latency buckets): catch-up
+		// waits track per-chain block time, which the global buckets resolve poorly.
+		Buckets: CatchUpWaitHistogramBuckets,
 	}, []string{"project", "network", "category", "reason", "finality"})
 
 	MetricConsensusResponsesCollected = NewLabeledHistogram(prometheus.HistogramOpts{

@@ -13,13 +13,22 @@ request. Three panels expose it:
 
 | panel | metric | answers |
 |---|---|---|
-| **Catch-up Retries by Reason** | `rate(network_retry_attempt_total)` | how *often* catch-up fires, by reason & network |
+| **Catch-up Retries by Reason** | `rate(network_retry_attempt_total{reason=~"block_unavailable\|empty_result\|missing_data"})` | how *often* catch-up fires, by reason & network |
 | **Catch-up Wait — p95** | `histogram_quantile(0.95, rate(..._wait_seconds_bucket))` | how *long* each wait is — expect ≈ one block time |
 | **Catch-up Wait Pressure** | `rate(..._wait_seconds_sum)` | the *impact*: ≈ how many requests are sitting in a catch-up wait right now |
 
+Two sibling panels keep genuine-error retries out of the catch-up view (they are
+retries but **not** catch-up):
+
+| panel | metric | answers |
+|---|---|---|
+| **Failover Retries by Reason** | `rate(network_retry_attempt_total{reason=~"retryable_error\|pending_tx"})` | how often upstreams *error* (failover), by network |
+| **Upstream Errors by Type** | `topk(15, rate(upstream_request_errors_total))` by `upstream,error` | the *why*: which upstream + error code (e.g. `ErrEndpointUnsupported`, `ErrEndpointCapacityExceeded`) |
+
 Healthy = per-retry wait ≈ the chain's block time, and pressure low/flat.
-**Act** when pressure climbs unbounded, p95 ≫ one block, or catch-up fires on
-`finalized` data.
+**Act** when pressure climbs unbounded, p95 ≫ one block (verify vs. the EMA gauge
+first — see bucket caveat), catch-up fires on `finalized` data, or **Failover
+Retries spike** (then check *Upstream Errors by Type*).
 
 ## What "catch-up" actually is
 
@@ -109,9 +118,22 @@ same 10 s on Arbitrum would be alarming.
      over-eager.
 2. **Wait p95** — is each wait ≈ one block for that chain (table above)?
    - p95 ≫ one block → the EMA block-time estimate is inflated (a laggy upstream
-     dragging the EMA), or backoff is leaking onto this path.
+     dragging the EMA), or backoff is leaking onto this path. **Before blaming the
+     EMA, verify it directly** with `erpc_network_dynamic_block_time_milliseconds`
+     and look at the **average** wait (`rate(_sum)/rate(_count)`). If the EMA is
+     correct (e.g. mainnet ≈ 12000 ms) and the avg ≈ one block but p95 looks huge,
+     it's a *histogram-bucket artifact*, not inflation — see the caveat below.
    - p95 pinned at exactly 700 ms → EMA never warmed (cold pods / churn);
      everything's on the fixed fallback.
+
+   > **Bucket caveat (learned the hard way).** `network_data_unavailable_wait_seconds`
+   > now uses dedicated buckets `{0.1,0.25,0.5,1,2,4,8,16,32,64}` (see
+   > `CatchUpWaitHistogramBuckets`) tuned for per-chain block times. Earlier it
+   > shared the global request-latency buckets (e.g. `…,1,3,5,10,30`), whose sparse
+   > 10→30 s gap put mainnet's 12 s wait in one coarse bucket — so `histogram_quantile`
+   > read ~30 s/"1 min" while the **avg was a healthy 12 s**. If you ever see a
+   > scary p95 here, confirm against the EMA gauge and the avg before concluding
+   > anything; trust p95 only with the dedicated buckets in place.
 3. **Wait Pressure** — the only panel that measures *impact*. `rate(_sum)` is
    wait-seconds accrued per second ≈ **average number of requests concurrently
    blocked in a catch-up wait** (Little's law: `concurrency = rate × duration`).
