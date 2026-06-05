@@ -56,6 +56,14 @@ func WithTags(tags ...string) func(*FakeUpstream) {
 	}
 }
 
+// WithJsonRpcConfig sets the upstream's jsonRpc config block (headers, batch
+// settings, etc.). Used by client tests that exercise jsonRpc.headers handling.
+func WithJsonRpcConfig(cfg *JsonRpcUpstreamConfig) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.config.JsonRpc = cfg
+	}
+}
+
 // WithFakeUpstreamNetworkID overrides the network ID this fake reports.
 // Tests that exercise per-network indexing (e.g.
 // `tracker.GetUpstreamMetrics`'s `upstreamsByNetwork` lookup) need

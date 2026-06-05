@@ -75,6 +75,17 @@ func NewGrpcBdsClient(
 		headers:         make(map[string]string),
 	}
 
+	// Apply any jsonRpc.headers configured on the upstream as gRPC metadata on
+	// every outbound request, mirroring the HTTP client
+	// (http_json_rpc_client.go) and the gRPC cache connector (data/grpc.go).
+	// This is how an edge-api auth key (authorization: Bearer <token>) reaches
+	// the wire for a grpc:// upstream.
+	if upstream != nil {
+		if cfg := upstream.Config(); cfg != nil && cfg.JsonRpc != nil {
+			client.SetHeaders(cfg.JsonRpc.Headers)
+		}
+	}
+
 	target, useTLS := pickTargetForBDS(parsedUrl)
 
 	// Determine whether to use TLS based on port or URL scheme.
