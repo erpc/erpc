@@ -13939,116 +13939,6 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "reqps",
-              "color": {
-                "mode": "continuous-GrYlRd"
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 24,
-            "x": 0,
-            "y": 1
-          },
-          "id": 230,
-          "options": {
-            "displayMode": "lcd",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "valueMode": "color",
-            "namePlacement": "left"
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(12, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
-              "format": "time_series",
-              "instant": true,
-              "legendFormat": "{{network}} \u00b7 {{upstream}} \u00b7 {{error}}",
-              "range": false,
-              "refId": "A"
-            }
-          ],
-          "title": "\ud83d\udd34 Top Impactful Errors (errors/s)",
-          "type": "bargauge",
-          "description": "Only IMPACTFUL errors (severity=critical) that add latency or fail user requests: RequestTimeout (waited the full timeout before failing over), TransportFailure (unreachable/TLS), ServerSideException (5xx), NonceException. Harmless ones (reverts, bad-params, catch-up BlockUnavailable, Unsupported/CapacityExceeded fast-failover) are excluded \u2014 see 'Upstream Errors by Type' for all. Fix: RequestTimeout\u2192upstream too slow / timeout or capacity; TransportFailure\u2192unreachable/TLS; ServerSide\u21925xx."
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "s",
-              "color": {
-                "mode": "continuous-GrYlRd"
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 8,
-            "x": 0,
-            "y": 11
-          },
-          "id": 231,
-          "options": {
-            "displayMode": "lcd",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "valueMode": "color",
-            "namePlacement": "left"
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.5))",
-              "format": "time_series",
-              "instant": true,
-              "legendFormat": "{{network}}",
-              "range": false,
-              "refId": "A"
-            }
-          ],
-          "title": "\ud83d\udc0c Top Latency Sinks (p95)",
-          "type": "bargauge",
-          "description": "Networks with the slowest user-facing p95 (only \u22650.5 req/s). Drill into which method (eth_getLogs block-range?) and which upstream is slow. Fix: cap getLogs ranges, add a faster upstream, or enable hedging."
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "fieldConfig": {
-            "defaults": {
               "unit": "ms",
               "color": {
                 "mode": "continuous-GrYlRd"
@@ -14058,9 +13948,9 @@
           },
           "gridPos": {
             "h": 10,
-            "w": 8,
-            "x": 8,
-            "y": 11
+            "w": 12,
+            "x": 0,
+            "y": 12
           },
           "id": 232,
           "options": {
@@ -14113,9 +14003,9 @@
           },
           "gridPos": {
             "h": 10,
-            "w": 8,
-            "x": 16,
-            "y": 11
+            "w": 12,
+            "x": 12,
+            "y": 12
           },
           "id": 233,
           "options": {
@@ -14153,13 +14043,273 @@
           "description": "Active PRIMARY upstreams that are behind the freshest upstream (blocks). The selection policy is serving from a stale node. Fix: tighten the block-lag exclusion threshold or deprioritize this upstream."
         },
         {
+          "type": "text",
+          "id": 237,
+          "title": "",
+          "transparent": true,
+          "gridPos": {
+            "h": 2,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### \ud83d\udd2d Tip of chain \u2014 getBlock & similar (realtime / unfinalized)\nThe latency-critical chain-tip reads. Errors below + freshness (catch-up) + primary lag."
+          }
+        },
+        {
+          "type": "table",
+          "title": "\ud83d\udd0e Tip of chain \u2014 issues to investigate (top critical errors \u2192 likely culprit)",
+          "description": "Top user-impacting errors on chain-tip getBlock* reads (getBlockByNumber/ByHash, blockNumber, getBlockReceipts) at realtime/unfinalized. Each row = a chain+upstream to look at; the 'likely culprit' column maps the error code to the probable cause/fix. Sorted by rate. Pair with Catch-up Cost + Laggy Primaries below for non-error tip issues.",
+          "id": 236,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 2
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(20, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "table",
+              "instant": true,
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true
+                },
+                "indexByName": {
+                  "network": 0,
+                  "upstream": 1,
+                  "error": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "error": "likely culprit",
+                  "Value": "errors/s"
+                }
+              }
+            }
+          ],
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            },
+            "sortBy": [
+              {
+                "displayName": "errors/s",
+                "desc": true
+              }
+            ]
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "likely culprit"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "RequestTimeout",
+                          "result": {
+                            "text": "\u23f1 Timeout \u2014 upstream too slow (raise timeout/capacity, or replace upstream)",
+                            "index": 0
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "TransportFailure",
+                          "result": {
+                            "text": "\ud83d\udd0c Transport \u2014 unreachable / TLS / DNS",
+                            "index": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "ServerSideException",
+                          "result": {
+                            "text": "\ud83d\udca5 Upstream 5xx \u2014 provider-side error",
+                            "index": 2
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "NonceException",
+                          "result": {
+                            "text": "# Nonce \u2014 tx ordering / state",
+                            "index": 3
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "CapacityExceeded",
+                          "result": {
+                            "text": "\ud83d\udea6 Rate-limited \u2014 raise limit or add capacity",
+                            "index": 4
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "Unsupported",
+                          "result": {
+                            "text": "\ud83d\udeab Unsupported method \u2014 method-scope this upstream",
+                            "index": 5
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "BillingIssue",
+                          "result": {
+                            "text": "\ud83d\udcb3 Billing/credits \u2014 provider account",
+                            "index": 6
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "Unauthorized",
+                          "result": {
+                            "text": "\ud83d\udd11 Auth \u2014 bad/expired key",
+                            "index": 7
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "ClientSideException",
+                          "result": {
+                            "text": "\u26a0 Bad request (4xx) \u2014 usually caller-side",
+                            "index": 8
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "BlockUnavailable",
+                          "result": {
+                            "text": "\u23f3 Block not on upstream yet (catch-up)",
+                            "index": 9
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "ExecutionException",
+                          "result": {
+                            "text": "\u21a9 Execution revert (usually benign)",
+                            "index": 10
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 360
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "errors/s"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "reqps"
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 110
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-background",
+                      "mode": "gradient"
+                    }
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "continuous-GrYlRd"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "upstream"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 260
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "s",
+              "unit": "ms",
               "color": {
                 "mode": "continuous-GrYlRd"
               }
@@ -14170,9 +14320,9 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 21
+            "y": 12
           },
-          "id": 235,
+          "id": 232,
           "options": {
             "displayMode": "lcd",
             "orientation": "horizontal",
@@ -14195,7 +14345,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.2))",
+              "expr": "topk(8, 1000 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))))",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -14203,9 +14353,9 @@
               "refId": "A"
             }
           ],
-          "title": "\ud83c\udfaf Indexing \u2014 tip-read p95 (s)",
+          "title": "\u23f3 Top Catch-up Cost (ms/req)",
           "type": "bargauge",
-          "description": "p95 latency of INDEXING-CRITICAL tip reads (getBlockByNumber/ByHash, getLogs, blockNumber, getBlockReceipts) on realtime+unfinalized blocks \u2014 exactly what indexers poll. High here = indexing lag for that chain. Fix: a faster upstream on the tip path, enable hedging, or cap getLogs ranges."
+          "description": "Networks paying the most catch-up latency per request. Fix: improve upstream freshness/indexing, lower emptyResultMaxAttempts, and check 'Catch-up by Finality' (finalized waits are wasted)."
         },
         {
           "datasource": {
@@ -14214,7 +14364,7 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "reqps",
+              "unit": "short",
               "color": {
                 "mode": "continuous-GrYlRd"
               }
@@ -14225,9 +14375,9 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 21
+            "y": 12
           },
-          "id": 236,
+          "id": 233,
           "options": {
             "displayMode": "lcd",
             "orientation": "horizontal",
@@ -14250,17 +14400,277 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "expr": "topk(8, max by (network) ((max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) and on(network, upstream) (erpc_selection_position{method=\"*\"} == 0)))",
               "format": "time_series",
               "instant": true,
-              "legendFormat": "{{network}} \u00b7 {{upstream}} \u00b7 {{error}}",
+              "legendFormat": "{{network}}",
               "range": false,
               "refId": "A"
             }
           ],
-          "title": "\ud83c\udfaf Indexing \u2014 impactful tip-read errors (errors/s)",
+          "title": "\ud83d\udcc9 Top Laggy Primaries (blocks)",
           "type": "bargauge",
-          "description": "Critical errors on the indexing tip-read path \u2014 these directly stall indexers (the tip read fails/retries, delaying the next block). Same fixes as Top Impactful Errors, scoped to the methods indexers depend on."
+          "description": "Active PRIMARY upstreams that are behind the freshest upstream (blocks). The selection policy is serving from a stale node. Fix: tighten the block-lag exclusion threshold or deprioritize this upstream."
+        },
+        {
+          "type": "text",
+          "id": 238,
+          "title": "",
+          "transparent": true,
+          "gridPos": {
+            "h": 2,
+            "w": 24,
+            "x": 0,
+            "y": 22
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### \ud83c\udf10 Other methods / finalized \u2014 generic culprits"
+          }
+        },
+        {
+          "type": "table",
+          "title": "\ud83d\udd0e Other methods \u2014 issues to investigate (top critical errors \u2192 likely culprit)",
+          "description": "Same diagnostic table for non-getBlock methods (eth_call, getLogs, receipts, traces, \u2026). Harmless errors (reverts/bad-params/catch-up) are excluded \u2014 see 'Upstream Errors by Type' for the full breakdown.",
+          "id": 230,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 24
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(20, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{category!~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "table",
+              "instant": true,
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true
+                },
+                "indexByName": {
+                  "network": 0,
+                  "upstream": 1,
+                  "error": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "error": "likely culprit",
+                  "Value": "errors/s"
+                }
+              }
+            }
+          ],
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            },
+            "sortBy": [
+              {
+                "displayName": "errors/s",
+                "desc": true
+              }
+            ]
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "likely culprit"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "RequestTimeout",
+                          "result": {
+                            "text": "\u23f1 Timeout \u2014 upstream too slow (raise timeout/capacity, or replace upstream)",
+                            "index": 0
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "TransportFailure",
+                          "result": {
+                            "text": "\ud83d\udd0c Transport \u2014 unreachable / TLS / DNS",
+                            "index": 1
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "ServerSideException",
+                          "result": {
+                            "text": "\ud83d\udca5 Upstream 5xx \u2014 provider-side error",
+                            "index": 2
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "NonceException",
+                          "result": {
+                            "text": "# Nonce \u2014 tx ordering / state",
+                            "index": 3
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "CapacityExceeded",
+                          "result": {
+                            "text": "\ud83d\udea6 Rate-limited \u2014 raise limit or add capacity",
+                            "index": 4
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "Unsupported",
+                          "result": {
+                            "text": "\ud83d\udeab Unsupported method \u2014 method-scope this upstream",
+                            "index": 5
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "BillingIssue",
+                          "result": {
+                            "text": "\ud83d\udcb3 Billing/credits \u2014 provider account",
+                            "index": 6
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "Unauthorized",
+                          "result": {
+                            "text": "\ud83d\udd11 Auth \u2014 bad/expired key",
+                            "index": 7
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "ClientSideException",
+                          "result": {
+                            "text": "\u26a0 Bad request (4xx) \u2014 usually caller-side",
+                            "index": 8
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "BlockUnavailable",
+                          "result": {
+                            "text": "\u23f3 Block not on upstream yet (catch-up)",
+                            "index": 9
+                          }
+                        }
+                      },
+                      {
+                        "type": "regex",
+                        "options": {
+                          "pattern": "ExecutionException",
+                          "result": {
+                            "text": "\u21a9 Execution revert (usually benign)",
+                            "index": 10
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 360
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "errors/s"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "reqps"
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 110
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-background",
+                      "mode": "gradient"
+                    }
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "continuous-GrYlRd"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "upstream"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 260
+                  }
+                ]
+              }
+            ]
+          }
         }
       ]
     }
