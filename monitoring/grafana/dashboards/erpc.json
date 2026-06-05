@@ -13928,134 +13928,6 @@
         "x": 0,
         "y": 1
       },
-      "id": 237,
-      "type": "row",
-      "title": "Indexing Critical Path",
-      "panels": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "s",
-              "color": {
-                "mode": "continuous-GrYlRd"
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 12,
-            "x": 0,
-            "y": 1
-          },
-          "id": 235,
-          "options": {
-            "displayMode": "lcd",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "valueMode": "color",
-            "namePlacement": "left"
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.2))",
-              "format": "time_series",
-              "instant": true,
-              "legendFormat": "{{network}}",
-              "range": false,
-              "refId": "A"
-            }
-          ],
-          "title": "\ud83c\udfaf Indexing \u2014 tip-read p95 (s)",
-          "type": "bargauge",
-          "description": "p95 latency of INDEXING-CRITICAL tip reads (getBlockByNumber/ByHash, getLogs, blockNumber, getBlockReceipts) on realtime+unfinalized blocks \u2014 exactly what indexers poll. High here = indexing lag for that chain. Fix: a faster upstream on the tip path, enable hedging, or cap getLogs ranges."
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "reqps",
-              "color": {
-                "mode": "continuous-GrYlRd"
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 12,
-            "x": 12,
-            "y": 1
-          },
-          "id": 236,
-          "options": {
-            "displayMode": "lcd",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "valueMode": "color",
-            "namePlacement": "left"
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(8, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
-              "format": "time_series",
-              "instant": true,
-              "legendFormat": "{{network}} \u00b7 {{upstream}} \u00b7 {{error}}",
-              "range": false,
-              "refId": "A"
-            }
-          ],
-          "title": "\ud83c\udfaf Indexing \u2014 impactful tip-read errors (errors/s)",
-          "type": "bargauge",
-          "description": "Critical errors on the indexing tip-read path \u2014 these directly stall indexers (the tip read fails/retries, delaying the next block). Same fixes as Top Impactful Errors, scoped to the methods indexers depend on."
-        }
-      ]
-    },
-    {
-      "collapsed": true,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 1
-      },
       "id": 234,
       "type": "row",
       "title": "Top Culprits",
@@ -14279,6 +14151,116 @@
           "title": "\ud83d\udcc9 Top Laggy Primaries (blocks)",
           "type": "bargauge",
           "description": "Active PRIMARY upstreams that are behind the freshest upstream (blocks). The selection policy is serving from a stale node. Fix: tighten the block-lag exclusion threshold or deprioritize this upstream."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "continuous-GrYlRd"
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 21
+          },
+          "id": 235,
+          "options": {
+            "displayMode": "lcd",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "valueMode": "color",
+            "namePlacement": "left"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.2))",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "{{network}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "\ud83c\udfaf Indexing \u2014 tip-read p95 (s)",
+          "type": "bargauge",
+          "description": "p95 latency of INDEXING-CRITICAL tip reads (getBlockByNumber/ByHash, getLogs, blockNumber, getBlockReceipts) on realtime+unfinalized blocks \u2014 exactly what indexers poll. High here = indexing lag for that chain. Fix: a faster upstream on the tip path, enable hedging, or cap getLogs ranges."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "color": {
+                "mode": "continuous-GrYlRd"
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 21
+          },
+          "id": 236,
+          "options": {
+            "displayMode": "lcd",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "valueMode": "color",
+            "namePlacement": "left"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(8, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getBlockReceipts\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "{{network}} \u00b7 {{upstream}} \u00b7 {{error}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "\ud83c\udfaf Indexing \u2014 impactful tip-read errors (errors/s)",
+          "type": "bargauge",
+          "description": "Critical errors on the indexing tip-read path \u2014 these directly stall indexers (the tip read fails/retries, delaying the next block). Same fixes as Top Impactful Errors, scoped to the methods indexers depend on."
         }
       ]
     }
