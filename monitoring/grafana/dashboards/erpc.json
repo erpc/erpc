@@ -4411,13 +4411,13 @@
               "exemplar": false,
               "format": "table",
               "instant": false,
-              "expr": "erpc_selection_position{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",method=\"*\"} == 0",
+              "expr": "(count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 1000 - (avg by (network, upstream) (erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}) or (count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 0)))\n== on(network) group_left()\nmax by (network) ((count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 1000 - (avg by (network, upstream) (erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}) or (count by (network, upstream) (erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0) * 0))))",
               "refId": "A"
             }
           ],
           "title": "Active Primary Upstream (per network)",
           "type": "state-timeline",
-          "description": "One gap-free row per network; the band shows which upstream is the selection primary (position==0) over time and changes color/label on every fail-over. Public RPC vendors get fixed colors; other upstreams use the per-network palette. Grafana paginates when there are more networks than fit. Filter $network to narrow the set.",
+          "description": "Fleet-majority PRIMARY upstream per network over time. Across all erpc replicas, the upstream most of them route as primary (position==0) wins each network; vote ties break toward the better (lower) selection_score, so each network resolves to exactly one upstream per moment and unchanged primaries render as one continuous block. Public RPC vendors get fixed colors; others use the per-network palette. Paginates when networks exceed the panel height.",
           "transformations": [
             {
               "id": "organize",
