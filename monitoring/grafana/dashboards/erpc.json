@@ -4284,7 +4284,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Aggregate catch-up wait time accrued per second (\u2248 number of requests simultaneously waiting to catch up), by reason. The direct 'how much of our retry latency is chain catch-up' signal \u2014 pair with the retry-count panel. Source: rate of network_data_unavailable_wait_seconds_sum.",
+          "description": "How many requests are stuck in a catch-up wait AT ONCE, per network/reason. Computed as rate(network_data_unavailable_wait_seconds_sum) = wait-seconds accrued per second; by Little's law that equals the average number of requests simultaneously blocked in a catch-up wait. Example: 4 = about 4 requests are always sitting in a catch-up sleep. This is the concurrent latency load catch-up imposes. Flat/low (<1) = negligible; a sustained climb = more requests stuck waiting (upstream-freshness problem). Note slow chains weigh more \u2014 one 12s mainnet wait counts the same as twelve 1s waits \u2014 so compare a network against its own baseline, not across chains.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4294,7 +4294,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "",
+                "axisLabel": "\u2248 concurrent requests waiting (wait-seconds/s)",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -4338,7 +4338,7 @@
                   }
                 ]
               },
-              "unit": "short"
+              "unit": "none"
             },
             "overrides": []
           },
@@ -4384,7 +4384,7 @@
               "refId": "A"
             }
           ],
-          "title": "Catch-up Wait Pressure by Reason",
+          "title": "Catch-up Wait Pressure (\u2248 concurrent requests waiting)",
           "type": "timeseries"
         },
         {
