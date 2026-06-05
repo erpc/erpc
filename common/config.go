@@ -727,6 +727,7 @@ type UpstreamConfig struct {
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
+	Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty" json:"grpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
 	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty" json:"autoIgnoreUnsupportedMethods"`
@@ -859,6 +860,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
 		JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty"`
+		Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty"`
 		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
 		AllowMethods                 []string                 `yaml:"allowMethods,omitempty"`
 		AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty"`
@@ -880,6 +882,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.Endpoint = old.Endpoint
 	u.Evm = old.Evm
 	u.JsonRpc = old.JsonRpc
+	u.Grpc = old.Grpc
 	u.IgnoreMethods = old.IgnoreMethods
 	u.AllowMethods = old.AllowMethods
 	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
@@ -955,6 +958,9 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 	if c.JsonRpc != nil {
 		copied.JsonRpc = c.JsonRpc.Copy()
+	}
+	if c.Grpc != nil {
+		copied.Grpc = c.Grpc.Copy()
 	}
 	if c.RateLimitAutoTune != nil {
 		copied.RateLimitAutoTune = c.RateLimitAutoTune.Copy()
@@ -1081,6 +1087,30 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 	*copied = *c
 
 	if c.Headers != nil {
+		maps.Copy(copied.Headers, c.Headers)
+	}
+
+	return copied
+}
+
+// GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+// gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
+// knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
+// every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
+type GrpcUpstreamConfig struct {
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers"`
+}
+
+func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &GrpcUpstreamConfig{}
+	*copied = *c
+
+	if c.Headers != nil {
+		copied.Headers = make(map[string]string, len(c.Headers))
 		maps.Copy(copied.Headers, c.Headers)
 	}
 

@@ -192,6 +192,36 @@ func TestSendRequest_HeadersPassedAsMetadata(t *testing.T) {
 		"client-set header must reach the server as gRPC metadata")
 }
 
+// TestSendRequest_ConfigHeadersReachWireAsMetadata closes the config→wire
+// seam: headers configured via grpc.headers on the upstream (the path
+// NewGrpcBdsClient wires) must reach the server as gRPC metadata. The other
+// tests cover config→headers map and SetHeaders→wire separately; this proves
+// the full chain end-to-end, mirroring the HTTP client's header test.
+func TestSendRequest_ConfigHeadersReachWireAsMetadata(t *testing.T) {
+	addr, server, stop := startHappyServer(t, 1, 0)
+	defer stop()
+
+	parsedURL, err := url.Parse(fmt.Sprintf("grpc://%s", addr))
+	require.NoError(t, err)
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	ups := common.NewFakeUpstream("test-ups", common.WithGrpcConfig(&common.GrpcUpstreamConfig{
+		Headers: map[string]string{"authorization": "Bearer secret-token"},
+	}))
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL)
+	require.NoError(t, err)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
+	_, err = client.SendRequest(ctx, req)
+	require.NoError(t, err)
+
+	md := server.snapshotMetadata()
+	require.Equal(t, []string{"Bearer secret-token"}, md.Get("authorization"),
+		"grpc.headers configured on the upstream must reach the server as gRPC metadata")
+}
+
 // TestSendRequest_ConcurrentRequests_AllSucceed fires many simultaneous
 // requests against a healthy server. Asserts no races, no goroutine
 // leaks, and every caller gets a response. The pool has shared mutable

@@ -94,6 +94,48 @@ func TestBuildTopicFiltersRejectsInvalidHex(t *testing.T) {
 // handler surfaces a transport-failure error — but critically NOT
 // ErrEndpointUnsupported, which would disqualify the upstream from carrying
 // eth_query* traffic.
+func TestGrpcBdsClientAppliesUpstreamGrpcHeaders(t *testing.T) {
+	parsedURL, err := url.Parse("grpc://127.0.0.1:1")
+	require.NoError(t, err)
+
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ups := common.NewFakeUpstream("test-ups", common.WithGrpcConfig(&common.GrpcUpstreamConfig{
+		Headers: map[string]string{
+			"authorization":   "Bearer secret-token",
+			"x-goldsky-chain": "abstract",
+		},
+	}))
+
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL)
+	require.NoError(t, err)
+
+	gc, ok := client.(*GenericGrpcBdsClient)
+	require.True(t, ok)
+	require.Equal(t, "Bearer secret-token", gc.headers["authorization"])
+	require.Equal(t, "abstract", gc.headers["x-goldsky-chain"])
+}
+
+// TestGrpcBdsClientNilUpstreamNoHeaders guards the nil-upstream and nil-Grpc
+// paths: construction must not panic and headers stay empty.
+func TestGrpcBdsClientNilUpstreamNoHeaders(t *testing.T) {
+	parsedURL, err := url.Parse("grpc://127.0.0.1:1")
+	require.NoError(t, err)
+
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	require.NoError(t, err)
+
+	gc, ok := client.(*GenericGrpcBdsClient)
+	require.True(t, ok)
+	require.Empty(t, gc.headers)
+}
+
 func TestGrpcBdsClientQueryMethodsDoNotShortCircuit(t *testing.T) {
 	parsedURL, err := url.Parse("grpc://127.0.0.1:1")
 	require.NoError(t, err)
