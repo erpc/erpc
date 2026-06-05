@@ -13,6 +13,16 @@ This file only repeats the bare minimum needed to bootstrap.
 - Go server (`cmd/erpc`) + TypeScript packages under `typescript/` (`@erpc-cloud/config`, `@erpc-cloud/cli`).
 - Module: `github.com/erpc/erpc`. Docs: <https://docs.erpc.cloud/>.
 
+## Observability runbooks
+
+Metric-analysis guides for the Grafana dashboards (`monitoring/grafana/`) — read
+the relevant one before reasoning about a panel:
+
+- [`monitoring/catch-up-metrics.md`](monitoring/catch-up-metrics.md) — how to
+  read the **Catch-up Retries / Wait / Pressure** panels (data-not-yet-available
+  retries). A non-zero baseline is normal; judge by pressure trend + per-chain
+  wait sanity, not raw counts.
+
 ## Bootstrap commands
 
 ```bash
