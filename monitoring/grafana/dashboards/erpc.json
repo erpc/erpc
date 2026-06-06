@@ -4534,7 +4534,7 @@
               "showLineNumbers": false,
               "showMiniMap": false
             },
-            "content": "### \ud83c\udf9a\ufe0f Served Tip \u2014 deliberate cluster lag (which block we serve vs what's available)\neRPC's served-tip feature advertises the MIN block of the largest cluster of agreeing upstreams (monotonic, cluster-shared) instead of the single most-ahead one \u2014 trading a small bounded lag for far fewer 'block not found' retries. Lag panels are **EXACT** (`erpc_network_served_tip_lag_blocks` / `_block_number`, post-clamp). **Blank/No-Data on a network = the feature isn't enabled for that axis there (the default)** \u2014 not an error. *(Requires the pr-911-2 deploy; everything reads No-Data until then.)*",
+            "content": "### Served Tip \u2014 deliberate cluster lag\nWe advertise the MIN block of the largest cluster of agreeing upstreams (a small, monotonic, deliberate lag that kills 'block not found' retries). Lag panels are EXACT. Blank = feature off for that axis (default).",
             "mode": "markdown"
           },
           "pluginVersion": "12.3.0",
@@ -4547,7 +4547,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How many blocks we INTENTIONALLY serve behind the freshest block ANY of our upstreams has \u2014 the served-tip cushion (tune with servedTip.clusterDelta). A few blocks is by design; >1 shown.\n\nVS Top Culprits' 'Halted/stale': this compares to our OWN best upstream; that compares to REAL TIME. So this can read 3-6 while what we serve is still <2 blocks old in real time \u2014 the cushion is harmless. If this AND Halted/stale climb together, our upstreams are collectively behind the chain.",
+          "description": "Blocks we deliberately serve behind our freshest upstream (the cushion); a few = by design. STOPGAP: values >100 (a misbehaving upstream reporting a bad block) are filtered out \u2014 the metric is computed vs the raw max-observed block, so it over-reports; the served tip itself is fine.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4613,7 +4613,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 1)",
+              "expr": "topk(12, (max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) < 100) > 1)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4629,7 +4629,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "The same deliberate served-tip lag in wall-clock seconds (exact lag blocks \u00d7 block time) \u2014 what callers feel. NO DATA = served-tip not enabled for 'latest' here (default), or nothing above 0.5s. Sub-second to ~1 block-time is healthy; seconds on a fast chain / tens of seconds on mainnet = meaningful intentional staleness.",
+          "description": "Same deliberate cushion in seconds (blocks \u00d7 block time).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4695,7 +4695,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, (max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) * on(network) group_left() (max by (network)(erpc_network_dynamic_block_time_milliseconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})/1000)) > 0.5)",
+              "expr": "topk(12, ((max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) < 100) * on(network) group_left() (max by (network)(erpc_network_dynamic_block_time_milliseconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})/1000)) > 0.5)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4711,7 +4711,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Served-tip lag on the FINALIZED axis. This should be ~0 \u2014 finalized blocks are agreed by definition. NO DATA = healthy (upstreams agree, or feature off). A sustained value here = upstreams DISAGREE on what's finalized (a cluster split on finality) \u2014 a louder red flag than latest-axis lag; investigate the laggard. >0 shown.",
+          "description": "Served-tip lag on the FINALIZED axis \u2014 should be ~0; any value = upstreams disagree on what's finalized.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4793,7 +4793,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "One row per upstream+vendor: its latest block AND how many blocks BEHIND THE FRESHEST upstream on its OWN chain (fleet-max \u2212 this upstream, so the freshest reads 0). Sorted worst-first. Works across multiple chains too \u2014 each row is self-contained and the gap is per-chain-relative, so a multi-network selection surfaces the worst laggards fleet-wide. (Latest-block numbers differ by chain \u2014 that's expected.)",
+          "description": "Each upstream's latest block + blocks behind its chain's freshest (0 = freshest). Sorted worst-first; works with multiple chains.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -4968,7 +4968,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "The top-15 most-behind (upstream on its chain) over time \u2014 blocks behind the freshest on the same chain (so 0 = freshest). Gap is per-chain-relative, so this works with one OR many chains selected: it always shows the worst-lagging upstreams fleet-wide. A line climbing = that upstream is drifting behind.",
+          "description": "Top laggards' blocks-behind-their-chain's-freshest over time. Readable scale; works for one or many chains.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5197,7 +5197,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How long the slowest 5% of chain-tip getBlock* reads take, per chain (realtime + unfinalized). This is what 'fetch latest' callers actually feel. If high \u2192 check the Tip culprit table (a slow upstream?) and the Catch-up Cost panel (waiting for fresh data?).",
+          "description": "p95 of chain-tip getBlock reads. High = slow tip; check the culprit table for the slow upstream.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5278,7 +5278,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks the MAIN primary (the upstream most of our replicas route as primary for method calls) is behind the freshest upstream eRPC can see. This is the real majority primary, not a single odd replica. Shown when >2 blocks.\n\nWHAT IT MEANS: state-dependent method calls (eth_call / getBalance / getLogs at recent or 'latest') routed to this primary can return data up to N blocks stale.\n\nHOW IT RELATES TO THE SERVED-TIP FEATURE: eRPC deliberately advertises a 'served tip' that may sit a little behind the single most-ahead upstream \u2014 it picks the bottom of the largest cluster of upstreams that AGREE on the head, trading a small, bounded, intentional lag for far fewer 'block not found' retries. That deliberate cluster lag is a DIFFERENT thing from what this panel shows. This panel = how far the ROUTING PRIMARY (where method calls actually land) trails the freshest available upstream \u2014 a selection/score/sticky outcome. The new 'Served Tip' row = how far the network's DELIBERATELY-CHOSEN advertised tip sits behind the highest/lowest available block, by design. So: a value here can be high purely because of routing (a sticky or higher-scored primary that happens to lag), independent of the served-tip setting.\n\nNOT the same as 'Halted/stale' either: that panel is the AGE of the latest block we report (tracked from eRPC's freshest upstream), which stays fresh even when the routing primary lags. The three can legitimately diverge \u2014 e.g. fresh reported tip + low served-tip lag + high primary lag = 'reporting latest is fine and our deliberate cluster lag is small, but we route method calls to a primary that trails a fresher available upstream'. Worth a look only if state-read freshness matters for that chain.\n\nPER-CHAIN: N blocks = N \u00d7 block time \u2014 13 blocks \u2248 4s on arbitrum-one but \u2248 2.6 min on mainnet. For the deliberate served-tip lag specifically, read the Served Tip row's SECONDS and normalized-blocks panels.",
+          "description": "Blocks the MAIN primary (most replicas route) is behind a fresher available upstream \u2014 a routing-quality gap. >2 shown.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5622,7 +5622,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How much extra latency CATCH-UP (waiting for fresh data) adds to the AVERAGE request on each chain. 80 ms here means every request on this chain pays 80 ms on average to wait for blocks the upstream hadn't indexed yet. The bottom-line user-felt cost of tip freshness issues. Same number as the 'Amortized Overhead' chart below; this one ranks worst chains.",
+          "description": "Worst chains by catch-up latency added per request (wait \u00d7 %affected) \u2014 the real impact, not the per-wait duration.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5723,7 +5723,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How often eRPC retries because data wasn't on the upstream yet \u2014 broken down by WHY:\n\n\u2022 block_unavailable \u2014 upstream said 'I don't have that block yet'\n\u2022 empty_result \u2014 upstream returned nothing for a recent block (it hasn't ingested it)\n\u2022 missing_data \u2014 upstream said 'I don't have this data'\n\nAll three mean 'wait one block, ask again'. A baseline rate is normal for tip workloads; a sudden spike on one reason \u2192 an upstream falling behind on that class. Failover retries (genuine errors) are in a separate panel.",
+          "description": "How often catch-up fires (retries/s) by reason. A baseline is normal; a spike on one reason = an upstream falling behind.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5831,7 +5831,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How long ONE catch-up wait lasts (per reason). Expect \u2248 one block time for the chain: mainnet ~12 s, base ~2 s, arbitrum ~0.4 s \u2014 that's literally 'wait one block and try again'. If much longer, the block-time estimate is wrong (a laggy upstream is dragging the EMA). If pinned at 700 ms, the estimate hasn't warmed up yet (fresh pod). Bucket-honest now.",
+          "description": "How long ONE catch-up wait lasts (\u2248 one block: mainnet ~12s). Only the few % of requests that wait pay this \u2014 for fleet impact see Catch-up cost.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5972,7 +5972,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "By Little's law, rate(_sum) \u2248 the average number of requests CONCURRENTLY blocked in a catch-up wait. 4 here means about 4 requests are always sitting in a wait at any moment. Flat and <1 \u2192 negligible. Sustained climb \u2192 freshness problem on that chain. Slow chains weigh more (one 12 s mainnet wait = twelve 1 s waits), so compare per network, not across.",
+          "description": "\u2248 how many requests are stuck in a catch-up wait at once. <1 = negligible; a sustained climb = freshness problem.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6080,7 +6080,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Of all requests we serve on a chain, what FRACTION hit a catch-up wait (because the data wasn't on the upstream yet). 1\u20132 % is typical for tip-read workloads. 10 %+ on a chain \u2192 many requests are hitting empties on recent blocks \u2192 upstream freshness problem, or RetryEmpty is too aggressive for that chain's response style. Counts retry events, so on chains with high emptyResultMaxAttempts the % is inflated up to the cap.",
+          "description": "Share of a chain's requests that hit a catch-up wait. 1-2% typical; 10%+ = upstream freshness problem.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6188,7 +6188,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Total catch-up wait time spread across ALL the chain's requests = the average latency tax catch-up adds per request. 80 ms means every request on this chain pays 80 ms on average for catch-up. The bottom-line cost \u2014 pair with '% Affected' (volume) and 'Wait' (per-affected duration) to understand whether the cost is many fast waits or few slow ones.",
+          "description": "Catch-up wait spread over ALL requests = avg latency added per request (= wait \u00d7 %affected). Real fleet impact (mainnet \u224812s \u00d7 0.7% \u2248 82ms).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6296,7 +6296,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Catch-up split by what KIND of block was being read:\n\n\u2022 unfinalized / realtime \u2192 tip reads. Catch-up here is EXPECTED \u2014 we're racing the chain.\n\u2022 finalized \u2192 permanent old blocks. Catch-up here is WASTED \u2014 waiting one block won't make permanent data appear. Means the upstream genuinely doesn't have the data (incomplete archive). FIX: fail over instead of waiting, or replace the upstream \u2014 not a tuning issue.\n\u2022 unknown \u2192 couldn't classify; triage like finalized.",
+          "description": "Catch-up split by block type. unfinalized/realtime = normal tip races; finalized > 0 = WASTED (waiting won't help) \u2014 red flag.",
           "fieldConfig": {
             "defaults": {
               "color": {
