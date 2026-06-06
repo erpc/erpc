@@ -46,21 +46,28 @@ func WildcardMatch(pattern, value string) (bool, error) {
 	return matcher(value), nil
 }
 
-// MatchesSelector reports whether a `use-upstream` selector matches an upstream
-// identified by its id and tags. It is a strict, backward-compatible superset
-// of plain id matching:
+// MatchesSelector reports whether a selector pattern matches an entity that is
+// identified by a primary `id` and carries a set of `tags` (labels). It is the
+// single shared primitive for "match by id or tag" — every such check (the
+// `use-upstream` directive, served-tip scoping, etc.) should go through it so
+// the semantics stay identical everywhere. It is intentionally NOT coupled to
+// upstreams or to any particular tag prefix; `family`, `region`, … are just tag
+// values an operator may pick.
 //
-//   - The pattern is ALWAYS evaluated against the upstream id first, exactly as
-//     before — so existing id globs/boolean expressions are unchanged.
+// It builds on WildcardMatch (glob + boolean grammar) and is a strict,
+// backward-compatible superset of plain id matching:
+//
+//   - The pattern is ALWAYS evaluated against `id` first, exactly as a plain
+//     WildcardMatch on the id would be — so existing id globs/expressions are
+//     unchanged.
 //   - For purely-positive patterns (no `!` negation operator) it is ALSO
-//     evaluated against each tag, so a selector like `use-upstream=family:systx`
-//     (or any other tag, including bare-string tags) selects by tag as well as
-//     by id. There is nothing special about any particular tag prefix.
-//   - Patterns that contain a negation operator are matched against the id
-//     ONLY. OR-ing tag matches into a negated expression would invert its
-//     meaning (a non-matching tag would "rescue" an upstream the operator meant
-//     to exclude), so tag-level negation is intentionally not honored in a
-//     request selector — express that in the selection policy instead.
+//     evaluated against each tag, so a selector like `family:systx` (or any
+//     tag, including bare-string tags) matches by tag as well as by id.
+//   - Patterns that contain a negation operator are matched against `id` ONLY.
+//     OR-ing tag matches into a negated expression would invert its meaning (a
+//     non-matching tag would "rescue" an entity the operator meant to exclude),
+//     so tag-level negation is intentionally not honored here — express that in
+//     policy instead.
 //
 // An empty pattern matches nothing; callers already guard `!= ""`.
 func MatchesSelector(pattern, id string, tags []string) (bool, error) {
@@ -92,8 +99,10 @@ func MatchesSelector(pattern, id string, tags []string) (bool, error) {
 	return false, nil
 }
 
-// UpstreamMatchesSelector is MatchesSelector for a common.Upstream, reading the
-// upstream's id and tags (nil-config safe).
+// UpstreamMatchesSelector applies MatchesSelector to a common.Upstream, reading
+// its id and tags (nil-Config safe). This is the canonical way to test a
+// selector (e.g. the `use-upstream` directive) against an upstream — every such
+// site should call this so behavior is uniform.
 func UpstreamMatchesSelector(pattern string, u Upstream) (bool, error) {
 	var tags []string
 	if cfg := u.Config(); cfg != nil {
