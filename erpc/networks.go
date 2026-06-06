@@ -60,6 +60,37 @@ type Network struct {
 	servedFinalizedBlockShared data.CounterInt64SharedVariable
 	servedLatestUpdatedAtMs    atomic.Int64
 	servedFinalizedUpdatedAtMs atomic.Int64
+
+	// servedTipPartitions holds lazily-materialized, cross-pod strict-monotonic
+	// served-tip counters for TAG-scoped requests (use-upstream=<exact tag>), so
+	// each node group (e.g. base flashblocks vs normal) advertises its own
+	// monotonic latest/finalized tip instead of inheriting the network-wide one.
+	// DDoS-safe by construction: a partition is created ONLY when the selector
+	// exactly matches a tag configured on this network's upstreams (a bounded,
+	// operator-controlled universe — see servedTipPartitionFor / configuredTags),
+	// and the count is capped (maxServedTipPartitions). Selectors that don't
+	// match a real tag (id globs, unknown/garbage tags) never create state and
+	// fall back to the stateless subset candidate. Keyed by the exact tag string.
+	servedTipPartitions     sync.Map // map[string]*servedTipPartition
+	servedTipPartitionCount atomic.Int32
+	// configuredTags is the lazily-cached set of exact tag strings present on
+	// this network's upstreams; only these may materialize a partition.
+	configuredTags atomic.Pointer[map[string]struct{}]
+}
+
+// maxServedTipPartitions caps the number of materialized per-tag served-tip
+// partitions per network (a backstop on top of the "must be a configured tag"
+// gate). Realistic configs have 1–3 groups; beyond the cap, extra tags fall
+// back to the stateless subset candidate.
+const maxServedTipPartitions = 16
+
+// servedTipPartition holds one node group's monotonic served-tip counters
+// (latest + finalized) and their velocity-gate timestamps.
+type servedTipPartition struct {
+	latestShared         data.CounterInt64SharedVariable
+	finalizedShared      data.CounterInt64SharedVariable
+	latestUpdatedAtMs    atomic.Int64
+	finalizedUpdatedAtMs atomic.Int64
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -309,23 +340,128 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // routing share one notion of "which upstreams count". Falls back to the full
 // registered set when the policy is absent or has not yet produced a decision.
 func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
+	var ups []common.Upstream
 	if n.policyEngine != nil {
 		if eligible := n.policyEngine.GetOrdered(n.networkId, method, "*"); len(eligible) > 0 {
-			return eligible
+			ups = eligible
 		}
 	}
-	if n.upstreamsRegistry == nil {
-		// Defensive: a partially-initialized network (e.g. cache-only paths or tests
-		// that don't wire a registry) has none — report no candidates so the head
-		// accessors fail open (return 0) instead of dereferencing a nil registry.
+	if ups == nil {
+		if n.upstreamsRegistry == nil {
+			// Defensive: a partially-initialized network (e.g. cache-only paths or tests
+			// that don't wire a registry) has none — report no candidates so the head
+			// accessors fail open (return 0) instead of dereferencing a nil registry.
+			return nil
+		}
+		raw := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+		ups = make([]common.Upstream, 0, len(raw))
+		for _, u := range raw {
+			ups = append(ups, u)
+		}
+	}
+
+	// Selector-scoped served tip: when the request targets a subset of
+	// upstreams (the use-upstream id/tag selector), the network's
+	// `latest`/`finalized` must be decided AMONG that subset — otherwise a
+	// more-ahead group (e.g. base flashblocks vs normal) would define the tip
+	// for a request pinned to the other group, causing "block not found"
+	// churn. This is stateless (no shared counter / no materialized state),
+	// so an arbitrary selector value can never grow per-pod memory. No-op when
+	// there is no request or no selector in ctx (background/admin callers).
+	if sel := requestSelector(ctx); sel != "" {
+		filtered := make([]common.Upstream, 0, len(ups))
+		for _, u := range ups {
+			if m, _ := common.UpstreamMatchesSelector(sel, u); m {
+				filtered = append(filtered, u)
+			}
+		}
+		return filtered
+	}
+	return ups
+}
+
+// requestSelector returns the use-upstream selector for the request bound to
+// ctx (set at the top of Forward), or "" when there is no request/selector.
+func requestSelector(ctx context.Context) string {
+	if req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req != nil {
+		if d := req.Directives(); d != nil {
+			return d.UseUpstream
+		}
+	}
+	return ""
+}
+
+// servedTipPartitionFor returns the lazily-materialized monotonic served-tip
+// counters for a TAG-scoped request, or nil to signal the stateless fallback.
+//
+// Materialization is gated so attacker-supplied selectors can never grow state:
+//   - the selector must EXACTLY match a tag configured on this network's
+//     upstreams (a bounded, operator-controlled universe; id globs and unknown
+//     tags do not qualify — they fall back to the stateless subset candidate);
+//   - the number of partitions is capped (maxServedTipPartitions) as a backstop;
+//   - the shared-state key is namespaced ("servedLatestBlock/<net>/sel:<tag>").
+//
+// The returned counters are shared across pods (same backing store), so each
+// group's tip is strict-monotonic just like the network-wide one.
+func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
+	if selector == "" {
 		return nil
 	}
-	raw := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	out := make([]common.Upstream, 0, len(raw))
-	for _, u := range raw {
-		out = append(out, u)
+	// Fast path: already materialized.
+	if p, ok := n.servedTipPartitions.Load(selector); ok {
+		return p.(*servedTipPartition)
 	}
-	return out
+	// Gate: only an exact match of a real configured tag may materialize state.
+	if !n.isConfiguredTag(ctx, selector) {
+		return nil
+	}
+	if n.upstreamsRegistry == nil {
+		return nil
+	}
+	ssr := n.upstreamsRegistry.SharedStateRegistry()
+	if ssr == nil {
+		return nil
+	}
+	// Cap backstop (also avoids a race racing far past the cap).
+	if n.servedTipPartitionCount.Load() >= maxServedTipPartitions {
+		return nil
+	}
+	p := &servedTipPartition{
+		latestShared:    ssr.GetCounterInt64("servedLatestBlock/"+n.networkId+"/sel:"+selector, evm.DefaultToleratedBlockHeadRollback),
+		finalizedShared: ssr.GetCounterInt64("servedFinalizedBlock/"+n.networkId+"/sel:"+selector, evm.DefaultToleratedBlockHeadRollback),
+	}
+	actual, loaded := n.servedTipPartitions.LoadOrStore(selector, p)
+	if !loaded {
+		n.servedTipPartitionCount.Add(1)
+	}
+	return actual.(*servedTipPartition)
+}
+
+// isConfiguredTag reports whether `tag` exactly matches a tag present on at
+// least one of this network's upstreams. The set is cached once it is
+// non-empty (it is derived from static config); until then it is computed
+// transiently so an early call before upstreams register doesn't poison the
+// cache with an empty set.
+func (n *Network) isConfiguredTag(ctx context.Context, tag string) bool {
+	if cached := n.configuredTags.Load(); cached != nil {
+		_, ok := (*cached)[tag]
+		return ok
+	}
+	set := make(map[string]struct{})
+	if n.upstreamsRegistry != nil {
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			if cfg := u.Config(); cfg != nil {
+				for _, t := range cfg.Tags {
+					set[t] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(set) > 0 {
+		n.configuredTags.Store(&set)
+	}
+	_, ok := set[tag]
+	return ok
 }
 
 // EvmHighestLatestBlockNumber returns the served latest block for this network.
@@ -342,7 +478,21 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	defer span.End()
 
 	if !n.servedTipEnabledFor("latest") {
+		// Max mode: evmHighestBlockMax → tipCandidateUpstreams already scopes
+		// to the request's selector (if any), so the MAX is within-subset.
 		return n.evmHighestBlockMax(ctx, false)
+	}
+	if sel := requestSelector(ctx); sel != "" {
+		// Cluster mode + targeted request: the network-wide shared counter is
+		// the WRONG tip for a subset (it would leak one group's tip across
+		// groups). For a selector that names a real configured tag, use a
+		// per-group monotonic counter (cross-pod, bounded — see
+		// servedTipPartitionFor); otherwise fall back to a stateless cluster-min
+		// over the subset so arbitrary selectors create no state.
+		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
+			return n.clusteredServedTip(ctx, span, false, "latest", "*", p.latestShared, &p.latestUpdatedAtMs)
+		}
+		return n.clusteredServedTip(ctx, span, false, "latest", "*", nil, nil)
 	}
 	return n.clusteredServedTip(ctx, span, false, "latest", "*",
 		n.servedLatestBlockShared, &n.servedLatestUpdatedAtMs)
@@ -487,6 +637,15 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 
 	if !n.servedTipEnabledFor("finalized") {
 		return n.evmHighestBlockMax(ctx, true)
+	}
+	if sel := requestSelector(ctx); sel != "" {
+		// See EvmHighestLatestBlockNumber: a configured-tag selector gets a
+		// per-group monotonic counter; any other selector falls back to a
+		// stateless cluster-min over the subset.
+		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
+			return n.clusteredServedTip(ctx, span, true, "finalized", "*", p.finalizedShared, &p.finalizedUpdatedAtMs)
+		}
+		return n.clusteredServedTip(ctx, span, true, "finalized", "*", nil, nil)
 	}
 	return n.clusteredServedTip(ctx, span, true, "finalized", "*",
 		n.servedFinalizedBlockShared, &n.servedFinalizedUpdatedAtMs)
@@ -682,6 +841,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			attribute.String("request.finality", req.Finality(ctx).String()),
 		),
 	)
+
+	// Bind the request to ctx so downstream served-tip resolution can decide
+	// `latest`/`finalized` AMONG the use-upstream-selected subset (see
+	// tipCandidateUpstreams / requestSelector). The failsafe executor re-sets
+	// the same value below for its own readers; setting it here makes it
+	// available to the earlier pre-forward / short-circuit paths too.
+	ctx = context.WithValue(ctx, common.RequestContextKey, req)
+
 	if common.IsTracingDetailed {
 		forwardSpan.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
@@ -1850,7 +2017,7 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 		targeted := 0
 		if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
 			for _, u := range upsList {
-				if match, _ := common.WildcardMatch(dr.UseUpstream, u.Id()); match {
+				if match, _ := common.UpstreamMatchesSelector(dr.UseUpstream, u); match {
 					targeted++
 				}
 			}
