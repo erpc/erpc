@@ -4547,7 +4547,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How many blocks we INTENTIONALLY serve behind the freshest block any of our upstreams has (MaxObserved \u2212 served, exact, at pick time). This is the served-tip feature's deliberate cushion \u2014 tune via servedTip.clusterDelta. Reference = OUR OWN FRESHEST UPSTREAM (not real time). DIFFERENT from 'Halted/stale' in Top Culprits: that compares the served tip to WALL-CLOCK (is it actually fresh in the real world, catches all-upstreams-behind); THIS compares to our best upstream (how much we hold back below it). They diverge when our freshest upstream runs ahead of real-time \u2014 e.g. fast chains here serve 3-6 blocks behind the freshest upstream yet <2 blocks old vs wall-clock, so the cushion is benign. >1 shown.",
+          "description": "How many blocks we INTENTIONALLY serve behind the freshest block ANY of our upstreams has \u2014 the served-tip cushion (tune with servedTip.clusterDelta). A few blocks is by design; >1 shown.\n\nVS Top Culprits' 'Halted/stale': this compares to our OWN best upstream; that compares to REAL TIME. So this can read 3-6 while what we serve is still <2 blocks old in real time \u2014 the cushion is harmless. If this AND Halted/stale climb together, our upstreams are collectively behind the chain.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5107,7 +5107,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How old the block we serve is vs WALL-CLOCK (served-block age \u00f7 block time). ~1 = healthy (we serve a ~1-block-old tip). The ABSOLUTE freshness check. KEY: this is measured against real time, so it catches chain halts AND the case where ALL our upstreams \u2014 even the freshest \u2014 have fallen behind the real chain. That last case is INVISIBLE to the Served-Tip row's 'deliberate lag', which only compares to our own freshest upstream. >2 shown. (No-Data here = every served tip is <2 blocks old vs real-time = healthy.)",
+          "description": "How old the tip we serve is vs REAL TIME (block age \u00f7 block time). ~1 = healthy; >2 shown (No-Data = everything fresh). The honest 'is what we serve actually fresh?' check.\n\nVS the Served-Tip row's 'Deliberate lag': that asks how much we hold back below our OWN freshest upstream; THIS asks how fresh we are vs the REAL chain. Only this one catches the dangerous case \u2014 ALL our upstreams (even the freshest) falling behind reality \u2014 which 'Deliberate lag' is blind to.",
           "fieldConfig": {
             "defaults": {
               "color": {
