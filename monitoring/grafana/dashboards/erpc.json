@@ -4535,7 +4535,7 @@
           },
           "options": {
             "mode": "markdown",
-            "content": "### \ud83c\udf9a\ufe0f Served Tip \u2014 deliberate cluster lag (which block we serve vs what's available)\neRPC's served-tip feature advertises the MIN block of the largest cluster of agreeing upstreams (monotonic, cluster-shared) instead of the single most-ahead one \u2014 trading a small bounded lag for far fewer 'block not found' retries. **Trust the SECONDS / BLOCKS panels** (served vs poller-freshest); the raw block-gap is an approximation. *(There is no direct served-tip metric yet \u2014 it lives only in OTel spans.)*"
+            "content": "### \ud83c\udf9a\ufe0f Served Tip \u2014 deliberate cluster lag (which block we serve vs what's available)\neRPC's served-tip feature advertises the MIN block of the largest cluster of agreeing upstreams (monotonic, cluster-shared) instead of the single most-ahead one \u2014 trading a small bounded lag for far fewer 'block not found' retries. Lag panels are **EXACT** (`erpc_network_served_tip_lag_blocks` / `_block_number`, post-clamp). **Blank/No-Data on a network = the feature isn't enabled for that axis there (the default)** \u2014 not an error. *(Requires the pr-911-2 deploy; everything reads No-Data until then.)*"
           }
         },
         {
@@ -4545,12 +4545,13 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "s",
+              "unit": "short",
               "color": {
                 "mode": "continuous-GrYlRd"
               },
               "displayName": "${__field.labels.network}",
-              "min": 0
+              "min": 0,
+              "noValue": "\u2713 none > 1 blk"
             },
             "overrides": []
           },
@@ -4583,7 +4584,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, clamp_min(max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"network_response\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"evm_state_poller\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}), 0) > 0.5)",
+              "expr": "topk(12, max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 1)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4591,9 +4592,9 @@
               "refId": "A"
             }
           ],
-          "title": "\u23f1\ufe0f Served-tip lag \u2014 SECONDS (trustworthy)",
+          "title": "\ud83c\udf9a\ufe0f Served-tip lag \u2014 blocks (EXACT, pick-time)",
           "type": "bargauge",
-          "description": "THE trustworthy 'how far behind do we serve' number. Seconds between the freshness of the block we actually SERVE (origin=network_response) and the freshest block our poller has SEEN (origin=evm_state_poller). Both come from the same network object \u2192 no scrape skew, comparable across chains. Healthy = a fraction of a second up to ~1 block-time. Seconds on a fast chain / tens of seconds on mainnet = we're holding back real time on purpose (check servedTip.clusterDelta or a laggard dragging the cluster). Negatives are jitter (clamped to 0). >0.5s shown."
+          "description": "How many blocks the served tip is held behind the freshest block observed across eligible upstreams, at pick time (EXACT \u2014 erpc_network_served_tip_lag_blocks). Reading guide: NO DATA / blank = served-tip feature NOT enabled for 'latest' on this network (the default \u2014 the series isn't exported at all); 0 = enabled and serving the freshest; 1-3 = small intentional cushion (the point: avoid 'block not found' churn); 5+ = holding back more than expected (check servedTip.clusterDelta or a laggard in the per-upstream table). >1 shown, worst first."
         },
         {
           "datasource": {
@@ -4602,12 +4603,13 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "short",
+              "unit": "s",
               "color": {
                 "mode": "continuous-GrYlRd"
               },
               "displayName": "${__field.labels.network}",
-              "min": 0
+              "min": 0,
+              "noValue": "\u2713 none > 0.5s"
             },
             "overrides": []
           },
@@ -4640,7 +4642,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, clamp_min((max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"network_response\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"evm_state_poller\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})) / on(network) group_left() (max by (network)(erpc_network_dynamic_block_time_milliseconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})/1000), 0) > 1.5)",
+              "expr": "topk(12, (max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) * on(network) group_left() (max by (network)(erpc_network_dynamic_block_time_milliseconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})/1000)) > 0.5)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4648,66 +4650,9 @@
               "refId": "A"
             }
           ],
-          "title": "\ud83c\udfaf Served-tip lag \u2014 in BLOCKS (cross-chain)",
+          "title": "\u23f1\ufe0f Served-tip lag \u2014 seconds (EXACT)",
           "type": "bargauge",
-          "description": "The same deliberate lag as the SECONDS panel, divided by each chain's block time \u2192 'how many blocks behind the freshest we serve', comparable on every chain. ~1 = healthy steady state (serve ~1 block behind freshest). 2-3 = mild intentional cushion. 5+ = holding back more than expected \u2014 check servedTip.clusterDelta and the per-upstream spread for a laggard. >1.5 shown."
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "color": {
-                "mode": "continuous-GrYlRd"
-              },
-              "displayName": "${__field.labels.network}",
-              "min": 0
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 9,
-            "w": 8,
-            "x": 16,
-            "y": 2
-          },
-          "id": 244,
-          "options": {
-            "displayMode": "gradient",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "valueMode": "color",
-            "namePlacement": "top"
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(12, (max by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - on(network) max by (network) (erpc_cache_connector_latest_block_number{network=~\"^${network:regex}$\"})) > 1)",
-              "format": "time_series",
-              "instant": true,
-              "legendFormat": "{{network}}",
-              "range": false,
-              "refId": "A"
-            }
-          ],
-          "title": "\ud83d\udcca Block gap: highest available \u2212 served (APPROX)",
-          "type": "bargauge",
-          "description": "APPROXIMATE block-count view of how far the served tip sits below the most-ahead upstream. Uses erpc_cache_connector_latest_block_number (the cluster/cache shared value) as the served proxy \u2014 there is NO direct served-tip metric (it's only an OTel span today). Two caveats: (1) the two metrics are scraped independently, so on fast chains most of a small number is timing skew; (2) cache may be keyed evm:<id> while upstreams use the alias, so some chains won't line up. Trust the SECONDS panel for the real lag; this is here only for the block-number view you asked for. Chase only big, persistent values. >1 shown."
+          "description": "The same deliberate served-tip lag in wall-clock seconds (exact lag blocks \u00d7 block time) \u2014 what callers feel. NO DATA = served-tip not enabled for 'latest' here (default), or nothing above 0.5s. Sub-second to ~1 block-time is healthy; seconds on a fast chain / tens of seconds on mainnet = meaningful intentional staleness."
         },
         {
           "type": "table",
@@ -4799,7 +4744,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Three lines for the selected chain over time: HIGHEST available (most-ahead upstream), LOWEST available (laggiest), and the SERVED tip (cache proxy). Healthy = a tight parallel band all climbing together, served riding just below highest, never dipping below lowest, never going backwards (served tip is monotonic \u2014 only a >1024-block reorg rolls it back). Watch for: served flat-lining while highest climbs (stuck tip), or the band fanning wide (upstreams diverging \u2192 bigger deliberate lag). \u26a0 Pick ONE chain. Served line may be missing for evm:<id>-keyed chains (use the SECONDS panel instead).",
+          "description": "Three lines for the selected chain over time: HIGHEST available block (most-ahead upstream), LOWEST available (laggiest), and the SERVED tip (now EXACT \u2014 erpc_network_served_tip_block_number). Healthy = a tight band climbing together, served riding just below highest, never below lowest, never going backwards (monotonic; only a >1024-block reorg rolls it back). Served flat-lining while highest climbs = stuck tip. \u26a0 Pick ONE chain in $network so the y-axis is one scale. NOTE: the 'served tip' line is absent on networks where served-tip isn't enabled for 'latest' (default config) \u2014 that's expected, lean on highest/lowest there.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4845,11 +4790,7 @@
                 "steps": [
                   {
                     "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
+                    "value": null
                   }
                 ]
               },
@@ -4919,16 +4860,74 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network) (erpc_cache_connector_latest_block_number{network=~\"^${network:regex}$\"})",
+              "expr": "max by (network) (erpc_network_served_tip_block_number{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
-              "legendFormat": "served tip (cache proxy)",
+              "legendFormat": "served tip (EXACT)",
               "range": true,
               "refId": "C"
             }
           ],
           "title": "\ud83d\udcc8 Served vs highest vs lowest available (pick ONE chain)",
           "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "continuous-GrYlRd"
+              },
+              "displayName": "${__field.labels.network}",
+              "min": 0,
+              "noValue": "\u2713 all agree on finalized"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 16,
+            "y": 2
+          },
+          "id": 249,
+          "options": {
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "valueMode": "color",
+            "namePlacement": "top"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(12, max by (network) (erpc_network_served_tip_lag_blocks{axis=\"finalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0)",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "{{network}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "\ud83d\udea9 Served-tip lag \u2014 FINALIZED axis (should be ~0)",
+          "type": "bargauge",
+          "description": "Served-tip lag on the FINALIZED axis. This should be ~0 \u2014 finalized blocks are agreed by definition. NO DATA = healthy (upstreams agree, or feature off). A sustained value here = upstreams DISAGREE on what's finalized (a cluster split on finality) \u2014 a louder red flag than latest-axis lag; investigate the laggard. >0 shown."
         }
       ]
     },

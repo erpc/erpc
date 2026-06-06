@@ -118,6 +118,29 @@ var (
 		Help:      "Dynamically computed block time per network in milliseconds.",
 	}, []string{"project", "network"})
 
+	// MetricNetworkServedTipBlockNumber is the block number the network actually
+	// advertises/serves as the tip for a block tag (axis=latest|finalized), after
+	// the served-tip cluster picker + monotonic clamp. Previously only an OTel span
+	// attribute (served_tip.candidate); exposed here so the deliberate served-tip lag
+	// is directly observable. Compare to max(upstream_latest_block_number).
+	MetricNetworkServedTipBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_block_number",
+		Help:      "Block number served/advertised as the tip per network and axis (latest|finalized), after the served-tip cluster picker + monotonic clamp.",
+	}, []string{"project", "network", "axis"})
+
+	// MetricNetworkServedTipLagBlocks is the deliberate, bounded served-tip lag:
+	// blocks the served tip sits behind the highest block observed across eligible
+	// upstreams at pick time (MaxObserved - Candidate). Computed at the same instant
+	// as the pick, so it is exact (no cross-metric scrape skew). NOTE: the series is
+	// ABSENT (not 0) when served-tip is in default MAX mode (feature off) for that
+	// axis — that path early-returns before the emit, so nothing is exported.
+	MetricNetworkServedTipLagBlocks = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_lag_blocks",
+		Help:      "Blocks the served tip is behind the highest block observed across eligible upstreams at pick time (deliberate served-tip lag), per network and axis.",
+	}, []string{"project", "network", "axis"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",
