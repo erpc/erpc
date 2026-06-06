@@ -13274,9 +13274,34 @@
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "s",
+              "unit": "none",
+              "decimals": 1,
+              "custom": {
+                "axisLabel": "\u00d7 block time (blocks behind tip)"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 3
+                  },
+                  {
+                    "color": "orange",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 10
+                  }
+                ]
+              },
               "color": {
-                "mode": "continuous-GrYlRd"
+                "mode": "thresholds"
               }
             },
             "overrides": []
@@ -13310,7 +13335,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"network_response\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}))",
+              "expr": "topk(8, (max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"network_response\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) / on(network) group_left() (max by (network)(erpc_network_dynamic_block_time_milliseconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})/1000) > 2)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -13318,9 +13343,9 @@
               "refId": "A"
             }
           ],
-          "title": "\ud83d\uded1 Halted/stale \u2014 served tip age (s)",
+          "title": "\ud83d\uded1 Halted/stale \u2014 blocks behind tip (\u00d7 block time)",
           "type": "bargauge",
-          "description": "SYMPTOM: how old the tip block we SERVE is (s behind wall-clock). Very high = tip halted/stale. Culprit \u2192 check 'primary lag' + the culprit table + catch-up: chosen primary behind, all upstreams lagging, or chain stalled."
+          "description": "SYMPTOM: how stale the served tip is, expressed in BLOCK-TIMES \u2014 i.e. how many blocks behind the tip we are. 1.0 \u2248 healthy (one block old, normal head age). Filtered to >2 so the always-1 baseline is hidden. >5 blocks \u2192 tip is halted/stale on that chain. Cross-chain comparable because normalized by each chain's EMA block time (erpc_network_dynamic_block_time_milliseconds). Culprit \u2192 check the tip culprit table, primary-lag, and catch-up cost below."
         },
         {
           "datasource": {
