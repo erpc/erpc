@@ -4793,7 +4793,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Each upstream's latest block + blocks behind its chain's freshest (0 = freshest). Sorted worst-first; works with multiple chains.",
+          "description": "Each upstream's latest block, blocks behind its chain's freshest (0=freshest), and how long it's been auto-excluded from routing (blank=in rotation). Behind + excluded = we're correctly NOT using it.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -4887,6 +4887,30 @@
                     "value": 150
                   }
                 ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "excluded (s)"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "continuous-GrYlRd"
+                    }
+                  }
+                ]
               }
             ]
           },
@@ -4932,9 +4956,22 @@
               "instant": true,
               "range": false,
               "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "",
+              "range": false,
+              "refId": "C"
             }
           ],
-          "title": "\ud83c\udff7\ufe0f Per upstream/vendor \u2014 latest block & gap behind freshest",
+          "title": "\ud83c\udff7\ufe0f Per upstream/vendor \u2014 latest block, gap behind freshest & excluded?",
           "transformations": [
             {
               "id": "merge",
@@ -4952,11 +4989,13 @@
                   "Value #B": 4,
                   "network": 0,
                   "upstream": 2,
-                  "vendor": 1
+                  "vendor": 1,
+                  "Value #C": 5
                 },
                 "renameByName": {
                   "Value #A": "latest block",
-                  "Value #B": "blocks behind freshest"
+                  "Value #B": "blocks behind freshest",
+                  "Value #C": "excluded (s)"
                 }
               }
             }
@@ -5061,6 +5100,200 @@
           ],
           "title": "\ud83d\udcc8 Blocks behind freshest \u2014 top laggards over time",
           "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Fleet-wide: which signal trips exclusion. 'block_head_lag*' = behind; 'throttle/error/latency' = unhealthy. Confirms the CAUSE when an upstream shows as behind.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "exclusions / s",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 12,
+            "y": 87
+          },
+          "id": 251,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(10, sum by (reason) (rate(erpc_selection_exclusion_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}[$__rate_interval])) > 0)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "\ud83d\udd0e Why upstreams get excluded \u2014 reasons over time (excl/s)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Upstreams auto-excluded from routing RIGHT NOW (we are NOT serving from them) and for how long. Usually because they fell behind \u2014 see the reasons panel. Cross-check the 'behind freshest' table: behind + here = handled.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "continuous-GrYlRd"
+              },
+              "displayName": "${__field.labels.network} / ${__field.labels.upstream}",
+              "mappings": [],
+              "min": 0,
+              "noValue": "\u2713 none excluded",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 60
+                  },
+                  {
+                    "color": "red",
+                    "value": 600
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 0,
+            "y": 87
+          },
+          "id": 250,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": false
+            },
+            "maxVizHeight": 300,
+            "minVizHeight": 16,
+            "minVizWidth": 8,
+            "namePlacement": "top",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "sizing": "auto",
+            "valueMode": "color"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(20, max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0)",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "{{network}} / {{upstream}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "\ud83d\udeab Excluded upstreams \u2014 which & for how long (routing)",
+          "type": "bargauge"
         }
       ],
       "title": "Networks - Served Tip",
@@ -5622,7 +5855,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Worst chains by catch-up latency added per request (wait \u00d7 %affected) \u2014 the real impact, not the per-wait duration.",
+          "description": "Worst chains by SHARE of requests that wait. >10% = real freshness problem (usually an upstream behind); single-digit = normal tip races. This is where a chain delaying 1-in-N requests shows up.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5639,12 +5872,16 @@
                     "value": 0
                   },
                   {
+                    "color": "yellow",
+                    "value": 5
+                  },
+                  {
                     "color": "red",
-                    "value": 80
+                    "value": 10
                   }
                 ]
               },
-              "unit": "ms"
+              "unit": "percent"
             },
             "overrides": []
           },
@@ -5687,7 +5924,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, 1000 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))))",
+              "expr": "topk(8, 100 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) > 0.5)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -5695,7 +5932,7 @@
               "refId": "A"
             }
           ],
-          "title": "\u23f3 Catch-up cost \u2014 average latency added per request (ms)",
+          "title": "\ud83d\udea6 Catch-up \u2014 % of requests delayed (worst chains)",
           "type": "bargauge"
         },
         {
@@ -6188,7 +6425,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Catch-up wait spread over ALL requests = avg latency added per request (= wait \u00d7 %affected). Real fleet impact (mainnet \u224812s \u00d7 0.7% \u2248 82ms).",
+          "description": "How many requests/sec actually wait. The real count of impacted requests \u2014 read WITH 'how long each wait takes'. (Not amortized.)",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -6198,7 +6435,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "ms added / request (amortized)",
+                "axisLabel": "requests delayed / s",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -6242,7 +6479,7 @@
                   }
                 ]
               },
-              "unit": "ms"
+              "unit": "reqps"
             },
             "overrides": []
           },
@@ -6279,16 +6516,13 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "exemplar": false,
-              "expr": "1000 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
-              "format": "time_series",
-              "instant": false,
+              "expr": "topk(15, sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
               "legendFormat": "{{network}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Catch-up \u2014 average ms added to each request",
+          "title": "Catch-up \u2014 requests DELAYED per second (real count)",
           "type": "timeseries"
         },
         {
