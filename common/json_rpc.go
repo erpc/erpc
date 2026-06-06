@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -208,7 +209,14 @@ func (r *JsonRpcResponse) parseIDLocked() error {
 	}
 	switch v := rawID.(type) {
 	case float64:
-		r.id = int64(v)
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("id must be a finite number")
+		}
+		id := int64(v)
+		if float64(id) != v {
+			return fmt.Errorf("id must be an integer in int64 range")
+		}
+		r.id = id
 		return nil
 	case string:
 		r.id = v
@@ -1349,7 +1357,14 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 		}
 		switch v := id.(type) {
 		case float64:
-			r.ID = int64(v)
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return fmt.Errorf("id must be a finite number")
+			}
+			idInt := int64(v)
+			if float64(idInt) != v {
+				return fmt.Errorf("id must be an integer in int64 range")
+			}
+			r.ID = idInt
 		case string:
 			r.ID = v
 		}
