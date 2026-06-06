@@ -656,3 +656,58 @@ func TestRecordMetricsAndTracing_NilAnalysis_DoesNotPanic(t *testing.T) {
 		e.recordMetricsAndTracing(req, time.Now(), result, nil /* analysis */, labels, span)
 	})
 }
+
+// emptyResponse returns an empty JSON-RPC array result, the canonical shape for
+// eth_getLogs on a block with no matching events. Used to exercise the empty-
+// result branch of the unassailable_lead short-circuit rule.
+func emptyResponse() *common.NormalizedResponse {
+	jrpc, _ := common.NewJsonRpcResponse(1, []interface{}{}, nil)
+	return common.NewNormalizedResponse().WithJsonRpcResponse(jrpc)
+}
+
+// TestConsensus_ShortCircuit_EmptyResponses_StuckParticipant verifies that when
+// the agreement threshold is met by empty responses (e.g. eth_getLogs on a
+// block with no matching events) and no competing non-empty group exists,
+// consensus short-circuits without waiting for the slow/stuck remaining
+// participants. Without this, consensus blocks on responseChan until the outer
+// failsafe timeout fires — the production pattern observed on Monad eth_getLogs.
+func TestConsensus_ShortCircuit_EmptyResponses_StuckParticipant(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+
+	pol := NewConsensusPolicyBuilder().
+		WithMaxParticipants(3).
+		WithAgreementThreshold(1).
+		WithLogger(&logger).
+		Build()
+
+	req := newTestRequest()
+
+	var callCount atomic.Int32
+	slowRelease := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(ctx, common.RequestContextKey, req)
+
+	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
+
+	start := time.Now()
+	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		n := callCount.Add(1)
+		if n <= 2 {
+			return emptyResponse(), nil // two fast participants with matching empty responses
+		}
+		<-slowRelease // third participant blocks indefinitely
+		return emptyResponse(), nil
+	})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Less(t, elapsed, 500*time.Millisecond,
+		"short-circuit on agreed empty result must not wait for stuck participant")
+
+	// Unblock the slow participant so the analyzer can finish in the background
+	// and the test doesn't leak a goroutine.
+	close(slowRelease)
+}

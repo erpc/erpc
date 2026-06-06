@@ -893,7 +893,7 @@ var shortCircuitRules = []shortCircuitRule{
 		},
 	},
 	{
-		Description: "winner meets agreement threshold, is non-empty, and lead is unassailable (no possible tie with remaining)",
+		Description: "winner meets agreement threshold (empty or non-empty) and lead is unassailable (no possible tie with remaining)",
 		Reason:      "unassailable_lead",
 		Condition: func(w *slotResult, a *consensusAnalysis) bool {
 			// With remaining participants, avoid short-circuiting when a preference could still
@@ -920,7 +920,26 @@ var shortCircuitRules = []shortCircuitRule{
 					return false
 				}
 			}
-			if best == nil || best.ResponseType != ResponseTypeNonEmpty || best.Count < a.config.agreementThreshold {
+			if best == nil || best.Count < a.config.agreementThreshold {
+				return false
+			}
+			if best.ResponseType == ResponseTypeEmpty {
+				// Allow short-circuit for empty results only when no other valid group
+				// exists that could catch up or create a tie. This handles the common
+				// case where all responding upstreams agree on an empty result (e.g.,
+				// eth_getLogs for a block with no matching events) while a stuck
+				// participant blocks the collect loop.
+				hasCompetingGroup := false
+				for _, g := range a.getValidGroups() {
+					if g.Hash != best.Hash {
+						hasCompetingGroup = true
+						break
+					}
+				}
+				if hasCompetingGroup {
+					return false
+				}
+			} else if best.ResponseType != ResponseTypeNonEmpty {
 				return false
 			}
 			// Compute second best among valid groups (non-infrastructure)
