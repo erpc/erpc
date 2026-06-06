@@ -13453,7 +13453,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, max by (network) ((max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) and on(network, upstream) (erpc_selection_position{method=\"*\"} == 0)))",
+              "expr": "topk(10, max by (network) ((max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) and on(network, upstream) (((count by (network, upstream) (erpc_selection_position{method=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"} == 0)) == on(network) group_left() max by (network) (count by (network, upstream) (erpc_selection_position{method=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"} == 0))))) > 2)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -13461,9 +13461,9 @@
               "refId": "A"
             }
           ],
-          "title": "\ud83d\udcc9 Lagging \u2014 primary upstream behind freshest (blocks)",
+          "title": "\ud83d\udcc9 Lagging \u2014 MAIN primary behind freshest (blocks)",
           "type": "bargauge",
-          "description": "How many blocks behind the FRESHEST upstream we know about our currently-routed primary is. 0 = primary is the freshest. Several blocks \u2192 the selection policy is routing to a slower upstream than it should \u2014 your tip reads return data that's N blocks stale. Cross-chain caveat: '5 blocks' is 60s on mainnet but only 1s on arbitrum, so think per-chain."
+          "description": "How many blocks behind the FRESHEST available upstream our MAIN primary is \u2014 the upstream that most of our replicas actually route as primary. (Previously this took the WORST lag across every upstream that was primary on ANY single replica, so one odd replica routing to a laggy node made it read 9 when the real primary was fresh \u2014 fixed.) Shown only when >2 blocks.\n\nMEANING: the policy is serving the tip from a node that's N blocks staler than a fresher one it could pick \u2014 a routing-quality gap, not necessarily a user-visible problem (the primary may be chosen for speed). REALITY CHECK: whether we actually hand back a stale tip is the 'Halted/stale' panel (served tip age) \u2014 these two should agree. PER-CHAIN: N blocks = N \u00d7 block time (~3 blocks = 6s on base, 36s on mainnet), so judge severity per chain."
         },
         {
           "type": "table",
