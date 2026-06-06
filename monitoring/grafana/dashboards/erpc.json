@@ -4520,7 +4520,7 @@
       },
       "id": 248,
       "type": "row",
-      "title": "Served Tip \u2014 deliberate cluster lag",
+      "title": "Served Tip",
       "panels": [
         {
           "type": "text",
@@ -4656,8 +4656,8 @@
         },
         {
           "type": "table",
-          "title": "\ud83c\udff7\ufe0f Per upstream/vendor \u2014 latest block & exact gap behind (pick ONE chain)",
-          "description": "One row per upstream+vendor for the selected chain: its latest block AND how many blocks it is BEHIND THE FRESHEST upstream (fleet-max latest \u2212 this upstream's latest, so the freshest reads 0 \u2014 the baseline). Sorted worst-first. A big gap = a laggard the served-tip picker correctly isn't waiting for. \u26a0 Pick ONE chain in $network.",
+          "title": "\ud83c\udff7\ufe0f Per upstream/vendor \u2014 latest block & gap behind freshest",
+          "description": "One row per upstream+vendor: its latest block AND how many blocks BEHIND THE FRESHEST upstream on its OWN chain (fleet-max \u2212 this upstream, so the freshest reads 0). Sorted worst-first. Works across multiple chains too \u2014 each row is self-contained and the gap is per-chain-relative, so a multi-network selection surfaces the worst laggards fleet-wide. (Latest-block numbers differ by chain \u2014 that's expected.)",
           "id": 245,
           "datasource": {
             "type": "prometheus",
@@ -4815,7 +4815,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Each upstream's blocks-behind-the-freshest over time (fleet-max latest \u2212 that upstream's latest, so the freshest sits at 0). Readable scale, unlike absolute block numbers. Legend shows current (last) and worst (max) gap per upstream \u2014 NOT a sum. A line climbing = that upstream is drifting behind. \u26a0 Pick ONE chain in $network.",
+          "description": "The top-15 most-behind (upstream on its chain) over time \u2014 blocks behind the freshest on the same chain (so 0 = freshest). Gap is per-chain-relative, so this works with one OR many chains selected: it always shows the worst-lagging upstreams fleet-wide. A line climbing = that upstream is drifting behind.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4900,12 +4900,12 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "max by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - on(network) group_right() max by (network, upstream) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
-              "legendFormat": "{{upstream}}",
+              "expr": "topk(15, max by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - on(network) group_right() max by (network, upstream) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}))",
+              "legendFormat": "{{network}} / {{upstream}}",
               "refId": "A"
             }
           ],
-          "title": "\ud83d\udcc8 Blocks behind freshest \u2014 per upstream over time (pick ONE chain)",
+          "title": "\ud83d\udcc8 Blocks behind freshest \u2014 top laggards over time",
           "type": "timeseries"
         },
         {
