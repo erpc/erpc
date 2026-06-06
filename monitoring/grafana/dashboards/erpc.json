@@ -4035,363 +4035,6 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Catch-up retries/sec by reason \u2014 ONLY the data-not-yet-available reasons (block_unavailable/empty_result/missing_data) that take the block-time wait. Failover retries (retryable_error/pending_tx) are in the separate 'Failover Retries' panel so they don't mask catch-up.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "catch-up retries / sec",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "bars",
-                "fillOpacity": 100,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "normal"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "reqps"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 12,
-            "x": 0,
-            "y": 1012
-          },
-          "id": 218,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",reason=~\"block_unavailable|empty_result|missing_data\"}[$__rate_interval]))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} / {{reason}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Catch-up Retries by Reason (retries/s)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "p95 of the catch-up wait per reason. Reliable once the dedicated catch-up buckets ship (network_data_unavailable_wait_seconds); expect p95 \u2248 one block time per chain. If it looks pinned high, cross-check erpc_network_dynamic_block_time_milliseconds and the avg (rate(_sum)/rate(_count)) before blaming the EMA \u2014 coarse buckets used to make this misleading.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds",
-                "seriesBy": "last"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisGridShow": false,
-                "axisLabel": "wait per affected request",
-                "axisPlacement": "hidden",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "smooth",
-                "lineStyle": {
-                  "fill": "solid"
-                },
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "always",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "area"
-                }
-              },
-              "mappings": [],
-              "min": 0,
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "semi-dark-green",
-                    "value": 0
-                  },
-                  {
-                    "color": "#EAB839",
-                    "value": 1
-                  },
-                  {
-                    "color": "orange",
-                    "value": 5
-                  },
-                  {
-                    "color": "red",
-                    "value": 15
-                  }
-                ]
-              },
-              "unit": "s"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 12,
-            "x": 12,
-            "y": 1012
-          },
-          "id": 219,
-          "interval": "1m",
-          "maxDataPoints": 500,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "lastNotNull",
-                "min",
-                "max",
-                "median"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last *",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "histogram_quantile(0.95, sum by (le, network, reason) (rate(erpc_network_data_unavailable_wait_seconds_bucket{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} / {{reason}}",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} / {{reason}} avg",
-              "range": true,
-              "refId": "B"
-            }
-          ],
-          "title": "Catch-up Wait \u2014 avg & p95 per affected request (s)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "How many requests are stuck in a catch-up wait AT ONCE, per network/reason. Computed as rate(network_data_unavailable_wait_seconds_sum) = wait-seconds accrued per second; by Little's law that equals the average number of requests simultaneously blocked in a catch-up wait. Example: 4 = about 4 requests are always sitting in a catch-up sleep. This is the concurrent latency load catch-up imposes. Flat/low (<1) = negligible; a sustained climb = more requests stuck waiting (upstream-freshness problem). Note slow chains weigh more \u2014 one 12s mainnet wait counts the same as twelve 1s waits \u2014 so compare a network against its own baseline, not across chains.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "\u2248 concurrent requests waiting (wait-seconds/s)",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 30,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "normal"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "none"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 24,
-            "x": 0,
-            "y": 1022
-          },
-          "id": 220,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} / {{reason}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Catch-up Wait Pressure (\u2248 concurrent requests waiting)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
           "gridPos": {
             "h": 18,
             "w": 24,
@@ -4857,330 +4500,6 @@
             }
           ],
           "title": "Upstream Errors by Type (errors/s)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "Share of each network's requests that hit a catch-up wait, by reason. 'How many requests are affected' \u2014 e.g. a chain at 15% means ~1 in 7 requests waits for not-yet-available data.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "% of network requests",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "bars",
-                "fillOpacity": 100,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "normal"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "percent"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 12,
-            "x": 0,
-            "y": 1058
-          },
-          "id": 227,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "100 * (sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / on(network) group_left() sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} / {{reason}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Catch-up \u2014 Requests Affected (% of network requests)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "Catch-up wait time spread across ALL of a network's requests = the average latency tax catch-up adds per request. The bottom-line negative effect. (Per-AFFECTED-request overhead is in 'Catch-up Wait'.)",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "ms added / request (amortized)",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "bars",
-                "fillOpacity": 100,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "normal"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "ms"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 12,
-            "x": 12,
-            "y": 1058
-          },
-          "id": 228,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "1000 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Catch-up \u2014 Amortized Overhead (ms / request)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "Catch-up retries split by request finality. unfinalized/realtime = normal tip races. FINALIZED should be ~0: finalized data is permanent, so waiting a block won't make it appear \u2014 catch-up there means genuinely-missing data / an incomplete archive upstream (fail over, don't wait). 'unknown' = finality couldn't be classified; treat like finalized for triage.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "catch-up retries / sec",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "bars",
-                "fillOpacity": 100,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "normal"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "reqps"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 10,
-            "w": 24,
-            "x": 0,
-            "y": 1068
-          },
-          "id": 229,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "topk(20, sum by (network, finality) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} / {{finality}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Catch-up by Finality \u2014 retries/s (finalized \u2248 red flag)",
           "type": "timeseries"
         }
       ],
@@ -13933,13 +13252,29 @@
       "title": "Top Culprits",
       "panels": [
         {
+          "type": "text",
+          "id": 237,
+          "title": "",
+          "transparent": true,
+          "gridPos": {
+            "h": 2,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### \ud83d\udd2d Tip of chain \u2014 *is it halted, slow, or lagging?* \u2192 *why*\nTop row = the SYMPTOM per network (\ud83d\uded1 stale age \u00b7 \ud83d\udc0c read p95 \u00b7 \ud83d\udcc9 primary lag). Below = the CULPRIT (errors \u2192 cause, catch-up cost)."
+          }
+        },
+        {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "ms",
+              "unit": "s",
               "color": {
                 "mode": "continuous-GrYlRd"
               }
@@ -13948,11 +13283,11 @@
           },
           "gridPos": {
             "h": 10,
-            "w": 12,
+            "w": 8,
             "x": 0,
-            "y": 12
+            "y": 2
           },
-          "id": 232,
+          "id": 239,
           "options": {
             "displayMode": "lcd",
             "orientation": "horizontal",
@@ -13975,7 +13310,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, 1000 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))))",
+              "expr": "topk(8, max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"network_response\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}))",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -13983,9 +13318,64 @@
               "refId": "A"
             }
           ],
-          "title": "\u23f3 Top Catch-up Cost (ms/req)",
+          "title": "\ud83d\uded1 Halted/stale \u2014 served tip age (s)",
           "type": "bargauge",
-          "description": "Networks paying the most catch-up latency per request. Fix: improve upstream freshness/indexing, lower emptyResultMaxAttempts, and check 'Catch-up by Finality' (finalized waits are wasted)."
+          "description": "SYMPTOM: how old the tip block we SERVE is (s behind wall-clock). Very high = tip halted/stale. Culprit \u2192 check 'primary lag' + the culprit table + catch-up: chosen primary behind, all upstreams lagging, or chain stalled."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "continuous-GrYlRd"
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 8,
+            "x": 8,
+            "y": 2
+          },
+          "id": 240,
+          "options": {
+            "displayMode": "lcd",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "valueMode": "color",
+            "namePlacement": "left"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.2))",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "{{network}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "\ud83d\udc0c Slow \u2014 getBlock tip p95 (s)",
+          "type": "bargauge",
+          "description": "SYMPTOM: p95 of chain-tip getBlock reads. High = slow tip. Culprit \u2192 a slow upstream (culprit table) or catch-up overhead (catch-up cost). Method latency detail is in Networks-Latency."
         },
         {
           "datasource": {
@@ -14003,9 +13393,9 @@
           },
           "gridPos": {
             "h": 10,
-            "w": 12,
-            "x": 12,
-            "y": 12
+            "w": 8,
+            "x": 16,
+            "y": 2
           },
           "id": 233,
           "options": {
@@ -14038,29 +13428,13 @@
               "refId": "A"
             }
           ],
-          "title": "\ud83d\udcc9 Top Laggy Primaries (blocks)",
+          "title": "\ud83d\udcc9 Lagging \u2014 primary behind fresher (blocks)",
           "type": "bargauge",
           "description": "Active PRIMARY upstreams that are behind the freshest upstream (blocks). The selection policy is serving from a stale node. Fix: tighten the block-lag exclusion threshold or deprioritize this upstream."
         },
         {
-          "type": "text",
-          "id": 237,
-          "title": "",
-          "transparent": true,
-          "gridPos": {
-            "h": 2,
-            "w": 24,
-            "x": 0,
-            "y": 0
-          },
-          "options": {
-            "mode": "markdown",
-            "content": "### \ud83d\udd2d Tip of chain \u2014 getBlock & similar (realtime / unfinalized)\nThe latency-critical chain-tip reads. Errors below + freshness (catch-up) + primary lag."
-          }
-        },
-        {
           "type": "table",
-          "title": "\ud83d\udd0e Tip of chain \u2014 issues to investigate (top critical errors \u2192 likely culprit)",
+          "title": "\ud83d\udd0e Tip culprits \u2014 critical errors \u2192 likely cause",
           "description": "Top user-impacting errors on chain-tip getBlock* reads (getBlockByNumber/ByHash, blockNumber, getBlockReceipts) at realtime/unfinalized. Each row = a chain+upstream to look at; the 'likely culprit' column maps the error code to the probable cause/fix. Sorted by rate. Pair with Catch-up Cost + Laggy Primaries below for non-error tip issues.",
           "id": 236,
           "datasource": {
@@ -14069,9 +13443,9 @@
           },
           "gridPos": {
             "h": 10,
-            "w": 24,
+            "w": 16,
             "x": 0,
-            "y": 2
+            "y": 12
           },
           "targets": [
             {
@@ -14303,6 +13677,758 @@
           }
         },
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "color": {
+                "mode": "continuous-GrYlRd"
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 8,
+            "x": 16,
+            "y": 12
+          },
+          "id": 232,
+          "options": {
+            "displayMode": "lcd",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "valueMode": "color",
+            "namePlacement": "left"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "topk(8, 1000 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))))",
+              "format": "time_series",
+              "instant": true,
+              "legendFormat": "{{network}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "\u23f3 Slow \u2014 catch-up cost (ms/req)",
+          "type": "bargauge",
+          "description": "Networks paying the most catch-up latency per request. Fix: improve upstream freshness/indexing, lower emptyResultMaxAttempts, and check 'Catch-up by Finality' (finalized waits are wasted)."
+        },
+        {
+          "type": "text",
+          "id": 241,
+          "title": "",
+          "transparent": true,
+          "gridPos": {
+            "h": 2,
+            "w": 24,
+            "x": 0,
+            "y": 22
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### \u23f3 Catch-up \u2014 empty/not-yet-available data forcing waits & retries (a top tip-freshness culprit)"
+          }
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Catch-up retries/sec by reason \u2014 ONLY the data-not-yet-available reasons (block_unavailable/empty_result/missing_data) that take the block-time wait. Failover retries (retryable_error/pending_tx) are in the separate 'Failover Retries' panel so they don't mask catch-up.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "catch-up retries / sec",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 24
+          },
+          "id": 218,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",reason=~\"block_unavailable|empty_result|missing_data\"}[$__rate_interval]))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up Retries by Reason (retries/s)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "p95 of the catch-up wait per reason. Reliable once the dedicated catch-up buckets ship (network_data_unavailable_wait_seconds); expect p95 \u2248 one block time per chain. If it looks pinned high, cross-check erpc_network_dynamic_block_time_milliseconds and the avg (rate(_sum)/rate(_count)) before blaming the EMA \u2014 coarse buckets used to make this misleading.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds",
+                "seriesBy": "last"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "wait per affected request",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "smooth",
+                "lineStyle": {
+                  "fill": "solid"
+                },
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "area"
+                }
+              },
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "semi-dark-green",
+                    "value": 0
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 1
+                  },
+                  {
+                    "color": "orange",
+                    "value": 5
+                  },
+                  {
+                    "color": "red",
+                    "value": 15
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 24
+          },
+          "id": 219,
+          "interval": "1m",
+          "maxDataPoints": 500,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "min",
+                "max",
+                "median"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "histogram_quantile(0.95, sum by (le, network, reason) (rate(erpc_network_data_unavailable_wait_seconds_bucket{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}} avg",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Catch-up Wait \u2014 avg & p95 per affected request (s)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "How many requests are stuck in a catch-up wait AT ONCE, per network/reason. Computed as rate(network_data_unavailable_wait_seconds_sum) = wait-seconds accrued per second; by Little's law that equals the average number of requests simultaneously blocked in a catch-up wait. Example: 4 = about 4 requests are always sitting in a catch-up sleep. This is the concurrent latency load catch-up imposes. Flat/low (<1) = negligible; a sustained climb = more requests stuck waiting (upstream-freshness problem). Note slow chains weigh more \u2014 one 12s mainnet wait counts the same as twelve 1s waits \u2014 so compare a network against its own baseline, not across chains.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "\u2248 concurrent requests waiting (wait-seconds/s)",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 33
+          },
+          "id": 220,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up Wait Pressure (\u2248 concurrent requests waiting)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Share of each network's requests that hit a catch-up wait, by reason. 'How many requests are affected' \u2014 e.g. a chain at 15% means ~1 in 7 requests waits for not-yet-available data.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "% of network requests",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 0,
+            "y": 41
+          },
+          "id": 227,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "100 * (sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / on(network) group_left() sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{reason}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up \u2014 Requests Affected (% of network requests)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Catch-up wait time spread across ALL of a network's requests = the average latency tax catch-up adds per request. The bottom-line negative effect. (Per-AFFECTED-request overhead is in 'Catch-up Wait'.)",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "ms added / request (amortized)",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 8,
+            "y": 41
+          },
+          "id": 228,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "1000 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up \u2014 Amortized Overhead (ms / request)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Catch-up retries split by request finality. unfinalized/realtime = normal tip races. FINALIZED should be ~0: finalized data is permanent, so waiting a block won't make it appear \u2014 catch-up there means genuinely-missing data / an incomplete archive upstream (fail over, don't wait). 'unknown' = finality couldn't be classified; treat like finalized for triage.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "catch-up retries / sec",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 16,
+            "y": 41
+          },
+          "id": 229,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(20, sum by (network, finality) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{finality}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Catch-up by Finality \u2014 retries/s (finalized \u2248 red flag)",
+          "type": "timeseries"
+        },
+        {
           "type": "text",
           "id": 238,
           "title": "",
@@ -14311,7 +14437,7 @@
             "h": 2,
             "w": 24,
             "x": 0,
-            "y": 22
+            "y": 50
           },
           "options": {
             "mode": "markdown",
@@ -14331,7 +14457,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 24
+            "y": 52
           },
           "targets": [
             {
