@@ -4656,8 +4656,8 @@
         },
         {
           "type": "table",
-          "title": "\ud83c\udff7\ufe0f Latest block per upstream/vendor (pick ONE chain)",
-          "description": "One row per upstream+vendor with the latest block each reports for the selected chain (collapsed across replicas). Sort by block desc: top = furthest AHEAD, bottom = laggard. The served tip sits at/just-below the bottom of the largest agreeing cluster \u2014 so a provider far below the pack is an outlier the picker correctly isn't waiting for. \u26a0 Pick ONE chain in $network or block numbers from different chains get mixed.",
+          "title": "\ud83c\udff7\ufe0f Per upstream/vendor \u2014 latest block & exact gap behind (pick ONE chain)",
+          "description": "One row per upstream+vendor for the selected chain: its latest block AND \u2014 the column you want \u2014 how many blocks it sits BEHIND the freshest upstream (erpc_upstream_block_head_lag, exact). Sorted worst-first. 0 = this upstream IS the freshest; a big number = a laggard the served-tip picker correctly isn't waiting for. \u26a0 Pick ONE chain in $network.",
           "id": 245,
           "datasource": {
             "type": "prometheus",
@@ -4681,9 +4681,25 @@
               "instant": true,
               "range": false,
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "max by (network, vendor, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "format": "table",
+              "instant": true,
+              "range": false,
+              "refId": "B"
             }
           ],
           "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
             {
               "id": "organize",
               "options": {
@@ -4695,10 +4711,12 @@
                   "network": 0,
                   "vendor": 1,
                   "upstream": 2,
-                  "Value": 3
+                  "Value #A": 3,
+                  "Value #B": 4
                 },
                 "renameByName": {
-                  "Value": "latest block"
+                  "Value #A": "latest block",
+                  "Value #B": "blocks behind freshest"
                 }
               }
             }
@@ -4711,7 +4729,7 @@
             },
             "sortBy": [
               {
-                "displayName": "latest block",
+                "displayName": "blocks behind freshest",
                 "desc": true
               }
             ]
@@ -4727,12 +4745,65 @@
               {
                 "matcher": {
                   "id": "byName",
+                  "options": "blocks behind freshest"
+                },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-background",
+                      "mode": "gradient"
+                    }
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "continuous-GrYlRd"
+                    }
+                  },
+                  {
+                    "id": "custom.width",
+                    "value": 160
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "yellow",
+                          "value": 5
+                        },
+                        {
+                          "color": "orange",
+                          "value": 20
+                        },
+                        {
+                          "color": "red",
+                          "value": 50
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
                   "options": "latest block"
                 },
                 "properties": [
                   {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
                     "id": "custom.width",
-                    "value": 160
+                    "value": 150
                   }
                 ]
               }
@@ -4744,7 +4815,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Three lines for the selected chain over time: HIGHEST available block (most-ahead upstream), LOWEST available (laggiest), and the SERVED tip (now EXACT \u2014 erpc_network_served_tip_block_number). Healthy = a tight band climbing together, served riding just below highest, never below lowest, never going backwards (monotonic; only a >1024-block reorg rolls it back). Served flat-lining while highest climbs = stuck tip. \u26a0 Pick ONE chain in $network so the y-axis is one scale. NOTE: the 'served tip' line is absent on networks where served-tip isn't enabled for 'latest' (default config) \u2014 that's expected, lean on highest/lowest there.",
+          "description": "Each upstream's blocks-behind-the-freshest over time for the selected chain (readable scale, unlike absolute block numbers where a 40-block gap is invisible at ~470M). A line climbing = that upstream is falling behind; a line at ~0 = it's the freshest. Lets you see the exact inter-upstream gap and whether it's growing. \u26a0 Pick ONE chain in $network.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4831,44 +4902,12 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "exemplar": false,
-              "expr": "max by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "highest available",
-              "range": true,
+              "expr": "max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "legendFormat": "{{upstream}}",
               "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "min by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "lowest available",
-              "range": true,
-              "refId": "B"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "max by (network) (erpc_network_served_tip_block_number{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "served tip (EXACT)",
-              "range": true,
-              "refId": "C"
             }
           ],
-          "title": "\ud83d\udcc8 Served vs highest vs lowest available (pick ONE chain)",
+          "title": "\ud83d\udcc8 Blocks behind freshest \u2014 per upstream over time (pick ONE chain)",
           "type": "timeseries"
         },
         {
