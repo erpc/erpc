@@ -7161,7 +7161,8 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "displayName": "${__field.labels.network} \u00b7 ${__field.labels.upstream}"
             },
             "overrides": []
           },
@@ -13302,7 +13303,8 @@
               },
               "color": {
                 "mode": "thresholds"
-              }
+              },
+              "displayName": "${__field.labels.network}"
             },
             "overrides": []
           },
@@ -13357,7 +13359,8 @@
               "unit": "s",
               "color": {
                 "mode": "continuous-GrYlRd"
-              }
+              },
+              "displayName": "${__field.labels.network}"
             },
             "overrides": []
           },
@@ -13412,7 +13415,8 @@
               "unit": "short",
               "color": {
                 "mode": "continuous-GrYlRd"
-              }
+              },
+              "displayName": "${__field.labels.network} \u00b7 ${__field.labels.upstream}"
             },
             "overrides": []
           },
@@ -13711,7 +13715,8 @@
               "unit": "ms",
               "color": {
                 "mode": "continuous-GrYlRd"
-              }
+              },
+              "displayName": "${__field.labels.network}"
             },
             "overrides": []
           },
