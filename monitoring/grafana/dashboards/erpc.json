@@ -4657,7 +4657,7 @@
         {
           "type": "table",
           "title": "\ud83c\udff7\ufe0f Per upstream/vendor \u2014 latest block & exact gap behind (pick ONE chain)",
-          "description": "One row per upstream+vendor for the selected chain: its latest block AND \u2014 the column you want \u2014 how many blocks it sits BEHIND the freshest upstream (erpc_upstream_block_head_lag, exact). Sorted worst-first. 0 = this upstream IS the freshest; a big number = a laggard the served-tip picker correctly isn't waiting for. \u26a0 Pick ONE chain in $network.",
+          "description": "One row per upstream+vendor for the selected chain: its latest block AND how many blocks it is BEHIND THE FRESHEST upstream (fleet-max latest \u2212 this upstream's latest, so the freshest reads 0 \u2014 the baseline). Sorted worst-first. A big gap = a laggard the served-tip picker correctly isn't waiting for. \u26a0 Pick ONE chain in $network.",
           "id": 245,
           "datasource": {
             "type": "prometheus",
@@ -4688,7 +4688,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "max by (network, vendor, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - on(network) group_right() max by (network, vendor, upstream) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "table",
               "instant": true,
               "range": false,
@@ -4815,7 +4815,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Each upstream's blocks-behind-the-freshest over time for the selected chain (readable scale, unlike absolute block numbers where a 40-block gap is invisible at ~470M). A line climbing = that upstream is falling behind; a line at ~0 = it's the freshest. Lets you see the exact inter-upstream gap and whether it's growing. \u26a0 Pick ONE chain in $network.",
+          "description": "Each upstream's blocks-behind-the-freshest over time (fleet-max latest \u2212 that upstream's latest, so the freshest sits at 0). Readable scale, unlike absolute block numbers. Legend shows current (last) and worst (max) gap per upstream \u2014 NOT a sum. A line climbing = that upstream is drifting behind. \u26a0 Pick ONE chain in $network.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4825,7 +4825,7 @@
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "catch-up retries / sec",
+                "axisLabel": "blocks behind freshest",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "barWidthFactor": 0.6,
@@ -4880,16 +4880,14 @@
             "alertThreshold": true,
             "legend": {
               "calcs": [
-                "sum"
+                "lastNotNull",
+                "max"
               ],
               "displayMode": "table",
               "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
+              "showLegend": true
             },
             "tooltip": {
-              "hideZeros": false,
               "mode": "multi",
               "sort": "desc"
             }
@@ -4902,7 +4900,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - on(network) group_right() max by (network, upstream) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "legendFormat": "{{upstream}}",
               "refId": "A"
             }
