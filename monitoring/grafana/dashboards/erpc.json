@@ -4699,92 +4699,6 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Upstreams excluded from routing, and for how long.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "continuous-GrYlRd"
-              },
-              "displayName": "${__field.labels.network} / ${__field.labels.upstream}",
-              "mappings": [],
-              "min": 0,
-              "noValue": "\u2713 none excluded",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "yellow",
-                    "value": 60
-                  },
-                  {
-                    "color": "red",
-                    "value": 600
-                  }
-                ]
-              },
-              "unit": "s"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "x": 6,
-            "y": 11,
-            "w": 6,
-            "h": 6
-          },
-          "id": 250,
-          "options": {
-            "displayMode": "gradient",
-            "legend": {
-              "calcs": [],
-              "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": false
-            },
-            "maxVizHeight": 300,
-            "minVizHeight": 16,
-            "minVizWidth": 8,
-            "namePlacement": "top",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "sizing": "auto",
-            "valueMode": "color"
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(20, max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0)",
-              "format": "time_series",
-              "instant": true,
-              "legendFormat": "{{network}} / {{upstream}}",
-              "range": false,
-              "refId": "A"
-            }
-          ],
-          "title": "Excluded now",
-          "type": "bargauge"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
           "description": "Share of requests in catch-up wait. >10% = freshness issue.",
           "fieldConfig": {
             "defaults": {
@@ -4816,7 +4730,7 @@
             "overrides": []
           },
           "gridPos": {
-            "x": 12,
+            "x": 6,
             "y": 11,
             "w": 6,
             "h": 6
@@ -5110,114 +5024,6 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Why upstreams get excluded (reasons/sec).",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "exclusions / s",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 30,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "normal"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "x": 0,
-            "y": 25,
-            "w": 12,
-            "h": 8
-          },
-          "id": 251,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "topk(10, sum by (reason) (rate(erpc_selection_exclusion_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}[$__rate_interval])) > 0)",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{reason}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Exclusion reasons",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
           "description": "How long one catch-up wait lasts (~ one block).",
           "fieldConfig": {
             "defaults": {
@@ -5291,9 +5097,9 @@
             "overrides": []
           },
           "gridPos": {
-            "x": 12,
+            "x": 0,
             "y": 25,
-            "w": 12,
+            "w": 24,
             "h": 8
           },
           "id": 219,
@@ -5530,7 +5336,7 @@
               },
               "editorMode": "code",
               "expr": "max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0",
-              "format": "time_series",
+              "format": "table",
               "instant": true,
               "legendFormat": "",
               "range": false,
