@@ -129,6 +129,21 @@ var (
 		Help:      "Block number served/advertised as the tip per network and axis (latest|finalized), after the served-tip cluster picker + monotonic clamp.",
 	}, []string{"project", "network", "axis"})
 
+	// MetricNetworkServedTipLaneBlockNumber is the served tip for a per-LANE
+	// partition — the set of upstreams a `use-upstream` selector matches (e.g.
+	// flashblocks* / !flashblocks* / systx*). `lane` is the human-readable group
+	// name derived by common.LaneName (shared id token, else a first-letters
+	// combo). Lets a dashboard show each isolated node group's own monotonic tip
+	// independently of the network-wide one. Bounded: lanes are capped per
+	// network and keyed by the matched upstream set, so attacker-supplied
+	// selectors can't inflate cardinality. ABSENT for networks/axes with no
+	// targeted (use-upstream) traffic.
+	MetricNetworkServedTipLaneBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_lane_block_number",
+		Help:      "Block number served as the tip for a per-lane use-upstream group, per network, lane, and axis (latest|finalized).",
+	}, []string{"project", "network", "lane", "axis"})
+
 	// MetricNetworkServedTipLagBlocks is the deliberate, bounded served-tip lag:
 	// blocks the served tip sits behind the freshest VELOCITY-ELIGIBLE upstream at
 	// pick time (MaxEligible - served). Using the velocity-gated max (not the raw
