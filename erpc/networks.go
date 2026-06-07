@@ -2,6 +2,8 @@ package erpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -62,20 +64,17 @@ type Network struct {
 	servedFinalizedUpdatedAtMs atomic.Int64
 
 	// servedTipPartitions holds lazily-materialized, cross-pod strict-monotonic
-	// served-tip counters for TAG-scoped requests (use-upstream=<exact tag>), so
-	// each node group (e.g. base flashblocks vs normal) advertises its own
-	// monotonic latest/finalized tip instead of inheriting the network-wide one.
-	// DDoS-safe by construction: a partition is created ONLY when the selector
-	// exactly matches a tag configured on this network's upstreams (a bounded,
-	// operator-controlled universe — see servedTipPartitionFor / configuredTags),
-	// and the count is capped (maxServedTipPartitions). Selectors that don't
-	// match a real tag (id globs, unknown/garbage tags) never create state and
-	// fall back to the stateless subset candidate. Keyed by the exact tag string.
-	servedTipPartitions     sync.Map // map[string]*servedTipPartition
+	// served-tip counters for GROUP-scoped requests (use-upstream selectors that
+	// carve out a real sub-group, e.g. `flashblocks*` / `!flashblocks*` / a
+	// `family:systx` tag), so each node group advertises its own monotonic
+	// latest/finalized tip instead of inheriting the network-wide one. DDoS-safe
+	// by construction: a partition is keyed by the HASH OF THE MATCHED UPSTREAM
+	// SET (see partitionKeyFor), so equivalent selectors dedup, garbage/prefix
+	// selectors can't inflate state beyond the topology's real groupings, and the
+	// count is capped (maxServedTipPartitions). Selectors that don't form a real
+	// sub-group fall back to the stateless subset candidate.
+	servedTipPartitions     sync.Map // map[string]*servedTipPartition (key = "grp:<hash>")
 	servedTipPartitionCount atomic.Int32
-	// configuredTags is the lazily-cached set of exact tag strings present on
-	// this network's upstreams; only these may materialize a partition.
-	configuredTags atomic.Pointer[map[string]struct{}]
 }
 
 // maxServedTipPartitions caps the number of materialized per-tag served-tip
@@ -392,28 +391,20 @@ func requestSelector(ctx context.Context) string {
 }
 
 // servedTipPartitionFor returns the lazily-materialized monotonic served-tip
-// counters for a TAG-scoped request, or nil to signal the stateless fallback.
-//
-// Materialization is gated so attacker-supplied selectors can never grow state:
-//   - the selector must EXACTLY match a tag configured on this network's
-//     upstreams (a bounded, operator-controlled universe; id globs and unknown
-//     tags do not qualify — they fall back to the stateless subset candidate);
-//   - the number of partitions is capped (maxServedTipPartitions) as a backstop;
-//   - the shared-state key is namespaced ("servedLatestBlock/<net>/sel:<tag>").
-//
-// The returned counters are shared across pods (same backing store), so each
-// group's tip is strict-monotonic just like the network-wide one.
+// counters for a GROUP-scoped request, or nil to signal the stateless fallback.
+// The partition key (and its bounded/DDoS-safe gating) is computed by
+// partitionKeyFor; the count is capped by maxServedTipPartitions and the
+// shared-state key is namespaced ("servedLatestBlock/<net>/grp:<hash>"). The
+// returned counters are shared across pods (same backing store), so each group's
+// tip is strict-monotonic just like the network-wide one.
 func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
-	if selector == "" {
+	key := n.partitionKeyFor(ctx, selector)
+	if key == "" {
 		return nil
 	}
 	// Fast path: already materialized.
-	if p, ok := n.servedTipPartitions.Load(selector); ok {
+	if p, ok := n.servedTipPartitions.Load(key); ok {
 		return p.(*servedTipPartition)
-	}
-	// Gate: only an exact match of a real configured tag may materialize state.
-	if !n.isConfiguredTag(ctx, selector) {
-		return nil
 	}
 	if n.upstreamsRegistry == nil {
 		return nil
@@ -422,46 +413,83 @@ func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *s
 	if ssr == nil {
 		return nil
 	}
-	// Cap backstop (also avoids a race racing far past the cap).
+	// Cap backstop (also bounds a race racing past the cap).
 	if n.servedTipPartitionCount.Load() >= maxServedTipPartitions {
 		return nil
 	}
 	p := &servedTipPartition{
-		latestShared:    ssr.GetCounterInt64("servedLatestBlock/"+n.networkId+"/sel:"+selector, evm.DefaultToleratedBlockHeadRollback),
-		finalizedShared: ssr.GetCounterInt64("servedFinalizedBlock/"+n.networkId+"/sel:"+selector, evm.DefaultToleratedBlockHeadRollback),
+		latestShared:    ssr.GetCounterInt64("servedLatestBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
+		finalizedShared: ssr.GetCounterInt64("servedFinalizedBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
 	}
-	actual, loaded := n.servedTipPartitions.LoadOrStore(selector, p)
+	actual, loaded := n.servedTipPartitions.LoadOrStore(key, p)
 	if !loaded {
 		n.servedTipPartitionCount.Add(1)
 	}
 	return actual.(*servedTipPartition)
 }
 
-// isConfiguredTag reports whether `tag` exactly matches a tag present on at
-// least one of this network's upstreams. The set is cached once it is
-// non-empty (it is derived from static config); until then it is computed
-// transiently so an early call before upstreams register doesn't poison the
-// cache with an empty set.
-func (n *Network) isConfiguredTag(ctx context.Context, tag string) bool {
-	if cached := n.configuredTags.Load(); cached != nil {
-		_, ok := (*cached)[tag]
-		return ok
+// partitionKeyFor maps a use-upstream selector to a STABLE served-tip partition
+// key, or "" when the selector must use the stateless path.
+//
+// A per-group monotonic tracker is materialized only for a "simple" selector (a
+// single glob token, optionally negated — e.g. `flashblocks*`, `!flashblocks*`,
+// or an exact tag like `family:systx`) that carves out a real SUB-group of the
+// network's upstreams. The key is a hash of the MATCHED UPSTREAM SET, not the
+// selector text, which makes the whole thing bounded and cross-pod safe:
+//
+//   - `flashblocks*`, `fl*`, `flash*`, and a `family:flashblocks` tag that all
+//     resolve to the same upstreams collapse to ONE partition (dedup);
+//   - prefix-enumeration / garbage selectors cannot inflate state beyond the
+//     (small, topology-bounded) number of real groupings — an attacker can't
+//     manufacture more distinct sets than the upstream layout allows;
+//   - every pod derives the same key from the same config, so the shared
+//     counter is cross-pod consistent.
+//
+// A group must match >=2 upstreams (single-node targeting needs no group
+// counter — the per-upstream poller is already monotonic) and fewer than ALL
+// (matching everything is just the network-wide tip). A per-network cap
+// (maxServedTipPartitions) backstops pathological topologies. Anything else
+// returns "" (stateless cluster-min over the subset).
+func (n *Network) partitionKeyFor(ctx context.Context, selector string) string {
+	if !isSimpleGroupSelector(selector) || n.upstreamsRegistry == nil {
+		return ""
 	}
-	set := make(map[string]struct{})
-	if n.upstreamsRegistry != nil {
-		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-			if cfg := u.Config(); cfg != nil {
-				for _, t := range cfg.Tags {
-					set[t] = struct{}{}
-				}
-			}
+	all := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	if len(all) < 2 {
+		return ""
+	}
+	matched := make([]string, 0, len(all))
+	for _, u := range all {
+		if m, _ := common.UpstreamMatchesSelector(selector, u); m {
+			matched = append(matched, u.Id())
 		}
 	}
-	if len(set) > 0 {
-		n.configuredTags.Store(&set)
+	if len(matched) < 2 || len(matched) >= len(all) {
+		return ""
 	}
-	_, ok := set[tag]
-	return ok
+	slices.Sort(matched)
+	sum := sha256.Sum256([]byte(strings.Join(matched, "\x00")))
+	return "grp:" + hex.EncodeToString(sum[:8])
+}
+
+// isSimpleGroupSelector reports whether a selector is a single glob token
+// (optionally negated) rather than a boolean expression — keeping automatic
+// group materialization to simple patterns like `flashblocks*` / `!flashblocks*`
+// and bounding the cost of resolving the matched set. Boolean combinators,
+// grouping, whitespace, and embedded negation are rejected.
+func isSimpleGroupSelector(selector string) bool {
+	s := strings.TrimSpace(selector)
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	if strings.ContainsAny(s, " \t\r\n()|&,") {
+		return false
+	}
+	// Allow at most one negation, only at the very start (`!prefix*`).
+	if i := strings.IndexByte(s, '!'); i > 0 || strings.Count(s, "!") > 1 {
+		return false
+	}
+	return true
 }
 
 // EvmHighestLatestBlockNumber returns the served latest block for this network.

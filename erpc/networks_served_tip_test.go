@@ -485,37 +485,42 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 			"family:fast: cluster-min within the fast family")
 	})
 
-	// DDoS safety: a materialized (cross-pod monotonic) partition is created
-	// ONLY for a selector that exactly matches a configured tag — never for
-	// attacker-shaped selectors (unknown tags, globs, ids). This bounds the
-	// shared-state key count to the operator's configured tags.
-	t.Run("OnlyConfiguredTagsMaterializeState", func(t *testing.T) {
+	// Group selectors (id PATTERNS or tags) that carve out a real sub-group
+	// (>=2 upstreams and < all) each materialize ONE cross-pod monotonic tracker,
+	// keyed by the matched upstream SET — so `flashblocks*`/`!flashblocks*`-style
+	// patterns create two groups automatically, equivalent selectors dedup, and
+	// garbage selectors can never inflate state (DDoS-safe).
+	t.Run("GroupSelectors_MaterializeDedupAndBound", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		util.SetupMocksForEvmStatePoller()
 		defer util.ResetGock()
-		nw, _ := setupServedTipNetwork(t, ctx, fixtures) // cluster mode
+		nw, _ := setupServedTipNetwork(t, ctx, fixtures) // cluster mode; 2 fast(2000) + 2 slow(1000)
 
-		// Two real tags → exactly two materialized partitions.
-		nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:slow"))
-		nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:fast"))
+		// A pattern and its negation form the two groups — each tracked among
+		// its own upstreams (this is the flashblocks* / !flashblocks* shape).
+		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "fast*")),
+			"fast* -> the fast group's own tip")
+		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "!fast*")),
+			"!fast* -> the complement (slow) group's own tip")
 		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
-			"each configured tag materializes exactly one partition")
+			"a pattern and its negation create exactly two group trackers")
 
-		// Repeat calls reuse the same partitions (no growth).
-		nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:slow"))
-		nw.EvmHighestFinalizedBlockNumber(withSel(ctx, "family:fast"))
-		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
-			"re-targeting an existing tag must not create new state")
-
-		// Attacker-shaped selectors must NEVER create shared state: unknown
-		// tags (match nothing), tag globs, id globs, exact upstream ids, junk.
-		for _, sel := range []string{
-			"family:ghost", "family:gh0st-9999", "family:*", "slow-*", "fast-1", "totally-made-up",
-		} {
+		// Selectors that resolve to the SAME upstream set dedup into the SAME
+		// partition (keyed by matched set, not text): fast*/fast-*/family:fast
+		// all = {fast-1,fast-2}; slow*/!fast*/family:slow all = {slow-1,slow-2}.
+		for _, sel := range []string{"fast-*", "family:fast", "slow*", "family:slow", "!fast*"} {
 			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
 		}
 		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
-			"non-configured-tag selectors must never materialize shared state (DDoS-safe)")
+			"equivalent selectors (same matched set) must dedup, not create new trackers")
+
+		// Non-group selectors NEVER materialize: match-all, single-node,
+		// no-match, or a boolean expression.
+		for _, sel := range []string{"*", "fast-1", "slow-1", "ghost*", "does-not-exist", "(fast*|slow*)"} {
+			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
+		}
+		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+			"match-all / single-node / no-match / boolean selectors must not create state (DDoS-safe)")
 	})
 }
