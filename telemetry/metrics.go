@@ -118,6 +118,45 @@ var (
 		Help:      "Dynamically computed block time per network in milliseconds.",
 	}, []string{"project", "network"})
 
+	// MetricNetworkServedTipBlockNumber is the block number the network actually
+	// advertises/serves as the tip for a block tag (axis=latest|finalized), after
+	// the served-tip cluster picker + monotonic clamp. Previously only an OTel span
+	// attribute (served_tip.candidate); exposed here so the deliberate served-tip lag
+	// is directly observable. Compare to max(upstream_latest_block_number).
+	MetricNetworkServedTipBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_block_number",
+		Help:      "Block number served/advertised as the tip per network and axis (latest|finalized), after the served-tip cluster picker + monotonic clamp.",
+	}, []string{"project", "network", "axis"})
+
+	// MetricNetworkServedTipLagBlocks is the deliberate, bounded served-tip lag:
+	// blocks the served tip sits behind the freshest VELOCITY-ELIGIBLE upstream at
+	// pick time (MaxEligible - served). Using the velocity-gated max (not the raw
+	// MaxObserved) keeps a garbage far-future tip from a wrong-chain/misconfigured
+	// upstream from inflating the gauge — that tip is velocity-dropped and surfaces
+	// instead in network_served_tip_upstream_excluded_total{reason="velocity"}.
+	// Computed at the same instant as the pick, so it is exact (no cross-metric
+	// scrape skew). NOTE: the series is ABSENT (not 0) when served-tip is in default
+	// MAX mode (feature off) for that axis — that path early-returns before the emit.
+	MetricNetworkServedTipLagBlocks = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_lag_blocks",
+		Help:      "Blocks the served tip sits behind the freshest velocity-eligible upstream at pick time (deliberate, outlier-guarded served-tip lag), per network and axis.",
+	}, []string{"project", "network", "axis"})
+
+	// MetricNetworkServedTipUpstreamExcludedTotal counts, per upstream, how often an
+	// upstream was excluded from the served-tip pick and why: reason="velocity" (its
+	// reported tip was too far ahead of the sane bound — typically a wrong-chain or
+	// misbehaving endpoint) or reason="outlier" (it survived the velocity gate but
+	// landed outside the dominant agreeing cluster). The served tip itself is
+	// unaffected; a sustained velocity count is the signal that an upstream is
+	// reporting bad block numbers. ABSENT in default MAX mode (feature off).
+	MetricNetworkServedTipUpstreamExcludedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_upstream_excluded_total",
+		Help:      "Times an upstream was excluded from the served-tip pick, per reason (velocity|outlier).",
+	}, []string{"project", "network", "upstream", "axis", "reason"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",
@@ -699,6 +738,15 @@ var EvmBlockRangeBucketSize int64 = 100000
 // Histogram buckets for eth_getLogs requested block-range sizes
 var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 10000, 30000}
 
+// CatchUpWaitHistogramBuckets are dedicated buckets for the catch-up wait
+// histogram (network_data_unavailable_wait_seconds). Catch-up waits cluster at
+// ~one block time, which varies by chain from sub-second (fast L2s) to ~12s
+// (Ethereum mainnet), with tails when retries stack — a range the global
+// request-latency buckets resolve poorly (e.g. a 10s→30s gap puts mainnet's 12s
+// wait in one coarse bucket, making p95 meaningless). These ~log2 buckets bracket
+// the common block times and extend past 30s so long-wait tails stay visible.
+var CatchUpWaitHistogramBuckets = []float64{0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64}
+
 // Histograms are populated by SetHistogramBuckets so the label filter applies.
 var (
 	MetricUpstreamRequestDuration             *LabeledHistogram
@@ -784,7 +832,9 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Namespace: "erpc",
 		Name:      "network_data_unavailable_wait_seconds",
 		Help:      "Wall-clock catch-up delay before a data-not-yet-available retry, by reason (block_unavailable/empty_result/missing_data).",
-		Buckets:   buckets,
+		// Dedicated buckets (not the global request-latency buckets): catch-up
+		// waits track per-chain block time, which the global buckets resolve poorly.
+		Buckets: CatchUpWaitHistogramBuckets,
 	}, []string{"project", "network", "category", "reason", "finality"})
 
 	MetricConsensusResponsesCollected = NewLabeledHistogram(prometheus.HistogramOpts{

@@ -230,6 +230,42 @@ func TestComputeServedTipCandidate_VelocityGate_AllowsLegitimateBurstCatchup(t *
 	assert.Empty(t, res.VelocityDropped)
 }
 
+func TestComputeServedTipCandidate_MaxEligible_ExcludesVelocityDroppedGarbage(t *testing.T) {
+	// A wrong-chain / misbehaving upstream reports a tip ~10k blocks ahead. It is
+	// velocity-dropped, so MaxEligible (the deliberate-lag reference) reflects the
+	// sane fleet — NOT the garbage. This is what keeps the served_tip_lag gauge from
+	// exploding to hundreds of thousands of blocks when one endpoint goes rogue.
+	cfg := ServedTipConfig{
+		ClusterDelta:         2,
+		BlockTimeSeconds:     2.0,
+		VelocitySlack:        2.0,
+		VelocityBufferBlocks: 5,
+	}
+	res := ComputeServedTipCandidate(
+		tipsFromInts(9999, 101, 101, 100),
+		100,
+		2*time.Second,
+		cfg,
+	)
+	assert.Equal(t, int64(9999), res.MaxObserved, "raw max still records the garbage tip")
+	assert.Equal(t, int64(101), res.MaxEligible, "eligible max excludes the velocity-dropped garbage")
+	assert.Len(t, res.VelocityDropped, 1)
+	// Deliberate lag = MaxEligible - Candidate = 101 - 100 = 1 block (not 9899).
+	assert.Equal(t, int64(1), res.MaxEligible-res.Candidate)
+}
+
+func TestComputeServedTipCandidate_Outliers_ListNonDominantMembers(t *testing.T) {
+	// Two upstreams agree at 100/101 (dominant); one sits far ahead at 200 in its
+	// own cluster → recorded as an outlier (it survived the velocity gate but
+	// disagreed). With no velocity gate, MaxEligible == MaxObserved.
+	res := ComputeServedTipCandidate(tipsFromInts(100, 101, 200), 0, 0, defaultCfg(2))
+	assert.Equal(t, int64(100), res.Candidate)
+	assert.Equal(t, 1, res.OutliersCount)
+	assert.Equal(t, []string{"u2"}, res.Outliers, "the 200 tip (u2) is the outlier")
+	assert.Equal(t, int64(200), res.MaxEligible)
+	assert.Equal(t, int64(200), res.MaxObserved)
+}
+
 func TestComputeServedTipCandidate_VelocityGate_DisabledWithoutBlockTime(t *testing.T) {
 	// With BlockTimeSeconds=0, the velocity gate is disabled (we can't
 	// compute expected max). Cluster picker runs unmodified.

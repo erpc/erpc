@@ -78,6 +78,18 @@ type ServedTipResult struct {
 	// velocity gate (claimed too-far-future given lastServedBlock and the
 	// elapsed time).
 	VelocityDropped []string
+
+	// MaxEligible is the highest block number among inputs that SURVIVED the
+	// velocity gate — the freshest sane tip. Equal to MaxObserved when the
+	// velocity gate is inactive (no prior anchor or unknown block time). Prefer
+	// this over MaxObserved for the deliberate-lag gauge: a garbage far-future
+	// tip (wrong-chain / misconfigured upstream) is velocity-dropped and so
+	// cannot inflate the lag here.
+	MaxEligible int64
+
+	// Outliers lists the UpstreamIDs that survived the velocity gate but landed
+	// OUTSIDE the dominant agreeing cluster (len == OutliersCount).
+	Outliers []string
 }
 
 // ComputeServedTipCandidate clusters the inputs and returns the MIN block
@@ -161,6 +173,10 @@ func ComputeServedTipCandidate(
 	sort.Slice(valid, func(i, j int) bool {
 		return valid[i].BlockNumber < valid[j].BlockNumber
 	})
+	// Freshest velocity-surviving tip — the sane "highest available" reference
+	// for the deliberate-lag gauge (excludes garbage tips the velocity gate
+	// dropped above).
+	res.MaxEligible = valid[len(valid)-1].BlockNumber
 
 	// 4. Greedy clustering: split when the gap exceeds clusterDelta.
 	clusters := [][]ServedTipInput{{valid[0]}}
@@ -192,6 +208,17 @@ func ComputeServedTipCandidate(
 	res.ClusterCount = len(clusters)
 	res.DominantSize = len(dominant)
 	res.OutliersCount = len(valid) - len(dominant)
+	// Attribute each non-dominant cluster member as an outlier for per-upstream
+	// exclusion telemetry (these survived the velocity gate but disagreed with
+	// the dominant cluster).
+	for i, c := range clusters {
+		if i == dominantIdx {
+			continue
+		}
+		for _, t := range c {
+			res.Outliers = append(res.Outliers, t.UpstreamID)
+		}
+	}
 	return res
 }
 

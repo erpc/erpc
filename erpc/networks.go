@@ -468,12 +468,16 @@ func (n *Network) clusteredServedTip(
 			updatedAtMs.Store(time.Now().UnixMilli())
 		}
 	}
+	// served is what clients actually get: the monotonic-clamped shared counter
+	// when present, else the raw candidate (test/misconfiguration).
+	served := res.Candidate
 	if shared != nil {
-		return shared.GetValue()
+		served = shared.GetValue()
 	}
-	// Without a shared registry (test or misconfiguration), fall back to the raw
-	// candidate so the method still produces a sensible value.
-	return res.Candidate
+	// Export the gauges with the post-clamp served value (not the pre-clamp
+	// picker proposal) so the exported lag never over-reports during dips.
+	n.observeServedTipMetrics(axis, served, &res)
+	return served
 }
 
 // EvmHighestFinalizedBlockNumber is the finalized-axis sibling of
@@ -559,15 +563,16 @@ func (n *Network) buildServedTipConfig() evm.ServedTipConfig {
 	return cfg
 }
 
-// observeServedTipResult emits the cluster-picker telemetry on the parent
-// span. Keeps the span attributes consistent between latest/finalized while
-// the dedicated Prometheus gauges land in a follow-up.
+// observeServedTipResult records the cluster-picker's PROPOSAL (pre monotonic
+// clamp) on the parent span, only under detailed tracing. The actually-served
+// Prometheus gauges are emitted separately by observeServedTipMetrics after the
+// clamp, so the exported value matches what clients receive.
 func (n *Network) observeServedTipResult(
 	span trace.Span,
 	axis string,
 	res *evm.ServedTipResult,
 ) {
-	if !common.IsTracingDetailed {
+	if res == nil || !common.IsTracingDetailed {
 		return
 	}
 	span.SetAttributes(
@@ -584,6 +589,44 @@ func (n *Network) observeServedTipResult(
 			attribute.Int64("served_tip.lag_vs_max", res.MaxObserved-res.Candidate),
 		)
 	}
+}
+
+// observeServedTipMetrics exports the served-tip gauges with the value clients
+// ACTUALLY receive (post monotonic clamp), so the lag reflects reality during
+// backward dips/reorgs, plus the per-upstream exclusion counters from the same
+// pick. axis ("latest"|"finalized") is a label rather than part of the metric
+// name — a deliberate divergence from the upstream_*_block_number naming, chosen
+// to keep the served-tip gauge set small. The per-call WithLabelValues lookups are
+// negligible next to the cluster pick + shared-counter update they ride along with.
+func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.ServedTipResult) {
+	if res == nil {
+		return
+	}
+	// Exclusion counters are independent of whether a tip was served: even a
+	// 0-candidate pick (all inputs velocity-dropped) is worth recording.
+	for _, up := range res.VelocityDropped {
+		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
+			WithLabelValues(n.projectId, n.Label(), up, axis, "velocity").Inc()
+	}
+	for _, up := range res.Outliers {
+		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
+			WithLabelValues(n.projectId, n.Label(), up, axis, "outlier").Inc()
+	}
+	if served <= 0 {
+		return
+	}
+	telemetry.MetricNetworkServedTipBlockNumber.
+		WithLabelValues(n.projectId, n.Label(), axis).
+		Set(float64(served))
+	// Lag is measured against the freshest velocity-eligible tip (MaxEligible),
+	// not the raw MaxObserved, so a garbage far-future upstream cannot inflate it.
+	lag := res.MaxEligible - served
+	if lag < 0 {
+		lag = 0
+	}
+	telemetry.MetricNetworkServedTipLagBlocks.
+		WithLabelValues(n.projectId, n.Label(), axis).
+		Set(float64(lag))
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
