@@ -476,7 +476,7 @@ func (n *Network) clusteredServedTip(
 	}
 	// Export the gauges with the post-clamp served value (not the pre-clamp
 	// picker proposal) so the exported lag never over-reports during dips.
-	n.observeServedTipMetrics(axis, served, res.MaxObserved)
+	n.observeServedTipMetrics(axis, served, &res)
 	return served
 }
 
@@ -593,19 +593,34 @@ func (n *Network) observeServedTipResult(
 
 // observeServedTipMetrics exports the served-tip gauges with the value clients
 // ACTUALLY receive (post monotonic clamp), so the lag reflects reality during
-// backward dips/reorgs. axis ("latest"|"finalized") is a label rather than part
-// of the metric name — a deliberate divergence from the upstream_*_block_number
-// naming, chosen to keep the served-tip set to two gauges. The per-call
-// WithLabelValues lookup is negligible next to the cluster pick + shared-counter
-// update it rides along with, so it is not cached.
-func (n *Network) observeServedTipMetrics(axis string, served, maxObserved int64) {
+// backward dips/reorgs, plus the per-upstream exclusion counters from the same
+// pick. axis ("latest"|"finalized") is a label rather than part of the metric
+// name — a deliberate divergence from the upstream_*_block_number naming, chosen
+// to keep the served-tip gauge set small. The per-call WithLabelValues lookups are
+// negligible next to the cluster pick + shared-counter update they ride along with.
+func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.ServedTipResult) {
+	if res == nil {
+		return
+	}
+	// Exclusion counters are independent of whether a tip was served: even a
+	// 0-candidate pick (all inputs velocity-dropped) is worth recording.
+	for _, up := range res.VelocityDropped {
+		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
+			WithLabelValues(n.projectId, n.Label(), up, axis, "velocity").Inc()
+	}
+	for _, up := range res.Outliers {
+		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
+			WithLabelValues(n.projectId, n.Label(), up, axis, "outlier").Inc()
+	}
 	if served <= 0 {
 		return
 	}
 	telemetry.MetricNetworkServedTipBlockNumber.
 		WithLabelValues(n.projectId, n.Label(), axis).
 		Set(float64(served))
-	lag := maxObserved - served
+	// Lag is measured against the freshest velocity-eligible tip (MaxEligible),
+	// not the raw MaxObserved, so a garbage far-future upstream cannot inflate it.
+	lag := res.MaxEligible - served
 	if lag < 0 {
 		lag = 0
 	}

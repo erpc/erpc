@@ -130,16 +130,32 @@ var (
 	}, []string{"project", "network", "axis"})
 
 	// MetricNetworkServedTipLagBlocks is the deliberate, bounded served-tip lag:
-	// blocks the served tip sits behind the highest block observed across eligible
-	// upstreams at pick time (MaxObserved - Candidate). Computed at the same instant
-	// as the pick, so it is exact (no cross-metric scrape skew). NOTE: the series is
-	// ABSENT (not 0) when served-tip is in default MAX mode (feature off) for that
-	// axis — that path early-returns before the emit, so nothing is exported.
+	// blocks the served tip sits behind the freshest VELOCITY-ELIGIBLE upstream at
+	// pick time (MaxEligible - served). Using the velocity-gated max (not the raw
+	// MaxObserved) keeps a garbage far-future tip from a wrong-chain/misconfigured
+	// upstream from inflating the gauge — that tip is velocity-dropped and surfaces
+	// instead in network_served_tip_upstream_excluded_total{reason="velocity"}.
+	// Computed at the same instant as the pick, so it is exact (no cross-metric
+	// scrape skew). NOTE: the series is ABSENT (not 0) when served-tip is in default
+	// MAX mode (feature off) for that axis — that path early-returns before the emit.
 	MetricNetworkServedTipLagBlocks = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_lag_blocks",
-		Help:      "Blocks the served tip is behind the highest block observed across eligible upstreams at pick time (deliberate served-tip lag), per network and axis.",
+		Help:      "Blocks the served tip sits behind the freshest velocity-eligible upstream at pick time (deliberate, outlier-guarded served-tip lag), per network and axis.",
 	}, []string{"project", "network", "axis"})
+
+	// MetricNetworkServedTipUpstreamExcludedTotal counts, per upstream, how often an
+	// upstream was excluded from the served-tip pick and why: reason="velocity" (its
+	// reported tip was too far ahead of the sane bound — typically a wrong-chain or
+	// misbehaving endpoint) or reason="outlier" (it survived the velocity gate but
+	// landed outside the dominant agreeing cluster). The served tip itself is
+	// unaffected; a sustained velocity count is the signal that an upstream is
+	// reporting bad block numbers. ABSENT in default MAX mode (feature off).
+	MetricNetworkServedTipUpstreamExcludedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_upstream_excluded_total",
+		Help:      "Times an upstream was excluded from the served-tip pick, per reason (velocity|outlier).",
+	}, []string{"project", "network", "upstream", "axis", "reason"})
 
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
