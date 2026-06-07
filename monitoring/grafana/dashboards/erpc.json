@@ -5294,6 +5294,114 @@
           ],
           "title": "\ud83d\udeab Excluded upstreams \u2014 which & for how long (routing)",
           "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Per-upstream drops from the served-tip pick (NEW in pr-911-3). reason=velocity = reported a block too far ahead (wrong-chain/buggy \u2014 the cause of a lag spike, e.g. abstract); reason=outlier = disagreed with the dominant cluster. The served tip itself is unaffected \u2014 this just names the culprit.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "tip exclusions / s",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 99
+          },
+          "id": 252,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(15, sum by (network, upstream, reason) (rate(erpc_network_served_tip_upstream_excluded_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}[$__rate_interval])) > 0)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{upstream}} ({{reason}})",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "\ud83d\udef0\ufe0f Served-tip exclusions \u2014 which upstream dropped from the tip & why (excl/s)",
+          "type": "timeseries"
         }
       ],
       "title": "Networks - Served Tip",
