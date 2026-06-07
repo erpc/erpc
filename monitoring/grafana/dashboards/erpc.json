@@ -4784,7 +4784,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Highest latest block per use-upstream group (id prefix).",
+          "description": "Served latest tip per use-upstream group (only when targeted; lane = token shared by all its upstreams).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4888,7 +4888,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (project, network, lane) (label_replace(erpc_upstream_latest_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\"}, \"lane\", \"$1\", \"upstream\", \"^([^-]+)-.*\"))",
+              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"latest\",lane!=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{lane}}",
@@ -4896,7 +4896,7 @@
               "refId": "A"
             }
           ],
-          "title": "Latest block / lane",
+          "title": "Served tip / lane (latest)",
           "type": "timeseries"
         },
         {
@@ -4904,7 +4904,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Highest finalized block per use-upstream group.",
+          "description": "Served finalized tip per use-upstream group (only when targeted).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5008,7 +5008,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (project, network, lane) (label_replace(erpc_upstream_finalized_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\"}, \"lane\", \"$1\", \"upstream\", \"^([^-]+)-.*\"))",
+              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"finalized\",lane!=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{lane}}",
@@ -5016,7 +5016,7 @@
               "refId": "A"
             }
           ],
-          "title": "Finalized / lane",
+          "title": "Served tip / lane (finalized)",
           "type": "timeseries"
         },
         {

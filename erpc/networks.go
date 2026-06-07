@@ -84,17 +84,24 @@ type Network struct {
 const maxServedTipPartitions = 16
 
 // servedTipPartition holds one node group's monotonic served-tip counters
-// (latest + finalized) and their velocity-gate timestamps.
+// (latest + finalized) and their velocity-gate timestamps. `lane` is the
+// human-readable group name (common.LaneName of the matched upstream set), used
+// as the `lane` label on the served-tip metric.
 type servedTipPartition struct {
+	lane                 string
 	latestShared         data.CounterInt64SharedVariable
 	finalizedShared      data.CounterInt64SharedVariable
 	latestUpdatedAtMs    atomic.Int64
 	finalizedUpdatedAtMs atomic.Int64
 }
 
-// servedTipLaneNone is the sentinel passed to clusteredServedTip for any
-// selector-scoped (subset) tip — partition or stateless — so observeServedTipMetrics
-// suppresses emission and a subset value never overwrites the network-wide gauge.
+// servedTipLaneAll is the lane label for the network-wide served tip.
+const servedTipLaneAll = "all"
+
+// servedTipLaneNone is the sentinel passed to clusteredServedTip for a
+// stateless selector-scoped tip (glob/single-node/match-all that did not form a
+// group): observeServedTipMetrics emits nothing for it, so such a subset value
+// never overwrites any gauge.
 const servedTipLaneNone = "\x00scoped"
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -403,7 +410,7 @@ func requestSelector(ctx context.Context) string {
 // returned counters are shared across pods (same backing store), so each group's
 // tip is strict-monotonic just like the network-wide one.
 func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
-	key := n.partitionKeyFor(ctx, selector)
+	key, ids := n.partitionKeyFor(ctx, selector)
 	if key == "" {
 		return nil
 	}
@@ -423,6 +430,7 @@ func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *s
 		return nil
 	}
 	p := &servedTipPartition{
+		lane:            common.LaneName(ids),
 		latestShared:    ssr.GetCounterInt64("servedLatestBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
 		finalizedShared: ssr.GetCounterInt64("servedFinalizedBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
 	}
@@ -455,13 +463,13 @@ func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *s
 // (matching everything is just the network-wide tip). A per-network cap
 // (maxServedTipPartitions) backstops pathological topologies. Anything else
 // returns "" (stateless cluster-min over the subset).
-func (n *Network) partitionKeyFor(ctx context.Context, selector string) string {
+func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string, []string) {
 	if !isSimpleGroupSelector(selector) || n.upstreamsRegistry == nil {
-		return ""
+		return "", nil
 	}
 	all := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 	if len(all) < 2 {
-		return ""
+		return "", nil
 	}
 	matched := make([]string, 0, len(all))
 	for _, u := range all {
@@ -470,11 +478,11 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) string {
 		}
 	}
 	if len(matched) < 2 || len(matched) >= len(all) {
-		return ""
+		return "", nil
 	}
 	slices.Sort(matched)
 	sum := sha256.Sum256([]byte(strings.Join(matched, "\x00")))
-	return "grp:" + hex.EncodeToString(sum[:8])
+	return "grp:" + hex.EncodeToString(sum[:8]), matched
 }
 
 // isSimpleGroupSelector reports whether a selector is a single glob token
@@ -523,7 +531,7 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 		// servedTipPartitionFor); otherwise fall back to a stateless cluster-min
 		// over the subset so arbitrary selectors create no state.
 		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			return n.clusteredServedTip(ctx, span, false, "latest", "*", p.latestShared, &p.latestUpdatedAtMs, servedTipLaneNone)
+			return n.clusteredServedTip(ctx, span, false, "latest", "*", p.latestShared, &p.latestUpdatedAtMs, p.lane)
 		}
 		return n.clusteredServedTip(ctx, span, false, "latest", "*", nil, nil, servedTipLaneNone)
 	}
@@ -681,7 +689,7 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 		// per-group monotonic counter; any other selector falls back to a
 		// stateless cluster-min over the subset.
 		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			return n.clusteredServedTip(ctx, span, true, "finalized", "*", p.finalizedShared, &p.finalizedUpdatedAtMs, servedTipLaneNone)
+			return n.clusteredServedTip(ctx, span, true, "finalized", "*", p.finalizedShared, &p.finalizedUpdatedAtMs, p.lane)
 		}
 		return n.clusteredServedTip(ctx, span, true, "finalized", "*", nil, nil, servedTipLaneNone)
 	}
@@ -795,14 +803,32 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 	if res == nil {
 		return
 	}
-	// Only the network-wide pick (lane == "") is recorded. A selector-scoped
-	// (subset) tip — partition or stateless — must never overwrite the
-	// network-wide gauge with a subset value, so it emits nothing.
+	// A stateless selector-scoped tip (glob / single-node / match-all that did
+	// not form a use-upstream group) emits nothing — it must never overwrite any
+	// gauge with a subset value.
+	if lane == servedTipLaneNone {
+		return
+	}
+
+	// Served-tip block number, labelled by lane: "all" for the network-wide pick
+	// (lane == ""), else the use-upstream group's LaneName. This is the ONLY
+	// per-lane gauge — the deliberate-lag and per-upstream exclusion signals
+	// below belong to the whole-network pick.
+	laneLabel := lane
+	if laneLabel == "" {
+		laneLabel = servedTipLaneAll
+	}
+	if served > 0 {
+		telemetry.MetricNetworkServedTipBlockNumber.
+			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+			Set(float64(served))
+	}
 	if lane != "" {
 		return
 	}
-	// Exclusion counters are independent of whether a tip was served: even a
-	// 0-candidate pick (all inputs velocity-dropped) is worth recording.
+
+	// Network-wide only from here: exclusion counters are independent of whether
+	// a tip was served (even a 0-candidate pick is worth recording).
 	for _, up := range res.VelocityDropped {
 		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
 			WithLabelValues(n.projectId, n.Label(), up, axis, "velocity").Inc()
@@ -814,9 +840,6 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 	if served <= 0 {
 		return
 	}
-	telemetry.MetricNetworkServedTipBlockNumber.
-		WithLabelValues(n.projectId, n.Label(), axis).
-		Set(float64(served))
 	// Lag is measured against the freshest velocity-eligible tip (MaxEligible),
 	// not the raw MaxObserved, so a garbage far-future upstream cannot inflate it.
 	lag := res.MaxEligible - served
