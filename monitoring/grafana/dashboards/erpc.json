@@ -4601,7 +4601,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, (max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) < 100) > 1)",
+              "expr": "topk(12, (max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",lane=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) < 100) > 1)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4683,7 +4683,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, max by (network) (erpc_network_served_tip_lag_blocks{axis=\"finalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0)",
+              "expr": "topk(12, max by (network) (erpc_network_served_tip_lag_blocks{axis=\"finalized\",lane=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4855,7 +4855,7 @@
           "gridPos": {
             "x": 0,
             "y": 17,
-            "w": 12,
+            "w": 8,
             "h": 8
           },
           "id": 25,
@@ -4897,6 +4897,124 @@
             }
           ],
           "title": "Served tip / lane (latest)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Blocks each isolated use-upstream GROUP (lane) deliberately holds its served tip behind that lane's OWN freshest velocity-eligible upstream \u2014 the per-lane safety cushion that keeps a transient single-node spike from being advertised as the tip. Like the lane tip charts, a lane appears only while it receives use-upstream traffic, and its name is the token shared by ALL the group's upstreams. A small steady value is healthy (intentional lag); a lane trending up is falling behind its own fleet and worth investigating.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineStyle": {
+                  "dash": [
+                    0,
+                    10
+                  ],
+                  "fill": "dot"
+                },
+                "lineWidth": 1,
+                "pointSize": 7,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 8,
+            "y": 17,
+            "w": 8,
+            "h": 8
+          },
+          "id": 903,
+          "interval": "1m",
+          "maxDataPoints": 20,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "max by (network, lane) (erpc_network_served_tip_lag_blocks{axis=\"latest\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} / {{lane}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Tip lag / lane (latest)",
           "type": "timeseries"
         },
         {
@@ -4973,9 +5091,9 @@
             "overrides": []
           },
           "gridPos": {
-            "x": 12,
+            "x": 16,
             "y": 17,
-            "w": 12,
+            "w": 8,
             "h": 8
           },
           "id": 63,

@@ -145,8 +145,8 @@ var (
 	MetricNetworkServedTipLagBlocks = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_lag_blocks",
-		Help:      "Blocks the served tip sits behind the freshest velocity-eligible upstream at pick time (deliberate, outlier-guarded served-tip lag), per network and axis.",
-	}, []string{"project", "network", "axis"})
+		Help:      "Blocks the served tip sits behind the freshest velocity-eligible upstream at pick time (deliberate, outlier-guarded served-tip lag), per network, lane and axis. lane=\"all\" is the network-wide pick; a named lane is a use-upstream group's own pick (present only for networks receiving targeted traffic).",
+	}, []string{"project", "network", "lane", "axis"})
 
 	// MetricNetworkServedTipUpstreamExcludedTotal counts, per upstream, how often an
 	// upstream was excluded from the served-tip pick and why: reason="velocity" (its

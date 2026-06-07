@@ -810,10 +810,9 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 		return
 	}
 
-	// Served-tip block number, labelled by lane: "all" for the network-wide pick
-	// (lane == ""), else the use-upstream group's LaneName. This is the ONLY
-	// per-lane gauge — the deliberate-lag and per-upstream exclusion signals
-	// below belong to the whole-network pick.
+	// Block number and deliberate lag are both labelled by lane: "all" for the
+	// network-wide pick (lane == ""), else the use-upstream group's LaneName. The
+	// per-upstream exclusion counters below belong only to the whole-network pick.
 	laneLabel := lane
 	if laneLabel == "" {
 		laneLabel = servedTipLaneAll
@@ -822,13 +821,26 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 		telemetry.MetricNetworkServedTipBlockNumber.
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
 			Set(float64(served))
+		// Deliberate served-tip lag for this pick: how far it sits behind the
+		// freshest velocity-eligible tip in the SAME set (the lane's subset for a
+		// named lane, all eligible upstreams for "all"). Measured against
+		// MaxEligible (not raw MaxObserved) so a garbage far-future upstream cannot
+		// inflate it. lane="all" is the network-wide lag; a named lane is the
+		// group's own deliberate cushion.
+		lag := res.MaxEligible - served
+		if lag < 0 {
+			lag = 0
+		}
+		telemetry.MetricNetworkServedTipLagBlocks.
+			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+			Set(float64(lag))
 	}
 	if lane != "" {
 		return
 	}
 
-	// Network-wide only from here: exclusion counters are independent of whether
-	// a tip was served (even a 0-candidate pick is worth recording).
+	// Network-wide only from here: per-upstream exclusion counters are independent
+	// of whether a tip was served (even a 0-candidate pick is worth recording).
 	for _, up := range res.VelocityDropped {
 		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
 			WithLabelValues(n.projectId, n.Label(), up, axis, "velocity").Inc()
@@ -837,18 +849,6 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
 			WithLabelValues(n.projectId, n.Label(), up, axis, "outlier").Inc()
 	}
-	if served <= 0 {
-		return
-	}
-	// Lag is measured against the freshest velocity-eligible tip (MaxEligible),
-	// not the raw MaxObserved, so a garbage far-future upstream cannot inflate it.
-	lag := res.MaxEligible - served
-	if lag < 0 {
-		lag = 0
-	}
-	telemetry.MetricNetworkServedTipLagBlocks.
-		WithLabelValues(n.projectId, n.Label(), axis).
-		Set(float64(lag))
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
