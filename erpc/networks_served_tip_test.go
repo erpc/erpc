@@ -506,17 +506,6 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
 			"a pattern and its negation create exactly two group trackers")
 
-		// Each partition carries a human-readable lane name derived by
-		// common.LaneName from its matched id set: {fast-1,fast-2} -> "fast",
-		// {slow-1,slow-2} -> "slow". This is the per-lane served-tip metric label.
-		lanes := map[string]bool{}
-		nw.servedTipPartitions.Range(func(_, v any) bool {
-			lanes[v.(*servedTipPartition).lane] = true
-			return true
-		})
-		assert.True(t, lanes["fast"] && lanes["slow"],
-			"lane names should be derived via LaneName (shared id token); got %v", lanes)
-
 		// Selectors that resolve to the SAME upstream set dedup into the SAME
 		// partition (keyed by matched set, not text): fast*/fast-*/family:fast
 		// all = {fast-1,fast-2}; slow*/!fast*/family:slow all = {slow-1,slow-2}.
