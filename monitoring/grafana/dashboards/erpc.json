@@ -4888,7 +4888,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"latest\",lane!=\"all\",lane!=\"\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"latest\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{lane}}",
@@ -5008,7 +5008,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"finalized\",lane!=\"all\",lane!=\"\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"finalized\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{lane}}",
@@ -15283,6 +15283,33 @@
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(erpc_network_served_tip_block_number{lane!=\"all\",lane!=\"\"}, lane)",
+        "includeAll": true,
+        "label": "lane",
+        "multi": true,
+        "name": "lane",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(erpc_network_served_tip_block_number{lane!=\"all\",lane!=\"\"}, lane)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
         "regex": "",
         "type": "query"
       },
