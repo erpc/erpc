@@ -13,13 +13,22 @@ request. Three panels expose it:
 
 | panel | metric | answers |
 |---|---|---|
-| **Catch-up Retries by Reason** | `rate(network_retry_attempt_total)` | how *often* catch-up fires, by reason & network |
+| **Catch-up Retries by Reason** | `rate(network_retry_attempt_total{reason=~"block_unavailable\|empty_result\|missing_data"})` | how *often* catch-up fires, by reason & network |
 | **Catch-up Wait — p95** | `histogram_quantile(0.95, rate(..._wait_seconds_bucket))` | how *long* each wait is — expect ≈ one block time |
 | **Catch-up Wait Pressure** | `rate(..._wait_seconds_sum)` | the *impact*: ≈ how many requests are sitting in a catch-up wait right now |
 
+Two sibling panels keep genuine-error retries out of the catch-up view (they are
+retries but **not** catch-up):
+
+| panel | metric | answers |
+|---|---|---|
+| **Failover Retries by Reason** | `rate(network_retry_attempt_total{reason=~"retryable_error\|pending_tx"})` | how often upstreams *error* (failover), by network |
+| **Upstream Errors by Type** | `topk(15, rate(upstream_request_errors_total))` by `upstream,error` | the *why*: which upstream + error code (e.g. `ErrEndpointUnsupported`, `ErrEndpointCapacityExceeded`) |
+
 Healthy = per-retry wait ≈ the chain's block time, and pressure low/flat.
-**Act** when pressure climbs unbounded, p95 ≫ one block, or catch-up fires on
-`finalized` data.
+**Act** when pressure climbs unbounded, p95 ≫ one block (verify vs. the EMA gauge
+first — see bucket caveat), catch-up fires on `finalized` data, or **Failover
+Retries spike** (then check *Upstream Errors by Type*).
 
 ## What "catch-up" actually is
 
@@ -48,6 +57,17 @@ Both are network-scope and share labels `{project, network, category, reason, fi
   waiting before a data-not-yet-available retry. The **duration** side.
   Recorded **only** for the catch-up reasons below.
 
+> **Counting note — events vs. unique requests.** `_count` (and
+> `network_retry_attempt_total`) count catch-up *retry events*, not distinct
+> requests. One request can retry up to `emptyResultMaxAttempts - 1` times, so
+> "% of requests affected" (events ÷ total requests) is **exact only when
+> `emptyResultMaxAttempts ≤ 2`** (one retry). With higher caps it *overcounts*
+> unique affected requests — e.g. a network with `emptyResultMaxAttempts: 6` can
+> log up to 5 waits for a single stubborn request, inflating the apparent share.
+> Read it as "catch-up retry load per request"; for true unique-request counts
+> we'd need a per-request counter (not yet emitted). Lowering an oversized cap
+> fixes both the overcount *and* the wasted work.
+
 ### Reasons
 
 | reason | meaning | catch-up wait? |
@@ -63,13 +83,27 @@ the **Retries** panel (they're retries) but **not** in Wait/Pressure (their cost
 is backoff, not chain catch-up — mixing them would mislabel failover as
 freshness).
 
-### The `finality` label — read it
+### The `finality` label — read it first (it's the highest-signal split)
+
+Panel: **Catch-up by Finality**. Split every catch-up number by `finality`
+before drawing conclusions:
 
 - catch-up on `unfinalized` / `realtime` data = **normal** (tip reads race the
-  chain).
-- catch-up on **`finalized`** data = **red flag**. Finalized data should always
-  be present; `empty_result`/`missing_data` there means a genuinely missing
-  range or a misconfigured/archive-incomplete upstream — not a timing race.
+  chain — this is what catch-up is *for*).
+- catch-up on **`finalized`** data = **red flag, and the waits are wasted**.
+  Finalized data is permanent — waiting one block will **not** make it appear, so
+  a block-time wait here buys nothing. It means the upstream genuinely lacks the
+  data (incomplete archive / range gap) or the result is legitimately empty and
+  `RetryEmpty` is over-eager. The right response is **fail over immediately**, not
+  wait — so finalized catch-up is pure overhead. Expect it ≈ 0; if it dominates,
+  that's the bottleneck.
+- `unknown` = finality couldn't be classified; triage it like `finalized`.
+
+This interacts with the counting note above: a high `emptyResultMaxAttempts` on a
+network that empties on *finalized* data multiplies wasted waits — every empty is
+retried (with a block-time wait) several times for data that can't appear. Fixing
+such a network is usually **config** (drop `emptyResultMaxAttempts`, check the
+upstream's archive completeness) rather than tuning the wait.
 
 ## How the wait is computed (so you know what "normal" looks like)
 
@@ -109,9 +143,22 @@ same 10 s on Arbitrum would be alarming.
      over-eager.
 2. **Wait p95** — is each wait ≈ one block for that chain (table above)?
    - p95 ≫ one block → the EMA block-time estimate is inflated (a laggy upstream
-     dragging the EMA), or backoff is leaking onto this path.
+     dragging the EMA), or backoff is leaking onto this path. **Before blaming the
+     EMA, verify it directly** with `erpc_network_dynamic_block_time_milliseconds`
+     and look at the **average** wait (`rate(_sum)/rate(_count)`). If the EMA is
+     correct (e.g. mainnet ≈ 12000 ms) and the avg ≈ one block but p95 looks huge,
+     it's a *histogram-bucket artifact*, not inflation — see the caveat below.
    - p95 pinned at exactly 700 ms → EMA never warmed (cold pods / churn);
      everything's on the fixed fallback.
+
+   > **Bucket caveat (learned the hard way).** `network_data_unavailable_wait_seconds`
+   > now uses dedicated buckets `{0.1,0.25,0.5,1,2,4,8,16,32,64}` (see
+   > `CatchUpWaitHistogramBuckets`) tuned for per-chain block times. Earlier it
+   > shared the global request-latency buckets (e.g. `…,1,3,5,10,30`), whose sparse
+   > 10→30 s gap put mainnet's 12 s wait in one coarse bucket — so `histogram_quantile`
+   > read ~30 s/"1 min" while the **avg was a healthy 12 s**. If you ever see a
+   > scary p95 here, confirm against the EMA gauge and the avg before concluding
+   > anything; trust p95 only with the dedicated buckets in place.
 3. **Wait Pressure** — the only panel that measures *impact*. `rate(_sum)` is
    wait-seconds accrued per second ≈ **average number of requests concurrently
    blocked in a catch-up wait** (Little's law: `concurrency = rate × duration`).
