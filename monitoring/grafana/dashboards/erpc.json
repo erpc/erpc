@@ -4283,7 +4283,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Served-tip age / block time. ~1 healthy; >2 = stale or halted.",
+          "description": "How old the head we serve is, in block-times: the latest block's timestamp vs real time, divided by the chain's block time. ~1 is healthy (one block behind real time); only chains >2 are shown, where the value climbing means the chain looks stalled or we're stuck on a stale head. No-Data here = every chain is fresh.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4373,7 +4373,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "p95 latency of chain-tip getBlock reads.",
+          "description": "p95 end-to-end latency (seconds) of chain-tip reads (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts) \u2014 the slowest 1-in-20 tip read. Sub-second is healthy; a high value means a slow upstream is dragging tip reads, so cross-check 'Tip culprits' and 'Upstream heads' for the offender.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4454,7 +4454,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks the main primary trails a fresher upstream.",
+          "description": "Blocks the MAIN primary (the upstream most replicas currently route to) sits behind a fresher upstream we also have. 0 = the primary is the freshest available; only chains >2 are shown, where it's a routing-quality gap \u2014 we could be serving fresher data but aren't.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4535,7 +4535,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks we serve behind our freshest upstream (deliberate).",
+          "description": "Blocks we DELIBERATELY serve behind our own freshest upstream \u2014 the safety cushion that kills 'block not found' retries (we advertise the MIN of the dominant agreeing cluster, not the single most-ahead node). A few blocks is by design; only 1\u2013100 is shown (>100 is hidden, as that's a misbehaving upstream rather than a real cushion).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4617,7 +4617,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Finalized-axis served-tip lag \u2014 should be ~0.",
+          "description": "Served-tip lag on the FINALIZED axis \u2014 should be ~0, since upstreams shouldn't disagree on finalized blocks. Any value here (only >0 is shown) means they DO disagree: a reorg-depth or upstream-config issue worth investigating.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4699,7 +4699,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Share of requests in catch-up wait. >10% = freshness issue.",
+          "description": "Share of a chain's requests that hit a catch-up wait \u2014 the data wasn't available on the chosen upstream yet, so we held and retried. Single-digit % is normal tip-race friction; >10% means an upstream is meaningfully behind and freshness is degrading for users.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4784,7 +4784,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Served latest tip per use-upstream group (only when targeted; lane = token shared by all its upstreams).",
+          "description": "Latest block each isolated use-upstream GROUP (lane) advertises as its tip \u2014 e.g. base 'flashblocks' vs the normal group. A lane appears only for networks receiving use-upstream traffic, and its name is the token shared by ALL the group's upstreams (a single vendor upstream is never a lane). Compare lanes on one chain to see which group leads; a steady gap is expected (flashblocks runs ahead by design).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4904,7 +4904,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Served finalized tip per use-upstream group (only when targeted).",
+          "description": "Finalized block each use-upstream group (lane) advertises. Lanes should AGREE on finalized; a gap between two lanes on the same chain flags a finalized-view divergence between the node groups \u2014 worth a look.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5024,7 +5024,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How long one catch-up wait lasts (~ one block).",
+          "description": "How long ONE catch-up wait lasts at p95 (seconds), split by reason \u2014 roughly one block time when an upstream is briefly behind (~12s on mainnet, sub-second on fast chains). Only the small % of requests that wait pay this; a value far above one block time means an upstream is stuck, not just racing the tip.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5165,7 +5165,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Per upstream: latest block, gap behind freshest, exclusion.",
+          "description": "Per upstream: its latest block, how many blocks it trails its chain's freshest ('blocks behind freshest'; 0 = it IS the freshest), and how long it's currently auto-excluded from routing ('excluded (s)'; blank = in rotation). Sort by 'blocks behind' to find laggards; a non-zero 'excluded (s)' is an upstream we are NOT serving from right now (usually because it fell behind).",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -5379,7 +5379,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Critical getBlock errors by upstream \u2192 likely cause.",
+          "description": "Critical errors on chain-tip methods (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts), by upstream and error type (errors/sec) \u2014 the likely culprit when the tip is halted, slow, or lagging above. Harmless errors (reverts, bad params) are filtered out, so anything here is a real fault on a real upstream.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -5642,7 +5642,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Critical non-getBlock errors by upstream \u2192 likely cause.",
+          "description": "Same critical-error breakdown for NON-tip methods (eth_call, getLogs, receipts, traces, \u2026), by upstream and error (errors/sec). Use it to catch an upstream degrading on general traffic even when the chain tip itself looks healthy.",
           "fieldConfig": {
             "defaults": {
               "custom": {
