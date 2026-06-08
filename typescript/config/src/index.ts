@@ -29,6 +29,8 @@ export type {
   LatencyDeviationOptions,
   ByFinalityHandlers,
   WhereFilter,
+  PolicyEvalArrayCondition,
+  IncludeIfOptions,
   EvmNetworkConfigForDefaults,
 } from "./types";
 export {

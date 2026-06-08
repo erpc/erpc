@@ -33,4 +33,6 @@ export type {
     LatencyDeviationOptions,
     ByFinalityHandlers,
     WhereFilter,
+    PolicyEvalArrayCondition,
+    IncludeIfOptions,
   } from "./policyEval";

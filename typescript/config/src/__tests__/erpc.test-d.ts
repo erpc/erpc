@@ -204,7 +204,36 @@ const _upstreamHelpers: SelectionPolicyEvalFunction = (upstreams) =>
     return u.metrics.errorRate < 0.5;
   }) as unknown as PolicyEvalUpstreamArray;
 
+/* ─────────────── 6b. includeIf + quantifiers type-check ───────────────── */
+
+// Quantifiers lift a per-upstream predicate to a pool-level condition, and
+// includeIf consumes it with a tag/id/vendor/where selector + position.
+const _includeIfConditions: SelectionPolicyEvalFunction = (upstreams) =>
+  upstreams
+    .preferTag("!tier:reserve", { fallback: "tier:reserve" })
+    .includeIf(forAll(blockSecondsLagAbove(30)), { tag: "tier:reserve" })
+    .includeIf(forAny(errorRateAbove(0.5)), { id: "reserve-*" })
+    .includeIf(forNone(latencyAbove(100)), { vendor: "premium" })
+    .includeIf(atLeast(2, blockNumberLagAbove(16)), { tag: "tier:reserve" })
+    .includeIf(fewerThan(2, errorRateBelow(0.1)), { tag: "tier:reserve" })
+    .includeIf(sizeBelow(2), { tag: "tier:reserve", position: "tail" })
+    .includeIf(sizeAtLeast(1), { where: { tag: "tier:reserve" } })
+    .includeIf(true, { tag: "tier:reserve" })
+    .sortByScore(PREFER_FASTEST);
+
+// includeIf condition also accepts an inline array predicate.
+const _includeIfInlineCondition: SelectionPolicyEvalFunction = (upstreams) =>
+  upstreams.includeIf((pool) => pool.length < 2, { tag: "tier:reserve" });
+
 /* ───────────────────────── 7. Negative cases (must error) ─────────────── */
+
+const _includeIfBadCondition: SelectionPolicyEvalFunction = (upstreams) =>
+  // @ts-expect-error — sizeBelow takes a number, not a string
+  upstreams.includeIf(sizeBelow("two"), { tag: "tier:reserve" });
+
+const _includeIfMissingSelector: SelectionPolicyEvalFunction = (upstreams) =>
+  // @ts-expect-error — includeIf requires an opts selector argument
+  upstreams.includeIf(sizeBelow(2));
 
 createConfig({
   projects: [

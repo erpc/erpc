@@ -379,6 +379,37 @@ export type WhereFilter = {
 };
 
 /**
+ * An aggregate condition over the whole surviving pool, returning a single
+ * boolean. Produced by the quantifier factories (`forAll`, `forAny`,
+ * `fewerThan`, `sizeBelow`, ...) and consumed by `includeIf`. Distinct from
+ * `PolicyEvalPredicate`, which is per-upstream.
+ */
+export type PolicyEvalArrayCondition = ((
+  upstreams: PolicyEvalUpstreamArray,
+) => boolean) & {
+  readonly policyReason?: string;
+};
+
+/**
+ * Selector for `includeIf`. At least one facet must be set — the facets AND
+ * together (same semantics as `where`) to pick which upstreams are admitted
+ * from the full universe when the condition holds.
+ */
+export type IncludeIfOptions = {
+  id?: Pattern;
+  tag?: TagPattern;
+  vendor?: Pattern;
+  /** Alternative to the flat facets above; same AND semantics. */
+  where?: WhereFilter;
+  /**
+   * Where admitted upstreams land relative to the survivors. `'tail'`
+   * (default) keeps the survivors as primaries; `'head'` puts the reserve
+   * set in front (rarely what you want — usually let `sortByScore` decide).
+   */
+  position?: "head" | "tail";
+};
+
+/**
  * The chainable upstream array passed into the eval. All methods return
  * a NEW array (immutable-style) so the chain is side-effect-free. Order
  * is meaningful: position 0 is the primary, position N is the Nth
@@ -524,6 +555,32 @@ export interface PolicyEvalUpstreamArray
   forceInclude(
     idOrFn: Pattern | ((u: PolicyEvalUpstream) => unknown),
     position?: "head" | "tail",
+  ): PolicyEvalUpstreamArray;
+  /**
+   * Conditionally admit upstreams from the full universe back into the
+   * chain — the dual of `excludeIf`. When `condition` holds, every upstream
+   * matching `opts` (and not already present) is unioned in; otherwise the
+   * chain is unchanged. It never removes an upstream.
+   *
+   * The function form of `condition` receives the CURRENT chain array (the
+   * pool that survived earlier steps), so it can ask aggregate questions
+   * about what is left — pair it with the quantifier factories
+   * (`forAll`, `fewerThan`, `sizeBelow`, ...):
+   *
+   *   .preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+   *   .includeIf(forAll(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
+   *   .includeIf(sizeBelow(2),                     { tag: 'tier:reserve' })
+   *
+   * Use it for a break-glass reserve tier: kept out of normal rotation, but
+   * admitted alongside the survivors when the serving pool is collectively
+   * unfit (too few left, all lagging, all slow). At least one selector facet
+   * is required; with none it is a no-op (it never admits the whole
+   * universe). Added upstreams default to the tail so the survivors keep
+   * priority; a later `sortByScore` reorders if a reserve upstream is better.
+   */
+  includeIf(
+    condition: boolean | PolicyEvalArrayCondition,
+    opts: IncludeIfOptions,
   ): PolicyEvalUpstreamArray;
 
   // ─── 4.11 Combinators ─────────────────────────────────────────────────
@@ -698,6 +755,35 @@ declare global {
   function any(...preds: PolicyEvalPredicate[]): PolicyEvalPredicate;
   /** Negate a predicate. */
   function not(pred: PolicyEvalPredicate): PolicyEvalPredicate;
+
+  // Quantifiers — lift a per-upstream predicate to a pool-level condition
+  // for `includeIf`. Where `all` / `any` / `not` compose per-upstream
+  // predicates into another per-upstream predicate, these collapse a
+  // predicate over the WHOLE array into one boolean.
+  /**
+   * True iff the array is non-empty AND every upstream satisfies `pred`.
+   * Deliberately false on an empty array — "all of nothing are bad" should
+   * not trigger a break-glass inclusion; use `sizeBelow` for the empty case.
+   */
+  function forAll(pred: PolicyEvalPredicate): PolicyEvalArrayCondition;
+  /** True iff at least one upstream satisfies `pred`. */
+  function forAny(pred: PolicyEvalPredicate): PolicyEvalArrayCondition;
+  /** True iff no upstream satisfies `pred`. */
+  function forNone(pred: PolicyEvalPredicate): PolicyEvalArrayCondition;
+  /** True iff at least `n` upstreams satisfy `pred`. */
+  function atLeast(
+    n: number,
+    pred: PolicyEvalPredicate,
+  ): PolicyEvalArrayCondition;
+  /** True iff fewer than `n` upstreams satisfy `pred`. */
+  function fewerThan(
+    n: number,
+    pred: PolicyEvalPredicate,
+  ): PolicyEvalArrayCondition;
+  /** True iff the array has fewer than `n` upstreams. */
+  function sizeBelow(n: number): PolicyEvalArrayCondition;
+  /** True iff the array has at least `n` upstreams. */
+  function sizeAtLeast(n: number): PolicyEvalArrayCondition;
 
   // Module-level helpers ──────────────────────────────────────────────
   /** True iff `ctx.method` matches the glob/pattern. */
