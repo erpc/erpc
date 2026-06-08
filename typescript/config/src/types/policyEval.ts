@@ -390,17 +390,16 @@ export type PolicyEvalArrayCondition = (
 ) => boolean;
 
 /**
- * Selector for `includeIf`. At least one facet must resolve to a concrete
- * value — the facets AND together (same semantics as `where`) to pick which
- * upstreams are admitted from the full universe when the condition holds.
+ * The selector-object form of `includeIf`'s target. At least one facet must
+ * resolve to a concrete value — the facets AND together (same semantics as
+ * `where`) to pick which upstreams are admitted from the full universe when
+ * the condition holds.
  */
-export type IncludeIfOptions = {
+export type IncludeIfTarget = {
   id?: Pattern;
   tag?: TagPattern;
   vendor?: Pattern;
   type?: Pattern;
-  /** Alternative to the flat facets above; same AND semantics. */
-  where?: WhereFilter;
   /**
    * Where admitted upstreams land relative to the survivors. `'tail'`
    * (default) keeps the survivors as primaries; `'head'` puts the reserve
@@ -559,17 +558,19 @@ export interface PolicyEvalUpstreamArray
   /**
    * Conditionally admit upstreams from the full universe back into the
    * chain — the dual of `excludeIf`. When `condition` holds, every upstream
-   * matching `opts` (and not already present) is unioned in; otherwise the
+   * matching `target` (and not already present) is unioned in; otherwise the
    * chain is unchanged. It never removes an upstream.
    *
-   * The function form of `condition` receives the CURRENT chain array (the
-   * pool that survived earlier steps), so it can ask aggregate questions
-   * about what is left using native array methods over the per-upstream
-   * predicate factories:
+   * `target` comes first so the policy reads "include <these> if
+   * <condition>". It is a tag pattern for the common case, or a selector
+   * object (`{ id, tag, vendor, type, position }`) for the rest. The function
+   * form of `condition` receives the CURRENT chain array (the pool that
+   * survived earlier steps), so it can ask aggregate questions about what is
+   * left using native array methods over the per-upstream predicate factories:
    *
    *   .excludeTag('tier:reserve')
-   *   .includeIf((p) => p.every(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
-   *   .includeIf((p) => p.length < 2,                      { tag: 'tier:reserve' })
+   *   .includeIf('tier:reserve', (p) => p.every(blockSecondsLagAbove(30)))
+   *   .includeIf('tier:reserve', (p) => p.length < 2)
    *
    * Use it for a break-glass reserve tier: kept out of normal rotation, but
    * admitted alongside the survivors when the serving pool is collectively
@@ -580,8 +581,8 @@ export interface PolicyEvalUpstreamArray
    * upstream is better.
    */
   includeIf(
+    target: TagPattern | IncludeIfTarget,
     condition: boolean | PolicyEvalArrayCondition,
-    opts: IncludeIfOptions,
   ): PolicyEvalUpstreamArray;
 
   // ─── 4.11 Combinators ─────────────────────────────────────────────────

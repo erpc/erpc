@@ -1034,6 +1034,21 @@
   // is never evicted; the reserve set is offered alongside it and ranked
   // by the subsequent `sortByScore`.
   //
+  //   target: WHAT to admit — placed first so the policy reads
+  //     "include <these> if <condition>" and is never ambiguous. Either:
+  //       * a tag pattern (string / array, `!negation` accepted) — the
+  //         common case: `includeIf('tier:reserve', cond)`; or
+  //       * a selector object `{ id, tag, vendor, type, position }` whose
+  //         facets AND together (same semantics as `where`). At least one
+  //         facet must resolve to a concrete value — otherwise includeIf is
+  //         a no-op (it never pulls the whole universe by accident, e.g. for
+  //         `{}` or `{ position: 'head' }`).
+  //     `position` ('head' | 'tail', default 'tail') only applies to the
+  //     object form; admitted upstreams go to the tail by default so the
+  //     surviving pool keeps priority — let `sortByScore` reorder if a
+  //     reserve upstream is genuinely better. Already-present upstreams (by
+  //     id) are not duplicated.
+  //
   //   condition: boolean OR (upstreams, ctx) => boolean. The function form
   //     receives the CURRENT chain array — the pool that survived earlier
   //     steps — so it can ask aggregate ("network-level") questions about
@@ -1042,27 +1057,34 @@
   //
   //       // admit when EVERY survivor is lagging (empty pool also admits —
   //       // native `every` is true on []):
-  //       .includeIf(p => p.every(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
+  //       .includeIf('tier:reserve', p => p.every(blockSecondsLagAbove(30)))
   //       // ...or when too few survive:
-  //       .includeIf(p => p.length < 2, { tag: 'tier:reserve' })
-  //
-  //   opts.{ id, tag, vendor, type, where }: select which upstreams to pull
-  //     from `__policyAllUpstreams` when the condition holds. Facets AND
-  //     together (same semantics as `where`). At least one facet must resolve
-  //     to a concrete value — otherwise includeIf is a no-op (it never pulls
-  //     the whole universe by accident, including for `where: {}` or a `where`
-  //     carrying only unsupported keys). Already-present upstreams (by id) are
-  //     not duplicated.
-  //   opts.position: 'head' | 'tail' (default 'tail'). Added upstreams go to
-  //     the tail by default so the surviving pool keeps priority and the
-  //     reserve set is consulted only after — let `sortByScore` reorder if a
-  //     reserve upstream is genuinely better.
+  //       .includeIf('tier:reserve', p => p.length < 2)
   //
   // Defensive: any malformed argument degrades to a no-op (returns the
   // chain unchanged) rather than throwing — a throw mid-eval would drop the
   // whole network back to the engine's default policy.
-  define('includeIf', function (condition, opts) {
-    // 1. Evaluate the gate. Function form gets (upstreams, ctx); a thrown
+  define('includeIf', function (target, condition) {
+    // 1. Resolve the target into selector facets + position. A string/array
+    //    is the tag shorthand; an object carries explicit facets. Gating on
+    //    the RESOLVED facets (not on "an object was passed") is what keeps
+    //    `{}` / `{ position: 'head' }` a no-op instead of a match-all that
+    //    admits the entire universe.
+    let idPat, tagPat, vendorPat, typePat, position;
+    if (typeof target === 'string' || Array.isArray(target)) {
+      tagPat = target;
+    } else if (target != null && typeof target === 'object') {
+      idPat = target.id;
+      tagPat = target.tag;
+      vendorPat = target.vendor;
+      typePat = target.type;
+      position = target.position;
+    }
+    if (idPat == null && tagPat == null && vendorPat == null && typePat == null) {
+      return this.slice();
+    }
+
+    // 2. Evaluate the gate. Function form gets (upstreams, ctx); a thrown
     //    predicate is swallowed (treated as "do not include") so one bad
     //    custom condition can't sink the eval.
     let pass;
@@ -1077,20 +1099,7 @@
     }
     if (!pass) return this.slice();
 
-    // 2. Resolve the selector facets (flat opts win over the `where` block),
-    //    then require at least one to be concrete. Gating on the RESOLVED
-    //    facets — not on `opts.where != null` — is what makes `where: {}` or
-    //    a `where` carrying only unsupported keys a no-op instead of a
-    //    match-all that admits the entire universe.
-    opts = opts || {};
-    const where = opts.where || {};
-    const idPat     = opts.id     != null ? opts.id     : where.id;
-    const tagPat    = opts.tag    != null ? opts.tag    : where.tag;
-    const vendorPat = opts.vendor != null ? opts.vendor : where.vendor;
-    const typePat   = opts.type   != null ? opts.type   : where.type;
-    if (idPat == null && tagPat == null && vendorPat == null && typePat == null) {
-      return this.slice();
-    }
+    // 3. Union in matching upstreams from the universe, deduped by id.
     const matchFn = function (u) {
       if (idPat     != null && !matchAny(idPat, u.id)) return false;
       if (tagPat    != null && !hasMatchingTag(u, tagPat)) return false;
@@ -1098,13 +1107,11 @@
       if (typePat   != null && !matchAny(typePat, u.type)) return false;
       return true;
     };
-
-    // 3. Union in matching upstreams from the universe, deduped by id.
     const all = globalThis.__policyAllUpstreams || [];
     const haves = new Set(this.map(u => u.id));
     const adds = all.filter(u => !haves.has(u.id) && matchFn(u));
     if (adds.length === 0) return this.slice();
-    return (opts.position === 'head') ? adds.concat(this) : this.concat(adds);
+    return (position === 'head') ? adds.concat(this) : this.concat(adds);
   });
 
   // ─── 4.11 Combinators ───────────────────────────────────────────────────

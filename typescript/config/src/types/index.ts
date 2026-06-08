@@ -34,5 +34,5 @@ export type {
     ByFinalityHandlers,
     WhereFilter,
     PolicyEvalArrayCondition,
-    IncludeIfOptions,
+    IncludeIfTarget,
   } from "./policyEval";

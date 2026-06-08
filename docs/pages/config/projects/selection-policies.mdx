@@ -441,9 +441,9 @@ Use `evalScope: 'network-method-finality'` to get one slot per `(method, finalit
     .removeCordoned()
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
     .excludeTag('tier:reserve')
-    .includeIf((p) => p.length > 0 && p.every(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
-    .includeIf((p) => p.length > 0 && p.every(latencyAbove(2000, 99)),   { tag: 'tier:reserve' })
-    .includeIf((p) => p.length < 1,                                      { tag: 'tier:reserve' })
+    .includeIf('tier:reserve', (p) => p.length > 0 && p.every(blockSecondsLagAbove(30)))
+    .includeIf('tier:reserve', (p) => p.length > 0 && p.every(latencyAbove(2000, 99)))
+    .includeIf('tier:reserve', (p) => p.length < 1)
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
 ```
@@ -930,15 +930,16 @@ Always include matching upstreams, even if prior filters dropped them.
 
 ```ts
 .includeIf(
-  condition: boolean | ((upstreams) => boolean),
-  opts: {
-    id?: string | string[],               // selector facets — AND together,
-    tag?: string | string[],              // at least one must resolve
-    vendor?: string | string[],
-    type?: string | string[],
-    where?: { id?, tag?, vendor?, type? }, // alternative to the flat facets
-    position?: 'head' | 'tail' = 'tail',
-  },
+  target:                                  // WHAT to admit — comes first
+    | string | string[]                    //   tag pattern (common case)
+    | {                                     //   or a selector object:
+        id?: string | string[],            //     facets AND together,
+        tag?: string | string[],           //     at least one must resolve
+        vendor?: string | string[],
+        type?: string | string[],
+        position?: 'head' | 'tail' = 'tail',
+      },
+  condition: boolean | ((upstreams) => boolean),   // WHEN to admit
 )
 ```
 
@@ -947,17 +948,18 @@ offender, `includeIf` **admits** a selected set of upstreams from the
 full universe when an aggregate condition over the surviving pool
 holds. It never removes an upstream.
 
-The function form of `condition` receives the **current** chain array
-— the pool that survived earlier steps — so it can ask aggregate
-("network-level") questions about what's left. The array is a normal
-JS array, so use native `every` / `some` / `length` / `filter` over the
-[predicate factories](#predicate-factories):
+`target` comes first so the policy reads "include _these_ if
+_condition_". The function form of `condition` receives the **current**
+chain array — the pool that survived earlier steps — so it can ask
+aggregate ("network-level") questions about what's left. The array is a
+normal JS array, so use native `every` / `some` / `length` / `filter`
+over the [predicate factories](#predicate-factories):
 
 ```js
 upstreams
-  .excludeTag('tier:reserve')                                             // reserve out of normal rotation
-  .includeIf((p) => p.every(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })  // admit if every survivor lags
-  .includeIf((p) => p.length < 2,                      { tag: 'tier:reserve' })  // ...or if too few remain
+  .excludeTag('tier:reserve')                                              // reserve out of normal rotation
+  .includeIf('tier:reserve', (p) => p.every(blockSecondsLagAbove(30)))     // admit if every survivor lags
+  .includeIf('tier:reserve', (p) => p.length < 2)                          // ...or if too few remain
   .sortByScore(PREFER_FASTEST)
 ```
 
@@ -974,10 +976,11 @@ decides the order.
 > if an empty pool should **not** trigger inclusion.
 
 At least one selector facet must resolve to a concrete value; otherwise
-it is a no-op (it never admits the whole universe — including for
-`where: {}`). Added upstreams default to the tail so the survivors keep
-priority. Already-present upstreams aren't duplicated. A malformed or
-throwing `condition` degrades to a no-op rather than failing the eval.
+it is a no-op (it never admits the whole universe — including for an
+empty or facet-less object target). Added upstreams default to the tail
+so the survivors keep priority. Already-present upstreams aren't
+duplicated. A malformed or throwing `condition` degrades to a no-op
+rather than failing the eval.
 
 </details>
 

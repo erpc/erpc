@@ -30,7 +30,7 @@ export type {
   ByFinalityHandlers,
   WhereFilter,
   PolicyEvalArrayCondition,
-  IncludeIfOptions,
+  IncludeIfTarget,
   EvmNetworkConfigForDefaults,
 } from "./types";
 export {
