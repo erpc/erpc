@@ -3024,11 +3024,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Comparison of block timestamp distance between EVM State Poller and Network Responses to identify cache staleness and synchronization issues",
+          "description": "Same block-age measure as \"Block Timestamp Distance - Network Response\", but sampled by the background EVM state poller rather than on a client response -- compare the two to catch the served path lagging the poller (cache staleness). POSITIVE = tip is that many seconds old. NEGATIVE is normal: block timestamps are whole seconds, so a fresh tip on a fast chain reads slightly ahead of the pods' clocks (integer-second rounding); the sub-second value is a fleet average of a {0,-1} signal, not real precision. Magnitude is chain-dependent -- see \"Tip age\" for the normalized view. Flag only the extremes: large positive = stale; large negative beyond a block-time (purple) = clock skew or an upstream reporting future timestamps.",
           "fieldConfig": {
             "defaults": {
               "color": {
-                "mode": "palette-classic"
+                "mode": "thresholds",
+                "seriesBy": "last"
               },
               "custom": {
                 "axisBorderShow": false,
@@ -3074,19 +3075,26 @@
                   "mode": "off"
                 }
               },
-              "decimals": 0,
               "mappings": [],
               "min": 0,
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
-                    "value": 0
+                    "color": "purple",
+                    "value": null
                   },
                   {
-                    "color": "red",
-                    "value": 80
+                    "color": "green",
+                    "value": -5
+                  },
+                  {
+                    "color": "orange",
+                    "value": 60
+                  },
+                  {
+                    "color": "dark-red",
+                    "value": 300
                   }
                 ]
               },
@@ -3149,7 +3157,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Comparison of block timestamp distance between EVM State Poller and Network Responses to identify cache staleness and synchronization issues",
+          "description": "Block age of the tip served to clients = wall-clock now minus the latest block's timestamp, fleet-averaged across pods. POSITIVE = the served tip is that many seconds old. NEGATIVE is normal and healthy: block timestamps are whole seconds, so a fresh tip on a fast chain often already carries the next second and reads as slightly \"in the future\" vs the pods' clocks -- a value within ~one block-time below zero just means the tip is bang up to date. The sub-second figure (e.g. -0.9s) is the average of a whole-second {0,-1} signal across pods, not real sub-second precision. Normal magnitude is chain-dependent (a 12s-block chain sits naturally around +6s) -- see \"Tip age\" for the block-time-normalized staleness view. Investigate only the extremes: large positive = a genuinely stale tip; large negative beyond a block-time (purple) = pod clock drift (NTP) or an upstream advertising future timestamps.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3197,7 +3205,7 @@
                   "mode": "none"
                 },
                 "thresholdsStyle": {
-                  "mode": "area"
+                  "mode": "off"
                 }
               },
               "mappings": [],
@@ -3206,23 +3214,15 @@
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "semi-dark-green",
-                    "value": 0
+                    "color": "purple",
+                    "value": null
                   },
                   {
-                    "color": "#EAB839",
-                    "value": 2
+                    "color": "green",
+                    "value": -5
                   },
                   {
-                    "color": "semi-dark-orange",
-                    "value": 10
-                  },
-                  {
-                    "color": "light-red",
-                    "value": 30
-                  },
-                  {
-                    "color": "semi-dark-purple",
+                    "color": "orange",
                     "value": 60
                   },
                   {
