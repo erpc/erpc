@@ -448,12 +448,11 @@ Use `evalScope: 'network-method-finality'` to get one slot per `(method, finalit
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
 ```
 
-This differs from a `preferTag` fallback: `preferTag` only reaches the
-fallback tier when the primary tier is **empty**, whereas `includeIf`
-brings the reserve in while primaries are still serving but
-**collectively degraded** (lagging / slow), letting `sortByScore` pick
-between them. Pair with `routing.probe: 'off'` on the reserve upstreams
-if you also want to keep shadow-probe traffic off them while they're out.
+The reserve is brought in while primaries are still serving but
+**collectively degraded** (lagging / slow) — not only when they're
+entirely gone — letting `sortByScore` pick between them. Pair with
+`routing.probe: 'off'` on the reserve upstreams if you also want to keep
+shadow-probe traffic off them while they're out.
 
 ### Per-method override
 

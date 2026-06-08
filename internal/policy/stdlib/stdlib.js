@@ -1027,12 +1027,12 @@
   // removes anyone.
   //
   // The intended use is a "break-glass" tier: keep a set of upstreams out
-  // of normal rotation (e.g. via `preferTag('!tier:<x>', { fallback })`)
-  // and bring them in ONLY when the upstreams that are currently serving
-  // become collectively unfit — too few left, all of them lagging, all of
-  // them slow. Because it adds rather than excludes, a single degraded
-  // primary is never evicted; the reserve set is offered alongside it and
-  // ranked by the subsequent `sortByScore`.
+  // of normal rotation (e.g. via `excludeTag('tier:<x>')`) and bring them
+  // in ONLY when the upstreams that are currently serving become
+  // collectively unfit — too few left, all of them lagging, all of them
+  // slow. Because it adds rather than excludes, a single degraded primary
+  // is never evicted; the reserve set is offered alongside it and ranked
+  // by the subsequent `sortByScore`.
   //
   //   condition: boolean OR (upstreams, ctx) => boolean. The function form
   //     receives the CURRENT chain array — the pool that survived earlier

@@ -58,7 +58,7 @@ func setLag(tracker *health.Tracker, u common.Upstream, lag int64) {
 // per-upstream predicate factory.
 func TestIncludeIf_AdmitsReserveWhenConditionHolds(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.length > 0 && p.every(blockNumberLagAbove(16)), { tag: 'tier:reserve' })`
 	engine, ups, tracker, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -79,7 +79,7 @@ func TestIncludeIf_AdmitsReserveWhenConditionHolds(t *testing.T) {
 // untouched — crucially, a degraded primary is never evicted by includeIf.
 func TestIncludeIf_KeepsReserveOutWhenConditionFails(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.length > 0 && p.every(blockNumberLagAbove(16)), { tag: 'tier:reserve' })`
 	engine, ups, tracker, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -100,7 +100,7 @@ func TestIncludeIf_KeepsReserveOutWhenConditionFails(t *testing.T) {
 // upstreams come in.
 func TestIncludeIf_BooleanTrueAlwaysAdmits(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(true, { tag: 'tier:reserve' })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -115,7 +115,7 @@ func TestIncludeIf_BooleanTrueAlwaysAdmits(t *testing.T) {
 // A literal `false` condition is a no-op.
 func TestIncludeIf_BooleanFalseIsNoOp(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(false, { tag: 'tier:reserve' })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -130,7 +130,7 @@ func TestIncludeIf_BooleanFalseIsNoOp(t *testing.T) {
 // position:'head' puts the admitted reserve in front of the survivors.
 func TestIncludeIf_PositionHead(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(true, { tag: 'tier:reserve', position: 'head' })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -144,7 +144,7 @@ func TestIncludeIf_PositionHead(t *testing.T) {
 
 // An upstream already present is not duplicated.
 func TestIncludeIf_DeduplicatesAlreadyPresent(t *testing.T) {
-	// No preferTag → reserve1 is already in the pool. includeIf must not
+	// No excludeTag → reserve1 is already in the pool. includeIf must not
 	// add a second copy.
 	eval := `(upstreams) => upstreams.includeIf(true, { tag: 'tier:reserve' })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
@@ -161,7 +161,7 @@ func TestIncludeIf_DeduplicatesAlreadyPresent(t *testing.T) {
 // entire universe.
 func TestIncludeIf_NoSelectorIsNoOp(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(true, {})`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -179,7 +179,7 @@ func TestIncludeIf_NoSelectorIsNoOp(t *testing.T) {
 // universe" class.
 func TestIncludeIf_EmptyWhereIsNoOp(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(true, { where: {} })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -194,7 +194,7 @@ func TestIncludeIf_EmptyWhereIsNoOp(t *testing.T) {
 // id and vendor selectors resolve against the universe.
 func TestIncludeIf_SelectorsByIdAndVendor(t *testing.T) {
 	byId := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(true, { id: 'reserve1' })`
 	engine, _, _, cancel := mkReserveEngine(t, byId)
 	defer cancel()
@@ -204,7 +204,7 @@ func TestIncludeIf_SelectorsByIdAndVendor(t *testing.T) {
 		ids(engine.GetOrdered("evm:1", "*", "*")), "id selector admits reserve1")
 
 	byVendor := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(true, { vendor: 'premium' })`
 	engine2, _, _, cancel2 := mkReserveEngine(t, byVendor)
 	defer cancel2()
@@ -220,7 +220,7 @@ func TestIncludeIf_SelectorsByIdAndVendor(t *testing.T) {
 // and wrongly admit the reserve).
 func TestIncludeIf_TypeSelectorIsApplied(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf(true, { type: 'evm' })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -235,7 +235,7 @@ func TestIncludeIf_TypeSelectorIsApplied(t *testing.T) {
 // where{} facet form is equivalent to the flat facets.
 func TestIncludeIf_WhereSelectorForm(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.length < 3, { where: { tag: 'tier:reserve' } })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -251,7 +251,7 @@ func TestIncludeIf_WhereSelectorForm(t *testing.T) {
 // network back to the engine default) — it degrades to "do not include".
 func TestIncludeIf_ThrowingConditionDegradesToNoOp(t *testing.T) {
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => { throw new Error('boom'); }, { tag: 'tier:reserve' })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -263,13 +263,13 @@ func TestIncludeIf_ThrowingConditionDegradesToNoOp(t *testing.T) {
 		"a throwing condition is swallowed → no admission, eval still produces the survivors")
 }
 
-// The function condition receives the CURRENT (post-preferTag) pool, not the
+// The function condition receives the CURRENT (post-exclude) pool, not the
 // original full universe — proving aggregate questions see only survivors.
 func TestIncludeIf_ConditionSeesSurvivingPool(t *testing.T) {
-	// After preferTag, only the 2 primaries remain. `pool.length === 2`
+	// After excludeTag, only the 2 primaries remain. `pool.length === 2`
 	// proves the condition sees the survivors, not the full 3-upstream set.
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.length === 2, { tag: 'tier:reserve' })`
 	engine, _, _, cancel := mkReserveEngine(t, eval)
 	defer cancel()
@@ -294,7 +294,7 @@ func TestIncludeIf_EveryVsSome(t *testing.T) {
 	}
 
 	everyEval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.length > 0 && p.every(blockNumberLagAbove(16)), { tag: 'tier:reserve' })`
 	engine, ups, tracker, cancel := mkReserveEngine(t, everyEval)
 	defer cancel()
@@ -306,7 +306,7 @@ func TestIncludeIf_EveryVsSome(t *testing.T) {
 		"every: not every survivor lags → no admission")
 
 	someEval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.some(blockNumberLagAbove(16)), { tag: 'tier:reserve' })`
 	engine2, ups2, tracker2, cancel2 := mkReserveEngine(t, someEval)
 	defer cancel2()
@@ -352,7 +352,7 @@ func TestIncludeIf_EmptyPoolEveryNativeSemantics(t *testing.T) {
 func TestIncludeIf_SizeGates(t *testing.T) {
 	// length < 3: 2 survivors → admit.
 	below := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.length < 3, { tag: 'tier:reserve' })`
 	e1, _, _, c1 := mkReserveEngine(t, below)
 	defer c1()
@@ -363,7 +363,7 @@ func TestIncludeIf_SizeGates(t *testing.T) {
 
 	// length >= 3: only 2 survivors → false → no admit.
 	atLeast := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.length >= 3, { tag: 'tier:reserve' })`
 	e2, _, _, c2 := mkReserveEngine(t, atLeast)
 	defer c2()
@@ -377,7 +377,7 @@ func TestIncludeIf_SizeGates(t *testing.T) {
 func TestIncludeIf_FilterCount(t *testing.T) {
 	// Both primaries lag → 2 match. Admit when at least 2 lag.
 	eval := `(upstreams) => upstreams
-		.preferTag('!tier:reserve', { fallback: 'tier:reserve' })
+		.excludeTag('tier:reserve')
 		.includeIf((p) => p.filter(blockNumberLagAbove(16)).length >= 2, { tag: 'tier:reserve' })`
 	engine, ups, tracker, cancel := mkReserveEngine(t, eval)
 	defer cancel()
