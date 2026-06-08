@@ -1438,9 +1438,11 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 
 		upstream := r.upstreamList[idx]
 
-		// If a UseUpstream directive is provided, only consider matching upstreams
+		// If a UseUpstream selector is provided, only consider matching
+		// upstreams. The selector matches the upstream id OR any of its tags
+		// (e.g. `use-upstream=family:systx`); see MatchesSelector.
 		if useUpstreamPattern != "" {
-			match, err := WildcardMatch(useUpstreamPattern, upstream.Id())
+			match, err := UpstreamMatchesSelector(useUpstreamPattern, upstream)
 			if err != nil || !match {
 				continue
 			}

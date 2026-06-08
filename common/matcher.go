@@ -46,6 +46,71 @@ func WildcardMatch(pattern, value string) (bool, error) {
 	return matcher(value), nil
 }
 
+// MatchesSelector reports whether a selector pattern matches an entity that is
+// identified by a primary `id` and carries a set of `tags` (labels). It is the
+// single shared primitive for "match by id or tag" — every such check (the
+// `use-upstream` directive, served-tip scoping, etc.) should go through it so
+// the semantics stay identical everywhere. It is intentionally NOT coupled to
+// upstreams or to any particular tag prefix; `family`, `region`, … are just tag
+// values an operator may pick.
+//
+// It builds on WildcardMatch (glob + boolean grammar) and is a strict,
+// backward-compatible superset of plain id matching:
+//
+//   - The pattern is ALWAYS evaluated against `id` first, exactly as a plain
+//     WildcardMatch on the id would be — so existing id globs/expressions are
+//     unchanged.
+//   - For purely-positive patterns (no `!` negation operator) it is ALSO
+//     evaluated against each tag, so a selector like `family:systx` (or any
+//     tag, including bare-string tags) matches by tag as well as by id.
+//   - Patterns that contain a negation operator are matched against `id` ONLY.
+//     OR-ing tag matches into a negated expression would invert its meaning (a
+//     non-matching tag would "rescue" an entity the operator meant to exclude),
+//     so tag-level negation is intentionally not honored here — express that in
+//     policy instead.
+//
+// An empty pattern matches nothing; callers already guard `!= ""`.
+func MatchesSelector(pattern, id string, tags []string) (bool, error) {
+	if pattern == "" {
+		return false, nil
+	}
+	// Honor id matching first — preserves the exact pre-tag behavior.
+	idMatch, err := WildcardMatch(pattern, id)
+	if err != nil {
+		return false, err
+	}
+	if idMatch {
+		return true, nil
+	}
+	// Tag matching is additive and only for purely-positive patterns so a
+	// negated id expression keeps its original semantics.
+	if len(tags) == 0 || strings.ContainsRune(pattern, '!') {
+		return false, nil
+	}
+	for _, t := range tags {
+		tagMatch, err := WildcardMatch(pattern, t)
+		if err != nil {
+			return false, err
+		}
+		if tagMatch {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// UpstreamMatchesSelector applies MatchesSelector to a common.Upstream, reading
+// its id and tags (nil-Config safe). This is the canonical way to test a
+// selector (e.g. the `use-upstream` directive) against an upstream — every such
+// site should call this so behavior is uniform.
+func UpstreamMatchesSelector(pattern string, u Upstream) (bool, error) {
+	var tags []string
+	if cfg := u.Config(); cfg != nil {
+		tags = cfg.Tags
+	}
+	return MatchesSelector(pattern, u.Id(), tags)
+}
+
 // ValidatePattern checks if a pattern string is syntactically valid.
 // It returns an error if the pattern is invalid, nil otherwise.
 func ValidatePattern(pattern string) error {

@@ -123,11 +123,15 @@ var (
 	// the served-tip cluster picker + monotonic clamp. Previously only an OTel span
 	// attribute (served_tip.candidate); exposed here so the deliberate served-tip lag
 	// is directly observable. Compare to max(upstream_latest_block_number).
+	// lane="all" is the network-wide served tip; a named lane is a use-upstream
+	// group's own served tip (LaneName of the matched upstream set) and is only
+	// present for networks receiving targeted (use-upstream) traffic — so a
+	// network with no use-upstream groups has only lane="all".
 	MetricNetworkServedTipBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_block_number",
-		Help:      "Block number served/advertised as the tip per network and axis (latest|finalized), after the served-tip cluster picker + monotonic clamp.",
-	}, []string{"project", "network", "axis"})
+		Help:      "Block number served/advertised as the tip, after the served-tip cluster picker + monotonic clamp. lane=\"all\" = network-wide; a named lane = a use-upstream group's own tip.",
+	}, []string{"project", "network", "lane", "axis"})
 
 	// MetricNetworkServedTipLagBlocks is the deliberate, bounded served-tip lag:
 	// blocks the served tip sits behind the freshest VELOCITY-ELIGIBLE upstream at
@@ -141,8 +145,8 @@ var (
 	MetricNetworkServedTipLagBlocks = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_lag_blocks",
-		Help:      "Blocks the served tip sits behind the freshest velocity-eligible upstream at pick time (deliberate, outlier-guarded served-tip lag), per network and axis.",
-	}, []string{"project", "network", "axis"})
+		Help:      "Blocks the served tip sits behind the freshest velocity-eligible upstream at pick time (deliberate, outlier-guarded served-tip lag), per network, lane and axis. lane=\"all\" is the network-wide pick; a named lane is a use-upstream group's own pick (present only for networks receiving targeted traffic).",
+	}, []string{"project", "network", "lane", "axis"})
 
 	// MetricNetworkServedTipUpstreamExcludedTotal counts, per upstream, how often an
 	// upstream was excluded from the served-tip pick and why: reason="velocity" (its

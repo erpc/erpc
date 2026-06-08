@@ -2,6 +2,8 @@ package erpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -60,7 +62,47 @@ type Network struct {
 	servedFinalizedBlockShared data.CounterInt64SharedVariable
 	servedLatestUpdatedAtMs    atomic.Int64
 	servedFinalizedUpdatedAtMs atomic.Int64
+
+	// servedTipPartitions holds lazily-materialized, cross-pod strict-monotonic
+	// served-tip counters for GROUP-scoped requests (use-upstream selectors that
+	// carve out a real sub-group, e.g. `flashblocks*` / `!flashblocks*` / a
+	// `family:systx` tag), so each node group advertises its own monotonic
+	// latest/finalized tip instead of inheriting the network-wide one. DDoS-safe
+	// by construction: a partition is keyed by the HASH OF THE MATCHED UPSTREAM
+	// SET (see partitionKeyFor), so equivalent selectors dedup, garbage/prefix
+	// selectors can't inflate state beyond the topology's real groupings, and the
+	// count is capped (maxServedTipPartitions). Selectors that don't form a real
+	// sub-group fall back to the stateless subset candidate.
+	servedTipPartitions     sync.Map // map[string]*servedTipPartition (key = "grp:<hash>")
+	servedTipPartitionCount atomic.Int32
 }
+
+// maxServedTipPartitions caps the number of materialized per-tag served-tip
+// partitions per network (a backstop on top of the "must be a configured tag"
+// gate). Realistic configs have 1–3 groups; beyond the cap, extra tags fall
+// back to the stateless subset candidate.
+const maxServedTipPartitions = 16
+
+// servedTipPartition holds one node group's monotonic served-tip counters
+// (latest + finalized) and their velocity-gate timestamps. `lane` is the
+// human-readable group name (common.LaneName of the matched upstream set), used
+// as the `lane` label on the served-tip metric.
+type servedTipPartition struct {
+	lane                 string
+	latestShared         data.CounterInt64SharedVariable
+	finalizedShared      data.CounterInt64SharedVariable
+	latestUpdatedAtMs    atomic.Int64
+	finalizedUpdatedAtMs atomic.Int64
+}
+
+// servedTipLaneAll is the lane label for the network-wide served tip.
+const servedTipLaneAll = "all"
+
+// servedTipLaneNone is the sentinel passed to clusteredServedTip for a
+// stateless selector-scoped tip (glob/single-node/match-all that did not form a
+// group): observeServedTipMetrics emits nothing for it, so such a subset value
+// never overwrites any gauge.
+const servedTipLaneNone = "\x00scoped"
 
 // Bootstrap registers this network with the policy engine. The engine kicks
 // off the slot's ticker and runs an initial synchronous eval so request-path
@@ -309,23 +351,158 @@ func (n *Network) gatherEvmTipInputsForMethod(
 // routing share one notion of "which upstreams count". Falls back to the full
 // registered set when the policy is absent or has not yet produced a decision.
 func (n *Network) tipCandidateUpstreams(ctx context.Context, method string) []common.Upstream {
+	var ups []common.Upstream
 	if n.policyEngine != nil {
 		if eligible := n.policyEngine.GetOrdered(n.networkId, method, "*"); len(eligible) > 0 {
-			return eligible
+			ups = eligible
 		}
 	}
-	if n.upstreamsRegistry == nil {
-		// Defensive: a partially-initialized network (e.g. cache-only paths or tests
-		// that don't wire a registry) has none — report no candidates so the head
-		// accessors fail open (return 0) instead of dereferencing a nil registry.
+	if ups == nil {
+		if n.upstreamsRegistry == nil {
+			// Defensive: a partially-initialized network (e.g. cache-only paths or tests
+			// that don't wire a registry) has none — report no candidates so the head
+			// accessors fail open (return 0) instead of dereferencing a nil registry.
+			return nil
+		}
+		raw := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+		ups = make([]common.Upstream, 0, len(raw))
+		for _, u := range raw {
+			ups = append(ups, u)
+		}
+	}
+
+	// Selector-scoped served tip: when the request targets a subset of
+	// upstreams (the use-upstream id/tag selector), the network's
+	// `latest`/`finalized` must be decided AMONG that subset — otherwise a
+	// more-ahead group (e.g. base flashblocks vs normal) would define the tip
+	// for a request pinned to the other group, causing "block not found"
+	// churn. This is stateless (no shared counter / no materialized state),
+	// so an arbitrary selector value can never grow per-pod memory. No-op when
+	// there is no request or no selector in ctx (background/admin callers).
+	if sel := requestSelector(ctx); sel != "" {
+		filtered := make([]common.Upstream, 0, len(ups))
+		for _, u := range ups {
+			if m, _ := common.UpstreamMatchesSelector(sel, u); m {
+				filtered = append(filtered, u)
+			}
+		}
+		return filtered
+	}
+	return ups
+}
+
+// requestSelector returns the use-upstream selector for the request bound to
+// ctx (set at the top of Forward), or "" when there is no request/selector.
+func requestSelector(ctx context.Context) string {
+	if req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req != nil {
+		if d := req.Directives(); d != nil {
+			return d.UseUpstream
+		}
+	}
+	return ""
+}
+
+// servedTipPartitionFor returns the lazily-materialized monotonic served-tip
+// counters for a GROUP-scoped request, or nil to signal the stateless fallback.
+// The partition key (and its bounded/DDoS-safe gating) is computed by
+// partitionKeyFor; the count is capped by maxServedTipPartitions and the
+// shared-state key is namespaced ("servedLatestBlock/<net>/grp:<hash>"). The
+// returned counters are shared across pods (same backing store), so each group's
+// tip is strict-monotonic just like the network-wide one.
+func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
+	key, ids := n.partitionKeyFor(ctx, selector)
+	if key == "" {
 		return nil
 	}
-	raw := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	out := make([]common.Upstream, 0, len(raw))
-	for _, u := range raw {
-		out = append(out, u)
+	// Fast path: already materialized.
+	if p, ok := n.servedTipPartitions.Load(key); ok {
+		return p.(*servedTipPartition)
 	}
-	return out
+	if n.upstreamsRegistry == nil {
+		return nil
+	}
+	ssr := n.upstreamsRegistry.SharedStateRegistry()
+	if ssr == nil {
+		return nil
+	}
+	// Cap backstop (also bounds a race racing past the cap).
+	if n.servedTipPartitionCount.Load() >= maxServedTipPartitions {
+		return nil
+	}
+	p := &servedTipPartition{
+		lane:            common.LaneName(ids),
+		latestShared:    ssr.GetCounterInt64("servedLatestBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
+		finalizedShared: ssr.GetCounterInt64("servedFinalizedBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
+	}
+	actual, loaded := n.servedTipPartitions.LoadOrStore(key, p)
+	if !loaded {
+		n.servedTipPartitionCount.Add(1)
+	}
+	return actual.(*servedTipPartition)
+}
+
+// partitionKeyFor maps a use-upstream selector to a STABLE served-tip partition
+// key, or "" when the selector must use the stateless path.
+//
+// A per-group monotonic tracker is materialized only for a "simple" selector (a
+// single glob token, optionally negated — e.g. `flashblocks*`, `!flashblocks*`,
+// or an exact tag like `family:systx`) that carves out a real SUB-group of the
+// network's upstreams. The key is a hash of the MATCHED UPSTREAM SET, not the
+// selector text, which makes the whole thing bounded and cross-pod safe:
+//
+//   - `flashblocks*`, `fl*`, `flash*`, and a `family:flashblocks` tag that all
+//     resolve to the same upstreams collapse to ONE partition (dedup);
+//   - prefix-enumeration / garbage selectors cannot inflate state beyond the
+//     (small, topology-bounded) number of real groupings — an attacker can't
+//     manufacture more distinct sets than the upstream layout allows;
+//   - every pod derives the same key from the same config, so the shared
+//     counter is cross-pod consistent.
+//
+// A group must match >=2 upstreams (single-node targeting needs no group
+// counter — the per-upstream poller is already monotonic) and fewer than ALL
+// (matching everything is just the network-wide tip). A per-network cap
+// (maxServedTipPartitions) backstops pathological topologies. Anything else
+// returns "" (stateless cluster-min over the subset).
+func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string, []string) {
+	if !isSimpleGroupSelector(selector) || n.upstreamsRegistry == nil {
+		return "", nil
+	}
+	all := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	if len(all) < 2 {
+		return "", nil
+	}
+	matched := make([]string, 0, len(all))
+	for _, u := range all {
+		if m, _ := common.UpstreamMatchesSelector(selector, u); m {
+			matched = append(matched, u.Id())
+		}
+	}
+	if len(matched) < 2 || len(matched) >= len(all) {
+		return "", nil
+	}
+	slices.Sort(matched)
+	sum := sha256.Sum256([]byte(strings.Join(matched, "\x00")))
+	return "grp:" + hex.EncodeToString(sum[:8]), matched
+}
+
+// isSimpleGroupSelector reports whether a selector is a single glob token
+// (optionally negated) rather than a boolean expression — keeping automatic
+// group materialization to simple patterns like `flashblocks*` / `!flashblocks*`
+// and bounding the cost of resolving the matched set. Boolean combinators,
+// grouping, whitespace, and embedded negation are rejected.
+func isSimpleGroupSelector(selector string) bool {
+	s := strings.TrimSpace(selector)
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	if strings.ContainsAny(s, " \t\r\n()|&,") {
+		return false
+	}
+	// Allow at most one negation, only at the very start (`!prefix*`).
+	if i := strings.IndexByte(s, '!'); i > 0 || strings.Count(s, "!") > 1 {
+		return false
+	}
+	return true
 }
 
 // EvmHighestLatestBlockNumber returns the served latest block for this network.
@@ -342,10 +519,24 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	defer span.End()
 
 	if !n.servedTipEnabledFor("latest") {
+		// Max mode: evmHighestBlockMax → tipCandidateUpstreams already scopes
+		// to the request's selector (if any), so the MAX is within-subset.
 		return n.evmHighestBlockMax(ctx, false)
 	}
+	if sel := requestSelector(ctx); sel != "" {
+		// Cluster mode + targeted request: the network-wide shared counter is
+		// the WRONG tip for a subset (it would leak one group's tip across
+		// groups). For a selector that names a real configured tag, use a
+		// per-group monotonic counter (cross-pod, bounded — see
+		// servedTipPartitionFor); otherwise fall back to a stateless cluster-min
+		// over the subset so arbitrary selectors create no state.
+		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
+			return n.clusteredServedTip(ctx, span, false, "latest", "*", p.latestShared, &p.latestUpdatedAtMs, p.lane)
+		}
+		return n.clusteredServedTip(ctx, span, false, "latest", "*", nil, nil, servedTipLaneNone)
+	}
 	return n.clusteredServedTip(ctx, span, false, "latest", "*",
-		n.servedLatestBlockShared, &n.servedLatestUpdatedAtMs)
+		n.servedLatestBlockShared, &n.servedLatestUpdatedAtMs, "")
 }
 
 // servedTipEnabledFor reports whether the cluster-min served tip is enabled for
@@ -431,6 +622,7 @@ func (n *Network) clusteredServedTip(
 	method string,
 	shared data.CounterInt64SharedVariable,
 	updatedAtMs *atomic.Int64,
+	lane string,
 ) int64 {
 	tips := n.gatherEvmTipInputsForMethod(ctx, useFinalized, method)
 	cfg := n.buildServedTipConfig()
@@ -476,7 +668,7 @@ func (n *Network) clusteredServedTip(
 	}
 	// Export the gauges with the post-clamp served value (not the pre-clamp
 	// picker proposal) so the exported lag never over-reports during dips.
-	n.observeServedTipMetrics(axis, served, &res)
+	n.observeServedTipMetrics(axis, served, &res, lane)
 	return served
 }
 
@@ -492,8 +684,17 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	if !n.servedTipEnabledFor("finalized") {
 		return n.evmHighestBlockMax(ctx, true)
 	}
+	if sel := requestSelector(ctx); sel != "" {
+		// See EvmHighestLatestBlockNumber: a configured-tag selector gets a
+		// per-group monotonic counter; any other selector falls back to a
+		// stateless cluster-min over the subset.
+		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
+			return n.clusteredServedTip(ctx, span, true, "finalized", "*", p.finalizedShared, &p.finalizedUpdatedAtMs, p.lane)
+		}
+		return n.clusteredServedTip(ctx, span, true, "finalized", "*", nil, nil, servedTipLaneNone)
+	}
 	return n.clusteredServedTip(ctx, span, true, "finalized", "*",
-		n.servedFinalizedBlockShared, &n.servedFinalizedUpdatedAtMs)
+		n.servedFinalizedBlockShared, &n.servedFinalizedUpdatedAtMs, "")
 }
 
 // guaranteedMethodFloor returns the lowest cluster-min served tip across the
@@ -598,12 +799,48 @@ func (n *Network) observeServedTipResult(
 // name — a deliberate divergence from the upstream_*_block_number naming, chosen
 // to keep the served-tip gauge set small. The per-call WithLabelValues lookups are
 // negligible next to the cluster pick + shared-counter update they ride along with.
-func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.ServedTipResult) {
+func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.ServedTipResult, lane string) {
 	if res == nil {
 		return
 	}
-	// Exclusion counters are independent of whether a tip was served: even a
-	// 0-candidate pick (all inputs velocity-dropped) is worth recording.
+	// A stateless selector-scoped tip (glob / single-node / match-all that did
+	// not form a use-upstream group) emits nothing — it must never overwrite any
+	// gauge with a subset value.
+	if lane == servedTipLaneNone {
+		return
+	}
+
+	// Block number and deliberate lag are both labelled by lane: "all" for the
+	// network-wide pick (lane == ""), else the use-upstream group's LaneName. The
+	// per-upstream exclusion counters below belong only to the whole-network pick.
+	laneLabel := lane
+	if laneLabel == "" {
+		laneLabel = servedTipLaneAll
+	}
+	if served > 0 {
+		telemetry.MetricNetworkServedTipBlockNumber.
+			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+			Set(float64(served))
+		// Deliberate served-tip lag for this pick: how far it sits behind the
+		// freshest velocity-eligible tip in the SAME set (the lane's subset for a
+		// named lane, all eligible upstreams for "all"). Measured against
+		// MaxEligible (not raw MaxObserved) so a garbage far-future upstream cannot
+		// inflate it. lane="all" is the network-wide lag; a named lane is the
+		// group's own deliberate cushion.
+		lag := res.MaxEligible - served
+		if lag < 0 {
+			lag = 0
+		}
+		telemetry.MetricNetworkServedTipLagBlocks.
+			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+			Set(float64(lag))
+	}
+	if lane != "" {
+		return
+	}
+
+	// Network-wide only from here: per-upstream exclusion counters are independent
+	// of whether a tip was served (even a 0-candidate pick is worth recording).
 	for _, up := range res.VelocityDropped {
 		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
 			WithLabelValues(n.projectId, n.Label(), up, axis, "velocity").Inc()
@@ -612,21 +849,6 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
 			WithLabelValues(n.projectId, n.Label(), up, axis, "outlier").Inc()
 	}
-	if served <= 0 {
-		return
-	}
-	telemetry.MetricNetworkServedTipBlockNumber.
-		WithLabelValues(n.projectId, n.Label(), axis).
-		Set(float64(served))
-	// Lag is measured against the freshest velocity-eligible tip (MaxEligible),
-	// not the raw MaxObserved, so a garbage far-future upstream cannot inflate it.
-	lag := res.MaxEligible - served
-	if lag < 0 {
-		lag = 0
-	}
-	telemetry.MetricNetworkServedTipLagBlocks.
-		WithLabelValues(n.projectId, n.Label(), axis).
-		Set(float64(lag))
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
@@ -725,6 +947,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			attribute.String("request.finality", req.Finality(ctx).String()),
 		),
 	)
+
+	// Bind the request to ctx so downstream served-tip resolution can decide
+	// `latest`/`finalized` AMONG the use-upstream-selected subset (see
+	// tipCandidateUpstreams / requestSelector). The failsafe executor re-sets
+	// the same value below for its own readers; setting it here makes it
+	// available to the earlier pre-forward / short-circuit paths too.
+	ctx = context.WithValue(ctx, common.RequestContextKey, req)
+
 	if common.IsTracingDetailed {
 		forwardSpan.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
@@ -1893,7 +2123,7 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 		targeted := 0
 		if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
 			for _, u := range upsList {
-				if match, _ := common.WildcardMatch(dr.UseUpstream, u.Id()); match {
+				if match, _ := common.UpstreamMatchesSelector(dr.UseUpstream, u); match {
 					targeted++
 				}
 			}

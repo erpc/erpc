@@ -36,6 +36,7 @@ type servedTipFixture struct {
 	latestBlock   int64
 	syncing       bool
 	ignoreMethods []string
+	tags          []string
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -74,6 +75,7 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 			Id:            f.id,
 			Endpoint:      endpoint,
 			IgnoreMethods: f.ignoreMethods,
+			Tags:          f.tags,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: cid,
 			},
@@ -421,4 +423,115 @@ func TestServedTip_GuaranteedMethodClampsTip(t *testing.T) {
 	})
 	assert.Equal(t, int64(90), nwB.EvmHighestLatestBlockNumber(ctx),
 		"trace_block supported only by u3 (90) clamps served down to 90")
+}
+
+// TestServedTip_SelectorScoped pins the use-upstream selector affecting the
+// served `latest`/`finalized` decision: when a request targets a subset of
+// upstreams (by tag here), the tip is computed AMONG that subset so a
+// more-ahead group (e.g. base flashblocks) never defines `latest` for a
+// request pinned to the other group. Selector scoping is stateless — it must
+// not advance/read the network-wide monotonic counter.
+func TestServedTip_SelectorScoped(t *testing.T) {
+	withSel := func(ctx context.Context, sel string) context.Context {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		req.SetDirectives(&common.RequestDirectives{UseUpstream: sel})
+		return context.WithValue(ctx, common.RequestContextKey, req)
+	}
+
+	fixtures := []servedTipFixture{
+		{id: "fast-1", chainID: 123, latestBlock: 2000, tags: []string{"family:fast"}},
+		{id: "fast-2", chainID: 123, latestBlock: 2000, tags: []string{"family:fast"}},
+		{id: "slow-1", chainID: 123, latestBlock: 1000, tags: []string{"family:slow"}},
+		{id: "slow-2", chainID: 123, latestBlock: 1000, tags: []string{"family:slow"}},
+	}
+
+	t.Run("MaxMode_Default", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		util.SetupMocksForEvmStatePoller()
+		defer util.ResetGock()
+		// Empty ServedTip config => default MAX mode.
+		nw, _ := setupServedTipNetworkWith(t, ctx, fixtures, &common.EvmServedTipConfig{})
+
+		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(ctx),
+			"no selector: network-wide MAX across both families")
+		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:slow")),
+			"family:slow: MAX within the slow family only, NOT the fast family's 2000")
+		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:fast")),
+			"family:fast: MAX within the fast family")
+		// An id-based selector must work too (use-upstream was always id-aware).
+		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "slow-*")),
+			"id glob selector also scopes the tip")
+	})
+
+	t.Run("ClusterMode", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		util.SetupMocksForEvmStatePoller()
+		defer util.ResetGock()
+		// Cluster-min served tip enabled for latest+finalized.
+		nw, _ := setupServedTipNetwork(t, ctx, fixtures)
+
+		// No selector: dominant agreement cluster. 2 fast(2000) vs 2 slow(1000)
+		// is a size tie, broken toward the higher min => 2000. This call also
+		// advances the network-wide monotonic counter to 2000.
+		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(ctx),
+			"no selector: dominant cluster min")
+		// family:slow: cluster-min over the slow subset, computed statelessly so
+		// the network counter (now 2000) does NOT clamp it up.
+		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:slow")),
+			"family:slow: cluster-min within the slow family, ignoring the 2000 network tip")
+		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:fast")),
+			"family:fast: cluster-min within the fast family")
+	})
+
+	// Group selectors (id PATTERNS or tags) that carve out a real sub-group
+	// (>=2 upstreams and < all) each materialize ONE cross-pod monotonic tracker,
+	// keyed by the matched upstream SET — so `flashblocks*`/`!flashblocks*`-style
+	// patterns create two groups automatically, equivalent selectors dedup, and
+	// garbage selectors can never inflate state (DDoS-safe).
+	t.Run("GroupSelectors_MaterializeDedupAndBound", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		util.SetupMocksForEvmStatePoller()
+		defer util.ResetGock()
+		nw, _ := setupServedTipNetwork(t, ctx, fixtures) // cluster mode; 2 fast(2000) + 2 slow(1000)
+
+		// A pattern and its negation form the two groups — each tracked among
+		// its own upstreams (this is the flashblocks* / !flashblocks* shape).
+		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "fast*")),
+			"fast* -> the fast group's own tip")
+		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "!fast*")),
+			"!fast* -> the complement (slow) group's own tip")
+		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+			"a pattern and its negation create exactly two group trackers")
+
+		// Each partition is named by common.LaneName of its matched id set:
+		// {fast-1,fast-2} -> "fast", {slow-1,slow-2} -> "slow". A single vendor
+		// prefix is never a lane (the partition needs >=2 upstreams).
+		lanes := map[string]bool{}
+		nw.servedTipPartitions.Range(func(_, v any) bool {
+			lanes[v.(*servedTipPartition).lane] = true
+			return true
+		})
+		assert.True(t, lanes["fast"] && lanes["slow"],
+			"lanes named via LaneName (token shared by all ids); got %v", lanes)
+
+		// Selectors that resolve to the SAME upstream set dedup into the SAME
+		// partition (keyed by matched set, not text): fast*/fast-*/family:fast
+		// all = {fast-1,fast-2}; slow*/!fast*/family:slow all = {slow-1,slow-2}.
+		for _, sel := range []string{"fast-*", "family:fast", "slow*", "family:slow", "!fast*"} {
+			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
+		}
+		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+			"equivalent selectors (same matched set) must dedup, not create new trackers")
+
+		// Non-group selectors NEVER materialize: match-all, single-node,
+		// no-match, or a boolean expression.
+		for _, sel := range []string{"*", "fast-1", "slow-1", "ghost*", "does-not-exist", "(fast*|slow*)"} {
+			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
+		}
+		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
+			"match-all / single-node / no-match / boolean selectors must not create state (DDoS-safe)")
+	})
 }
