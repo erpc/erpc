@@ -11,7 +11,8 @@ import (
 
 // testNetwork is a simple test implementation of common.Network interface for this file
 type testNetwork struct {
-	cfg *common.NetworkConfig
+	cfg           *common.NetworkConfig
+	finalityState common.DataFinalityState
 }
 
 func (t *testNetwork) Architecture() common.NetworkArchitecture {
@@ -67,7 +68,7 @@ func (t *testNetwork) GetMethodMetrics(method string) common.TrackedMetrics {
 }
 
 func (t *testNetwork) GetFinality(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) common.DataFinalityState {
-	return common.DataFinalityStateFinalized
+	return t.finalityState
 }
 
 func TestAllPhantomTransactions(t *testing.T) {
