@@ -430,18 +430,20 @@ Use `evalScope: 'network-method-finality'` to get one slot per `(method, finalit
 
 ```js
 // A reserve pool (e.g. a pricier or rate-limited provider, tagged
-// `tags: [tier:reserve]`) is kept OUT of normal rotation, then ranked in
-// only when the serving pool is collectively unfit — every survivor
-// lagging, or too few left. `includeIf` adds; it never evicts a survivor,
-// so a single slow primary alone does not pull the reserve in.
+// `tags: [tier:reserve]`) is kept OUT of normal rotation with excludeTag,
+// then ranked in only when the serving pool is collectively unfit — every
+// survivor lagging or slow, or none left. `includeIf` adds; it never evicts
+// a survivor, so a single slow primary alone does not pull the reserve in.
+// The `length > 0 && ...` guard keeps the lag/latency rules from firing on
+// an empty pool; the `length < 1` line is the explicit empty-pool fallback.
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
-    .preferTag('!tier:reserve', { minHealthy: 1, fallback: 'tier:reserve' })
-    .includeIf(forAll(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
-    .includeIf(forAll(latencyAbove(2000, 99)),   { tag: 'tier:reserve' })
-    .includeIf(sizeBelow(2),                     { tag: 'tier:reserve' })
+    .excludeTag('tier:reserve')
+    .includeIf((p) => p.length > 0 && p.every(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
+    .includeIf((p) => p.length > 0 && p.every(latencyAbove(2000, 99)),   { tag: 'tier:reserve' })
+    .includeIf((p) => p.length < 1,                                      { tag: 'tier:reserve' })
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
 ```
@@ -931,10 +933,11 @@ Always include matching upstreams, even if prior filters dropped them.
 .includeIf(
   condition: boolean | ((upstreams) => boolean),
   opts: {
-    id?: string | string[],          // selector facets — AND together,
-    tag?: string | string[],         // at least one is required
+    id?: string | string[],               // selector facets — AND together,
+    tag?: string | string[],              // at least one must resolve
     vendor?: string | string[],
-    where?: { id?, tag?, vendor? },  // alternative to the flat facets
+    type?: string | string[],
+    where?: { id?, tag?, vendor?, type? }, // alternative to the flat facets
     position?: 'head' | 'tail' = 'tail',
   },
 )
@@ -947,14 +950,15 @@ holds. It never removes an upstream.
 
 The function form of `condition` receives the **current** chain array
 — the pool that survived earlier steps — so it can ask aggregate
-("network-level") questions about what's left. Pair it with the
-[quantifiers](#quantifiers) (`forAll`, `fewerThan`, `sizeBelow`, …):
+("network-level") questions about what's left. The array is a normal
+JS array, so use native `every` / `some` / `length` / `filter` over the
+[predicate factories](#predicate-factories):
 
 ```js
 upstreams
-  .preferTag('!tier:reserve', { fallback: 'tier:reserve' })   // reserve out of normal rotation
-  .includeIf(forAll(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })  // admit if every survivor lags
-  .includeIf(sizeBelow(2),                     { tag: 'tier:reserve' })  // ...or if too few remain
+  .excludeTag('tier:reserve')                                             // reserve out of normal rotation
+  .includeIf((p) => p.every(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })  // admit if every survivor lags
+  .includeIf((p) => p.length < 2,                      { tag: 'tier:reserve' })  // ...or if too few remain
   .sortByScore(PREFER_FASTEST)
 ```
 
@@ -965,11 +969,16 @@ adds rather than excludes, a single degraded primary is never evicted
 — the reserve set is offered alongside it and a later `sortByScore`
 decides the order.
 
-At least one selector facet is required; with none it is a no-op (it
-never admits the whole universe). Added upstreams default to the tail
-so the survivors keep priority. Already-present upstreams aren't
-duplicated. A malformed or throwing `condition` degrades to a no-op
-rather than failing the eval.
+> Native `every` returns `true` on an empty array, so
+> `(p) => p.every(...)` admits the reserve when the pool is empty
+> (usually what you want). Guard with `(p) => p.length > 0 && p.every(...)`
+> if an empty pool should **not** trigger inclusion.
+
+At least one selector facet must resolve to a concrete value; otherwise
+it is a no-op (it never admits the whole universe — including for
+`where: {}`). Added upstreams default to the tail so the survivors keep
+priority. Already-present upstreams aren't duplicated. A malformed or
+throwing `condition` degrades to a no-op rather than failing the eval.
 
 </details>
 
@@ -1203,41 +1212,6 @@ not(pred)        // NOT
 Composed predicates carry a joined `policyReason` —
 `any(errorRateAbove(0.5), latencyAbove(30_000))` displays as
 `any(errorRate>0.5,p70>30000ms)` (p70 is the default-quantile slug).
-
-</details>
-
-### Quantifiers
-
-Where `all` / `any` / `not` compose per-upstream predicates into
-another per-upstream predicate (for `excludeIf`), the quantifiers
-collapse a per-upstream predicate over the **whole** surviving pool
-into a single boolean — an aggregate, "network-level" question. They
-produce the conditions [`includeIf`](#probing--forced-inclusion)
-consumes.
-
-<details>
-<summary>**Pool-level conditions**</summary>
-
-```ts
-forAll(pred)         // every upstream satisfies pred (false on an empty pool)
-forAny(pred)         // at least one satisfies pred
-forNone(pred)        // no upstream satisfies pred
-atLeast(n, pred)     // at least n upstreams satisfy pred
-fewerThan(n, pred)   // fewer than n upstreams satisfy pred
-sizeBelow(n)         // pool has fewer than n upstreams
-sizeAtLeast(n)       // pool has at least n upstreams
-```
-
-`forAll` is deliberately **false on an empty pool** — "all of nothing
-are bad" should not trigger a break-glass inclusion; use `sizeBelow`
-for the empty / thin-pool case. Each takes a per-upstream predicate
-from the [predicate factories](#predicate-factories), so the full
-predicate library composes:
-
-```js
-.includeIf(forAll(any(blockSecondsLagAbove(30), latencyAbove(2000, 99))), { tag: 'tier:reserve' })
-.includeIf(fewerThan(2, not(any(errorRateAbove(0.5), blockNumberLagAbove(16)))), { tag: 'tier:reserve' })
-```
 
 </details>
 

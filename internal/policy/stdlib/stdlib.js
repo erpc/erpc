@@ -1037,17 +1037,22 @@
   //   condition: boolean OR (upstreams, ctx) => boolean. The function form
   //     receives the CURRENT chain array — the pool that survived earlier
   //     steps — so it can ask aggregate ("network-level") questions about
-  //     what is left. Pair with the quantifier factories below:
+  //     what is left, using native array methods over the existing
+  //     per-upstream predicate factories:
   //
-  //       .includeIf(forAll(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
-  //       .includeIf(forAll(latencyAbove(2000, 99)),   { tag: 'tier:reserve' })
-  //       .includeIf(sizeBelow(2),                      { tag: 'tier:reserve' })
+  //       // admit when EVERY survivor is lagging (empty pool also admits —
+  //       // native `every` is true on []):
+  //       .includeIf(p => p.every(blockSecondsLagAbove(30)), { tag: 'tier:reserve' })
+  //       // ...or when too few survive:
+  //       .includeIf(p => p.length < 2, { tag: 'tier:reserve' })
   //
-  //   opts.{ id, tag, vendor, where }: select which upstreams to pull from
-  //     `__policyAllUpstreams` when the condition holds. Facets AND together
-  //     (same semantics as `where`). At least one selector is required — with
-  //     none, includeIf is a no-op (it never pulls the whole universe by
-  //     accident). Already-present upstreams (by id) are not duplicated.
+  //   opts.{ id, tag, vendor, type, where }: select which upstreams to pull
+  //     from `__policyAllUpstreams` when the condition holds. Facets AND
+  //     together (same semantics as `where`). At least one facet must resolve
+  //     to a concrete value — otherwise includeIf is a no-op (it never pulls
+  //     the whole universe by accident, including for `where: {}` or a `where`
+  //     carrying only unsupported keys). Already-present upstreams (by id) are
+  //     not duplicated.
   //   opts.position: 'head' | 'tail' (default 'tail'). Added upstreams go to
   //     the tail by default so the surviving pool keeps priority and the
   //     reserve set is consulted only after — let `sortByScore` reorder if a
@@ -1072,21 +1077,25 @@
     }
     if (!pass) return this.slice();
 
-    // 2. Build the selector from opts facets. Require at least one facet —
-    //    a selector-less includeIf would otherwise admit the entire
-    //    universe, which is never the intent.
+    // 2. Resolve the selector facets (flat opts win over the `where` block),
+    //    then require at least one to be concrete. Gating on the RESOLVED
+    //    facets — not on `opts.where != null` — is what makes `where: {}` or
+    //    a `where` carrying only unsupported keys a no-op instead of a
+    //    match-all that admits the entire universe.
     opts = opts || {};
-    const hasSelector = opts.id != null || opts.tag != null ||
-      opts.vendor != null || opts.where != null;
-    if (!hasSelector) return this.slice();
     const where = opts.where || {};
     const idPat     = opts.id     != null ? opts.id     : where.id;
     const tagPat    = opts.tag    != null ? opts.tag    : where.tag;
     const vendorPat = opts.vendor != null ? opts.vendor : where.vendor;
+    const typePat   = opts.type   != null ? opts.type   : where.type;
+    if (idPat == null && tagPat == null && vendorPat == null && typePat == null) {
+      return this.slice();
+    }
     const matchFn = function (u) {
       if (idPat     != null && !matchAny(idPat, u.id)) return false;
       if (tagPat    != null && !hasMatchingTag(u, tagPat)) return false;
       if (vendorPat != null && !matchAny(vendorPat, u.vendor)) return false;
+      if (typePat   != null && !matchAny(typePat, u.type)) return false;
       return true;
     };
 
@@ -1546,87 +1555,6 @@
       // and pretending it caused the not.
       return [fn.policySlug];
     };
-    return fn;
-  };
-
-  // ─── 4.16 Quantifiers — lift a per-upstream predicate to a pool gate ────
-  //
-  // `all` / `any` / `not` above compose per-upstream predicates (`u =>
-  // bool`) into another per-upstream predicate, for `excludeIf`. The
-  // quantifiers below instead collapse a per-upstream predicate over a
-  // WHOLE array into a single boolean — an aggregate, "network-level"
-  // question about the surviving pool. They are the conditions `includeIf`
-  // consumes:
-  //
-  //   forAll(pred)        true iff the array is non-empty AND every element
-  //                       satisfies `pred`. ("every survivor is lagging")
-  //   forAny(pred)        true iff at least one element satisfies `pred`.
-  //   forNone(pred)       true iff no element satisfies `pred`.
-  //   atLeast(n, pred)    true iff at least `n` elements satisfy `pred`.
-  //   fewerThan(n, pred)  true iff fewer than `n` elements satisfy `pred`.
-  //                       ("fewer than 2 healthy survivors remain")
-  //   sizeBelow(n)        true iff the array has fewer than `n` elements.
-  //   sizeAtLeast(n)      true iff the array has at least `n` elements.
-  //
-  // Each returns `(upstreams) => boolean`. `forAll` is deliberately false
-  // on an empty array — "all of nothing are bad" should NOT trigger a
-  // break-glass inclusion; use `sizeBelow` for the empty/thin-pool case.
-  // The predicate is applied defensively (a throwing per-upstream predicate
-  // counts as "did not match") so a malformed leaf can't sink the eval.
-  function _safePred(pred, u) {
-    if (typeof pred !== 'function') return false;
-    try { return !!pred(u); } catch (_e) { return false; }
-  }
-  function _countMatching(arr, pred) {
-    let n = 0;
-    for (let i = 0; i < arr.length; i++) if (_safePred(pred, arr[i])) n++;
-    return n;
-  }
-  globalThis.forAll = function (pred) {
-    const fn = function (arr) {
-      if (!arr || arr.length === 0) return false;
-      for (let i = 0; i < arr.length; i++) if (!_safePred(pred, arr[i])) return false;
-      return true;
-    };
-    fn.policyReason = 'forAll(' + _reasonFor(pred) + ')';
-    return fn;
-  };
-  globalThis.forAny = function (pred) {
-    const fn = function (arr) {
-      if (!arr) return false;
-      for (let i = 0; i < arr.length; i++) if (_safePred(pred, arr[i])) return true;
-      return false;
-    };
-    fn.policyReason = 'forAny(' + _reasonFor(pred) + ')';
-    return fn;
-  };
-  globalThis.forNone = function (pred) {
-    const fn = function (arr) {
-      if (!arr) return true;
-      for (let i = 0; i < arr.length; i++) if (_safePred(pred, arr[i])) return false;
-      return true;
-    };
-    fn.policyReason = 'forNone(' + _reasonFor(pred) + ')';
-    return fn;
-  };
-  globalThis.atLeast = function (n, pred) {
-    const fn = function (arr) { return arr ? _countMatching(arr, pred) >= n : false; };
-    fn.policyReason = 'atLeast(' + n + ',' + _reasonFor(pred) + ')';
-    return fn;
-  };
-  globalThis.fewerThan = function (n, pred) {
-    const fn = function (arr) { return arr ? _countMatching(arr, pred) < n : true; };
-    fn.policyReason = 'fewerThan(' + n + ',' + _reasonFor(pred) + ')';
-    return fn;
-  };
-  globalThis.sizeBelow = function (n) {
-    const fn = function (arr) { return (arr ? arr.length : 0) < n; };
-    fn.policyReason = 'sizeBelow(' + n + ')';
-    return fn;
-  };
-  globalThis.sizeAtLeast = function (n) {
-    const fn = function (arr) { return (arr ? arr.length : 0) >= n; };
-    fn.policyReason = 'sizeAtLeast(' + n + ')';
     return fn;
   };
 })();
