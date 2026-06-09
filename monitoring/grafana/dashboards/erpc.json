@@ -102,7 +102,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(200,\n  sum by (region, network, vendor, finality, category) (\n    increase(erpc_network_successful_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      user=~\"${user:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\"\n    }[$__range])\n  )\n)",
+              "expr": "topk(200,\n  sum by (region, network, vendor, finality, category) (\n    increase(erpc_network_successful_request_total{\n      namespace=~\"${namespace:regex}\",\n      upstream=~\"${upstream:regexp}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      user=~\"${user:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\"\n    }[$__range])\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "10m",
@@ -205,7 +205,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (vendor) (\n    increase(erpc_network_successful_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\",\n    }[$__range])\n  )\n)",
+              "expr": "topk(20,\n  sum by (vendor) (\n    increase(erpc_network_successful_request_total{\n      namespace=~\"${namespace:regex}\",\n      upstream=~\"${upstream:regexp}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\",\n    }[$__range])\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -308,7 +308,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (upstream) (\n    increase(erpc_upstream_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
+              "expr": "topk(20,\n  sum by (upstream) (\n    increase(erpc_upstream_request_total{\n      namespace=~\"${namespace:regex}\",\n      upstream=~\"${upstream:regexp}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -411,7 +411,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(2,\n  sum by (connector) (\n    increase(erpc_cache_get_success_hit_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      policy=~\".*finality=(${finality:pipe}).*\",\n      user=~\"${user:regex}\",\n    }[$__range])\n  )\n)",
+              "expr": "topk(2,\n  sum by (connector) (\n    increase(erpc_cache_get_success_hit_total{\n      namespace=~\"${namespace:regex}\",\n      upstream=~\"${upstream:regexp}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      policy=~\".*finality=(${finality:pipe}).*\",\n      user=~\"${user:regex}\",\n    }[$__range])\n  )\n)",
               "format": "time_series",
               "hide": false,
               "instant": true,
@@ -514,7 +514,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (region, network) (\n    increase(erpc_network_successful_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
+              "expr": "topk(20,\n  sum by (region, network) (\n    increase(erpc_network_successful_request_total{\n      namespace=~\"${namespace:regex}\",\n      upstream=~\"${upstream:regexp}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -617,7 +617,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (category) (\n    increase(erpc_network_successful_request_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
+              "expr": "topk(20,\n  sum by (category) (\n    increase(erpc_network_successful_request_total{\n      namespace=~\"${namespace:regex}\",\n      upstream=~\"${upstream:regexp}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      project=~\"${project:regex}\",\n      vendor=~\"${vendor:regex}\",\n      vendor!~\"${ignore_vendor:regex}\",\n      category=~\"${category:regex}\",\n      finality=~\"${finality:regex}\",\n      user=~\"${user:regex}\"\n    }[$__range])\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -720,7 +720,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (finality, vendor_group, category) (\n    label_replace(\n      label_replace(\n        label_replace(\n          increase(\n            erpc_network_successful_request_total{\n              cluster=~\"${cluster:regex}\",\n              region=~\"${region:regex}\",\n              network=~\"${network:regex}\",\n              network!~\"${ignore_network:regex}\",\n              project=~\"${project:regex}\",\n              vendor=~\"${vendor:regex}\",\n              vendor!~\"${ignore_vendor:regex}\",\n              category=~\"${category:regex}\",\n              finality=~\"${finality:regex}\",\n              user=~\"${user:regex}\"\n            }[$__range]\n          ),\n          \"vendor_group\", \"vendors\", \"vendor\", \".*\"\n        ),\n        \"vendor_group\", \"CACHE\", \"vendor\", \"<cache>\"\n      ),\n      \"vendor_group\", \"CACHE\", \"vendor\", \"prism\"\n    )\n  )\n)",
+              "expr": "topk(20,\n  sum by (finality, vendor_group, category) (\n    label_replace(\n      label_replace(\n        label_replace(\n          increase(\n            erpc_network_successful_request_total{\n              namespace=~\"${namespace:regex}\",\n              upstream=~\"${upstream:regexp}\",\n              cluster=~\"${cluster:regex}\",\n              region=~\"${region:regex}\",\n              network=~\"${network:regex}\",\n              network!~\"${ignore_network:regex}\",\n              project=~\"${project:regex}\",\n              vendor=~\"${vendor:regex}\",\n              vendor!~\"${ignore_vendor:regex}\",\n              category=~\"${category:regex}\",\n              finality=~\"${finality:regex}\",\n              user=~\"${user:regex}\"\n            }[$__range]\n          ),\n          \"vendor_group\", \"vendors\", \"vendor\", \".*\"\n        ),\n        \"vendor_group\", \"CACHE\", \"vendor\", \"<cache>\"\n      ),\n      \"vendor_group\", \"CACHE\", \"vendor\", \"prism\"\n    )\n  )\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -850,7 +850,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_network_successful_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",user=~\"${user:regex}\"\n    }[1m])) by (region, agent_name, user) > 0",
+              "expr": "sum(increase(erpc_network_successful_request_total{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",user=~\"${user:regex}\"\n    }[1m])) by (region, agent_name, user) > 0",
               "interval": "",
               "legendFormat": "{{region}} {{agent_name}} {{user}}",
               "range": true,
@@ -954,7 +954,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_network_successful_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",user=~\"${user:regex}\"\n    }[1m])) by (region) > 0",
+              "expr": "sum(increase(erpc_network_successful_request_total{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",user=~\"${user:regex}\"\n    }[1m])) by (region) > 0",
               "interval": "",
               "legendFormat": "{{region}}",
               "range": true,
@@ -1503,7 +1503,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_network_failed_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    severity=\"warning\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (network,category,error,region, user) > 0",
+              "expr": "sum(increase(erpc_network_failed_request_total{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    severity=\"warning\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (network,category,error,region, user) > 0",
               "instant": false,
               "interval": "",
               "legendFormat": "{{region}}, {{network}}, {{category}}, {{error}}",
@@ -1614,7 +1614,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_network_failed_request_total{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    severity=\"info\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (network,category,error,user) > 0",
+              "expr": "sum(increase(erpc_network_failed_request_total{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    severity=\"info\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (network,category,error,user) > 0",
               "instant": false,
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{error}}",
@@ -1731,7 +1731,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -1833,7 +1833,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality))",
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -1938,7 +1938,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -2040,7 +2040,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}, {{vendor}}",
               "range": true,
@@ -2142,7 +2142,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
               "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -2243,7 +2243,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    user=~\"${user:regex}\",\n    cluster=~\"${cluster:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=\"<error>\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, network, category, finality, vendor))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
               "range": true,
@@ -2356,7 +2356,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "rate(erpc_network_timeout_duration_seconds_sum{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]) / rate(erpc_network_timeout_duration_seconds_count{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m])",
+              "expr": "rate(erpc_network_timeout_duration_seconds_sum{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]) / rate(erpc_network_timeout_duration_seconds_count{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m])",
               "interval": "",
               "legendFormat": "avg {{project}}, {{network}}, {{category}}",
               "range": true,
@@ -2368,7 +2368,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]))",
+              "expr": "histogram_quantile(0.99, rate(erpc_network_timeout_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[5m]))",
               "interval": "",
               "legendFormat": "p99 {{project}}, {{network}}, {{category}}",
               "range": true,
@@ -2485,7 +2485,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg(erpc_network_hedge_delay_seconds{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}) by (project, network, category, finality)",
+              "expr": "avg(erpc_network_hedge_delay_seconds{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}) by (project, network, category, finality)",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -2588,7 +2588,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_network_hedged_request_total{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (project, network, category, finality)",
+              "expr": "sum(rate(erpc_network_hedged_request_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (project, network, category, finality)",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -2698,7 +2698,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "1 - ((sum(increase(erpc_network_hedge_discards_total{attempt!=\"1\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[30s])) by (project, network)) / (sum(increase(erpc_network_hedged_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (project, network))) > 0",
+              "expr": "1 - ((sum(increase(erpc_network_hedge_discards_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", attempt!=\"1\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[30s])) by (project, network)) / (sum(increase(erpc_network_hedged_request_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (project, network))) > 0",
               "legendFormat": "{{network}}",
               "range": true,
               "refId": "A"
@@ -2804,7 +2804,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (project, network, category, finality)",
+              "expr": "sum(rate(erpc_network_multiplexed_request_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (project, network, category, finality)",
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -2906,7 +2906,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_network_successful_request_total{network=~\"${network:regex}\",vendor=~\"${vendor:regexp}\",upstream=~\"${upstream:regexp}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (finality)",
+              "expr": "sum(increase(erpc_network_successful_request_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", user=~\"${user:regex}\", network=~\"${network:regex}\",vendor=~\"${vendor:regexp}\",upstream=~\"${upstream:regexp}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (finality)",
               "interval": "",
               "legendFormat": "{{finality}}",
               "range": true,
@@ -3009,7 +3009,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_network_successful_request_total{network=~\"${network:regex}\",vendor=~\"${vendor:regexp}\",upstream=~\"${upstream:regexp}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (vendor, finality)",
+              "expr": "sum(increase(erpc_network_successful_request_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", user=~\"${user:regex}\", network=~\"${network:regex}\",vendor=~\"${vendor:regexp}\",upstream=~\"${upstream:regexp}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (vendor, finality)",
               "interval": "",
               "legendFormat": "{{vendor}}, {{finality}}",
               "range": true,
@@ -3141,7 +3141,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "avg(erpc_network_latest_block_timestamp_distance_seconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",origin=\"evm_state_poller\"}) by (network)",
+              "expr": "avg(erpc_network_latest_block_timestamp_distance_seconds{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",origin=\"evm_state_poller\"}) by (network)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}}",
@@ -3272,7 +3272,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "avg(erpc_network_latest_block_timestamp_distance_seconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",origin=\"network_response\"}) by (network)",
+              "expr": "avg(erpc_network_latest_block_timestamp_distance_seconds{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",origin=\"network_response\"}) by (network)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}}",
@@ -3393,7 +3393,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, project) (erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"})",
+              "expr": "max by (network, project) (erpc_network_dynamic_block_time_milliseconds{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}}",
@@ -3510,7 +3510,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, project) (erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}) / 1000",
+              "expr": "max by (network, project) (erpc_network_dynamic_block_time_milliseconds{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}) / 1000",
               "format": "time_series",
               "instant": false,
               "legendFormat": "Block Time: {{network}}",
@@ -3523,7 +3523,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "1 / max by (network, upstream) (rate(erpc_upstream_latest_block_polled_total{network!=\"\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "expr": "1 / max by (network, upstream) (rate(erpc_upstream_latest_block_polled_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", upstream=~\"${upstream:regexp}\", network!=\"\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
               "hide": false,
               "instant": false,
               "legendFormat": "Actual: {{network}} / {{upstream}}",
@@ -3651,7 +3651,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "(1 / max by (network, upstream) (rate(erpc_upstream_latest_block_polled_total{network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) / on(network) group_left() (max by (network) (erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}) / 1000)",
+              "expr": "(1 / max by (network, upstream) (rate(erpc_upstream_latest_block_polled_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", upstream=~\"${upstream:regexp}\", network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) / on(network) group_left() (max by (network) (erpc_network_dynamic_block_time_milliseconds{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",cluster=~\"^${cluster:regex}$\"}) / 1000)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -3779,7 +3779,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})",
+              "expr": "max by (network, upstream) (erpc_upstream_block_head_lag{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", upstream=~\"${upstream:regexp}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -3997,7 +3997,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "(sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0)))\n== on(network) group_left()\nmax by (network) ((sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0))))",
+              "expr": "(sum by (network, upstream) (count_over_time((erpc_selection_position{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0)))\n== on(network) group_left()\nmax by (network) ((sum by (network, upstream) (count_over_time((erpc_selection_position{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 1000 - (avg by (network, upstream) (avg_over_time(erpc_selection_score{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"}[10m])) or (sum by (network, upstream) (count_over_time((erpc_selection_position{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", cluster=~\"^${cluster:regex}$\",project=~\"^${project:regex}$\",network=~\"^${network:regex}$\",method=\"*\"} == 0)[10m:60s])) * 0))))",
               "format": "table",
               "instant": false,
               "refId": "A"
@@ -4051,7 +4051,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Network-scope FAILOVER retries/sec (retryable_error/pending_tx) \u2014 genuine upstream errors / tx hunting, NOT chain catch-up. A spike here means upstreams are erroring; drill into 'Upstream Errors by Type'.",
+          "description": "Network-scope FAILOVER retries/sec (retryable_error/pending_tx) — genuine upstream errors / tx hunting, NOT chain catch-up. A spike here means upstreams are erroring; drill into 'Upstream Errors by Type'.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4143,7 +4143,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",reason=~\"retryable_error|pending_tx\"}[$__rate_interval]))",
+              "expr": "sum by (network, reason) (rate(erpc_network_retry_attempt_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\",reason=~\"retryable_error|pending_tx\"}[$__rate_interval]))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{reason}}",
@@ -4159,7 +4159,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Top upstream error sources by error CODE (ErrEndpointUnsupported, ErrEndpointCapacityExceeded, ...). The 'why' behind failover retries \u2014 e.g. an upstream sent methods it doesn't support, or rate-limited.",
+          "description": "Top upstream error sources by error CODE (ErrEndpointUnsupported, ErrEndpointCapacityExceeded, ...). The 'why' behind failover retries — e.g. an upstream sent methods it doesn't support, or rate-limited.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4251,7 +4251,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(15, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "expr": "topk(15, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", category=~\"${category:regex}\", upstream=~\"${upstream:regexp}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{upstream}} / {{error}}",
@@ -4357,7 +4357,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, (max by (network) (erpc_network_latest_block_timestamp_distance_seconds{origin=\"network_response\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) / on(network) group_left() (max by (network)(erpc_network_dynamic_block_time_milliseconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})/1000) > 2)",
+              "expr": "topk(8, (max by (network) (erpc_network_latest_block_timestamp_distance_seconds{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", origin=\"network_response\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) / on(network) group_left() (max by (network)(erpc_network_dynamic_block_time_milliseconds{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})/1000) > 2)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4373,7 +4373,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "p95 end-to-end latency (seconds) of chain-tip reads (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts) \u2014 the slowest 1-in-20 tip read. Sub-second is healthy; a high value means a slow upstream is dragging tip reads, so cross-check 'Tip culprits' and 'Upstream heads' for the offender.",
+          "description": "p95 end-to-end latency (seconds) of chain-tip reads (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts) — the slowest 1-in-20 tip read. Sub-second is healthy; a high value means a slow upstream is dragging tip reads, so cross-check 'Tip culprits' and 'Upstream heads' for the offender.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4438,7 +4438,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.2))",
+              "expr": "topk(8, histogram_quantile(0.95, sum by (le, network) (rate(erpc_network_request_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", user=~\"${user:regex}\", upstream=~\"${upstream:regexp}\", category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) and on(network) (sum by (network)(rate(erpc_network_request_duration_seconds_count{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.2))",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4454,7 +4454,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks the MAIN primary (the upstream most replicas currently route to) sits behind a fresher upstream we also have. 0 = the primary is the freshest available; only chains >2 are shown, where it's a routing-quality gap \u2014 we could be serving fresher data but aren't.",
+          "description": "Blocks the MAIN primary (the upstream most replicas currently route to) sits behind a fresher upstream we also have. 0 = the primary is the freshest available; only chains >2 are shown, where it's a routing-quality gap — we could be serving fresher data but aren't.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4519,7 +4519,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(10, max by (network) ((max by (network, upstream) (erpc_upstream_block_head_lag{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) and on(network, upstream) (((count by (network, upstream) (erpc_selection_position{method=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"} == 0)) == on(network) group_left() max by (network) (count by (network, upstream) (erpc_selection_position{method=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"} == 0))))) > 2)",
+              "expr": "topk(10, max by (network) ((max by (network, upstream) (erpc_upstream_block_head_lag{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", upstream=~\"${upstream:regexp}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"})) and on(network, upstream) (((count by (network, upstream) (erpc_selection_position{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", method=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"} == 0)) == on(network) group_left() max by (network) (count by (network, upstream) (erpc_selection_position{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", method=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"} == 0))))) > 2)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4535,7 +4535,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks we DELIBERATELY serve behind our own freshest upstream \u2014 the safety cushion that kills 'block not found' retries (we advertise the MIN of the dominant agreeing cluster, not the single most-ahead node). A few blocks is by design; only 1\u2013100 is shown (>100 is hidden, as that's a misbehaving upstream rather than a real cushion).",
+          "description": "Blocks we DELIBERATELY serve behind our own freshest upstream — the safety cushion that kills 'block not found' retries (we advertise the MIN of the dominant agreeing cluster, not the single most-ahead node). A few blocks is by design; only 1–100 is shown (>100 is hidden, as that's a misbehaving upstream rather than a real cushion).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4544,7 +4544,7 @@
               "displayName": "${__field.labels.network}",
               "mappings": [],
               "min": 0,
-              "noValue": "\u2713 none > 1 blk",
+              "noValue": "✓ none > 1 blk",
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
@@ -4601,7 +4601,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, (max by (network) (erpc_network_served_tip_lag_blocks{axis=\"latest\",lane=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) < 100) > 1)",
+              "expr": "topk(12, (max by (network) (erpc_network_served_tip_lag_blocks{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", axis=\"latest\",lane=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) < 100) > 1)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4617,7 +4617,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Served-tip lag on the FINALIZED axis \u2014 should be ~0, since upstreams shouldn't disagree on finalized blocks. Any value here (only >0 is shown) means they DO disagree: a reorg-depth or upstream-config issue worth investigating.",
+          "description": "Served-tip lag on the FINALIZED axis — should be ~0, since upstreams shouldn't disagree on finalized blocks. Any value here (only >0 is shown) means they DO disagree: a reorg-depth or upstream-config issue worth investigating.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4626,7 +4626,7 @@
               "displayName": "${__field.labels.network}",
               "mappings": [],
               "min": 0,
-              "noValue": "\u2713 all agree on finalized",
+              "noValue": "✓ all agree on finalized",
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
@@ -4683,7 +4683,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(12, max by (network) (erpc_network_served_tip_lag_blocks{axis=\"finalized\",lane=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0)",
+              "expr": "topk(12, max by (network) (erpc_network_served_tip_lag_blocks{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", axis=\"finalized\",lane=\"all\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4699,7 +4699,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Share of a chain's requests that hit a catch-up wait \u2014 the data wasn't available on the chosen upstream yet, so we held and retried. Single-digit % is normal tip-race friction; >10% means an upstream is meaningfully behind and freshness is degrading for users.",
+          "description": "Share of a chain's requests that hit a catch-up wait — the data wasn't available on the chosen upstream yet, so we held and retried. Single-digit % is normal tip-race friction; >10% means an upstream is meaningfully behind and freshness is degrading for users.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4768,7 +4768,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(8, 100 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) > 0.5)",
+              "expr": "topk(8, 100 * (sum by (network) (rate(erpc_network_data_unavailable_wait_seconds_count{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network) (rate(erpc_network_request_duration_seconds_count{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", finality=~\"${finality:regex}\", category=~\"${category:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))) > 0.5)",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}}",
@@ -4784,7 +4784,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Latest block each isolated use-upstream GROUP (lane) advertises as its tip \u2014 e.g. base 'flashblocks' vs the normal group. A lane appears only for networks receiving use-upstream traffic, and its name is the token shared by ALL the group's upstreams (a single vendor upstream is never a lane). Compare lanes on one chain to see which group leads; a steady gap is expected (flashblocks runs ahead by design).",
+          "description": "Latest block each isolated use-upstream GROUP (lane) advertises as its tip — e.g. base 'flashblocks' vs the normal group. A lane appears only for networks receiving use-upstream traffic, and its name is the token shared by ALL the group's upstreams (a single vendor upstream is never a lane). Compare lanes on one chain to see which group leads; a steady gap is expected (flashblocks runs ahead by design).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4888,7 +4888,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"latest\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", axis=\"latest\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{lane}}",
@@ -4904,7 +4904,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks each isolated use-upstream GROUP (lane) deliberately holds its served tip behind that lane's OWN freshest velocity-eligible upstream \u2014 the per-lane safety cushion that keeps a transient single-node spike from being advertised as the tip. Like the lane tip charts, a lane appears only while it receives use-upstream traffic, and its name is the token shared by ALL the group's upstreams. A small steady value is healthy (intentional lag); a lane trending up is falling behind its own fleet and worth investigating.",
+          "description": "Blocks each isolated use-upstream GROUP (lane) deliberately holds its served tip behind that lane's OWN freshest velocity-eligible upstream — the per-lane safety cushion that keeps a transient single-node spike from being advertised as the tip. Like the lane tip charts, a lane appears only while it receives use-upstream traffic, and its name is the token shared by ALL the group's upstreams. A small steady value is healthy (intentional lag); a lane trending up is falling behind its own fleet and worth investigating.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5006,7 +5006,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, lane) (erpc_network_served_tip_lag_blocks{axis=\"latest\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network, lane) (erpc_network_served_tip_lag_blocks{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", axis=\"latest\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{lane}}",
@@ -5022,7 +5022,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Finalized block each use-upstream group (lane) advertises. Lanes should AGREE on finalized; a gap between two lanes on the same chain flags a finalized-view divergence between the node groups \u2014 worth a look.",
+          "description": "Finalized block each use-upstream group (lane) advertises. Lanes should AGREE on finalized; a gap between two lanes on the same chain flags a finalized-view divergence between the node groups — worth a look.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5126,7 +5126,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{axis=\"finalized\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network, lane) (erpc_network_served_tip_block_number{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", axis=\"finalized\",lane!=\"all\",lane!=\"\",lane=~\"${lane:regex}\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{lane}}",
@@ -5142,7 +5142,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How long ONE catch-up wait lasts at p95 (seconds), split by reason \u2014 roughly one block time when an upstream is briefly behind (~12s on mainnet, sub-second on fast chains). Only the small % of requests that wait pay this; a value far above one block time means an upstream is stuck, not just racing the tip.",
+          "description": "How long ONE catch-up wait lasts at p95 (seconds), split by reason — roughly one block time when an upstream is briefly behind (~12s on mainnet, sub-second on fast chains). Only the small % of requests that wait pay this; a value far above one block time means an upstream is stuck, not just racing the tip.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5253,7 +5253,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "histogram_quantile(0.95, sum by (le, network, reason) (rate(erpc_network_data_unavailable_wait_seconds_bucket{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.95, sum by (le, network, reason) (rate(erpc_network_data_unavailable_wait_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{reason}}",
@@ -5267,7 +5267,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_sum{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_count{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
+              "expr": "sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_sum{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) / sum by (network, reason) (rate(erpc_network_data_unavailable_wait_seconds_count{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval]))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{reason}} avg",
@@ -5429,7 +5429,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "max by (network, vendor, upstream) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network, vendor, upstream) (erpc_upstream_latest_block_number{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "table",
               "instant": true,
               "range": false,
@@ -5441,7 +5441,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "max by (network) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - on(network) group_right() max by (network, vendor, upstream) (erpc_upstream_latest_block_number{upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
+              "expr": "max by (network) (erpc_upstream_latest_block_number{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) - on(network) group_right() max by (network, vendor, upstream) (erpc_upstream_latest_block_number{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", upstream!=\"*\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"})",
               "format": "table",
               "instant": true,
               "range": false,
@@ -5453,7 +5453,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0",
+              "expr": "max by (network, upstream) (erpc_selection_excluded_seconds{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}) > 0",
               "format": "table",
               "instant": true,
               "legendFormat": "",
@@ -5497,7 +5497,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Critical errors on chain-tip methods (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts), by upstream and error type (errors/sec) \u2014 the likely culprit when the tip is halted, slow, or lagging above. Harmless errors (reverts, bad params) are filtered out, so anything here is a real fault on a real upstream.",
+          "description": "Critical errors on chain-tip methods (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts), by upstream and error type (errors/sec) — the likely culprit when the tip is halted, slow, or lagging above. Harmless errors (reverts, bad params) are filtered out, so anything here is a real fault on a real upstream.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -5541,7 +5541,7 @@
                           "pattern": ".*RequestTimeout.*",
                           "result": {
                             "index": 0,
-                            "text": "\u23f1 Timeout \u2014 upstream too slow (raise timeout/capacity, or replace upstream)"
+                            "text": "⏱ Timeout — upstream too slow (raise timeout/capacity, or replace upstream)"
                           }
                         },
                         "type": "regex"
@@ -5551,7 +5551,7 @@
                           "pattern": ".*TransportFailure.*",
                           "result": {
                             "index": 1,
-                            "text": "\ud83d\udd0c Transport \u2014 unreachable / TLS / DNS"
+                            "text": "🔌 Transport — unreachable / TLS / DNS"
                           }
                         },
                         "type": "regex"
@@ -5561,7 +5561,7 @@
                           "pattern": ".*ServerSideException.*",
                           "result": {
                             "index": 2,
-                            "text": "\ud83d\udca5 Upstream 5xx \u2014 provider-side error"
+                            "text": "💥 Upstream 5xx — provider-side error"
                           }
                         },
                         "type": "regex"
@@ -5571,7 +5571,7 @@
                           "pattern": ".*NonceException.*",
                           "result": {
                             "index": 3,
-                            "text": "# Nonce \u2014 tx ordering / state"
+                            "text": "# Nonce — tx ordering / state"
                           }
                         },
                         "type": "regex"
@@ -5581,7 +5581,7 @@
                           "pattern": ".*CapacityExceeded.*",
                           "result": {
                             "index": 4,
-                            "text": "\ud83d\udea6 Rate-limited \u2014 raise limit or add capacity"
+                            "text": "🚦 Rate-limited — raise limit or add capacity"
                           }
                         },
                         "type": "regex"
@@ -5591,7 +5591,7 @@
                           "pattern": ".*Unsupported.*",
                           "result": {
                             "index": 5,
-                            "text": "\ud83d\udeab Unsupported method \u2014 method-scope this upstream"
+                            "text": "🚫 Unsupported method — method-scope this upstream"
                           }
                         },
                         "type": "regex"
@@ -5601,7 +5601,7 @@
                           "pattern": ".*BillingIssue.*",
                           "result": {
                             "index": 6,
-                            "text": "\ud83d\udcb3 Billing/credits \u2014 provider account"
+                            "text": "💳 Billing/credits — provider account"
                           }
                         },
                         "type": "regex"
@@ -5611,7 +5611,7 @@
                           "pattern": ".*Unauthorized.*",
                           "result": {
                             "index": 7,
-                            "text": "\ud83d\udd11 Auth \u2014 bad/expired key"
+                            "text": "🔑 Auth — bad/expired key"
                           }
                         },
                         "type": "regex"
@@ -5621,7 +5621,7 @@
                           "pattern": ".*ClientSideException.*",
                           "result": {
                             "index": 8,
-                            "text": "\u26a0 Bad request (4xx) \u2014 usually caller-side"
+                            "text": "⚠ Bad request (4xx) — usually caller-side"
                           }
                         },
                         "type": "regex"
@@ -5631,7 +5631,7 @@
                           "pattern": ".*BlockUnavailable.*",
                           "result": {
                             "index": 9,
-                            "text": "\u23f3 Block not on upstream yet (catch-up)"
+                            "text": "⏳ Block not on upstream yet (catch-up)"
                           }
                         },
                         "type": "regex"
@@ -5641,7 +5641,7 @@
                           "pattern": ".*ExecutionException.*",
                           "result": {
                             "index": 10,
-                            "text": "\u21a9 Execution revert (usually benign)"
+                            "text": "↩ Execution revert (usually benign)"
                           }
                         },
                         "type": "regex"
@@ -5722,7 +5722,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(20, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.01)",
+              "expr": "topk(20, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", user=~\"${user:regex}\", upstream=~\"${upstream:regexp}\", category=~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",finality=~\"realtime|unfinalized\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.01)",
               "format": "table",
               "instant": true,
               "range": false,
@@ -5760,7 +5760,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Same critical-error breakdown for NON-tip methods (eth_call, getLogs, receipts, traces, \u2026), by upstream and error (errors/sec). Use it to catch an upstream degrading on general traffic even when the chain tip itself looks healthy.",
+          "description": "Same critical-error breakdown for NON-tip methods (eth_call, getLogs, receipts, traces, …), by upstream and error (errors/sec). Use it to catch an upstream degrading on general traffic even when the chain tip itself looks healthy.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -5783,7 +5783,7 @@
                           "pattern": ".*RequestTimeout.*",
                           "result": {
                             "index": 0,
-                            "text": "\u23f1 Timeout \u2014 upstream too slow (raise timeout/capacity, or replace upstream)"
+                            "text": "⏱ Timeout — upstream too slow (raise timeout/capacity, or replace upstream)"
                           }
                         },
                         "type": "regex"
@@ -5793,7 +5793,7 @@
                           "pattern": ".*TransportFailure.*",
                           "result": {
                             "index": 1,
-                            "text": "\ud83d\udd0c Transport \u2014 unreachable / TLS / DNS"
+                            "text": "🔌 Transport — unreachable / TLS / DNS"
                           }
                         },
                         "type": "regex"
@@ -5803,7 +5803,7 @@
                           "pattern": ".*ServerSideException.*",
                           "result": {
                             "index": 2,
-                            "text": "\ud83d\udca5 Upstream 5xx \u2014 provider-side error"
+                            "text": "💥 Upstream 5xx — provider-side error"
                           }
                         },
                         "type": "regex"
@@ -5813,7 +5813,7 @@
                           "pattern": ".*NonceException.*",
                           "result": {
                             "index": 3,
-                            "text": "# Nonce \u2014 tx ordering / state"
+                            "text": "# Nonce — tx ordering / state"
                           }
                         },
                         "type": "regex"
@@ -5823,7 +5823,7 @@
                           "pattern": ".*CapacityExceeded.*",
                           "result": {
                             "index": 4,
-                            "text": "\ud83d\udea6 Rate-limited \u2014 raise limit or add capacity"
+                            "text": "🚦 Rate-limited — raise limit or add capacity"
                           }
                         },
                         "type": "regex"
@@ -5833,7 +5833,7 @@
                           "pattern": ".*Unsupported.*",
                           "result": {
                             "index": 5,
-                            "text": "\ud83d\udeab Unsupported method \u2014 method-scope this upstream"
+                            "text": "🚫 Unsupported method — method-scope this upstream"
                           }
                         },
                         "type": "regex"
@@ -5843,7 +5843,7 @@
                           "pattern": ".*BillingIssue.*",
                           "result": {
                             "index": 6,
-                            "text": "\ud83d\udcb3 Billing/credits \u2014 provider account"
+                            "text": "💳 Billing/credits — provider account"
                           }
                         },
                         "type": "regex"
@@ -5853,7 +5853,7 @@
                           "pattern": ".*Unauthorized.*",
                           "result": {
                             "index": 7,
-                            "text": "\ud83d\udd11 Auth \u2014 bad/expired key"
+                            "text": "🔑 Auth — bad/expired key"
                           }
                         },
                         "type": "regex"
@@ -5863,7 +5863,7 @@
                           "pattern": ".*ClientSideException.*",
                           "result": {
                             "index": 8,
-                            "text": "\u26a0 Bad request (4xx) \u2014 usually caller-side"
+                            "text": "⚠ Bad request (4xx) — usually caller-side"
                           }
                         },
                         "type": "regex"
@@ -5873,7 +5873,7 @@
                           "pattern": ".*BlockUnavailable.*",
                           "result": {
                             "index": 9,
-                            "text": "\u23f3 Block not on upstream yet (catch-up)"
+                            "text": "⏳ Block not on upstream yet (catch-up)"
                           }
                         },
                         "type": "regex"
@@ -5883,7 +5883,7 @@
                           "pattern": ".*ExecutionException.*",
                           "result": {
                             "index": 10,
-                            "text": "\u21a9 Execution revert (usually benign)"
+                            "text": "↩ Execution revert (usually benign)"
                           }
                         },
                         "type": "regex"
@@ -5966,7 +5966,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(20, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{category!~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.01)",
+              "expr": "topk(20, sum by (network, upstream, error) (rate(erpc_upstream_request_errors_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", finality=~\"${finality:regex}\", user=~\"${user:regex}\", upstream=~\"${upstream:regexp}\", category!~\"eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getBlockReceipts\",severity=\"critical\",network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}[$__rate_interval])) > 0.01)",
               "format": "table",
               "instant": true,
               "range": false,
@@ -6080,7 +6080,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (vendor) (\n  erpc_network_successful_request_total{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    user=~\"${user:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"n/a\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
+              "expr": "sum by (vendor) (\n  erpc_network_successful_request_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    user=~\"${user:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"n/a\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -6185,7 +6185,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (vendor, finality) (\n  erpc_network_successful_request_total{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    user=~\"${user:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"n/a\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
+              "expr": "sum by (vendor, finality) (\n  erpc_network_successful_request_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    user=~\"${user:regex}\",\n    vendor=~\"${vendor:regex}\",\n    vendor!=\"n/a\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",
@@ -6314,7 +6314,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_total{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    project=~\"${project:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (network, vendor, category)",
+              "expr": "sum(increase(erpc_upstream_request_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    project=~\"${project:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (network, vendor, category)",
               "interval": "",
               "legendFormat": "{{network}}, {{vendor}}, {{category}}",
               "range": true,
@@ -6417,7 +6417,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_upstream_request_total{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (vendor, category)",
+              "expr": "sum(rate(erpc_upstream_request_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (vendor, category)",
               "interval": "",
               "legendFormat": "{{network}}, {{vendor}}, {{category}}, {{finality}}",
               "range": true,
@@ -6518,7 +6518,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    severity=\"critical\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (region, project, upstream, category, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    namespace=~\"${namespace:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    severity=\"critical\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (region, project, upstream, category, error) > 0",
               "interval": "",
               "legendFormat": "{{region}} {{project}}, {{upstream}}, {{category}}, {{error}}",
               "range": true,
@@ -6619,7 +6619,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    severity=\"warning\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (project, network, vendor, category, finality, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    severity=\"warning\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (project, network, vendor, category, finality, error) > 0",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{vendor}}, {{finality}}, {{error}}",
               "range": true,
@@ -6722,7 +6722,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    namespace=~\"${namespace:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "C"
@@ -6829,7 +6829,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "B"
@@ -6936,7 +6936,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[30s])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    user=~\"${user:regex}\",\n    upstream=~\"${upstream:regexp}\",\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\"\n}[30s])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "A"
@@ -7051,7 +7051,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -7157,7 +7157,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -7264,7 +7264,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[30s])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[30s])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -7366,7 +7366,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_total{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, attempt)",
+              "expr": "sum(increase(erpc_upstream_request_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, attempt)",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}, attempt={{attempt}}",
               "range": true,
@@ -7469,7 +7469,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_upstream_request_total{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, finality)",
+              "expr": "sum(rate(erpc_upstream_request_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, finality)",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
@@ -7570,7 +7570,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    severity=\"critical\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    severity=\"critical\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
               "range": true,
@@ -7671,7 +7671,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    severity=\"warning\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    severity=\"warning\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
               "range": true,
@@ -7772,7 +7772,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_wrong_empty_response_total{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category) > 0",
+              "expr": "sum(increase(erpc_upstream_wrong_empty_response_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    user=~\"${user:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category) > 0",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
               "range": true,
@@ -7879,7 +7879,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    severity=\"info\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    severity=\"info\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
               "range": true,
@@ -7980,7 +7980,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_stale_upper_bound_total{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, vendor, upstream, category)",
+              "expr": "sum(increase(erpc_upstream_stale_upper_bound_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, vendor, upstream, category)",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{vendor}}, {{upstream}}",
               "range": true,
@@ -8081,7 +8081,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_stale_lower_bound_total{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, vendor, upstream, category)",
+              "expr": "sum(increase(erpc_upstream_stale_lower_bound_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, vendor, upstream, category)",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{vendor}}, {{upstream}}",
               "range": true,
@@ -8200,7 +8200,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(20, avg by (network) (\n  erpc_selection_eligible_upstreams{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }\n))",
+              "expr": "topk(20, avg by (network) (\n  erpc_selection_eligible_upstreams{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }\n))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}}",
@@ -8306,7 +8306,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "p50",
@@ -8319,7 +8319,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "p95",
@@ -8332,7 +8332,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(erpc_selection_eval_duration_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "p99",
@@ -8438,7 +8438,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (kind) (rate(erpc_selection_eval_errors_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m]))",
+              "expr": "sum by (kind) (rate(erpc_selection_eval_errors_total{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m]))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{kind}}",
@@ -8454,7 +8454,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "`sortByScore` output, HIGHER = better. Score = overall(u) / (1 + \u03a3 metric\u00d7weight). Per-upstream `routing.scoreMultipliers.overall` boosts visibly lift the line.",
+          "description": "`sortByScore` output, HIGHER = better. Score = overall(u) / (1 + Σ metric×weight). Per-upstream `routing.scoreMultipliers.overall` boosts visibly lift the line.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -8544,7 +8544,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg by (network, upstream) (\n  erpc_selection_score{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }\n)",
+              "expr": "avg by (network, upstream) (\n  erpc_selection_score{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }\n)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -8650,7 +8650,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg by (network, upstream) (\n  erpc_selection_position{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }\n)",
+              "expr": "avg by (network, upstream) (\n  erpc_selection_position{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }\n)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -8722,7 +8722,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sort_desc(\n  max by (network, upstream) (\n    erpc_selection_excluded_seconds{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n    } > 60\n  )\n)",
+              "expr": "sort_desc(\n  max by (network, upstream) (\n    erpc_selection_excluded_seconds{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n    } > 60\n  )\n)",
               "format": "table",
               "instant": true,
               "legendFormat": "__auto",
@@ -8866,7 +8866,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (reason) (\n  rate(erpc_selection_exclusion_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "expr": "sum by (reason) (\n  rate(erpc_selection_exclusion_total{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{reason}}",
@@ -8882,13 +8882,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Top-15 upstreams by how long they are CURRENTLY continuously excluded (erpc_selection_excluded_seconds, wall-clock). 0 = in rotation. This is duration, not event count \u2014 pair with the 'Active Primary Upstream' timeline to see the exclusion windows.",
+          "description": "Top-15 upstreams by how long they are CURRENTLY continuously excluded (erpc_selection_excluded_seconds, wall-clock). 0 = in rotation. This is duration, not event count — pair with the 'Active Primary Upstream' timeline to see the exclusion windows.",
           "fieldConfig": {
             "defaults": {
               "color": {
                 "mode": "thresholds"
               },
-              "displayName": "${__field.labels.network} \u00b7 ${__field.labels.upstream}",
+              "displayName": "${__field.labels.network} · ${__field.labels.upstream}",
               "mappings": [],
               "min": 0,
               "thresholds": {
@@ -8943,7 +8943,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(15, max by (network, upstream) (erpc_selection_excluded_seconds{network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}))",
+              "expr": "topk(15, max by (network, upstream) (erpc_selection_excluded_seconds{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream=~\"${upstream:regexp}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\",cluster=~\"^${cluster:regex}$\"}))",
               "format": "time_series",
               "instant": true,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -8959,7 +8959,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: an upstream spiking on `error_rate_above` is a different problem from one spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: exclusion events per second across all eRPC instances (sum of per-instance \u00d7 per-tick increments where this upstream tripped this rule). With N instances \u00d7 1Hz eval interval, a sustained N events/sec means every instance excludes this upstream every tick (always tripping); 1 event/sec means roughly 1 in N instances excludes per tick (intermittent / borderline).",
+          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: an upstream spiking on `error_rate_above` is a different problem from one spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: exclusion events per second across all eRPC instances (sum of per-instance × per-tick increments where this upstream tripped this rule). With N instances × 1Hz eval interval, a sustained N events/sec means every instance excludes this upstream every tick (always tripping); 1 event/sec means roughly 1 in N instances excludes per tick (intermittent / borderline).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -9049,10 +9049,10 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(20,\n  sum by (network, upstream, reason) (\n    rate(erpc_selection_exclusion_total{\n        cluster=~\"${cluster:regex}\",\n        region=~\"${region:regex}\",\n        project=~\"${project:regex}\",\n        network=~\"${network:regex}\",\n        network!~\"${ignore_network:regex}\",\n        upstream=~\"${upstream:regex}\"\n    }[5m])\n  )\n)",
+              "expr": "topk(20,\n  sum by (network, upstream, reason) (\n    rate(erpc_selection_exclusion_total{\n        namespace=~\"${namespace:regex}\",\n        cluster=~\"${cluster:regex}\",\n        region=~\"${region:regex}\",\n        project=~\"${project:regex}\",\n        network=~\"${network:regex}\",\n        network!~\"${ignore_network:regex}\",\n        upstream=~\"${upstream:regex}\"\n    }[5m])\n  )\n)",
               "format": "time_series",
               "instant": false,
-              "legendFormat": "{{network}} / {{upstream}} \u2014 {{reason}}",
+              "legendFormat": "{{network}} / {{upstream}} — {{reason}}",
               "range": true,
               "refId": "A"
             }
@@ -9155,7 +9155,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(20, sum by (network) (\n  rate(erpc_selection_primary_switch_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])\n))",
+              "expr": "topk(20, sum by (network) (\n  rate(erpc_selection_primary_switch_total{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[5m])\n))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}}",
@@ -9261,7 +9261,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "topk(20, sum by (network, upstream) (\n  rate(erpc_selection_sticky_hold_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n))",
+              "expr": "topk(20, sum by (network, upstream) (\n  rate(erpc_selection_sticky_hold_total{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n))",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{network}} / {{upstream}}",
@@ -9349,7 +9349,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (le) (\n  rate(erpc_selection_readmit_age_seconds_bucket{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[$__rate_interval])\n)",
+              "expr": "sum by (le) (\n  rate(erpc_selection_readmit_age_seconds_bucket{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }[$__rate_interval])\n)",
               "format": "heatmap",
               "instant": false,
               "legendFormat": "{{le}}",
@@ -9365,7 +9365,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "`shadowExcludeIf` trips \u2014 upstreams that WOULD have been excluded if the rule were real. Compare to `selection_exclusion_total` to decide when to flip a shadow rule to a real `excludeIf`.",
+          "description": "`shadowExcludeIf` trips — upstreams that WOULD have been excluded if the rule were real. Compare to `selection_exclusion_total` to decide when to flip a shadow rule to a real `excludeIf`.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -9455,7 +9455,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (reason) (\n  rate(erpc_selection_shadow_exclusion_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "expr": "sum by (reason) (\n  rate(erpc_selection_shadow_exclusion_total{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{reason}}",
@@ -9561,7 +9561,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (action, reason) (\n  rate(erpc_upstream_cordon_event_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
+              "expr": "sum by (action, reason) (\n  rate(erpc_upstream_cordon_event_total{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      upstream=~\"${upstream:regex}\"\n  }[5m])\n)",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{action}} / {{reason}}",
@@ -9718,7 +9718,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, network, upstream) <= 5000",
+              "expr": "avg(erpc_upstream_block_head_lag{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, network, upstream) <= 5000",
               "format": "time_series",
               "instant": false,
               "interval": "1m",
@@ -9853,7 +9853,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network,category) > 5000",
+              "expr": "avg(erpc_upstream_block_head_lag{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network,category) > 5000",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -9952,7 +9952,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "avg(erpc_upstream_latest_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}) by (cluster, project, namespace, region, upstream, network)",
+              "expr": "avg(erpc_upstream_latest_block_number{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}) by (cluster, project, namespace, region, upstream, network)",
               "format": "table",
               "instant": true,
               "interval": "1m",
@@ -10057,7 +10057,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_latest_block_polled_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream)",
+              "expr": "sum(increase(erpc_upstream_latest_block_polled_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream)",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -10191,7 +10191,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network) <= 5000",
+              "expr": "avg(erpc_upstream_finalization_lag{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network) <= 5000",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -10324,7 +10324,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network) > 5000",
+              "expr": "avg(erpc_upstream_finalization_lag{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network) > 5000",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -10427,7 +10427,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "avg(erpc_upstream_finalized_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}) by (project, upstream, network)",
+              "expr": "avg(erpc_upstream_finalized_block_number{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}) by (project, upstream, network)",
               "format": "table",
               "instant": true,
               "interval": "1m",
@@ -10532,7 +10532,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_finalized_block_polled_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream)",
+              "expr": "sum(increase(erpc_upstream_finalized_block_polled_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream)",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -10636,7 +10636,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_stale_latest_block_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream, category)    ",
+              "expr": "sum(increase(erpc_upstream_stale_latest_block_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream, category)    ",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
@@ -10740,7 +10740,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_stale_finalized_block_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream, category)    ",
+              "expr": "sum(increase(erpc_upstream_stale_finalized_block_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, upstream, category)    ",
               "format": "time_series",
               "interval": "1m",
               "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
@@ -10845,7 +10845,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_unexpected_panic_total{project=~\"${project:regex}\"}[1m])) by (scope, extra, error)",
+              "expr": "sum(increase(erpc_unexpected_panic_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\"}[1m])) by (scope, extra, error)",
               "instant": false,
               "interval": "",
               "legendFormat": "__auto",
@@ -10964,7 +10964,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_shadow_response_identical_total{project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality)",
+              "expr": "sum(increase(erpc_shadow_response_identical_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality)",
               "instant": false,
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{upstream}}, {{finality}}",
@@ -11068,7 +11068,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_shadow_response_mismatch_total{project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\",finality!=\"realtime\",emptyish=\"false\"}[1m])) by (project, network, upstream, category, emptyish, larger, finality)",
+              "expr": "sum(increase(erpc_shadow_response_mismatch_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\",finality!=\"realtime\",emptyish=\"false\"}[1m])) by (project, network, upstream, category, emptyish, larger, finality)",
               "hide": false,
               "instant": false,
               "legendFormat": "{{network}}, {{category}}, {{upstream}}, {{finality}}, emt={{emptyish}}, lgr={{larger}}",
@@ -11173,7 +11173,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum(increase(erpc_shadow_response_error_total{project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality, error)",
+              "expr": "sum(increase(erpc_shadow_response_error_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regexp}\",cluster=~\"${cluster:regexp}\",network=~\"${network:regexp}\"}[1m])) by (project, network, upstream, category, finality, error)",
               "instant": false,
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{upstream}}, {{error}}, {{finality}}",
@@ -11294,7 +11294,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_set_success_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, category, connector)",
+              "expr": "sum(increase(erpc_cache_set_success_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, category, connector)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -11394,7 +11394,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector))",
               "hide": false,
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -11406,7 +11406,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
               "hide": true,
               "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
               "range": true,
@@ -11509,7 +11509,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_set_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, category, connector, policy, error, ttl)",
+              "expr": "sum(increase(erpc_cache_set_error_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, category, connector, policy, error, ttl)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{error}}, {{policy}}, TTL={{ttl}}",
               "range": true,
               "refId": "A"
@@ -11609,7 +11609,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
               "range": true,
               "refId": "A"
@@ -11620,7 +11620,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
               "hide": false,
               "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
               "range": true,
@@ -11725,7 +11725,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_success_hit_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (project, network, category, connector)",
+              "expr": "sum(increase(erpc_cache_get_success_hit_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", vendor=~\"${vendor:regex}\", user=~\"${user:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (project, network, category, connector)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -11830,7 +11830,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -11841,7 +11841,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",cluster=~\"${cluster:regex}\"}[30s])) by (le, project, network, category, connector))",
               "hide": false,
               "legendFormat": "p99 - {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -11947,7 +11947,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_success_miss_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, category, connector)",
+              "expr": "sum(increase(erpc_cache_get_success_miss_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[1m])) by (project, network, category, connector)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -12047,7 +12047,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
               "hide": true,
               "legendFormat": "p50 - {{region}}, {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -12059,7 +12059,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\"}[30s])) by (le, region, project, network, category, connector))",
               "hide": false,
               "legendFormat": "p95 - {{region}}, {{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
@@ -12164,7 +12164,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_error_total{region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\".*(ErrRecordNotFound|MissingData).*\",project=~\"${project:regex}\"}[1m])) by (region, project, network, category, connector, error) > 0",
+              "expr": "sum(increase(erpc_cache_get_error_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\".*(ErrRecordNotFound|MissingData).*\",project=~\"${project:regex}\"}[1m])) by (region, project, network, category, connector, error) > 0",
               "legendFormat": "{{region}} {{project}}, {{network}}, {{category}}, {{connector}}, {{error}}",
               "range": true,
               "refId": "A"
@@ -12264,7 +12264,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\".*(ErrRecordNotFound|MissingData).*\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector, error))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\".*(ErrRecordNotFound|MissingData).*\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector, error))",
               "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{error}}",
               "range": true,
               "refId": "A"
@@ -12275,7 +12275,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\"ErrRecordNotFound.*\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector, error))",
+              "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!~\"ErrRecordNotFound.*\",project=~\"${project:regex}\"}[30s])) by (le, project, network, category, connector, error))",
               "hide": false,
               "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{error}}",
               "range": true,
@@ -12555,7 +12555,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Wall-clock age of the latest block each cache connector has ingested (now \u2212 its latest block timestamp). Self-contained cache catch-up signal; no join required. Source: cache_connector_latest_block_timestamp_seconds.",
+          "description": "Wall-clock age of the latest block each cache connector has ingested (now − its latest block timestamp). Self-contained cache catch-up signal; no join required. Source: cache_connector_latest_block_timestamp_seconds.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -12761,7 +12761,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "bottomk(30, \n  sum by (network, category, finality) (\n    erpc_consensus_misbehavior_detected_total{\n      network=~\"${network:regex}\",\n      project=~\"${project:regex}\",\n      category=~\"${category:regex}\"\n    })\n  /\n  sum by (network, category, finality) (\n    erpc_consensus_total{\n      network=~\"${network:regex}\",\n      project=~\"${project:regex}\",\n      category=~\"${category:regex}\"\n    })\n)",
+              "expr": "bottomk(30, \n  sum by (network, category, finality) (\n    erpc_consensus_misbehavior_detected_total{\n      cluster=~\"${cluster:regex}\",\n      namespace=~\"${namespace:regex}\",\n      region=~\"${region:regex}\",\n      finality=~\"${finality:regex}\",\n      upstream=~\"${upstream:regexp}\",\n      network=~\"${network:regex}\",\n      project=~\"${project:regex}\",\n      category=~\"${category:regex}\"\n    })\n  /\n  sum by (network, category, finality) (\n    erpc_consensus_total{\n      cluster=~\"${cluster:regex}\",\n      namespace=~\"${namespace:regex}\",\n      region=~\"${region:regex}\",\n      network=~\"${network:regex}\",\n      project=~\"${project:regex}\",\n      category=~\"${category:regex}\"\n    })\n)",
               "format": "heatmap",
               "instant": true,
               "interval": "",
@@ -12866,7 +12866,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_consensus_total{cluster=~\"${cluster:regex}\",network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category)",
+              "expr": "sum(increase(erpc_consensus_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\",network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category)",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}",
               "range": true,
@@ -12975,7 +12975,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_agreement_count_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_agreement_count_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, network, category, finality))",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -13082,7 +13082,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_consensus_responses_collected_count{cluster=~\"${cluster:regex}\",network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\",finality=~\"${finality:regex}\"}[1m])) by (network, category, finality, vendors) > 0",
+              "expr": "sum(rate(erpc_consensus_responses_collected_count{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\",network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\",finality=~\"${finality:regex}\"}[1m])) by (network, category, finality, vendors) > 0",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{finality}}, {{vendors}}",
               "range": true,
@@ -13185,7 +13185,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_responses_collected_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, network, category, short_circuited, finality))",
+              "expr": "histogram_quantile(1, sum(rate(erpc_consensus_responses_collected_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, network, category, short_circuited, finality))",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{finality}}, short-circuited={{short_circuited}}",
               "range": true,
@@ -13292,7 +13292,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_consensus_misbehavior_detected_total{\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    project=~\"${project:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (network, upstream, category, finality, response_type, larger_than_consensus) > 0",
+              "expr": "sum(increase(erpc_consensus_misbehavior_detected_total{\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    project=~\"${project:regex}\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (network, upstream, category, finality, response_type, larger_than_consensus) > 0",
               "interval": "",
               "legendFormat": "{{network}}, {{upstream}}, {{category}}, {{finality}}, type={{response_type}} larger={{larger_than_consensus}}",
               "range": true,
@@ -13395,7 +13395,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_consensus_short_circuit_total{network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category, reason, finality) > 0",
+              "expr": "sum(increase(erpc_consensus_short_circuit_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category, reason, finality) > 0",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{reason}}, {{finality}} ",
               "range": true,
@@ -13498,7 +13498,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_consensus_errors_total{network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category, category, error, finality) > 0",
+              "expr": "sum(increase(erpc_consensus_errors_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category, category, error, finality) > 0",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{finality}}, {{error}}",
               "range": true,
@@ -13601,7 +13601,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_consensus_cancellations_total{network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category, phase, finality) > 0",
+              "expr": "sum(increase(erpc_consensus_cancellations_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",project=~\"${project:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category, phase, finality) > 0",
               "interval": "",
               "legendFormat": "{{network}}, {{category}}, {{phase}}, {{finality}} ",
               "range": true,
@@ -13714,7 +13714,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20, sum by (bucket, network) (\n  increase(erpc_network_evm_block_range_requested_total{\n    network=~\"${network:regex}\",network!~\"${ignore_network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\",\n    category=~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n  }[$__range])\n))",
+              "expr": "topk(20, sum by (bucket, network) (\n  increase(erpc_network_evm_block_range_requested_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    network=~\"${network:regex}\",network!~\"${ignore_network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\",\n    category=~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_blockNumber|eth_getLogs|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n  }[$__range])\n))",
               "format": "time_series",
               "instant": false,
               "interval": "",
@@ -13796,7 +13796,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(10,\n  (\n    sum by (network, bucket) (\n      increase(erpc_network_evm_block_range_requested_total{\n        network=~\"${network:regex}\",network!~\"${ignore_network:regex}\",\n        category=~\"${category:regex}\",\n        project=~\"${project:regex}\",\n        vendor=~\"${vendor:regex}\",\n        # bucket!~\"(TIP|LATEST|FUTURE|FINALIZED)\",\n        category=~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n      }[$__range])\n    )\n  )\n)",
+              "expr": "topk(10,\n  (\n    sum by (network, bucket) (\n      increase(erpc_network_evm_block_range_requested_total{\n        cluster=~\"${cluster:regex}\",\n        namespace=~\"${namespace:regex}\",\n        region=~\"${region:regex}\",\n        network=~\"${network:regex}\",network!~\"${ignore_network:regex}\",\n        category=~\"${category:regex}\",\n        project=~\"${project:regex}\",\n        vendor=~\"${vendor:regex}\",\n        # bucket!~\"(TIP|LATEST|FUTURE|FINALIZED)\",\n        category=~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n      }[$__range])\n    )\n  )\n)",
               "instant": false,
               "interval": "",
               "legendFormat": "{{network}} / {{bucket}}",
@@ -13882,7 +13882,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (category, bucket) (\n  increase(erpc_network_evm_block_range_requested_total{\n    network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",\n    category!~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n  }[5m])\n)",
+              "expr": "sum by (category, bucket) (\n  increase(erpc_network_evm_block_range_requested_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    vendor=~\"${vendor:regex}\",\n    network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",\n    category!~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n  }[5m])\n)",
               "instant": false,
               "interval": "",
               "legendFormat": "{{category}} / {{bucket}}",
@@ -13963,7 +13963,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(20,\n  sum by (network, bucket) (\n    increase(erpc_network_evm_block_range_requested_total{\n      network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",\n      category!~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n    }[$__range])\n  )\n)",
+              "expr": "topk(20,\n  sum by (network, bucket) (\n    increase(erpc_network_evm_block_range_requested_total{\n      cluster=~\"${cluster:regex}\",\n      namespace=~\"${namespace:regex}\",\n      region=~\"${region:regex}\",\n      vendor=~\"${vendor:regex}\",\n      network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",\n      category!~\"(eth_getBlockByNumber|eth_getBlockByHash|eth_getLogs|eth_blockNumber|eth_getTransactionByHash|eth_getTransactionReceipt|eth_getBlockReceipts)\"\n    }[$__range])\n  )\n)",
               "instant": false,
               "interval": "",
               "legendFormat": "{{network}} / {{bucket}}",
@@ -14086,7 +14086,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "avg by (budget, method) (erpc_rate_limiter_budget_max_count{})\n",
+              "expr": "avg by (budget, method) (erpc_rate_limiter_budget_max_count{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\"})\n",
               "legendFormat": "{{budget}}, config_method={{method}}",
               "range": true,
               "refId": "A"
@@ -14187,7 +14187,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limits_total{origin=\"project\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, budget)",
+              "expr": "sum(rate(erpc_rate_limits_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", user=~\"${user:regex}\", origin=\"project\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, budget)",
               "legendFormat": "{{project}}, {{network}}, {{budget}}",
               "range": true,
               "refId": "A"
@@ -14288,7 +14288,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limits_total{origin=\"network\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",budget!=\"<remote>\"}[1m])) by (project, network, user)",
+              "expr": "sum(rate(erpc_rate_limits_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", user=~\"${user:regex}\", origin=\"network\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",budget!=\"<remote>\"}[1m])) by (project, network, user)",
               "legendFormat": "{{project}}, {{network}}, {{user}}",
               "range": true,
               "refId": "A"
@@ -14389,7 +14389,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limits_total{origin=\"upstream\",budget=\"<remote>\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
+              "expr": "sum(rate(erpc_rate_limits_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", user=~\"${user:regex}\", origin=\"upstream\",budget=\"<remote>\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
               "legendFormat": "{{project}}, {{network}}, {{vendor}}",
               "range": true,
               "refId": "A"
@@ -14490,7 +14490,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limits_total{origin=\"upstream\",budget!=\"<remote>\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
+              "expr": "sum(rate(erpc_rate_limits_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", user=~\"${user:regex}\", origin=\"upstream\",budget!=\"<remote>\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
               "legendFormat": "{{project}}, {{network}}, {{vendor}}",
               "range": true,
               "refId": "A"
@@ -14591,7 +14591,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limits_total{origin=\"auth\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, user, auth)",
+              "expr": "sum(rate(erpc_rate_limits_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", user=~\"${user:regex}\", origin=\"auth\",project=~\"${project:regex}\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, user, auth)",
               "legendFormat": "{{project}}, {{network}}, {{user}}, {{auth}}",
               "range": true,
               "refId": "A"
@@ -14697,7 +14697,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limits_total{network=~\"${network:regex}\",project=~\"${project:regex}\",upstream=~\"${upstream:regex}\",user=~\"${user:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin, budget)",
+              "expr": "sum(rate(erpc_rate_limits_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",project=~\"${project:regex}\",upstream=~\"${upstream:regex}\",user=~\"${user:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin, budget)",
               "legendFormat": "origin={{origin}}, project={{project}}, {{network}}, {{category}}, budget={{budget}}",
               "range": true,
               "refId": "A"
@@ -14803,7 +14803,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(erpc_rate_limiter_failopen_total{network=~\"${network:regex}\",project=~\"${project:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin, budget)",
+              "expr": "sum(rate(erpc_rate_limiter_failopen_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",project=~\"${project:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin, budget)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{budget}}",
               "range": true,
               "refId": "A"
@@ -14918,7 +14918,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
               "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -15025,7 +15025,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
               "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -15135,7 +15135,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_auth_failed_total{\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\"\n}[$__interval])) by (project, region, strategy, reason, agent_name) > 0",
+              "expr": "sum(increase(erpc_auth_failed_total{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\"\n}[$__interval])) by (project, region, strategy, reason, agent_name) > 0",
               "legendFormat": "{{project}} {{region}} {{strategy}} {{reason}} {{agent_name}}",
               "range": true,
               "refId": "A"
