@@ -426,6 +426,43 @@ Use `evalScope: 'network-method-finality'` to get one slot per `(method, finalit
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
 ```
 
+### Reserve tier (break-glass inclusion)
+
+```js
+// A reserve pool (e.g. a pricier or rate-limited provider, tagged
+// `tags: [tier:reserve]`) is kept OUT of normal rotation with excludeTag,
+// then ranked in only when the serving pool is collectively unfit — every
+// survivor lagging or slow, or none left. `includeIf` adds; it never evicts
+// a survivor, so a single slow primary alone does not pull the reserve in.
+// The `length > 0 && ...` guard keeps the lag/latency rules from firing on
+// an empty pool; the `length < 1` line is the explicit empty-pool fallback.
+(upstreams, ctx) =>
+  upstreams
+    .removeCordoned()
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+    .excludeTag('tier:reserve')
+    .includeIf('tier:reserve', (p) => p.length > 0 && p.every(blockSecondsLagAbove(30)))
+    .includeIf('tier:reserve', (p) => p.length > 0 && p.every(latencyAbove(2000, 99)))
+    .includeIf('tier:reserve', (p) => p.length < 1)
+    .sortByScore(PREFER_FASTEST)
+    .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
+```
+
+The reserve is brought in while primaries are still serving but
+**collectively degraded** (lagging / slow) — not only when they're
+entirely gone — letting `sortByScore` pick between them. Pair with
+`routing.probe: 'off'` on the reserve upstreams if you also want to keep
+shadow-probe traffic off them while they're out.
+
+Keep the explicit `excludeTag('tier:reserve')` step even though `includeIf`
+targets the same tag: the two are not redundant, they cover the two
+directions of intent. `excludeTag` states "this tier is NOT in normal
+rotation" — without it the reserve is simply in the pool like any other
+upstream. `includeIf` states "this is the only condition under which it
+comes back". Reading the pair top-to-bottom is the policy's own
+documentation of why the reserve exists and when it's allowed to serve;
+dropping either half leaves that reasoning implicit.
+
 ### Per-method override
 
 ```js
@@ -894,6 +931,65 @@ excluded set forever once predicates trip, until manually uncordoned.
 ```
 
 Always include matching upstreams, even if prior filters dropped them.
+
+</details>
+
+<details>
+<summary>**`includeIf`**</summary>
+
+```ts
+.includeIf(
+  target:                                  // WHAT to admit — comes first
+    | string | string[]                    //   tag pattern (common case)
+    | {                                     //   or a selector object:
+        id?: string | string[],            //     facets AND together,
+        tag?: string | string[],           //     at least one must resolve
+        vendor?: string | string[],
+        type?: string | string[],
+        position?: 'head' | 'tail' = 'tail',
+      },
+  condition: boolean | ((upstreams) => boolean),   // WHEN to admit
+)
+```
+
+The dual of `excludeIf`: where `excludeIf` **drops** a per-upstream
+offender, `includeIf` **admits** a selected set of upstreams from the
+full universe when an aggregate condition over the surviving pool
+holds. It never removes an upstream.
+
+`target` comes first so the policy reads "include _these_ if
+_condition_". The function form of `condition` receives the **current**
+chain array — the pool that survived earlier steps — so it can ask
+aggregate ("network-level") questions about what's left. The array is a
+normal JS array, so use native `every` / `some` / `length` / `filter`
+over the [predicate factories](#predicate-factories):
+
+```js
+upstreams
+  .excludeTag('tier:reserve')                                              // reserve out of normal rotation
+  .includeIf('tier:reserve', (p) => p.every(blockSecondsLagAbove(30)))     // admit if every survivor lags
+  .includeIf('tier:reserve', (p) => p.length < 2)                          // ...or if too few remain
+  .sortByScore(PREFER_FASTEST)
+```
+
+Use it for a **break-glass reserve tier**: kept out of rotation, but
+ranked in alongside the survivors only when the serving pool is
+collectively unfit (too few left, all lagging, all slow). Because it
+adds rather than excludes, a single degraded primary is never evicted
+— the reserve set is offered alongside it and a later `sortByScore`
+decides the order.
+
+> Native `every` returns `true` on an empty array, so
+> `(p) => p.every(...)` admits the reserve when the pool is empty
+> (usually what you want). Guard with `(p) => p.length > 0 && p.every(...)`
+> if an empty pool should **not** trigger inclusion.
+
+At least one selector facet must resolve to a concrete value; otherwise
+it is a no-op (it never admits the whole universe — including for an
+empty or facet-less object target). Added upstreams default to the tail
+so the survivors keep priority. Already-present upstreams aren't
+duplicated. A malformed or throwing `condition` degrades to a no-op
+rather than failing the eval.
 
 </details>
 

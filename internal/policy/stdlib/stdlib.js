@@ -1020,6 +1020,100 @@
     return (position === 'head') ? adds.concat(this) : this.concat(adds);
   });
 
+  // includeIf — conditionally admit upstreams from the full universe back
+  // into the chain. The dual of `excludeIf`: where `excludeIf` DROPS a
+  // per-upstream offender, `includeIf` ADDS a selected set of upstreams
+  // when an aggregate condition over the surviving pool holds. It never
+  // removes anyone.
+  //
+  // The intended use is a "break-glass" tier: keep a set of upstreams out
+  // of normal rotation (e.g. via `excludeTag('tier:<x>')`) and bring them
+  // in ONLY when the upstreams that are currently serving become
+  // collectively unfit — too few left, all of them lagging, all of them
+  // slow. Because it adds rather than excludes, a single degraded primary
+  // is never evicted; the reserve set is offered alongside it and ranked
+  // by the subsequent `sortByScore`.
+  //
+  //   target: WHAT to admit — placed first so the policy reads
+  //     "include <these> if <condition>" and is never ambiguous. Either:
+  //       * a tag pattern (string / array, `!negation` accepted) — the
+  //         common case: `includeIf('tier:reserve', cond)`; or
+  //       * a selector object `{ id, tag, vendor, type, position }` whose
+  //         facets AND together (same semantics as `where`). At least one
+  //         facet must resolve to a concrete value — otherwise includeIf is
+  //         a no-op (it never pulls the whole universe by accident, e.g. for
+  //         `{}` or `{ position: 'head' }`).
+  //     `position` ('head' | 'tail', default 'tail') only applies to the
+  //     object form; admitted upstreams go to the tail by default so the
+  //     surviving pool keeps priority — let `sortByScore` reorder if a
+  //     reserve upstream is genuinely better. Already-present upstreams (by
+  //     id) are not duplicated.
+  //
+  //   condition: boolean OR (upstreams, ctx) => boolean. The function form
+  //     receives the CURRENT chain array — the pool that survived earlier
+  //     steps — so it can ask aggregate ("network-level") questions about
+  //     what is left, using native array methods over the existing
+  //     per-upstream predicate factories:
+  //
+  //       // admit when EVERY survivor is lagging (empty pool also admits —
+  //       // native `every` is true on []):
+  //       .includeIf('tier:reserve', p => p.every(blockSecondsLagAbove(30)))
+  //       // ...or when too few survive:
+  //       .includeIf('tier:reserve', p => p.length < 2)
+  //
+  // Defensive: any malformed argument degrades to a no-op (returns the
+  // chain unchanged) rather than throwing — a throw mid-eval would drop the
+  // whole network back to the engine's default policy.
+  define('includeIf', function (target, condition) {
+    // 1. Resolve the target into selector facets + position. A string/array
+    //    is the tag shorthand; an object carries explicit facets. Gating on
+    //    the RESOLVED facets (not on "an object was passed") is what keeps
+    //    `{}` / `{ position: 'head' }` a no-op instead of a match-all that
+    //    admits the entire universe.
+    let idPat, tagPat, vendorPat, typePat, position;
+    if (typeof target === 'string' || Array.isArray(target)) {
+      tagPat = target;
+    } else if (target != null && typeof target === 'object') {
+      idPat = target.id;
+      tagPat = target.tag;
+      vendorPat = target.vendor;
+      typePat = target.type;
+      position = target.position;
+    }
+    if (idPat == null && tagPat == null && vendorPat == null && typePat == null) {
+      return this.slice();
+    }
+
+    // 2. Evaluate the gate. Function form gets (upstreams, ctx); a thrown
+    //    predicate is swallowed (treated as "do not include") so one bad
+    //    custom condition can't sink the eval.
+    let pass;
+    if (typeof condition === 'function') {
+      try {
+        pass = !!condition(this, globalThis.__policyCtx || {});
+      } catch (_e) {
+        pass = false;
+      }
+    } else {
+      pass = !!condition;
+    }
+    if (!pass) return this.slice();
+
+    // 3. Union in matching upstreams from the universe, deduped by id.
+    const matchFn = function (u) {
+      if (idPat     != null && !matchAny(idPat, u.id)) return false;
+      if (tagPat    != null && !hasMatchingTag(u, tagPat)) return false;
+      if (vendorPat != null && !matchAny(vendorPat, u.vendor)) return false;
+      if (typePat   != null && !matchAny(typePat, u.type)) return false;
+      return true;
+    };
+    const all = globalThis.__policyAllUpstreams || [];
+    const haves = new Set(this.map(u => u.id));
+    const adds = all.filter(u => !haves.has(u.id) && matchFn(u));
+    if (adds.length === 0) return this.slice();
+    return (position === 'head') ? adds.concat(this) : this.concat(adds);
+  });
+
   // ─── 4.11 Combinators ───────────────────────────────────────────────────
 
   define('if', function (cond, thenFn, elseFn) {
