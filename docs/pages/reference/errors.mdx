@@ -1,0 +1,390 @@
+---
+title: Error taxonomy
+description: Every error eRPC can emit — typed, categorized, with retryability flags, wire HTTP status, and JSON-RPC codes — so you can interpret metrics, write alerts, and debug routing decisions confidently.
+---
+
+import { LLMsTxtLink, AISection, SourceLink, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Error taxonomy
+
+A catalog of all ~73 typed errors eRPC can emit, organized by category. Each entry shows whether the error retries on the same upstream, retries on a different upstream, what HTTP status and JSON-RPC code it produces on the wire, and whether it is live or dead code. Every vendor's idiosyncratic message is normalized into one of these types before retry logic or metrics ever see it.
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="debug why requests are exhausting all upstreams"
+	defaultOpen
+	prompt={`My eRPC instance frequently returns ErrUpstreamsExhausted to clients and I don't know
+which upstream error type is dominating. Read the error taxonomy, then inspect my
+my eRPC config config and tell me which metrics and log fields to check, and how to adjust
+retry or circuit-breaker settings based on the dominant child error. Reference:
+https://docs.erpc.cloud/reference/errors.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="set up production alerting on error severity"
+	prompt={`I want Prometheus alerts that fire on critical errors only and ignore expected
+noise like hedge discards and client disconnects. Using the severity classification in
+the eRPC error taxonomy, write PromQL alert expressions for my eRPC config deployment
+and explain which error codes map to each severity level. Reference:
+https://docs.erpc.cloud/reference/errors.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="trace a -32003 response on eth_sendRawTransaction"
+	prompt={`Some of my eth_sendRawTransaction calls return JSON-RPC code -32003 even though the
+transactions go through. Explain which normalizer rules apply to sendRawTransaction,
+why eRPC may have retried, and how to distinguish already_known from nonce_too_low
+using the error details fields. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/reference/errors.llms.txt`}
+/>
+
+<AISection title="Error taxonomy — full agent reference">
+
+### How it works
+
+**Two-layer taxonomy.** Go errors are `BaseError`-rooted structs with a string `ErrorCode` constant. Upstream-attributed errors additionally carry an `UpstreamAwareError` accessor. `ErrJsonRpcExceptionExternal` is deliberately NOT a `StandardError` — it is the raw vendor JSON-RPC object used as input to normalizers only; it never propagates beyond the client layer.
+
+**Normalization pipeline.** HTTP responses go through `ExtractJsonRpcError` (`architecture/evm/error_normalizer.go`), which runs a vendor-specific hook first, then evaluates 22 ordered rules (first match wins). gRPC/BDS responses go through `ExtractGrpcErrorFromGrpcStatus` (`common/grpc_errors.go`), which checks BDS error codes first, then standard gRPC codes. Both paths produce a typed internal error wrapping `ErrJsonRpcExceptionInternal` that carries both the original vendor code and the normalized eRPC code.
+
+**Retryability is dual-axis.** `IsRetryableTowardsUpstream` returns `false` if any of 10 specific codes appear anywhere in the cause chain (including joined multi-errors). `IsRetryableTowardNetwork` defaults to `true` and returns `false` only when: (a) `ErrUpstreamsExhausted` has a nil cause, (b) a multi-error cause has ALL non-retryable children, or (c) a linear cause chain carries `Details["retryableTowardNetwork"]=false`. The flag walk stops at multi-error wrappers to avoid order-dependent bugs.
+
+**Wire translation.** `TranslateToJsonRpcException` converts internal errors to a JSON-RPC numeric code. For `ErrUpstreamsExhausted`, it selects the "dominant" child error (highest occurrence count, skipping `ErrCodeUpstreamRequestSkipped` and `ErrCodeEndpointUnsupported`). HTTP status is determined by two identical switch functions in `erpc/http_server.go` — not by per-type `ErrorStatusCode()` methods, which are dead code.
+
+**Error label for metrics.** Both error metrics use `common.ErrorFingerprint(err)` as the `error` label value. `ErrorFingerprint` calls `ErrorSummary` then redacts hashes/addresses/IPs/numbers and caps at 256 characters. The mode of `ErrorSummary` is controlled by `metrics.errorLabelMode`, defaulting to `compact` (code-only labels, preventing high cardinality). `verbose` mode is human-readable but creates unbounded time series — use only in development.
+
+**Severity classification.** `ClassifySeverity(err)` categorizes errors for the `severity` Prometheus label: `info` for nil/client errors/execution exceptions; `warning` for non-retryable-toward-upstream errors, `ErrEndpointRequestCanceled`, `context.Canceled`; `critical` for everything else.
+
+**`ErrUpstreamsExhausted` aggregation.** This is a multi-error aggregator: its `Cause` is an `errors.Join` of all per-upstream errors. `SummarizeCauses()` buckets children into 19 categories and appends a human-readable suffix to the message: `"(2 upstream timeout, 1 upstream rateLimit)"`. When `buildErrorResponseBody` sees a single-child `ErrUpstreamsExhausted`, it unwraps it — clients see the real upstream error, not the wrapper.
+
+**Error class hierarchy:**
+
+```
+StandardError interface
+└── BaseError (embedded in all domain errors)
+    ├── UpstreamAwareError (embedded in upstream-attributed errors)
+    │
+    ├── Server / request lifecycle
+    │   ├── ErrInvalidRequest, ErrInvalidUrlPath, ErrInvalidConfig
+    │   ├── ErrRequestTimeout, ErrInternalServerError, ErrNotImplemented
+    │
+    ├── Auth
+    │   ├── ErrAuthUnauthorized, ErrAuthRateLimitRuleExceeded
+    │
+    ├── Project / Network
+    │   ├── ErrProjectNotFound, ErrProjectAlreadyExists
+    │   ├── ErrNetworkNotFound, ErrNetworkNotSupported, ErrNetworkInitializing
+    │   ├── ErrUnknownNetworkID, ErrUnknownNetworkArchitecture
+    │   ├── ErrInvalidEvmChainId, ErrFinalizedBlockUnavailable, ErrNetworkRequestTimeout
+    │
+    ├── Upstream lifecycle
+    │   ├── ErrUpstreamClientInitialization, ErrUpstreamInitialization
+    │   ├── ErrNoUpstreamsLeftToSelect, ErrNoUpstreamsDefined, ErrNoUpstreamsFound
+    │
+    ├── Upstream request routing
+    │   ├── ErrUpstreamRequest (wrapper), ErrUpstreamRequestSkipped
+    │   ├── ErrUpstreamBlockUnavailable, ErrUpstreamMethodIgnored
+    │   ├── ErrUpstreamSyncing, ErrUpstreamShadowing, ErrUpstreamNotAllowed
+    │   ├── ErrUpstreamHedgeCancelled, ErrUpstreamMalformedResponse
+    │   ├── ErrUpstreamsExhausted (multi-error aggregator)
+    │
+    ├── Rate limiting
+    │   ├── ErrRateLimitBudgetNotFound, ErrProjectRateLimitRuleExceeded
+    │   ├── ErrNetworkRateLimitRuleExceeded, ErrUpstreamRateLimitRuleExceeded
+    │
+    ├── Endpoint (upstream HTTP/gRPC responses)
+    │   ├── ErrEndpointUnauthorized, ErrEndpointUnsupported
+    │   ├── ErrEndpointClientSideException, ErrEndpointExecutionException
+    │   ├── ErrEndpointTransportFailure, ErrEndpointServerSideException
+    │   ├── ErrEndpointRequestTimeout, ErrEndpointRequestCanceled
+    │   ├── ErrEndpointCapacityExceeded, ErrEndpointBillingIssue
+    │   ├── ErrEndpointMissingData, ErrEndpointRequestTooLarge
+    │   ├── ErrEndpointContentValidation, ErrEndpointNonceException
+    │
+    ├── Failsafe policies
+    │   ├── ErrFailsafeConfiguration, ErrFailsafeTimeoutExceeded
+    │   ├── ErrFailsafeRetryExceeded, ErrFailsafeCircuitBreakerOpen
+    │
+    ├── Consensus
+    │   ├── ErrConsensusDispute, ErrConsensusLowParticipants
+    │
+    ├── getLogs / client range errors
+    │   ├── ErrGetLogsExceededMaxAllowedRange
+    │   ├── ErrGetLogsExceededMaxAllowedAddresses, ErrGetLogsExceededMaxAllowedTopics
+    │
+    ├── JSON-RPC (carriers)
+    │   ├── ErrJsonRpcRequestUnmarshal, ErrJsonRpcRequestUnresolvableMethod
+    │   ├── ErrJsonRpcRequestPreparation
+    │   └── ErrJsonRpcExceptionInternal (normalized carrier)
+    │
+    └── Store / cache
+        ├── ErrInvalidConnectorDriver, ErrRecordNotFound, ErrRecordExpired
+
+Not StandardError (standalone types):
+├── ErrJsonRpcExceptionExternal — raw upstream JSON-RPC error; normalizer input only
+├── TaskFatalError              — initializer stop signal; IsTaskFatal()=true
+└── ErrDynamicTimeoutExceeded   — sentinel for context.WithTimeoutCause
+```
+
+### Config schema
+
+| YAML path | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `metrics.errorLabelMode` | `string` | `"compact"` ([`common/defaults.go:L762-L764`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L762-L764)) | Controls `ErrorSummary` output format. `"compact"`: code-only labels (low cardinality). `"verbose"`: `CodeChain: cleanedDeepestMessage` (high cardinality; development only). Only `"compact"` and `"verbose"` are accepted ([`common/validation.go:L147-L148`](https://github.com/erpc/erpc/blob/main/common/validation.go#L147-L148)). Applied globally via `common.SetErrorLabelMode`. Source: <SourceLink file="common/config.go" lines="2536-2550" /> |
+
+No other error-specific config fields. Vendor normalization is unconditional for any upstream with a matching `Vendor()`.
+
+### Complete error-code table
+
+Legend:
+- **U** = `IsRetryableTowardsUpstream` result
+- **N** = `IsRetryableTowardNetwork` result
+- **Wire HTTP** = actual wire status from `determineResponseStatusCode`/`handleErrorResponse` (<SourceLink file="erpc/http_server.go" lines="1280-1317" />, <SourceLink file="erpc/http_server.go" lines="1457-1491" />)
+- **JSON-RPC** = wire numeric code after `TranslateToJsonRpcException`
+
+| # | Error code | U | N | Wire HTTP | JSON-RPC | Notes |
+|---|---|---|---|---|---|---|
+| 1 | `ErrInvalidRequest` | yes | yes | 400 | −32602 | invalid body/headers |
+| 2 | `ErrInvalidUrlPath` | yes | yes | 400 | −32602 | malformed URL path |
+| 3 | `ErrInvalidConfig` | yes | yes | 200 | −32603 | startup-only |
+| 4 | `ErrRequestTimeout` | yes | yes | 200 | −32603 | pre-upstream timeout |
+| 5 | `ErrInternalServerError` | yes | yes | 200 | −32603 | internal |
+| 6 | `ErrAuthUnauthorized` | yes | yes | 401 | −32016 | auth strategy rejected |
+| 7 | `ErrAuthRateLimitRuleExceeded` | no (capacity) | yes | 429 | −32005 | auth-level budget |
+| 8 | `ErrProjectNotFound` | yes | yes | 404 | −32603 | project not configured |
+| 9 | `ErrProjectAlreadyExists` | n/a | n/a | — | — | startup duplicate |
+| 10 | `ErrNetworkNotFound` | yes | yes | 404 | −32603 | network not configured |
+| 11 | `ErrUnknownNetworkID` | yes | yes | 200 | −32603 | — |
+| 12 | `ErrUnknownNetworkArchitecture` | yes | yes | 200 | −32603 | — |
+| 13 | `ErrNotImplemented` | yes | yes | 200 | −32603 | — |
+| 14 | `ErrInvalidEvmChainId` | yes | yes | 200 | −32603 | — |
+| 15 | `ErrFinalizedBlockUnavailable` | yes | yes | 200 | −32603 | finality check |
+| 16 | `ErrUpstreamClientInitialization` | yes | yes | — | — | not fatal unless wrapped in `TaskFatalError` |
+| 17 | `ErrUpstreamRequest` | inherited | inherited | — | inherited | wrapper; carries durationMs/attempts/retries/hedges |
+| 18 | `ErrUpstreamMalformedResponse` | yes | yes | 200 | −32603 | — |
+| 19 | `ErrUpstreamsExhausted` | recursive | recursive | 200 | from dominant child | multi-error aggregator |
+| 20 | `ErrNoUpstreamsLeftToSelect` | yes | yes | 200 | −32603 | per-upstream states in details |
+| 21 | `ErrNoUpstreamsDefined` | yes | yes | 200 | −32603 | **Dead code** — zero production call sites |
+| 22 | `ErrNoUpstreamsFound` | yes | yes | 200 | −32603 | — |
+| 23 | `ErrNetworkInitializing` | yes | yes | 200 | −32603 | retry shortly |
+| 24 | `ErrNetworkNotSupported` | yes | yes | 404 | −32603 | no provider covers network |
+| 25 | `ErrUpstreamNetworkNotDetected` | yes | yes | — | — | **Dead code** — zero production call sites |
+| 26 | `ErrUpstreamInitialization` | yes | yes | — | — | — |
+| 27 | `ErrUpstreamRequestSkipped` | no | yes | 200 | −32603 | permanent skip |
+| 28 | `ErrUpstreamBlockUnavailable` | yes | yes | 200 | −32603 | transient lag |
+| 29 | `ErrUpstreamMethodIgnored` | no | yes | 200 | −32601 | `ignoreMethods` config |
+| 30 | `ErrUpstreamSyncing` | yes | yes | 200 | −32603 | node still syncing |
+| 31 | `ErrUpstreamShadowing` | yes | yes | — | — | shadow mode |
+| 32 | `ErrUpstreamNotAllowed` | yes | yes | — | — | use-upstream directive |
+| 33 | `ErrUpstreamHedgeCancelled` | yes | yes | — | — | hedge discard |
+| 34 | `ErrResponseWriteLock` | yes | yes | — | — | **Dead code** — superseded by `ErrUpstreamHedgeCancelled` |
+| 35 | `ErrJsonRpcRequestUnmarshal` | no | no | 400 | −32700 | retryableTowardNetwork=false always |
+| 36 | `ErrJsonRpcRequestUnresolvableMethod` | yes | no | 200 | −32603 | retryableTowardNetwork=false; note: gets −32603, not −32700 |
+| 37 | `ErrJsonRpcRequestPreparation` | yes | no | 200 | −32603 | **Dead code** — N=false default is caller-overridable (unique in taxonomy) |
+| 38 | `ErrFailsafeConfiguration` | n/a | n/a | — | — | startup |
+| 39 | `ErrFailsafeTimeoutExceeded` | yes | yes | 200 | −32603 | scope in message |
+| 40 | `ErrFailsafeRetryExceeded` | inherited | inherited | — | inherited | scope in message |
+| 41 | `ErrFailsafeCircuitBreakerOpen` | no | yes | 200 | −32603 | — |
+| 42 | `ErrRateLimitBudgetNotFound` | n/a | n/a | — | — | config |
+| 43 | `ErrRateLimitRuleNotFound` | n/a | n/a | — | — | **Dead code** — zero production call sites |
+| 44 | `ErrProjectRateLimitRuleExceeded` | no (capacity) | yes | 429 | −32005 | — |
+| 45 | `ErrNetworkRateLimitRuleExceeded` | no (capacity) | yes | 429 | −32005 | — |
+| 46 | `ErrNetworkRequestTimeout` | yes | yes | 200 | −32603 | network-scope timeout |
+| 47 | `ErrUpstreamRateLimitRuleExceeded` | no (capacity) | yes | 200 | −32005 | NOT in wire 429 list despite method returning 429 |
+| 48 | `ErrUpstreamExcludedByPolicy` | yes | yes | — | — | **Dead code** — zero production call sites; exclusion is structural |
+| 49 | `ErrEndpointUnauthorized` | no | yes | 401 | −32016 | provider 401/403 |
+| 50 | `ErrEndpointUnsupported` | no | yes | 200 | −32601 | — |
+| 51 | `ErrEndpointClientSideException` | yes | yes (default) | 200 | from cause | N:no set by some normalizer branches (rules 17, 18d) |
+| 52 | `ErrEndpointExecutionException` | no | no | 200 | 3 or −32003 | N:yes overridden for `eth_sendRawTransaction` reverts |
+| 53 | `ErrEndpointTransportFailure` | yes | yes | — | −32603 | URL stripped from cause msg (credential hygiene) |
+| 54 | `ErrEndpointServerSideException` | yes | yes | 200 | from cause | `originalStatusCode` stored in details |
+| 55 | `ErrEndpointRequestTimeout` | yes | yes | 200 | −32015 | — |
+| 56 | `ErrEndpointRequestCanceled` | yes | yes | — | — | severity=warning |
+| 57 | `ErrEndpointCapacityExceeded` | no (capacity) | yes | 429 | −32005 | — |
+| 58 | `ErrEndpointBillingIssue` | no | yes | 200 | −32005 | — |
+| 59 | `ErrEndpointMissingData` | yes | yes | 200 | −32014 | details: latestBlock/finalizedBlock/maxAvailableRecentBlocks |
+| 60 | `ErrUpstreamNodeTypeMismatch` | yes | yes | — | −32603 | archive vs full node |
+| 61 | `ErrEndpointRequestTooLarge` | no | yes | 200 | −32012 | complaint: `evm_block_range` or `evm_addresses` |
+| 62 | `ErrJsonRpcExceptionInternal` | wrapper | wrapper | — | `normalizedCode` field | internal carrier for normalized codes |
+| 63 | `ErrJsonRpcExceptionExternal` | n/a | n/a | — | — | raw upstream JSON-RPC; normalizer input only |
+| 64 | `ErrInvalidConnectorDriver` | n/a | n/a | — | — | config |
+| 65 | `ErrRecordNotFound` | yes | yes | — | — | cache miss |
+| 66 | `ErrRecordExpired` | yes | yes | — | — | cache TTL exceeded |
+| 67 | `ErrConsensusDispute` | multi | multi | 200 | −32603 | retryable if ANY child is retryable |
+| 68 | `ErrConsensusLowParticipants` | multi | multi | 200 | −32603 | same any-child rule |
+| 69 | `ErrGetLogsExceededMaxAllowedRange` | yes | yes | 200 | −32012 | eRPC cap, not upstream |
+| 70 | `ErrGetLogsExceededMaxAllowedAddresses` | yes | yes | 200 | −32012 | — |
+| 71 | `ErrGetLogsExceededMaxAllowedTopics` | yes | yes | 200 | −32012 | — |
+| 72 | `ErrEndpointContentValidation` | no | yes | 200 | −32603 | try different upstream |
+| 73 | `ErrEndpointNonceException` | yes | no | 200 | −32003 | reason: `already_known` or `nonce_too_low`; idempotency |
+
+Non-`StandardError` types: `ErrJsonRpcExceptionExternal` (normalizer input), `TaskFatalError` (initializer stop signal), `ErrDynamicTimeoutExceeded` (sentinel distinguishing failsafe-policy timeout from HTTP server deadline).
+
+### JSON-RPC numeric codes
+
+All defined at [`common/errors.go:L2151-L2174`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2151-L2174).
+
+| Constant | Value | Category |
+|---|---|---|
+| `JsonRpcErrorUnknown` | −99999 | eRPC internal — unclassified fallback |
+| `JsonRpcErrorCallException` | −32000 | standard — generic call exception |
+| `JsonRpcErrorTransactionRejected` | −32003 | standard — transaction rejected; also nonce exceptions |
+| `JsonRpcErrorClientSideException` | −32600 | standard — invalid request |
+| `JsonRpcErrorUnsupportedException` | −32601 | standard — method not found/unsupported |
+| `JsonRpcErrorInvalidArgument` | −32602 | standard — invalid params |
+| `JsonRpcErrorServerSideException` | −32603 | standard — internal error; eRPC default for unmapped errors |
+| `JsonRpcErrorParseException` | −32700 | standard — JSON parse error |
+| `JsonRpcErrorEvmReverted` | 3 | de-facto — EVM execution reverted (positive code) |
+| `JsonRpcErrorCapacityExceeded` | −32005 | eRPC-normalized — maps all rate-limit / capacity types |
+| `JsonRpcErrorEvmLargeRange` | −32012 | eRPC-normalized — request range too large |
+| `JsonRpcErrorMissingData` | −32014 | eRPC-normalized — data not on this node |
+| `JsonRpcErrorNodeTimeout` | −32015 | eRPC-normalized — node-level timeout |
+| `JsonRpcErrorUnauthorized` | −32016 | eRPC-normalized — unauthorized/forbidden |
+
+### Wire HTTP status mapping
+
+| Wire HTTP | Triggered by (`HasErrorCode` anywhere in chain) |
+|---|---|
+| 400 | `ErrInvalidUrlPath`, `ErrJsonRpcRequestUnmarshal`, `ErrInvalidRequest` |
+| 401 | `ErrAuthUnauthorized`, `ErrEndpointUnauthorized` |
+| 404 | `ErrProjectNotFound`, `ErrNetworkNotFound`, `ErrNetworkNotSupported` |
+| 429 | `ErrAuthRateLimitRuleExceeded`, `ErrProjectRateLimitRuleExceeded`, `ErrNetworkRateLimitRuleExceeded`, `ErrEndpointCapacityExceeded` |
+| 200 | everything else |
+
+**`ErrUpstreamRateLimitRuleExceeded` returns 200 on the wire** despite its `ErrorStatusCode()` method returning 429. It is not in the wire 429 switch.
+
+### HTTP/JSON-RPC vendor normalization rules
+
+Entry point: <SourceLink file="architecture/evm/error_normalizer.go" lines="20" />. Triggered when `jr.Error != nil` OR HTTP status &gt; 299. Rules evaluated in order — **first match wins**. `originalCode` (vendor numeric) is preserved; `normalizedCode` is set to the eRPC value.
+
+| # | Trigger | Normalized error | JSON-RPC | U | N |
+|---|---|---|---|---|---|
+| 0 | Vendor hook returns non-nil | vendor-defined | vendor-defined | — | — |
+| 1 | Block-range-too-large strings ("Try with this block range", "max block range", "range too large", "too many results", "try paginating", etc.) | `ErrEndpointRequestTooLarge` (`evm_block_range`) | −32012 | no | yes |
+| 2 | Address-count strings ("specify less number of address", "addresses or topics per search position", "filters"+"current limit is") | `ErrEndpointRequestTooLarge` (`evm_addresses`) | −32012 | no | yes |
+| 3 | "sender is over rate limit" (OP sequencer) | `ErrEndpointCapacityExceeded` | −32005 | no | **no** (all providers hit same sequencer) |
+| 4 | status 402, "reached the free tier", "Monthly capacity limit", "/billing" | `ErrEndpointBillingIssue` | −32005 | no | yes |
+| 5 | status 429, "Too many requests", "rate limit", "has exceeded", "limit exceeded", etc. | `ErrEndpointCapacityExceeded` | −32005 | no | yes |
+| 6 | Block-tag unsupported ("pending block is not available", "safe block not found", "finalized is not a supported", etc.) | `ErrEndpointClientSideException` | −32600 | yes | yes (deliberately retryable) |
+| 7 | Missing-data patterns ("missing trie node", "unknown block", "header not found", "transaction not found", "no historical rpc", etc.) | `ErrEndpointMissingData` | −32014 | yes | yes |
+| 8 | "execution timeout" | `ErrEndpointServerSideException` | −32015 | yes | yes |
+| 9 | Reverts: "reverted", "VM execution error", "VM Exception", "intrinsic gas too high" | `ErrEndpointExecutionException` | 3 | no | no (yes for `eth_sendRawTransaction`) |
+| 10 | "EVM error: InvalidJump" (Berachain) | `ErrEndpointExecutionException` | 3 | no | no (yes for `eth_sendRawTransaction`) |
+| 11 | Duplicate-tx: "already known", "tx already in mempool", "transaction already exists", etc. — **must precede rule 14** | `ErrEndpointNonceException` (`already_known`) | −32003 | yes | no |
+| 12 | Nonce conflict: "nonce too low", "nonce has already been used" | `ErrEndpointNonceException` (`nonce_too_low`) | −32003 | yes | no |
+| 13 | "insufficient funds", "insufficient balance" — **no** `eth_sendRawTransaction` override | `ErrEndpointExecutionException` | −32003 | no | no |
+| 14 | code == −32003, "out of gas", "gas too low", "IntrinsicGas" | `ErrEndpointExecutionException` | −32003 | no | no (yes for `eth_sendRawTransaction`) |
+| 15a | "not found"/"not available" AND ("Method"\|"module") | `ErrEndpointUnsupported` | −32601 | no | yes |
+| 15b | same outer AND ("header"\|"block"\|"transaction"\|"state") | `ErrEndpointMissingData` | −32014 | yes | yes |
+| 15c | same outer, neither 15a nor 15b | `ErrEndpointClientSideException` | −32600 | yes | yes |
+| 16 | status 415/405, code −32601/−32004/−32001, "Unsupported method", "not supported", "method is not whitelisted" — **must follow "not found" rules** | `ErrEndpointUnsupported` | −32601 | no | yes |
+| 17 | Malformed tx: "rlp: expected input list", "typed transaction too short", "invalid transaction" | `ErrEndpointClientSideException` | −32602 | yes | **no** |
+| 18a | "tx of type", Envio type errors | `ErrEndpointClientSideException` | −32601 | yes | yes |
+| 18b | code == −32600 AND data contains "validation errors in batch" | `ErrEndpointClientSideException` | −32000 | yes | yes |
+| 18c | code == −32602 or −32600 (generic) | `ErrEndpointClientSideException` | −32602 | yes | yes |
+| 18d | "param is required", "Invalid Request", "invalid argument", "invalid params" | `ErrEndpointClientSideException` | −32602 | yes | **no** |
+| 19 | status 401/403, "invalid api key", "key is inactive", "unauthorized" | `ErrEndpointUnauthorized` | −32016 | no | yes |
+| 20 | Fallback (everything else) | `ErrEndpointServerSideException` | passthrough vendor code | yes | yes |
+| 21 | 200-OK result begins with `0x08c379a0` at `dt[1:11]` (index 0 is JSON quote) | `ErrEndpointExecutionException` | 3 | no | no |
+| 22 | `trace_*`/`debug_*`/`eth_trace*` AND raw body contains "execution timeout" (string scan, not JSON) | `ErrEndpointServerSideException` | −32015 | yes | yes |
+
+### gRPC/BDS normalization rules
+
+Entry point: <SourceLink file="common/grpc_errors.go" lines="12" />. BDS error codes checked first, then gRPC codes.
+
+| Trigger | Normalized error | JSON-RPC | U | N |
+|---|---|---|---|---|
+| BDS `UNSUPPORTED_BLOCK_TAG`, `UNSUPPORTED_METHOD` | `ErrEndpointUnsupported` | −32601 | no | yes |
+| BDS `RANGE_OUTSIDE_AVAILABLE` | `ErrEndpointMissingData` | −32014 | yes | yes |
+| BDS `INVALID_PARAMETER`, `INVALID_REQUEST` | `ErrEndpointClientSideException` | −32602 | yes | **no** |
+| BDS `RATE_LIMITED` | `ErrEndpointCapacityExceeded` | −32005 | no | yes |
+| BDS `TIMEOUT_ERROR` | `ErrEndpointRequestTimeout` | −32015 | yes | yes |
+| BDS `RANGE_TOO_LARGE` | `ErrEndpointRequestTooLarge` (`evm_block_range`) | −32012 | no | yes |
+| BDS `INTERNAL_ERROR` | `ErrEndpointServerSideException` | −32603 | yes | yes |
+| gRPC `Canceled` | `ErrEndpointRequestCanceled` | — | yes | yes |
+| gRPC `Unimplemented` | `ErrEndpointUnsupported` | −32601 | no | yes |
+| gRPC `InvalidArgument` | `ErrEndpointClientSideException` | −32602 | yes | **no** |
+| gRPC `ResourceExhausted` | `ErrEndpointCapacityExceeded` | −32005 | no | yes |
+| gRPC `DeadlineExceeded` | `ErrEndpointRequestTimeout` | −32015 | yes | yes |
+| gRPC `Unauthenticated`, `PermissionDenied` | `ErrEndpointUnauthorized` | −32016 | no | yes |
+| gRPC `NotFound`, `OutOfRange` | `ErrEndpointMissingData` | −32014 | yes | yes |
+| gRPC `Internal`, `Unknown`, `Unavailable`, default | `ErrEndpointServerSideException` | −32603 | yes | yes |
+
+### Worked examples
+
+**1. Diagnosing why a request exhausted all upstreams.** You see `erpc_network_failed_request_total` spike with `error="ErrUpstreamsExhausted/ErrEndpointRequestTimeout"`. The compound label (compact mode) tells you the inner code. Check `erpc_upstream_request_errors_total` filtered by `error` containing `Timeout` to see which upstream timed out most. Switch `metrics.errorLabelMode` to `"verbose"` temporarily in a staging environment to read the full message — never in production.
+
+**2. `eth_sendRawTransaction` returning `−32003` but the tx went through.** The normalizer sets N=yes for reverts and out-of-gas on `eth_sendRawTransaction` (rules 9 and 14). eRPC retried on a different upstream. The first upstream returned `ErrEndpointExecutionException` with code 3 (revert), which is kept and surfaced to the caller — this is expected behavior. Insufficient-funds stays N=no even for sendRawTransaction; no retry occurs in that case.
+
+**3. All upstreams returning `ErrEndpointMissingData` — request retried despite "exhausted".** `ErrUpstreamsExhausted` wrapping only missing-data children is still N=true (any retryable child makes the whole error retryable). Outer retry logic will try again. If data is genuinely absent from all nodes (e.g. pruned historical state), retry will keep failing — configure a dedicated archive upstream or catch `−32014` in your client.
+
+**4. Alert fires on `severity="warning"` for hedge discards.** `ErrUpstreamHedgeCancelled` is severity=warning. This is normal — it means a sibling hedge leg won the race. Alert only on `severity="critical"` in production; `warning` includes hedge discards and client disconnects that are expected at scale.
+
+### Best practices
+
+- Alert on `severity="critical"` only — `severity="info"` covers client errors and EVM reverts; `severity="warning"` covers hedge discards and client disconnects.
+- Keep `metrics.errorLabelMode` at `"compact"` in production. `"verbose"` creates a new Prometheus time series per unique error message and will exhaust memory.
+- When `ErrUpstreamsExhausted` appears in logs, check `SummarizeCauses` bucket in the message (e.g. `"2 upstream timeout, 1 upstream rateLimit"`) to identify the dominant failure mode before tuning retry or circuit-breaker config.
+- `ErrEndpointTransportFailure` strips endpoint URLs from cause messages — if you need the raw URL for debugging, check the upstream config or traces, not the error log.
+- `ErrUpstreamClientInitialization` is not fatal by default. If you see it at startup for an upstream that should have resolved (chain-ID mismatch, wrong type), check whether callers wrap it in `TaskFatalError` for permanent failures.
+- `ErrUpstreamRateLimitRuleExceeded` returns HTTP 200, not 429, on the wire. If your client is polling on 429 to detect upstream budget exhaustion, it will miss this case — filter on JSON-RPC code `−32005` instead.
+- For `eth_sendRawTransaction`, a `−32003` response may be a successful idempotent retry (nonce-duplicate or out-of-gas handled by normalizer rule 11/14). Check the `reason` field in error details (`already_known` vs `nonce_too_low`) to distinguish.
+
+### Edge cases & gotchas
+
+1. **`ErrUpstreamsExhausted` with NO cause is terminal (N=false).** An exhausted error wrapping zero children means no upstream was tried; retrying at network scope cannot make progress. Source: [`common/errors.go:L2393-L2394`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2393-L2394)
+2. **All-missing-data exhausted IS retryable.** `ErrUpstreamsExhausted` wrapping only `ErrEndpointMissingData` children is N=true because any retryable child makes the whole exhausted error retryable. Source: [`common/errors_retry_test.go:L51-L74`](https://github.com/erpc/erpc/blob/main/common/errors_retry_test.go#L51-L74)
+3. **`ErrEndpointExecutionException` is N=false — except `eth_sendRawTransaction` reverts.** The normalizer overrides N=yes for `eth_sendRawTransaction` reverts and out-of-gas (rules 9 and 14). Insufficient-funds (rule 13) does NOT get the override. Source: [`architecture/evm/error_normalizer.go:L263-L272`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L263-L272)
+4. **`ErrEndpointClientSideException` is N=true by default.** Only rules 17 (malformed tx), 18d (invalid params), and gRPC/BDS `InvalidArgument` set N=false. Rule 6 (block-tag-unsupported) deliberately keeps N=true to allow other upstreams to attempt the tag. Source: [`common/errors_retry_test.go:L175-L187`](https://github.com/erpc/erpc/blob/main/common/errors_retry_test.go#L175-L187)
+5. **`ErrUpstreamRateLimitRuleExceeded` returns 200 on the wire.** It is NOT in the wire 429 switch despite its `ErrorStatusCode()` returning 429. Source: [`erpc/http_server.go:L1484-L1490`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1484-L1490)
+6. **OP-stack "sender is over rate limit" is capacity-exceeded but N=false.** All eRPC provider entries proxy the same OP sequencer; retrying on a different provider hits the same limit. All other `ErrEndpointCapacityExceeded` are N=true. Source: [`architecture/evm/error_normalizer.go:L125-L139`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L125-L139)
+7. **Nonce-duplicate detection must run before generic −32003.** Some vendors use −32003 for "already known"/"nonce too low". Rules 11/12 appear before rule 14 in the normalizer. "Replacement transaction underpriced" deliberately stays a plain error. Source: [`architecture/evm/error_normalizer.go:L297-L301`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L297-L301)
+8. **200-OK revert detection checks `dt[1:11]`.** Index 0 is the JSON quote character; the ABI selector `0x08c379a0` starts at index 1. Source: [`architecture/evm/error_normalizer.go:L609-L624`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L609-L624)
+9. **Trace/debug timeout detection scans raw bytes.** Rule 22 does a raw string search to avoid parsing up to ~50MB trace responses. Source: [`architecture/evm/error_normalizer.go:L626-L629`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L626-L629)
+10. **`buildErrorResponseBody` unwraps single-child exhausted.** When exactly one upstream tried, the wrapper is removed and clients see the real upstream error. Source: [`erpc/http_server.go:L1397-L1403`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1397-L1403)
+11. **Compact `ErrorSummary` compound labels are not universal.** Only `ErrFailsafeRetryExceeded`, `ErrUpstreamRequest`, and `ErrUpstreamRequestSkipped` produce `OuterCode/InnerCode` labels. `ErrFailsafeTimeoutExceeded` does NOT compound even with a cause. Source: [`common/errors_summary_test.go:L24-L30`](https://github.com/erpc/erpc/blob/main/common/errors_summary_test.go#L24-L30)
+12. **`ErrDynamicTimeoutExceeded` distinguishes failsafe from HTTP deadline.** Set as `context.WithTimeoutCause` cause by the timeout policy. `context.Cause(ctx) == ErrDynamicTimeoutExceeded` tells you the failsafe policy fired, not the HTTP server's global deadline. Source: [`common/errors.go:L1981-L1984`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1981-L1984)
+13. **`TranslateToJsonRpcException` skips `UpstreamRequestSkipped` and `EndpointUnsupported` when counting dominant error.** When all upstreams returned one of these codes, the first child's wire code is used (typically −32601 or −32603). Source: [`common/json_rpc.go:L1523-L1526`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1523-L1526)
+14. **BDS gRPC legacy extractor diverges from live path.** `evm.ExtractGrpcError` (no call sites) maps `TIMEOUT_ERROR`/`DeadlineExceeded` to `ErrEndpointServerSideException`; live `common.ExtractGrpcErrorFromGrpcStatus` maps both to `ErrEndpointRequestTimeout`. If the legacy function is ever restored, BDS timeout retry behavior will regress.
+15. **`ErrConsensusDispute` and `ErrConsensusLowParticipants` retryability follows the any-child rule.** Both aggregate per-upstream participant errors via `errors.Join`. If ANY single child is retryable, the consensus error is retryable network-wide. Source: [`common/errors.go:L2397-L2411`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2397-L2411)
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, **error**, **severity**, composite, finality, user, agent_name | Each upstream attempt returning an error; `error` label = `ErrorFingerprint(err)` |
+| `erpc_network_failed_request_total` | counter | project, network, category, attempt, **error**, **severity**, finality, user, agent_name | Request failed at network/project level |
+| `erpc_cache_set_error_total` | counter | project, network, category, connector, policy, ttl, **error** | Cache set errored |
+| `erpc_cache_get_error_total` | counter | project, network, category, connector, policy, ttl, **error** | Cache get errored |
+| `erpc_unexpected_panic_total` | counter | scope, extra, **error** | Recovered panic |
+
+Alert on `severity="critical"` only. `severity="info"` covers client errors and EVM reverts; `severity="warning"` covers hedge discards and client disconnects.
+
+### Source code entry points
+
+- [`common/errors.go:L1-L2800`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1) — Complete error type definitions, all `ErrCode*` constants, retryability predicates, severity classification, `ErrorSummary`, `ErrorFingerprint`, `HasErrorCode`, `IsClientDisconnect`, `TaskFatalError`, `ErrDynamicTimeoutExceeded`, `JsonRpcErrorNumber` constants
+- [`architecture/evm/error_normalizer.go:L20-L658`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L20-L658) — `ExtractJsonRpcError`: all 22 generic HTTP normalization rules in order; vendor hook dispatch at L29-L31
+- [`common/grpc_errors.go:L12-L225`](https://github.com/erpc/erpc/blob/main/common/grpc_errors.go#L12-L225) — Live gRPC/BDS error normalization; BDS code priority then gRPC code fallback
+- [`common/json_rpc.go:L1501-L1630`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1501-L1630) — `TranslateToJsonRpcException`: internal error → wire JSON-RPC numeric code; dominant-child selection for `ErrUpstreamsExhausted`
+- [`erpc/http_server.go:L1280-L1491`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1280-L1491) — `determineResponseStatusCode`, `buildErrorResponseBody`, `handleErrorResponse`; the only two places that actually set wire HTTP status
+- [`architecture/evm/util.go:L7-L49`](https://github.com/erpc/erpc/blob/main/architecture/evm/util.go#L7-L49) — `IsNonRetryableWriteMethod`; `IsMissingDataError` patterns for rule 7
+- [`common/config.go:L2536-L2550`](https://github.com/erpc/erpc/blob/main/common/config.go#L2536-L2550) — `LabelMode` type, `ErrorLabelModeVerbose`/`ErrorLabelModeCompact` constants, `MetricsConfig.ErrorLabelMode` field
+- [`common/errors_retry_test.go`](https://github.com/erpc/erpc/blob/main/common/errors_retry_test.go) — Tests for `IsRetryableTowardNetwork`/`IsRetryableTowardsUpstream`/`HasErrorCode` behavioral invariants
+
+### Related pages
+
+- [Retry](/config/failsafe/retry) — retryability flags in this table drive retry decisions.
+- [Circuit breaker](/config/failsafe/circuit-breaker) — `ErrFailsafeCircuitBreakerOpen` and capacity errors feed circuit scoring.
+- [Hedge](/config/failsafe/hedge) — `ErrUpstreamHedgeCancelled` is the discard signal for losing hedge legs.
+- [Rate limiters](/config/rate-limiters) — `ErrUpstreamRateLimitRuleExceeded` / `ErrEndpointCapacityExceeded` are the rate-limit error types.
+- [Auth](/config/auth) — `ErrAuthUnauthorized` / `ErrAuthRateLimitRuleExceeded` are auth-layer errors.
+
+</AISection>

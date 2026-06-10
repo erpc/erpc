@@ -1,0 +1,110 @@
+---
+title: See everything
+description: Per-request metrics, traces, and honest healthchecks — know about problems before your users do.
+---
+
+import { LLMsTxtLink, AISection, CapabilityGrid, ConfigTabs, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# See everything
+
+When something degrades at 3 a.m., "the RPC feels slow" isn't a diagnosis. eRPC measures
+every request at every hop — which project, which chain, which upstream, which method,
+cache hit or miss, retried or hedged — and exposes it all as Prometheus metrics and
+OpenTelemetry traces. Grafana dashboards ship in the repo. Your on-call sees exactly
+which provider degraded and when, instead of guessing.
+
+<CapabilityGrid
+  columns={3}
+  items={[
+    { title: "Monitoring & metrics", href: "/operation/monitoring", summary: "The 20 metrics that matter on day one, plus ready-made dashboards." },
+    { title: "Tracing & logging", href: "/operation/tracing", summary: "Follow one request through every policy and upstream attempt." },
+    { title: "Healthcheck", href: "/operation/healthcheck", summary: "Readiness that tells your load balancer the truth." },
+    { title: "Error taxonomy", href: "/reference/errors", summary: "Every error normalized to a named code you can alert on." },
+    { title: "Metrics reference", href: "/reference/metrics", summary: "All 122 metrics, every label, in one table." },
+  ]}
+/>
+
+All of the above in one place — illustrative, not a tuned production config:
+
+<ConfigTabs
+  path="(root)"
+  focusYaml="2-4,8"
+  focusTs="2-4,6"
+  yaml={`# structured logs with secret redaction
+logLevel: info
+# Prometheus on :4001/metrics
+metrics:
+  enabled: true
+  port: 4001
+# one OTel trace per request, every hop; keep 10% of traces
+tracing:
+  enabled: true
+  protocol: grpc
+  endpoint: otel-collector:4317
+  sampleRate: 0.1
+# /healthcheck is always on; error codes are normalized automatically.`}
+  ts={`// structured logs with secret redaction
+logLevel: "info",
+// Prometheus on :4001/metrics
+metrics: { enabled: true, port: 4001 },
+// one OTel trace per request, every hop; keep 10% of traces
+tracing: {
+  enabled: true,
+  protocol: "grpc",
+  endpoint: "otel-collector:4317",
+  sampleRate: 0.1,
+}`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="wire up Prometheus metrics and a Grafana dashboard"
+	defaultOpen
+	prompt={`I want to enable eRPC metrics so I can import the bundled Grafana dashboard and
+start monitoring upstream health and cache hit rates. Update my eRPC config with the
+metrics config and tell me which metrics matter most on day one. Read the full
+reference first: https://docs.erpc.cloud/use-cases/see-everything.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="add distributed tracing and structured logging"
+	prompt={`I need to trace individual requests through eRPC all the way to the upstream to
+debug slow responses. Configure OpenTelemetry tracing and structured log output in
+my eRPC config with a sensible sample rate for production. Reference:
+https://docs.erpc.cloud/use-cases/see-everything.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="build alerts for upstream degradation and chain-tip lag"
+	prompt={`I want Prometheus alerts that fire when an upstream starts erroring heavily or falls
+behind the chain tip. Walk me through the right metric names, labels, and threshold
+values to use, given my eRPC setup in my eRPC config. Reference:
+https://docs.erpc.cloud/use-cases/see-everything.llms.txt`}
+/>
+
+<AISection title="See everything — agent starting points">
+
+This page sells the outcome; implementation lives in the feature pages. Fetch their
+machine-readable companions:
+
+- [Monitoring & metrics](/operation/monitoring) — metrics server config, key operational metrics, Grafana dashboards.
+- [Tracing & logging](/operation/tracing) — OTel endpoint/sampling/protocol, span hierarchy, log levels, secret redaction.
+- [Healthcheck](/operation/healthcheck) — eval strategies, root vs per-project checks, k8s probes.
+- [Error taxonomy](/reference/errors) — every error code, retryability, HTTP status mapping.
+- [Metrics reference](/reference/metrics) — the complete 122-metric catalog with labels and cardinality warnings.
+
+Alerting hints for agents: upstream health is `erpc_upstream_request_errors_total` by
+`error`/`severity`, chain-tip freshness is `erpc_network_latest_block_timestamp_distance_seconds`,
+and benching events surface via cordon metrics — exact names, labels, and firing conditions
+are in the metrics reference agent section.
+
+</AISection>

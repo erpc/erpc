@@ -1,239 +1,536 @@
 ---
 title: CLI & env vars
-description: eRPC command-line flags, subcommands, and the environment variables that influence runtime behavior.
+description: Start, validate, or inspect your eRPC config from the command line — then deploy with confidence knowing exactly what the engine will run.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# CLI & environment variables
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-The `erpc` binary is the single entry point for running the proxy, validating a config, and quick-starting against an ad-hoc upstream list. Most operators only ever invoke `erpc start --config=erpc.yaml`, but the rest of the surface is useful for CI checks, container ENTRYPOINTs, and ad-hoc local testing.
+# CLI & env vars
 
-**Subcommands:**
+Three commands cover the full config lifecycle: `start` runs the proxy, `validate`
+catches mistakes before they reach production, and `dump` shows the exact effective
+config — defaults filled, TypeScript resolved — that the engine would actually load.
+Point any of them at a YAML, TypeScript, or JavaScript file, or skip the file entirely
+and spin up a quick test node with `--endpoint`.
 
-- [`start`](#start) (default) — run the proxy
-- [`validate`](#validate) — parse and validate a config; useful as a pre-deploy CI step
+## Quick taste
 
-**Flags:**
+Illustrative, not a tuned production config — validate a config file in CI:
 
-- [`--config` / `-c`](#--config) — path to the YAML/TS/JS config file
-- [`--endpoint` / `-e`](#--endpoint) — supply upstream endpoints without a config file (repeatable)
-- [`--require-config`](#--require-config) — refuse to start without an explicit config
+<ConfigTabs
+  path="cli"
+  focusYaml="2"
+  focusTs="2"
+  yaml={`# shell
+erpc validate --config ./erpc.yaml --format json | jq .errors`}
+  ts={`// shell
+erpc validate --config ./erpc.ts --format json | jq .errors`}
+/>
 
-## Quick start
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="set up config with CI validation and safe env var injection"
+	defaultOpen
+	prompt={`I want to validate my eRPC config in CI before every deploy, and inject secrets
+like API keys and Redis passwords safely via environment variables. My config is
+my eRPC config. Read the full reference first:
+https://docs.erpc.cloud/operation/cli.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="tune metrics cardinality and histogram buckets"
+	prompt={`Audit the metrics section of my eRPC config: adjust histogram
+bucket boundaries to match our typical latency distribution (10ms–10s), drop the
+user and composite labels to reduce cardinality, and make sure errorLabelMode is
+right for Grafana. Reference:
+https://docs.erpc.cloud/operation/cli.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug a TypeScript config that silently drops a function"
+	prompt={`My eRPC TypeScript config's selectionPolicy evalFunc seems to be ignored at
+runtime — the dump output shows a sentinel but requests aren't being filtered.
+Walk me through why TS functions can be silently dropped and how to verify they
+were registered correctly. Config: ./eRPC config. Reference:
+https://docs.erpc.cloud/operation/cli.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="configure graceful shutdown for Kubernetes rolling deploys"
+	prompt={`My Kubernetes deployment sees connection errors during rolling updates. Configure
+the waitBeforeShutdown and waitAfterShutdown values in my eRPC config, and set up
+INSTANCE_ID via the downward API so shared-state UpdatedBy does not collide
+across pods. Reference:
+https://docs.erpc.cloud/operation/cli.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="explain which logLevel and LOG_LEVEL to use in each environment"
+	prompt={`I have three environments (dev, staging, prod) and I'm unsure which log level to
+set in the config file vs which to override at runtime with LOG_LEVEL. Also
+explain why validate and dump always suppress logs. My config lives at my eRPC config.
+Reference: https://docs.erpc.cloud/operation/cli.llms.txt`}
+/>
+
+<AISection title="CLI & env vars — full agent reference">
+
+### How it works
+
+**Startup sequence.** `main()` registers a `signal.NotifyContext` on SIGINT/SIGTERM
+(`cmd/erpc/main.go:L72`), builds a CLI app via `github.com/urfave/cli/v3`, and calls
+`cmd.Run`. For the `start`/default action, `baseCliAction` calls `getConfig` then
+`erpc.Init`. `erpc.Init` (`erpc/init.go:L19`) runs in order:
+
+1. Set zerolog global level from `cfg.LogLevel`.
+2. Log the final config as JSON at INFO (may contain redacted secrets).
+3. Install histogram buckets and label filter.
+4. Register a global network-alias resolver for metrics label consistency.
+5. Init EVM JSON-RPC cache if configured (failures are warnings, not fatal).
+6. Init shared-state registry if configured (same warn-on-fail pattern).
+7. Build `ERPC` core: tracing, rate limiters, proxy pool, shared-state fallback, vendors registry, projects registry.
+8. Call `erpcInstance.Bootstrap(appCtx)` — eager network bootstrap in background goroutines.
+9. Start HTTP server goroutine.
+10. Optionally start a standalone gRPC server if gRPC is enabled and does not share the HTTP v4 port.
+11. Start Prometheus metrics server.
+12. Block on `<-appCtx.Done()`, then sleep `server.waitAfterShutdown` before returning.
+
+**Config file search order.** When `--config` and a positional argument are both absent
+and `--require-config` is not set, `getConfig` probes (`cmd/erpc/main.go:L279-L293`):
+
+1. `./erpc.yaml`
+2. `./erpc.yml`
+3. `./erpc.ts`
+4. `./erpc.js`
+5. `/erpc.yaml`
+6. `/erpc.yml`
+7. `/erpc.ts`
+8. `/erpc.js`
+9. `/root/erpc.yaml`
+10. `/root/erpc.yml`
+11. `/root/erpc.ts`
+12. `/root/erpc.js`
+
+First path where `fs.Stat` succeeds wins. If none match and no `--endpoint` flag was
+supplied, eRPC starts with a synthetic `main` project using public RPC providers.
+
+**YAML loading.** `LoadConfig` reads the file, runs `os.ExpandEnv` on raw bytes
+(`common/config.go:L102`), then decodes with `gopkg.in/yaml.v3` in strict mode
+(`KnownFields(true)` — unknown keys are fatal). After decode: legacy migration hook,
+then `SetDefaults`, then `Validate`.
+
+**TypeScript/JS loading.** `loadConfigFromTypescript` (`common/config.go:L2686`):
+
+1. esbuild compiles the file as an IIFE bundle (`Bundle:true`, `Format:IIFE`, `Target:ES2020`, `Platform:Node`, `GlobalName:"exports"`).
+2. The `tsLoaderWalker` JS fragment is appended — it depth-first walks `exports.default`, assigns IDs (`fn_0`, `fn_1`, …) to every function-typed leaf, registers them in `globalThis.__erpcFns[id]`, and stamps `fn.__erpcFnId = id`.
+3. Combined source is compiled to a `sobek.Program` (`userScript`) and run in a temporary runtime.
+4. `JSON.stringify` with a replacer converts functions to `"__ts_fn__:fn_<n>"` sentinels; functions not reached by the walker are dropped silently.
+5. The resulting JSON is decoded through `yaml.Decoder` with `KnownFields(true)`.
+6. `cfg.UserScript` is set; the policy-engine pool re-runs this program in each acquired sobek runtime to reconstruct live `__erpcFns` references — no `.toString()` round-trip, closures preserved.
+
+**`validate` subcommand.** Loads config, calls `erpc.GenerateValidationReport` which
+builds a resource tree and checks for orphan rate-limit budgets, public endpoints, and
+static-analysis issues. Output is JSON (default) or Markdown. Exits `0` when `errors`
+is empty, `1` otherwise. All zerolog output is silenced via
+`zerolog.SetGlobalLevel(zerolog.Disabled)` before `getConfig` — no warnings from
+`SetDefaults` or `Validate` appear on stderr.
+
+**`dump` subcommand.** Loads config, calls `policy.ResolveEffectiveSelectionPolicies`
+to fill in the effective `selectionPolicy` per network as the engine would derive it,
+then marshals to YAML (default) or JSON. Useful for verifying what a TypeScript config
+actually produces. Log output is also suppressed.
+
+**Graceful shutdown.** On SIGINT/SIGTERM: `signal.NotifyContext` cancels `appCtx`.
+The HTTP server's goroutine wakes, sleeps `server.waitBeforeShutdown` (default 10 s —
+gives Kubernetes time to mark the pod NotReady), then calls `srv.Shutdown(30 s budget)`.
+The metrics server shuts down with a 5 s budget. The OTel tracer provider shuts down in
+a goroutine with a 5 s budget. `erpc.Init` blocks on `<-appCtx.Done()` then sleeps
+`server.waitAfterShutdown` (default 10 s) before returning, allowing in-flight requests
+to drain.
+
+**pprof.** A `//go:build pprof` file registers standard `net/http/pprof` routes and
+starts a listener at `0.0.0.0:<port>` (default `6060`; override with `ERPC_PPROF_PORT`).
+Mutex and block profiling are enabled at rate 1. The standard binary does **not** include
+pprof — build with `-tags pprof` to activate.
+
+### Config schema
+
+**CLI flags** — <SourceLink file="cmd/erpc/main.go" lines="76-94" />
+
+| Flag | Type | Default | Behavior / footguns |
+|------|------|---------|---------------------|
+| `--config` | string | `""` | Path to config file. When non-empty, sets `requireConfig=true`; no fallback to auto-discovery. If the path does not exist, exits 1001. |
+| `--endpoint` / `-e` | []string | `[]` | Zero or more upstream endpoint URLs. Validated with `url.ParseRequestURI`; invalid URLs abort with exit 1001. Injected as synthetic upstreams into the first project when no providers/upstreams exist. |
+| `--require-config` | bool | `false` | If `true` and no config file found, aborts. Skips auto-discovery and `--endpoint`-only mode. |
+| `validate --format` | string | `"json"` | Output format: `json` or `md`. |
+| `dump --format` | string | `"yaml"` | Output format: `yaml`, `yml`, or `json`. Any other value triggers `"unsupported format"` and exits 1. |
+
+**`--set` / `-s` is not available.** Commented out at <SourceLink file="cmd/erpc/main.go" lines="86-90" />. Passing it produces a framework-level flag error before any application code runs.
+
+**Top-level `Config` fields** — <SourceLink file="common/config.go" lines="38-68" />
+
+| YAML path | Type | Default | Behavior / footguns |
+|-----------|------|---------|---------------------|
+| `logLevel` | string | `"INFO"` | Zerolog level. Invalid value defaults to `debug` with a warning. Overridable at runtime by `LOG_LEVEL` env var. Valid: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, `disabled`. |
+| `clusterKey` | string | `"erpc-default"` | Logical replica group ID for shared-state scoping. Propagated to `database.sharedState.clusterKey` only if that field is empty. Precedence: explicit `database.sharedState.clusterKey` &gt; `clusterKey` &gt; hard-coded default. |
+| `metrics.enabled` | \*bool | `true` (non-test builds) | If `false` or nil, metrics server is not started. In test builds the default is nil. |
+| `metrics.port` | \*int | `4001` | Prometheus scrape port. |
+| `metrics.hostV4` | \*string | `"0.0.0.0"` | IPv4 bind address for the metrics server. |
+| `metrics.hostV6` | \*string | `"[::]"` | IPv6 bind address. |
+| `metrics.errorLabelMode` | LabelMode | `"compact"` | Controls the `error` label on request-error counters. `"compact"` condenses codes; `"verbose"` emits full class names. |
+| `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries. Non-float values are rejected by validation. |
+| `metrics.histogramDropLabels` | []string | nil | Label names removed from every histogram to reduce cardinality. |
+| `metrics.histogramLabelOverrides` | map[string][]string | nil | Per-metric label keep-list; key is metric name without `erpc_` prefix. |
+
+**Environment variables**
+
+| Env var | Where applied | Effect |
+|---------|---------------|--------|
+| `LOG_LEVEL` | `init()` and after config decode | Zerolog global level. Applied twice: first during config-loading so those logs respect it; second after decode to override `cfg.LogLevel`. Invalid value falls back to `debug`. Valid: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, `disabled`. |
+| `LOG_WRITER` | `init()` | When `"console"`, switches from JSON to a human-readable colored writer. Must be set before process start; cannot be changed at runtime. |
+| `ERPC_NOLOGS` | `init()` (build tag `!test`) | When `"1"`, silences zerolog globally and replaces the writer with `io.Discard`. Intended for test runs. |
+| `ERPC_NOMETRICS` | `init()` (build tag `!test`) | When `"1"`, swaps the Prometheus default registry with a no-op. Irreversible within the process. |
+| `ERPC_PPROF_PORT` | `init()` (build tag `pprof`) | pprof listener port; default `6060`. Only effective when built with `-tags pprof`. Binds `0.0.0.0` — all interfaces. |
+| `INSTANCE_ID` | shared-state + consensus | First in the instance-identity chain. Used as `UpdatedBy` in shared-state writes and as `{instanceId}` in consensus dispute-log filenames. |
+| `POD_NAME` | shared-state + consensus | Second in the chain (Kubernetes pod name). |
+| `HOSTNAME` | shared-state + consensus | Third in the chain (OS hostname). |
+| `FORCE_TEST_LISTEN_V4` | `common/defaults.go` | When `"true"` in test builds, forces `server.listenV4=true`. |
+| `$VAR` / `${VAR}` in YAML | before YAML parse | `os.ExpandEnv` on raw bytes. Unset vars resolve to empty string. Footgun: if the expanded value contains `:` or `{`, quote the YAML value. |
+| `process.env.<KEY>` in TS | sobek runtime creation | Full `os.Environ()` snapshot passed to TS/JS config runtime. A snapshot — not a live view. |
+
+**Instance-identity priority chain.** Two functions resolve instance ID:
+
+- Shared-state: `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → `os.Hostname()` → `"unknown"`. <SourceLink file="data/shared_state_registry.go" lines="82-98" />
+- Consensus: same order but final fallback is SHA-256(unixNano+pid) truncated to 8 hex chars. <SourceLink file="consensus/export_utils.go" lines="26-48" /> Setting `INSTANCE_ID` explicitly avoids both failure modes.
+
+**`validate` command output schema** (JSON):
+
+```json
+{
+  "errors":   [],
+  "warnings": [],
+  "notices":  [],
+  "resources": {
+    "totals": { "projectsTotal": 0, "networksTotal": 0, "upstreamsTotal": 0, "rateLimitBudgetsTotal": 0 },
+    "tree": {
+      "projects":     [{ "id": "", "networks": [{ "id": "", "upstreams": [{ "id": "" }] }] }],
+      "rateLimiters": { "budgets": [{ "id": "", "rulesCount": 0 }] }
+    }
+  }
+}
+```
+
+Exit `0` if `errors` is empty, exit `1` otherwise.
+
+**Exit codes** — <SourceLink file="util/exit.go" lines="7-10" />
+
+- `1001` (`ExitCodeERPCStartFailed`) — CLI/config load failure or `erpc.Init` error.
+- `1002` (`ExitCodeHttpServerFailed`) — HTTP or gRPC server fatal error.
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. CI validation gate before deploy.** Production deployments run `erpc validate` in the
+pipeline before any image build or Helm upgrade. Exit code 0 means no errors; pipe through
+`jq .errors` for a clean failure message in CI logs without JSON noise:
 
 ```bash
-# Run with a config file
-erpc start -c /etc/erpc/erpc.yaml
+# exits 0 when errors=[], exits 1 when errors is non-empty
+erpc validate --config ./erpc.yaml --format json | jq '.errors'
 
-# Run with one or more endpoints (no config file)
-erpc start -e https://eth.example/v1/abc -e alchemy://API_KEY
-
-# Validate a config (CI / pre-deploy)
-erpc validate -c /etc/erpc/erpc.yaml
+# Markdown for PR comments or human-readable output in CI
+erpc validate --config ./erpc.yaml --format md
 ```
 
-## Subcommands
+**2. Production log level: error in prod, info in staging, info in dev.** Real fleets keep
+`logLevel: error` in production (high-QPS internal workloads) to suppress routine health-check noise,
+`info` in staging and dev where visibility matters. `LOG_LEVEL=debug` at runtime (without a
+deploy) is the escape hatch when diagnosing live issues:
 
-### `start`
+<ConfigTabs
+  path="logLevel"
+  yaml={`# Production — suppress routine INFO chatter; errors surfaced by structured log
+logLevel: error
 
-Starts the proxy. Default subcommand — `erpc` alone is equivalent to `erpc start`.
+# Staging / dev — info gives bootstrap/network visibility without trace flood
+# logLevel: info`}
+  ts={`// Production
+logLevel: 'error',
 
-If `--config` is set, eRPC loads it and runs as configured.
+// Staging / dev
+// logLevel: 'info',`}
+/>
 
-If `--config` is omitted but `--endpoint` is set (one or more times), eRPC builds an implicit single-project config with those endpoints. Convenient for CI / sandbox use.
+**3. Tuned metrics for multi-region fleet.** Production edge deployments drop the `user`
+and `composite` histogram labels (high-cardinality from many API keys and composite request
+patterns) and set explicit bucket boundaries that match real p50/p99 latencies observed in
+the fleet. `errorLabelMode: compact` is always used in production to keep Prometheus
+cardinality bounded:
 
-If neither is set, eRPC tries auto-discovery — looks for `erpc.yaml`, `erpc.ts`, `erpc.js` in the current directory. If none is found, it fails fast.
+<ConfigTabs
+  path="metrics"
+  yaml={`metrics:
+  enabled: true
+  port: 4001
+  hostV4: "0.0.0.0"
+  # Bucket edges aligned to observed p50 (~100ms) and p99 (~3s) latencies.
+  # Coarser than the default to keep time-series count down on large fleets.
+  histogramBuckets: "0.020,0.100,0.300,0.500,1,3,6,10"
+  # compact keeps error labels bounded; verbose creates a label value per
+  # error class — too many on multi-upstream deployments.
+  errorLabelMode: compact
+  # Drop high-cardinality labels from histograms only; counters keep them.
+  histogramDropLabels:
+    - user
+    - composite`}
+  ts={`metrics: {
+  enabled: true,
+  port: 4001,
+  hostV4: '0.0.0.0',
+  // Bucket edges aligned to observed p50 (~100ms) and p99 (~3s) latencies.
+  histogramBuckets: '0.020,0.100,0.300,0.500,1,3,6,10',
+  errorLabelMode: 'compact',
+  histogramDropLabels: ['user', 'composite'],
+},`}
+/>
 
-### `validate`
+**4. Graceful shutdown for Kubernetes rolling deploys.** Both Kubernetes and PaaS
+production deployments use 30s for both shutdown windows. `waitBeforeShutdown` gives
+Kubernetes time to update endpoints before the server starts refusing connections;
+`waitAfterShutdown` lets in-flight requests drain. `INSTANCE_ID` via the downward API
+prevents `UpdatedBy` collisions across pods in shared-state writes:
 
-Parses and validates a config without starting any listeners. Exits 0 on success, non-zero with diagnostics on failure.
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  # Allow Kubernetes to mark the pod NotReady before traffic stops arriving.
+  # Without this, rolling deploys produce connection errors during the gap.
+  waitBeforeShutdown: 30s
+  # Drain in-flight requests before the process exits.
+  waitAfterShutdown: 30s`}
+  ts={`server: {
+  // Allow Kubernetes to mark the pod NotReady before traffic stops arriving.
+  waitBeforeShutdown: '30s',
+  // Drain in-flight requests before the process exits.
+  waitAfterShutdown: '30s',
+},`}
+/>
+
+Kubernetes pod spec fragment for the downward API:
+
+```yaml
+env:
+  - name: INSTANCE_ID
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name   # stable pod name; avoids UpdatedBy = "unknown"
+```
+
+**5. Per-environment clusterKey for shared-state isolation.** Each deployment uses a
+distinct `clusterKey` so prod, staging, and dev never share lock state. The top-level key
+propagates automatically unless `database.sharedState.clusterKey` is set explicitly:
+
+<ConfigTabs
+  path="database.sharedState"
+  yaml={`database:
+  sharedState:
+    # Unique per deployment — prod/stage/dev must not share lock state.
+    # If this key collides across two fleets, they race each other's locks.
+    clusterKey: prod-us-east-1
+    connector:
+      driver: redis
+      redis:
+        uri: \${SHARED_STATE_REDIS_URL}`}
+  ts={`database: {
+  sharedState: {
+    // Unique per deployment — prod/stage/dev must not share lock state.
+    clusterKey: 'prod-us-east-1',
+    connector: {
+      driver: 'redis',
+      redis: { uri: '\${SHARED_STATE_REDIS_URL}' },
+    },
+  },
+},`}
+/>
+
+**6. Quick smoke-test with a bare endpoint, no config file.** Spin up eRPC against a
+single node to verify routing — no YAML required. Useful for local testing before writing
+a full config:
 
 ```bash
-erpc validate -c erpc.yaml
+erpc --endpoint https://mainnet.infura.io/v3/$INFURA_KEY
+# equivalent: erpc start --endpoint https://mainnet.infura.io/v3/$INFURA_KEY
 ```
 
-Good as a `pre-commit` hook or a CI step before deploying.
-
-## Flags
-
-### `--config`
-
-```
---config <path>
--c <path>
-```
-
-Path to the config file. eRPC infers the format from the extension: `.yaml` / `.yml` are parsed as YAML; `.ts` / `.js` are loaded as a module whose `default` export is the config object.
-
-YAML supports `${VAR}` env-var interpolation. TypeScript configs use `process.env.VAR` directly.
-
-### `--endpoint`
-
-```
---endpoint <url>
--e <url>
-```
-
-Repeatable. Supply one or more upstream endpoints on the command line. eRPC auto-builds an implicit project named `default` with these endpoints, auto-detecting chain IDs.
+**7. Inspect the effective config produced by a TypeScript config.** TypeScript arrow
+functions in `selectionPolicy.evalFunc` show up as `__ts_fn__:fn_N` sentinels; everything
+else renders as plain YAML. Use this to verify closures were detected by the walker:
 
 ```bash
-erpc start \
-  -e https://eth-mainnet.alchemyapi.io/v2/KEY \
-  -e https://polygon-mainnet.g.alchemy.com/v2/KEY \
-  -e alchemy://KEY                              # all chains under this key
+erpc dump --config ./erpc.ts --format yaml
+# or JSON for programmatic diffing:
+erpc dump --config ./erpc.ts --format json | jq .
 ```
 
-Useful for quick prototyping, integration tests, and Docker images that don't want to mount a config file.
+### Request/response behavior
 
-### `--require-config`
+The CLI layer itself does not process JSON-RPC requests. The behaviors below govern how
+the bootstrap interacts with the process environment.
 
-```
---require-config
-```
+- **`.env` file** in `os.Getwd()` is loaded in `init()` before `main()` runs; values are
+  available for YAML `$VAR` substitution. Non-existence is silently ignored; other errors
+  are logged at ERROR. [<SourceLink file="cmd/erpc/main.go" lines="42-46" />]
+- **`LOG_LEVEL` env var overrides `cfg.LogLevel`** after config load; a config-file
+  `logLevel: error` can be trumped by `LOG_LEVEL=debug` without editing the file.
+  [<SourceLink file="cmd/erpc/main.go" lines="354-363" />]
+- **`validate` and `dump` suppress all log output.** `zerolog.SetGlobalLevel(zerolog.Disabled)`
+  is called before `getConfig` runs; `LOG_LEVEL` has no effect during these commands.
+  [<SourceLink file="cmd/erpc/main.go" lines="109" />]
+- **YAML strict-mode** rejects unknown fields (`KnownFields(true)`); this applies to the
+  JSON round-trip from TypeScript configs too. [<SourceLink file="common/config.go" lines="103" />]
+- **Shorthand upstream URLs** (`alchemy://KEY`, `infura://KEY`, etc.) are converted to
+  `ProviderConfig` and removed from `p.Upstreams` at `SetDefaults` time; after load they
+  appear in `p.Providers`, not `p.Upstreams`. [<SourceLink file="common/defaults.go" lines="1164-1172" />]
 
-Refuse to start unless `--config` was provided. Disables the auto-discovery fallback and the `--endpoint`-only mode. Use in production to fail fast when the config volume mount is missing or the wrong path was set.
+### Best practices
 
-```bash
-erpc start --require-config -c /etc/erpc/erpc.yaml
-```
+- Run `erpc validate --config ./erpc.yaml` in every CI pipeline before shipping config
+  changes — it catches unknown field typos, missing rate-limit budget references, and
+  `selectionPolicy` compile errors without starting a server.
+- Use `erpc dump --config ./erpc.ts --format yaml` when debugging TypeScript configs to
+  see what the engine actually sees; TS function sentinels (`__ts_fn__:fn_N`) confirm
+  functions were detected correctly.
+- Always quote YAML values that may contain env vars with special characters:
+  `password: "${REDIS_PASSWORD}"` not `password: ${REDIS_PASSWORD}` — a `:` in the
+  expanded value will break YAML parsing silently.
+- Set `INSTANCE_ID` (or `POD_NAME` via the Kubernetes downward API) explicitly in every
+  deployment — without it, shared-state `UpdatedBy` falls back to `"unknown"` and
+  collides across pods; consensus dispute-log filenames get unique hashes but shared-state
+  writes do not.
+- Do not build with `-tags pprof` in production unless you immediately firewall-restrict
+  `ERPC_PPROF_PORT` — the listener binds `0.0.0.0`, not localhost.
+- Set `LOG_WRITER=console` only for local development; JSON output is required by every
+  log-aggregation platform (Datadog, Grafana Loki, etc.) and the env var cannot be changed
+  at runtime.
+- In Kubernetes, add a `preStop` hook or rely on `server.waitBeforeShutdown` (default 10 s)
+  to let the pod reach NotReady before requests stop arriving — skip this and you will see
+  connection errors during rolling deploys.
 
-## Environment variables
+### Edge cases & gotchas
 
-| Variable | Where consumed | Effect |
-|---|---|---|
-| `LOG_LEVEL` | logger init | One of `trace`, `debug`, `info`, `warn`, `error`. Defaults to `info`. Equivalent to `logLevel` in config; CLI takes precedence. |
-| `LOG_WRITER` | logger init | When `console`, switches log output to a human-readable console writer instead of JSON. Useful for local development. |
-| `INSTANCE_ID` | misbehaviors templating, shared state | Explicit instance identifier. Used as `{instanceId}` in `consensus.misbehaviorsDestination.filePattern` and as the lock owner in shared-state. |
-| `POD_NAME` | instance ID resolver | Kubernetes-style fallback for instance ID. Read when `INSTANCE_ID` is not set. |
-| `HOSTNAME` | instance ID resolver, `responseHeaders` interpolation | Final fallback for instance ID. Also the standard container/pod hostname — common to interpolate into `server.responseHeaders.X-Instance`. |
-| `GOGC` | Go runtime | Garbage-collection target as a percent of heap growth. Set `GOGC=30` to trigger GC more aggressively (~30% growth). |
-| `GOMEMLIMIT` | Go runtime | Soft memory limit. Set e.g. `GOMEMLIMIT=2GiB` to trigger GC when RSS approaches the limit. Combine with `GOGC` for tighter memory ceilings. |
-| `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS SDK | Standard AWS credentials chain. Used by DynamoDB connector + consensus S3 export when `auth.mode` is unset. |
-| `OTEL_EXPORTER_OTLP_*` | OpenTelemetry SDK | Standard OTLP env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, etc.). Most operators set these via `tracing.*` config instead. |
+1. **`--config` sets `requireConfig=true` implicitly.** If the specified path does not
+   exist, the process exits 1001 with no fallback to auto-discovery.
+   [<SourceLink file="cmd/erpc/main.go" lines="300-302" />]
+2. **Positional argument works in all subcommands.** `erpc validate ./config.yaml` and
+   `erpc dump ./config.yaml` both work — first positional arg is treated as a config path
+   with `requireConfig=true`. [<SourceLink file="cmd/erpc/main.go" lines="303-305" />]
+3. **YAML strict-mode rejects unknown fields.** A typo in any YAML key is a fatal error —
+   this also applies to the JSON round-trip from TypeScript configs.
+4. **Quoted YAML values required for env vars that may contain special chars.**
+   `password: "${REDIS_PASSWORD}"` is safe; `password: ${REDIS_PASSWORD}` is not if the
+   value contains `:` or `{`.
+5. **TypeScript default-export must be the last statement.** If a later expression
+   overwrites `exports.default`, the earlier config object is lost. Error:
+   `"config object must be default exported from TypeScript code AND must be the last statement in the file"`.
+   [<SourceLink file="common/config.go" lines="2715-2717" />]
+6. **TS functions in bare arrays are not walked.** The `tsLoaderWalker` only descends into
+   object properties, not bare array function elements. In practice `selectionPolicy`
+   functions are always object values so this rarely matters.
+7. **Orphaned TS function silently dropped.** A function not reached by the walker is
+   dropped by the JSON.stringify replacer — the config field will be absent with no error.
+   [<SourceLink file="common/config.go" lines="2736-2739" />]
+8. **`validate`/`dump` suppress all log output.** `zerolog.SetGlobalLevel(zerolog.Disabled)`
+   is called before `getConfig`. Warnings from `SetDefaults`, legacy migration, and
+   validation do not appear. Use `jq .errors` on the JSON output. `LOG_LEVEL` has no
+   effect here.
+9. **`LOG_WRITER=console` must be set before process start.** Configured in `init()`, not
+   hot-reloadable. In log-aggregation environments keep the default JSON writer.
+10. **pprof binds `0.0.0.0`.** All interfaces, not localhost-only. Firewall-restrict or
+    avoid `-tags pprof` in production.
+11. **`ERPC_NOMETRICS=1` is irreversible.** Swaps the Prometheus default registry
+    process-wide; cannot be undone within the same process.
+12. **`INSTANCE_ID` not stable across restarts = orphaned shared-state locks.** Use a
+    deployment-stable value (pod name, container ID).
+13. **`dump --format csv` (or any unknown format) exits 1 via a distinct code path.**
+    A marshal failure means config loaded but serialisation failed; an unsupported-format
+    failure means serialisation was never attempted. Valid values: `yaml`, `yml`, `json`.
+14. **Shared-state falls back to `"unknown"` while consensus generates a hash.** In
+    environments with no env vars and `os.Hostname()` failing, shared-state `UpdatedBy`
+    is `"unknown"` (collides across pods). Consensus dispute-log filenames get a unique
+    8-char hash. [<SourceLink file="data/shared_state_registry.go" lines="82-98" />]
+    [<SourceLink file="consensus/export_utils.go" lines="26-48" />]
+15. **Provider endpoint env expansion runs after YAML-level expansion.** Pipeline:
+    (1) `os.ExpandEnv` on raw YAML bytes → YAML decode → `SetDefaults` (providers
+    registered). Then at request time: (2) provider's `GenerateConfigs` builds endpoint
+    strings → `expandEnvVars` calls `os.ExpandEnv`. Double-expansion is possible if the
+    vendor builds an endpoint that itself contains `$VAR` literals.
+    [<SourceLink file="thirdparty/provider.go" lines="67-71" />]
+16. **`--set` / `-s` is not implemented.** The flag was planned as a Helm-style dot-path
+    override but is commented out. Passing `-s` or `--set` produces
+    `"flag provided but not defined: -s"` from the CLI framework.
+    [<SourceLink file="cmd/erpc/main.go" lines="86-90" />]
+17. **Metrics server disabled in test builds.** `MetricsConfig.SetDefaults` sets
+    `Enabled=true` only when `!util.IsTest()`. Tests that need metrics must set
+    `metrics.enabled: true` explicitly. [<SourceLink file="common/defaults.go" lines="750-752" />]
+18. **gRPC shares the HTTP handler when both addresses resolve to the same port.** No
+    separate `grpcServer.Start` goroutine runs. [<SourceLink file="erpc/init.go" lines="125" />]
+19. **Eager network bootstrap runs on `appCtx`; novel chains trigger the lazy path.**
+    Novel chain IDs arriving before bootstrap finishes block the request until init
+    completes or the request context times out.
+    [<SourceLink file="erpc/networks_registry.go" lines="195-212" />]
+20. **TypeScript `process.env` is a snapshot, not a live view.** Built once when the
+    sobek runtime is created from `os.Environ()`; a restart-less env var change requires
+    all policy engine runtimes to be recreated.
 
-### Operator overrides
+### Observability
 
-The following variables control runtime subsystems and are intended for production operators. They are not debug flags — set them deliberately and leave them set for the lifetime of the deployment.
+The bootstrap/CLI layer emits no Prometheus metrics of its own. Key structured log
+messages (zerolog JSON unless `LOG_WRITER=console`):
 
-| Variable | Effect |
-|---|---|
-| `ERPC_NOLOGS` | Set to `1` to suppress all zerolog output and allocations entirely. Useful in CI/test runs where log noise is unwanted or when eRPC is embedded in a process that manages its own log pipeline. |
-| `ERPC_NOMETRICS` | Set to `1` to disable Prometheus metrics completely (replaces the default registry with a no-op). Use when running eRPC embedded in a larger service that reports metrics through its own pipeline. |
-| `ERPC_PPROF_PORT` | Port for the Go pprof profiling HTTP server (default `6060`). Profile the running process with `go tool pprof http://localhost:6060/debug/pprof/heap`. Set to an empty string to disable the pprof server entirely. |
+| Log message | Level | When |
+|-------------|-------|------|
+| `"executing command"` (fields: `action`, `version`, `commit`) | INFO | Start of every CLI action |
+| `""` with `config` field | INFO | Final config logged before init — may contain redacted secrets |
+| `"initializing eRPC core"` | INFO | Before `NewERPC` |
+| `"initializing transports"` | INFO | After core init, before server start |
+| `"shutting down gracefully..."` | INFO | On context cancel |
+| `"no projects found in config; will add a default 'main' project"` | WARN | Synthetic project injected |
+| `"failed to initialize evm json rpc cache: ..."` | WARN | Cache init failure (non-fatal) |
+| `"invalid log level '...', defaulting to 'debug'"` | WARN | Invalid `LOG_LEVEL` or `logLevel` value |
+| `"pprof server started at http://localhost:<port>"` | INFO | Only when built with `-tags pprof` |
+| `"networks bootstrap completed"` | INFO | After all configured networks initialised |
 
-<AISection title="Copy for your AI assistant — full CLI / env-vars reference">
+### Source code entry points
 
-### Command-resolution order
+- [`cmd/erpc/main.go:L72-L305`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L72-L305) — signal handling, CLI command definitions, `getConfig`, auto-discovery, `--endpoint` injection
+- [`erpc/init.go:L19-L180`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L19-L180) — `Init(ctx, cfg)`: full startup + graceful drain sequence
+- [`common/config.go:L95-L110`](https://github.com/erpc/erpc/blob/main/common/config.go#L95-L110) — `LoadConfig`: `os.ExpandEnv`, YAML decode, legacy migration, `SetDefaults`, `Validate`
+- [`common/config.go:L2686-L2740`](https://github.com/erpc/erpc/blob/main/common/config.go#L2686-L2740) — `loadConfigFromTypescript`: esbuild, `tsLoaderWalker`, sobek eval, sentinel lifecycle
+- [`common/defaults.go:L49-L176`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L49-L176) — `Config.SetDefaults`: full defaults cascade, synthetic `main` project injection
+- [`common/validation.go:L15`](https://github.com/erpc/erpc/blob/main/common/validation.go#L15) — `Config.Validate`: exhaustive validation rules
+- [`cmd/erpc/pprof.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/pprof.go) — build-tag `pprof`: `init()` registering pprof routes and starting `0.0.0.0:<port>` listener
+- [`cmd/erpc/initflags.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/initflags.go) — build-tag `!test`: `ERPC_NOLOGS` and `ERPC_NOMETRICS` init hooks
+- [`util/exit.go:L7-L10`](https://github.com/erpc/erpc/blob/main/util/exit.go#L7-L10) — exit codes `1001` (start failed) and `1002` (HTTP/gRPC server fatal)
+- [`erpc/config_analyzer.go`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go) — `GenerateValidationReport`, `RenderValidationReportJSON`, `RenderValidationReportMarkdown`
 
-When you run `erpc` (no subcommand), the binary resolves as follows:
+### Related pages
 
-1. First positional arg is `start` → run the proxy.
-2. First positional arg is `validate` → validate config, exit.
-3. No positional arg → equivalent to `start`.
-
-### Config discovery, when `--config` is omitted
-
-In order of precedence:
-
-1. `--endpoint` flag(s) present → build an implicit config: a single project `default` with the listed upstreams.
-2. `ERPC_CONFIG_PATH` env var → load that path.
-3. Walk the current directory for `erpc.yaml`, `erpc.yml`, `erpc.ts`, `erpc.js` in order.
-4. Fail with "no config provided".
-
-Setting `--require-config` skips steps 1–3 — only step 0 (`--config`) applies, and the process exits with an error if it's missing.
-
-### Config format selection
-
-The file extension picks the parser:
-
-| Extension | Parser |
-|---|---|
-| `.yaml`, `.yml` | YAML, with `${VAR}` env-var interpolation |
-| `.ts` | TypeScript, loaded via the eRPC config SDK |
-| `.js` | JavaScript (CommonJS or ESM), loaded as a module |
-| `.json` | JSON |
-
-For TS/JS, the module's `default` export is the config object. The `@erpc-cloud/config` SDK provides `createConfig()` for type safety.
-
-### Environment variable resolution order for instance identification
-
-When eRPC needs to identify this instance (for misbehaviors templating, shared-state lock ownership, metric labels), it tries in order:
-
-1. `INSTANCE_ID` env var
-2. `POD_NAME` env var (Kubernetes convention)
-3. `HOSTNAME` env var (default container behavior; on Linux this is the hostname syscall)
-4. A randomly generated UUID if none of the above are set
-
-Setting `INSTANCE_ID` explicitly is the recommended path for non-k8s deployments where you want stable instance names (e.g. `INSTANCE_ID=erpc-eu-01`).
-
-### `GOGC` and `GOMEMLIMIT` — production tuning
-
-The Go runtime defaults (`GOGC=100`, no GOMEMLIMIT) work for most workloads. Tune when:
-
-- **Memory pressure** — set `GOMEMLIMIT` to ~80% of your container's memory limit so the GC kicks in before the OOM-killer does:
-
-  ```bash
-  GOGC=30 GOMEMLIMIT=2GiB erpc start -c erpc.yaml
-  ```
-
-- **Burst latency from GC pauses** — lower `GOGC` (e.g. 25) means smaller heaps and shorter pauses, at the cost of CPU overhead from more frequent collections.
-
-- **CPU pressure with plenty of RAM** — raise `GOGC` (200, 400) so GC runs less often.
-
-Caution: very low `GOGC` (< 10) can cause GC thrashing — the runtime constantly collects, consuming most of the CPU.
-
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Normal shutdown (SIGINT/SIGTERM after a clean drain). |
-| `1` | Config validation failed (parse error, unknown field, type mismatch). |
-| `2` | Unable to bind a configured listener (port in use, permission denied). |
-| `3` | Database or shared-state connector failed to initialize at startup. |
-
-In a containerized environment, non-zero exits trigger a pod restart; the orchestrator's restart-backoff will handle transient initialization failures (e.g. waiting for a database to come up).
-
-### CI integration
-
-A typical CI check before deploying a config change:
-
-```bash
-# In CI
-erpc validate -c new-config.yaml
-if [ $? -ne 0 ]; then
-  echo "Config validation failed"
-  exit 1
-fi
-
-# Optionally: run a smoke test with the new config
-erpc start -c new-config.yaml &
-ERPC_PID=$!
-sleep 5
-curl -fsS http://localhost:4000/healthcheck || { kill $ERPC_PID; exit 1; }
-kill $ERPC_PID
-```
-
-`validate` parses every field, checks references (e.g. `policies[].connector` resolves to a `connectors[].id`), and validates that vendor secrets are present. It does NOT make any network calls — it can run on locked-down build agents.
-
-### Common pitfalls
-
-- **`erpc start` without any flag and no config** — falls through to auto-discovery in the cwd. In Docker, cwd is `/` by default, so the auto-discovery finds nothing. Mount the config and pass `--config` or set the working dir.
-- **`-e` mode auto-detects chain IDs by calling `eth_chainId`** — if the endpoint is broken, startup fails with "could not detect chain". Use the long-form config when you know the chain IDs in advance.
-- **`GOMEMLIMIT` without `GOGC`** — without a lower `GOGC`, the runtime relies entirely on the soft limit, which can lead to large heap swings just under the limit. Pair them.
-- **`LOG_LEVEL=trace` in production** — extremely verbose; can saturate log shippers and dominate CPU on a busy proxy.
-- **`INSTANCE_ID` not stable across restarts** — if you use it as a shared-state lock owner, an unstable ID can leave orphaned locks after a crash. Use a deployment-stable value (the pod name in k8s; an explicit string elsewhere).
+- [HTTP server](/operation/http-server) — server bind addresses, timeouts, and graceful shutdown knobs.
+- [Deployment](/deployment/docker) — Docker and Kubernetes deployment patterns, including `POD_NAME` downward API setup.
+- [Projects](/config/projects) — the config structure that `start` and `validate` both load.
+- [Rate limiters](/config/rate-limiters) — budget IDs that validation checks for orphan references.
+- [Observability](/operation/metrics) — Prometheus metrics exposed on `metrics.port`.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

@@ -1,0 +1,185 @@
+---
+title: Lanes & concurrency
+description: Route a class of requests to a specific provider group and eRPC automatically maintains a separate block-tip counter for that group — eliminating "block not found" churn caused by cross-provider tip pollution.
+---
+
+import {
+	LLMsTxtLink,
+	AISection,
+	ConfigTabs,
+	SourceLink,
+	PromptExample,
+} from "../../components";
+
+<LLMsTxtLink />
+
+# Lanes & concurrency
+
+Different provider classes see different blocks at different times. When you route flashblock RPCs to one provider group and archive calls to another, eRPC automatically tracks a separate block tip for each group. The right tip reaches the right upstreams — no cross-provider contamination, no spurious `block not found` errors.
+
+What you get:
+
+- Per-group served-tip counters shared and monotonic across every pod
+- Deterministic lane names on your Prometheus dashboards (`flashblocks`, `systx`, …)
+- Zero config — lanes emerge automatically from your `use-upstream` selectors
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="pin all traffic on a network to flashblocks upstreams"
+	defaultOpen
+	prompt={`I want all requests on my Ethereum mainnet network to route exclusively to flashblocks
+providers so the block tip is always flashblocks-accurate. Set directivesDefaults.useUpstream
+at the network level in my eRPC config, and explain when a selector qualifies for a lane
+partition versus falling back to stateless. Reference:
+https://docs.erpc.cloud/reference/lanes.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="route archive calls to a dedicated upstream group"
+	prompt={`I have archive-depth upstreams tagged family:archive and I want heavy getLogs / debug
+trace calls to route to them while fast reads go to my premium upstreams. Configure
+use-upstream selectors and explain how eRPC derives a stable lane name for Prometheus
+dashboards. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/reference/lanes.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug missing lane metrics in Prometheus"
+	prompt={`My Prometheus shows erpc_network_served_tip_block_number with lane=all but never a
+named lane label even though I'm sending X-ERPC-Use-Upstream headers. Explain the
+conditions that prevent a lane partition from forming (complex selector, fewer than 2
+upstreams matched, MAX mode, servedTip not enabled) and check my eRPC config for the
+likely cause. Reference: https://docs.erpc.cloud/reference/lanes.llms.txt`}
+/>
+
+<AISection title="Lanes & concurrency — full agent reference">
+
+### How it works
+
+A **lane** is not a config object. It is an emergent artifact: when a request carries a `use-upstream` selector (via `X-ERPC-Use-Upstream` header, `?use-upstream=` query parameter, or `directivesDefaults.useUpstream` in config), eRPC resolves which upstreams match. If the matched set is a proper subset of at least two upstreams — and the selector is "simple" (see below) — eRPC derives a stable key by SHA-256-hashing the sorted upstream IDs, then lazily creates a `servedTipPartition` for that key. That partition holds two `CounterInt64SharedVariable` counters (latest and finalized blocks), shared across pods via the shared-state registry.
+
+**LaneName algorithm.** `LaneName(ids)` sorts the upstream IDs alphabetically, then walks the hyphen-split tokens of the first sorted ID and returns the first token that appears in every other ID. If no universally shared token exists, it falls back to a concatenation of the first two characters of each ID (up to five IDs). The result is deterministic and order-independent — every pod reaches the same name from the same upstream topology. Source: <SourceLink file="common/lane.go" lines="25" />
+
+**What counts as a "simple" selector.** `isSimpleGroupSelector` rejects selectors that contain whitespace, `|`, `&`, `(`, `)`, or `,` (no boolean combinators), or more than one `!` not at position 0, or length &gt; 128 characters. Qualifying examples: `flashblocks*`, `!flashblocks*`, `family:systx`, `alchemy-*`. Non-qualifying: `alchemy | quicknode`, `(a | b)`.
+
+**Partition lifecycle and cap.** Partitions are stored in a `sync.Map` keyed by `"grp:<hex8>"`. On the fast path, `sync.Map.Load` returns an existing partition with no locking. On the slow path, an `atomic.Int32` counter is checked against `maxServedTipPartitions = 16`; if at the cap, the request falls through to the stateless fallback. Because the check-and-create is not atomic, up to `16 + goroutine-concurrency` partitions can transiently exist — `LoadOrStore` guarantees exactly one partition wins per key.
+
+The partition key is derived from the **matched upstream set**, not the selector text. `flashblocks*` and `fl*` targeting the same three upstreams produce the same key and share one partition. Cardinality is bounded by the actual upstream topology, not selector diversity.
+
+**Stateless fallback.** When a selector is complex, matches fewer than two upstreams, or matches all upstreams, `servedTipPartitionFor` returns nil. `observeServedTipMetrics` is called with `lane=servedTipLaneNone` and returns immediately, writing nothing to Prometheus — preventing a subset value from overwriting the `lane="all"` gauge.
+
+**UseUpstream directive precedence** (highest to lowest):
+
+1. `X-ERPC-Use-Upstream` header on the request.
+2. `?use-upstream=<value>` query parameter.
+3. `networks[*].directivesDefaults.useUpstream` config default.
+
+The selector is used in two places: as the partition lookup key for served-tip counters, and inside the upstream selection loop (`UpstreamMatchesSelector`) to filter which upstreams receive the request. Tag-based matching is supported — `family:flashblocks` matches any upstream whose tags include that key — but negated selectors (prefix `!`) never match by tag, only by upstream ID.
+
+### Config schema
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `networks[*].directivesDefaults.useUpstream` | `*string` | `nil` (no default selector) | Sets the `use-upstream` selector for all requests on this network when the client sends none. Identical semantics to the `X-ERPC-Use-Upstream` header. **Footgun:** a wildcard matching all upstreams does NOT form a partition — it uses the `lane="all"` path. Sources: <SourceLink file="common/config.go" lines="2109" />, <SourceLink file="common/request.go" lines="589-590" /> |
+
+Lanes themselves are not directly configured — they emerge from runtime request selectors and the upstream topology. Lane behavior requires `networks[*].evm.servedTip` cluster mode to be enabled; in MAX mode (the default) `servedTipEnabledFor` returns false, partition lookup never runs, and no `lane`-labelled metrics are emitted.
+
+### Worked examples
+
+**1. Pin all network traffic to flashblocks upstreams.** Set `directivesDefaults.useUpstream` at the network level so every request on that chain automatically routes to flashblocks providers and gets a flashblocks-accurate tip:
+
+<ConfigTabs
+	path="projects[].networks[].directivesDefaults.useUpstream"
+	yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        directivesDefaults:
+          useUpstream: "flashblocks*"  # all requests → flashblocks lane`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      directivesDefaults: {
+        useUpstream: "flashblocks*",
+      },
+    }],
+  }],
+});`}
+/>
+
+**2. Per-request lane selection via header.** Send `X-ERPC-Use-Upstream: systx*` on individual requests to route them to system-transaction-capable upstreams. eRPC derives the lane name, maintains a `systx`-scoped tip, and serves block numbers visible to that provider class only.
+
+**3. Tag-based lane targeting.** If upstreams are tagged with `family:archive`, a selector `family:archive` is simple, qualifies for a partition, and routes archive-depth calls to archive nodes — `LaneName` derives a human-readable label from the matched upstream IDs for your dashboards.
+
+**4. Complex selector routing without lane tip tracking.** A selector like `alchemy | quicknode` routes to both providers correctly via `UpstreamMatchesSelector` in the forwarding loop — but it is not simple, so no per-group tip partition is created and no `lane=...` gauge appears. The stateless fallback applies; this is expected behavior for multi-provider round-robin.
+
+### Best practices
+
+- Use simple glob selectors (`flashblocks*`, `family:archive`) rather than boolean expressions when per-group tip accuracy matters; boolean selectors route correctly but never get a lane counter.
+- Set `directivesDefaults.useUpstream` at the network level rather than injecting headers per-request — it ensures every request (including retries and hedges) carries the selector without client cooperation.
+- Keep the total number of distinct upstream subsets below 16 per network; beyond that, additional groups fall back to stateless tip and lose per-group accuracy.
+- Do not rely on `LaneName` label values being unique — two different upstream sets can produce the same label. Use the partition key (internal) as the stable identifier; the label is for human readability only.
+- Negated selectors (`!alchemy-*`) match by upstream ID only, not by tag. If you need tag-based exclusion, restructure as an inclusion selector on the desired tag instead.
+- `servedTip` cluster mode must be enabled for lanes to have any effect; in the default MAX mode, no partitions are ever created and all the lane machinery is dormant.
+
+### Edge cases & gotchas
+
+1. **A single matched upstream does not form a lane.** `partitionKeyFor` requires `len(matched) >= 2`; a single-upstream selector gets the stateless fallback and emits no gauge.
+2. **Matching ALL upstreams does not form a lane.** `len(matched) >= len(all)` also falls through, preventing a match-all selector from shadowing `lane="all"`.
+3. **Boolean combinator selectors are never partitioned.** `alchemy | quicknode` contains `|`; it routes correctly but never gets a per-group tip counter.
+4. **The 16-partition cap is a soft guard.** Concurrent goroutines can transiently exceed 16. Beyond the cap, new groups use the stateless fallback.
+5. **Partition key = hash of matched upstream set, not selector text.** `flashblocks*` and `fl*` matching the same upstreams share one partition. Cardinality is bounded by topology, not by selector diversity.
+6. **`LaneName` is not guaranteed unique.** Two different upstream sets could produce the same name if both share the same common token. The partition key is the stable identifier; the name is decorative for dashboards.
+7. **Negated selectors match by ID only, never by tag.** A pattern containing `!` skips tag evaluation entirely. `!alchemy-*` excludes by ID but will not rescue non-matching IDs via tags.
+8. **Stateless fallback emits no gauge.** `servedTipLaneNone` causes `observeServedTipMetrics` to return before any write, ensuring a complex-selector request cannot overwrite `lane="all"` with an incorrect subset value.
+9. **`LaneName` sort is alphabetical.** For `(quicknode-systx, systx-quicknode)`, sorted order puts `quicknode-systx` first; `LaneName` returns `"quicknode"`, not `"systx"`. Source: `common/lane_test.go` (`order independent` test).
+10. **`servedTip` must be configured for lanes to have effect.** In MAX mode (default), `EvmHighestLatestBlockNumber` takes the non-cluster path and no partition is ever consulted.
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_served_tip_block_number` | gauge | `project`, `network`, `lane`, `axis` | `lane="all"` (network-wide) or `lane=<LaneName>` (per-group); absent when stateless fallback |
+| `erpc_network_served_tip_lag_blocks` | gauge | `project`, `network`, `lane`, `axis` | Blocks behind freshest velocity-eligible tip; absent in MAX mode |
+| `erpc_network_served_tip_upstream_excluded_total` | counter | `project`, `network`, `upstream`, `axis`, `reason` | Only for `lane="all"` (network-wide pick); `reason` = `velocity` or `outlier` |
+
+`axis` = `"latest"` or `"finalized"`. The `lane` series for a named group is only present for networks that actually receive targeted `use-upstream` traffic.
+
+Per-upstream exclusion counters (`erpc_network_served_tip_upstream_excluded_total`) are only emitted for `lane="all"` — the network-wide pick. The internal Go condition checks `lane == ""`, but the Prometheus label written is `"all"` (via `servedTipLaneAll`). Source: <SourceLink file="erpc/networks.go" lines="844-851" />
+
+### Source code entry points
+
+- [`common/lane.go`](https://github.com/erpc/erpc/blob/main/common/lane.go) — `LaneName(ids []string) string`: naming algorithm, pure function.
+- [`common/lane_test.go`](https://github.com/erpc/erpc/blob/main/common/lane_test.go) — unit tests for `LaneName`: shared-token precedence, order-independence, fallback combo, single-id, empty input, determinism.
+- [`erpc/networks.go:L80-L105`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L80-L105) — constants, `servedTipPartition` struct, `maxServedTipPartitions = 16`.
+- [`erpc/networks.go:L405-L442`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L405-L442) — `servedTipPartitionFor`: lazy partition materialization with cap and `sync.Map`.
+- [`erpc/networks.go:L444-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L444-L506) — `partitionKeyFor`: selector → SHA-256 key; `isSimpleGroupSelector` filter.
+- [`erpc/networks.go:L517-L540`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L517-L540) — `EvmHighestLatestBlockNumber`: cluster-mode + per-lane branching.
+- [`erpc/networks.go:L802-L852`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L802-L852) — `observeServedTipMetrics`: lane label assignment and gauge emission.
+- [`common/matcher.go:L73-L112`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L73-L112) — `MatchesSelector` + `UpstreamMatchesSelector`: ID + tag matching primitive.
+- [`common/request.go:L739-L741`](https://github.com/erpc/erpc/blob/main/common/request.go#L739-L741) — `X-ERPC-Use-Upstream` header extraction.
+- [`common/request.go:L811-L812`](https://github.com/erpc/erpc/blob/main/common/request.go#L811-L812) — `?use-upstream=` query-param extraction.
+- [`common/config.go:L2109`](https://github.com/erpc/erpc/blob/main/common/config.go#L2109) — `DirectivesConfig.UseUpstream` field.
+- [`telemetry/metrics.go:L130-L162`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L130-L162) — metric definitions.
+
+### Related pages
+
+- [Matcher](/config/matcher) — the `UpstreamMatchesSelector` and tag-matching primitives used to resolve which upstreams a selector targets.
+- [Tag-aware routing](/config/projects/selection-policies) — how `use-upstream` integrates with the upstream selection loop.
+- [Served tip / block number tracking](/reference/evm/block-number) — the cluster-mode served-tip feature that lanes extend.
+- [Rate limiters](/config/rate-limiters) — per-upstream rate limits that interact with lane-scoped routing.
+
+</AISection>

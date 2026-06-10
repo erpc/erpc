@@ -1,0 +1,143 @@
+---
+title: Scale chains & providers
+description: One config line per provider, every chain they support — and the best upstream wins each request.
+---
+
+import { LLMsTxtLink, AISection, CapabilityGrid, ConfigTabs, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Scale chains & providers
+
+Supporting a new chain shouldn't be a project. Give eRPC one provider API key and it
+unlocks every chain that vendor supports — upstreams appear lazily the first time a
+request needs them. Behind the scenes, a scoring engine continuously ranks all your
+endpoints on real latency, errors, and how far behind the chain tip they are, so the
+next request always goes to whoever deserves it most. Auditioning a brand-new provider?
+Mirror live traffic to it in shadow mode before trusting it with a single real response.
+
+<CapabilityGrid
+  columns={3}
+  items={[
+    { title: "Providers", href: "/config/projects/providers", summary: "22 vendors built in — one key, all their chains." },
+    { title: "Networks", href: "/config/projects/networks", summary: "Per-chain settings and friendly aliases like /main/arbitrum." },
+    { title: "Upstreams", href: "/config/projects/upstreams", summary: "Fine-grained control over each endpoint when you need it." },
+    { title: "Selection & scoring", href: "/config/projects/selection-policies", summary: "Live health metrics pick the best upstream, every time." },
+    { title: "Shadow upstreams", href: "/config/projects/shadow-upstreams", summary: "Test new providers on real traffic with zero user impact." },
+  ]}
+/>
+
+All of the above in one place — illustrative, not a tuned production config:
+
+<ConfigTabs
+  path="projects[]"
+  focusYaml="4,14,21,23"
+  focusTs="4,15,22,24"
+  yaml={`projects:
+  - id: main
+    # one key → every chain the vendor supports, upstreams appear lazily
+    providers:
+      - endpoint: alchemy://\${ALCHEMY_API_KEY}
+      - endpoint: drpc://\${DRPC_API_KEY}
+    upstreams:
+      # mix in your own node alongside vendors
+      - id: my-own-node
+        endpoint: http://10.0.0.5:8545
+      # audition a new provider on 20% of live traffic, zero user impact
+      - id: candidate-provider
+        endpoint: https://rpc.new-vendor.xyz
+        shadow:
+          enabled: true
+          sampleRate: 0.2
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        # /main/ethereum instead of /main/evm/1
+        alias: ethereum
+        # who deserves the next request, re-evaluated continuously
+        selectionPolicy:
+          evalFunc: |
+            (upstreams, ctx) => upstreams
+              .preferTag('!tier:fallback')
+              .sortByScore()`}
+  ts={`projects: [{
+  id: "main",
+  // one key → every chain the vendor supports, upstreams appear lazily
+  providers: [
+    { endpoint: \`alchemy://\${process.env.ALCHEMY_API_KEY}\` },
+    { endpoint: \`drpc://\${process.env.DRPC_API_KEY}\` },
+  ],
+  upstreams: [
+    // mix in your own node alongside vendors
+    { id: "my-own-node", endpoint: "http://10.0.0.5:8545" },
+    // audition a new provider on 20% of live traffic, zero user impact
+    {
+      id: "candidate-provider",
+      endpoint: "https://rpc.new-vendor.xyz",
+      shadow: { enabled: true, sampleRate: 0.2 },
+    },
+  ],
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    // /main/ethereum instead of /main/evm/1
+    alias: "ethereum",
+    // who deserves the next request, re-evaluated continuously
+    selectionPolicy: {
+      evalFunc: (upstreams, ctx) =>
+        upstreams.preferTag("!tier:fallback").sortByScore(),
+    },
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="add new chains and providers from scratch"
+	defaultOpen
+	prompt={`I want to add Alchemy and dRPC to my eRPC config so every chain they support is
+available automatically, with live scoring picking the best upstream per request.
+Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/use-cases/scale-chains-and-providers.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="shadow-test a new provider before trusting it"
+	prompt={`I want to audition a new RPC vendor on real traffic before giving it any production
+requests. Configure a shadow upstream in my eRPC config that mirrors a sample of live
+traffic to the candidate and logs mismatches, with zero user impact. Read the
+reference first: https://docs.erpc.cloud/use-cases/scale-chains-and-providers.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="tune scoring so fallback providers stay idle unless needed"
+	prompt={`I have primary and fallback providers in my eRPC config and I want the selection policy
+to always prefer primaries and only route to fallbacks when primaries are degraded.
+Walk through the scoring and tag config to make this work. Reference:
+https://docs.erpc.cloud/use-cases/scale-chains-and-providers.llms.txt`}
+/>
+
+<AISection title="Scale chains — agent starting points">
+
+This page sells the outcome; implementation lives in the feature pages. Fetch their
+machine-readable companions:
+
+- [Providers](/config/projects/providers) — every vendor's settings keys, URL shortcut schemes, lazy upstream generation.
+- [Networks](/config/projects/networks) — network defaults inheritance, aliases, lazy bootstrap.
+- [Upstreams](/config/projects/upstreams) — endpoint schemes, block availability gating, cordon reasons, defaults inheritance.
+- [Selection & scoring](/config/projects/selection-policies) — score components, multipliers, custom eval functions, tags.
+- [Shadow upstreams](/config/projects/shadow-upstreams) — mirroring, sampling, mismatch observability.
+
+Resolution chain an agent must know: provider shortcut endpoints expand to vendor-specific
+upstreams per network on first use; explicit `upstreams` and generated ones merge, with
+`upstreamDefaults` then upstream-level overrides applied; the selection policy orders the
+final set before every request. Full field tables live in each page's agent section.
+
+</AISection>

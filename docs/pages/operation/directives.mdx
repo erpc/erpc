@@ -1,414 +1,396 @@
 ---
 title: Directives
-description: Per-request hints that override eRPC behavior — set via HTTP header (X-ERPC-*) or query parameter on any request.
+description: Send an HTTP header or query param and change routing, caching, validation, or consensus for exactly that one request — no restarts, no config changes.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# Directives
+import { LLMsTxtLink, AISection, ConfigTabs, ConfigCode, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-Directives are per-request hints that tell eRPC how to handle a specific call — whether to retry empty responses, which upstream(s) to use, which validations to run, and more. Set them via HTTP header (`X-ERPC-*`) or query parameter on any request.
+# Directives
 
-**You can configure (per request):**
+Every request can carry its own instructions. Add an `X-ERPC-*` header or a `?param=` query string and eRPC instantly shifts routing, caching, integrity checks, or consensus behavior for that call only. No server restart. No config change. The same 23 directives can also be pinned as `directiveDefaults` on any network so every call starts with a sensible baseline.
 
-- **`retryEmpty`** — retry empty/null responses from upstreams (default: `true`)
-- **`retryPending`** — retry pending-tx responses until a block number appears (default: `true`)
-- **`skipCacheRead`** — skip reading from cache; accepts `true`, `false`, or a wildcard connector-ID pattern
-- **`useUpstream`** — restrict routing to upstreams whose ID matches a wildcard pattern
-- **`skipInterpolation`** — skip block-tag → number translation on cache keys (advanced)
-- **Block-integrity** — `enforceHighestBlock`, `enforceGetLogsBlockRange`, `enforceNonNullTaggedBlocks`
-- **Response validation** — bloom filters, receipt structure, transaction fields, log fields, and more
+After each response, eRPC echoes back what actually happened — which upstream won, cache hit or miss, retry and hedge counts — so you always know exactly what the proxy did.
 
-## Example requests
+## Quick taste
 
-```bash
-# Disable empty-response retry for a single call
-curl 'http://localhost:4000/main/evm/42161' \
-  --header 'Content-Type: application/json' \
-  --header 'X-ERPC-Retry-Empty: false' \
-  --data '{
-    "method": "eth_getTransactionReceipt",
-    "params": ["0xe014f359cb3988f9944cd8003aac58812730383041993fdf762efcee21172d15"],
-    "id": 1,
-    "jsonrpc": "2.0"
-  }'
+Per request, the way directives are actually used — pin one call to specific upstreams via
+header or query string:
 
-# Route only to upstreams whose ID starts with "alchemy-"
-curl 'http://localhost:4000/main/evm/1?use-upstream=alchemy-*' \
-  --header 'Content-Type: application/json' \
-  --data '{"method": "eth_blockNumber", "id": 2, "jsonrpc": "2.0"}'
+<ConfigCode
+  language="bash"
+  filename="terminal"
+  focus="1-3,6-7"
+  code={`# via header: only Alchemy upstreams may serve this request
+curl https://rpc.example.com/main/evm/1 \\
+  -H 'X-ERPC-Use-Upstream: alchemy-*' \\
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'
 
-# Skip only in-memory cache reads (still reads from Redis, Postgres, etc.)
-curl 'http://localhost:4000/main/evm/1' \
-  --header 'Content-Type: application/json' \
-  --header 'X-ERPC-Skip-Cache-Read: memory*' \
-  --data '{"method": "eth_getBlockByNumber", "params": ["latest", false], "id": 3, "jsonrpc": "2.0"}'
-
-# Enable bloom-filter validation for a single high-integrity request
-curl 'http://localhost:4000/main/evm/1?validate-logs-bloom-match=true' \
-  --header 'Content-Type: application/json' \
-  --data '{"method": "eth_getBlockReceipts", "params": ["0x123"], "id": 4, "jsonrpc": "2.0"}'
-```
-
-## Network-wide defaults
-
-Instead of setting directives on every request, apply defaults at the network level:
-
-<ConfigTabs
-	path="projects > networks[] > directiveDefaults"
-	yaml={`projects:
-  - id: main
-
-    # Apply to all networks in this project:
-    networkDefaults:
-      directiveDefaults:
-        retryEmpty: true
-        retryPending: false
-        skipCacheRead: false          # false | true | wildcard (e.g. 'memory*')
-        useUpstream: 'alchemy-*|localnode-*'
-
-    # Or override for a specific network:
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 137
-        directiveDefaults:
-          retryEmpty: true
-          enforceHighestBlock: true
-          validateLogsBloomMatch: false`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    networkDefaults: {
-      directiveDefaults: {
-        retryEmpty: true,
-        retryPending: false,
-        skipCacheRead: false,
-        useUpstream: "alchemy-*|localnode-*",
-      },
-    },
-    networks: [{
-      architecture: "evm",
-      evm: { chainId: 137 },
-      directiveDefaults: {
-        retryEmpty: true,
-        enforceHighestBlock: true,
-        validateLogsBloomMatch: false,
-      },
-    }],
-  }],
-});`}
+# same directive as a query parameter
+curl 'https://rpc.example.com/main/evm/1?use-upstream=alchemy-*' \\
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'`}
 />
 
-<AISection title="Copy for your AI assistant — full directives reference">
-
-### How directives work
-
-Every request eRPC receives is resolved against a three-layer stack (highest priority first):
-
-1. **Per-request** — `X-ERPC-*` header or `?<name>=<value>` query param on the individual HTTP call.
-2. **Network-level `directiveDefaults`** — set under `networks[].directiveDefaults` in `erpc.yaml`.
-3. **Project-level `networkDefaults.directiveDefaults`** — applies to every network in the project that doesn't override it.
-
-A per-request header always wins over config defaults.
-
-### Request-behavior directives
-
-#### `retryEmpty`
-
-- **Header:** `X-ERPC-Retry-Empty: true|false`
-- **Query param:** `?retry-empty=true|false`
-- **Default:** `true`
-- **Config key:** `directiveDefaults.retryEmpty`
-
-When `true`, eRPC retries on other upstreams whenever the response is "empty-ish": `null`, `{}`, `[]`, `""`, or `0x`. If every upstream returns the same empty value, eRPC passes it through. Empty-response retry only applies to unfinalized data — for blocks far in the past, an empty response is treated as final.
-
-Set `false` if your client intentionally wants the raw pending-state answer (e.g. you're polling `eth_getTransactionReceipt` for a pending tx and want the `null` immediately rather than waiting for eRPC to exhaust retries).
-
-#### `retryPending`
-
-- **Header:** `X-ERPC-Retry-Pending: true|false`
-- **Query param:** `?retry-pending=false`
-- **Default:** `true`
-- **Config key:** `directiveDefaults.retryPending`
-
-Applies to: `eth_getTransactionByHash`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionReceipt`.
-
-When `true`, eRPC retries these methods until the response has a non-null `blockNumber` (i.e. the transaction has been included in a block). Set `false` when you explicitly want pending-tx data (MEV, mempool monitoring).
-
-Note: pending transactions are never stored in cache because their content is not yet final.
-
-#### `skipCacheRead`
-
-- **Header:** `X-ERPC-Skip-Cache-Read: <value>`
-- **Query param:** `?skip-cache-read=<value>`
-- **Default:** `false`
-- **Config key:** `directiveDefaults.skipCacheRead`
-
-Controls whether eRPC reads from its configured cache connectors before going to an upstream.
-
-Accepted values:
-
-| Value | Effect |
-|---|---|
-| `false` | Normal cache behavior — read from every configured connector. |
-| `true` | Skip ALL cache reads; go directly to an upstream. |
-| Wildcard string (e.g. `memory*`, `redis*`, `memory*\|dynamo*`) | Skip only connectors whose ID matches the pattern. Uses the same [wildcard matching](/config/matcher) as other eRPC filters. |
-
-The wildcard form lets you bypass a fast local cache while still consulting a slower remote one, or vice versa. The new response will still be written back to cache as normal.
-
-#### `useUpstream`
-
-- **Header:** `X-ERPC-Use-Upstream: <pattern>`
-- **Query param:** `?use-upstream=<pattern>`
-- **Default:** none (all eligible upstreams)
-- **Config key:** `directiveDefaults.useUpstream`
-
-Restrict upstream routing to those whose `id` matches the pattern. Uses wildcard matching — `*` matches any substring, `|` separates alternatives. Examples:
-
-- `alchemy-mainnet` — exact match
-- `alchemy-*` — any upstream whose ID starts with `alchemy-`
-- `alchemy-*|infura-*` — upstreams starting with either prefix
-
-Upstreams that don't match are skipped entirely for this request. If no upstream matches, eRPC returns an error.
-
-#### `skipInterpolation`
-
-- **Header:** `X-ERPC-Skip-Interpolation: true|false`
-- **Query param:** `?skip-interpolation=true|false`
-- **Default:** `false`
-- **Config key:** `directiveDefaults.skipInterpolation`
-
-When `false` (the default), eRPC translates block tags (`latest`, `finalized`) to block numbers before constructing cache keys — so a cached `eth_getBlockByNumber("latest")` result is stored under the resolved block number and can be reused by future requests for that specific block. Set `true` to disable this translation and cache under the literal tag. Advanced; rarely needed.
-
-### Block-integrity directives
-
-#### `enforceHighestBlock`
-
-- **Header:** `X-ERPC-Enforce-Highest-Block: true|false`
-- **Query param:** `?enforce-highest-block=true|false`
-- **Default:** `true`
-- **Config key:** `directiveDefaults.enforceHighestBlock`
-
-Tracks the highest block number seen across all upstreams. When an upstream returns a `eth_blockNumber` or `eth_getBlockByNumber("latest"/"finalized")` response older than the highest known, eRPC retries on a fresher upstream. Prevents clients from seeing stale chain heads when upstreams lag.
-
-#### `enforceGetLogsBlockRange`
-
-- **Header:** `X-ERPC-Enforce-Get-Logs-Block-Range: true|false`
-- **Query param:** `?enforce-get-logs-block-range=true|false`
-- **Default:** `true`
-- **Config key:** `directiveDefaults.enforceGetLogsBlockRange`
-
-Before sending `eth_getLogs`, `trace_filter`, or `arbtrace_filter`, checks that the selected upstream's known block range covers the requested `fromBlock`–`toBlock` window. If not, skips that upstream rather than wasting a round-trip.
-
-#### `enforceNonNullTaggedBlocks`
-
-- **Header:** `X-ERPC-Enforce-Non-Null-Tagged-Blocks: true|false`
-- **Query param:** `?enforce-non-null-tagged-blocks=true|false`
-- **Default:** `true`
-- **Config key:** `directiveDefaults.enforceNonNullTaggedBlocks`
-
-Converts null responses for `eth_getBlockByNumber("latest"/"pending"/...)` into errors so that retry/failover kicks in. Numeric block requests always fail on null regardless of this setting. Set `false` for chains (e.g. zkSync) that legitimately return null for certain block tags.
-
-### Transaction-validation directives
-
-All transaction validations default to `false` (opt-in). They add JSON parsing overhead and are intended for high-integrity indexing workloads.
-
-#### `validateTransactionsRoot`
-
-- **Header:** `X-ERPC-Validate-Transactions-Root: true|false`
-- **Query param:** `?validate-transactions-root=true|false`
-- **Config key:** `directiveDefaults.validateTransactionsRoot`
-
-Verifies that the Merkle transactions root in the block header matches the actual transaction list in the response. Catches malformed or truncated responses.
-
-#### `validateTransactionFields`
-
-- **Header:** `X-ERPC-Validate-Transaction-Fields: true|false`
-- **Query param:** `?validate-transaction-fields=true|false`
-- **Config key:** `directiveDefaults.validateTransactionFields`
-
-Checks per-transaction field formats (hash length, address length, hex encoding). Rejects responses with malformed transaction objects.
-
-#### `validateTransactionBlockInfo`
-
-- **Header:** `X-ERPC-Validate-Transaction-Block-Info: true|false`
-- **Query param:** `?validate-transaction-block-info=true|false`
-- **Config key:** `directiveDefaults.validateTransactionBlockInfo`
-
-Verifies that `blockHash` and `blockNumber` on each transaction match the containing block. Catches responses where transactions were incorrectly spliced from another block.
-
-#### `validateHeaderFieldLengths`
-
-- **Header:** `X-ERPC-Validate-Header-Field-Lengths: true|false`
-- **Query param:** `?validate-header-field-lengths=true|false`
-- **Config key:** `directiveDefaults.validateHeaderFieldLengths`
-
-Validates byte lengths of block header fields (hashes, addresses, bloom). Rejects responses with truncated or incorrectly-encoded header values.
-
-### Log-validation directives
-
-#### `enforceLogIndexStrictIncrements`
-
-- **Header:** `X-ERPC-Enforce-Log-Index-Strict-Increments: true|false`
-- **Query param:** `?enforce-log-index-strict-increments=true|false`
-- **Config key:** `directiveDefaults.enforceLogIndexStrictIncrements`
-
-Verifies that `logIndex` values increment by exactly 1 across all receipts in a `eth_getBlockReceipts` response. Gaps or duplicates indicate a malformed or partial response.
-
-#### `validateTxHashUniqueness`
-
-- **Header:** `X-ERPC-Validate-Tx-Hash-Uniqueness: true|false`
-- **Query param:** `?validate-tx-hash-uniqueness=true|false`
-- **Config key:** `directiveDefaults.validateTxHashUniqueness`
-
-Checks that no two receipts in a `eth_getBlockReceipts` response share the same transaction hash. Duplicates indicate a corrupt response.
-
-#### `validateTransactionIndex`
-
-- **Header:** `X-ERPC-Validate-Transaction-Index: true|false`
-- **Query param:** `?validate-transaction-index=true|false`
-- **Config key:** `directiveDefaults.validateTransactionIndex`
-
-Checks that `transactionIndex` values in receipts are sequential starting from 0. Out-of-order or skipped indices indicate a partial or reordered response.
-
-#### `validateLogFields`
-
-- **Header:** `X-ERPC-Validate-Log-Fields: true|false`
-- **Query param:** `?validate-log-fields=true|false`
-- **Config key:** `directiveDefaults.validateLogFields`
-
-Validates log entry field formats — address length and topic byte lengths. Rejects malformed log objects.
-
-#### `validateLogsBloomEmptiness`
-
-- **Header:** `X-ERPC-Validate-Logs-Bloom-Emptiness: true|false`
-- **Query param:** `?validate-logs-bloom-emptiness=true|false`
-- **Config key:** `directiveDefaults.validateLogsBloomEmptiness`
-
-Checks consistency between the presence of logs and the `logsBloom` field: if logs exist, bloom must be non-zero; if no logs, bloom must be the zero bloom. Catches responses where bloom and logs disagree at a coarse level.
-
-#### `validateLogsBloomMatch`
-
-- **Header:** `X-ERPC-Validate-Logs-Bloom-Match: true|false`
-- **Query param:** `?validate-logs-bloom-match=true|false`
-- **Config key:** `directiveDefaults.validateLogsBloomMatch`
-
-Recomputes the bloom filter from the actual log entries and compares it to the `logsBloom` in the block header. The most thorough log validation — catches cases where the bloom was pre-computed from a different (e.g. forked) log set. Also the most CPU-intensive of the log validations.
-
-### Receipt-validation directives
-
-#### `validateReceiptTransactionMatch`
-
-- **Header:** `X-ERPC-Validate-Receipt-Transaction-Match: true|false`
-- **Query param:** `?validate-receipt-transaction-match=true|false`
-- **Config key:** `directiveDefaults.validateReceiptTransactionMatch`
-
-Cross-validates a receipt against its corresponding transaction (hash, from/to addresses). Requires the ground-truth transaction to be available (library mode).
-
-#### `validateContractCreation`
-
-- **Header:** `X-ERPC-Validate-Contract-Creation: true|false`
-- **Query param:** `?validate-contract-creation=true|false`
-- **Config key:** `directiveDefaults.validateContractCreation`
-
-Checks that contract-creation receipts have a non-empty `contractAddress` and non-creation receipts do not. Requires ground-truth transaction data (library mode).
-
-### Numeric and expected-value directives
-
-#### `receiptsCountExact`
-
-- **Header:** `X-ERPC-Receipts-Count-Exact: <N>`
-- **Query param:** `?receipts-count-exact=<N>`
-- **Config key:** `directiveDefaults.receiptsCountExact`
-
-Reject the response unless the receipts array has exactly `N` entries. Useful when you know the transaction count for the block and want to detect truncated responses.
-
-#### `receiptsCountAtLeast`
-
-- **Header:** `X-ERPC-Receipts-Count-At-Least: <N>`
-- **Query param:** `?receipts-count-at-least=<N>`
-- **Config key:** `directiveDefaults.receiptsCountAtLeast`
-
-Reject the response unless the receipts array has at least `N` entries.
-
-#### `validationExpectedBlockHash`
-
-- **Header:** `X-ERPC-Validation-Expected-Block-Hash: <hash>`
-- **Query param:** `?validation-expected-block-hash=<hash>`
-- **Config key:** `directiveDefaults.validationExpectedBlockHash`
-
-Reject the response unless every receipt carries this block hash. Guards against cross-block contamination (a receipt from a different block slipping in).
-
-#### `validationExpectedBlockNumber`
-
-- **Header:** `X-ERPC-Validation-Expected-Block-Number: <hex>`
-- **Query param:** `?validation-expected-block-number=<hex>`
-- **Config key:** `directiveDefaults.validationExpectedBlockNumber`
-
-Reject the response unless every receipt has this block number (hex string, e.g. `0x123abc`).
-
-### How validation failures interact with failsafe
-
-When any validation directive fails, eRPC treats the response as an upstream error — the response is not cached and not returned to the client. Failsafe policies then take over:
-
-- **With retry**: each validation failure counts as an attempt; configure `maxAttempts` high enough to cover your upstream pool.
-- **With consensus**: invalid responses are excluded from voting; only valid responses participate, so one valid upstream can win even if the majority return bad data.
-- **Recommended for indexers**: hedge + consensus + retry together — hedge races multiple upstreams in parallel, consensus picks the agreed-upon valid result, retry handles the case where all initial attempts fail.
-
-### `directiveDefaults` config reference
-
-All directives can be set as network-wide defaults under `directiveDefaults`. Per-request headers/query params override these defaults.
-
-| Directive | Default | Notes |
+Directives that make sense as a permanent baseline can be pinned per network with
+`directiveDefaults` — headers and query params still override them per request:
+
+<ConfigTabs
+  path="projects[].networks[].directiveDefaults"
+  focusYaml="6-10"
+  focusTs="6-10"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        directiveDefaults:
+          # retry when upstream returns null/empty (e.g. not-yet-indexed block)
+          retryEmpty: true
+          # reject responses whose block number is behind the known tip
+          enforceHighestBlock: true`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    directiveDefaults: {
+      // retry when upstream returns null/empty (e.g. not-yet-indexed block)
+      retryEmpty: true,
+      // reject responses whose block number is behind the known tip
+      enforceHighestBlock: true,
+    },
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="set sane directive defaults for a new network"
+	defaultOpen
+	prompt={`I'm adding a new EVM network to my eRPC config and want to pin
+sensible directiveDefaults — retryEmpty, enforceHighestBlock, validateTransactionsRoot,
+and useUpstream routing for archival calls. Read the full reference first:
+https://docs.erpc.cloud/operation/directives.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="audit and tighten my existing directive defaults"
+	prompt={`Review the directiveDefaults blocks in my eRPC config: check which
+validation directives are on by default but may be incompatible with non-standard chains
+(zkSync, Filecoin, Kaia style), flag any retryPending: true set globally (dangerous), and
+suggest per-network overrides. Read the reference:
+https://docs.erpc.cloud/operation/directives.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="pin an archival upstream for indexer traffic"
+	prompt={`My indexer sends eth_getLogs and eth_getBlockReceipts requests that should always
+hit an archival upstream tagged family:archival in my eRPC config. Configure
+directiveDefaults.useUpstream so those calls are pinned to that group and add the right
+receipt-validation directives for indexing correctness. Reference:
+https://docs.erpc.cloud/operation/directives.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug why X-ERPC-Retry-Empty is not retrying"
+	prompt={`My requests have X-ERPC-Retry-Empty: true in the header but eRPC is not retrying
+empty results. Walk me through why this might happen (boolean parse rules, EmptyResultMaxAttempts
+cap, gRPC path limitation) and how to verify via the X-ERPC-Attempts response header that
+retries are actually firing. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/operation/directives.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="reduce diagnostic header noise in production logs"
+	prompt={`Our load balancer logs every X-ERPC-Upstreams response header and it's adding
+megabytes to our access logs. Configure executionHeaders on the server to suppress the
+per-attempt trace while keeping the counter headers for dashboards. Work with my existing eRPC config.
+Reference: https://docs.erpc.cloud/operation/directives.llms.txt`}
+/>
+
+<AISection title="Directives — full agent reference">
+
+### How it works
+
+**Parsing pipeline.** For every HTTP request eRPC runs two passes. First, `ApplyDirectiveDefaults` copies any `directiveDefaults` config block into the request struct (lowest priority). Second, `EnrichFromHttp` scans all 23 registered header and query names. If none are present it returns immediately after extracting User-Agent — zero allocations, zero locks. When directive inputs are present the struct is cloned before mutation so batch sub-requests that share the same pointer do not race.
+
+Precedence from lowest to highest: `directiveDefaults` config → HTTP header → URL query parameter. A query-param value always wins over the same header, which always wins over config. `ApplyDirectiveDefaults` is idempotent — once `r.directives` is non-nil every subsequent call is a no-op, so per-request overrides can never be clobbered by a second config pass. Source: [`common/request.go:563-676`](https://github.com/erpc/erpc/blob/main/common/request.go#L563-L676).
+
+**Boolean parsing rule.** For all 23 directive headers the only truthy value is the exact string `"true"` (case-insensitive, whitespace stripped). `"1"` and `"yes"` are not truthy. `X-ERPC-Force-Trace` is handled by the tracing subsystem separately and accepts all three. Always use `"true"` to avoid this asymmetry. Confirmed: [`common/request_test.go:406-427`](https://github.com/erpc/erpc/blob/main/common/request_test.go#L406-L427).
+
+**Exception for headers #20–23.** `X-ERPC-Validate-Header-Field-Lengths`, `X-ERPC-Validate-Transaction-Fields`, `X-ERPC-Validate-Transaction-Block-Info`, and `X-ERPC-Validate-Log-Fields` parse with `strings.ToLower` only (no `TrimSpace`), so `"  true  "` evaluates to `false` for these four. Query-param parsers always apply `TrimSpace`. Source: [`common/request.go:798-807`](https://github.com/erpc/erpc/blob/main/common/request.go#L798-L807).
+
+**`directiveDefaults` placement.** Settable at `projects[].networks[].directiveDefaults` (per network) or `projects[].networks[].failsafe.directiveDefaults` (failsafe scope). Every `*bool` field has three states: nil (omitted — request field stays at Go zero `false`), pointer to `false` (explicitly written), pointer to `true`. The nil check in `ApplyDirectiveDefaults` is a "was this field set?" guard, not a multi-level inheritance chain.
+
+**gRPC path.** `EnrichFromHttp` is never called on the gRPC path. gRPC callers receive only `directiveDefaults`; per-request header overrides are not available. Source: [`erpc/request_processor.go:35-67`](https://github.com/erpc/erpc/blob/main/erpc/request_processor.go#L35-L67).
+
+### Config schema
+
+Config struct: [`common/config.go:2105-2152`](https://github.com/erpc/erpc/blob/main/common/config.go#L2105-L2152). Applied by `ApplyDirectiveDefaults` at [`common/request.go:563-676`](https://github.com/erpc/erpc/blob/main/common/request.go#L563-L676).
+
+#### Complete directive registry (all 23)
+
+| # | HTTP header | Query param | Type | Config field | Default | Effect | Consumed at |
+|---|---|---|---|---|---|---|---|
+| 1 | `X-ERPC-Retry-Empty` | `retry-empty` | bool | `retryEmpty` | `false` | Retry on null/empty upstream response. Subject to `EmptyResultMaxAttempts` cap. | [`erpc/network_executor.go:427-442`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L427-L442) |
+| 2 | `X-ERPC-Retry-Pending` | `retry-pending` | bool | `retryPending` | `false` (struct comment "true by default" is **stale**) | Retry `eth_getTransactionReceipt` / `eth_getTransactionByHash` / `eth_getTransactionByBlockHashAndIndex` / `eth_getTransactionByBlockNumberAndIndex` while tx is pending. `EmptyResultMaxAttempts` cap applies. | [`erpc/network_executor.go:445-459`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L445-L459) |
+| 3 | `X-ERPC-Skip-Cache-Read` | `skip-cache-read` | string (bool in config YAML normalized to string) | `skipCacheRead` | `""` (no skip) | `"true"` = skip all; `"false"`/`""` = use cache; other string = connector-ID WildcardMatch pattern. YAML `true`/`false` normalized to strings via `fmt.Sprintf("%v", v)`. Header NOT trimmed; query IS trimmed. | [`common/request.go:898-914`](https://github.com/erpc/erpc/blob/main/common/request.go#L898-L914) |
+| 4 | `X-ERPC-Use-Upstream` | `use-upstream` | string | `useUpstream` | `""` (no filter) | Selector matched against upstream `id`; for purely-positive patterns also against upstream `Tags` (any tag match wins). Negated patterns (`!`) match ID only. Header NOT trimmed; query IS trimmed. No match → `ErrUpstreamsExhausted`. Activates selector-scoped served-tip partitioning. | [`upstream/upstream.go:1526-1534`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1526-L1534) |
+| 5 | `X-ERPC-Skip-Interpolation` | `skip-interpolation` | bool | `skipInterpolation` | `false` | Suppresses block-tag → hex substitution in forwarded params. Internal block refs still computed/cached. | [`architecture/evm/json_rpc.go:132`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc.go#L132) |
+| 6 | `X-ERPC-Skip-Consensus` | `skip-consensus` | bool | `skipConsensus` | `false` | Bypasses consensus branch; uses standard `retry(hedge(upstreamSweep))`. Retry/hedge/breaker/timeout still apply. | [`erpc/network_executor.go:179-188`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L179-L188) |
+| 7 | `X-ERPC-Enforce-Highest-Block` | `enforce-highest-block` | bool | `enforceHighestBlock` | **`true`** (SetDefaults) | `eth_getBlockByNumber` with `"latest"`/`"finalized"`: re-routes if response is behind known highest block. Skipped for cached responses. | [`architecture/evm/eth_getBlockByNumber.go:111-170`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L111-L170) |
+| 8 | `X-ERPC-Enforce-GetLogs-Range` | `enforce-getlogs-range` | bool | `enforceGetLogsBlockRange` | **`true`** (SetDefaults) | Pre-forward: rejects `eth_getLogs`/`trace_filter` if block range exceeds `getLogsMaxAllowedRange`. Consumed via legacy `EvmIntegrityConfig` (not a true per-request override — see Edge cases). | [`architecture/evm/eth_getLogs.go:280-288`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L280-L288) |
+| 9 | `X-ERPC-Enforce-Non-Null-Tagged-Blocks` | `enforce-non-null-tagged-blocks` | bool | `enforceNonNullTaggedBlocks` | **`true`** (SetDefaults) | Treats null block for tag-based `eth_getBlockByNumber` as an error. Disable for chains that legitimately return null for certain tags (e.g., zkSync). | [`architecture/evm/eth_getBlockByNumber.go:304`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L304) |
+| 10 | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` | bool | `enforceLogIndexStrictIncrements` | `false` | `eth_getBlockReceipts`: log indices must increment by exactly 1 **globally** across all receipts (counter does not reset per receipt). | [`architecture/evm/eth_getBlockReceipts.go:399-416`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L399-L416) |
+| 11 | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | bool | `validateLogsBloomEmptiness` | `false` | Logs exist → bloom non-zero; no logs → bloom zero. | [`architecture/evm/eth_getBlockReceipts.go:307-321`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L307-L321) |
+| 12 | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | bool | `validateLogsBloomMatch` | `false` | Recomputes 2048-bit Bloom filter from receipt logs (keccak256) and verifies against `logsBloom`. CPU-intensive. For `eth_getBlockReceipts` only (no ground truth needed). | [`architecture/evm/eth_getBlockReceipts.go:419-480`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L419-L480) |
+| 13 | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` | bool | `validateTxHashUniqueness` | `false` | Rejects empty `transactionHash` AND duplicates — stricter than always-on dedup (which only catches duplicates among non-empty hashes). | [`architecture/evm/eth_getBlockReceipts.go:202-213`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L202-L213) |
+| 14 | `X-ERPC-Validate-Transaction-Index` | `validate-transaction-index` | bool | `validateTransactionIndex` | `false` | Each receipt's `transactionIndex` must equal its array position `i`. Absent fields skipped. | [`architecture/evm/eth_getBlockReceipts.go:217-233`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L217-L233) |
+| 15 | `X-ERPC-Receipts-Count-Exact` | `receipts-count-exact` | int64 | `receiptsCountExact` | nil | `eth_getBlockReceipts` must return exactly N receipts. Parse failure silently skips. | [`architecture/evm/eth_getBlockReceipts.go:149-155`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L149-L155) |
+| 16 | `X-ERPC-Receipts-Count-At-Least` | `receipts-count-at-least` | int64 | `receiptsCountAtLeast` | nil | `eth_getBlockReceipts` must return at least N receipts. Parse failure silently skips. | [`architecture/evm/eth_getBlockReceipts.go:157-163`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L157-L163) |
+| 17 | `X-ERPC-Validation-Expected-Block-Hash` | `validation-expected-block-hash` | string | `validationExpectedBlockHash` | `""` | All receipts must carry this block hash. Case-insensitive, `0x` prefix stripped at comparison. | [`architecture/evm/eth_getBlockReceipts.go:168-170`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L168-L170) |
+| 18 | `X-ERPC-Validation-Expected-Block-Number` | `validation-expected-block-number` | int64 | `validationExpectedBlockNumber` | nil | All receipts must carry this block number. | [`architecture/evm/eth_getBlockReceipts.go:182-184`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L182-L184) |
+| 19 | `X-ERPC-Validate-Transactions-Root` | `validate-transactions-root` | bool | `validateTransactionsRoot` | **`true`** (SetDefaults) | Checks `transactionsRoot` against transaction list. Disable for non-standard chains. | [`architecture/evm/eth_getBlockByNumber.go:515`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L515) |
+| 20 | `X-ERPC-Validate-Header-Field-Lengths` | `validate-header-field-lengths` | bool | `validateHeaderFieldLengths` | `false` | Block header hash fields must be 32 bytes; `logsBloom` 256 bytes. **Parses with `ToLower` only (no `TrimSpace`)** — `"  true  "` → `false`. | [`architecture/evm/eth_getBlockByNumber.go:615-683`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L615-L683) |
+| 21 | `X-ERPC-Validate-Transaction-Fields` | `validate-transaction-fields` | bool | `validateTransactionFields` | `false` | Each tx `hash` must be 32 bytes; no duplicates. Hash-only blocks bypass entirely. **Parses without `TrimSpace`**. | [`architecture/evm/eth_getBlockByNumber.go:687-708`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L687-L708) |
+| 22 | `X-ERPC-Validate-Transaction-Block-Info` | `validate-transaction-block-info` | bool | `validateTransactionBlockInfo` | `false` | Per-tx: `blockHash` matches block hash; `blockNumber` matches; `transactionIndex` matches array position. Full-object txs only. **Parses without `TrimSpace`**. | [`architecture/evm/eth_getBlockByNumber.go:711-753`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L711-L753) |
+| 23 | `X-ERPC-Validate-Log-Fields` | `validate-log-fields` | bool | `validateLogFields` | `false` | Per log: address 20 bytes, each topic 32 bytes, topic count ≤ `MaxTopics`, context fields match enclosing receipt. Absent fields skipped. **Parses without `TrimSpace`**. | [`architecture/evm/eth_getBlockReceipts.go:324-397`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L324-L397) |
+
+#### Config-only directives (no HTTP header or query param)
+
+| Field | Config path | Default | Notes |
+|---|---|---|---|
+| `validateReceiptTransactionMatch` | `directiveDefaults.validateReceiptTransactionMatch` | `false` | Requires `GroundTruthTransactions` (library mode). Silently no-op over HTTP. Source: [`architecture/evm/eth_getBlockReceipts.go:235-300`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L235-L300) |
+| `validateContractCreation` | `directiveDefaults.validateContractCreation` | `false` | Only active inside `ValidateReceiptTransactionMatch` loop; requires `GroundTruthTransactions`. |
+
+#### `server.executionHeaders` — response diagnostic header mode
+
+| Value | Effect | Source |
 |---|---|---|
-| `retryEmpty` | `true` | Retry empty/null/`0x` responses. |
-| `retryPending` | `true` | Retry until `blockNumber` is non-null for tx methods. |
-| `skipCacheRead` | `false` | `false`, `true`, or wildcard connector-ID pattern. |
-| `useUpstream` | none | Wildcard upstream-ID filter. |
-| `skipInterpolation` | `false` | Skip tag → number translation on cache keys. |
-| `enforceHighestBlock` | `true` | Track and enforce highest block seen across upstreams. |
-| `enforceGetLogsBlockRange` | `true` | Check upstream range covers requested `fromBlock`–`toBlock`. |
-| `enforceNonNullTaggedBlocks` | `true` | Null on tagged blocks is an error; set `false` for zkSync-like chains. |
-| `validateTransactionsRoot` | `false` | Verify Merkle transactions root. |
-| `validateTransactionFields` | `false` | Check per-tx field formats. |
-| `validateTransactionBlockInfo` | `false` | Tx `blockHash`/`blockNumber` matches containing block. |
-| `validateHeaderFieldLengths` | `false` | Block header field byte-length checks. |
-| `enforceLogIndexStrictIncrements` | `false` | Log indices must increment by 1 across receipts. |
-| `validateTxHashUniqueness` | `false` | No duplicate tx hashes in receipts. |
-| `validateTransactionIndex` | `false` | Receipt indices sequential from 0. |
-| `validateLogFields` | `false` | Log address/topic field formats. |
-| `validateLogsBloomEmptiness` | `false` | Logs present ↔ bloom non-zero. |
-| `validateLogsBloomMatch` | `false` | Recompute bloom from logs and verify match (most expensive). |
-| `validateReceiptTransactionMatch` | `false` | Cross-validate receipt vs transaction (library mode). |
-| `validateContractCreation` | `false` | Contract-creation receipts must have `contractAddress` (library mode). |
-| `receiptsCountExact` | none | Receipts array must have exactly N entries. |
-| `receiptsCountAtLeast` | none | Receipts array must have at least N entries. |
-| `validationExpectedBlockHash` | none | All receipts must carry this block hash. |
-| `validationExpectedBlockNumber` | none | All receipts must carry this block number. |
+| `"all"` (default) | Full counter headers + `X-ERPC-Upstreams` per-attempt trace | [`erpc/http_server.go:1081-1086`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1081-L1086) |
+| `"summary"` | All counter headers; `X-ERPC-Upstreams` trace suppressed only | [`erpc/http_server.go:1105-1127`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1105-L1127) |
+| `"off"` | No `X-ERPC-*` diagnostics (version/commit still emitted) | [`erpc/http_server.go:1105-1127`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1105-L1127) |
 
-See [Networks → `directiveDefaults`](/config/projects/networks#directivedefaults--request-directives-at-network-level) for the full network-config context.
+### Worked examples
 
-### Common pitfalls
+All patterns below are distilled from real production fleets; comments explain the non-obvious choices.
 
-- **`skipCacheRead: true` vs `skipCacheRead: "memory*"`** — `true` skips ALL cache connectors including remote ones (Redis, DynamoDB). Use a wildcard pattern when you want to bypass only a specific tier.
-- **Validation directives default to `false`** — they add JSON parsing overhead. Enable only the checks your workload needs.
-- **`validateLogsBloomMatch` is expensive** — it recomputes the bloom filter for every receipt in the response. Enable in conjunction with retry/consensus so a failed validation doesn't increase overall latency unless a bad upstream is actually encountered.
-- **`enforceNonNullTaggedBlocks: false` for zkSync** — some chains legitimately return null for `pending` or pre-genesis block tags. Disabling this directive prevents spurious retries on those chains.
-- **`receiptsCountExact` / `validationExpectedBlock*` are per-request directives** — they encode request-specific knowledge (how many txs the block has, which block hash you expect). They're rarely useful as `directiveDefaults`; set them via header/query for specific high-integrity fetches.
+**1. Global network defaults: retryEmpty on, retryPending explicitly off.** Production fleets set `retryEmpty: true` at `networkDefaults` so every network retries null/empty upstream responses (e.g., a not-yet-indexed block) without per-network config. `retryPending: false` is explicit because the struct's stale "true by default" comment causes confusion — production configs state it clearly:
+
+<ConfigTabs
+  path="projects[].networkDefaults.directiveDefaults"
+  yaml={`networkDefaults:
+  directiveDefaults:
+    # Retry null/empty results globally — covers block-availability races
+    # on eth_getLogs, eth_getBlockByNumber, eth_getTransactionReceipt.
+    retryEmpty: true
+    # retryPending default is false despite stale struct comment;
+    # pin it explicitly so intent is clear to future maintainers.
+    retryPending: false`}
+  ts={`networkDefaults: {
+  directiveDefaults: {
+    // Retry null/empty results globally — covers block-availability races
+    // on eth_getLogs, eth_getBlockByNumber, eth_getTransactionReceipt.
+    retryEmpty: true,
+    // retryPending default is false despite stale struct comment;
+    // pin it explicitly so intent is clear to future maintainers.
+    retryPending: false,
+  },
+}`}
+/>
+
+**2. Non-standard chain: disable validateTransactionsRoot.** zkSync Era, Kaia, Filecoin, HyperEVM, Sophon, Abstract, and Etherlink all use non-standard transaction-trie roots that fail eRPC's `validateTransactionsRoot` check. Production configs disable it per-network while inheriting all other defaults. zkSync and similar ZK-rollups also disable `enforceNonNullTaggedBlocks` because their chains can legitimately return null for certain block tags:
+
+<ConfigTabs
+  path="projects[].networks[].directiveDefaults"
+  yaml={`networks:
+  - evm:
+      chainId: 324  # zkSync Era mainnet
+      integrity:
+        # zkSync can return null for certain block tags — don't treat as error
+        enforceNonNullTaggedBlocks: false
+    directiveDefaults:
+      # zkSync uses a custom transaction trie; root will never match
+      validateTransactionsRoot: false`}
+  ts={`networks: [{
+  evm: {
+    chainId: 324, // zkSync Era mainnet
+    integrity: {
+      // zkSync can return null for certain block tags — don't treat as error
+      enforceNonNullTaggedBlocks: false,
+    },
+  },
+  directiveDefaults: {
+    // zkSync uses a custom transaction trie; root will never match
+    validateTransactionsRoot: false,
+  },
+}]`}
+/>
+
+**3. Indexer workload — full receipt integrity.** When backfilling a chain for an indexer you want to catch any upstream that sends partial or misordered receipts. Enable the receipt cluster at `directiveDefaults` so every call on that network is validated automatically:
+
+<ConfigTabs
+  path="projects[].networks[].directiveDefaults"
+  yaml={`directiveDefaults:
+  retryEmpty: true
+  # tx-receipt polling — only enable per-indexer-network, not globally
+  retryPending: true
+  enforceHighestBlock: true
+  validateTransactionsRoot: true
+  # reject receipts with empty or duplicate tx hashes
+  validateTxHashUniqueness: true
+  # each receipt must appear at its array position
+  validateTransactionIndex: true
+  # log indices must increment globally across all receipts in the block
+  enforceLogIndexStrictIncrements: true`}
+  ts={`directiveDefaults: {
+  retryEmpty: true,
+  // tx-receipt polling — only enable per-indexer-network, not globally
+  retryPending: true,
+  enforceHighestBlock: true,
+  validateTransactionsRoot: true,
+  // reject receipts with empty or duplicate tx hashes
+  validateTxHashUniqueness: true,
+  // each receipt must appear at its array position
+  validateTransactionIndex: true,
+  // log indices must increment globally across all receipts in the block
+  enforceLogIndexStrictIncrements: true,
+}`}
+/>
+
+**4. Per-request upstream pinning.** A dApp wants to read its own just-submitted transaction from the same upstream it used to broadcast, bypassing the normal load-balanced pool. Send the header at call time — no config change needed:
+
+```http
+POST /1/main HTTP/1.1
+X-ERPC-Use-Upstream: alchemy-mainnet
+X-ERPC-Retry-Pending: true
+```
+
+The upstream selector supports wildcards and tags: `"alchemy-*"`, `"alchemy-mainnet|quicknode-*"`, `"family:archival"` (tag match), `"!drpc"` (exclude one by ID).
+
+**5. Per-call cache bypass for fresh data.** A price-feed service needs uncached `eth_call` results on every tick. Send `X-ERPC-Skip-Cache-Read: true` per request; write-back still fires so the next caller gets the fresh value from cache:
+
+```http
+POST /1/main HTTP/1.1
+X-ERPC-Skip-Cache-Read: true
+```
+
+To bypass only the in-memory tier and keep Redis warm reads: `X-ERPC-Skip-Cache-Read: memory*`.
+
+**6. Skipping consensus for internal tooling.** A monitoring script wants low-latency reads and trusts a single upstream. Bypass the consensus quorum for that call:
+
+```http
+POST /1/main HTTP/1.1
+X-ERPC-Skip-Consensus: true
+```
+
+Retry, hedge, circuit-breaker, and timeout still apply — only the dispute/agreement step is skipped.
+
+### Request/response behavior
+
+**Request headers — canonical truthy value.** All 23 directive headers require `"true"` (any case, optional surrounding whitespace). `"1"` and `"yes"` evaluate to `false` and silently have no effect. Exception: `X-ERPC-Force-Trace` (tracing subsystem, not a directive) accepts `"true"`, `"1"`, or `"yes"`. Always use `"true"`.
+
+**Response headers always emitted:**
+
+| Header | Value |
+|---|---|
+| `X-ERPC-Version` | eRPC version string |
+| `X-ERPC-Commit` | git commit SHA |
+
+**Execution diagnostic headers** (single responses only; controlled by `server.executionHeaders`; never emitted for batch):
+
+| Header | Value | When |
+|---|---|---|
+| `X-ERPC-Attempts` | total physical ops (upstream + cache) | always |
+| `X-ERPC-Upstream-Attempts` / `X-ERPC-Upstream-Retries` / `X-ERPC-Upstream-Hedges` | counters | always |
+| `X-ERPC-Network-Attempts` / `X-ERPC-Network-Retries` / `X-ERPC-Network-Hedges` | counters | always |
+| `X-ERPC-Cache-Attempts` / `X-ERPC-Cache-Retries` / `X-ERPC-Cache-Hedges` | counters | only when &gt; 0 |
+| `X-ERPC-Consensus-Slots` / `X-ERPC-Consensus-Disputes` / `X-ERPC-Consensus-Low-Participants` | counters | only when &gt; 0 |
+| `X-ERPC-Cache` | `HIT` or `MISS` | when response metadata present |
+| `X-ERPC-Upstream` | winning upstream id | when known |
+| `X-ERPC-Duration` | milliseconds | NormalizedResponse only |
+| `X-ERPC-Upstreams` | per-attempt trace: `upstreamId=reason:outcome:durationMs[:won]` segments joined by `;` | `all` mode only; when `len(attempts) > 0` |
+
+Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms`.
+
+**Error shapes produced by directive checks.** Failed validation directives return `ErrEndpointContentValidation`. A `UseUpstream` selector that matches no upstream returns `ErrUpstreamsExhausted` (wrapping `ErrUpstreamNotAllowed` per candidate) — there is no distinct "selector matched nothing" error code.
+
+### Best practices
+
+- **Start with `enforceHighestBlock: true` and `validateTransactionsRoot: true`** — both are on by default and catch the most common upstream data-quality issues with negligible overhead.
+- **Turn on the receipt-validation cluster only for indexing workloads** — `validateLogsBloomMatch`, `enforceLogIndexStrictIncrements`, `validateLogFields` are CPU-intensive; they penalize latency for general-purpose proxy traffic.
+- **Use `retryEmpty: true` for block-polling calls** but verify `EmptyResultMaxAttempts` is set appropriately; unbounded retries on a degraded upstream can exhaust the timeout budget.
+- **Never set `retryPending: true` globally** — it converts every pending-tx lookup into a polling loop. Pin it per request (`X-ERPC-Retry-Pending: true`) or to a dedicated network for transaction-tracking flows.
+- **Pin `useUpstream` at config via `directiveDefaults` for known-good archival nodes** rather than relying on callers to send the header — this prevents a misconfigured client from silently routing archival calls to full nodes.
+- **Always send `"true"`, never `"1"` or `"yes"`**, for all `X-ERPC-*` directive headers. Four of the 23 headers (#20–23) lack `TrimSpace` — a value like `"  true  "` (with spaces) evaluates to `false` on those.
+- **On gRPC, per-request overrides are not available.** Wire all desired defaults into `directiveDefaults` in config; `EnrichFromHttp` is never called on the gRPC path.
+
+### Edge cases & gotchas
+
+1. **`RetryPending` default is `false`, not `true`.** The struct comment at `common/request.go:125` ("true by default") is stale. No `SetDefaults` entry exists. Must be explicitly enabled via `directiveDefaults.retryPending: true` or `X-ERPC-Retry-Pending: true`.
+2. **`X-ERPC-Use-Upstream` header is NOT trimmed; query IS.** A header with leading/trailing spaces will not match any upstream. Source: [`common/request.go:741`](https://github.com/erpc/erpc/blob/main/common/request.go#L741) vs [`:812`](https://github.com/erpc/erpc/blob/main/common/request.go#L812).
+3. **Headers #20–23 lack `TrimSpace`.** `"  true  "` → `false` for `X-ERPC-Validate-Header-Field-Lengths`, `X-ERPC-Validate-Transaction-Fields`, `X-ERPC-Validate-Transaction-Block-Info`, `X-ERPC-Validate-Log-Fields`. All other boolean directive headers do trim. Source: [`common/request.go:798,801,804,807`](https://github.com/erpc/erpc/blob/main/common/request.go#L798-L807).
+4. **`"1"` and `"yes"` are NOT truthy for directive headers.** Only `"true"` (any case). This differs from `X-ERPC-Force-Trace`. Source: [`common/request_test.go:406-427`](https://github.com/erpc/erpc/blob/main/common/request_test.go#L406-L427).
+5. **`UseUpstream` failure produces `ErrUpstreamsExhausted`, not a selector-specific error.** Operators must parse the error message text to diagnose selector mismatches. Source: [`common/errors.go:1432-1440`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1432-L1440).
+6. **`EnforceGetLogsBlockRange` cannot be overridden per-request via HTTP.** `SetDefaults` copies `DirectiveDefaults` values into `Evm.Integrity`; the architecture layer reads from the network config struct, not the per-request directive. Source: [`common/defaults.go:1957-1964`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1957-L1964).
+7. **`EnforceLogIndexStrictIncrements` counts globally, not per-receipt.** Indices must be contiguous across all receipts in the block response. Upstreams that reset `logIndex` per-receipt fail this check.
+8. **`ValidateTxHashUniqueness` rejects empty hashes; always-on dedup does not.** Enabling this on a chain that legitimately omits transaction hashes causes all responses to fail.
+9. **`ReceiptsCountExact` / `ReceiptsCountAtLeast` parse failures are silent.** A non-integer value leaves the pointer nil; no check fires and no warning is logged.
+10. **`ValidateReceiptTransactionMatch` and `ValidateContractCreation` are silently no-ops over HTTP.** `GroundTruthTransactions` cannot be supplied via headers; both directives only activate in Go library mode.
+11. **`ValidateTransactionFields` and `ValidateTransactionBlockInfo` skip hash-only blocks.** When `eth_getBlockByNumber` returns hash-only transactions, the validation loop is entirely bypassed.
+12. **Batch responses never emit `X-ERPC-*` diagnostic headers.** Use per-response `id` fields for batch diagnostics.
+13. **`executionHeaders: summary` removes only `X-ERPC-Upstreams`.** All counter and metadata headers still emit. Use `"off"` to suppress everything.
+14. **Selector-scoped served-tip partitions are capped.** Beyond `maxServedTipPartitions` per network, no partition is created and the stateless fallback is used silently — no error. Source: [`erpc/networks.go:429`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L429).
+15. **`ValidateLogFields` cross-checks log fields against the enclosing receipt, not the block.** Absent log context fields (e.g., `blockHash` missing from a log entry) pass silently even when the receipt's field is set.
+16. **`nil *bool` in `DirectiveDefaultsConfig` ≠ `false *bool`.** Nil means "not set — skip"; a `*false` pointer means "explicitly disable". Only non-nil pointers are applied in `ApplyDirectiveDefaults`. Source: [`common/request.go:570-580`](https://github.com/erpc/erpc/blob/main/common/request.go#L570-L580).
+17. **`ValidateHeaderFieldLengths` struct comment is stale.** `common/request.go:172` says "only via config/library, not HTTP headers" — incorrect. The directive is fully HTTP-settable. Source: [`common/request.go:797-798`](https://github.com/erpc/erpc/blob/main/common/request.go#L797-L798).
+
+### Observability
+
+Directives have no dedicated Prometheus metrics; their effects appear in existing counters.
+
+| Metric | Type | When it fires |
+|---|---|---|
+| `erpc_upstream_request_retries_total{reason="empty_result"}` | counter | Each retry triggered by `RetryEmpty` |
+| `erpc_upstream_request_retries_total{reason="pending_tx"}` | counter | Each retry triggered by `RetryPending` |
+| `erpc_upstream_request_retries_total{reason="integrity_validation"}` | counter | Each retry due to a failed validation directive |
+| `erpc_network_consensus_rounds_total` | counter | Consensus rounds; `SkipConsensus=true` prevents increment |
+
+**Trace / log.** `X-ERPC-Force-Trace: true` forces OTel sampler to record the span regardless of sampling rate (attribute `erpc.force_trace = true`). Source: [`common/tracing_util.go:89-100`](https://github.com/erpc/erpc/blob/main/common/tracing_util.go#L89-L100). At `trace` level, `applied request directives` is logged with `Interface("directives", ...)` after every `EnrichFromHttp` call. Source: [`erpc/http_server.go:659`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L659).
+
+### Source code entry points
+
+- [`common/request.go:116-215`](https://github.com/erpc/erpc/blob/main/common/request.go#L116-L215) — `RequestDirectives` struct: all 23 directive fields + library-only fields
+- [`common/request.go:563-676`](https://github.com/erpc/erpc/blob/main/common/request.go#L563-L676) — `ApplyDirectiveDefaults`: idempotency guard, nil-check per `*bool` field, copy-from-config
+- [`common/request.go:702-893`](https://github.com/erpc/erpc/blob/main/common/request.go#L702-L893) — `EnrichFromHttp`: fast-path scan, clone-on-write, all 23 header + query parsers
+- [`common/config.go:2105-2175`](https://github.com/erpc/erpc/blob/main/common/config.go#L2105-L2175) — `DirectiveDefaultsConfig` struct; `skipCacheRead` custom YAML/JSON unmarshal
+- [`common/defaults.go:1454-1471`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1454-L1471) — `DirectiveDefaultsConfig.SetDefaults`: four `true` defaults (`enforceHighestBlock`, `enforceGetLogsBlockRange`, `enforceNonNullTaggedBlocks`, `validateTransactionsRoot`)
+- [`erpc/http_server.go:1081-1272`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1081-L1272) — `executionHeadersMode`, `setResponseHeaders`, `writeCounterHeaders`, `writeResponseMetadataHeaders`, `writeUpstreamTraceHeaders`
+- [`erpc/network_executor.go:179-188`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L179-L188) — `SkipConsensus` branch
+- [`erpc/network_executor.go:374-462`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L374-L462) — `shouldRetryWithReason`: `RetryEmpty` / `RetryPending` checks and `EmptyResultMaxAttempts` cap
+- [`erpc/networks.go:374-441`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L374-L441) — selector-scoped served-tip: `requestSelector`, `servedTipPartitionFor`, partition cap
+- [`upstream/upstream.go:1505-1548`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1505-L1548) — `shouldSkip`: `UseUpstream` selector check via `UpstreamMatchesSelector`
+- [`common/matcher.go:34-112`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L34-L112) — `WildcardMatch`, `MatchesSelector`, `UpstreamMatchesSelector`
+- [`erpc/skip_consensus_directive_test.go`](https://github.com/erpc/erpc/blob/main/erpc/skip_consensus_directive_test.go) — end-to-end `SkipConsensus` tests
+- [`common/request_test.go:391-541`](https://github.com/erpc/erpc/blob/main/common/request_test.go#L391-L541) — unit tests for boolean parse rules, header/query precedence, `ValidateTransactionsRoot` override
+
+### Related pages
+
+- [Auth](/config/auth) — credential headers (`X-ERPC-Secret-Token`, `Authorization`, `X-Siwe-*`) parsed separately before directives.
+- [Rate limiters](/config/rate-limiters) — caps total request volume; important when `retryEmpty`/`retryPending` loops could multiply upstream calls.
+- [Consensus](/config/projects/consensus) — the branch that `skipConsensus` bypasses.
+- [Selection policies](/config/projects/selection-policies) — controls which upstreams are eligible before `useUpstream` further restricts the set.
+- [Matcher syntax](/config/matcher) — the WildcardMatch grammar used by `useUpstream` and `skipCacheRead` patterns.
+- [Survive provider outages](/use-cases/survive-provider-outages) — a use case that combines `retryEmpty`, `enforceHighestBlock`, and `useUpstream`.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

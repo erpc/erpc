@@ -1,0 +1,150 @@
+---
+title: Survive provider outages
+description: Keep serving traffic when an RPC provider slows down, rate-limits you, or disappears entirely.
+---
+
+import { LLMsTxtLink, AISection, CapabilityGrid, ConfigTabs, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Survive provider outages
+
+Every RPC provider has a bad day. With eRPC in front, your users never find out:
+slow answers get raced against a second provider, errors fail over automatically,
+and an upstream that keeps misbehaving is quietly benched until it recovers.
+You ship one endpoint; eRPC turns a pool of imperfect providers into something
+that behaves like a perfect one.
+
+<CapabilityGrid
+  columns={3}
+  items={[
+    { title: "Retry", href: "/config/failsafe/retry", summary: "Errors fail over to the next-best upstream, automatically." },
+    { title: "Hedge", href: "/config/failsafe/hedge", summary: "Slow request? A backup race starts before the user notices." },
+    { title: "Timeout", href: "/config/failsafe/timeout", summary: "Nothing hangs — every request has a hard ceiling." },
+    { title: "Circuit breaker", href: "/config/failsafe/circuit-breaker", summary: "Repeat offenders get benched until they behave again." },
+    { title: "Cordoning", href: "/operation/cordoning", summary: "See why an upstream was benched, or bench one yourself." },
+    { title: "Healthcheck", href: "/operation/healthcheck", summary: "Tell your load balancer the truth about readiness." },
+  ]}
+/>
+
+All of the above in one place — illustrative, not a tuned production config:
+
+<ConfigTabs
+  path="projects[]"
+  focusYaml="8,11,14,21,24"
+  focusTs="8,10,12,19,21"
+  yaml={`projects:
+  - id: main
+    # applies to every chain in this project
+    networkDefaults:
+      failsafe:
+        - matchMethod: "*"
+          # nothing hangs: hard ceiling per request
+          timeout:
+            duration: 30s
+          # errors fail over to the next-best upstream
+          retry:
+            maxAttempts: 3
+          # slow answers get raced at their p70 latency
+          hedge:
+            delay: { quantile: 0.7, min: 100ms, max: 2s }
+            maxCount: 1
+    upstreamDefaults:
+      failsafe:
+        - matchMethod: "*"
+          # one in-place retry per upstream before rotating away
+          retry:
+            maxAttempts: 1
+          # bench repeat offenders, probe again after 5m
+          circuitBreaker:
+            failureThresholdCount: 20
+            failureThresholdCapacity: 80
+            halfOpenAfter: 5m
+            successThresholdCount: 8
+# Cordoning is automatic (no config); /healthcheck reflects readiness.`}
+  ts={`projects: [{
+  id: "main",
+  // applies to every chain in this project
+  networkDefaults: {
+    failsafe: [{
+      matchMethod: "*",
+      // nothing hangs: hard ceiling per request
+      timeout: { duration: "30s" },
+      // errors fail over to the next-best upstream
+      retry: { maxAttempts: 3 },
+      // slow answers get raced at their p70 latency
+      hedge: { delay: { quantile: 0.7, min: "100ms", max: "2s" }, maxCount: 1 },
+    }],
+  },
+  upstreamDefaults: {
+    failsafe: [{
+      matchMethod: "*",
+      // one in-place retry per upstream before rotating away
+      retry: { maxAttempts: 1 },
+      // bench repeat offenders, probe again after 5m
+      circuitBreaker: {
+        failureThresholdCount: 20,
+        failureThresholdCapacity: 80,
+        halfOpenAfter: "5m",
+        successThresholdCount: 8,
+      },
+    }],
+  },
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="make my RPC layer survive provider outages"
+	defaultOpen
+	prompt={`I want my app to keep serving traffic even when an RPC provider slows down,
+rate-limits me, or goes offline. Configure eRPC in my eRPC config with retry,
+hedge, timeout, and circuit breaker so outages are transparent to my users.
+Read the reference and follow the child-page links inside it:
+https://docs.erpc.cloud/use-cases/survive-provider-outages.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="add circuit breaking to bench a flaky provider automatically"
+	prompt={`One of my RPC providers is intermittently returning errors and degrading my
+app. Add a circuit breaker to my eRPC config so eRPC benches that upstream after
+repeated failures and probes it again once it recovers, without any manual
+intervention. Reference:
+https://docs.erpc.cloud/use-cases/survive-provider-outages.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="tune failover speed to minimize user-visible errors"
+	prompt={`My eRPC config in my eRPC config already has retry and hedge configured but
+users still see occasional errors during provider incidents. Review the
+timeout, retry backoff, and hedge delay settings and tighten them so failover
+is as fast as possible without excessive upstream cost. Reference:
+https://docs.erpc.cloud/use-cases/survive-provider-outages.llms.txt`}
+/>
+
+<AISection title="Survive outages — agent starting points">
+
+This page sells the outcome; implementation lives in the feature pages. Fetch their
+machine-readable companions and combine policies per method:
+
+- [Retry](/config/failsafe/retry) — scopes (network vs upstream), empty-result handling, backoff math.
+- [Hedge](/config/failsafe/hedge) — fixed vs quantile delays, clamps, loser cancellation.
+- [Timeout](/config/failsafe/timeout) — the three-level timeout hierarchy and dynamic quantile mode.
+- [Circuit breaker](/config/failsafe/circuit-breaker) — thresholds, half-open probing, and how it complements selection-policy exclusion (cordoning is a third, independent mechanism).
+- [Cordoning](/operation/cordoning) — every cordon reason and how to inspect/override it.
+- [Healthcheck](/operation/healthcheck) — eval strategies and load-balancer integration.
+
+Composition rules an agent must know: failsafe entries are matched per request via
+`matchMethod`/`matchFinality`; at network scope the executor chain nests
+timeout(consensus(retry(hedge(upstreams)))); retries at network scope rotate across
+upstreams while upstream-scope retries re-attempt the same one. Full ordering and
+per-policy field tables are in each feature page's agent section.
+
+</AISection>

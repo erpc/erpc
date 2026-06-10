@@ -1,70 +1,367 @@
 ---
 title: FAQ
-description: Frequently asked questions about running, configuring, and troubleshooting eRPC.
+description: Quick answers to the most common eRPC questions — config files, caching gotchas, auth setup, rate limits, and error codes decoded.
 ---
 
-import { LLMsTxtLink, ConfigTabs } from "../components";
-
-## Frequently Asked Questions
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink } from "../components";
 
 <LLMsTxtLink />
 
-### How to set env variables?
+# FAQ
 
-To use env variables in [erpc.yaml](/config/example), follow these steps:
+Get unstuck fast. These are the questions that come up most often when setting up, configuring, and operating eRPC.
 
-1. **Set env variables**: Define the env variables in your system or shell before running your application:
+### How do I use environment variables in my config file?
+
+YAML: every `$VAR` or `${VAR}` is substituted before the file is parsed — no extra syntax. TypeScript: use `process.env.MY_KEY` like any Node program.
+
+### Which config file does eRPC load automatically?
+
+eRPC checks for `erpc.yaml`, `.yml`, `.ts`, and `.js` — first in `./`, then `/`, then `/root/`. First file found wins. No config file found and `--require-config` not set? eRPC starts with a built-in default project.
+
+### What happens if I leave out a config section — do I get defaults?
+
+Yes. `SetDefaults` fills every missing field. Run `erpc dump ./erpc.yaml` to see the exact config the engine would use, with all defaults resolved.
+
+### How do I validate my config without starting eRPC?
 
 ```bash
-export ETHEREUM_RPC_URL=https://mainnet.infura.io/v3/YOUR_INFURA_KEY
-````
+erpc validate ./erpc.yaml
+```
 
-2. **Use placeholders in config**: Add placeholders in your config file where you want the env variables to be used:
+Exit 0 means no errors. Pipe stdout through `jq .errors` to see only errors.
 
-<ConfigTabs
-  path="projects > upstreams[]"
-  yaml={`projects:
-  - id: main
-    upstreams:
-      - endpoint: \${ETHEREUM_RPC_URL}`}
-  ts={`projects: [{
-  id: "main",
-  upstreams: [
-    { endpoint: process.env.ETHEREUM_RPC_URL },
-  ],
-}]`}
-/>
+### Can I use `--set` to override a single config value?
 
-### How to disable caching?
+No. The `--set` / `-s` flag was planned but is not implemented. Use environment variables or edit the config file.
 
-To disable caching, set [`evmJsonRpcCache`](/config/database/evm-json-rpc-cache) to `null` in your configuration:
+---
+
+### Why does eRPC still hit upstreams even though I added a cache?
+
+The most common cause: no `finality: realtime` policy. Methods like `eth_blockNumber` and `eth_gasPrice` resolve to `realtime` finality and only match policies that explicitly declare `finality: realtime`. A policy without `finality` silently covers only finalized data.
+
+Add a second policy for realtime:
 
 <ConfigTabs
-  path="database > evmJsonRpcCache"
+  path="database.evmJsonRpcCache"
+  focusYaml="16-18"
+  focusTs="8-10"
   yaml={`database:
-  evmJsonRpcCache: ~`}
+  evmJsonRpcCache:
+    connectors:
+      - id: my-redis
+        driver: redis
+        redis:
+          addr: "localhost:6379"
+    policies:
+      - connector: my-redis
+        network: "*"
+        method: "*"
+        finality: finalized
+      - connector: my-redis
+        network: "*"
+        method: "*"
+        # realtime methods (eth_blockNumber, eth_gasPrice) only match this policy
+        finality: realtime
+        ttl: 2s`}
   ts={`database: {
-  evmJsonRpcCache: null,
+  evmJsonRpcCache: {
+    connectors: [{ id: "my-redis", driver: "redis", redis: { addr: "localhost:6379" } }],
+    policies: [
+      { connector: "my-redis", network: "*", method: "*", finality: "finalized" },
+      {
+        connector: "my-redis", network: "*", method: "*",
+        // realtime methods (eth_blockNumber, eth_gasPrice) only match this policy
+        finality: "realtime",
+        ttl: "2s",
+      },
+    ],
+  },
 }`}
 />
 
-### How do I set up CORS for frontend usage?
+### Why do empty `eth_getLogs` results trigger a retry instead of being cached?
 
-If you’re deploying eRPC on Railway (or elsewhere) and plan to call it directly from a web application in the browser, you must enable CORS in your [erpc.yaml](/config/projects/cors#config). Below is a minimal example that allows requests from a specific origin or any origin:
+The default `empty: ignore` skips caching empty results. This is intentional — an empty log set for a block that hasn't been produced yet would be wrong to cache. Set `empty: allow` if you genuinely want to cache empty responses for confirmed blocks.
 
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    cors:
-      allowedOrigins: 
-        # If you want to allow all origins, use "*" which means any frontend can make calls to your erpc instance
-        - "https://myapp.com"
-      allowedMethods: 
-        - "GET"
-        - "POST"
-        - "OPTIONS"
-      allowedHeaders:
-        - "Content-Type"
-      allowCredentials: false
-      maxAge: 300
-```
+### How does the realtime TTL guard work?
+
+It checks the **block's age**, not how long ago the response was cached. A response cached five minutes ago is still served if its block is fresh; a response cached ten seconds ago is rejected if its block is older than the TTL.
+
+### Is zstd compression on by default?
+
+Yes — even if you omit the `compression:` block entirely. To disable it you must explicitly set `compression.enabled: false`.
+
+### How do I disable caching entirely?
+
+Omit the `database.evmJsonRpcCache` key. When the pointer is nil, the cache subsystem is never created.
+
+---
+
+### What auth strategies does eRPC support?
+
+Five: `secret` (static token), `jwt` (signed bearer), `siwe` (EIP-4361 Ethereum sign-in), `network` (IP/CIDR allowlist), and `database` (dynamic lookup against PostgreSQL, DynamoDB, Redis, or memory). If `projects[*].auth` is nil, all requests are allowed.
+
+### How does the database strategy handle a DB outage?
+
+Default is fail-closed (`failOpen.enabled: false`), so any DB error rejects the request. Set `failOpen.enabled: true` to treat DB failures as successful authentication using a synthetic `failOpen.userId`. A circuit-breaker limits live DB probes to one per second during an outage.
+
+### Why is my JWT auth rejecting all tokens?
+
+Most likely: empty `verificationKeys` map. With no keys configured no signature can be verified and every JWT is rejected. Add at least one `kid → keyData` entry.
+
+### How do rate-limit budgets interact with auth?
+
+After successful authentication the rate-limit check fires at auth scope before the request reaches project or network scope. A per-user budget on the auth record overrides the strategy-level budget.
+
+---
+
+### What is the default rate-limiting behavior?
+
+When `rateLimiters` is omitted, no budgets are registered and every request passes through. Adding `rateLimiters:` without any `budgets:` entries also passes all traffic.
+
+### Does eRPC rate-limit inbound or outbound traffic?
+
+Both. Check order: auth → project → network → upstream. Inbound rejections return HTTP 429. Upstream-level rejections return HTTP 200 with JSON-RPC error code `-32005`.
+
+### Why does my upstream budget rate limit return HTTP 200, not 429?
+
+`ErrUpstreamRateLimitRuleExceeded` is not in the wire 429 list. It returns HTTP 200 with JSON-RPC error code `-32005`.
+
+### Can multiple eRPC instances share a rate-limit budget?
+
+Yes, but only with `store.driver: redis`. The default `memory` driver is per-process — each instance counts independently. With Redis, set distinct `cacheKeyPrefix` values per deployment to prevent quota collision.
+
+### Does the auto-tuner affect shared budgets?
+
+Yes, and it can conflict. Each upstream has its own auto-tuner that independently adjusts `MaxCount` on the shared budget's rules. Whichever tuner fires last wins.
+
+---
+
+### Why do I see `-32603` for errors that should have a specific code?
+
+`-32603` is the fallback for any internal error that doesn't map to a specific JSON-RPC code. Check the error `message` field and look for an `ErrCode` in the body. If the error is wrapped in `ErrUpstreamsExhausted`, the dominant child error determines the final code.
+
+### What does `-32005` mean?
+
+`-32005` is `JsonRpcErrorCapacityExceeded` — eRPC's normalized code for rate limits, upstream 429s, billing issues, and endpoint capacity errors.
+
+### What does `-32014` mean?
+
+`-32014` is `JsonRpcErrorMissingData` — the requested block, transaction, or state is not available on this node (archive vs. full node mismatch, or data not yet indexed).
+
+### Why does `eth_sendRawTransaction` sometimes get retried to a different upstream?
+
+`eth_sendRawTransaction` is intentionally excluded from the non-retryable write-method guard. Reverts and out-of-gas errors are safe to retry because the transaction was never mined. However, `"already known"` or `"nonce too low"` responses are classified as `ErrEndpointNonceException` and are NOT retried to another upstream.
+
+### How do I suppress verbose error labels in Prometheus?
+
+Set `metrics.errorLabelMode: compact` (the default). Compact mode emits only the error code chain; verbose mode includes the full message string, which can create high-cardinality series.
+
+---
+
+<AISection title="FAQ — agent details">
+
+### How it works
+
+The FAQ answers above are each grounded in one or more KB source files. This section provides the full mechanics, config schema, worked examples, best practices, edge cases, and source entry points for each topic area.
+
+### Config schema
+
+Key fields referenced across FAQ answers:
+
+| YAML path | Type | Default | Notes |
+|---|---|---|---|
+| `logLevel` | string | `"INFO"` | Zerolog global level; also overridable via `LOG_LEVEL` env var (applied twice: at init and after config load). <SourceLink file="common/defaults.go" lines="50-52" /> |
+| `clusterKey` | string | `"erpc-default"` | Logical replica group for shared-state scoping. <SourceLink file="common/defaults.go" lines="53-55" /> |
+| `metrics.errorLabelMode` | string | `"compact"` | `"compact"` = code-only labels; `"verbose"` = code + message. High-cardinality risk with verbose. <SourceLink file="common/defaults.go" lines="762-764" /> |
+| `database.evmJsonRpcCache.policies[*].finality` | string | `"finalized"` (zero value) | Must be explicitly `"realtime"` to cache realtime methods. Omitting is identical to `finality: finalized`. <SourceLink file="common/data.go" lines="10" /> |
+| `database.evmJsonRpcCache.policies[*].empty` | string | `"ignore"` | `"ignore"` = skip empty on write, treat as miss on read. `"allow"` = cache empty results. `"only"` = cache only empty results. |
+| `database.evmJsonRpcCache.compression.enabled` | bool | `true` | Auto-enabled even when `compression:` block is omitted. Must explicitly be set to `false` to opt out. <SourceLink file="common/defaults.go" lines="580-582" /> |
+| `rateLimiters.store.driver` | string | `"memory"` | `"redis"` required for cross-instance shared budgets. <SourceLink file="common/defaults.go" lines="2782" /> |
+| `rateLimiters.store.cacheKeyPrefix` | string | `"erpc_rl_"` | Must differ between eRPC deployments sharing the same Redis to prevent quota collision. <SourceLink file="upstream/ratelimiter_registry.go" lines="76" /> |
+| `rateLimiters.budgets[*].rules[*].maxCount` | uint32 | required | `0` means always-blocked (not unlimited). Omit `rateLimitBudget` entirely for unrestricted access. |
+| `projects[*].auth` | `*AuthConfig` | nil (allow-all) | When nil, all requests are authenticated as anonymous with no check. |
+| `projects[*].auth.strategies[*].database.failOpen.enabled` | bool | `false` | Set `true` to allow traffic through on DB outage, using the synthetic `failOpen.userId`. <SourceLink file="common/defaults.go" lines="2735-2742" /> |
+
+### Worked examples
+
+**1. Full cache setup with finality buckets.** Cover both finalized and realtime data; without the second policy, `eth_blockNumber` and `eth_gasPrice` will always miss cache and hit upstreams:
+
+<ConfigTabs
+  path="database.evmJsonRpcCache"
+  yaml={`database:
+  evmJsonRpcCache:
+    connectors:
+      - id: my-redis
+        driver: redis
+        redis:
+          addr: "localhost:6379"
+    policies:
+      - connector: my-redis
+        network: "*"
+        method: "*"
+        finality: finalized
+      - connector: my-redis
+        network: "*"
+        method: "*"
+        finality: realtime
+        ttl: 2s`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [{ id: "my-redis", driver: "redis", redis: { addr: "localhost:6379" } }],
+    policies: [
+      { connector: "my-redis", network: "*", method: "*", finality: "finalized" },
+      { connector: "my-redis", network: "*", method: "*", finality: "realtime", ttl: "2s" },
+    ],
+  },
+}`}
+/>
+
+**2. JWT auth with per-user rate-limit budgets.** The JWT claim named by `rateLimitBudgetClaimName` (default `"rlm"`) sets the per-user budget; tokens without that claim fall through to the strategy-level budget or no budget:
+
+<ConfigTabs
+  path="projects[].auth"
+  yaml={`auth:
+  strategies:
+    - type: jwt
+      jwt:
+        verificationKeys:
+          my-key-id: "file:///run/secrets/jwt-pub.pem"
+        allowedAlgorithms: ["RS256"]
+      rateLimitBudget: default-budget`}
+  ts={`auth: {
+  strategies: [{
+    type: "jwt",
+    jwt: {
+      verificationKeys: { "my-key-id": "file:///run/secrets/jwt-pub.pem" },
+      allowedAlgorithms: ["RS256"],
+    },
+    rateLimitBudget: "default-budget",
+  }],
+}`}
+/>
+
+**3. Redis shared rate limiter with separate prefixes per environment.** Prevents staging and production counters from colliding when both deployments share one Redis instance:
+
+<ConfigTabs
+  path="rateLimiters"
+  yaml={`rateLimiters:
+  store:
+    driver: redis
+    redis:
+      addr: "shared-redis:6379"
+    cacheKeyPrefix: "erpc_prod_"
+  budgets:
+    - id: provider-budget
+      rules:
+        - method: "*"
+          maxCount: 500
+          period: second`}
+  ts={`rateLimiters: {
+  store: {
+    driver: "redis",
+    redis: { addr: "shared-redis:6379" },
+    cacheKeyPrefix: "erpc_prod_",
+  },
+  budgets: [{ id: "provider-budget", rules: [{ method: "*", maxCount: 500, period: "second" }] }],
+}`}
+/>
+
+**4. Database auth with fail-open.** Lets traffic through during a DB outage, capping emergency users with a dedicated budget:
+
+<ConfigTabs
+  path="projects[].auth.strategies[]"
+  yaml={`strategies:
+  - type: database
+    database:
+      connector:
+        driver: postgresql
+        postgresql:
+          connectionUri: "\${AUTH_DB_URI}"
+      failOpen:
+        enabled: true
+        userId: emergency-failopen
+        rateLimitBudget: failopen-budget`}
+  ts={`strategies: [{
+  type: "database",
+  database: {
+    connector: { driver: "postgresql", postgresql: { connectionUri: process.env.AUTH_DB_URI } },
+    failOpen: { enabled: true, userId: "emergency-failopen", rateLimitBudget: "failopen-budget" },
+  },
+}]`}
+/>
+
+### Request/response behavior
+
+**Config loading flow.** `os.ExpandEnv` runs on raw YAML bytes before the YAML parser sees the file. If `$VAR` expands to a value containing `:` or `{`, the value must be quoted: `endpoint: "${MY_URL}"`. TypeScript configs receive the full OS environment as `process.env` in the sobek runtime — substitution is JS-native, not a pre-parse pass. <SourceLink file="common/config.go" lines="102" />
+
+**Cache finality matching.** On reads, a `finalized` request also matches `unfinalized` policies (a block finalized after write may have been stored unfinalized). A `realtime` request matches only `realtime` policies — no cross-finality fallthrough. On writes, finality must match exactly. <SourceLink file="architecture/evm/json_rpc_cache.go" lines="951-978" />
+
+**Realtime TTL guard.** Compares the **block's unix timestamp** (from the response body) against `time.Now()`. It does NOT check how long ago the response was written to cache. For methods with no block timestamp in the response (`eth_blockNumber`, `eth_gasPrice`, `eth_getLogs`), the guard falls back to the gRPC connector's latest-block timestamp, which is polled every 60 seconds. If no timestamp is available the guard fails open and serves the cached result. <SourceLink file="architecture/evm/json_rpc_cache.go" lines="841-920" />
+
+**Rate-limit check order.** auth → project → network → upstream. Each layer uses the same `TryAcquirePermit` path. Auth, project, and network rejections return HTTP 429. Upstream rejections return HTTP 200 with JSON-RPC code `-32005` because `ErrUpstreamRateLimitRuleExceeded` is absent from the wire 429 switch. <SourceLink file="erpc/http_server.go" lines="1484" />
+
+**Error code derivation.** When `ErrUpstreamsExhausted` wraps multiple per-upstream errors, the final JSON-RPC code is the dominant child: highest occurrence count, skipping `ErrCodeUpstreamRequestSkipped` and `ErrCodeEndpointUnsupported`; earliest error per code wins ties. The fallback for any unmapped internal error is `-32603`. <SourceLink file="common/json_rpc.go" lines="1501" />
+
+### Best practices
+
+- Always add a `finality: realtime` policy alongside your `finality: finalized` policy — omitting it silently bypasses the cache for all time-sensitive methods. The zero-value trap is the single most common cache misconfiguration.
+- Use `erpc dump ./erpc.yaml` before deploying to verify that all defaults have been filled in as expected, especially compression and auto-tuner settings.
+- Use `erpc validate ./erpc.yaml` in CI; exit code 0 means no errors. Pipe through `jq .errors` for clean output.
+- For fleet deployments using Redis rate limiting, set a distinct `cacheKeyPrefix` per environment (`erpc_prod_`, `erpc_staging_`) to prevent quota collision between deployments sharing one Redis.
+- Set `metrics.errorLabelMode: compact` (the default) in production. Verbose mode can create unbounded label cardinality when provider error messages contain addresses, hashes, or block numbers.
+- For `database` auth strategy, set `failOpen.enabled: true` with a dedicated `failOpen.rateLimitBudget` so traffic during DB outages is capped and observable — the circuit-breaker limits live DB probes to one per second automatically.
+- Do not set `rateLimitBudget` to a budget that doesn't exist in `rateLimiters.budgets` — the error is a runtime error, not a startup error, and will surface only on the first request that reaches that code path.
+
+### Edge cases & gotchas
+
+1. **`finality` zero-value trap.** Omitting `finality` in a cache policy is identical to `finality: finalized`. Realtime methods never match and always hit upstreams silently. <SourceLink file="common/data.go" lines="10" />
+2. **Compression is always on.** The `compression` sub-block is auto-created with `enabled: true` even when omitted. You must explicitly write `compression.enabled: false` to disable it. <SourceLink file="common/defaults.go" lines="482-488" />
+3. **Empty `eth_getLogs` with `empty: ignore` triggers retries.** The default behavior skips caching empty results. The upstream is hit every time until a non-empty response is produced or the block is confirmed past the network head. <SourceLink file="architecture/evm/json_rpc_cache.go" lines="1079" />
+4. **Realtime TTL guard checks block age, not cache-entry age.** A cached response from 10 minutes ago is served if its block is still fresh; a cached response from 5 seconds ago is rejected if its block is stale.
+5. **Memory rate limiter is per-process.** In a multi-instance deployment, each instance has independent counters. The effective limit scales linearly with instance count. Use the Redis driver for shared limits. <SourceLink file="upstream/ratelimiter_registry.go" lines="48-51" />
+6. **Upstream rate-limit rejections return HTTP 200.** `ErrUpstreamRateLimitRuleExceeded` is not in the 429 wire list. Client SDKs that interpret HTTP 200 as success will not retry — check the JSON-RPC error code `-32005`. <SourceLink file="erpc/http_server.go" lines="1484" />
+7. **`maxCount: 0` in a rate-limit rule means always-blocked**, not unlimited. Omit `rateLimitBudget` entirely to allow unrestricted traffic. <SourceLink file="upstream/ratelimiter_budget.go" lines="109-119" />
+8. **`--set` / `-s` is not implemented.** Passing `-s` or `--set` produces `"flag provided but not defined: -s"` from the CLI framework — no eRPC code runs. <SourceLink file="cmd/erpc/main.go" lines="86-90" />
+9. **`--config` sets `requireConfig: true` implicitly.** If the specified file does not exist, eRPC exits 1001. There is no fallback to auto-discovery when an explicit path is given. <SourceLink file="cmd/erpc/main.go" lines="300-302" />
+10. **YAML strict mode rejects unknown keys.** A typo in any YAML key is a fatal error at startup. TypeScript configs go through the same strict YAML decoder via JSON round-trip. <SourceLink file="common/config.go" lines="103" />
+11. **Auto-tuner is implicitly enabled when `rateLimitBudget` is set.** `SetDefaults` auto-creates `RateLimitAutoTuneConfig` when `rateLimitBudget != ""` and `rateLimitAutoTune` is nil. Opt out with `rateLimitAutoTune.enabled: false`. <SourceLink file="common/defaults.go" lines="1674" />
+12. **Database auth circuit-breaker limits probes to 1 per second during outage.** Only one goroutine per second is elected to probe the real DB path; all others get fail-open (if enabled) immediately. <SourceLink file="auth/strategy_database.go" lines="25-54" />
+13. **Empty `verificationKeys` rejects all JWTs.** With no keys, `findVerificationKey` always fails → every JWT token is rejected regardless of content. Add at least one `kid → keyData` entry. <SourceLink file="auth/strategy_jwt.go" lines="25-42" />
+14. **`os.ExpandEnv` in YAML runs on raw bytes before parse.** A YAML value like `password: ${REDIS_PASSWORD}` is substituted before decode. If the value contains YAML special characters (`:`, `{`), the resulting YAML will be malformed — use quoted values: `password: "${REDIS_PASSWORD}"`. <SourceLink file="common/config.go" lines="102" />
+
+### Observability
+
+| Metric | Type | When it fires |
+|--------|------|---------------|
+| `erpc_cache_get_age_guard_reject_total` | counter | Realtime cached result rejected because block age exceeded policy TTL |
+| `erpc_cache_set_skipped_total` | counter | `shouldCacheResponse` returned false (empty result, size filter, future block) |
+| `erpc_rate_limits_total` | counter | Any budget rule denied a request; labeled by `origin` (auth/project/network/upstream) |
+| `erpc_rate_limiter_failopen_total` | counter | Rate limiter allowed request due to Redis timeout or admission semaphore full |
+| `erpc_auth_failed_total` | counter | Auth strategy rejected the request |
+| `erpc_upstream_request_errors_total` | counter | Upstream returned an error; `error` label uses `ErrorFingerprint` |
+
+### Source code entry points
+
+- [`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279) — config search order, `--config` flag, `--set` (commented out), `getConfig`, `baseCliAction`
+- [`common/defaults.go`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L49) — `SetDefaults`, default project synthesis, auto-tune injection, compression auto-creation
+- [`common/config.go`](https://github.com/erpc/erpc/blob/main/common/config.go#L102) — `LoadConfig`, `os.ExpandEnv` YAML substitution, TS loader, strict YAML decoder
+- [`common/data.go`](https://github.com/erpc/erpc/blob/main/common/data.go#L10) — `DataFinalityState` enum (finalized=0, realtime=2)
+- [`architecture/evm/json_rpc_cache.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L841) — `shouldAcceptCachedResult` (realtime age guard), `shouldCacheResponse`, finality policy matching
+- [`erpc/http_server.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1484) — wire HTTP status switch, 429 error list, upstream-level 200 return
+- [`upstream/ratelimiter_budget.go`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go#L153) — `TryAcquirePermit`, fail-open, admission semaphore
+- [`auth/strategy_database.go`](https://github.com/erpc/erpc/blob/main/auth/strategy_database.go#L25) — circuit-breaker, `tryFastFailOpen`, singleflight dedup
+- [`common/errors.go`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1) — full error type hierarchy, retryability flags, `ErrUpstreamsExhausted` dominant-code selection
+- [`architecture/evm/error_normalizer.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L20) — vendor error normalization rules, 22-rule cascade
+
+### Related pages
+
+- [Cache database](/config/database) — connector setup, full policy reference, compression config.
+- [Auth](/config/auth) — all five strategies in depth, method filtering, per-user budgets.
+- [Rate limiters](/config/rate-limiters) — budget rules, auto-tuner, Redis vs. memory store.
+- [Config reference](/reference) — complete field listing with defaults.
+- [Survive provider outages](/use-cases/survive-provider-outages) — putting failsafe and routing together.
+
+</AISection>

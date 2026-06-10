@@ -1,0 +1,132 @@
+---
+title: Trust the data
+description: Don't let one misbehaving node feed your app a wrong answer — verify, cross-check, and enforce integrity automatically.
+---
+
+import { LLMsTxtLink, AISection, CapabilityGrid, ConfigTabs, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Trust the data
+
+A wrong answer is worse than a slow one. RPC nodes lag behind the chain tip, prune history,
+and occasionally just lie. eRPC can ask several providers the same question and only accept
+an answer they agree on, refuse responses that would silently travel back in time, and split
+huge log queries so no provider quietly truncates your results. Your app sees one consistent
+chain, even when the nodes behind it disagree.
+
+<CapabilityGrid
+  columns={3}
+  items={[
+    { title: "Consensus", href: "/config/failsafe/consensus", summary: "Multiple providers vote; disagreement is detected, not served." },
+    { title: "Integrity", href: "/config/failsafe/integrity", summary: "No time travel: block numbers and logs can't silently regress." },
+    { title: "Block tracking", href: "/reference/evm/block-tracking", summary: "eRPC always knows each upstream's latest and finalized block." },
+    { title: "getLogs splitting", href: "/reference/evm/getlogs-splitting", summary: "Huge queries split automatically — no more truncated events." },
+    { title: "Method handlers", href: "/reference/evm/method-handlers", summary: "Per-method smarts normalize quirks across providers." },
+  ]}
+/>
+
+All of the above in one place — illustrative, not a tuned production config:
+
+<ConfigTabs
+  path="projects[].networks[]"
+  focusYaml="8-9,12-13,17"
+  focusTs="8-9,13-14,19"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # split bigger ranges automatically; on provider errors, split & retry
+          getLogsMaxAllowedRange: 10000
+          getLogsSplitOnError: true
+        directiveDefaults:
+          # no silent time travel, no silently truncated log ranges
+          enforceHighestBlock: true
+          enforceGetLogsBlockRange: true
+        failsafe:
+          - matchMethod: "eth_getBalance|eth_call"
+            # sensitive reads: providers must agree before you get an answer
+            consensus:
+              maxParticipants: 3
+              agreementThreshold: 2
+              disputeBehavior: returnError
+# Block tracking (latest/finalized per upstream) is always on — no config needed.`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: {
+      chainId: 1,
+      // split bigger ranges automatically; on provider errors, split & retry
+      getLogsMaxAllowedRange: 10000,
+      getLogsSplitOnError: true,
+    },
+    directiveDefaults: {
+      // no silent time travel, no silently truncated log ranges
+      enforceHighestBlock: true,
+      enforceGetLogsBlockRange: true,
+    },
+    failsafe: [{
+      matchMethod: "eth_getBalance|eth_call",
+      // sensitive reads: providers must agree before you get an answer
+      consensus: {
+        maxParticipants: 3,
+        agreementThreshold: 2,
+        disputeBehavior: "returnError",
+      },
+    }],
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="enforce consensus so one bad node can't mislead my app"
+	defaultOpen
+	prompt={`I want eRPC to require multiple providers to agree before returning sensitive reads
+like eth_getBalance and eth_call. Configure consensus in my eRPC config so disagreements
+surface as errors rather than silent wrong answers. Read the full reference first:
+https://docs.erpc.cloud/use-cases/trust-the-data.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="prevent silent block regressions and truncated log results"
+	prompt={`My app occasionally gets stale block numbers and truncated eth_getLogs results from
+lagging nodes. Configure integrity checks and getLogs auto-splitting in my eRPC config
+to stop silent data quality issues. Reference:
+https://docs.erpc.cloud/use-cases/trust-the-data.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug why consensus is rejecting valid responses"
+	prompt={`My eRPC consensus policy is returning dispute errors more than expected, and I want
+to understand whether it's genuine node disagreement or a config problem. Walk me
+through reading the relevant metrics and adjusting thresholds in my eRPC config.
+Reference: https://docs.erpc.cloud/use-cases/trust-the-data.llms.txt`}
+/>
+
+<AISection title="Trust the data — agent starting points">
+
+This page sells the outcome; implementation lives in the feature pages. Fetch their
+machine-readable companions:
+
+- [Consensus](/config/failsafe/consensus) — participant selection, agreement rules DSL, quotas, punishment, misbehavior export.
+- [Integrity](/config/failsafe/integrity) — highest-block enforcement, getLogs range checks, empty-result directives.
+- [Block tracking](/reference/evm/block-tracking) — state poller cadence, served tip, lag semantics (block-number deltas).
+- [getLogs splitting](/reference/evm/getlogs-splitting) — split triggers, sub-request failure semantics, merge/dedup rules.
+- [Method handlers](/reference/evm/method-handlers) — per-method normalization and edge cases.
+
+Key interaction: consensus and integrity both consume block-tracking state; getLogs splitting
+runs before failsafe policies so each sub-request is individually retried/hedged. Field-level
+tables and exact defaults live in each page's agent section.
+
+</AISection>

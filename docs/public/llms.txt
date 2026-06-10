@@ -16,72 +16,170 @@
 
 # Introducing eRPC
 
-eRPC is a fault-tolerant EVM RPC proxy and permanent caching solution. It is built with read-heavy use-cases in mind such as data indexing and high-load frontend usage.
+Stop babysitting RPC providers. eRPC sits in front of every upstream you have —
+Alchemy, QuickNode, your own node, anything — and handles failover, retries,
+response caching, and multi-chain routing automatically. One URL pattern,
+every EVM chain, zero provider lock-in.
 
-# Quick start
+## Quick start
 
-### Create configuration
+### Write a minimal config
 
-Create your [`erpc.yaml`](/config/example.llms.txt) configuration file based on the `erpc.dist.yaml` file:
+Create `erpc.yaml` in the current directory:
 
-```bash
-cp erpc.dist.yaml erpc.yaml
-code erpc.yaml
+```yaml
+# erpc.yaml — minimal single-project config
+logLevel: info
+projects:
+  - id: main
+    upstreams:
+      - id: my-alchemy
+        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
 ```
 
-See [a complete config example](/config/example.llms.txt) for inspiration.
+Prefer TypeScript for full type safety and closures in selection policies:
+
+```ts
+// erpc.ts
+
+export default createConfig({
+  logLevel: "info",
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        { id: "my-alchemy", endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY" },
+      ],
+    },
+  ],
+});
+```
+
+See the [example config](/config/example.llms.txt) for a production-ready starting point, including YAML vs. TypeScript tradeoffs.
 
 ### Run with Docker
 
-Use the Docker image:
+Mount the config file and expose the RPC and metrics ports:
 
 ```bash
-docker run -v $(pwd)/erpc.yaml:/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
+docker run \
+  -v $(pwd)/erpc.yaml:/erpc.yaml \
+  -p 4000:4000 \
+  -p 4001:4001 \
+  ghcr.io/erpc/erpc:latest
 ```
 
-### Test the setup
-
-Send your first request:
+Or with `npx` (requires Node 18+):
 
 ```bash
-curl --location 'http://localhost:4000/main/evm/42161' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "eth_getBlockByNumber",
-    "params": [
-        "0x1203319",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
+npx @erpc-cloud/cli start ./erpc.yaml
 ```
 
-### Setup monitoring (optional)
+The server listens on `4000` for JSON-RPC traffic and `4001` for Prometheus metrics.
 
-Bring up monitoring stack (Prometheus, Grafana) using docker-compose:
+### Send a request
 
 ```bash
-# clone the repo if you haven't
-git clone https://github.com/erpc/erpc.git
-cd erpc
+curl -s http://localhost:4000/main/evm/1 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
 
-# bring up the monitoring stack
+URL pattern: `/<project>/<architecture>/<chainId>`. Use `/main/evm/42161` for Arbitrum, `/main/evm/137` for Polygon — no config change needed to add a chain if your upstream supports it.
+
+### Validate your config (optional)
+
+```bash
+docker run --rm -v $(pwd)/erpc.yaml:/erpc.yaml ghcr.io/erpc/erpc:latest validate
+```
+
+Exits 0 when config is valid; prints a structured JSON report with `errors`, `warnings`, and `notices` on any issue.
+
+### Bring up monitoring (optional)
+
+The repo ships a combined Prometheus + Grafana container with an 80+ panel dashboard pre-loaded:
+
+```bash
+git clone https://github.com/erpc/erpc.git && cd erpc
 docker-compose up -d
 ```
 
-### Access Grafana
-
-Open Grafana at [http://localhost:3000](http://localhost:3000) and login with the following credentials:
-
-- username: `admin`
-- password: `admin`
-
-### Monitor metrics
-
-Send more requests and watch the metrics being collected and visualized in Grafana.
+Grafana opens at [http://localhost:3000](http://localhost:3000) (admin / admin). Prometheus scrapes eRPC at `host.docker.internal:4001` every 10 seconds.
 
 ![eRPC Grafana Dashboard](/assets/monitoring-example-erpc.png.llms.txt)
+
+---
+
+### eRPC homepage — full agent reference
+
+### How it works
+
+eRPC is a fault-tolerant EVM RPC proxy and permanent caching layer. The bootstrap sequence: config file (YAML, TypeScript, or JavaScript) is loaded and validated, then the engine initialises database connectors, rate limiters, the ERPC core, HTTP/gRPC transports, metrics, and tracing — all bound to a context that cancels on SIGINT/SIGTERM for graceful drain.
+
+**Config discovery order** (no `--config` flag needed): `./erpc.yaml`, `./erpc.yml`, `./erpc.ts`, `./erpc.js`, `/erpc.yaml`, `/erpc.yml`, `/erpc.ts`, `/erpc.js`, `/root/erpc.yaml`, `/root/erpc.yml`, `/root/erpc.ts`, `/root/erpc.js` — first match wins.
+
+**URL routing**: `/<project>/<architecture>/<chainId>`. Domain aliasing and per-network aliases let you shorten this — e.g. `/main/arbitrum` instead of `/main/evm/42161`. Unknown projects return HTTP 404; invalid architecture returns HTTP 400, both as JSON-RPC envelopes.
+
+**TypeScript configs** are compiled in-process via esbuild (IIFE bundle) and evaluated with the sobek JS runtime, so closures and module-level helpers in selection-policy `evalFunc` functions are preserved natively — no function serialisation.
+
+**No-config mode**: when `projects` is empty, a synthetic `main` project with public repository + Envio providers is injected, and `/evm/<chainId>` resolves without a project prefix.
+
+### Config schema
+
+See individual feature pages for per-field tables. Top-level keys: `logLevel`, `clusterKey`, `server`, `healthCheck`, `admin`, `database`, `projects`, `rateLimiters`, `metrics`, `proxyPools`, `tracing`.
+
+Key environment variables:
+
+| Variable | Effect |
+|---|---|
+| `LOG_LEVEL` | Override `logLevel` at runtime without a config edit |
+| `LOG_WRITER=console` | Switch from JSON logs to human-readable output (dev only) |
+| `GOMEMLIMIT` | Not set by default — set to ~90% of container memory limit to avoid OOM kills |
+
+### Best practices
+
+- Use TypeScript (`erpc.ts`) over YAML for any config that needs selection-policy closures or env-var helpers.
+- Always run `erpc validate` in CI before deploying — it exits non-zero on errors and prints a structured JSON report.
+- Set `GOMEMLIMIT` in your Kubernetes pod spec (e.g. `2700MiB` for a 3Gi limit). The kube manifest ships without it, which can cause OOM kills under load.
+- Pin a specific image tag (e.g. `ghcr.io/erpc/erpc:v0.x.y`) rather than `:latest` in production.
+- For the combined Prometheus+Grafana monitoring container: it is a single-process convenience for local dev. Run Prometheus and Grafana as separate services in production.
+- Quote YAML values that contain environment variable references: `password: "${REDIS_PASSWORD}"` — bare `${VAR}` with special characters can break YAML parsing before the variable is even read.
+
+### Edge cases & gotchas
+
+- **`--set` / `-s` is not implemented.** Passing `-s logLevel=debug` produces a CLI framework error. Use `LOG_LEVEL=debug` instead.
+- **`erpc dump --format csv`** (or any unknown format) exits 1 with a clear error — only `yaml`, `yml`, and `json` are valid.
+- **`validate` and `dump` suppress all log output** via a global zerolog disable before config loading. If a failure is hard to diagnose, pipe stdout through `jq .errors` — warnings from `SetDefaults` are silenced and won't appear on stderr.
+- **`.env` is loaded before CLI parsing**: variables in a local `.env` file are available for `${VAR}` substitution in YAML configs.
+- **`GET /<project>/evm/<chainId>`** is a healthcheck, not an error — any non-POST/non-OPTIONS method on a proxy path is silently treated as a network-scoped health probe.
+- **`docker-compose down --volumes`** (via `make down`) destroys `prometheus_data` and `grafana_data`. Use `docker compose down` without `--volumes` to preserve monitoring state.
+
+### Observability
+
+Port `4001` exposes Prometheus metrics. The repo's monitoring container bundles a pre-built Grafana dashboard (`monitoring/grafana/dashboards/erpc.json`, 80+ panels) covering request rates, latency, failover events, consensus, cache, selection policy, and block-head lag.
+
+Five built-in alert rules: `HighErrorRate` (upstream error rate >5% for 5 min), `SlowRequests` (p95 >1s), `HighRateLimiting`, `NetworkRateLimiting`, `HighRequestRate` / `LowRequestRate`.
+
+### Source code entry points
+
+- [`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go) — CLI entry point: config discovery, `start`/`validate`/`dump` subcommands, env-var overrides
+- [`erpc/init.go`](https://github.com/erpc/erpc/blob/main/erpc/init.go) — full startup orchestration: log level, database init, ERPC core, transports, graceful drain
+- [`common/config.go`](https://github.com/erpc/erpc/blob/main/common/config.go) — `Config` struct, `LoadConfig`, TypeScript compilation pipeline
+- [`common/defaults.go`](https://github.com/erpc/erpc/blob/main/common/defaults.go) — `SetDefaults`, synthetic project injection, vendor shorthand URL parsing
+- [`erpc/http_server.go:L810-L1006`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L810-L1006) — `parseUrlPath`: full routing state machine
+- [`kube/erpc.yml`](https://github.com/erpc/erpc/blob/main/kube/erpc.yml) — Kubernetes Namespace + Deployment + ConfigMap + Service + PodMonitor
+- [`monitoring/grafana/dashboards/erpc.json`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/dashboards/erpc.json) — pre-built Grafana dashboard
+
+### Related pages
+
+- [How eRPC works](/use-cases/how-it-works.llms.txt) — request lifecycle, failsafe layers, and caching in one diagram
+- [Survive provider outages](/use-cases/survive-provider-outages.llms.txt) — automatic failover in action
+- [Cut costs and latency](/use-cases/cut-costs-and-latency.llms.txt) — permanent EVM JSON-RPC cache
+- [Scale chains and providers](/use-cases/scale-chains-and-providers.llms.txt) — multi-upstream routing and scoring
+- [Resilience config](/config/failsafe.llms.txt) — retry, hedge, timeout, circuit breaker, consensus
+- [Full machine-readable reference](/llms.txt.llms.txt) — `/llms.txt` for LLM agents and tooling
+
+---
 
 ---
 
@@ -90,57 +188,82 @@ Send more requests and watch the metrics being collected and visualized in Grafa
 The same hierarchy a reader sees in the docs sidebar — every leaf
 links to its `.llms.txt` companion.
 
-- [Quick start](https://docs.erpc.cloud/index.llms.txt)
-- [Why eRPC?](https://docs.erpc.cloud/why.llms.txt) — Main use-cases — cost reduction, fault tolerance, observability, and EVM-aware load balancing.
-- [Free & Public RPCs](https://docs.erpc.cloud/free.llms.txt) — Run an eRPC proxy against 2,000+ chains and 4,000+ free public RPC endpoints with zero config.
-- [FAQ](https://docs.erpc.cloud/faq.llms.txt) — Frequently asked questions about running, configuring, and troubleshooting eRPC.
+- [Quick start](https://docs.erpc.cloud/index.llms.txt) — Stop babysitting RPC providers. eRPC handles failover, caching, and multi-chain routing so your stack stays fast even when providers don't.
+- [Why eRPC?](https://docs.erpc.cloud/why.llms.txt) — eRPC eliminates provider failures, stale data, and blind spots — one proxy in front of every RPC upstream you run.
+- [Free & Public RPCs](https://docs.erpc.cloud/free.llms.txt) — Zero config, zero API keys — eRPC auto-connects to thousands of free public EVM endpoints the moment you start it.
+- [FAQ](https://docs.erpc.cloud/faq.llms.txt) — Quick answers to the most common eRPC questions — config files, caching gotchas, auth setup, rate limits, and error codes decoded.
 
 ### Config
 
-- [erpc.yaml/ts](https://docs.erpc.cloud/config/example.llms.txt) — A tour of every top-level section in an eRPC config — logLevel, server, metrics, database, projects, upstreams, networks, failsafe, and rateLimiters — with minimal and full examples in YAML and TypeScript.
-- [Server](https://docs.erpc.cloud/config/server.llms.txt) — HTTP + gRPC listeners, TLS, timeouts, shutdown grace, trusted-proxy IP detection, response headers, error-detail controls, and domain-based project aliasing.
+- [Example](https://docs.erpc.cloud/config/example.llms.txt) — A production-ready starting point you can copy today, plus a complete annotated reference of every config section — caching, failover, hedging, rate limits, and observability included.
+- [Server](https://docs.erpc.cloud/config/server.llms.txt) — eRPC's front door — dual-stack listeners, TLS/mTLS, a hard global timeout, gzip, drain-aware shutdown, and domain aliasing so any Host header routes to the right chain without touching a URL path.
 - **Projects**
-  - [Networks](https://docs.erpc.cloud/config/projects/networks.llms.txt) — A network is a chain (`evm:1`, `evm:42161`, …) and how eRPC serves it — failsafe, selection, integrity, static responses, aliasing.
-  - [Upstreams](https://docs.erpc.cloud/config/projects/upstreams.llms.txt) — An upstream is one or more RPC endpoints that serve one or more EVM networks — with failsafe, rate limits, scoring, block-availability bounds, and per-method filters.
-  - [Providers](https://docs.erpc.cloud/config/projects/providers.llms.txt) — One-line endpoints that fan out across every chain a third-party RPC vendor supports.
-  - [Selection policy](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — One JavaScript function per network decides which upstreams serve which methods, in what order. Order is law — missing means excluded.
-  - [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Configure Cross-Origin Resource Sharing (CORS) per project so browser-based frontends can call eRPC directly — control which origins, methods, and headers are permitted.
+  - [Networks](https://docs.erpc.cloud/config/projects/networks.llms.txt) — One entry per chain — eRPC routes every request to the right upstreams, caches results, and retries failures, all without touching your code.
+  - [Upstreams](https://docs.erpc.cloud/config/projects/upstreams.llms.txt) — Add any RPC endpoint — Alchemy, a self-hosted node, a gRPC feed — and eRPC figures out what it can serve, heals it when it breaks, and routes around it when it can't.
+  - [Providers](https://docs.erpc.cloud/config/projects/providers.llms.txt) — One API key, every chain — declare a single provider entry and eRPC auto-generates upstreams for each network on first request, with 22 built-in vendor integrations.
+  - [Selection & scoring](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — eRPC ranks your upstreams every 15 seconds using live health data — bad actors drop out automatically, the fastest healthy provider goes first, and re-admission is metric-driven, not timer-driven.
+  - [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Let your frontend talk to eRPC safely — configure which browser origins are allowed, in seconds, without blocking a single server-to-server call.
+  - [Static responses](https://docs.erpc.cloud/config/projects/static-responses.llms.txt) — Return hardcoded JSON-RPC replies instantly for specific method+params pairs — no upstream contact, zero quota consumed, microsecond latency.
+  - [Shadow upstreams](https://docs.erpc.cloud/config/projects/shadow-upstreams.llms.txt) — Dark-launch a new RPC provider by mirroring live traffic to it in the background — zero latency impact, automatic response comparison, and Prometheus counters to prove it's ready.
 - **Failsafe**
-  - [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Bound how long a request may take — fixed or quantile-adaptive, with per-method and per-finality scoping.
-  - [Retry](https://docs.erpc.cloud/config/failsafe/retry.llms.txt) — Replay transient failures with backoff — empty-result handling, network-scope failover, per-method scoping.
-  - [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — Race a backup request to a second upstream when the primary is slow — quantile-adaptive delay with min/max guard rails.
-  - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Consensus policy compares responses from multiple upstreams and returns the agreed result, detecting misbehaving nodes and providing deterministic behavior during faults.
-  - [Integrity](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
-  - [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — How eRPC trips a failing upstream out of rotation — via the Selection Policy's excludeIf chain.
+  - [Retry](https://docs.erpc.cloud/config/failsafe/retry.llms.txt) — When a provider misbehaves, eRPC automatically rotates to the next one — and paces retries for missing data to match the chain's own block time.
+  - [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — When a provider is having a slow moment, eRPC quietly races a backup request — your slowest responses simply disappear.
+  - [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Give every request a hard latency budget — three nested layers keep stalled upstreams from tying up your connections indefinitely.
+  - [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — When an upstream starts failing, eRPC stops sending it traffic automatically — and quietly brings it back once it recovers.
+  - [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Fan out every request to multiple providers simultaneously, agree on a single canonical answer, and automatically flag — or silence — the ones that lie.
+  - [Integrity](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — eRPC silently discards stale or structurally broken upstream responses and retries on another provider — callers always get the correct answer.
 - **Database**
-  - [Drivers](https://docs.erpc.cloud/config/database/drivers.llms.txt) — Drivers define the storage backend for the eRPC cache — memory, Redis, PostgreSQL, DynamoDB. Each driver has its own timing, pool, and lock-retry knobs.
-  - [EVM Cache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Cache JSON-RPC responses across one or more storage backends — non-blocking, finality-aware, reorg-safe.
-  - [sharedState](https://docs.erpc.cloud/config/database/shared-state.llms.txt) — Share critical blockchain state across multiple eRPC instances — eliminates redundant upstream polling and improves integrity checks in horizontal-scaling deployments.
-- [Auth](https://docs.erpc.cloud/config/auth.llms.txt) — Each project can have one or more authentication strategies (secret, network/CIDR, JWT, SIWE, x402 pay-per-request) with per-method filters and rate limits.
-- [Rate limiters](https://docs.erpc.cloud/config/rate-limiters.llms.txt) — Define shared budgets with per-method rules and assign them to projects, networks, upstreams, or auth strategies. Backed by Redis (distributed) or memory (local).
-- [Matcher syntax](https://docs.erpc.cloud/config/matcher.llms.txt) — Pattern matching DSL used wherever eRPC compares network/method/param/header values — supports wildcards, OR/AND/NOT, and numeric comparisons over hex/decimal.
+  - [EVM JSON-RPC cache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Stop paying for the same upstream call twice — eRPC caches every EVM JSON-RPC response by finality bucket, fans out reads in parallel, and rejects stale tip-of-chain data before it ever reaches your users.
+  - [Drivers](https://docs.erpc.cloud/config/database/drivers.llms.txt) — Five interchangeable cache back-ends — memory, Redis, PostgreSQL, DynamoDB, and a read-only gRPC BDS connector — all behind one uniform interface, with optional per-operation failsafe policies that keep transient storage hiccups invisible to your upstreams.
+  - [Shared state](https://docs.erpc.cloud/config/database/shared-state.llms.txt) — Give every pod in your fleet the same real-time view of each upstream's block height — routing stays consistent as you scale out, with zero added latency on the request path.
+- [Auth](https://docs.erpc.cloud/config/auth.llms.txt) — Lock down every request with a token, JWT, wallet signature, or IP allowlist — and bind each identity to its own rate-limit budget.
+- [Rate limiters](https://docs.erpc.cloud/config/rate-limiters.llms.txt) — Stop a runaway caller or a misbehaving provider from affecting everyone else — eRPC applies independent request budgets at four layers and self-tunes outbound limits automatically.
+- [Matcher syntax](https://docs.erpc.cloud/config/matcher.llms.txt) — One pattern engine everywhere — globs, boolean logic, and hex ranges that work identically across cache policies, failsafe rules, rate limits, method filters, and routing directives.
+
+### Use cases
+
+- [How eRPC works](https://docs.erpc.cloud/use-cases/how-it-works.llms.txt) — Every JSON-RPC call travels a battle-tested pipeline — auth, smart caching, parallel hedging, multi-upstream consensus — and arrives with full diagnostic headers. Zero glue code required.
+- [Survive provider outages](https://docs.erpc.cloud/use-cases/survive-provider-outages.llms.txt) — Keep serving traffic when an RPC provider slows down, rate-limits you, or disappears entirely.
+- [Cut RPC cost & latency](https://docs.erpc.cloud/use-cases/cut-costs-and-latency.llms.txt) — Serve repeated questions from cache, deduplicate identical requests, and stop paying providers for the same answer twice.
+- [Scale chains & providers](https://docs.erpc.cloud/use-cases/scale-chains-and-providers.llms.txt) — One config line per provider, every chain they support — and the best upstream wins each request.
+- [Trust the data](https://docs.erpc.cloud/use-cases/trust-the-data.llms.txt) — Don't let one misbehaving node feed your app a wrong answer — verify, cross-check, and enforce integrity automatically.
+- [Lock it down](https://docs.erpc.cloud/use-cases/lock-it-down.llms.txt) — Keys, JWTs, sign-in with Ethereum, per-user rate limits — your RPC endpoint stops being a free-for-all.
+- [See everything](https://docs.erpc.cloud/use-cases/see-everything.llms.txt) — Per-request metrics, traces, and honest healthchecks — know about problems before your users do.
 
 ### Deployment
 
-- [Docker](https://docs.erpc.cloud/deployment/docker.llms.txt) — Deploy eRPC using official Docker images — quick start, docker-compose, custom NPM modules, and production tuning.
-- [Railway](https://docs.erpc.cloud/deployment/railway.llms.txt) — One-click deploy template for eRPC on Railway.
-- [Kubernetes](https://docs.erpc.cloud/deployment/kubernetes.llms.txt) — Deploy eRPC on Kubernetes with Deployment, Service, ConfigMap, HPA, and PodDisruptionBudget manifests.
-- [Cloud](https://docs.erpc.cloud/deployment/cloud.llms.txt) — Managed eRPC instances and cache storage in your preferred region — skip the DevOps overhead.
+- [Docker](https://docs.erpc.cloud/deployment/docker.llms.txt) — A 30 MB distroless image, one mount, two ports — eRPC runs anywhere Docker runs, with a pre-wired Grafana dashboard ready the moment you start.
+- [Railway](https://docs.erpc.cloud/deployment/railway.llms.txt) — From zero to a running eRPC proxy with Grafana monitoring in one click — no infra to manage, public endpoints ready immediately.
+- [Kubernetes](https://docs.erpc.cloud/deployment/kubernetes.llms.txt) — Stateless by design — scale eRPC to any replica count, roll restarts without dropping requests, and wire Prometheus scraping in one manifest apply.
+- [Cloud](https://docs.erpc.cloud/deployment/cloud.llms.txt) — Managed eRPC instances with regional cache storage — no infrastructure setup required.
 
 ### Operations
 
-- [URL](https://docs.erpc.cloud/operation/url.llms.txt) — URL patterns, request body formats, domain aliasing, and multi-chain batching for eRPC clients.
-- [Healthcheck](https://docs.erpc.cloud/operation/healthcheck.llms.txt) — Built-in /healthcheck endpoint for Kubernetes readiness probes, liveness probes, and custom upstream health evaluation.
-- [Batching](https://docs.erpc.cloud/operation/batch.llms.txt) — eRPC deduplicates, fans out, and reassembles JSON-RPC batch requests — both inbound arrays from clients and outbound batches to upstreams.
-- [Directives](https://docs.erpc.cloud/operation/directives.llms.txt) — Per-request hints that override eRPC behavior — set via HTTP header (X-ERPC-*) or query parameter on any request.
-- [Production](https://docs.erpc.cloud/operation/production.llms.txt) — Memory/GC tuning, healthcheck rollout, instance identification, error visibility, and IP forwarding recommendations for running eRPC in production.
-- [Monitoring](https://docs.erpc.cloud/operation/monitoring.llms.txt) — Prometheus metrics for eRPC — enabling the metrics endpoint, cardinality reduction, custom histogram buckets, and the full available metrics reference.
-- [Tracing](https://docs.erpc.cloud/operation/tracing.llms.txt) — OpenTelemetry tracing for eRPC — OTLP export, sampling, force-trace rules, custom resource attributes.
-- [Admin](https://docs.erpc.cloud/operation/admin.llms.txt) — JSON-RPC admin endpoint for runtime introspection of eRPC's config, project health, and API-key management.
-- [Cordoning](https://docs.erpc.cloud/operation/cordoning.llms.txt) — Manually take an upstream out of rotation (and put it back) via the admin RPC — the operator's escape hatch for incident response, vendor maintenance windows, and forced failover testing.
-- [CLI & env vars](https://docs.erpc.cloud/operation/cli.llms.txt) — eRPC command-line flags, subcommands, and the environment variables that influence runtime behavior.
+- [URL](https://docs.erpc.cloud/operation/url.llms.txt) — One URL pattern routes every chain — domain and network aliases let you publish clean, memorable endpoints without touching your app code.
+- [Healthcheck](https://docs.erpc.cloud/operation/healthcheck.llms.txt) — One endpoint that tells Kubernetes exactly when your pod is ready, draining, or broken — with eight probe strategies from "any upstream alive" to live chain-ID verification.
+- [Batching](https://docs.erpc.cloud/operation/batch.llms.txt) — Send one request, get back a merged response — eRPC parallelises inbound batch arrays, re-batches calls to supporting upstreams, and collapses identical in-flight requests so each unique call hits the network exactly once.
+- [Directives](https://docs.erpc.cloud/operation/directives.llms.txt) — Send an HTTP header or query param and change routing, caching, validation, or consensus for exactly that one request — no restarts, no config changes.
+- [Production](https://docs.erpc.cloud/operation/production.llms.txt) — Go live confidently — a short list of settings that separate a hardened eRPC deployment from a dev-mode one.
+- [Monitoring](https://docs.erpc.cloud/operation/monitoring.llms.txt) — Every subsystem in eRPC — upstreams, cache, rate limits, consensus, hedging — emits Prometheus metrics. One scrape target, full visibility, zero instrumentation work.
+- [Tracing](https://docs.erpc.cloud/operation/tracing.llms.txt) — Every request, cache lookup, and upstream call becomes a searchable span — shipped to any OTel backend. Secrets never leave the process.
+- [Admin](https://docs.erpc.cloud/operation/admin.llms.txt) — A built-in operator control plane — inspect topology, cordon sick upstreams without restarts, and manage API keys, all over a secure JSON-RPC 2.0 endpoint.
+- [Cordoning](https://docs.erpc.cloud/operation/cordoning.llms.txt) — Pull any upstream out of routing instantly with one admin call — no metric window to wait for, no config redeploy required.
+- [CLI & env vars](https://docs.erpc.cloud/operation/cli.llms.txt) — Start, validate, or inspect your eRPC config from the command line — then deploy with confidence knowing exactly what the engine will run.
+
+### Reference
+
+- **EVM behaviors**
+  - [getLogs auto-splitting](https://docs.erpc.cloud/reference/evm/getlogs-splitting.llms.txt) — Large eth_getLogs queries silently split into parallel chunks and merge back — no more range-limit errors from any provider, no client changes required.
+  - [Method handlers](https://docs.erpc.cloud/reference/evm/method-handlers.llms.txt) — eRPC's per-method EVM hooks eliminate entire classes of provider inconsistency — stale blocks, duplicate broadcasts, range-exceeded traces — before your application ever sees them.
+  - [Block tracking & served tip](https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt) — eRPC keeps a live pulse on every upstream's chain head and finality, then distills a single honest block number your clients can trust — with no "block not found" surprises.
+- [Error taxonomy](https://docs.erpc.cloud/reference/errors.llms.txt) — Every error eRPC can emit — typed, categorized, with retryability flags, wire HTTP status, and JSON-RPC codes — so you can interpret metrics, write alerts, and debug routing decisions confidently.
+- [Metrics reference](https://docs.erpc.cloud/reference/metrics.llms.txt) — Every observable signal eRPC emits — 122 Prometheus metrics across upstreams, cache, rate limiting, consensus, hedging, and more — ready to wire into your dashboards and alerts.
+- [gRPC & BDS streaming](https://docs.erpc.cloud/reference/grpc-bds.llms.txt) — Use typed protobuf APIs for block, transaction, and log lookups — eRPC routes, caches, and protects every gRPC call exactly like HTTP, with built-in deadlock defenses that keep stuck H2 streams from stalling your traffic.
+- [HTTP client & proxy pools](https://docs.erpc.cloud/reference/http-client.llms.txt) — eRPC keeps a single pre-warmed, high-throughput connection to every upstream — and can rotate traffic across a fleet of SOCKS5 or HTTP proxies with zero extra latency.
+- [Lanes & concurrency](https://docs.erpc.cloud/reference/lanes.llms.txt) — Route a class of requests to a specific provider group and eRPC automatically maintains a separate block-tip counter for that group — eliminating "block not found" churn caused by cross-provider tip pollution.
+- [Simulator](https://docs.erpc.cloud/reference/simulator.llms.txt) — A local browser playground that runs a real eRPC instance against synthetic upstreams — explore routing, failsafe, and selection-policy behavior in seconds, no credentials needed.
 - **Presets**
-  - [DVN (LayerZero)](https://docs.erpc.cloud/presets/dvn-ready.llms.txt) — Minimal eRPC config for DVN operators — multi-provider unanimous consensus on the RPC methods cross-chain message verification depends on.
+  - [DVN (LayerZero)](https://docs.erpc.cloud/presets/dvn-ready.llms.txt) — A drop-in eRPC config for DVN operators — unanimous consensus on the four source-chain verification methods closes the forged-log attack vector that hit KelpDAO.
 
 ---
 
@@ -149,44 +272,62 @@ links to its `.llms.txt` companion.
 Convenient when an agent wants to iterate over every page rather than
 follow the hierarchy:
 
-- [Authentication](https://docs.erpc.cloud/config/auth.llms.txt) — Each project can have one or more authentication strategies (secret, network/CIDR, JWT, SIWE, x402 pay-per-request) with per-method filters and rate limits.
-- [config/database/drivers.mdx](https://docs.erpc.cloud/config/database/drivers.llms.txt) — Drivers define the storage backend for the eRPC cache — memory, Redis, PostgreSQL, DynamoDB. Each driver has its own timing, pool, and lock-retry knobs.
-- [evmJsonRpcCache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Cache JSON-RPC responses across one or more storage backends — non-blocking, finality-aware, reorg-safe.
-- [sharedState](https://docs.erpc.cloud/config/database/shared-state.llms.txt) — Share critical blockchain state across multiple eRPC instances — eliminates redundant upstream polling and improves integrity checks in horizontal-scaling deployments.
-- [Complete config example](https://docs.erpc.cloud/config/example.llms.txt) — A tour of every top-level section in an eRPC config — logLevel, server, metrics, database, projects, upstreams, networks, failsafe, and rateLimiters — with minimal and full examples in YAML and TypeScript.
-- [Failsafe](https://docs.erpc.cloud/config/failsafe.llms.txt) — Per-network and per-upstream failsafe policies — timeout, retry, hedge, consensus, integrity — with per-method and per-finality scoping plus per-attempt observability.
-- [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — How eRPC trips a failing upstream out of rotation — via the Selection Policy's excludeIf chain.
-- [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Consensus policy compares responses from multiple upstreams and returns the agreed result, detecting misbehaving nodes and providing deterministic behavior during faults.
-- [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — Race a backup request to a second upstream when the primary is slow — quantile-adaptive delay with min/max guard rails.
-- [Integrity & Empty Data](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — Integrity directives enforce block tracking, response validation, and empty/missing-data handling. Configure via directiveDefaults on networks or per-request headers.
-- [Retry](https://docs.erpc.cloud/config/failsafe/retry.llms.txt) — Replay transient failures with backoff — empty-result handling, network-scope failover, per-method scoping.
-- [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Bound how long a request may take — fixed or quantile-adaptive, with per-method and per-finality scoping.
-- [Matcher syntax](https://docs.erpc.cloud/config/matcher.llms.txt) — Pattern matching DSL used wherever eRPC compares network/method/param/header values — supports wildcards, OR/AND/NOT, and numeric comparisons over hex/decimal.
-- [Projects](https://docs.erpc.cloud/config/projects.llms.txt) — A project bundles a set of networks, upstreams, providers, auth, and rate-limit budgets — one eRPC instance can serve many projects (e.g. backend, indexer, frontend) with different cost/reliability profiles.
-- [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Configure Cross-Origin Resource Sharing (CORS) per project so browser-based frontends can call eRPC directly — control which origins, methods, and headers are permitted.
-- [Networks](https://docs.erpc.cloud/config/projects/networks.llms.txt) — A network is a chain (`evm:1`, `evm:42161`, …) and how eRPC serves it — failsafe, selection, integrity, static responses, aliasing.
-- [Providers](https://docs.erpc.cloud/config/projects/providers.llms.txt) — One-line endpoints that fan out across every chain a third-party RPC vendor supports.
-- [Selection policy](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — One JavaScript function per network decides which upstreams serve which methods, in what order. Order is law — missing means excluded.
-- [Upstreams](https://docs.erpc.cloud/config/projects/upstreams.llms.txt) — An upstream is one or more RPC endpoints that serve one or more EVM networks — with failsafe, rate limits, scoring, block-availability bounds, and per-method filters.
-- [Rate Limiters](https://docs.erpc.cloud/config/rate-limiters.llms.txt) — Define shared budgets with per-method rules and assign them to projects, networks, upstreams, or auth strategies. Backed by Redis (distributed) or memory (local).
-- [Server](https://docs.erpc.cloud/config/server.llms.txt) — HTTP + gRPC listeners, TLS, timeouts, shutdown grace, trusted-proxy IP detection, response headers, error-detail controls, and domain-based project aliasing.
-- [Hosted cloud](https://docs.erpc.cloud/deployment/cloud.llms.txt) — Managed eRPC instances and cache storage in your preferred region — skip the DevOps overhead.
-- [Docker deployment](https://docs.erpc.cloud/deployment/docker.llms.txt) — Deploy eRPC using official Docker images — quick start, docker-compose, custom NPM modules, and production tuning.
-- [Kubernetes deployment](https://docs.erpc.cloud/deployment/kubernetes.llms.txt) — Deploy eRPC on Kubernetes with Deployment, Service, ConfigMap, HPA, and PodDisruptionBudget manifests.
-- [Railway](https://docs.erpc.cloud/deployment/railway.llms.txt) — One-click deploy template for eRPC on Railway.
-- [FAQ](https://docs.erpc.cloud/faq.llms.txt) — Frequently asked questions about running, configuring, and troubleshooting eRPC.
-- [Free & Public RPCs](https://docs.erpc.cloud/free.llms.txt) — Run an eRPC proxy against 2,000+ chains and 4,000+ free public RPC endpoints with zero config.
-- [Introducing eRPC](https://docs.erpc.cloud/index.llms.txt)
-- [Admin API](https://docs.erpc.cloud/operation/admin.llms.txt) — JSON-RPC admin endpoint for runtime introspection of eRPC's config, project health, and API-key management.
-- [Batch requests](https://docs.erpc.cloud/operation/batch.llms.txt) — eRPC deduplicates, fans out, and reassembles JSON-RPC batch requests — both inbound arrays from clients and outbound batches to upstreams.
-- [CLI & env vars](https://docs.erpc.cloud/operation/cli.llms.txt) — eRPC command-line flags, subcommands, and the environment variables that influence runtime behavior.
-- [Cordoning](https://docs.erpc.cloud/operation/cordoning.llms.txt) — Manually take an upstream out of rotation (and put it back) via the admin RPC — the operator's escape hatch for incident response, vendor maintenance windows, and forced failover testing.
-- [Directives](https://docs.erpc.cloud/operation/directives.llms.txt) — Per-request hints that override eRPC behavior — set via HTTP header (X-ERPC-*) or query parameter on any request.
-- [Healthcheck](https://docs.erpc.cloud/operation/healthcheck.llms.txt) — Built-in /healthcheck endpoint for Kubernetes readiness probes, liveness probes, and custom upstream health evaluation.
-- [Monitoring & metrics](https://docs.erpc.cloud/operation/monitoring.llms.txt) — Prometheus metrics for eRPC — enabling the metrics endpoint, cardinality reduction, custom histogram buckets, and the full available metrics reference.
-- [Production guidelines](https://docs.erpc.cloud/operation/production.llms.txt) — Memory/GC tuning, healthcheck rollout, instance identification, error visibility, and IP forwarding recommendations for running eRPC in production.
-- [Tracing](https://docs.erpc.cloud/operation/tracing.llms.txt) — OpenTelemetry tracing for eRPC — OTLP export, sampling, force-trace rules, custom resource attributes.
-- [URL & routing](https://docs.erpc.cloud/operation/url.llms.txt) — URL patterns, request body formats, domain aliasing, and multi-chain batching for eRPC clients.
+- [Authentication](https://docs.erpc.cloud/config/auth.llms.txt) — Lock down every request with a token, JWT, wallet signature, or IP allowlist — and bind each identity to its own rate-limit budget.
+- [Storage drivers](https://docs.erpc.cloud/config/database/drivers.llms.txt) — Five interchangeable cache back-ends — memory, Redis, PostgreSQL, DynamoDB, and a read-only gRPC BDS connector — all behind one uniform interface, with optional per-operation failsafe policies that keep transient storage hiccups invisible to your upstreams.
+- [Cache policies](https://docs.erpc.cloud/config/database/evm-json-rpc-cache.llms.txt) — Stop paying for the same upstream call twice — eRPC caches every EVM JSON-RPC response by finality bucket, fans out reads in parallel, and rejects stale tip-of-chain data before it ever reaches your users.
+- [Shared state](https://docs.erpc.cloud/config/database/shared-state.llms.txt) — Give every pod in your fleet the same real-time view of each upstream's block height — routing stays consistent as you scale out, with zero added latency on the request path.
+- [Example config](https://docs.erpc.cloud/config/example.llms.txt) — A production-ready starting point you can copy today, plus a complete annotated reference of every config section — caching, failover, hedging, rate limits, and observability included.
+- [Failsafe](https://docs.erpc.cloud/config/failsafe.llms.txt) — Six composable failsafe policies that keep every RPC request succeeding — even when upstreams are slow, wrong, or temporarily down.
+- [Circuit breaker](https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt) — When an upstream starts failing, eRPC stops sending it traffic automatically — and quietly brings it back once it recovers.
+- [Consensus](https://docs.erpc.cloud/config/failsafe/consensus.llms.txt) — Fan out every request to multiple providers simultaneously, agree on a single canonical answer, and automatically flag — or silence — the ones that lie.
+- [Hedge](https://docs.erpc.cloud/config/failsafe/hedge.llms.txt) — When a provider is having a slow moment, eRPC quietly races a backup request — your slowest responses simply disappear.
+- [Integrity checks](https://docs.erpc.cloud/config/failsafe/integrity.llms.txt) — eRPC silently discards stale or structurally broken upstream responses and retries on another provider — callers always get the correct answer.
+- [Retry](https://docs.erpc.cloud/config/failsafe/retry.llms.txt) — When a provider misbehaves, eRPC automatically rotates to the next one — and paces retries for missing data to match the chain's own block time.
+- [Timeout](https://docs.erpc.cloud/config/failsafe/timeout.llms.txt) — Give every request a hard latency budget — three nested layers keep stalled upstreams from tying up your connections indefinitely.
+- [Matcher syntax](https://docs.erpc.cloud/config/matcher.llms.txt) — One pattern engine everywhere — globs, boolean logic, and hex ranges that work identically across cache policies, failsafe rules, rate limits, method filters, and routing directives.
+- [Projects](https://docs.erpc.cloud/config/projects.llms.txt) — One eRPC, many tenants — each project gets its own networks, upstreams, auth, and budgets.
+- [CORS](https://docs.erpc.cloud/config/projects/cors.llms.txt) — Let your frontend talk to eRPC safely — configure which browser origins are allowed, in seconds, without blocking a single server-to-server call.
+- [Networks](https://docs.erpc.cloud/config/projects/networks.llms.txt) — One entry per chain — eRPC routes every request to the right upstreams, caches results, and retries failures, all without touching your code.
+- [Providers & vendors](https://docs.erpc.cloud/config/projects/providers.llms.txt) — One API key, every chain — declare a single provider entry and eRPC auto-generates upstreams for each network on first request, with 22 built-in vendor integrations.
+- [Selection & scoring](https://docs.erpc.cloud/config/projects/selection-policies.llms.txt) — eRPC ranks your upstreams every 15 seconds using live health data — bad actors drop out automatically, the fastest healthy provider goes first, and re-admission is metric-driven, not timer-driven.
+- [Shadow upstreams](https://docs.erpc.cloud/config/projects/shadow-upstreams.llms.txt) — Dark-launch a new RPC provider by mirroring live traffic to it in the background — zero latency impact, automatic response comparison, and Prometheus counters to prove it's ready.
+- [Static responses](https://docs.erpc.cloud/config/projects/static-responses.llms.txt) — Return hardcoded JSON-RPC replies instantly for specific method+params pairs — no upstream contact, zero quota consumed, microsecond latency.
+- [Upstreams](https://docs.erpc.cloud/config/projects/upstreams.llms.txt) — Add any RPC endpoint — Alchemy, a self-hosted node, a gRPC feed — and eRPC figures out what it can serve, heals it when it breaks, and routes around it when it can't.
+- [Rate Limiters](https://docs.erpc.cloud/config/rate-limiters.llms.txt) — Stop a runaway caller or a misbehaving provider from affecting everyone else — eRPC applies independent request budgets at four layers and self-tunes outbound limits automatically.
+- [Server](https://docs.erpc.cloud/config/server.llms.txt) — eRPC's front door — dual-stack listeners, TLS/mTLS, a hard global timeout, gzip, drain-aware shutdown, and domain aliasing so any Host header routes to the right chain without touching a URL path.
+- [Hosted cloud](https://docs.erpc.cloud/deployment/cloud.llms.txt) — Managed eRPC instances with regional cache storage — no infrastructure setup required.
+- [Docker](https://docs.erpc.cloud/deployment/docker.llms.txt) — A 30 MB distroless image, one mount, two ports — eRPC runs anywhere Docker runs, with a pre-wired Grafana dashboard ready the moment you start.
+- [Kubernetes](https://docs.erpc.cloud/deployment/kubernetes.llms.txt) — Stateless by design — scale eRPC to any replica count, roll restarts without dropping requests, and wire Prometheus scraping in one manifest apply.
+- [Railway](https://docs.erpc.cloud/deployment/railway.llms.txt) — From zero to a running eRPC proxy with Grafana monitoring in one click — no infra to manage, public endpoints ready immediately.
+- [FAQ](https://docs.erpc.cloud/faq.llms.txt) — Quick answers to the most common eRPC questions — config files, caching gotchas, auth setup, rate limits, and error codes decoded.
+- [Free & Public RPCs](https://docs.erpc.cloud/free.llms.txt) — Zero config, zero API keys — eRPC auto-connects to thousands of free public EVM endpoints the moment you start it.
+- [Quick start](https://docs.erpc.cloud/index.llms.txt) — Stop babysitting RPC providers. eRPC handles failover, caching, and multi-chain routing so your stack stays fast even when providers don't.
+- [Admin API](https://docs.erpc.cloud/operation/admin.llms.txt) — A built-in operator control plane — inspect topology, cordon sick upstreams without restarts, and manage API keys, all over a secure JSON-RPC 2.0 endpoint.
+- [Batching & multiplexing](https://docs.erpc.cloud/operation/batch.llms.txt) — Send one request, get back a merged response — eRPC parallelises inbound batch arrays, re-batches calls to supporting upstreams, and collapses identical in-flight requests so each unique call hits the network exactly once.
+- [CLI & env vars](https://docs.erpc.cloud/operation/cli.llms.txt) — Start, validate, or inspect your eRPC config from the command line — then deploy with confidence knowing exactly what the engine will run.
+- [Cordoning](https://docs.erpc.cloud/operation/cordoning.llms.txt) — Pull any upstream out of routing instantly with one admin call — no metric window to wait for, no config redeploy required.
+- [Directives](https://docs.erpc.cloud/operation/directives.llms.txt) — Send an HTTP header or query param and change routing, caching, validation, or consensus for exactly that one request — no restarts, no config changes.
+- [Healthcheck](https://docs.erpc.cloud/operation/healthcheck.llms.txt) — One endpoint that tells Kubernetes exactly when your pod is ready, draining, or broken — with eight probe strategies from "any upstream alive" to live chain-ID verification.
+- [Monitoring & metrics](https://docs.erpc.cloud/operation/monitoring.llms.txt) — Every subsystem in eRPC — upstreams, cache, rate limits, consensus, hedging — emits Prometheus metrics. One scrape target, full visibility, zero instrumentation work.
+- [Production checklist](https://docs.erpc.cloud/operation/production.llms.txt) — Go live confidently — a short list of settings that separate a hardened eRPC deployment from a dev-mode one.
+- [Tracing & logging](https://docs.erpc.cloud/operation/tracing.llms.txt) — Every request, cache lookup, and upstream call becomes a searchable span — shipped to any OTel backend. Secrets never leave the process.
+- [URL structure](https://docs.erpc.cloud/operation/url.llms.txt) — One URL pattern routes every chain — domain and network aliases let you publish clean, memorable endpoints without touching your app code.
 - [Examples](https://docs.erpc.cloud/presets.llms.txt) — Drop-in eRPC config presets for specific scenarios (DVN, indexer, frontend, etc.).
-- [DVN (LayerZero)](https://docs.erpc.cloud/presets/dvn-ready.llms.txt) — Minimal eRPC config for DVN operators — multi-provider unanimous consensus on the RPC methods cross-chain message verification depends on.
-- [Why eRPC?](https://docs.erpc.cloud/why.llms.txt) — Main use-cases — cost reduction, fault tolerance, observability, and EVM-aware load balancing.
+- [DVN-ready preset (LayerZero)](https://docs.erpc.cloud/presets/dvn-ready.llms.txt) — A drop-in eRPC config for DVN operators — unanimous consensus on the four source-chain verification methods closes the forged-log attack vector that hit KelpDAO.
+- [Error taxonomy](https://docs.erpc.cloud/reference/errors.llms.txt) — Every error eRPC can emit — typed, categorized, with retryability flags, wire HTTP status, and JSON-RPC codes — so you can interpret metrics, write alerts, and debug routing decisions confidently.
+- [Block tracking & served tip](https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt) — eRPC keeps a live pulse on every upstream's chain head and finality, then distills a single honest block number your clients can trust — with no "block not found" surprises.
+- [getLogs auto-splitting](https://docs.erpc.cloud/reference/evm/getlogs-splitting.llms.txt) — Large eth_getLogs queries silently split into parallel chunks and merge back — no more range-limit errors from any provider, no client changes required.
+- [Method Handlers](https://docs.erpc.cloud/reference/evm/method-handlers.llms.txt) — eRPC's per-method EVM hooks eliminate entire classes of provider inconsistency — stale blocks, duplicate broadcasts, range-exceeded traces — before your application ever sees them.
+- [gRPC & BDS streaming](https://docs.erpc.cloud/reference/grpc-bds.llms.txt) — Use typed protobuf APIs for block, transaction, and log lookups — eRPC routes, caches, and protects every gRPC call exactly like HTTP, with built-in deadlock defenses that keep stuck H2 streams from stalling your traffic.
+- [HTTP Client & Proxy Pools](https://docs.erpc.cloud/reference/http-client.llms.txt) — eRPC keeps a single pre-warmed, high-throughput connection to every upstream — and can rotate traffic across a fleet of SOCKS5 or HTTP proxies with zero extra latency.
+- [Lanes & concurrency](https://docs.erpc.cloud/reference/lanes.llms.txt) — Route a class of requests to a specific provider group and eRPC automatically maintains a separate block-tip counter for that group — eliminating "block not found" churn caused by cross-provider tip pollution.
+- [Metrics reference](https://docs.erpc.cloud/reference/metrics.llms.txt) — Every observable signal eRPC emits — 122 Prometheus metrics across upstreams, cache, rate limiting, consensus, hedging, and more — ready to wire into your dashboards and alerts.
+- [Simulator](https://docs.erpc.cloud/reference/simulator.llms.txt) — A local browser playground that runs a real eRPC instance against synthetic upstreams — explore routing, failsafe, and selection-policy behavior in seconds, no credentials needed.
+- [Cut RPC cost & latency](https://docs.erpc.cloud/use-cases/cut-costs-and-latency.llms.txt) — Serve repeated questions from cache, deduplicate identical requests, and stop paying providers for the same answer twice.
+- [How eRPC works](https://docs.erpc.cloud/use-cases/how-it-works.llms.txt) — Every JSON-RPC call travels a battle-tested pipeline — auth, smart caching, parallel hedging, multi-upstream consensus — and arrives with full diagnostic headers. Zero glue code required.
+- [Lock it down](https://docs.erpc.cloud/use-cases/lock-it-down.llms.txt) — Keys, JWTs, sign-in with Ethereum, per-user rate limits — your RPC endpoint stops being a free-for-all.
+- [Scale chains & providers](https://docs.erpc.cloud/use-cases/scale-chains-and-providers.llms.txt) — One config line per provider, every chain they support — and the best upstream wins each request.
+- [See everything](https://docs.erpc.cloud/use-cases/see-everything.llms.txt) — Per-request metrics, traces, and honest healthchecks — know about problems before your users do.
+- [Survive provider outages](https://docs.erpc.cloud/use-cases/survive-provider-outages.llms.txt) — Keep serving traffic when an RPC provider slows down, rate-limits you, or disappears entirely.
+- [Trust the data](https://docs.erpc.cloud/use-cases/trust-the-data.llms.txt) — Don't let one misbehaving node feed your app a wrong answer — verify, cross-check, and enforce integrity automatically.
+- [Why eRPC?](https://docs.erpc.cloud/why.llms.txt) — eRPC eliminates provider failures, stale data, and blind spots — one proxy in front of every RPC upstream you run.

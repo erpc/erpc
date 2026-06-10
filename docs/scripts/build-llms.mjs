@@ -190,19 +190,17 @@ function scanOpenTag(src, i) {
  * `openTag.openEnd`. Returns -1 if not found.
  */
 function findClose(src, tag, fromIdx) {
+	// NOTE: we deliberately do NOT skip quotes/backticks at the top level here.
+	// JSX children are markdown — inline code and ``` fences use backticks in
+	// ways that do not pair like JS template literals (a fence is 3 backticks),
+	// which previously desynchronized the scan. Template literals only occur
+	// inside tag ATTRIBUTES, and `scanOpenTag` already skips those safely; so
+	// whenever we encounter any opening tag we jump past its attributes via
+	// scanOpenTag and continue from there.
 	let i = fromIdx;
 	let depth = 1;
 	while (i < src.length) {
-		const c = src[i];
-		if (c === '"' || c === "'") {
-			i = skipString(src, i, c);
-			continue;
-		}
-		if (c === "`") {
-			i = skipTemplate(src, i);
-			continue;
-		}
-		if (c !== "<") {
+		if (src[i] !== "<") {
 			i++;
 			continue;
 		}
@@ -219,10 +217,11 @@ function findClose(src, tag, fromIdx) {
 			i = k + 1;
 			continue;
 		}
-		// Detect <tag>
+		// Any other opening tag: jump past its attributes (handles nested
+		// same-tag depth AND attribute template literals containing markdown).
 		const open = scanOpenTag(src, i);
-		if (open && open.tag === tag && !open.selfClose) {
-			depth++;
+		if (open) {
+			if (open.tag === tag && !open.selfClose) depth++;
 			i = open.openEnd;
 			continue;
 		}
@@ -442,6 +441,70 @@ function transformSteps(src) {
 	return transformTag(src, "Steps", ({ inner }) => `\n${inner.trim()}\n`);
 }
 
+/**
+ * Expand plain MDX <details>/<summary> blocks (the L2 human deep-dive
+ * convention). The summary becomes a bold lead-in line; the body is emitted
+ * fully expanded so the .llms.txt surface never hides content.
+ */
+function transformDetails(src) {
+	return transformTag(src, "details", ({ inner }) => {
+		let heading = "";
+		const withoutSummary = transformTag(inner, "summary", ({ inner: s }) => {
+			heading = s.trim();
+			return "";
+		});
+		const body = withoutSummary.trim();
+		return heading ? `\n${heading}\n\n${body}\n` : `\n${body}\n`;
+	});
+}
+
+/**
+ * <CapabilityGrid items={[...]}/> → markdown bullet list. The items attr is a
+ * JS array literal of {title, href, summary}; parse the string/href/summary
+ * triplets leniently rather than evaluating it.
+ */
+function transformCapabilityGrid(src) {
+	return transformTag(src, "CapabilityGrid", ({ attrs }) => {
+		const itemsExpr = attrs.items ?? "";
+		const itemRe =
+			/title:\s*["']([^"']+)["'][\s\S]*?href:\s*["']([^"']+)["'][\s\S]*?summary:\s*["']([^"']+)["']/g;
+		const lines = [];
+		let m;
+		while ((m = itemRe.exec(itemsExpr)) !== null) {
+			lines.push(`- **[${m[1]}](${m[2]})** — ${m[3]}`);
+		}
+		if (lines.length === 0) {
+			return "\n> **Capabilities:** see the sub-pages of this section for full detail.\n";
+		}
+		// Internal hrefs get rewritten to .llms.txt later by rewriteInternalLinks.
+		return `\n${lines.join("\n")}\n`;
+	});
+}
+
+/**
+ * <PromptExample n=… title=… prompt={`…`}/> → heading + fenced text block so
+ * agents (and the llms surface) keep the copyable prompt verbatim.
+ */
+function transformPromptExample(src) {
+	return transformTag(src, "PromptExample", ({ attrs }) => {
+		const n = attrs.n ?? "?";
+		const title = attrs.title ?? "";
+		const prompt = String(attrs.prompt ?? "").trim();
+		return `\n**Prompt Example #${n}: ${title}**\n\n\`\`\`text\n${prompt}\n\`\`\`\n`;
+	});
+}
+
+/** <SourceLink file=… lines=… label=…/> → plain markdown GitHub permalink. */
+function transformSourceLink(src) {
+	return transformTag(src, "SourceLink", ({ attrs }) => {
+		const file = attrs.file ?? "";
+		const lines = attrs.lines ?? "";
+		const anchor = lines ? `#L${String(lines).replace(/-/g, "-L")}` : "";
+		const label = attrs.label ?? (lines ? `${file}:L${lines}` : file);
+		return `[\`${label}\`](https://github.com/erpc/erpc/blob/main/${file}${anchor})`;
+	});
+}
+
 function stripBareLeftoverComponents(src) {
 	// Run the JSX scanner left-to-right; for any unknown capitalized tag,
 	// emit just its inner content (drop the wrapper). Doing this with the
@@ -491,6 +554,10 @@ function transformMdxToMarkdown(src) {
 	let out = src;
 	out = stripImports(out);
 	out = transformAISection(out);
+	out = transformPromptExample(out);
+	out = transformDetails(out);
+	out = transformCapabilityGrid(out);
+	out = transformSourceLink(out);
 	out = transformConfigCode(out);
 	out = transformConfigTabs(out);
 	out = transformCallout(out);
@@ -705,7 +772,24 @@ function renderNavTree(nodes, depth = 0) {
 	return out.join("\n");
 }
 
+/** Delete all previously generated *.llms.txt under public/ so removed or
+ * moved pages don't leave stale machine-readable companions behind. */
+async function cleanStaleLlmsTxt(dir) {
+	const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+	for (const entry of entries) {
+		const abs = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			await cleanStaleLlmsTxt(abs);
+			const remaining = await fs.readdir(abs).catch(() => ["x"]);
+			if (remaining.length === 0) await fs.rmdir(abs).catch(() => {});
+		} else if (entry.isFile() && entry.name.endsWith(".llms.txt")) {
+			await fs.unlink(abs).catch(() => {});
+		}
+	}
+}
+
 async function main() {
+	await cleanStaleLlmsTxt(PUBLIC_DIR);
 	const files = await walkMdx(PAGES_DIR);
 	files.sort((a, b) => a.rel.localeCompare(b.rel));
 
@@ -741,10 +825,6 @@ async function main() {
 			.filter((l) => l !== null)
 			.join("\n");
 
-		const outPath = relToLlmsTxtPath(rel);
-		await fs.mkdir(path.dirname(outPath), { recursive: true });
-		await fs.writeFile(outPath, `${header}\n${markdown}`, "utf8");
-
 		const entry = {
 			rel,
 			urlPath,
@@ -752,6 +832,7 @@ async function main() {
 			llmsUrlPath,
 			title,
 			description,
+			header,
 			body: markdown,
 		};
 		entries.push(entry);
@@ -764,7 +845,54 @@ async function main() {
 		}
 	}
 
-	// Second pass: build the hierarchical navigation tree from `_meta.js`.
+	// Second pass: write every per-page .llms.txt, appending a "Navigation"
+	// section with parent (up), children (down), and siblings (sideways) so an
+	// agent can traverse the whole docs tree without returning to the root
+	// index. The root /llms.txt is always linked as the global entry point.
+	const stripExt = (rel) => rel.replace(/\.(mdx|md)$/i, "");
+	const line = (e) =>
+		`- [${e.title}](${SITE_BASE_URL}${e.llmsUrlPath})${e.description ? ` — ${e.description}` : ""}`;
+	for (const entry of entries) {
+		const dir = path.dirname(entry.rel); // "." for top-level pages
+		const base = stripExt(entry.rel);
+
+		// Parent: the page whose path equals this page's directory
+		// (config/failsafe/hedge.mdx → config/failsafe.mdx). Top-level pages
+		// have no parent page; the root llms.txt covers them.
+		const parent =
+			dir !== "." ? entries.find((e) => stripExt(e.rel) === dir) : null;
+		// Children: pages living inside the directory named after this page
+		// (config/failsafe.mdx → config/failsafe/*.mdx).
+		const children = entries.filter(
+			(e) => path.dirname(e.rel) === base,
+		);
+		const siblings = entries.filter(
+			(e) => e !== entry && path.dirname(e.rel) === dir,
+		);
+
+		const nav = [
+			"\n\n## Navigation (machine-readable surface)",
+			"",
+			`- Up: ${parent ? `[${parent.title}](${SITE_BASE_URL}${parent.llmsUrlPath})` : `[All pages index](${SITE_BASE_URL}/llms.txt)`}`,
+			`- Root index of every page: [llms.txt](${SITE_BASE_URL}/llms.txt) · everything in one file: [llms-full.txt](${SITE_BASE_URL}/llms-full.txt)`,
+		];
+		if (children.length > 0) {
+			nav.push("", "### Child pages", "", ...children.map(line));
+		}
+		if (siblings.length > 0) {
+			nav.push("", "### Sibling pages", "", ...siblings.map(line));
+		}
+
+		const outPath = relToLlmsTxtPath(entry.rel);
+		await fs.mkdir(path.dirname(outPath), { recursive: true });
+		await fs.writeFile(
+			outPath,
+			`${entry.header}\n${entry.body}${nav.join("\n")}\n`,
+			"utf8",
+		);
+	}
+
+	// Build the hierarchical navigation tree from `_meta.js`.
 	const navTree = await buildNavTree(PAGES_DIR, "", entryByPath);
 	const navMarkdown = renderNavTree(navTree, 0);
 
@@ -822,8 +950,35 @@ async function main() {
 		"utf8",
 	);
 
+	// llms-full.txt — every page concatenated into one fetch for agents with
+	// large context windows. Pages are separated by a heading banner.
+	const fullLines = [
+		"# eRPC documentation — llms-full.txt",
+		"",
+		`> Source: ${SITE_BASE_URL}/`,
+		"> Every docs page concatenated into a single machine-readable file.",
+		"> For the navigable index, fetch /llms.txt instead.",
+		"",
+	];
+	for (const entry of entries) {
+		fullLines.push(
+			"",
+			"---",
+			"",
+			`<!-- page: ${entry.urlPath} -->`,
+			"",
+			entry.header,
+			entry.body.trim(),
+		);
+	}
+	await fs.writeFile(
+		path.join(PUBLIC_DIR, "llms-full.txt"),
+		fullLines.join("\n") + "\n",
+		"utf8",
+	);
+
 	console.log(
-		`[llms] wrote ${files.length} per-page .llms.txt files + root index at ${PUBLIC_DIR}/llms.txt`,
+		`[llms] wrote ${files.length} per-page .llms.txt files + root index + llms-full.txt at ${PUBLIC_DIR}`,
 	);
 }
 

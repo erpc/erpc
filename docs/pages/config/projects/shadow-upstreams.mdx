@@ -1,0 +1,392 @@
+---
+title: Shadow upstreams
+description: Dark-launch a new RPC provider by mirroring live traffic to it in the background — zero latency impact, automatic response comparison, and Prometheus counters to prove it's ready.
+---
+
+import {
+	AISection,
+	ConfigTabs,
+	LLMsTxtLink,
+	PromptExample,
+	SourceLink,
+} from "../../../components";
+
+<LLMsTxtLink />
+
+# Shadow upstreams
+
+Promote a new RPC provider with confidence: mark it as a shadow upstream and eRPC mirrors every live request to it after the primary response is already on the wire. Shadow calls are fire-and-forget — latency and reliability are untouched. eRPC compares responses by content hash and logs every divergence, so you have hard evidence before flipping the switch.
+
+**What you get:**
+- Zero-latency-impact dark launch for new providers or chain configs
+- Automatic content-hash comparison with configurable field ignores
+- Per-outcome Prometheus counters (identical / mismatch / error) per upstream
+- Panic-isolated goroutines — a shadow crash never reaches the client
+
+## Quick taste
+
+Illustrative, not a tuned production config — shadow 10% of traffic to a new provider:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  focusYaml="4,6-9"
+  focusTs="4,6-9"
+  yaml={`projects:
+  - id: main
+    upstreams:
+      - id: new-provider-shadow
+        endpoint: https://new-provider.example.com
+        shadow:
+          enabled: true
+          # mirror 10% of live traffic; zero latency impact on the primary path
+          sampleRate: 0.1`}
+  ts={`projects: [{
+  id: "main",
+  upstreams: [{
+    id: "new-provider-shadow",
+    endpoint: "https://new-provider.example.com",
+    shadow: {
+      enabled: true,
+      // mirror 10% of live traffic; zero latency impact on the primary path
+      sampleRate: 0.1,
+    },
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="dark-launch a new provider"
+	defaultOpen
+	prompt={`I want to evaluate a new RPC provider for my chain before promoting it to production.
+Set up a shadow upstream in my eRPC config that mirrors 10% of live traffic to the new
+provider with zero latency impact, and configure ignoreFields to suppress false
+mismatches on volatile fields like timestamp. Read the full reference first:
+https://docs.erpc.cloud/config/projects/shadow-upstreams.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="add ignoreFields for an L2 chain"
+	prompt={`My shadow upstream for an L2 chain keeps logging mismatch errors on eth_getLogs and
+eth_getBlockReceipts for L1 fee fields (l1Fee, l1GasPrice, l1BaseFeeScalar, etc.) that
+legitimately differ between providers. Update the shadow config in my eRPC config to ignore
+those fields so only real data divergence is flagged. Reference:
+https://docs.erpc.cloud/config/projects/shadow-upstreams.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="validate a new node with blockAvailability + shadow"
+	prompt={`I have a new archive node that only has data from block 18820001 onward. Add it as a
+shadow upstream in my eRPC config scoped to that block range so the comparison only fires
+on requests that the node can actually serve. Reference:
+https://docs.erpc.cloud/config/projects/shadow-upstreams.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="interpret mismatch metrics before promoting"
+	prompt={`I've been running a shadow upstream in my eRPC config for 24 hours and I'm seeing
+erpc_shadow_response_mismatch_total incrementing. Walk me through which metric labels
+(finality, emptyish, larger) to check to tell apart expected divergence from real
+provider discrepancies, and what zero-mismatch criteria to use before promoting.
+Reference: https://docs.erpc.cloud/config/projects/shadow-upstreams.llms.txt`}
+/>
+
+<AISection title="Shadow upstreams — full agent reference">
+
+### How it works
+
+**Registration.** An upstream becomes a shadow by setting `shadow.enabled: true`. The registry (`upstream/registry.go:L574-L584`) routes it into `networkShadowUpstreams[networkId]` instead of `networkUpstreams[networkId]`. Shadow upstreams are never offered to the selection policy, never scored by the health tracker, and never returned by `GetNetworkUpstreams`. The normal routing path cannot reach them.
+
+**Trigger point.** After `p.doForward` returns in `PreparedProject.Forward` (`erpc/projects.go:L135-L163`), if the network has shadow upstreams and the primary response is non-nil, eRPC clones both the response and request — full byte copies, not references — then launches `executeShadowRequests` as a goroutine. The primary response is already committed to the caller before the goroutine starts.
+
+**Goroutine safety.** The shadow goroutine receives cloned objects, not live references. Original request body is byte-copied with `append([]byte(nil), body...)`; the JSON-RPC response is deep-copied into a new `NormalizedResponse`. No races between primary and shadow are possible.
+
+**Context lifecycle.** The shadow goroutine derives its context from `p.networksRegistry.appCtx` (not the inbound request context). Client disconnects do not cancel shadow requests.
+
+**Per-upstream loop.** For each shadow upstream: (1) `ShouldHandleMethod` check — skip silently if the upstream's allow/ignore lists reject the method; (2) sample rate check — if `rand.Float64() >= sampleRate`, skip with debug log; (3) forward with `byPassMethodExclusion=true` so the selection-engine's `shouldSkip` guard doesn't block it; (4) compare responses.
+
+**Comparison algorithm.** eRPC computes a content hash of both the primary and shadow responses. If `ignoreFields` is configured for the method, both hashes are computed with those JSON keys masked before comparison. Result is one of three outcomes: **Identical** (hashes match, or both emptyish) — logged at Trace; **Mismatch** (hashes differ) — logged at Error with full request, both responses, both hashes, and the ignored fields list; **Error** (shadow request failed or hash computation failed) — counter incremented with stable error fingerprint.
+
+**Panic isolation.** A `defer recover()` in `executeShadowRequests` catches any panic, logs it, and increments `erpc_unexpected_panic_total{type="shadow-upstreams"}`. Shadow panics never propagate to the caller.
+
+### Config schema
+
+All fields live under `projects[*].upstreams[*].shadow`. Struct at <SourceLink file="common/config.go" lines="982-986" />.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `shadow.enabled` | `bool` | `false` | When `true`, this upstream is registered into `networkShadowUpstreams` and excluded from all normal routing. Must be `true` for any shadow behavior to activate. Source: <SourceLink file="common/config.go" lines="983" />, <SourceLink file="upstream/registry.go" lines="574" /> |
+| `shadow.sampleRate` | `*float64` | `nil` → `1.0` (always fire) | Fraction of eligible shadow requests to execute. `0.5` fires 50% at random. Check is `rand.Float64() >= sampleRate` — setting `0.0` suppresses all traffic; setting `nil` or `1.0` fires every request. Source: <SourceLink file="common/config.go" lines="984" />, <SourceLink file="erpc/shadow.go" lines="65-75" /> |
+| `shadow.ignoreFields` | `map[string][]string` | `nil` (no fields ignored) | Keys are JSON-RPC method names; values are JSON field names to mask before hash comparison. Both the primary and shadow response are hashed with the same mask. Prevents false mismatches for fields that legitimately differ (e.g., clock-skewed `timestamp`). Source: <SourceLink file="common/config.go" lines="985" />, <SourceLink file="erpc/shadow.go" lines="167-191" /> |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Archive node dark-launch with block-range scoping.** A common production pattern: a new
+archive node only has data above a certain block, so `blockAvailability.lower` gates which
+requests can reach it — shadowing only fires on requests the node can actually answer, avoiding
+a flood of spurious error-total increments:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - id: new-archive-shadow
+    endpoint: https://rpc.example.com
+    vendorName: my-vendor
+    evm:
+      chainId: 1
+      blockAvailability:
+        lower:
+          # only shadow requests for blocks at or above this height;
+          # below it the node doesn't have data, so comparison is meaningless
+          exactBlock: 18820001
+    failsafe:
+      - timeout:
+          duration: 5s
+          # adaptive timeout: p95 of node's own latency distribution, clamped
+          # to [2s, 5s] so slow nodes don't hold the shadow goroutine open forever
+          quantile: 0.95
+          minDuration: 2s
+          maxDuration: 5s
+    shadow:
+      enabled: true
+      # nil sampleRate = always fire; start here and tune down if shadow load is high`}
+  ts={`upstreams: [{
+  id: "new-archive-shadow",
+  endpoint: "https://rpc.example.com",
+  vendorName: "my-vendor",
+  evm: {
+    chainId: 1,
+    blockAvailability: {
+      lower: {
+        // only shadow requests for blocks at or above this height
+        exactBlock: 18820001,
+      },
+    },
+  },
+  failsafe: [{
+    timeout: {
+      duration: "5s",
+      // adaptive timeout: p95 clamped to [2s, 5s]
+      quantile: 0.95,
+      minDuration: "2s",
+      maxDuration: "5s",
+    },
+  }],
+  shadow: {
+    enabled: true,
+    // no sampleRate = always fire; reduce to 0.1 on high-QPS fleets
+  },
+}]`}
+/>
+
+**2. Low-rate background validation — standard provider comparison.** 10% sample rate is the
+typical starting point on busy fleets: shadow goroutines share outbound connection pools with
+normal upstreams so 100% shadow can double load on the candidate provider. Ignore `timestamp`
+on block methods to suppress clock-skew false positives:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - id: candidate-shadow
+    endpoint: https://rpc.example.com
+    shadow:
+      enabled: true
+      # 10% gives statistically meaningful coverage without doubling upstream load
+      sampleRate: 0.1
+      ignoreFields:
+        # providers differ on timestamp by ±1s due to clock skew — not a real mismatch
+        eth_getBlockByNumber: ["timestamp"]
+        eth_getBlockByHash: ["timestamp"]`}
+  ts={`upstreams: [{
+  id: "candidate-shadow",
+  endpoint: "https://rpc.example.com",
+  shadow: {
+    enabled: true,
+    // 10% gives coverage without doubling upstream load
+    sampleRate: 0.1,
+    ignoreFields: {
+      // providers differ on timestamp by ±1s — not a real mismatch
+      eth_getBlockByNumber: ["timestamp"],
+      eth_getBlockByHash: ["timestamp"],
+    },
+  },
+}]`}
+/>
+
+**3. L2 chain with many volatile L1 fee fields.** OP-stack and Arbitrum chains embed L1 fee
+data in receipts that can differ between providers depending on which L1 oracle snapshot they
+use. The `ignoreFields` wildcard `*.fieldName` masks the field at every depth of an array
+response — critical for `eth_getLogs` and `eth_getBlockReceipts` where each entry in the
+array carries L1 fee metadata:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - id: l2-node-shadow
+    endpoint: https://rpc.example.com
+    shadow:
+      enabled: true
+      sampleRate: 0.1
+      ignoreFields:
+        # array-level wildcard: masks the field at every element of the logs array
+        eth_getLogs:
+          - "*.blockTimestamp"
+        # receipts carry multiple L1 fee sub-fields that differ by L1 oracle snapshot
+        eth_getBlockReceipts:
+          - "*.blockTimestamp"
+          - "*.l1BaseFeeScalar"
+          - "*.l1BlobBaseFee"
+          - "*.l1BlobBaseFeeScalar"
+          - "*.l1BlockNumber"
+          - "*.l1Fee"
+          - "*.l1GasPrice"
+          - "*.l1GasUsed"
+          - "*.logs.*.blockTimestamp"`}
+  ts={`upstreams: [{
+  id: "l2-node-shadow",
+  endpoint: "https://rpc.example.com",
+  shadow: {
+    enabled: true,
+    sampleRate: 0.1,
+    ignoreFields: {
+      // array wildcard masks the field at every element
+      eth_getLogs: ["*.blockTimestamp"],
+      // receipts carry L1 fee sub-fields that differ by L1 oracle snapshot
+      eth_getBlockReceipts: [
+        "*.blockTimestamp",
+        "*.l1BaseFeeScalar",
+        "*.l1BlobBaseFee",
+        "*.l1BlobBaseFeeScalar",
+        "*.l1BlockNumber",
+        "*.l1Fee",
+        "*.l1GasPrice",
+        "*.l1GasUsed",
+        "*.logs.*.blockTimestamp",
+      ],
+    },
+  },
+}]`}
+/>
+
+**4. Method-scoped shadow for log-indexing validation.** When the only concern is whether a
+new node's event indexing matches production, scope the shadow to `eth_getLogs` only. The
+`allowMethods` list on the upstream ensures the shadow goroutine never attempts other methods
+(the `ShouldHandleMethod` pre-check silently skips them), keeping shadow traffic narrow and
+noise-free:
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - id: logs-specialist-shadow
+    endpoint: https://rpc.example.com
+    # only shadow eth_getLogs — ShouldHandleMethod skips everything else silently
+    allowMethods:
+      - eth_getLogs
+    shadow:
+      enabled: true
+      sampleRate: 0.2`}
+  ts={`upstreams: [{
+  id: "logs-specialist-shadow",
+  endpoint: "https://rpc.example.com",
+  // only shadow eth_getLogs — ShouldHandleMethod skips everything else silently
+  allowMethods: ["eth_getLogs"],
+  shadow: { enabled: true, sampleRate: 0.2 },
+}]`}
+/>
+
+**5. Pause shadow without removing config.** Setting `sampleRate: 0` suppresses all shadow
+traffic while preserving the full config. Flip to `0.1` to resume — no config restructuring,
+no deployment diff noise:
+
+```yaml
+shadow:
+  enabled: true
+  sampleRate: 0   # all traffic suppressed; rand.Float64() >= 0.0 is always true
+                  # change to 0.1 to resume 10% shadowing
+```
+
+### Request/response behavior
+
+- Shadow requests run asynchronously after the primary response is committed to the client. They add zero latency to the client-visible path.
+- Shadow goroutines use `appCtx` — client disconnect does not cancel them. They always run to completion.
+- `byPassMethodExclusion=true` is passed to `ups.Forward` so the shadow goroutine bypasses the `shouldSkip` selection-engine check. Method exclusion from the upstream config is still enforced by the pre-call `ShouldHandleMethod` check in the shadow layer itself. [<SourceLink file="erpc/shadow.go" lines="54-61" />]
+- A shadow response that errors or returns nil increments `erpc_shadow_response_error_total` — no mismatch is recorded. The error label is a stable fingerprint, not the raw error string.
+- Mismatch log level is **Error** — these will appear in error-rate dashboards and alert on any divergence. [<SourceLink file="erpc/shadow.go" lines="253-261" />]
+- OTel trace span `"Project.executeShadowRequest"` is emitted per shadow goroutine, enabling independent shadow latency measurement in your tracing backend. [<SourceLink file="erpc/shadow.go" lines="82" />]
+
+### Best practices
+
+- Start with `sampleRate: 0.05–0.1` on high-QPS deployments. Shadow goroutines share outbound connection pools with normal upstreams on the same host; 100% shadow on a busy fleet can double upstream load.
+- Use `ignoreFields` aggressively for volatile fields (`timestamp`, `gasPrice`, `nonce` on pending). False mismatches from clock skew will drown out real divergence signals.
+- Watch `erpc_shadow_response_mismatch_total` segmented by `finality` label: mismatches on `finality="unfinalized"` are often expected (different block propagation timing); mismatches on `finality="finalized"` are signal for a real provider discrepancy.
+- Use `larger="true"` on the mismatch metric to detect shadow upstreams that return extra undocumented fields — a common source of application-level bugs if you switch providers.
+- Combine `allowMethods` on the upstream config with `ignoreFields` to narrow shadow scope per use-case (e.g., validate `eth_getLogs` only, ignore timestamp on block methods).
+- Set `sampleRate: 0` (not `enabled: false`) when you want to pause shadows temporarily — this preserves the config and makes re-enabling a one-field change.
+- Shadow upstreams are not in the health-tracker scoring pool. Their error rate does not affect routing decisions; monitor them separately via `erpc_shadow_response_error_total`.
+
+### Edge cases & gotchas
+
+1. **Shadow fires on cached responses.** The trigger checks `resp != nil`; it does not distinguish cache hits from upstream hits. Cache-served finalized responses usually match; unfinalized ones may not — monitor `mismatch_total{finality="unfinalized"}` separately.
+2. **`sampleRate: 0` suppresses all shadow traffic.** The check is `rand.Float64() >= sampleRate`; since `rand.Float64()` is always `>= 0.0`, zero suppresses every request.
+3. **`sampleRate: nil` and `sampleRate: 1.0` are equivalent.** Both fire every request.
+4. **Both hashes are recomputed when `ignoreFields` is set.** Masking is applied to both sides before comparison — a field masked on one side is masked on both.
+5. **Hash error increments `erpc_shadow_response_error_total{error="hash_error"}`.** No mismatch is recorded when hash computation fails.
+6. **`ErrUpstreamShadowing` is an internal guard, not a client-visible error.** It fires inside `shouldSkip` only when a shadow upstream is reached through the normal forward path (misconfiguration). The health tracker exempts it from `ErrorsTotal` so it does not degrade upstream scoring. [<SourceLink file="health/tracker.go" lines="970-983" />]
+7. **The `larger` mismatch label identifies shadow returning more data than primary.** `shadowSize > originalSize` sets `larger="true"`. Useful for detecting shadow upstreams that return extra fields in receipts or traces.
+8. **Shadow upstreams with no healthy primary are still dispatched.** If `p.doForward` returns a response object (even an error response), the shadow trigger fires. Only `resp == nil` suppresses it.
+9. **Panic isolation is complete.** A panic inside any shadow goroutine is caught by `recover()`, logged, and counted; the primary goroutine stack is unaffected.
+10. **Method allow/ignore lists on the shadow upstream are fully enforced.** `ShouldHandleMethod` is called before each shadow request; rejected methods are silently skipped. [<SourceLink file="erpc/shadow.go" lines="54-61" />]
+
+### Observability
+
+| Metric | Type | Labels | Fires when |
+|---|---|---|---|
+| `erpc_shadow_response_identical_total` | counter | `project`, `vendor`, `network`, `upstream`, `category` | Shadow hash matches primary, or both responses are emptyish |
+| `erpc_shadow_response_mismatch_total` | counter | `project`, `vendor`, `network`, `upstream`, `category`, `finality`, `emptyish`, `larger` | Shadow hash differs from primary |
+| `erpc_shadow_response_error_total` | counter | `project`, `vendor`, `network`, `upstream`, `category`, `error` | Shadow request errored, returned nil, or hash computation failed |
+| `erpc_unexpected_panic_total` | counter | `type=shadow-upstreams`, `context`, `fingerprint` | Panic recovered inside `executeShadowRequests` |
+
+**Label notes:**
+- `vendor` — `ups.VendorName()`, e.g. `"alchemy"`, `"quicknode"`.
+- `category` — JSON-RPC method name, e.g. `"eth_getBlockByNumber"`.
+- `finality` — `shadowResp.Finality().String()` on mismatch: `"finalized"`, `"unfinalized"`, or `"n/a"`.
+- `emptyish` — `"true"` when shadow returned `null`/`""`/`[]`/`{}`.
+- `larger` — `"true"` when shadow byte size exceeded primary byte size.
+- `error` — `common.ErrorFingerprint(err)`: a stable short error-type string; prevents label cardinality explosion.
+
+**Log messages emitted:**
+- Error: `"shadow response hash mismatch"` — with full `request`, `originalResponse`, `shadowResponse`, `expectedHash`, `shadowHash`, `ignoredFields`.
+- Debug: `"shadow request returned error"`, `"shadow request returned nil response"`, `"shadow request skipped due to sampling"`, `"method not allowed for shadow upstream"`.
+- Trace: `"shadow response identical to primary response"`.
+
+### Source code entry points
+
+- [`erpc/shadow.go`](https://github.com/erpc/erpc/blob/main/erpc/shadow.go) — `executeShadowRequests`: request cloning, per-upstream loop, sample rate check, method check, forward, hash comparison, metric emit.
+- [`erpc/projects.go:L135-L163`](https://github.com/erpc/erpc/blob/main/erpc/projects.go#L135-L163) — `PreparedProject.Forward`: trigger point after `doForward`, response cloning, goroutine launch.
+- [`upstream/registry.go:L574-L603`](https://github.com/erpc/erpc/blob/main/upstream/registry.go#L574-L603) — shadow vs. normal upstream registration split; `GetNetworkShadowUpstreams` accessor at L295–L298.
+- [`common/config.go:L982-L986`](https://github.com/erpc/erpc/blob/main/common/config.go#L982-L986) — `ShadowUpstreamConfig` struct definition.
+- [`common/errors.go:L1416-L1430`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1416-L1430) — `ErrUpstreamShadowing` / `ErrCodeUpstreamShadowing` definition.
+- [`upstream/upstream.go:L1505-L1508`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1505-L1508) — `shouldSkip` first check: returns `NewErrUpstreamShadowing` for shadow-enabled upstreams on the normal path.
+- [`health/tracker.go:L970-L983`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L970-L983) — exemption: `ErrCodeUpstreamShadowing` does not increment `ErrorsTotal`.
+- [`telemetry/metrics.go:L640-L656`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L640-L656) — `MetricShadowResponseIdenticalTotal`, `MetricShadowResponseMismatchTotal`, `MetricShadowResponseErrorTotal` definitions.
+- [`health/tracker_test.go:L765`](https://github.com/erpc/erpc/blob/main/health/tracker_test.go#L765) — test asserting `ErrUpstreamShadowing` keeps `ErrorsTotal=0` and `ErrorRate=0`.
+
+### Related pages
+
+- [Upstreams](/config/projects/upstreams) — upstream configuration, `allowMethods`/`ignoreMethods`, and health tracking.
+- [Selection policies](/config/projects/selection-policies) — how upstreams are scored and chosen; shadow upstreams are excluded from this entirely.
+- [Rate limiters](/config/rate-limiters) — cap outbound load to the shadow upstream if it's a metered provider.
+- [Survive provider outages](/use-cases/survive-provider-outages) — complementary resilience pattern: shadow before promoting, then failover after.
+
+</AISection>

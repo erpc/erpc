@@ -1,288 +1,352 @@
 ---
 title: Healthcheck
-description: Built-in /healthcheck endpoint for Kubernetes readiness probes, liveness probes, and custom upstream health evaluation.
+description: One endpoint that tells Kubernetes exactly when your pod is ready, draining, or broken — with eight probe strategies from "any upstream alive" to live chain-ID verification.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# Healthcheck
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-eRPC exposes a `/healthcheck` endpoint for orchestrators (Kubernetes, Railway, Fly.io, etc.) to verify service readiness. The endpoint evaluates upstream health using configurable strategies and returns HTTP 200 when healthy or a non-200 code when unhealthy.
+# Healthcheck
 
-**You can configure:**
+eRPC's `/healthcheck` endpoint gives Kubernetes and your monitoring stack a single, honest answer about upstream health. Choose from eight evaluation strategies — from "at least one upstream appeared" (safe at cold start) to live `eth_chainId` verification — and let the response format scale from a plain `OK` byte to full per-upstream diagnostics. On graceful shutdown, the endpoint returns 503 automatically so pods drain cleanly before traffic stops.
 
-- `mode` — response format: `simple` (plain text), `networks` (per-network JSON detail), or `verbose` (per-upstream JSON detail)
-- `defaultEval` — which health-evaluation strategy to use when none is specified in the request
-- `auth` — authentication strategies that gate access to the endpoint
+**What you get**
+
+- Eight named eval strategies for startup, readiness, and liveness probes
+- Drain-aware 503 that stops traffic routing before connections close
+- Independent auth so monitoring systems don't need project API secrets
+- Scoped probes: global, per-project, or per-network in one endpoint
+
+## Quick taste
+
+Illustrative, not a tuned production config — networks mode with CIDR-locked auth:
 
 <ConfigTabs
-	path="healthCheck"
-	focus="1-10"
-	yaml={`healthCheck:
-  mode: verbose
+  path="healthCheck"
+  focusYaml="3-5,10-12"
+  focusTs="3-5,10-12"
+  yaml={`healthCheck:
+  # return per-network JSON instead of a plain OK/fail byte
+  mode: networks
+  # safe at cold start: passes as soon as any upstream has registered
   defaultEval: "any:initializedUpstreams"
   auth:
     strategies:
       - type: network
         network:
+          # kubelet probes come from the node IP, not 127.0.0.1
           allowLocalhost: true
           allowedCIDRs:
             - "10.0.0.0/8"`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  healthCheck: {
-    mode: "verbose",
-    defaultEval: "any:initializedUpstreams",
-    auth: {
-      strategies: [{
-        type: "network",
-        network: {
-          allowLocalhost: true,
-          allowedCIDRs: ["10.0.0.0/8"],
-        },
-      }],
-    },
+  ts={`healthCheck: {
+  // return per-network JSON instead of a plain OK/fail byte
+  mode: "networks",
+  // safe at cold start: passes as soon as any upstream has registered
+  defaultEval: "any:initializedUpstreams",
+  auth: {
+    strategies: [{
+      type: "network",
+      network: {
+        // kubelet probes come from the node IP, not 127.0.0.1
+        allowLocalhost: true,
+        allowedCIDRs: ["10.0.0.0/8"],
+      },
+    }],
   },
-});`}
+}`}
 />
 
-## Kubernetes probe example
+## Agent reference
 
-Use the HTTP healthcheck for the readiness probe and a TCP socket check for liveness. The readiness probe drives zero-downtime rollouts — eRPC starts returning 503 during graceful shutdown so the orchestrator removes the pod before new requests arrive.
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="set up Kubernetes readiness and startup probes"
+	defaultOpen
+	prompt={`Configure Kubernetes readiness, startup, and liveness probes for my eRPC deployment
+so the pod drains cleanly before shutdown and doesn't receive traffic until at least
+one upstream is initialized. Use separate eval strategies for startup vs readiness,
+set waitBeforeShutdown to match probe thresholds, and lock the healthcheck endpoint
+to pod/node CIDRs. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/operation/healthcheck.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="tune eval strategy for my traffic pattern"
+	prompt={`Audit my eRPC healthcheck config in my eRPC config: I'm seeing false-positive 502s from
+my readiness probe right after deploys before traffic warms up. Recommend the right
+eval strategy (or strategy combination) for startup vs. steady-state, explain the
+tradeoffs of any:initializedUpstreams vs errorRate vs all:activeUpstreams for my
+setup, and update the config accordingly. Reference:
+https://docs.erpc.cloud/operation/healthcheck.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="verify chain integrity before routing traffic"
+	prompt={`Add a strict chain-ID verification probe to my eRPC deployment so no upstream gets
+traffic unless it's confirmed to be on the right EVM chain. Use all:evm:eth_chainId
+on the readiness probe and show me how to size timeoutSeconds for my upstream count.
+Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/operation/healthcheck.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="expose verbose diagnostics for monitoring dashboard"
+	prompt={`Switch my eRPC healthcheck to verbose mode and add network-scoped auth so my
+internal monitoring system can query per-upstream metrics and EVM diagnostics without
+sharing project API secrets. Lock access to private RFC-1918 CIDRs. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/operation/healthcheck.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="debug why my healthcheck returns 502 after restart"
+	prompt={`My eRPC readiness probe returns HTTP 502 for the first minute after every pod
+restart. Diagnose whether this is the error-rate cold-start problem (no traffic yet),
+the lazy-init delay on first per-network probe, or a misconfigured eval strategy, and
+fix my config at my eRPC config so restarts are clean. Reference:
+https://docs.erpc.cloud/operation/healthcheck.llms.txt`}
+/>
+
+<AISection title="Healthcheck — full agent reference">
+
+### How it works
+
+**Trigger paths.** Any HTTP request that is not `POST` or `OPTIONS` is treated as a healthcheck by the URL parser. A trailing `/healthcheck` path segment also forces the healthcheck branch regardless of method. Valid probe paths, from broadest to narrowest scope:
+
+- `GET /` — global (all projects)
+- `GET /healthcheck` — same as above
+- `GET /<projectId>/healthcheck` — per-project
+- `GET /<projectId>/<architecture>/<chainId>/healthcheck` — per-network (e.g. `GET /main/evm/1/healthcheck`)
+
+For domain-aliased deployments where a domain preselects all three of project + arch + chain, `GET /` resolves to a per-network probe after alias expansion.
+
+**Draining guard.** Before any evaluation the handler checks a `draining` flag. When the server context is cancelled (SIGTERM received), `draining` flips to `true` and the endpoint immediately returns HTTP 503 with plain-text body `"shutting down"`. This is the Kubernetes readiness-probe hook: the pod is removed from the load balancer pool while in-flight requests complete. Because 503 means "draining" and 502 means "unhealthy", Kubernetes can distinguish the two states and avoid triggering a pod restart during normal rollout.
+
+**Auth.** When `healthCheck.auth` is configured, an independent `AuthRegistry` is created at startup. On every probe call the registry authenticates using the real client IP (resolved from trusted-proxy headers). Auth is completely separate from per-project auth — monitoring systems can reach the healthcheck without sharing application credentials.
+
+**Scope resolution.** With no `projectId`, the handler fetches all registered projects (HTTP 500 only if zero projects exist). With `projectId` set, a missing project returns the same 404 structure as the proxy path. When both `architecture` and `chainId` are in the URL, only that network is evaluated and the project result mirrors it; otherwise `evaluateProjectHealth` aggregates across all upstreams.
+
+**Lazy upstream initialization.** When a per-network probe arrives and no upstreams are registered for that network yet, the handler calls `PrepareUpstreamsForNetwork` — the exact same path used by the first real RPC request. This prevents a false-negative "no upstreams initialized" on the very first probe after pod startup. The first probe for a new network may take hundreds of milliseconds; subsequent probes are fast.
+
+**Provider-only project shortcut.** If a project has providers configured but zero statically-defined upstreams and zero initialized upstreams, the handler marks the project healthy immediately (message: `"no upstreams initialized yet, and no networks configured, but there are providers configured, send first actual request to initialize the upstreams"`). This prevents provider-based projects from appearing unhealthy before the first real RPC call.
+
+**Evaluation strategies.** The `?eval=` query parameter (or `healthCheck.defaultEval`, or the hard-coded default `any:initializedUpstreams`) selects the evaluation strategy. An unknown eval value returns HTTP 502 with `"unknown evaluation strategy: <value>"` — not HTTP 400. The `?eval=` parameter always overrides `healthCheck.defaultEval` per-request.
+
+**Error-rate strategies.** These compute `errorsTotal / requestsTotal` from the health tracker's `*`-method and `DataFinalityStateAll` bucket. Only upstreams with at least one request are included. If all upstreams have zero traffic, the result is unhealthy: `"no error rate data available yet"`.
+
+**Chain-ID strategy.** `checkEvmChainId` fans out concurrent `eth_chainId` RPC calls (semaphore capped at 10, 5-second per-upstream timeout) and compares each response to `ups.Config().Evm.ChainId`. For `any:`, one success passes the probe; for `all:`, every upstream must pass. With partial success under `any:`, the message is `"N / M upstreams passed (K failed)"`.
+
+**Active-upstreams strategy.** `all:activeUpstreams` checks: (1) at least one upstream or provider is configured; (2) all statically declared upstreams are initialized; (3) none are cordoned. For provider-only setups, check (2) is skipped. When evaluating a specific network, only upstreams whose chain ID matches are counted — cross-network upstreams are not penalized.
+
+**Response modes.** Controlled by `healthCheck.mode`:
+- **`simple`** — HTTP 200 with plain ASCII `OK`; HTTP 502 with a JSON-RPC `ErrHealthCheckFailed` error body on failure.
+- **`networks`** — HTTP 200/502 with `Content-Type: application/json`; body `{"projectId": [{id, alias, blockTimeMs, state}]}`.
+- **`verbose`** — Full JSON `{status, message, details}` with per-upstream metrics and EVM diagnostics. Metrics use `*`-wildcard aggregate (all methods, all finality states); method-level breakdown requires Prometheus.
+
+**HTTP status code semantics:**
+
+| Code | Condition | Body |
+|---|---|---|
+| 200 | All evaluated projects/networks healthy | `OK` (simple), JSON list (networks), full JSON (verbose) |
+| 502 | One or more projects/networks unhealthy | JSON-RPC error (simple), JSON with `state:"ERROR"` entries (networks/verbose) |
+| 503 | Server draining (readiness hook) | `shutting down` — always plain text |
+
+### Config schema
+
+All fields are under `healthCheck.` at the top level of the eRPC config. Struct at <SourceLink file="common/config.go" lines="186-208" />.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `healthCheck.mode` | `"simple"` \| `"networks"` \| `"verbose"` | `"networks"` (set by `HealthCheckConfig.SetDefaults`) | Controls response verbosity. **Footgun:** a nil `HealthCheckConfig` (no `healthCheck:` key at all) falls back to `"simple"` inside `handleHealthCheck` — but `SetDefaults` sets `"networks"` if the key is present. Source: <SourceLink file="common/defaults.go" lines="738-741" />, <SourceLink file="erpc/healthcheck.go" lines="399-403" /> |
+| `healthCheck.defaultEval` | string | `"any:initializedUpstreams"` (hard-coded fallback when both query param and config field are empty) | Default eval strategy when `?eval=` is absent. Must be one of the 8 strategy constants. An unrecognized value returns HTTP 502 with `"unknown evaluation strategy: <value>"`. Source: <SourceLink file="erpc/healthcheck.go" lines="107-112" />, <SourceLink file="common/config.go" lines="189" /> |
+| `healthCheck.auth` | `*AuthConfig` | `nil` (endpoint open) | Creates an independent `AuthRegistry` for the healthcheck path. All auth strategies supported by `AuthConfig` work here. **Footgun:** kubelet probes originate from the node IP, not `127.0.0.1` — `allowLocalhost: true` alone does not cover node-originated probes; add the node/pod CIDR to `allowedCIDRs`. Source: <SourceLink file="common/config.go" lines="188" />, <SourceLink file="erpc/http_server.go" lines="201-207" /> |
+
+**Eval strategy constants** (for `healthCheck.defaultEval` or `?eval=` query parameter). Source: <SourceLink file="common/config.go" lines="200-208" />.
+
+| Value | Go constant | Healthy when |
+|---|---|---|
+| `any:initializedUpstreams` | `EvalAnyInitializedUpstreams` | ≥ 1 upstream registered in the registry |
+| `any:errorRateBelow90` | `EvalAnyErrorRateBelow90` | ≥ 1 traffic-bearing upstream has error rate &lt; 90% |
+| `all:errorRateBelow90` | `EvalAllErrorRateBelow90` | All traffic-bearing upstreams have error rate &lt; 90% |
+| `any:errorRateBelow100` | `EvalAnyErrorRateBelow100` | ≥ 1 traffic-bearing upstream has error rate &lt; 100% |
+| `all:errorRateBelow100` | `EvalAllErrorRateBelow100` | All traffic-bearing upstreams have error rate &lt; 100% |
+| `any:evm:eth_chainId` | `EvalAnyEvmEthChainId` | ≥ 1 upstream returns the expected chain ID (live call, semaphore=10, 5s timeout) |
+| `all:evm:eth_chainId` | `EvalAllEvmEthChainId` | Every upstream returns the expected chain ID |
+| `all:activeUpstreams` | `EvalAllActiveUpstreams` | All static upstreams initialized AND none cordoned |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. The production standard: verbose mode + 30s drain window (high-volume fleet).** Every
+Some production deployments use `verbose` mode so internal dashboards can inspect
+per-upstream metrics on a single URL, paired with a 30s drain window that safely outlasts
+the longest in-flight RPC batch:
+
+<ConfigTabs
+  path="server + healthCheck"
+  yaml={`server:
+  # drain window must exceed readinessProbe.periodSeconds × failureThreshold
+  # so the pod is fully deregistered before connections close
+  waitBeforeShutdown: 30s
+  waitAfterShutdown: 30s
+
+healthCheck:
+  # verbose exposes per-upstream metrics + evmDiagnostics in a single response —
+  # no Prometheus scrape needed for incident triage
+  mode: verbose`}
+  ts={`server: {
+  // drain window must exceed readinessProbe.periodSeconds × failureThreshold
+  // so the pod is fully deregistered before connections close
+  waitBeforeShutdown: "30s",
+  waitAfterShutdown: "30s",
+},
+healthCheck: {
+  // verbose exposes per-upstream metrics + evmDiagnostics in one response —
+  // no Prometheus scrape needed for incident triage
+  mode: "verbose",
+},`}
+/>
+
+**2. Kubernetes startup + readiness split (recommended general shape).** Traffic-facing
+clusters separate startup (just needs an upstream registered) from readiness (needs live
+traffic flowing). This avoids a 502 storm on cold start before any upstream has been hit:
+
+<ConfigTabs
+  path="server + healthCheck + k8s probes"
+  yaml={`server:
+  # 30s outlasts the readiness window (5s × 2 + 20s buffer)
+  waitBeforeShutdown: 30s
+
+healthCheck:
+  # networks mode is cheaper for k8s probes — no per-upstream JSON overhead
+  mode: networks
+  # default: any:initializedUpstreams — safe at cold start, used by readiness
+  defaultEval: "any:initializedUpstreams"
+  auth:
+    strategies:
+      - type: network
+        network:
+          # kubelet probes originate from the node IP, not 127.0.0.1 —
+          # allowLocalhost: true alone is not enough, add node/pod CIDRs
+          allowLocalhost: true
+          allowedCIDRs:
+            - "10.0.0.0/8"`}
+  ts={`server: { waitBeforeShutdown: "30s" },
+healthCheck: {
+  // networks mode is cheaper for k8s probes — no per-upstream JSON overhead
+  mode: "networks",
+  // safe at cold start: passes as soon as any upstream is registered
+  defaultEval: "any:initializedUpstreams",
+  auth: {
+    strategies: [{
+      type: "network",
+      network: {
+        // kubelet probes originate from the node IP, not 127.0.0.1 —
+        // allowLocalhost: true alone is not enough, add node/pod CIDRs
+        allowLocalhost: true,
+        allowedCIDRs: ["10.0.0.0/8"],
+      },
+    }],
+  },
+},`}
+/>
+
+Kubernetes probe manifest to pair with the config above:
 
 ```yaml
-# Allow up to 1 minute to start when there are many upstreams.
 startupProbe:
   httpGet:
-    path: /healthcheck
+    path: /healthcheck?eval=any:initializedUpstreams
     port: 4000
   initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 5
+  # allow up to 60s for the very first upstream to initialize
   failureThreshold: 6
 
-# Readiness: marks the pod NotReady during graceful drain.
-# Set waitBeforeShutdown >= periodSeconds * failureThreshold + 1s.
 readinessProbe:
   httpGet:
+    # uses defaultEval from config (any:initializedUpstreams)
     path: /healthcheck
     port: 4000
-  initialDelaySeconds: 10
   periodSeconds: 5
   timeoutSeconds: 5
   failureThreshold: 2
   successThreshold: 1
 
-# Liveness: TCP only — the HTTP server being up is enough.
 livenessProbe:
+  # TCP socket — never use httpGet here: 503 during normal drain triggers restart
   tcpSocket:
     port: 4000
   initialDelaySeconds: 30
   periodSeconds: 10
-  timeoutSeconds: 1
   failureThreshold: 3
-  successThreshold: 1
 ```
 
-Pair with `server.waitBeforeShutdown` and `server.waitAfterShutdown` in your eRPC config for a full zero-downtime shutdown sequence.
-
-## Custom eval per request
-
-Override the default strategy with the `?eval=` query parameter without changing config:
-
-```bash
-# Any upstream with error rate < 90%
-curl "http://localhost:4000/healthcheck?eval=any:errorRateBelow90"
-
-# All EVM upstreams report the correct chain ID (sends real RPC calls)
-curl "http://localhost:4000/main/evm/1/healthcheck?eval=all:evm:eth_chainId"
-```
-
-## Auth-gated healthcheck
+**3. Strict chain-ID verification before routing traffic.** Use when upstreams could
+silently be on the wrong chain — after a provider migration, when serving high-value
+transactions, or any time a misconfigured chain would cause irreversible damage. The
+fan-out runs at concurrency 10 with a 5s per-upstream timeout:
 
 ```yaml
-healthCheck:
-  auth:
-    strategies:
-      - type: secret
-        secret:
-          value: \${HEALTHCHECK_SECRET}
-      - type: network
-        network:
-          allowLocalhost: true
+readinessProbe:
+  httpGet:
+    # all: variant: every upstream must return the expected chain ID
+    path: /healthcheck?eval=all:evm:eth_chainId
+    port: 4000
+  periodSeconds: 15
+  # budget ceil(N_upstreams / 10) × 5s + 2s margin
+  # e.g. 6 upstreams → ceil(6/10)×5 + 2 = 7s; use 15 for safety
+  timeoutSeconds: 15
+  failureThreshold: 2
 ```
 
-Pass the secret via query string or header:
+**4. Multi-region edge with per-network probe.** Multi-region edge clusters use
+`networks` mode so load-balancer health checks see a compact JSON list. The per-network
+URL lets the LB probe only the chain it cares about, avoiding false positives from an
+unrelated chain's degradation:
 
-```bash
-curl "http://localhost:4000/healthcheck?secret=\${HEALTHCHECK_SECRET}"
-curl http://localhost:4000/healthcheck -H "X-ERPC-Secret-Token: \${HEALTHCHECK_SECRET}"
+<ConfigTabs
+  path="healthCheck"
+  yaml={`healthCheck:
+  # compact JSON list: {"projectId": [{id, alias, blockTimeMs, state}]}
+  # fast for LB health checks; verbose is too heavy at LB poll frequency
+  mode: networks`}
+  ts={`healthCheck: {
+  // compact JSON list: {"projectId": [{id, alias, blockTimeMs, state}]}
+  // fast for LB health checks; verbose is too heavy at LB poll frequency
+  mode: "networks",
+},`}
+/>
+
+Probe URL (narrows to one chain — first call for an uninitialized network triggers lazy
+init, budget extra `timeoutSeconds`):
+
+```
+GET /myproject/evm/1/healthcheck?eval=any:evm:eth_chainId
 ```
 
-<AISection title="Copy for your AI assistant — full healthcheck reference">
+**5. Verbose diagnostics endpoint for monitoring with RFC-1918 auth.** Internal SRE
+dashboards and alert rules need per-upstream detail without sharing application API keys.
+Lock to private CIDRs — both `allowLocalhost` and RFC-1918 ranges are needed because
+monitoring agents typically run on a pod IP, not `127.0.0.1`:
 
-### HealthCheckConfig fields
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `"simple"` \| `"networks"` \| `"verbose"` | `"simple"` | Controls the response shape (see below). |
-| `defaultEval` | string | `"any:initializedUpstreams"` | Evaluation strategy when `?eval=` is not present in the request. Must be one of the named strategies listed below — arbitrary expressions are not supported. |
-| `auth` | AuthConfig | none (open) | Optional auth config. Same strategy schema as project-level auth. Omit to leave the endpoint open. |
-
-### Evaluation strategies
-
-`defaultEval` (and the `?eval=` query parameter) accept only the following named strategies — arbitrary expressions are not supported. Passing an unrecognized string returns HTTP 503 with `"unknown evaluation strategy: <value>"`.
-
-| Strategy | Passes when |
-|---|---|
-| `any:initializedUpstreams` | At least one upstream has finished initializing. |
-| `any:errorRateBelow90` | At least one upstream has an error rate below 90%. |
-| `all:errorRateBelow90` | Every upstream has an error rate below 90%. |
-| `any:errorRateBelow100` | At least one upstream has an error rate below 100% (i.e. not fully erroring). |
-| `all:errorRateBelow100` | Every upstream has an error rate below 100%. |
-| `any:evm:eth_chainId` | At least one EVM upstream responds to `eth_chainId` with the expected chain ID. |
-| `all:evm:eth_chainId` | Every EVM upstream responds to `eth_chainId` with the expected chain ID. |
-| `all:activeUpstreams` | Every configured upstream is initialized AND not cordoned by a selection policy. |
-
-Notes:
-- Error-rate strategies read from the in-memory score tracker — they are pure memory operations, sub-millisecond.
-- `eth_chainId` strategies fire real RPC calls to each upstream in parallel. Set `readinessProbe.timeoutSeconds` high enough (5 s is usually safe).
-- `all:activeUpstreams` is the strictest strategy: it fails if any upstream is missing or has been excluded by a selection policy. Use only when your deployment requires all upstreams to be reachable.
-
-### Response shapes
-
-**simple mode (default)**
-
-Healthy:
-```
-HTTP 200
-OK
-```
-
-Unhealthy:
-```
-HTTP 503
-{"code":"HealthcheckUnhealthy","message":"...","details":{...}}
-```
-
-**networks mode**
-
-Returns a JSON object keyed by project ID. Each project entry contains per-network aggregates.
-
-```json
-{
-  "status": "OK",
-  "message": "all systems operational",
-  "details": {
-    "main": {
-      "status": "OK",
-      "networks": {
-        "evm:1": {
-          "networkId": "evm:1",
-          "alias": "ethereum",
-          "blockTimeMs": 12003,
-          "healthy": true,
-          "status": "OK"
-        }
-      }
-    }
-  }
-}
-```
-
-**verbose mode**
-
-Identical to `networks` but each network entry also includes a per-upstream breakdown with individual upstream status, error rate, and scoring info.
-
-```json
-{
-  "status": "OK",
-  "message": "all systems operational",
-  "details": {
-    "main": {
-      "status": "OK",
-      "message": "3 / 3 upstreams have low error rates",
-      "config": {
-        "networks": 2,
-        "upstreams": 3,
-        "providers": 1
-      },
-      "networks": {
-        "evm:1": {
-          "networkId": "evm:1",
-          "alias": "ethereum",
-          "blockTimeMs": 12003,
-          "healthy": true,
-          "status": "OK",
-          "upstreams": {
-            "alchemy-eth": { "healthy": true, "errorRate": 0.01 }
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-`blockTimeMs` is the EMA-estimated block time for each network, derived from on-chain block timestamps. It is `null` (field omitted) during startup while observations accumulate.
-
-### Drain semantics
-
-When eRPC receives SIGTERM it enters a graceful shutdown sequence:
-
-1. The `/healthcheck` endpoint immediately starts returning 503 (regardless of actual upstream health).
-2. `server.waitBeforeShutdown` — eRPC keeps accepting in-flight requests but stops accepting new ones. The orchestrator's readiness probe fails during this window, removing the pod from the load-balancer rotation.
-3. `server.waitAfterShutdown` — the HTTP listener closes; the process stays alive briefly so open TCP connections can be drained by Envoy / kube-proxy.
-
-Size `waitBeforeShutdown` to at least `readinessProbe.periodSeconds × readinessProbe.failureThreshold + 1s`. For the example probe config above (5 s period × 2 failures = 10 s), a safe value is `waitBeforeShutdown: 12s`.
-
-### URL patterns
-
-```bash
-# Global (checks all projects / all networks)
-GET /healthcheck
-
-# Project-scoped (checks only the specified network)
-GET /<projectId>/evm/<chainId>/healthcheck
-GET /<projectId>/evm/<chainId>   # same as above
-
-# With custom eval
-GET /healthcheck?eval=all:errorRateBelow90
-GET /main/evm/1/healthcheck?eval=any:evm:eth_chainId
-
-# With auth secret
-GET /healthcheck?secret=<token>
-# or header: X-ERPC-Secret-Token: <token>
-```
-
-When project or network aliases are configured:
-
-```bash
-# Project aliased
-GET /evm/42161/healthcheck
-
-# Project + network arch aliased
-GET /42161/healthcheck
-
-# Fully aliased (project + arch + chain)
-GET /healthcheck   # on eth-rpc.example.com
-```
-
-### Auth configuration
-
-`healthCheck.auth` accepts the same strategy schema as all other auth points in eRPC (`secret`, `network`, `jwt`, `siwe`). When omitted, the endpoint is open to all callers. Typical production setup: allow from localhost and internal CIDRs via `network` strategy so orchestrator probes work without a token, while blocking external access.
-
-```yaml
-healthCheck:
+<ConfigTabs
+  path="healthCheck"
+  yaml={`healthCheck:
+  mode: verbose
+  # all:activeUpstreams fails if any declared upstream is uncordoned but uninitialized
+  # — stronger than error-rate strategies which require prior traffic
+  defaultEval: "all:activeUpstreams"
   auth:
     strategies:
       - type: network
@@ -291,53 +355,124 @@ healthCheck:
           allowedCIDRs:
             - "10.0.0.0/8"
             - "172.16.0.0/12"
-            - "192.168.0.0/16"
+            - "192.168.0.0/16"`}
+  ts={`healthCheck: {
+  mode: "verbose",
+  // all:activeUpstreams fails if any declared upstream is uncordoned but uninitialized
+  // — stronger than error-rate strategies which require prior traffic
+  defaultEval: "all:activeUpstreams",
+  auth: {
+    strategies: [{
+      type: "network",
+      network: {
+        allowLocalhost: true,
+        allowedCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+      },
+    }],
+  },
+},`}
+/>
+
+### Request/response behavior
+
+**Response shape — `networks` mode (HTTP 200):**
+```json
+{
+  "projectId": [
+    {"id": "evm:1", "alias": "mainnet", "blockTimeMs": 12000.0, "state": "OK"},
+    {"id": "evm:42161", "state": "ERROR"}
+  ]
+}
 ```
 
-### Common pitfalls
-
-- **Using `all:activeUpstreams` as a readiness probe** — any temporarily cordoned or slow-to-initialize upstream will make the probe fail and block traffic to a perfectly healthy pod. Prefer `any:initializedUpstreams` or `any:errorRateBelow90` for readiness.
-- **`eth_chainId` evals on a busy cluster** — each probe fires real RPC calls; multiply by probe frequency and pod count. With 10 upstreams, 5 s probe interval, and 20 pods that is 40 RPC calls per second directed at your upstreams.
-- **`waitBeforeShutdown` too short** — if the readiness probe doesn't have time to fail `failureThreshold` times before the listener closes, live traffic will hit the terminating pod. See the drain formula above.
-- **Auth accidentally blocking orchestrator probes** — the kubelet probes run from a node IP, not localhost. If using `network.allowLocalhost: true` only, probes from node IPs are rejected. Add the node CIDR to `allowedCIDRs` or remove auth from the healthcheck entirely if the endpoint is only reachable inside the cluster.
-- **Liveness probe on `/healthcheck` instead of TCP** — the HTTP healthcheck fails during graceful drain (by design). A liveness probe on the same path will restart the pod during every normal shutdown, making rolling updates restart pods twice.
-
-### Real-world examples
-
-**Minimal (development / single upstream)**
-
-```yaml
-healthCheck:
-  mode: simple
-  defaultEval: "any:initializedUpstreams"
+**Response shape — `verbose` mode (HTTP 200):**
+```json
+{
+  "status": "OK",
+  "message": "all systems operational",
+  "details": {
+    "projectId": {
+      "status": "OK",
+      "message": "...",
+      "config": {"networks": 2, "upstreams": 3, "providers": 0},
+      "upstreams": {
+        "upsId": {
+          "network": "evm:1",
+          "metrics": {"...": "aggregate across all methods"},
+          "evmDiagnostics": {"...": "EVM state poller data"}
+        }
+      },
+      "networks": {
+        "evm:1": {"status": "OK", "alias": "mainnet", "blockTimeMs": 12000.0}
+      }
+    }
+  }
+}
 ```
 
-**Production multi-upstream with verbose output**
+**Response shape — `simple` mode, unhealthy (HTTP 502):**
 
-```yaml
-healthCheck:
-  mode: verbose
-  defaultEval: "any:errorRateBelow90"
-  auth:
-    strategies:
-      - type: network
-        network:
-          allowLocalhost: true
-          allowedCIDRs: ["10.0.0.0/8", "172.16.0.0/12"]
-```
+The body is a structured `ErrHealthCheckFailed` JSON-RPC error — not a plain string. Clients that parse JSON-RPC errors get structured data even in simple mode.
 
-**Strict all-upstreams-required (e.g. private RPC with SLA)**
+**Drain response (HTTP 503, any mode):**
 
-```yaml
-healthCheck:
-  mode: networks
-  defaultEval: "all:activeUpstreams"
-```
+`http.Error(w, "shutting down", 503)` sets `Content-Type: text/plain`. Clients that always expect JSON will fail to parse this. This is intentional — it must be distinguishable from a normal 502 unhealthy response.
 
-Note: with this strategy, a single cordoned or unhealthy upstream makes the pod NotReady. Useful when you need every upstream available, but risky in auto-scaling scenarios.
+### Best practices
+
+- Use **separate strategies for startup vs. readiness probes**: `any:initializedUpstreams` for startup (no traffic required), `any:errorRateBelow90` for readiness (requires live traffic). Mixing them leads to either false-positive failures at startup or missed degradation in production.
+- **Never put the healthcheck path on a liveness probe.** The endpoint returns 503 during normal graceful shutdown, which triggers pod restart on every rollout. Use a TCP socket liveness probe instead.
+- **Add node/pod CIDRs to `allowedCIDRs`** when using `healthCheck.auth` — kubelet probes originate from the node IP, not `127.0.0.1`, so `allowLocalhost: true` alone will silently reject them.
+- **Budget extra `timeoutSeconds`** when using `any:evm:eth_chainId` or `all:evm:eth_chainId` with many upstreams: the fan-out runs at concurrency 10 with a 5s per-upstream timeout, so worst-case latency is `ceil(N/10) × 5s`.
+- **Set `waitBeforeShutdown` ≥ `periodSeconds × failureThreshold + 1s`** on your readiness probe. Without this, traffic may still be routed to the pod after 503 has been returned, causing request failures during rollout.
+- **Use `mode: verbose`** only for monitoring dashboards or debugging. In high-cardinality deployments the verbose response can be large; `networks` mode is sufficient for Kubernetes probes.
+- **For provider-based projects** (upstreams created dynamically on first RPC call), `any:initializedUpstreams` will return unhealthy until the first real request triggers initialization. Accept this false-negative window or use the startup probe to absorb it.
+
+### Edge cases & gotchas
+
+1. **Draining returns 503 plain text, not JSON.** `http.Error(w, "shutting down", 503)` sets `Content-Type: text/plain`. Clients that always expect JSON will fail to parse this response. This is the readiness-probe hook — liveness probes on `/healthcheck` will trigger pod restart during normal graceful shutdown.
+2. **`any:initializedUpstreams` does not confirm the upstream can serve requests.** An upstream registers even if its chain-ID probe is still pending or has failed. Use `all:activeUpstreams` or a chain-ID strategy for stronger guarantees. Source: <SourceLink file="erpc/healthcheck.go" lines="59-77" />
+3. **Error-rate strategies require prior traffic.** Fresh instances return `"no error rate data available yet"` (HTTP 502) until at least one upstream has processed a request. Use `any:initializedUpstreams` for startup probes. Source: <SourceLink file="erpc/healthcheck.go" lines="465-471" />
+4. **First per-network probe may be slow.** `PrepareUpstreamsForNetwork` triggers internal chain-ID RPC probes on first call; allow extra `timeoutSeconds` on the startup probe for this network initialization. Source: <SourceLink file="erpc/healthcheck.go" lines="175-181" />
+5. **Global healthcheck fails if no projects are registered.** If all projects fail to register at startup, `GET /healthcheck` returns HTTP 500 even though the HTTP server itself is up. Source: <SourceLink file="erpc/healthcheck.go" lines="122-127" />
+6. **Unknown eval value returns HTTP 502, not HTTP 400.** `evaluateNetworkHealth` falls through to its `default:` branch — watch for the exact prefix `"unknown evaluation strategy: "` when debugging misconfigured eval strings. Source: <SourceLink file="erpc/healthcheck.go" lines="550-551" />
+7. **Healthcheck auth always exposes full error details.** Unlike most proxy errors that respect `server.includeErrorDetails`, project/network resolution errors from the healthcheck handler always include the project ID in the error body. Source: <SourceLink file="erpc/healthcheck.go" lines="130-133" />
+8. **Duplicate network alias is silently dropped.** If two `NetworkConfig` entries share the same `alias`, only the first registration wins; the second is dropped with a WARN log. Source: <SourceLink file="erpc/networks_registry.go" lines="340-344" />
+9. **`all:activeUpstreams` with provider-only projects bypasses the initialization check.** Even if the provider has 0 initialized upstreams, `hasUninitializedUpstreams` is forced `false`. The probe can still fail if 0 upstreams AND 0 providers are configured. Source: <SourceLink file="erpc/healthcheck.go" lines="663-670" />
+10. **`verbose` mode metrics use `*` wildcard aggregate.** `metricsTracker.GetUpstreamMethodMetrics(ups, "*", DataFinalityStateAll)` is rolled up across all methods and finality states. Method-level breakdown requires Prometheus. Source: <SourceLink file="erpc/healthcheck.go" lines="259-262" />
+11. **`any:evm:eth_chainId` with partial success is healthy.** If some upstreams fail but at least one passes, the result is HTTP 200 with message `"N / M upstreams passed (K failed)"`. Under `all:`, any single failure makes the probe unhealthy. Source: <SourceLink file="erpc/healthcheck.go" lines="896-905" />
+
+### Observability
+
+The healthcheck handler does not emit any dedicated Prometheus metrics. The general `erpc_unexpected_panic_total` counter fires if the handler panics.
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_unexpected_panic_total` | counter | subsystem | Handler panics only; not expected in normal operation |
+
+**OTel tracing:** `handleHealthCheck` runs within the `Http.ReceivedRequest` span started by the top-level handler. `common.EnrichHTTPServerSpan` sets the `http.status_code` attribute before the response is written.
+
+**Log messages:**
+- `"entering draining mode → healthcheck will fail"` — INFO when app context is cancelled
+- `"failed to encode health check response"` — ERROR on JSON encoding failure
+- `"skipping duplicate alias registration with different target"` — WARN on duplicate network alias
+
+### Source code entry points
+
+- [`erpc/healthcheck.go:L1-L913`](https://github.com/erpc/erpc/blob/main/erpc/healthcheck.go) — `handleHealthCheck`, `evaluateNetworkHealth`, `evaluateProjectHealth`, `formatHealthDataForMode`, `checkEvmChainId`; all response struct definitions
+- [`erpc/http_server.go:L78-L83`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L78-L83) — draining flag set when app context is done; INFO log `"entering draining mode → healthcheck will fail"`
+- [`erpc/http_server.go:L201-L207`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L201-L207) — healthcheck auth registry construction at startup
+- [`erpc/http_server.go:L836-L849`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L836-L849) — URL path parsing: healthcheck detection logic (non-POST/OPTIONS + trailing `/healthcheck`)
+- [`common/config.go:L186-L208`](https://github.com/erpc/erpc/blob/main/common/config.go#L186-L208) — `HealthCheckConfig` struct, `HealthCheckMode` constants, eval-strategy constants
+- [`common/defaults.go:L738-L741`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L738-L741) — `HealthCheckConfig.SetDefaults`; canonical default mode `"networks"`
+- [`erpc/healthcheck_test.go`](https://github.com/erpc/erpc/blob/main/erpc/healthcheck_test.go) — integration tests for all eval strategies, drain mode, auth, provider-only, specific network scoping
+
+### Related pages
+
+- [Auth](/config/auth) — same strategy schema used for `healthCheck.auth`
+- [Server configuration](/operation/server) — `server.waitBeforeShutdown` must be tuned alongside readiness probe thresholds
+- [Rate limiters](/config/rate-limiters) — independent from healthcheck but affects upstream error rates that feed into `errorRate*` eval strategies
+- [Deployment](/deployment/) — Kubernetes deployment patterns including probe configuration
+- [Observability](/operation/metrics) — Prometheus metrics for upstream health beyond what healthcheck exposes
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

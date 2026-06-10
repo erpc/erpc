@@ -1,846 +1,447 @@
 ---
-title: Complete config example
-description: A tour of every top-level section in an eRPC config — logLevel, server, metrics, database, projects, upstreams, networks, failsafe, and rateLimiters — with minimal and full examples in YAML and TypeScript.
+title: Example config
+description: A production-ready starting point you can copy today, plus a complete annotated reference of every config section — caching, failover, hedging, rate limits, and observability included.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# Complete config example
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-A single eRPC config file wires together log level, HTTP server, metrics, caching database, projects (with networks, upstreams, and failsafe policies), and shared rate-limit budgets. eRPC auto-detects sane defaults for almost everything — a two-line config is enough to get started, and you add sections only when you need them.
+# Example config
 
-**Sections you can configure:**
+A production-ready starting point you can copy today, and a complete annotated reference
+below it. The recommended config turns on what makes eRPC worth running — multi-provider
+failover, hedging, permanent caching, observability — with sane values you'd actually
+deploy; delete what you don't need and defaults fill the gaps.
 
-- **`logLevel`** — `trace | debug | info | warn | error`
-- **`server`** — HTTP listen address, timeouts, TLS, gzip, shutdown grace
-- **`metrics`** — Prometheus scrape endpoint
-- **`database`** — EVM JSON-RPC response cache (memory, Redis, PostgreSQL, DynamoDB/ScyllaDB)
-- **`projects[]`** — one entry per traffic profile (frontend, indexer, backend …); each holds `networks[]`, `upstreams[]`, `rateLimitBudget`, `auth`, and `failsafe`
-- **`rateLimiters`** — shared per-method budgets consumed by upstreams and projects
+## Recommended starting point
 
-## Minimal config
-
-Chain IDs are auto-detected; defaults are applied for retries, timeouts, hedges, and everything else.
+Copy, set two API keys, done. Each block's comment says what power it buys you:
 
 <ConfigTabs
-	path="projects > upstreams"
-	focus="3-7"
-	yaml={`logLevel: debug
-projects:
-  - id: main
-    upstreams:
-      - endpoint: https://your-node.example.com/
-      - endpoint: alchemy://\${ALCHEMY_API_KEY}
-      - endpoint: drpc://\${DRPC_API_KEY}`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
+  path="(root)"
+  yaml={`logLevel: info
 
-export default createConfig({
-  logLevel: "debug",
-  projects: [{
-    id: "main",
-    upstreams: [
-      { endpoint: "https://your-node.example.com/" },
-      { endpoint: \`alchemy://\${process.env.ALCHEMY_API_KEY}\` },
-      { endpoint: \`drpc://\${process.env.DRPC_API_KEY}\` },
-    ],
-  }],
-});`}
-/>
-
-## Full config — all major sections
-
-<ConfigTabs
-	path="logLevel, server, metrics, database, projects, rateLimiters"
-	focus="1-8"
-	yaml={`logLevel: warn
-
-server:
-  httpHostV4: "0.0.0.0"
-  httpPortV4: 4000
-  maxTimeout: 30s
-  enableGzip: true
-  waitBeforeShutdown: 30s
-  waitAfterShutdown: 30s
-  tls:
-    enabled: false
-    certFile: "/path/to/cert.pem"
-    keyFile: "/path/to/key.pem"
-
+# Observability on from day one: Prometheus on :4001/metrics
 metrics:
   enabled: true
-  hostV4: "0.0.0.0"
   port: 4001
 
+# Permanent cache: finalized chain data never changes, so never pay for it twice.
+# Start in-process; uncomment redis to share the cache across replicas.
 database:
   evmJsonRpcCache:
     connectors:
-      - id: memory-cache
+      - id: hot
         driver: memory
-        memory:
-          maxItems: 100000
-      - id: postgres-cache
-        driver: postgresql
-        postgresql:
-          connectionUri: "postgres://user:pass@db:5432/erpc"
-          table: rpc_cache
+      # - id: shared
+      #   driver: redis
+      #   redis: { addr: redis:6379 }
     policies:
-      - network: "*"
-        method: "*"
-        finality: finalized
-        connector: memory-cache
-        ttl: 0
-      - network: "*"
-        method: "*"
+      - connector: hot
+        finality: finalized      # immutable: cached forever
+      - connector: hot
         finality: unfinalized
-        connector: memory-cache
-        ttl: 5s
-      - network: "*"
-        method: "eth_getLogs|trace_*"
-        finality: finalized
-        connector: postgres-cache
-        ttl: 0
+        ttl: 5s                  # fresh data: short-lived cache
 
-projects:
-  - id: main
-    rateLimitBudget: frontend-budget
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 30s
-            retry:
-              maxAttempts: 3
-              delay: 0ms
-            # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
-            # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
-            hedge:
-              delay: 500ms
-              maxCount: 1
-            # Trip degraded upstreams out of rotation via the Selection Policy
-            # (excludeIf chain), not failsafe — see
-            # /config/projects/selection-policies. Operator-driven manual
-            # exclusion lives in /operation/cordoning.
-      - architecture: evm
-        evm:
-          chainId: 42161
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 30s
-            retry:
-              maxAttempts: 3
-              delay: 0ms
-            hedge:
-              delay: 500ms
-              maxCount: 1
-
-    # Each upstream supports 1 or more networks (chains)
-    upstreams:
-      - id: blastapi-arb
-        type: evm
-        endpoint: https://arbitrum-one.blastapi.io/YOUR_KEY
-        rateLimitBudget: global-blast
-        evm:
-          chainId: 42161
-        ignoreMethods:
-          - "alchemy_*"
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s
-            retry:
-              maxAttempts: 2
-              delay: 500ms
-              backoffMaxDelay: 3s
-              backoffFactor: 1.2
-              jitter: 0ms
-            # NOTE: "trip a bad upstream out of rotation" is the
-            # Selection Policy's job — the default policy already drops
-            # upstreams with errorRate > 50%, throttling > 30%, p95 > 30s,
-            # or block-head lag > 16 blocks. Just leave the defaults on
-            # and use /operation/cordoning for manual operator overrides.
-      - id: alchemy-multi-chain
-        endpoint: alchemy://\${ALCHEMY_API_KEY}
-        rateLimitBudget: global
-        jsonRpc:
-          supportsBatch: true
-          batchMaxSize: 10
-          batchMaxWait: 100ms
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s
-            retry:
-              maxAttempts: 2
-              delay: 500ms
-      - id: blastapi-chain-1
-        type: evm
-        endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
-        rateLimitBudget: global-blast
-        evm:
-          chainId: 1
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s
-            retry:
-              maxAttempts: 2
-              delay: 500ms
-              backoffMaxDelay: 3s
-              backoffFactor: 1.2
-              jitter: 0ms
-      - id: quiknode-chain-42161
-        type: evm
-        endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
-        rateLimitBudget: global-quicknode
-        # You can enable auto-ignoring unsupported methods, instead of defining them explicitly.
-        # NOTE: some providers (e.g. dRPC) are not consistent with "unsupported method" responses,
-        # so this feature might mark methods as unsupported that are actually supported!
-        autoIgnoreUnsupportedMethods: true
-        # To allow auto-batching requests towards the upstream, use these settings.
-        # Remember if "supportsBatch" is false, you still can send batch requests to eRPC
-        # but they will be sent to upstream as individual requests.
-        jsonRpc:
-          supportsBatch: true
-          batchMaxSize: 10
-          batchMaxWait: 100ms
-        failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s
-            retry:
-              maxAttempts: 2
-              delay: 500ms
-
+# A reusable budget so no single consumer can starve the rest
 rateLimiters:
   budgets:
-    - id: global
-      rules:
-        - method: "*"
-          maxCount: 10000
-          period: 1s
-    - id: global-blast
-      rules:
-        - method: "*"
-          maxCount: 1000
-          period: 1s
     - id: frontend-budget
       rules:
         - method: "*"
           maxCount: 500
-          period: 1s`}
-	ts={`import {
-  createConfig,
-  DataFinalityStateFinalized,
-  DataFinalityStateUnfinalized,
-} from "@erpc-cloud/config";
+          period: 1s
+
+projects:
+  - id: main
+    rateLimitBudget: frontend-budget
+
+    # Uncomment to require an API key (see /config/auth for JWT, SIWE, IP rules)
+    # auth:
+    #   strategies:
+    #     - type: secret
+    #       secret: { value: \${MY_API_KEY} }
+
+    # One key per vendor unlocks every chain they support — upstreams appear
+    # lazily on first request per chain
+    providers:
+      - endpoint: alchemy://\${ALCHEMY_API_KEY}
+      - endpoint: drpc://\${DRPC_API_KEY}
+
+    upstreams:
+      # Mix in your own node; selection scoring decides who deserves traffic
+      - endpoint: https://your-node.example.com/
+        evm: { chainId: 1 }
+      # Free public RPC as last resort: the tier:fallback tag keeps it out of
+      # rotation until paid upstreams are unhealthy
+      - endpoint: https://ethereum-rpc.publicnode.com
+        evm: { chainId: 1 }
+        tags: ["tier:fallback"]
+
+    # Resilience defaults for every chain: bounded latency, automatic
+    # failover, and hedged slow-tails
+    networkDefaults:
+      failsafe:
+        - matchMethod: "*"
+          timeout:
+            duration: 30s        # nothing hangs longer than this
+          retry:
+            maxAttempts: 3       # errors fail over across upstreams
+          hedge:                 # race a backup at the p70 latency mark
+            delay: { quantile: 0.7, min: 100ms, max: 2s }
+            maxCount: 1
+
+    # Per-upstream safety net: bench repeat offenders, probe recovery
+    upstreamDefaults:
+      failsafe:
+        - matchMethod: "*"
+          retry:
+            maxAttempts: 1
+          circuitBreaker:
+            failureThresholdCount: 20
+            failureThresholdCapacity: 80
+            halfOpenAfter: 5m
+            successThresholdCount: 8
+
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        alias: ethereum          # /main/ethereum instead of /main/evm/1`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  logLevel: "warn",
+  logLevel: "info",
 
-  server: {
-    httpHostV4: "0.0.0.0",
-    httpPortV4: 4000,
-    maxTimeout: "30s",
-    enableGzip: true,
-    waitBeforeShutdown: "30s",
-    waitAfterShutdown: "30s",
-    tls: { enabled: false, certFile: "/path/to/cert.pem", keyFile: "/path/to/key.pem" },
-  },
+  // Observability on from day one: Prometheus on :4001/metrics
+  metrics: { enabled: true, port: 4001 },
 
-  metrics: { enabled: true, hostV4: "0.0.0.0", port: 4001 },
-
+  // Permanent cache: finalized chain data never changes, so never pay for it
+  // twice. Start in-process; add a redis connector to share across replicas.
   database: {
     evmJsonRpcCache: {
       connectors: [
-        { id: "memory-cache", driver: "memory", memory: { maxItems: 100000 } },
-        { id: "postgres-cache", driver: "postgresql",
-          postgresql: { connectionUri: "postgres://user:pass@db:5432/erpc", table: "rpc_cache" } },
+        { id: "hot", driver: "memory" },
+        // { id: "shared", driver: "redis", redis: { addr: "redis:6379" } },
       ],
       policies: [
-        { network: "*", method: "*", finality: DataFinalityStateFinalized, connector: "memory-cache", ttl: 0 },
-        { network: "*", method: "*", finality: DataFinalityStateUnfinalized, connector: "memory-cache", ttl: "5s" },
-        { network: "*", method: "eth_getLogs|trace_*", finality: DataFinalityStateFinalized, connector: "postgres-cache", ttl: 0 },
+        // immutable: cached forever
+        { connector: "hot", finality: "finalized" },
+        // fresh data: short-lived cache
+        { connector: "hot", finality: "unfinalized", ttl: "5s" },
       ],
     },
+  },
+
+  // A reusable budget so no single consumer can starve the rest
+  rateLimiters: {
+    budgets: [{
+      id: "frontend-budget",
+      rules: [{ method: "*", maxCount: 500, period: "1s" }],
+    }],
   },
 
   projects: [{
     id: "main",
     rateLimitBudget: "frontend-budget",
-    networks: [{
-      architecture: "evm",
-      evm: { chainId: 1 },
+
+    // Uncomment to require an API key (see /config/auth for JWT, SIWE, IP rules)
+    // auth: {
+    //   strategies: [{ type: "secret", secret: { value: process.env.MY_API_KEY } }],
+    // },
+
+    // One key per vendor unlocks every chain they support — upstreams appear
+    // lazily on first request per chain
+    providers: [
+      { endpoint: \`alchemy://\${process.env.ALCHEMY_API_KEY}\` },
+      { endpoint: \`drpc://\${process.env.DRPC_API_KEY}\` },
+    ],
+
+    upstreams: [
+      // Mix in your own node; selection scoring decides who deserves traffic
+      { endpoint: "https://your-node.example.com/", evm: { chainId: 1 } },
+      // Free public RPC as last resort: the tier:fallback tag keeps it out of
+      // rotation until paid upstreams are unhealthy
+      {
+        endpoint: "https://ethereum-rpc.publicnode.com",
+        evm: { chainId: 1 },
+        tags: ["tier:fallback"],
+      },
+    ],
+
+    // Resilience defaults for every chain: bounded latency, automatic
+    // failover, and hedged slow-tails
+    networkDefaults: {
       failsafe: [{
         matchMethod: "*",
         timeout: { duration: "30s" },
-        retry: { maxAttempts: 3, delay: "0ms" },
-        hedge: { delay: "500ms", maxCount: 1 },
-        // Tripping a bad upstream out of rotation is the Selection
-        // Policy's job — see /config/projects/selection-policies. The
-        // default policy already covers errorRate / throttle / p95 / lag.
+        retry: { maxAttempts: 3 },
+        hedge: { delay: { quantile: 0.7, min: "100ms", max: "2s" }, maxCount: 1 },
       }],
-    }],
-    upstreams: [
-      {
-        id: "blastapi-arb", type: "evm",
-        endpoint: "https://arbitrum-one.blastapi.io/YOUR_KEY",
-        rateLimitBudget: "global-blast",
-        evm: { chainId: 42161 },
-        ignoreMethods: ["alchemy_*"],
-        failsafe: [{ matchMethod: "*", timeout: { duration: "15s" },
-          retry: { maxAttempts: 2, delay: "500ms", backoffMaxDelay: "3s", backoffFactor: 1.2 } }],
-      },
-      {
-        id: "alchemy-multi-chain",
-        endpoint: \`alchemy://\${process.env.ALCHEMY_API_KEY}\`,
-        rateLimitBudget: "global",
-        jsonRpc: { supportsBatch: true, batchMaxSize: 10, batchMaxWait: "100ms" },
-        failsafe: [{ matchMethod: "*", timeout: { duration: "15s" },
-          retry: { maxAttempts: 2, delay: "500ms" } }],
-      },
-    ],
-  }],
+    },
 
-  rateLimiters: {
-    budgets: [
-      { id: "global", rules: [{ method: "*", maxCount: 10000, period: "1s" }] },
-      { id: "global-blast", rules: [{ method: "*", maxCount: 1000, period: "1s" }] },
-      { id: "frontend-budget", rules: [{ method: "*", maxCount: 500, period: "1s" }] },
-    ],
-  },
+    // Per-upstream safety net: bench repeat offenders, probe recovery
+    upstreamDefaults: {
+      failsafe: [{
+        matchMethod: "*",
+        retry: { maxAttempts: 1 },
+        circuitBreaker: {
+          failureThresholdCount: 20,
+          failureThresholdCapacity: 80,
+          halfOpenAfter: "5m",
+          successThresholdCount: 8,
+        },
+      }],
+    },
+
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      alias: "ethereum", // /main/ethereum instead of /main/evm/1
+    }],
+  }],
 });`}
 />
 
-## Related sections
+What this gives you out of the box: every chain your vendors support via one endpoint,
+permanent caching of immutable data, p99-taming hedges, automatic failover with a
+circuit-breaker safety net, a fallback tier that only activates when paid upstreams fail,
+and metrics from request one. The [default selection policy](/config/projects/selection-policies)
+needs no configuration — it already excludes unhealthy upstreams and honors the
+`tier:fallback` tag.
 
-- [Database](/config/database/drivers) — cache connectors and policies in depth
-- [Projects](/config/projects) — multiple projects, providers, scoring, CORS
-- [Networks](/config/projects/networks) — per-chain failsafe, integrity checks, static responses
-- [Upstreams](/config/projects/upstreams) — RPC endpoints, vendor shorthands, batching, block availability
-- [Rate limiters](/config/rate-limiters) — shared budgets, per-method rules, `waitTime`
-- [Failsafe](/config/failsafe) — timeout, retry, hedge, consensus, integrity in depth
-- [Selection policy](/config/projects/selection-policies) — how degraded upstreams get tripped out of rotation (replaces the old `circuitBreaker`)
-- [Cordoning](/operation/cordoning) — manual operator-driven exclusion via admin RPC
+## Complete example — all sections
 
-<AISection title="Copy for your AI assistant — exhaustive eRPC config reference">
+The annotated example below mirrors `erpc.dist.yaml` and `erpc.dist.ts` from the repo root. Read the inline comments for the reasoning behind each value; detailed field references live in the per-section docs linked at the bottom.
 
-This section covers every top-level field and every common sub-field. Use it as a reference when writing or reviewing an eRPC config.
-
----
-
-### `logLevel`
-
-```yaml
-logLevel: warn   # trace | debug | info | warn | error
-```
-
-| Value | Output |
-|---|---|
-| `trace` | Every internal decision, full request/response bodies. Never in production. |
-| `debug` | Per-request logs, rate-limit decisions, upstream selection. |
-| `info` | Happy-path summaries, one line per request (success/failure). Default on first boot. |
-| `warn` | Non-critical issues — cache DB unreachable, upstream degraded but not fatal. |
-| `error` | User-visible failures, misconfigurations. Recommended in production. |
-
-Can also be set via the `LOG_LEVEL` environment variable, which takes precedence at startup if both are defined. Set `LOG_WRITER=console` for human-readable terminal output instead of structured JSON.
-
----
-
-### `server`
-
-```yaml
-server:
-  listenV4: true
-  httpHostV4: "0.0.0.0"
-  httpPortV4: 4000
-  listenV6: false
-  httpHostV6: "[::]"
-  httpPortV6: 5000
-  maxTimeout: 30s        # hard deadline for the full request lifecycle
-  readTimeout: 10s       # time to read the complete request from the client
-  writeTimeout: 20s      # time to write the full response back to the client
-  enableGzip: true
-  waitBeforeShutdown: 30s   # grace before stop accepting new connections
-  waitAfterShutdown: 30s    # grace after stop accepting, to drain in-flight
-  tls:
-    enabled: false
-    certFile: "/path/to/cert.pem"
-    keyFile: "/path/to/key.pem"
-    caFile: "/path/to/ca.pem"       # optional; enables mTLS client-cert verification
-    insecureSkipVerify: false
-```
-
-| Field | Default | Notes |
-|---|---|---|
-| `listenV4` | `true` | Bind an IPv4 listener. |
-| `httpHostV4` | `"0.0.0.0"` | IPv4 bind address. |
-| `httpPortV4` | `4000` | IPv4 port. |
-| `listenV6` | `false` | Bind an IPv6 listener. |
-| `httpHostV6` | `"[::]"` | IPv6 bind address. |
-| `httpPortV6` | `5000` | IPv6 port. |
-| `maxTimeout` | `30s` | Total deadline for one request (all retries + hedges included). |
-| `readTimeout` | — | HTTP read timeout (Go `net/http` semantics). |
-| `writeTimeout` | — | HTTP write timeout. |
-| `enableGzip` | `false` | Compress responses when the client sends `Accept-Encoding: gzip`. |
-| `waitBeforeShutdown` | `0` | Sleep before closing the listener — lets a load balancer drain traffic. |
-| `waitAfterShutdown` | `0` | Sleep after closing — lets in-flight requests complete. |
-| `tls.enabled` | `false` | Terminate TLS on eRPC instead of a sidecar. |
-| `tls.certFile` | — | Path to the server certificate PEM. |
-| `tls.keyFile` | — | Path to the server private key PEM. |
-| `tls.caFile` | — | CA certificate for mTLS client verification. Omit to skip client-cert check. |
-| `tls.insecureSkipVerify` | `false` | Skip verification of client certificates. Dangerous; only for local testing. |
-
----
-
-### `metrics`
-
-```yaml
-metrics:
-  enabled: true
-  listenV4: true
-  hostV4: "0.0.0.0"
-  port: 4001
-  listenV6: false
-  hostV6: "[::]"
-```
-
-Exposes a Prometheus scrape endpoint at `http://<host>:<port>/metrics`. When `enabled: false` (the default), the port is never bound.
-
-| Field | Default | Notes |
-|---|---|---|
-| `enabled` | `false` | Must be `true` to expose the `/metrics` endpoint. |
-| `hostV4` | `"0.0.0.0"` | IPv4 bind address. |
-| `port` | `4001` | Port for the Prometheus scrape endpoint. |
-| `listenV6` | `false` | Bind on IPv6 as well. |
-| `hostV6` | `"[::]"` | IPv6 bind address. |
-
----
-
-### `database`
-
-Caching is **non-blocking on the critical path** — a cache miss or a write failure does not delay the request. All cache operations are best-effort.
-
-#### `database.evmJsonRpcCache`
-
-Disable the cache entirely:
-```yaml
-database:
-  evmJsonRpcCache: ~
-```
-
-Enable with one or more connectors and routing policies:
-```yaml
-database:
-  evmJsonRpcCache:
-    connectors:
-      - id: memory-cache
-        driver: memory
-        memory:
-          maxItems: 100000
-      - id: redis-cache
-        driver: redis
-        redis:
-          addr: redis://localhost:6379
-      - id: postgres-cache
-        driver: postgresql
-        postgresql:
-          connectionUri: "postgres://user:pass@host:5432/db"
-          table: rpc_cache
-      - id: dynamo-cache
-        driver: dynamodb
-        dynamodb:
-          region: us-east-1
-          table: erpc-cache
-          # endpoint: http://localhost:8000  # for local DynamoDB / ScyllaDB
-    policies:
-      - network: "*"
-        method: "*"
-        finality: realtime
-        connector: memory-cache
-        ttl: 2s
-      - network: "*"
-        method: "*"
-        finality: unfinalized
-        connector: redis-cache
-        ttl: 10s
-      - network: "*"
-        method: "*"
-        finality: finalized
-        connector: dynamo-cache
-        ttl: 0           # 0 = never expire
-      - network: "evm:42161|evm:10"
-        method: "arbtrace_*"
-        finality: finalized
-        connector: postgres-cache
-        ttl: 86400s
-        maxItemSize: 1MB  # skip caching items larger than this
-```
-
-**Connector drivers:**
-
-| Driver | When to use |
-|---|---|
-| `memory` | Fast in-process LRU. Lost on restart. Good for realtime/unfinalized data. |
-| `redis` | Shared across replicas. Good for unfinalized / short-TTL data. |
-| `postgresql` | Relational; good for finalized data with complex query needs. |
-| `dynamodb` | DynamoDB-compatible (also ScyllaDB/Alternator). High-throughput finalized cache. |
-
-**Policy fields:**
-
-| Field | Notes |
-|---|---|
-| `network` | Matcher — `*`, `evm:1`, `evm:1|evm:42161` (pipe = OR). |
-| `method` | Matcher — `*`, `eth_call`, `eth_getLogs|trace_*`. |
-| `finality` | `realtime` / `unfinalized` / `finalized` / `unknown`. Match only requests whose data has this finality. |
-| `connector` | References a connector `id` defined in `connectors[]`. |
-| `ttl` | Duration string (`0` = no expiry, `5s`, `1h`, `86400s`). |
-| `maxItemSize` | Optional max payload size to store (e.g. `1MB`). Larger items skip this policy. |
-| `empty` | `allow` (default) — cache empty/null responses; `ignore` — don't cache them. |
-
-Policies are evaluated in order; the first matching policy wins per (network, method, finality) combination.
-
----
-
-### `projects[]`
-
-Each project is independently routed by URL: `/<projectId>/<architecture>/<chainId>`.
-
-```yaml
-projects:
-  - id: main                       # required; unique
-    rateLimitBudget: frontend-budget
-    forwardHeaders: ["X-Request-ID", "traceparent"]
-    allowMethods: ["eth_*", "net_*"]
-    ignoreMethods: ["debug_*"]
-    networks: [...]                 # optional; only needed for overrides
-    upstreams: [...]                # required (or use providers[])
-    providers: [...]                # optional; vendor key-based auto-fan-out
-    auth:
-      strategies: [...]            # see Authentication docs
-    cors:
-      allowedOrigins: ["https://my-dapp.example.com"]
-```
-
-See [Projects](/config/projects) for the full field reference including scoring knobs (`routingStrategy`, `scoreGranularity`, `scoreSwitchHysteresis`, etc.).
-
----
-
-### `projects[].networks[]`
-
-Override failsafe, integrity checks, and selection policies on a per-chain basis. Defining a network entry is **optional** — omit it to use global defaults.
-
-```yaml
-networks:
-  - architecture: evm
-    evm:
-      chainId: 1
-    failsafe:
-      - matchMethod: "*"
-        timeout:
-          duration: 30s
-        retry:
-          maxAttempts: 3
-          delay: 500ms
-          backoffMaxDelay: 10s
-          backoffFactor: 0.3
-          jitter: 500ms
-        hedge:
-          delay: 1000ms
-          maxCount: 2
-```
-
-**`failsafe[]` — per-policy fields:**
-
-| Field | Notes |
-|---|---|
-| `matchMethod` | Matcher for which RPC methods this policy applies to. `"*"` = all. |
-| `timeout.duration` | Hard deadline for the entire request lifecycle (including all retries on this network). |
-| `retry.maxAttempts` | Maximum number of upstream attempts (including the first). |
-| `retry.delay` | Base delay between retries. |
-| `retry.backoffMaxDelay` | Ceiling for exponential backoff. |
-| `retry.backoffFactor` | Multiplier per retry. `1.0` = constant delay; `1.5` = 50% growth per step. |
-| `retry.jitter` | Random jitter added to each delay. |
-| `hedge.delay` | After this delay without a response, fire a parallel request to a second upstream. |
-| `hedge.maxCount` | Maximum simultaneous hedged requests. |
-
-**Hedge is strongly recommended at the network level.** It fires a second upstream request after `hedge.delay` if the first hasn't responded, returning whichever comes back first. This dramatically reduces tail latency without extra retries.
-
-**To trip a degraded upstream out of rotation** (the old `circuitBreaker`), use the [Selection Policy](/config/projects/selection-policies)'s `excludeIf` chain — the default policy already drops upstreams whose errorRate, throttling, p95 latency, or block-head lag cross sensible thresholds. For manual operator-driven exclusion (planned maintenance, incident response), use the [admin cordon RPC](/operation/cordoning).
-
----
-
-### `projects[].upstreams[]`
-
-```yaml
-upstreams:
-  # Direct HTTP endpoint
-  - id: my-node
-    type: evm
-    endpoint: https://your-node.example.com/
-    rateLimitBudget: global
-    evm:
-      chainId: 1
-    ignoreMethods:
-      - "alchemy_*"
-      - "debug_*"
-    allowMethods:
-      - "eth_*"
-      - "net_*"
-    autoIgnoreUnsupportedMethods: false
-    jsonRpc:
-      supportsBatch: true
-      batchMaxSize: 10
-      batchMaxWait: 100ms
-    failsafe:
-      - matchMethod: "*"
-        timeout:
-          duration: 15s
-        retry:
-          maxAttempts: 2
-          delay: 500ms
-          backoffMaxDelay: 3s
-          backoffFactor: 1.2
-          jitter: 0ms
-
-  # Vendor shorthand — multi-chain import
-  - id: alchemy-all
-    endpoint: alchemy://\${ALCHEMY_API_KEY}
-    rateLimitBudget: global
-
-  # Other supported vendor shorthands:
-  # endpoint: drpc://\${DRPC_API_KEY}
-  # endpoint: blastapi://\${BLASTAPI_API_KEY}
-  # endpoint: infura://\${INFURA_API_KEY}
-  # endpoint: envio://rpc.hypersync.xyz
-  # endpoint: tenderly://\${TENDERLY_API_KEY}
-  # endpoint: chainstack://\${CHAINSTACK_API_KEY}
-  # endpoint: onfinality://\${ONFINALITY_API_KEY}
-  # endpoint: thirdweb://\${THIRDWEB_API_KEY}
-  # endpoint: ankr://\${ANKR_API_KEY}
-  # endpoint: quicknode://\${QUICKNODE_API_KEY}
-```
-
-**Key upstream fields:**
-
-| Field | Notes |
-|---|---|
-| `id` | Required; unique label used in logs and metrics. |
-| `type` | Architecture type. `evm` (default for EVM chains). |
-| `endpoint` | HTTP(S) URL or vendor shorthand (`alchemy://KEY`, `drpc://KEY`, etc.). |
-| `rateLimitBudget` | ID of a budget in `rateLimiters.budgets[]`. |
-| `evm.chainId` | Optional explicit chain ID. Recommended — skips `eth_chainId` auto-detection at startup. |
-| `ignoreMethods` | Methods never sent to this upstream (matcher syntax). |
-| `allowMethods` | Method allowlist for this upstream. Implicitly adds `ignoreMethods: ["*"]`. |
-| `autoIgnoreUnsupportedMethods` | When `true`, eRPC tracks and skips methods this upstream has rejected as unsupported. Caution: some vendors (e.g. dRPC) return inconsistent unsupported-method signals — this can cause false positives. |
-| `jsonRpc.supportsBatch` | When `true`, eRPC may pack multiple pending requests into one JSON-RPC batch. |
-| `jsonRpc.batchMaxSize` | Maximum requests per batch (default `10`). |
-| `jsonRpc.batchMaxWait` | How long to wait for the batch to fill before sending (default `100ms`). |
-
-**Vendor shorthand chains are hard-coded in the eRPC binary.** When a vendor adds a new chain, eRPC must be updated. For new/uncommon chains use direct HTTP endpoints instead.
-
----
-
-### `rateLimiters`
-
-```yaml
-rateLimiters:
-  budgets:
-    - id: global
-      rules:
-        - method: "*"
-          maxCount: 10000
-          period: 1s
-          waitTime: 100ms    # allow waiting up to 100ms for capacity; 0 = fail immediately
-    - id: global-blast
-      rules:
-        - method: "*"
-          maxCount: 1000
-          period: 1s
-    - id: per-method-example
-      rules:
-        - method: "eth_getLogs"
-          maxCount: 100
-          period: 1s
-        - method: "*"
-          maxCount: 5000
-          period: 1s
-```
-
-Budgets are **shared** — if upstream A and B both reference `global`, their combined traffic counts against the limit.
-
-| Field | Notes |
-|---|---|
-| `id` | Unique identifier referenced by upstreams and projects. |
-| `rules[].method` | Method matcher (`*`, `eth_call`, `eth_getLogs|trace_*`). Rules are evaluated in order; first match wins. |
-| `rules[].maxCount` | Maximum requests allowed in `period`. |
-| `rules[].period` | Window length (e.g. `1s`, `1m`). |
-| `rules[].waitTime` | When capacity is exhausted, wait this long before returning a rate-limit error. `0` (default) = fail immediately. |
-
----
-
-### Config file location and format
-
-By default `erpc` looks for `./erpc.ts`, `./erpc.yaml`, or `./erpc.yml` in the current directory. Override with:
-
-```bash
-erpc start --config /path/to/erpc.yaml
-erpc start -c /path/to/erpc.ts
-erpc validate -c /path/to/erpc.yaml   # validate without starting
-```
-
-YAML supports `\${VAR}` env-var interpolation. TypeScript uses `process.env.VAR` directly.
-
----
-
-### Complete erpc.dist.yaml — annotated
-
-This mirrors the canonical `erpc.dist.yaml` in the repo root, with every section annotated:
-
-```yaml
+<ConfigTabs
+  path="logLevel, server, metrics, database, projects, rateLimiters"
+  focusYaml="1,4,6,10,63-64,79-80,85,89,106,149,219,223"
+  focusTs="12,14,45,53,59,124"
+  yaml={`# ── Global ───────────────────────────────────────────────────────────────
+# trace|debug|info|warn|error. Override at runtime with LOG_LEVEL env var.
+# Set LOG_WRITER=console for human-readable output instead of JSON.
 logLevel: warn
 
+# ── Cache database ────────────────────────────────────────────────────────
+# eRPC supports memory, Redis, PostgreSQL, and DynamoDB/ScyllaDB connectors.
+# Cache reads/writes are non-blocking — a miss or write failure never delays
+# the upstream request. Disable entirely with: evmJsonRpcCache: ~
 database:
   evmJsonRpcCache:
     connectors:
       - id: memory-cache
         driver: memory
-      - id: postgres-cache
-        driver: postgresql
-        postgresql:
-          connectionUri: postgres://erpc:erpc@localhost:5432/erpc
+        # memory.maxItems / maxTotalSize default to 100 000 / "1GB".
+        # Omit sub-block to accept defaults.
+
       - id: redis-cache
         driver: redis
         redis:
           addr: redis://localhost:6379
+
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: "postgres://erpc:erpc@localhost:5432/erpc"
+
       - id: scylladb-cache
         driver: dynamodb
         dynamodb:
           region: DC1
-          endpoint: http://localhost:8067   # ScyllaDB Alternator endpoint
+          # ScyllaDB Alternator endpoint
+          endpoint: http://localhost:8067
+
+    # Policies are evaluated in order; first match per (network, method,
+    # finality) triple wins. Use finality tiers to route short-lived data
+    # to fast/volatile stores and permanently-final data to cheaper storage.
     policies:
       - network: "*"
         method: "*"
+        # block-tip / pending data — short TTL, fast store
         finality: realtime
         empty: allow
         connector: memory-cache
         ttl: 2s
+
       - network: "*"
         method: "*"
+        # confirmed but not irreversible
         finality: unfinalized
         empty: allow
         connector: redis-cache
         ttl: 10s
+
       - network: "*"
         method: "*"
+        # irreversible; ttl: 0 = never expires
         finality: finalized
         empty: allow
         connector: scylladb-cache
         ttl: 0
 
+# ── HTTP server ───────────────────────────────────────────────────────────
 server:
-  httpHostV4: 0.0.0.0
+  httpHostV4: "0.0.0.0"
   httpPortV4: 4000
+  # listenV6: false
+  # httpHostV6: "[::]"
+  # httpPortV6: 5000
+  # Hard deadline for the full request lifecycle (all retries + hedges).
+  # Must be non-zero. Should be >= sum of upstream retry delays + hedge delay.
   maxTimeout: 50s
+  # TLS termination — leave commented unless doing edge termination on eRPC.
+  # tls:
+  #   enabled: true
+  #   certFile: "/path/to/cert.pem"
+  #   keyFile: "/path/to/key.pem"
 
+# ── Prometheus metrics ────────────────────────────────────────────────────
 metrics:
   enabled: true
-  hostV4: 0.0.0.0
+  hostV4: "0.0.0.0"
   port: 4001
 
+# ── Projects ──────────────────────────────────────────────────────────────
+# Each project maps to a URL prefix: /<projectId>/evm/<chainId>
+# Multiple projects let you apply different auth, rate limits, or failsafe
+# policies to different caller populations (frontend vs. indexer, etc.).
 projects:
   - id: main
+
+    # Health-tracker rolling window. Per-upstream rolling counters
+    # (errorRate, p50/p70/p95 latency, throttledRate, misbehaviorRate)
+    # are kept as a 10-bucket ring spanning this duration; one bucket
+    # rotates out every windowSize/10.  Defaults to 1m when omitted;
+    # widen if your aggregate RPS is low enough that 1m gives a noisy score.
+    scoreMetricsWindowSize: 10s
+
+    upstreamDefaults:
+      evm:
+        # State-poller cadence — hits eth_blockNumber + eth_syncing on this
+        # interval even for excluded upstreams, so health metrics stay fresh.
+        # Keep this <= scoreMetricsWindowSize.
+        statePollerInterval: 2s
+
+    # ── Networks ────────────────────────────────────────────────────────
+    # Network entries are optional. Omit them to use global defaults.
+    # Define them to override failsafe, integrity, or selection policy
+    # on a per-chain basis.
     networks:
       - architecture: evm
         evm:
           chainId: 1
+        # failsafe[] is an ordered list of policies matched in order.
+        # Each policy applies to requests whose method AND finality match.
+        # The first matching policy wins.
         failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 30s
-            retry:
-              maxAttempts: 3
-              delay: 500ms
-              backoffMaxDelay: 10s
-              backoffFactor: 0.3
-              jitter: 500ms
-            hedge:
-              delay: 3000ms
-              maxCount: 2
+          timeout:
+            duration: 30s
+          retry:
+            maxAttempts: 3
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+          # Hedge fires a parallel request to a second upstream after
+          # "delay" if the first hasn't responded. Returns whichever wins.
+          # Strongly recommended — dramatically cuts tail latency.
+          hedge:
+            delay: 3000ms
+            maxCount: 2
+
       - architecture: evm
         evm:
           chainId: 42161
         failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 30s
-            retry:
-              maxAttempts: 5
-              delay: 500ms
-              backoffMaxDelay: 10s
-              backoffFactor: 0.3
-              jitter: 200ms
-            hedge:
-              delay: 1000ms
-              maxCount: 2
+          timeout:
+            duration: 30s
+          retry:
+            maxAttempts: 5
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 200ms
+          hedge:
+            delay: 1000ms
+            maxCount: 2
+
+    # ── Upstreams ────────────────────────────────────────────────────────
+    # Vendor shorthand endpoints (alchemy://, tenderly://, etc.) are
+    # converted to providers at startup; they cover multiple chains
+    # automatically using the vendor's chain registry.
+    # Raw HTTPS endpoints require evm.chainId to skip auto-detection.
     upstreams:
-      - id: alchemy-multi-chain-example-1
-        endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
+      - id: alchemy-multi-chain
+        endpoint: alchemy://\${ALCHEMY_API_KEY}
         rateLimitBudget: global
         failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s
-            retry:
-              maxAttempts: 2
-              delay: 1000ms
-              backoffMaxDelay: 10s
-              backoffFactor: 0.3
-              jitter: 500ms
-      - id: tenderly-example-1
-        endpoint: tenderly://YOUR_TENDERLY_API_KEY
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+
+      - id: tenderly-eth
+        endpoint: tenderly://\${TENDERLY_API_KEY}
         rateLimitBudget: global-tenderly
         evm:
           chainId: 1
         failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s
-      - id: blastapi-chain-42161
+          timeout:
+            duration: 15s
+
+      - id: blastapi-arb
         type: evm
-        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        endpoint: https://arbitrum-one.blastapi.io/\${BLASTAPI_KEY}
         rateLimitBudget: global-blast
         evm:
           chainId: 42161
+        # ignoreMethods filters methods never sent to this upstream.
+        # allowMethods is an allowlist (implicitly adds ignoreMethods: ["*"]).
+        ignoreMethods:
+          - "alchemy_*"
+        # Enable batching when the upstream supports it.
+        jsonRpc:
+          supportsBatch: true
+          batchMaxSize: 10
+          batchMaxWait: 100ms
         failsafe:
-          - matchMethod: "*"
-            timeout:
-              duration: 15s
-            retry:
-              maxAttempts: 2
-              delay: 1000ms
-              backoffMaxDelay: 10s
-              backoffFactor: 0.3
-              jitter: 500ms
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
 
+      - id: quicknode-arb
+        type: evm
+        endpoint: https://\${QUICKNODE_SUBDOMAIN}.arbitrum-mainnet.quiknode.pro/\${QUICKNODE_KEY}/
+        rateLimitBudget: global-quicknode
+        evm:
+          chainId: 42161
+        # autoIgnoreUnsupportedMethods tracks methods this upstream rejects
+        # and skips them in future requests. Caution: some vendors return
+        # inconsistent "unsupported" signals — can cause false positives.
+        autoIgnoreUnsupportedMethods: true
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 1000ms
+
+# ── Rate limiters ─────────────────────────────────────────────────────────
+# Budgets are shared — if two upstreams both reference "global", their
+# combined traffic counts against the limit.
+# Rules are evaluated in order; first matching method wins per budget.
 rateLimiters:
   budgets:
-    - id: global
-      rules:
-        - method: '*'
-          maxCount: 10000
-          period: 1s
     - id: global-tenderly
       rules:
         - method: '*'
@@ -856,22 +457,656 @@ rateLimiters:
         - method: '*'
           maxCount: 300
           period: 1s
+    - id: global
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
+          # waitTime: 0 = reject immediately when budget exhausted;
+          # set to e.g. 50ms to absorb brief bursts
+          waitTime: 0`}
+  ts={`import {
+  createConfig,
+  DataFinalityStateFinalized,
+  DataFinalityStateRealtime,
+  DataFinalityStateUnfinalized,
+} from "@erpc-cloud/config";
+
+// TypeScript configs use process.env.VAR — NOT \${VAR} shell substitution.
+// The Go loader reads env vars via os.Environ() before running this file.
+
+export default createConfig({
+  logLevel: "trace",
+
+  database: {
+    evmJsonRpcCache: {
+      connectors: [
+        {
+          id: "default-memory",
+          driver: "memory",
+          memory: {
+            maxItems: 100000,
+            maxTotalSize: "1GB",
+          },
+        },
+      ],
+      policies: [
+        {
+          connector: "default-memory",
+          network: "*",
+          method: "*",
+          finality: DataFinalityStateUnfinalized,
+          ttl: "10s",
+        },
+        {
+          connector: "default-memory",
+          network: "*",
+          method: "*",
+          finality: DataFinalityStateFinalized,
+          ttl: "0s",
+        },
+      ],
+    },
+  },
+
+  server: {
+    listenV4: true,
+    httpHostV4: "0.0.0.0",
+    // also accepted; resolves to httpPortV4
+    httpPort: 4000,
+    maxTimeout: "50s",
+  },
+
+  metrics: {
+    enabled: true,
+    hostV4: "0.0.0.0",
+    port: 4001,
+  },
+
+  projects: [
+    {
+      id: "main",
+      scoreMetricsWindowSize: "10s",
+      upstreamDefaults: {
+        evm: { statePollerInterval: "2s" },
+      },
+      networks: [
+        {
+          architecture: "evm",
+          evm: { chainId: 1 },
+          // Ordered failsafe list: first matching (method + finality) wins.
+          failsafe: [
+            {
+              matchMethod: "*",
+              matchFinality: [DataFinalityStateRealtime],
+              timeout: { duration: "3s" },
+              retry: { maxAttempts: 2 },
+            },
+            {
+              matchMethod: "eth_getLogs",
+              timeout: { duration: "5s" },
+              retry: { maxAttempts: 5 },
+            },
+            {
+              matchMethod: "*",
+              timeout: { duration: "10s" },
+              retry: { maxAttempts: 3 },
+              hedge: { delay: "3000ms", maxCount: 2 },
+            },
+          ],
+        },
+      ],
+      upstreams: [
+        {
+          endpoint: \`alchemy://\${process.env.ALCHEMY_API_KEY}\`,
+          rateLimitBudget: "global",
+          failsafe: [
+            {
+              matchMethod: "*",
+              timeout: { duration: "15s" },
+              retry: { maxAttempts: 2, delay: "1000ms" },
+            },
+          ],
+        },
+        {
+          endpoint: \`chainstack://\${process.env.CHAINSTACK_API_KEY}\`,
+          failsafe: [
+            { matchMethod: "*", timeout: { duration: "15s" } },
+          ],
+        },
+        {
+          // Raw URL upstream — chainId prevents auto-detection round trip.
+          id: "my-own-node",
+          type: "evm",
+          endpoint: process.env.CUSTOM_RPC_1 ?? "",
+          evm: { chainId: 1 },
+          failsafe: [
+            { matchMethod: "*", timeout: { duration: "15s" } },
+          ],
+        },
+      ],
+    },
+  ],
+
+  rateLimiters: {
+    budgets: [
+      {
+        id: "global",
+        rules: [{ method: "*", maxCount: 10000, period: "1s" }],
+      },
+    ],
+  },
+});`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="set up eRPC from scratch"
+	defaultOpen
+	prompt={`I want to set up eRPC for the first time with two providers (Alchemy and a raw HTTPS node),
+Redis caching, and basic failsafe policies. Use the full config example as a starting shape and
+trim it to what I actually need. My config will live at my eRPC config. Read the reference first:
+https://docs.erpc.cloud/config/example.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="validate and debug my config"
+	prompt={`Run erpc validate on my eRPC config and explain every error or warning. Then use erpc dump
+to show me what defaults got filled in automatically, and flag anything that looks wrong —
+especially rate-limit budgets, maxTimeout vs retry sums, and env-var substitution pitfalls.
+Reference: https://docs.erpc.cloud/config/example.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="migrate my config from YAML to TypeScript"
+	prompt={`Migrate my eRPC config from YAML to TypeScript so I get IDE autocompletion and
+type-checking. Preserve every field exactly, replace \${VAR} shell substitutions
+with process.env.VAR template literals, keep the default export as the last
+statement, and confirm the result passes erpc validate. Reference:
+https://docs.erpc.cloud/config/example.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug endpoints resolving to alchemy://undefined"
+	prompt={`My eRPC TypeScript config is generating endpoint strings like alchemy://undefined
+at runtime. Explain why YAML-style \${VAR} expansion does not apply to TypeScript
+files and fix my config to use process.env correctly. Reference:
+https://docs.erpc.cloud/config/example.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="wire erpc validate and erpc dump into CI"
+	prompt={`Add erpc validate --format json and erpc dump steps to my CI pipeline so config
+errors fail the build before deploy. Show how to pipe validate output through jq
+to surface only errors, and use erpc dump to confirm the effective failsafe
+defaults my config produces. Reference:
+https://docs.erpc.cloud/config/example.llms.txt`}
+/>
+
+<AISection title="Full config example — agent navigation reference">
+
+This page is intentionally a flat annotated example. Every section has a dedicated reference page with complete field tables and behavioral invariants. Use the map below to find the right page for any config question.
+
+### How it works
+
+**Config file discovery.** When no `--config` flag is given, eRPC probes these paths in order and uses the first it finds ([`cmd/erpc/main.go:L279-L293`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L293)):
+
+1. `./erpc.yaml` — relative to the working directory
+2. `./erpc.yml`
+3. `./erpc.ts`
+4. `./erpc.js`
+5. `/erpc.yaml`, `/erpc.yml`, `/erpc.ts`, `/erpc.js`
+6. `/root/erpc.yaml`, `/root/erpc.yml`, `/root/erpc.ts`, `/root/erpc.js`
+
+YAML is probed before TypeScript in the same directory — a stale `erpc.yaml` silently shadows a newly added `erpc.ts`. If nothing is found and `--require-config` is unset, eRPC starts with a synthetic `main` project using public endpoints.
+
+A `.env` file in the working directory is loaded automatically before config parsing via `github.com/joho/godotenv` ([`cmd/erpc/main.go:L42-L46`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L42-L46)). Variables from `.env` are available as `${VAR}` in YAML and as `process.env.VAR` in TypeScript.
+
+**YAML loading.** `os.ExpandEnv` runs on the raw file bytes before YAML parsing ([`common/config.go:L102`](https://github.com/erpc/erpc/blob/main/common/config.go#L102)). Every `$VAR` and `${VAR}` pattern is substituted. Unset variables resolve to the empty string. If the substituted value contains YAML-special characters (`:`, `{`…) and the field is unquoted, the parse will fail — always quote values that may contain secrets: `password: "${REDIS_PASSWORD}"`.
+
+**TypeScript loading.** Shell-style expansion is never applied. The TS file is compiled by embedded esbuild and run in a sobek JS runtime where `process.env` is pre-populated from `os.Environ()`. Use JS template literals: `` `alchemy://${process.env.ALCHEMY_API_KEY}` ``. Writing `${VAR}` in a TS string literal without `process.env.` evaluates the JS variable `VAR`, which is `undefined` unless declared — resulting in the string `"undefined"` and a confusing downstream error.
+
+**Validate and dump commands.**
+
+```bash
+# Validate config without starting — exits 1 if errors found
+erpc validate --config erpc.yaml
+erpc validate --config erpc.ts --format md
+
+# Dump the effective config as eRPC will see it (defaults filled in)
+erpc dump --config erpc.ts
+erpc dump --config erpc.yaml --format json
 ```
 
----
+`validate` builds the full resource tree (projects → networks → upstreams, rate-limit budgets), checks for orphaned budgets and public endpoints, and prints a structured JSON or Markdown report. Exit 0 if `errors` is empty. All zerolog output is suppressed during validate — pipe stdout through `jq .errors` to see only errors ([`cmd/erpc/main.go:L109`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L109)).
 
-### Common pitfalls
+`dump` resolves the effective selection policies (including TypeScript `evalFunc` sentinels back to their source) and prints the complete config as YAML or JSON.
 
-- **Cache `ttl: 0` on `realtime` / `unfinalized` data** — data never expires; callers get stale pending-tx states. Use a short TTL for non-finalized policies.
-- **No `hedge` on the network level** — without it, a slow upstream causes the full `timeout.duration` to elapse before a second upstream is tried. Add `hedge.delay` equal to your P90 upstream latency.
-- **`batchMaxWait` too large** — adds artificial latency at low traffic; tune to `50-200ms`.
-- **`autoIgnoreUnsupportedMethods: true` on inconsistent vendors** — some vendors return generic errors for any unsupported call; eRPC might mark valid methods as unsupported and permanently skip them.
-- **`rateLimitBudget` referenced but not defined** — startup succeeds but rate limiting is silently skipped. Always define the budget in `rateLimiters.budgets[]`.
-- **`waitTime: 0` on rate-limit rules** — any request that arrives when the budget is exhausted gets an immediate error. Set `waitTime: 50ms` or higher to allow brief bursts to absorb the wait.
-- **`maxTimeout` shorter than `retry` total delay** — if `maxTimeout: 10s` but retries add up to 15s, the network-level timeout fires first and cuts retries short. Set `maxTimeout` to at least the sum of all upstream retry delays plus hedge delay.
+**Defaults cascade.** `SetDefaults` fills every nil/zero field after decode — no field is silently undefined at runtime. If `projects` is empty after loading, a synthetic `main` project with `repository` + `envio` providers is injected automatically. <SourceLink file="common/defaults.go" lines="49-176" />
+
+### Per-section documentation map
+
+| Config section | Canonical page | Key topics |
+|---|---|---|
+| `logLevel`, `clusterKey`, CLI flags, env vars | Config formats (this page, agent panel below) | YAML vs TS loading, discovery order, `validate`/`dump` subcommands |
+| `server` | [Server](/config/server) | HTTP/gRPC listen, TLS, timeouts, graceful shutdown, response headers |
+| `metrics` | [Monitoring](/operation/monitoring) | All 122 Prometheus metrics, histogram bucket config, cardinality controls |
+| `database.evmJsonRpcCache` | [Cache policies](/config/database/evm-json-rpc-cache) | Finality tiers, TTL semantics, `empty` behavior, policy ordering |
+| `database.evmJsonRpcCache.connectors` | [Storage drivers](/config/database/drivers) | memory, Redis, PostgreSQL, DynamoDB/ScyllaDB connector fields |
+| `database.sharedState` | [Shared state](/config/database/shared-state) | Distributed lock, consensus state, cluster key scoping |
+| `projects[].networks[]` | [Networks](/config/projects/networks) | Per-chain failsafe, integrity checks, block tracking |
+| `projects[].upstreams[]` | [Upstreams](/config/projects/upstreams) | RPC lifecycle, batching, method filtering, vendor shorthands |
+| `projects[].providers[]` | [Providers & vendors](/config/projects/providers) | Vendor key-based auto-fan-out, `onlyNetworks`/`ignoreNetworks` |
+| `projects[].auth` | [Authentication](/config/auth) | secret, JWT, SIWE, network strategies |
+| `projects[].cors` | [CORS](/config/projects/cors) | `allowedOrigins`, credentials, preflight |
+| `projects[].selectionPolicy` | [Selection & scoring](/config/projects/selection-policies) | evalFunc, score multipliers, exclusion thresholds |
+| `projects[].networks[].failsafe[].timeout` | [Timeout](/config/failsafe/timeout) | Hard deadline fields, interaction with retries |
+| `projects[].networks[].failsafe[].retry` | [Retry](/config/failsafe/retry) | Backoff, jitter, retryable error classes |
+| `projects[].networks[].failsafe[].hedge` | [Hedge](/config/failsafe/hedge) | Adaptive vs static delay, maxCount, write-method exclusion |
+| `projects[].networks[].failsafe[].circuitBreaker` | [Circuit breaker](/config/failsafe/circuit-breaker) | Half-open, thresholds, interaction with selection policy |
+| `projects[].networks[].failsafe[].consensus` | [Consensus](/config/failsafe/consensus) | DVN/quorum, dispute log, low-participant behavior |
+| `projects[].networks[].failsafe[].integrity` | [Integrity](/config/failsafe/integrity) | Block-finality enforcement, re-query on mismatch |
+| `rateLimiters.budgets[]` | [Rate limiters](/config/rate-limiters) | Shared budgets, `waitTime`, per-method rules |
+| `proxyPools[]` | [HTTP client & proxy pools](/reference/http-client) | Proxy routing, pool sizing |
+| `tracing` | [Tracing & logging](/operation/tracing) | OTel, sampleRate, endpoint, log formats |
+| `admin` | [Admin API](/operation/admin) | Cordon, drain, live config inspection |
+| `healthCheck` | [Healthcheck](/operation/healthcheck) | Mode, `defaultEval`, upstream requirements |
+
+### Config loading invariants
+
+- Strict YAML mode (`KnownFields: true`) — any unknown key is a fatal error. <SourceLink file="common/config.go" lines="103" />
+- `os.ExpandEnv` runs on raw YAML bytes before parse; never applied to TypeScript files. <SourceLink file="common/config.go" lines="102" />
+- `SetDefaults` fills every nil/zero field after decode — no field is silently undefined at runtime. <SourceLink file="common/defaults.go" lines="49-176" />
+- `Validate` runs after `SetDefaults` and returns an error if any invariant is violated; `erpc validate` exposes the full report. <SourceLink file="common/validation.go" lines="15" />
+- TypeScript configs are bundled by embedded esbuild (no Node.js required) and evaluated in sobek; `process.env` is pre-populated from `os.Environ()`. <SourceLink file="common/config.go" lines="2686" />
+- If `projects` is empty after loading, a synthetic `main` project with `repository` + `envio` providers is injected automatically. <SourceLink file="common/defaults.go" lines="100-167" />
+
+### Worked examples
+
+**1. Validate before deploying.** Run the validate subcommand against any format to catch typos, orphaned rate-limit budgets, and reference errors before the server starts:
+
+```bash
+erpc validate --config erpc.yaml
+# exits 0 if errors: [] — pipe through jq .errors to see just the problems
+erpc validate --config erpc.ts --format md
+```
+
+**2. Debug what defaults fill in.** Use `dump` to see the exact effective config the engine will run with — especially useful for TypeScript configs where `evalFunc` sentinels can be resolved back to source:
+
+```bash
+erpc dump --config erpc.ts
+erpc dump --config erpc.yaml --format json | jq '.projects[0].networks'
+```
+
+**3. Start with CLI flags, no config file.** Pass one or more `--endpoint` flags to inject synthetic upstreams into a default `main` project — useful for quick smoke tests:
+
+```bash
+erpc --endpoint https://eth.llamarpc.com --endpoint alchemy://$ALCHEMY_KEY
+```
+
+**4. Per-finality failsafe in TypeScript.** The TS dist example shows how to use `matchFinality` to give realtime (block-tip) requests a short timeout and retry budget while giving archival calls more headroom:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "*"
+    matchFinality: realtime
+    timeout:
+      duration: 3s
+    retry:
+      maxAttempts: 2
+  - matchMethod: "*"
+    timeout:
+      duration: 30s
+    retry:
+      maxAttempts: 5
+    hedge:
+      delay: 1000ms
+      maxCount: 2`}
+  ts={`failsafe: [
+  {
+    matchMethod: "*",
+    matchFinality: [DataFinalityStateRealtime],
+    timeout: { duration: "3s" },
+    retry: { maxAttempts: 2 },
+  },
+  {
+    matchMethod: "*",
+    timeout: { duration: "30s" },
+    retry: { maxAttempts: 5 },
+    hedge: { delay: "1000ms", maxCount: 2 },
+  },
+]`}
+/>
+
+### Best practices
+
+- **Set `server.maxTimeout` ≥ total retry budget + hedge delay.** If `maxTimeout: 10s` but retries sum to 15s, the server deadline fires first and silently cuts retries short. Use `erpc dump` to verify the sum.
+- **Always quote YAML values that expand env vars containing special characters.** `connectionUri: "${DATABASE_URL}"` — unquoted `${DATABASE_URL}` breaks YAML parsing when the URL contains `:` or `{`.
+- **Never use `${VAR}` syntax in TypeScript configs.** Use `` `alchemy://${process.env.ALCHEMY_API_KEY}` `` — omitting `process.env.` gives the string `"alchemy://undefined"` and a confusing validation failure.
+- **Use `ttl: 0` only for `finality: finalized` data.** Setting `ttl: 0` on `realtime` or `unfinalized` policies means stale pending-transaction states are cached forever. Short TTLs (2s–10s) are correct for non-final data.
+- **Keep `rateLimitBudget` IDs consistent.** Every budget referenced by an upstream or network must exist in `rateLimiters.budgets`. Validation catches this (`erpc validate`), but older runtime versions silently skip rate-limiting when a budget is missing.
+- **Don't leave a stale `erpc.yaml` when migrating to `erpc.ts`.** YAML is probed first — the old file silently shadows the new one. Remove or rename it.
+- **Vendor shorthand endpoints (`alchemy://`, `tenderly://`, etc.) become providers, not upstreams.** After `SetDefaults` they move from `p.Upstreams` to `p.Providers`; `erpc validate` reports them under `providersTotal`, not `upstreamsTotal`. This is expected.
+
+### Edge cases & gotchas
+
+- **`--set` / `-s` is not implemented.** The flag is commented out in the source. Passing `-s logLevel=debug` produces `"flag provided but not defined: -s"` from the CLI framework. There is no Helm-style dot-path override; use env vars or config file edits. Source: [`cmd/erpc/main.go:L86-L90`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L86-L90)
+- **`validate` and `dump` suppress all log output.** `zerolog.SetGlobalLevel(zerolog.Disabled)` is called before `getConfig` runs. No warnings from `SetDefaults`, legacy migration, or validation appear on stderr. Pipe stdout through `jq .errors` to see errors. Source: [`cmd/erpc/main.go:L109`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L109)
+- **`dump --format csv` (or any unknown format) exits 1** via a distinct code path, not a marshal error. Valid values are `"yaml"`, `"yml"`, and `"json"` only.
+- **Positional argument works in ALL subcommands.** `erpc validate ./my-config.yaml` and `erpc dump ./my-config.yaml` treat the first positional arg as a config path with `requireConfig=true`. Source: [`cmd/erpc/main.go:L303-L305`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L303-L305)
+- **TypeScript default export must be the last statement.** The sobek runtime's `exports.default` is inspected after the script runs; a later expression can overwrite it. Error: `"config object must be default exported from TypeScript code AND must be the last statement in the file"`.
+- **TS module executes multiple times** — once at load and once per policy-pool runtime acquire. Top-level side effects (logging, expensive computation) are repeated; keep the config pure.
+- **`erpc.dist.yaml` fails validation as shipped** — upstreams reference `rateLimitBudget: global` but no `global` budget exists. Use it as a shape reference only, not copy-paste directly. Source: [`erpc.dist.yaml`](https://github.com/erpc/erpc/blob/main/erpc.dist.yaml)
+- **`LOG_LEVEL` env var overrides config-file `logLevel` at two points** — first in `init()` (applies to the config-loading phase) and second after decode (overrides `cfg.LogLevel` itself). A file setting of `logLevel: error` can be trumped by `LOG_LEVEL=debug` without editing the file.
+
+### Source code entry points
+
+- [`cmd/erpc/main.go:L279-L293`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L293) — config file discovery loop
+- [`common/config.go:L87-L132`](https://github.com/erpc/erpc/blob/main/common/config.go#L87-L132) — `LoadConfig`: YAML vs TS dispatch, `os.ExpandEnv`, strict decode, defaults, validation
+- [`common/defaults.go:L49-L176`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L49-L176) — `Config.SetDefaults`: full default cascade including synthetic project injection
+- [`common/validation.go:L15`](https://github.com/erpc/erpc/blob/main/common/validation.go#L15) — `Config.Validate`: all cross-field validation rules
+- [`common/config.go:L2686-L2766`](https://github.com/erpc/erpc/blob/main/common/config.go#L2686-L2766) — `loadConfigFromTypescript`: esbuild bundle, walker, sobek eval, JSON round-trip
+- [`cmd/erpc/main.go:L109`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L109) — `validate` subcommand: zerolog suppression, structured JSON/MD report
+- [`erpc/config_analyzer.go`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go) — `GenerateValidationReport`: static analysis producing the validation report
+
+### Config formats — YAML vs TypeScript
+
+eRPC accepts the same schema as `erpc.yaml`/`erpc.yml` (strict YAML) or `erpc.ts`/`erpc.js`
+(TypeScript compiled in-process). Everything below — discovery order, the TS loading
+pipeline, env-var semantics, validate/dump tooling — applies to whichever format you pick.
+
+#### How it works
+
+**File discovery.** When no `--config` flag or positional argument is supplied, eRPC probes a hardcoded list in order: `./erpc.yaml`, `./erpc.yml`, `./erpc.ts`, `./erpc.js`, then the same four filenames under `/` and `/root/`. The first path where `fs.Stat` succeeds wins. YAML takes priority over TypeScript within the same directory — a leftover `erpc.yaml` silently shadows a newly added `erpc.ts`. Passing an explicit path forces that file and treats a missing file as a fatal error (exit 1001). A `.env` file in the working directory is loaded at process `init()` time via `godotenv` before any config parsing.
+
+**YAML loading.** `common.LoadConfig` reads the file, runs `os.ExpandEnv` on the raw bytes (substituting every `$VAR` and `${VAR}` pattern from the OS environment), then decodes with `gopkg.in/yaml.v3` in strict mode (`KnownFields(true)` — unknown keys are errors). After decode, it applies `LegacyTranslateFn` (legacy key migration), then `SetDefaults`, then `Validate`.
+
+**TypeScript loading pipeline.** `loadConfigFromTypescript` (`common/config.go:L2686`) runs these steps:
+
+1. esbuild (embedded Go library) bundles the `.ts`/`.js` file as a self-contained IIFE, resolving all imports including `@erpc-cloud/config`. `createConfig` is a pure identity function — it costs nothing.
+2. A `tsLoaderWalker` JS fragment is appended that depth-first walks `exports.default`, assigns sequential IDs (`fn_0`, `fn_1`, …) to every function-valued object property, and registers them on `globalThis.__erpcFns`.
+3. The result is compiled to a `sobek.Program` once and stored as `cfg.UserScript`.
+4. A throwaway runtime evaluates the program; `exports.default` is the config object.
+5. `JSON.stringify` with a replacer converts registered functions to sentinel strings (`"__ts_fn__:fn_<n>"`); unregistered functions are dropped (never `.toString()`-serialised).
+6. The JSON is decoded through the same strict YAML decoder used for `.yaml` files, so schema validation is identical — typos fail with the same unknown-field error.
+
+**`os.ExpandEnv` is YAML-only.** TypeScript/JS files are never subjected to shell-variable expansion. Use `process.env.MY_KEY` (a JS expression) instead of `${MY_KEY}`.
+
+**Function preservation at runtime.** `cfg.UserScript` is re-evaluated once per policy-engine runtime-pool acquire, rebuilding `__erpcFns` natively in that runtime so closures and module-level helpers remain live. At tick time, a `__ts_fn__:fn_<n>` sentinel is resolved by id lookup in `__erpcFns` and invoked directly.
+
+**Shared post-load pipeline.** Both formats share `LegacyTranslateFn` → `SetDefaults` → `Validate`. Validation errors cause exit 1001. `erpc validate` loads config, runs static analysis (orphan rate-limit budgets, missing upstreams, etc.), and prints a JSON or Markdown report. `erpc dump` loads config and renders the fully defaulted effective config as YAML or JSON — useful for seeing what TS sentinel functions resolve to.
+
+#### Config schema
+
+Config formats own no YAML runtime fields. The table below documents the loader's environment contract and CLI flags.
+
+**CLI flags** (<SourceLink file="cmd/erpc/main.go" lines="76-94" />)
+
+| Flag | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `--config` | string | `""` | Path to config file; skips auto-discovery; sets `requireConfig=true` implicitly — missing file exits 1001. |
+| positional arg | string | — | Same as `--config`; forces `requireConfig=true`; works with all subcommands (`start`, `validate`, `dump`). |
+| `--require-config` | bool | `false` | Abort if no config found in search path; no effect when `--config` is given (already implied). |
+| `--endpoint` / `-e` | `[]string` | `[]` | Inject upstream endpoint URLs when no providers/upstreams exist in config. Provider-scheme URLs (e.g. `alchemy://key`) are converted to providers at `SetDefaults` time. Invalid URLs abort with exit 1001. |
+| `validate --format` | string | `"json"` | `"json"` or `"md"`. |
+| `dump --format` | string | `"yaml"` | `"yaml"`, `"yml"`, or `"json"`. Any other value exits 1 via an explicit error branch. |
+| `--set` / `-s` | — | **not available** | Commented out of the source. Passing `-s` produces `"flag provided but not defined: -s"` — not a graceful error. |
+
+**Environment variables**
+
+| Env var | Scope | Behavior | Citation |
+|---|---|---|---|
+| `$VAR` / `${VAR}` in YAML | YAML loader | `os.ExpandEnv` on raw bytes before parse; unset vars → empty string. Unquoted values containing `:` or `{` will break YAML parse. | <SourceLink file="common/config.go" lines="102" /> |
+| `process.env.X` in TS | TS runtime | Populated from `os.Environ()` when the sobek runtime is created; `.env` file loaded first. Snapshot — not updated if env changes after startup. | <SourceLink file="common/runtime.go" lines="23-36" /> |
+| `LOG_LEVEL` | bootstrap | Zerolog global level; overrides `logLevel` in config. Applied twice: at `init()` and again after decode. | [`cmd/erpc/main.go:L59-L66`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L59-L66) |
+| `LOG_WRITER` | bootstrap | When `"console"`, switches zerolog to human-readable output. Set at `init()` — cannot be changed at runtime. | [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) |
+
+**`validate` command JSON output schema** (`erpc/config_analyzer.go:L76-L123`)
+
+```
+{
+  "errors":   [],
+  "warnings": [],
+  "notices":  [],
+  "resources": {
+    "totals": { "projectsTotal", "networksTotal", "upstreamsTotal", "rateLimitBudgetsTotal" },
+    "tree": { "projects": [...], "rateLimiters": { "budgets": [...] } }
+  }
+}
+```
+
+Exits 0 if `errors` is empty, exits 1 otherwise.
+
+#### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. YAML with `.env` secrets — simplest production shape.** Env vars are substituted
+before parse; quote every value that might contain `:` or `{` to avoid YAML parse errors
+after expansion:
+
+```yaml
+# erpc.yaml (with .env file providing ALCHEMY_API_KEY, INFURA_API_KEY)
+logLevel: warn
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+    upstreams:
+      # Always quote env-interpolated values — a bare ${VAR} containing ":"
+      # produces invalid YAML after os.ExpandEnv substitution.
+      - endpoint: "alchemy://${ALCHEMY_API_KEY}"
+      - endpoint: "infura://${INFURA_API_KEY}"
+```
+
+**2. TypeScript config split into shared modules — the production multi-chain shape.**
+A large fleet uses one `erpc.ts` that imports typed fragments from `shared/` files. The
+module-level `networkDefaults` and `upstreamDefaults` objects are evaluated once at load
+and reused across chains — closures in `evalFunc` bodies capture them without serialisation:
+
+```ts
+// erpc.ts — assembly point; env vars only here
+import { createConfig } from "@erpc-cloud/config";
+import { cacheConfig } from "./shared/cache";
+import { networkDefaults } from "./shared/networks";
+import { upstreamDefaults } from "./shared/upstreams";
+
+export default createConfig({
+  logLevel: "warn",
+  database: {
+    evmJsonRpcCache: cacheConfig(),
+  },
+  projects: [{
+    id: "main",
+    // Defaults applied to every network / upstream in this project
+    networkDefaults,
+    upstreamDefaults,
+    networks: [{ architecture: "evm", evm: { chainId: 1 } }],
+    upstreams: [{
+      // process.env — NOT ${VAR} — JS template literals need process.env.
+      // ${ALCHEMY_API_KEY} without process.env resolves to "undefined" silently.
+      endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`,
+    }],
+  }],
+});
+```
+
+**3. TypeScript with a real closure in `evalFunc` — upstream weight map.**
+The TS path preserves closures; the module-level `weights` constant is available inside
+the function body at policy-tick time, with no serialisation. This is the canonical reason
+to prefer TypeScript over YAML for complex selection policies:
+
+```ts
+// erpc.ts
+import { createConfig } from "@erpc-cloud/config";
+
+// Module-level constant — captured by reference in evalFunc and available
+// on every policy-pool runtime acquire without stringifying the function.
+const weights: Record<string, number> = { "alchemy": 3, "infura": 1 };
+
+export default createConfig({
+  logLevel: "info",
+  projects: [{
+    id: "main",
+    networks: [{ architecture: "evm", evm: { chainId: 1 } }],
+    upstreams: [
+      { endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}` },
+      { endpoint: `infura://${process.env.INFURA_API_KEY}` },
+    ],
+    selectionPolicy: {
+      evalFunc: (upstreams) =>
+        upstreams.sort((a, b) =>
+          (weights[b.upstream.id] ?? 0) - (weights[a.upstream.id] ?? 0)
+        ),
+    },
+  }],
+});
+```
+
+**4. Per-method failsafe tiers in `upstreamDefaults` — production upstream-level policies.**
+Production fleets use `upstreamDefaults.failsafe` to apply tight adaptive timeouts per
+method group at the upstream boundary, so the network-level retry budget isn't burned on
+upstreams that are merely slow. Method-specific entries must come before the catch-all
+(`hedge: null` suppresses upstream-level hedging — hedging belongs at network scope):
+
+```ts
+// shared/upstreams.ts
+import type { FailsafeConfig, UpstreamConfig } from "@erpc-cloud/config";
+
+const upstreamFailsafe: FailsafeConfig[] = [
+  {
+    matchMethod: "eth_getLogs|eth_getBlockReceipts",
+    // Heavy range queries routinely take seconds — floor of 2s prevents premature
+    // upstream-level timeouts that burn network-level retry budget on subgraph backfills.
+    timeout: { duration: "15s", quantile: 0.9, minDuration: "2s", maxDuration: "15s" } as any,
+    // Hedge and retry are null at upstream scope — handled at network scope instead.
+    hedge: null,
+    retry: null,
+  },
+  {
+    matchMethod: "eth_call",
+    // eth_call latency is bimodal (cache hit ~5ms, heavy simulation ~10s).
+    // Adaptive timeout tracks actual p80 so fast calls aren't capped at the ceiling.
+    timeout: { duration: "20s", quantile: 0.8, minDuration: "500ms", maxDuration: "20s" } as any,
+    hedge: null,
+    retry: null,
+  },
+  {
+    matchMethod: "*",
+    timeout: { duration: "60s", quantile: 0.8, minDuration: "500ms", maxDuration: "60s" } as any,
+    hedge: null,
+    retry: null,
+  },
+];
+
+export const upstreamDefaults: UpstreamConfig = {
+  // Disable filter methods — providers rarely support them reliably.
+  ignoreMethods: ["eth_newFilter", "eth_newBlockFilter", "eth_newPendingTransactionFilter"],
+  failsafe: upstreamFailsafe,
+};
+```
+
+**5. Using `erpc validate` and `erpc dump` in CI.** Validate exits 1 on errors and
+suppresses all log output; pipe through `jq` to surface only errors. Use `erpc dump`
+after switching formats to confirm effective failsafe defaults:
+
+```sh
+# CI pre-deploy check — fails build if config has errors
+erpc validate --format json ./erpc.ts | jq .errors
+
+# Markdown report for humans (e.g. in a PR comment)
+erpc validate --format md ./erpc.yaml
+
+# Inspect effective defaults after migrating YAML → TS
+erpc dump --format yaml ./erpc.ts
+
+# Check a specific section (e.g. first network's failsafe after adding defaults)
+erpc dump --format json ./erpc.ts | jq '.projects[0].networks[0].failsafe'
+```
+
+#### Request/response behavior
+
+Config loading is a startup-phase operation, not a per-request path. No HTTP headers or JSON-RPC bodies are involved. The loader reports its outcome through log messages and exit codes only.
+
+**Exit codes** (<SourceLink file="util/exit.go" lines="7-10" />):
+- `1001` (`ExitCodeERPCStartFailed`) — CLI/config load failure, validation error, or `erpc.Init` error.
+- `1002` (`ExitCodeHttpServerFailed`) — HTTP or gRPC server fatal error.
+
+#### Best practices
+
+- **Quote all YAML env-interpolated values.** `password: "${REDIS_PASSWORD}"` is safe; `password: ${REDIS_PASSWORD}` breaks if the value contains `:` or `{`. Source: <SourceLink file="common/config.go" lines="102" />
+- **Use `process.env.VAR`, not `${VAR}`, in TypeScript configs.** `${MY_KEY}` in a TS template literal is a JS variable reference — if undeclared, it evaluates to `"undefined"`, silently producing `alchemy://undefined`. Source: <SourceLink file="common/config.go" lines="95-109" />
+- **Keep the TS config module pure.** The module is evaluated multiple times (load, each policy-pool runtime acquire, `erpc dump`). Top-level side effects like logging or HTTP calls repeat on every acquire.
+- **Run `erpc validate` in CI before deploying.** All log output is suppressed during validation; errors appear only in the JSON/Markdown output. Pipe `validate` stdout through `jq .errors` to diagnose failures.
+- **Run `erpc dump` to verify effective defaults.** After switching from manual config to system-template, use `erpc dump` to confirm the failsafe defaults (retry, timeout, hedge) are what you expect.
+- **Never rely on `--set` / `-s`.** The flag is commented out. Use `.env` or `process.env` for environment-specific overrides.
+- **Pin `@erpc-cloud/config` to the matching binary version.** The npm package is always released in lockstep with the Go binary; a version mismatch means the TS types may not match the runtime schema.
+
+#### Edge cases & gotchas
+
+1. **YAML beats TS in auto-discovery.** `./erpc.yaml` and `./erpc.yml` are probed before `./erpc.ts` and `./erpc.js`. A stale `erpc.yaml` in the working directory silently shadows your `erpc.ts`.
+2. **YAML env value with special characters breaks parse.** If `$MY_VAR` expands to a value containing `:` or `{`, the substituted text becomes invalid YAML. Quote all env-interpolated values: `value: "${MY_VAR}"`.
+3. **TS `${VAR}` without `process.env.` is a JS variable reference, not env expansion.** `${MY_KEY}` in a TS template literal references a JS variable `MY_KEY`. If undeclared, it evaluates to `"undefined"`, producing endpoint strings like `alchemy://undefined`. This is a silent failure — no parse error, just a wrong URL.
+4. **TS default export must be last.** `exports.default` is read after the program runs. A reassignment by any later expression overwrites the config. Error: `"config object must be default exported from TypeScript code AND must be the last statement in the file"`.
+5. **Functions outside walkable positions are silently dropped.** The walker registers only function-valued object properties. A function placed directly as an array element is not walked; the `JSON.stringify` replacer drops it (`undefined`), and the decoded field is missing. Source: [`common/config.go:L2636-L2652`](https://github.com/erpc/erpc/blob/main/common/config.go#L2636-L2652).
+6. **TS module evaluates multiple times.** Load, each policy-pool runtime acquire, and `erpc dump` each re-run the full module. Top-level side effects (logging, HTTP calls, `Date.now()`) repeat. Keep the config module pure.
+7. **`validate` and `dump` suppress all log output.** `zerolog.SetGlobalLevel(zerolog.Disabled)` fires before `getConfig`, so warnings from `SetDefaults` and legacy migration are invisible. Pipe `validate` stdout through `jq .errors` to diagnose failures.
+8. **`--set` / `-s` is not implemented.** The flag is commented out. Passing it produces a CLI framework error, not a graceful "unsupported" message.
+9. **`dump --format csv` exits 1 via an explicit error branch, not a marshal failure.** Valid formats are `yaml`, `yml`, and `json` only. Source: [`cmd/erpc/main.go:L190-L194`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L190-L194).
+10. **TS `process.env` is a snapshot.** The env map is built once when the sobek runtime is created. Changes to OS env vars after startup are not reflected; a restart is required.
+11. **Provider-scheme endpoints are converted to providers, not upstreams.** `alchemy://key` in `--endpoint` or in `upstreams[].endpoint` is converted to a `ProviderConfig` and removed from `upstreams` by `SetDefaults`. `erpc validate` reports it under providers, so `upstreamsTotal` looks lower than the endpoint count.
+12. **`erpc.dist.yaml` ships broken.** The canonical YAML example references a `global` rate-limit budget that does not exist in `rateLimiters.budgets` and contains a duplicate upstream id. `erpc validate --config erpc.dist.yaml` exits 1. The TypeScript example (`erpc.dist.ts`) validates cleanly when env vars are set.
+13. **`erpc dump` may print `__ts_fn__:fn_N`** for a TS `evalFunc` when source resolution fails (best-effort `.toString()`; any error leaves the sentinel). Source: [`internal/policy/dump.go:L32-L136`](https://github.com/erpc/erpc/blob/main/internal/policy/dump.go#L32-L136).
+14. **Strict decode applies to TS configs too.** `decoder.KnownFields(true)` on the JSON intermediary means a property typo still fails at load with the same unknown-field error YAML gives.
+15. **`AuthStrategyConfig` union is wrong for non-secret strategies in TS.** The hand-written `network`/`jwt`/`siwe` arms declare their payload under the key `secret` instead of the correct key names. Also, the `database` auth type is absent from the TS union. Source: [`typescript/config/src/types/generic.ts:L120-L141`](https://github.com/erpc/erpc/blob/main/typescript/config/src/types/generic.ts#L120-L141).
+
+#### Observability
+
+The config-loading and format subsystems emit no Prometheus metrics. Operational signals are log-only:
+
+| Log message | Level | When |
+|---|---|---|
+| `"looking for config file: <path>"` | INFO | Each path probed during auto-discovery |
+| `"resolved configuration file to: <path>"` | INFO | Winning path identified |
+| `"failed to load configuration"` | ERROR | Any `LoadConfig` error before exit 1001 |
+| `"no projects found in config; will add a default 'main' project"` | WARN | `SetDefaults` synthetic project injection |
+| `"build failed: <messages>"` | ERROR | esbuild compilation error in `.ts`/`.js` file |
+| `"compile ts config: …"` | ERROR | sobek compile error after bundling |
+| `"ts config decode: …"` | ERROR | Strict YAML decode of the TS JSON output failed (field typo) |
+| `"executing command"` | INFO | Every CLI action, with `action`/`version`/`commit` fields |
+| `"config default export serialized to null/undefined"` | ERROR | TS config did not produce a valid default export |
+
+#### Source code entry points
+
+- [`cmd/erpc/main.go:L279-L322`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L322) — config file auto-discovery loop, `getConfig`, `--endpoint` injection, `.env` loading
+- [`common/config.go:L87-L132`](https://github.com/erpc/erpc/blob/main/common/config.go#L87-L132) — `LoadConfig`: suffix dispatch (YAML vs TS/JS), `os.ExpandEnv`, strict YAML decode, legacy migration, `SetDefaults`, `Validate`
+- [`common/config.go:L2686-L2766`](https://github.com/erpc/erpc/blob/main/common/config.go#L2686-L2766) — `loadConfigFromTypescript`: esbuild bundle, walker append, sobek compile + run, JSON stringify with sentinel replacer, strict YAML decode of JSON
+- [`common/compiler.go:L10-L41`](https://github.com/erpc/erpc/blob/main/common/compiler.go#L10-L41) — `CompileTypeScript`: esbuild Go API options (IIFE, ES2020, Node platform, inline sourcemap)
+- [`common/runtime.go:L15-L44`](https://github.com/erpc/erpc/blob/main/common/runtime.go#L15-L44) — `NewRuntime`: sobek runtime factory; populates `env` array and `process.env` map from `os.Environ()`
+- [`common/defaults.go:L49-L176`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L49-L176) — `Config.SetDefaults`: default cascade including synthetic `main` project injection
+- [`common/validation.go:L15`](https://github.com/erpc/erpc/blob/main/common/validation.go#L15) — `Config.Validate`: exhaustive schema validation
+- [`internal/policy/runtime_pool.go:L41-L82`](https://github.com/erpc/erpc/blob/main/internal/policy/runtime_pool.go#L41-L82) — re-runs `UserScript` per pooled runtime, preserving closures and module-level helpers
+- [`common/config_test.go:L147-L348`](https://github.com/erpc/erpc/blob/main/common/config_test.go#L147-L348) — TS unified-pipeline + closure-preservation tests (key behavior contracts)
+
+### Related pages
+
+- [Auth](/config/auth) — note: the TypeScript `AuthStrategyConfig` union has known bugs for non-secret strategies; prefer YAML when using jwt/siwe/network auth.
+- [Upstreams](/config/projects/upstreams) — every upstream field, vendor shorthands, batching, method filtering.
+- [Networks](/config/projects/networks) — per-chain failsafe, finality, integrity checks.
+- [Cache policies](/config/database/evm-json-rpc-cache) — finality tiers, TTL semantics, connector routing.
+- [Rate limiters](/config/rate-limiters) — shared budgets, waitTime, per-method rules.
+- [Failsafe overview](/config/failsafe/timeout) — retry, hedge, circuit breaker, consensus.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

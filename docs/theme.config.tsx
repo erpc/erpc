@@ -1,20 +1,13 @@
 import { useRouter } from "next/router";
 import {useConfig } from 'nextra-theme-docs'
+import { GitHubStars } from "./components/GitHubStars";
 
 export default {
 	docsRepositoryBase: "https://github.com/erpc/erpc/tree/main/docs",
 	logo: <b>eRPC</b>,
 	project: {
 		link: "https://github.com/erpc/erpc",
-		icon: (
-			<img
-				src="https://img.shields.io/github/stars/erpc/erpc"
-				alt="GitHub stars"
-				width="100"  // Set both width and height to the same value
-				height="100" // Match this to the width
-				style={{ objectFit: 'contain' }} // Ensures the image fits within the dimensions
-			/>
-		)
+		icon: <GitHubStars />,
 	},
 	chat: {
 		link: "https://t.me/erpc_cloud",
