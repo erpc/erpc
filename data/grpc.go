@@ -63,6 +63,9 @@ var supportedMethods = map[string]struct{}{
 	"eth_getTransactionReceipt": {},
 	"eth_getBlockReceipts":      {},
 	"eth_chainId":               {},
+	// eth_blockNumber has no native BDS gRPC method; Get derives it from the
+	// latest block (see the translation in Get).
+	"eth_blockNumber": {},
 }
 
 func NewGrpcConnector(
@@ -258,6 +261,20 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 			callCtx, cancel = context.WithTimeout(ctx, g.getTimeout)
 			defer cancel()
 		}
+	}
+
+	// The backing reader has no eth_blockNumber RPC; derive it from the latest
+	// block. Read getBlockByNumber("latest") and return just its number in the
+	// eth_blockNumber result shape (a quoted hex string). Freshness is enforced
+	// by the cache layer's realtime gate via the connector's reported head.
+	if method == "eth_blockNumber" {
+		num, _, ok := g.fetchTaggedBlock(callCtx, cli, "latest")
+		if !ok {
+			span.SetAttributes(attribute.String("grpc.skip_reason", "latest_block_unavailable"))
+			return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
+		}
+		span.SetAttributes(attribute.String("grpc.result", "success_block_number"))
+		return []byte(fmt.Sprintf("\"0x%x\"", num)), nil
 	}
 
 	resp, err := cli.SendRequest(callCtx, req)
