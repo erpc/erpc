@@ -381,6 +381,12 @@ var (
 		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	MetricUpstreamBlockHeadLargeForwardJump = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_block_head_large_forward_jump",
+		Help:      "Size of an implausible forward jump in block head reported by an upstream that was rejected as bad data (e.g. a node serving another chain's head). The upstream is cordoned when this fires.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	MetricUpstreamWrongEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_wrong_empty_response_total",

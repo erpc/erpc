@@ -358,3 +358,40 @@ func TestComputeServedTipCandidate_ClusterDelta_ExplicitOverride(t *testing.T) {
 		"explicit delta=5 overrides; 7-block gap excludes the lagger")
 	assert.Equal(t, 2, res.ClusterCount)
 }
+
+// ─── VelocityForwardBound (shared physics bound) ─────────────────────────
+
+// VelocityForwardBound is the single bound shared by the served-tip velocity
+// gate and the state poller's block-head ingestion guard. These tests pin its
+// contract: 0 means "gate inactive" (unknown anchor or chain pace), otherwise
+// anchor + ceil(elapsedBlocks × slack) + buffer.
+func TestVelocityForwardBound(t *testing.T) {
+	t.Run("unknown anchor disables the bound", func(t *testing.T) {
+		assert.Equal(t, int64(0), VelocityForwardBound(0, 10*time.Second, 2.0, 2.0, 5))
+		assert.Equal(t, int64(0), VelocityForwardBound(-5, 10*time.Second, 2.0, 2.0, 5))
+	})
+
+	t.Run("unknown block time disables the bound", func(t *testing.T) {
+		assert.Equal(t, int64(0), VelocityForwardBound(100, 10*time.Second, 0, 2.0, 5))
+		assert.Equal(t, int64(0), VelocityForwardBound(100, 10*time.Second, -1, 2.0, 5))
+	})
+
+	t.Run("formula: anchor + ceil(elapsedBlocks x slack) + buffer", func(t *testing.T) {
+		// 10s elapsed / 2s blocks = 5 blocks; x2.0 slack = 10; +5 buffer.
+		assert.Equal(t, int64(115), VelocityForwardBound(100, 10*time.Second, 2.0, 2.0, 5))
+		// Fractional blocks round up: 3s / 2s = 1.5 blocks; x2.0 = 3; +5.
+		assert.Equal(t, int64(108), VelocityForwardBound(100, 3*time.Second, 2.0, 2.0, 5))
+	})
+
+	t.Run("bound grows with elapsed time (stall catch-up tolerance)", func(t *testing.T) {
+		short := VelocityForwardBound(1_000_000, time.Second, 2.0, 2.0, 5)
+		long := VelocityForwardBound(1_000_000, time.Hour, 2.0, 2.0, 5)
+		assert.Greater(t, long, short, "a longer stall must allow a larger catch-up")
+		// 1h / 2s = 1800 blocks; x2.0 = 3600; +5.
+		assert.Equal(t, int64(1_003_605), long)
+	})
+
+	t.Run("zero elapsed still allows the buffer", func(t *testing.T) {
+		assert.Equal(t, int64(105), VelocityForwardBound(100, 0, 2.0, 2.0, 5))
+	})
+}

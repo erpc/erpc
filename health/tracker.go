@@ -293,6 +293,7 @@ type Tracker struct {
 	finalizationLagGaugeCache     sync.Map // map[ubKey]prometheus.Gauge
 	cordonedGaugeCache            sync.Map // map[cordKey]prometheus.Gauge
 	rollbackGaugeCache            sync.Map // map[ubKey]prometheus.Gauge
+	forwardJumpGaugeCache         sync.Map // map[ubKey]prometheus.Gauge
 }
 
 // urdoKey uniquely identifies a MetricUpstreamRequestDuration time series.
@@ -475,6 +476,18 @@ func (t *Tracker) getRollbackGauge(up common.Upstream) prometheus.Gauge {
 		t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(),
 	)
 	actual, _ := t.rollbackGaugeCache.LoadOrStore(key, g)
+	return actual.(prometheus.Gauge)
+}
+
+func (t *Tracker) getForwardJumpGauge(up common.Upstream) prometheus.Gauge {
+	key := ubKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id()}
+	if v, ok := t.forwardJumpGaugeCache.Load(key); ok {
+		return v.(prometheus.Gauge)
+	}
+	g := telemetry.MetricUpstreamBlockHeadLargeForwardJump.WithLabelValues(
+		t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(),
+	)
+	actual, _ := t.forwardJumpGaugeCache.LoadOrStore(key, g)
 	return actual.(prometheus.Gauge)
 }
 
@@ -1562,4 +1575,19 @@ func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finalit
 		Msgf("recording block rollback in tracker")
 
 	t.getRollbackGauge(upstream).Set(float64(rollback))
+}
+
+func (t *Tracker) RecordImplausibleBlockHeadForwardJump(upstream common.Upstream, finality string, currentVal, newVal int64) {
+	jump := newVal - currentVal
+
+	net := upstream.NetworkId()
+	lg := upstream.Logger().With().Str("networkId", net).Logger()
+	lg.Warn().
+		Int64("currentValue", currentVal).
+		Int64("newValue", newVal).
+		Int64("jump", jump).
+		Str("finality", finality).
+		Msgf("upstream reported an implausible forward block-head jump; rejecting value")
+
+	t.getForwardJumpGauge(upstream).Set(float64(jump))
 }

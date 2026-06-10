@@ -24,6 +24,16 @@ type CounterInt64SharedVariable interface {
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
+	// SetForwardBound installs a plausibility bound on forward movement. On every
+	// forward update the function receives the current value and the time since
+	// that value was last CHANGED (not merely refreshed), and returns the highest
+	// acceptable new value — or 0 for "no bound" (e.g. chain block time unknown).
+	// A new value above the bound is rejected: not stored, OnValue not fired,
+	// surfaced via OnLargeForwardJump instead. nil (default) disables the guard.
+	SetForwardBound(fn func(currentVal int64, sinceChange time.Duration) int64)
+	// OnLargeForwardJump registers a callback fired when a forward update is
+	// rejected by the bound installed via SetForwardBound.
+	OnLargeForwardJump(callback func(currentVal, newVal int64))
 }
 
 type baseSharedVariable struct {
@@ -108,7 +118,19 @@ type counterInt64 struct {
 	valueCallbacks         []func(int64)
 	ignoreRollbackOf       int64
 	largeRollbackCallbacks []func(localVal, newVal int64)
-	callbackMu             sync.RWMutex
+	// forwardBound (optional) bounds forward movement: a new value above
+	// fn(currentValue, sinceChange) is rejected as bad data (e.g. an upstream
+	// serving another chain's head) and surfaced via largeForwardJumpCallbacks,
+	// rather than stored and propagated. Guarded by callbackMu.
+	forwardBound              func(currentVal int64, sinceChange time.Duration) int64
+	largeForwardJumpCallbacks []func(currentVal, newVal int64)
+	// valueChangedAtUnixMs is when c.value last actually CHANGED. Distinct from
+	// updatedAtUnixMs, which is also bumped by value-unchanged refresh attempts
+	// (TryUpdateIfStale debouncing) and so under-measures elapsed time across a
+	// stall. The forward bound must see true elapsed-since-change so that
+	// legitimate catch-up after a stall is not rejected.
+	valueChangedAtUnixMs atomic.Int64
+	callbackMu           sync.RWMutex
 	// bgPushInProgress dedupes best-effort remote reconciliation/push operations.
 	// It MUST NOT be held while waiting on updateMu; remote sync should never block request flow.
 	bgPushInProgress sync.Mutex
@@ -179,9 +201,29 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	}
 
 	if newVal > currentValue {
-		// Forward progress: always accept
+		// Forward progress: accept unless it violates the forward bound. A value
+		// beyond the bound is bad data (e.g. an upstream serving another chain's
+		// head): neither stored nor propagated via OnValue. For remote updates we
+		// advance our local timestamp past the remote's so our lower (sane) value
+		// wins reconciliation and overwrites the poisoned remote value — mirrors
+		// the small-rollback rejection behavior.
+		if c.exceedsForwardBound(currentValue, newVal) {
+			if isRemoteUpdate {
+				c.advanceTimestampPast(st.UpdatedAt)
+			}
+			c.registry.logger.Warn().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("currentValue", currentValue).
+				Int64("newVal", newVal).
+				Int64("jump", newVal-currentValue).
+				Msg("implausible forward jump rejected (remote)")
+			c.triggerLargeForwardJumpCallback(currentValue, newVal)
+			return false
+		}
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
+				c.markValueChanged()
 				// Update timestamp AFTER accepting the value (for remote updates)
 				if isRemoteUpdate {
 					c.updateUpdatedAtMs(st.UpdatedAt)
@@ -230,6 +272,7 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	// Large rollback exceeds threshold - apply it and trigger callback
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
+			c.markValueChanged()
 			// Update timestamp AFTER accepting the value (for remote updates)
 			if isRemoteUpdate {
 				c.updateUpdatedAtMs(st.UpdatedAt)
@@ -278,9 +321,24 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	}
 
 	if newVal > currentValue {
-		// Forward progress: always accept
+		// Forward progress: accept unless it violates the forward bound. A value
+		// beyond the bound is bad data (e.g. an upstream serving another chain's
+		// head): neither stored nor propagated via OnValue, so it cannot poison
+		// anything downstream of this counter. Surfaced via OnLargeForwardJump.
+		if c.exceedsForwardBound(currentValue, newVal) {
+			c.registry.logger.Warn().
+				Str("source", source).
+				Str("key", c.key).
+				Int64("currentValue", currentValue).
+				Int64("newVal", newVal).
+				Int64("jump", newVal-currentValue).
+				Msg("implausible forward jump rejected (local)")
+			c.triggerLargeForwardJumpCallback(currentValue, newVal)
+			return false
+		}
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
+				c.markValueChanged()
 				c.allocateUpdatedAtMs() // Mark as fresh
 				c.registry.logger.Trace().
 					Str("source", source).
@@ -319,6 +377,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	// Large rollback exceeds threshold - apply it and trigger callback
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
+			c.markValueChanged()
 			c.allocateUpdatedAtMs() // Mark as fresh
 			c.registry.logger.Trace().
 				Str("source", source).
@@ -344,6 +403,42 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 		currentValue = c.value.Load()
 		if newVal >= currentValue {
 			return false
+		}
+	}
+}
+
+// exceedsForwardBound reports whether advancing from currentValue to newVal
+// violates the installed forward bound. No bound installed, no established
+// value, or a 0 bound (unknown chain pace) all mean "no rejection".
+func (c *counterInt64) exceedsForwardBound(currentValue, newVal int64) bool {
+	c.callbackMu.RLock()
+	fn := c.forwardBound
+	c.callbackMu.RUnlock()
+	if fn == nil || currentValue <= 0 {
+		return false
+	}
+	var sinceChange time.Duration
+	if changedAt := c.valueChangedAtUnixMs.Load(); changedAt > 0 {
+		sinceChange = time.Since(time.UnixMilli(changedAt))
+	}
+	bound := fn(currentValue, sinceChange)
+	return bound > 0 && newVal > bound
+}
+
+// markValueChanged stamps the moment c.value actually changed — the anchor
+// timestamp the forward bound measures elapsed time from.
+func (c *counterInt64) markValueChanged() {
+	c.valueChangedAtUnixMs.Store(time.Now().UnixMilli())
+}
+
+func (c *counterInt64) triggerLargeForwardJumpCallback(currentVal, newVal int64) {
+	c.callbackMu.RLock()
+	callbacks := make([]func(currentVal, newVal int64), len(c.largeForwardJumpCallbacks))
+	copy(callbacks, c.largeForwardJumpCallbacks)
+	c.callbackMu.RUnlock()
+	for _, cb := range callbacks {
+		if cb != nil {
+			cb(currentVal, newVal)
 		}
 	}
 }
@@ -478,6 +573,18 @@ func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
 	c.callbackMu.Lock()
 	defer c.callbackMu.Unlock()
 	c.largeRollbackCallbacks = append(c.largeRollbackCallbacks, cb)
+}
+
+func (c *counterInt64) SetForwardBound(fn func(currentVal int64, sinceChange time.Duration) int64) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	c.forwardBound = fn
+}
+
+func (c *counterInt64) OnLargeForwardJump(cb func(currentVal, newVal int64)) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	c.largeForwardJumpCallbacks = append(c.largeForwardJumpCallbacks, cb)
 }
 
 func (c *counterInt64) markFreshAttempt() {

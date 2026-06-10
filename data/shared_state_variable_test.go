@@ -1742,3 +1742,223 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 		setCallMu.Unlock()
 	})
 }
+
+// TestCounterInt64_ForwardBound verifies the forward-movement guard: once a
+// counter holds an established value, a forward update above the installed
+// bound is rejected as bad data (not stored, OnValue not fired) and surfaced
+// via OnLargeForwardJump — the inverse of the large-rollback guard. The bound
+// is a function of the current value and the time since it last CHANGED, so
+// legitimate catch-up after a stall is accepted while an abrupt implausible
+// jump (e.g. an upstream serving another chain's head) is rejected.
+func TestCounterInt64_ForwardBound(t *testing.T) {
+	newCounter := func() *counterInt64 {
+		return &counterInt64{
+			ignoreRollbackOf: 1024,
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+	}
+	// A fixed-width bound: accept advances up to 10k blocks past current.
+	fixedBound := func(width int64) func(int64, time.Duration) int64 {
+		return func(cur int64, _ time.Duration) int64 { return cur + width }
+	}
+
+	t.Run("local: forward progress within bound is accepted", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		c.value.Store(1_000_000)
+
+		var cbCount atomic.Int32
+		c.OnLargeForwardJump(func(_, _ int64) { cbCount.Add(1) })
+
+		updated := c.processNewValue(UpdateSourceTryUpdate, 1_000_100)
+		assert.True(t, updated, "in-bound forward progress should be accepted")
+		assert.Equal(t, int64(1_000_100), c.GetValue())
+		assert.Equal(t, int32(0), cbCount.Load(), "no forward-jump callback for normal progress")
+	})
+
+	t.Run("local: jump beyond bound is rejected and not stored", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		c.value.Store(1_000_000)
+
+		var mu sync.Mutex
+		var calls []struct{ current, new int64 }
+		c.OnLargeForwardJump(func(currentVal, newVal int64) {
+			mu.Lock()
+			calls = append(calls, struct{ current, new int64 }{currentVal, newVal})
+			mu.Unlock()
+		})
+		var valueCbCount atomic.Int32
+		c.OnValue(func(int64) { valueCbCount.Add(1) })
+
+		updated := c.processNewValue(UpdateSourceTryUpdate, 60_000_000)
+		assert.False(t, updated, "implausible forward jump should be rejected")
+		assert.Equal(t, int64(1_000_000), c.GetValue(), "value must be unchanged after rejection")
+		assert.Equal(t, int32(0), valueCbCount.Load(), "OnValue must not fire for a rejected value")
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Len(t, calls, 1, "OnLargeForwardJump should fire exactly once")
+		if len(calls) == 1 {
+			assert.Equal(t, int64(1_000_000), calls[0].current)
+			assert.Equal(t, int64(60_000_000), calls[0].new)
+		}
+	})
+
+	t.Run("cold start: first value from zero is accepted regardless of magnitude", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		// value defaults to 0: no established self-history to check against.
+
+		var cbCount atomic.Int32
+		c.OnLargeForwardJump(func(_, _ int64) { cbCount.Add(1) })
+
+		updated := c.processNewValue(UpdateSourceTryUpdate, 60_000_000)
+		assert.True(t, updated, "cold-start value must be accepted")
+		assert.Equal(t, int64(60_000_000), c.GetValue())
+		assert.Equal(t, int32(0), cbCount.Load(), "no forward-jump callback on cold start")
+	})
+
+	t.Run("disabled: no bound installed accepts arbitrarily large jumps (backward compatible)", func(t *testing.T) {
+		c := newCounter()
+		c.value.Store(1_000_000)
+
+		updated := c.processNewValue(UpdateSourceTryUpdate, 60_000_000)
+		assert.True(t, updated, "without a bound, large jumps are accepted as before")
+		assert.Equal(t, int64(60_000_000), c.GetValue())
+	})
+
+	t.Run("inactive: bound function returning 0 accepts everything (chain pace unknown)", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(func(int64, time.Duration) int64 { return 0 })
+		c.value.Store(1_000_000)
+
+		var cbCount atomic.Int32
+		c.OnLargeForwardJump(func(_, _ int64) { cbCount.Add(1) })
+
+		updated := c.processNewValue(UpdateSourceTryUpdate, 60_000_000)
+		assert.True(t, updated, "a 0 bound means 'gate inactive', never 'reject all'")
+		assert.Equal(t, int64(60_000_000), c.GetValue())
+		assert.Equal(t, int32(0), cbCount.Load())
+	})
+
+	t.Run("boundary: value equal to bound accepted, one above rejected", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		c.value.Store(1_000_000)
+
+		updated := c.processNewValue(UpdateSourceTryUpdate, 1_010_000)
+		assert.True(t, updated, "value exactly at the bound should be accepted")
+		assert.Equal(t, int64(1_010_000), c.GetValue())
+
+		updated = c.processNewValue(UpdateSourceTryUpdate, 1_020_001)
+		assert.False(t, updated, "value one above the bound should be rejected")
+		assert.Equal(t, int64(1_010_000), c.GetValue())
+	})
+
+	t.Run("recovery: an in-bound value after a rejected jump is accepted", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		c.value.Store(1_000_000)
+
+		assert.False(t, c.processNewValue(UpdateSourceTryUpdate, 60_000_000))
+		assert.Equal(t, int64(1_000_000), c.GetValue())
+
+		// Upstream recovers and reports a sane next block.
+		assert.True(t, c.processNewValue(UpdateSourceTryUpdate, 1_000_012))
+		assert.Equal(t, int64(1_000_012), c.GetValue())
+	})
+
+	t.Run("stall: bound sees elapsed-since-CHANGE so catch-up is accepted", func(t *testing.T) {
+		c := newCounter()
+		c.value.Store(0)
+		// Establish a value through the normal path so valueChangedAt is stamped.
+		assert.True(t, c.processNewValue(UpdateSourceTryUpdate, 1_000_000))
+
+		// Simulate a refresh-only stall: updatedAtUnixMs keeps being bumped by
+		// value-unchanged poll attempts, but the VALUE hasn't moved for an hour.
+		c.valueChangedAtUnixMs.Store(time.Now().Add(-1 * time.Hour).UnixMilli())
+		c.allocateUpdatedAtMs() // freshness timestamp says "just now"
+
+		var seenElapsed atomic.Int64
+		// A velocity-style bound: ~1 block per 2s plus a small buffer. After a
+		// 1h stall this allows ~1800 blocks of catch-up.
+		c.SetForwardBound(func(cur int64, sinceChange time.Duration) int64 {
+			seenElapsed.Store(int64(sinceChange))
+			return cur + int64(sinceChange.Seconds()/2) + 5
+		})
+
+		updated := c.processNewValue(UpdateSourceTryUpdate, 1_001_700)
+		assert.True(t, updated, "catch-up within the elapsed-derived bound must be accepted after a stall")
+		assert.GreaterOrEqual(t, time.Duration(seenElapsed.Load()), time.Hour,
+			"the bound must be given elapsed-since-change, not elapsed-since-refresh")
+	})
+
+	t.Run("remote: jump beyond bound is rejected and timestamp advanced", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		c.value.Store(1_000_000)
+		c.updatedAtUnixMs.Store(100)
+
+		var cbCount atomic.Int32
+		c.OnLargeForwardJump(func(_, _ int64) { cbCount.Add(1) })
+		var valueCbCount atomic.Int32
+		c.OnValue(func(int64) { valueCbCount.Add(1) })
+
+		// A peer instance propagates a poisoned value with a fresher timestamp.
+		updated := c.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value:     60_000_000,
+			UpdatedAt: 200, // fresher than local 100
+			UpdatedBy: "peer-instance",
+		})
+		assert.False(t, updated, "remote forward jump should be rejected")
+		assert.Equal(t, int64(1_000_000), c.GetValue(), "remote poison must not be stored")
+		assert.Equal(t, int32(0), valueCbCount.Load(), "OnValue must not fire for a rejected remote value")
+		assert.Equal(t, int32(1), cbCount.Load(), "OnLargeForwardJump should fire once")
+		// Local timestamp advanced past the remote's so our sane value wins
+		// reconciliation and overwrites the poisoned remote value (mirrors the
+		// small-rollback rejection behavior).
+		assert.Greater(t, c.updatedAtMs(), int64(200), "local timestamp should be advanced past remote")
+	})
+
+	t.Run("remote: in-bound forward progress is accepted", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		c.value.Store(1_000_000)
+		c.updatedAtUnixMs.Store(100)
+
+		updated := c.processNewState(UpdateSourceRemoteSync, CounterInt64State{
+			Value:     1_000_500,
+			UpdatedAt: 200,
+			UpdatedBy: "peer-instance",
+		})
+		assert.True(t, updated, "in-bound remote progress should be accepted")
+		assert.Equal(t, int64(1_000_500), c.GetValue())
+	})
+
+	t.Run("concurrent rejected jumps do not corrupt value or panic", func(t *testing.T) {
+		c := newCounter()
+		c.SetForwardBound(fixedBound(10_000))
+		c.value.Store(1_000_000)
+
+		var cbCount atomic.Int32
+		c.OnLargeForwardJump(func(_, _ int64) { cbCount.Add(1) })
+
+		const goroutines = 50
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				c.processNewValue(UpdateSourceTryUpdate, 60_000_000)
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int64(1_000_000), c.GetValue(), "value must remain at the last good block")
+		assert.Equal(t, int32(goroutines), cbCount.Load(), "each rejected call fires the callback exactly once")
+	})
+}
