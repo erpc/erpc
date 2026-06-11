@@ -301,6 +301,72 @@ func TestComputeServedTipCandidate_VelocityGate_NoLastServed_DisablesGate(t *tes
 	assert.Empty(t, res.VelocityDropped)
 }
 
+func TestComputeServedTipCandidate_VelocityGate_FailsOpenWhenAllDropped(t *testing.T) {
+	// The wedge scenario: a freshly-booted process inherits a stale persisted
+	// counter (lastServed=100) with no in-process advance yet (elapsed=0), so
+	// the bound collapses to 100+5=105 while every live tip is far past it.
+	// Pre-fail-open this dropped ALL inputs → Candidate 0 → the monotonic
+	// counter never advanced again (and elapsed stayed 0) → wedged forever.
+	cfg := ServedTipConfig{
+		ClusterDelta:         2,
+		BlockTimeSeconds:     2.0,
+		VelocitySlack:        2.0,
+		VelocityBufferBlocks: 5,
+	}
+	res := ComputeServedTipCandidate(
+		tipsFromInts(5000, 5001, 5001),
+		100, // stale inherited anchor
+		0,   // no in-process advance observed yet
+		cfg,
+	)
+	assert.True(t, res.VelocityFailOpen, "gate must fail open when it would drop every input")
+	assert.Empty(t, res.VelocityDropped, "nothing was actually dropped on fail-open")
+	assert.Equal(t, int64(5000), res.Candidate, "ungated re-run picks the real cluster min")
+	assert.Equal(t, int64(5001), res.MaxEligible, "eligible max is the unfiltered max on fail-open")
+}
+
+func TestComputeServedTipCandidate_VelocityGate_FailOpenStillClustersOutGarbage(t *testing.T) {
+	// Fail-open must not hand the pick to a garbage tip: the ungated re-run
+	// goes through the same clustering, so the agreeing majority still wins
+	// and the far-future tip is attributed as an outlier.
+	cfg := ServedTipConfig{
+		ClusterDelta:         2,
+		BlockTimeSeconds:     2.0,
+		VelocitySlack:        2.0,
+		VelocityBufferBlocks: 5,
+	}
+	res := ComputeServedTipCandidate(
+		tipsFromInts(5000, 5001, 999999),
+		100,
+		2*time.Second,
+		cfg,
+	)
+	assert.True(t, res.VelocityFailOpen)
+	assert.Equal(t, int64(5000), res.Candidate, "dominant cluster wins despite fail-open")
+	assert.Equal(t, []string{"u2"}, res.Outliers, "garbage tip is an outlier, not the pick")
+}
+
+func TestComputeServedTipCandidate_VelocityGate_PartialDropDoesNotFailOpen(t *testing.T) {
+	// As long as at least one input survives the gate, behavior is unchanged:
+	// the too-far-future tip is dropped and attributed, no fail-open.
+	cfg := ServedTipConfig{
+		ClusterDelta:         2,
+		BlockTimeSeconds:     2.0,
+		VelocitySlack:        2.0,
+		VelocityBufferBlocks: 5,
+	}
+	res := ComputeServedTipCandidate(
+		tipsFromInts(105, 106, 9999),
+		100,
+		2*time.Second, // expectedMax = 100 + ceil(1×2.0) + 5 = 107
+		cfg,
+	)
+	assert.False(t, res.VelocityFailOpen)
+	assert.Equal(t, []string{"u2"}, res.VelocityDropped)
+	assert.Equal(t, int64(105), res.Candidate)
+	assert.Equal(t, int64(106), res.MaxEligible)
+}
+
 // ----- cluster delta auto-derivation ----------------------------------------
 
 func TestComputeServedTipCandidate_ClusterDelta_AutoDerivedFromBlockTime(t *testing.T) {

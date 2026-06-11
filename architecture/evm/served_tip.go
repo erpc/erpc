@@ -76,15 +76,28 @@ type ServedTipResult struct {
 
 	// VelocityDropped lists the UpstreamIDs whose tips were rejected by the
 	// velocity gate (claimed too-far-future given lastServedBlock and the
-	// elapsed time).
+	// elapsed time). Always empty when the gate failed open — see
+	// VelocityFailOpen.
 	VelocityDropped []string
+
+	// VelocityFailOpen reports that the velocity gate would have rejected
+	// EVERY input, so the pick re-ran ungated. A bound that disagrees with all
+	// live tips at once means the ANCHOR is wrong, not the world — e.g. a
+	// stale persisted counter inherited at boot (the in-process elapsed starts
+	// at 0, collapsing the bound to lastServed+buffer), or a stall the window
+	// never caught up from. Without fail-open such a pick returns Candidate 0
+	// ("no new information") forever, and a strict-monotonic served-tip
+	// counter can never advance again. Outlier protection still applies: the
+	// ungated re-run goes through the same clustering, so a lone garbage tip
+	// still loses to the dominant cluster.
+	VelocityFailOpen bool
 
 	// MaxEligible is the highest block number among inputs that SURVIVED the
 	// velocity gate — the freshest sane tip. Equal to MaxObserved when the
-	// velocity gate is inactive (no prior anchor or unknown block time). Prefer
-	// this over MaxObserved for the deliberate-lag gauge: a garbage far-future
-	// tip (wrong-chain / misconfigured upstream) is velocity-dropped and so
-	// cannot inflate the lag here.
+	// velocity gate is inactive (no prior anchor or unknown block time) or
+	// when it failed open. Prefer this over MaxObserved for the deliberate-lag
+	// gauge: a garbage far-future tip (wrong-chain / misconfigured upstream)
+	// is velocity-dropped and so cannot inflate the lag here.
 	MaxEligible int64
 
 	// Outliers lists the UpstreamIDs that survived the velocity gate but landed
@@ -102,6 +115,8 @@ type ServedTipResult struct {
 //  2. Velocity-gate: if lastServedBlock > 0 and cfg.BlockTimeSeconds > 0,
 //     drop inputs whose tip exceeds the expected max derived from
 //     (lastServedBlock + elapsedBlocks × VelocitySlack + VelocityBufferBlocks).
+//     If that would drop EVERY input the gate FAILS OPEN (nothing is dropped)
+//     — see ServedTipResult.VelocityFailOpen.
 //  3. Sort surviving inputs ascending by block number.
 //  4. Cluster greedily: adjacent values whose gap exceeds ClusterDelta split.
 //  5. Pick the dominant cluster: max by (size desc, then min desc) — size
@@ -163,9 +178,17 @@ func ComputeServedTipCandidate(
 			}
 			filtered = append(filtered, t)
 		}
-		valid = filtered
-		if len(valid) == 0 {
-			return res
+		if len(filtered) == 0 {
+			// Fail open: a bound that rejects every live tip means the anchor
+			// (lastServedBlock/elapsed) is wrong, not the world. Dropping all
+			// inputs would yield Candidate 0 — "no new information" — so the
+			// caller's monotonic counter would never advance and every later
+			// pick would wedge the same way. Re-run ungated and let clustering
+			// arbitrate outliers instead.
+			res.VelocityFailOpen = true
+			res.VelocityDropped = nil
+		} else {
+			valid = filtered
 		}
 	}
 

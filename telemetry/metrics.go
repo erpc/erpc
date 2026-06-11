@@ -161,6 +161,19 @@ var (
 		Help:      "Times an upstream was excluded from the served-tip pick, per reason (velocity|outlier).",
 	}, []string{"project", "network", "upstream", "axis", "reason"})
 
+	// MetricNetworkServedTipVelocityFailOpenTotal counts picks where the velocity
+	// gate would have rejected EVERY input and therefore failed open (re-ran
+	// ungated). One-off ticks are normal (boot with a stale inherited counter,
+	// recovery from a stall); a SUSTAINED rate means the velocity anchor or the
+	// block-time estimate is wrong for this network and deserves a look. Before
+	// fail-open existed, this exact condition silently wedged the monotonic
+	// served-tip counter forever. ABSENT in default MAX mode (feature off).
+	MetricNetworkServedTipVelocityFailOpenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_velocity_failopen_total",
+		Help:      "Times the served-tip velocity gate would have dropped every input and failed open (re-ran ungated); sustained rate = stale/wrong anchor or block-time estimate.",
+	}, []string{"project", "network", "axis"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

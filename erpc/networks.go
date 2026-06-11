@@ -784,6 +784,7 @@ func (n *Network) observeServedTipResult(
 		attribute.Int("served_tip.dominant_size", res.DominantSize),
 		attribute.Int("served_tip.outliers_count", res.OutliersCount),
 		attribute.Int("served_tip.velocity_dropped", len(res.VelocityDropped)),
+		attribute.Bool("served_tip.velocity_failopen", res.VelocityFailOpen),
 	)
 	if res.MaxObserved > res.Candidate {
 		span.SetAttributes(
@@ -826,14 +827,18 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 		// named lane, all eligible upstreams for "all"). Measured against
 		// MaxEligible (not raw MaxObserved) so a garbage far-future upstream cannot
 		// inflate it. lane="all" is the network-wide lag; a named lane is the
-		// group's own deliberate cushion.
-		lag := res.MaxEligible - served
-		if lag < 0 {
-			lag = 0
+		// group's own deliberate cushion. Skipped when there were no eligible
+		// inputs at all (MaxEligible 0) — writing the clamped 0 there would
+		// report a pick that learned nothing as a perfectly healthy lag.
+		if res.MaxEligible > 0 {
+			lag := res.MaxEligible - served
+			if lag < 0 {
+				lag = 0
+			}
+			telemetry.MetricNetworkServedTipLagBlocks.
+				WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+				Set(float64(lag))
 		}
-		telemetry.MetricNetworkServedTipLagBlocks.
-			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(lag))
 	}
 	if lane != "" {
 		return
@@ -841,6 +846,10 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 
 	// Network-wide only from here: per-upstream exclusion counters are independent
 	// of whether a tip was served (even a 0-candidate pick is worth recording).
+	if res.VelocityFailOpen {
+		telemetry.MetricNetworkServedTipVelocityFailOpenTotal.
+			WithLabelValues(n.projectId, n.Label(), axis).Inc()
+	}
 	for _, up := range res.VelocityDropped {
 		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
 			WithLabelValues(n.projectId, n.Label(), up, axis, "velocity").Inc()
