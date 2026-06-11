@@ -57,6 +57,12 @@ Conventions that keep the system working:
   expanded, navigation links up/down/sideways), the root `llms.txt`, and
   `llms-full.txt`. Don't edit generated files; new pages just need a
   `_meta.js` entry.
+- **Agents are served markdown automatically** — `docs/middleware.ts`
+  302-redirects requests whose `Accept` header lists `text/markdown` (Claude
+  Code sends this on every fetch) or whose `User-Agent` matches a known AI
+  fetcher to the page's `.llms.txt` twin. If you add a non-page route, make
+  sure the middleware's `matcher` excludes it; new AI fetchers belong in the
+  `AI_FETCHER_UA` regex.
 - **Build:** `cd docs && pnpm install && pnpm build` (standalone pnpm
   workspace; `next dev` for live preview).
 
