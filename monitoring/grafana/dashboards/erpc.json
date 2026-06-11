@@ -4904,7 +4904,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks each isolated use-upstream GROUP (lane) deliberately holds its served tip behind that lane's OWN freshest velocity-eligible upstream \u2014 the per-lane safety cushion that keeps a transient single-node spike from being advertised as the tip. Like the lane tip charts, a lane appears only while it receives use-upstream traffic, and its name is the token shared by ALL the group's upstreams. A small steady value is healthy (intentional lag); a lane trending up is falling behind its own fleet and worth investigating.",
+          "description": "Blocks each isolated use-upstream GROUP (lane) deliberately holds its served tip behind that lane's OWN single freshest upstream view \u2014 the per-lane safety cushion that keeps a transient single-node spike from being advertised as the tip. Like the lane tip charts, a lane appears only while it receives use-upstream traffic, and its name is the token shared by ALL the group's upstreams. A small steady value is healthy (intentional lag); a lane trending up is falling behind its own fleet and worth investigating.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5142,139 +5142,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Upstreams dropped from the tip pick (velocity|outlier); gate bypass = velocity gate disarmed for safety (all_dropped: would have rejected every input; stale_anchor: anchor older than the re-anchor cutoff). Sustained bypass = wrong anchor/block-time.",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisGridShow": false,
-                "axisLabel": "",
-                "axisPlacement": "hidden",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "linear",
-                "lineStyle": {
-                  "dash": [
-                    0,
-                    10
-                  ],
-                  "fill": "dot"
-                },
-                "lineWidth": 1,
-                "pointSize": 7,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "always",
-                "showValues": false,
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": 0
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "cps"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "x": 0,
-            "y": 25,
-            "w": 24,
-            "h": 8
-          },
-          "id": 904,
-          "interval": "1m",
-          "maxDataPoints": 20,
-          "options": {
-            "alertThreshold": true,
-            "legend": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last *",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "hideZeros": false,
-              "mode": "multi",
-              "sort": "desc"
-            }
-          },
-          "pluginVersion": "12.3.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "topk(15, sum by (network, upstream, reason) (rate(erpc_network_served_tip_upstream_excluded_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}[$__rate_interval])) > 0)",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} / {{upstream}} ({{reason}})",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "topk(10, sum by (network, trigger) (rate(erpc_network_served_tip_velocity_failopen_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}[$__rate_interval])) > 0)",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} \u00b7 gate bypass ({{trigger}})",
-              "range": true,
-              "refId": "B"
-            }
-          ],
-          "title": "Tip exclusions & gate fail-open",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "description": "Universal stuck-tip detector: seconds since the served-tip counter last advanced (alert when >> block time on a live chain), and how far the shared counter sits AHEAD of the freshest live tip (poisoned-counter signal; serve-time ceiling protects clients).",
+          "description": "Universal stuck-tip detector: seconds since the served-tip value last changed. Alert when >> block time on a live chain \u2014 catches any freeze mechanism, including unknown ones.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5338,28 +5206,11 @@
               },
               "unit": "s"
             },
-            "overrides": [
-              {
-                "matcher": {
-                  "id": "byFrameRefID",
-                  "options": "B"
-                },
-                "properties": [
-                  {
-                    "id": "unit",
-                    "value": "short"
-                  },
-                  {
-                    "id": "custom.axisPlacement",
-                    "value": "right"
-                  }
-                ]
-              }
-            ]
+            "overrides": []
           },
           "gridPos": {
             "x": 0,
-            "y": 33,
+            "y": 25,
             "w": 24,
             "h": 8
           },
@@ -5399,23 +5250,9 @@
               "legendFormat": "{{network}} \u00b7 advance age (s)",
               "range": true,
               "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "topk(10, max by (network) (erpc_network_served_tip_counter_ahead_blocks{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\", axis=\"latest\"}) > 0)",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} \u00b7 counter ahead (blocks)",
-              "range": true,
-              "refId": "B"
             }
           ],
-          "title": "Tip stuck/rogue watch",
+          "title": "Tip advance age (stuck watch)",
           "type": "timeseries"
         },
         {
@@ -5497,7 +5334,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 41,
+            "y": 33,
             "w": 24,
             "h": 8
           },
@@ -5687,7 +5524,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 49,
+            "y": 41,
             "w": 24,
             "h": 10
           },
@@ -5980,7 +5817,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 59,
+            "y": 51,
             "w": 24,
             "h": 10
           },
@@ -6222,7 +6059,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 69,
+            "y": 61,
             "w": 24,
             "h": 10
           },

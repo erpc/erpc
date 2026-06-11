@@ -19,14 +19,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the NEW semantics of Network.EvmHighestLatestBlockNumber:
-//
-//   - Returns the MIN of the dominant cluster of upstream tips (NOT max).
-//   - Strict monotonic forward progress via a network-level shared variable;
-//     a second computation that would regress is rejected.
-//
-// They will FAIL against the existing MAX-based implementation. Each test
-// case is designed so MAX(tips) != cluster-MIN to make the failure visible.
+// These tests pin the semantics of Network.EvmHighestLatestBlockNumber in
+// served-tip mode: the MAJORITY order statistic — the freshest block a strict
+// majority of eligible upstreams already have (evm.PickServedTip). Each case
+// is designed so MAX(tips) != majority to make regressions visible.
 
 // servedTipFixture is a compact description of one upstream's poller state
 // at test time. Used to drive the lighter setupServedTipNetwork helper.
@@ -192,9 +188,8 @@ func setupServedTipNetworkWith(t *testing.T, ctx context.Context, fixtures []ser
 
 // ----- new-semantics scenarios ----------------------------------------------
 
-// Three close upstreams: MIN of the cluster (not MAX) is the served tip.
-// MAX semantics (old) would return 100; new semantics returns 98.
-func TestServedTip_ThreeUpstreams_AllClose_ReturnsMin(t *testing.T) {
+// Three close upstreams: the majority head (2nd of 3), not MAX, is served.
+func TestServedTip_ThreeUpstreams_AllClose_ReturnsMajority(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -209,16 +204,13 @@ func TestServedTip_ThreeUpstreams_AllClose_ReturnsMin(t *testing.T) {
 	})
 
 	served := network.EvmHighestLatestBlockNumber(ctx)
-	assert.Equal(t, int64(98), served,
-		"served tip must be MIN of dominant cluster, not MAX; "+
-			"this returns 100 under the old EvmHighestLatestBlockNumber semantics")
+	assert.Equal(t, int64(99), served,
+		"served tip must be the majority head (2 of 3 have 99), not MAX(100)")
 }
 
-// One leader + two laggers: dominant cluster is the laggers; their MIN wins.
-// MAX semantics would return 100; new semantics returns 49.
-// (In real serving, the monotonic clamp would refuse 49 if last-served was
-// higher — but this test bypasses that by being the first call.)
-func TestServedTip_OneLeader_TwoLaggers_ReturnsLaggerMin(t *testing.T) {
+// One leader + two laggers: the majority view (the middle head) wins — the
+// single leader cannot define "latest" for the whole network.
+func TestServedTip_OneLeader_TwoLaggers_ReturnsMajority(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -233,13 +225,13 @@ func TestServedTip_OneLeader_TwoLaggers_ReturnsLaggerMin(t *testing.T) {
 	})
 
 	served := network.EvmHighestLatestBlockNumber(ctx)
-	assert.Equal(t, int64(49), served,
-		"with 1 leader vs 2 laggers, trust the lagging cluster; "+
-			"this returns 100 under the old MAX semantics")
+	assert.Equal(t, int64(50), served,
+		"with 1 leader vs 2 laggers the majority head (50) is served; "+
+			"MAX semantics would return the leader's 100")
 }
 
-// Three close + two way-behind: dominant cluster is the 3-close; MIN of that
-// cluster wins (98). Old MAX semantics returns 100.
+// Three close + two way-behind: the majority head is the 3rd of 5 (98) —
+// fresh enough to be useful, held by a strict majority. MAX would return 100.
 func TestServedTip_FiveUpstreams_ThreeClose_TwoBehind(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -258,20 +250,15 @@ func TestServedTip_FiveUpstreams_ThreeClose_TwoBehind(t *testing.T) {
 
 	served := network.EvmHighestLatestBlockNumber(ctx)
 	assert.Equal(t, int64(98), served,
-		"dominant cluster (3 close) wins; MIN of that cluster served; "+
-			"this returns 100 under the old MAX semantics")
+		"majority head (3 of 5 have 98) is served; MAX semantics would return 100")
 }
 
-// Strict monotonic forward progress: a second computation that would
-// regress (because upstreams retreated) is held at the last-served value.
-//
-// This exercises the network-level shared-variable TryUpdate clamp on top
-// of the cluster picker. Under the old implementation that returns MAX of
-// current tips with no monotonic guarantee, the second call returns 80
-// (the new MAX) — so this test fails twice over: first because cluster-MIN
-// expects 99 on the first call, and again because the second call must
-// stay at 99 (not retreat to 80).
-func TestServedTip_MonotonicClamp_HoldsLastServedOnRegression(t *testing.T) {
+// Monotonicity under upstream retreat: the served tip must not regress when
+// upstreams transiently report lower heads. There is no network-level counter
+// anymore — the guarantee comes from the per-upstream poller counters being
+// monotonic (small retreats are rejected at the poller layer), and the
+// majority of monotonic inputs is monotonic while the set is stable.
+func TestServedTip_NoRegressionOnUpstreamRetreat(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -286,8 +273,8 @@ func TestServedTip_MonotonicClamp_HoldsLastServedOnRegression(t *testing.T) {
 	})
 
 	served1 := network.EvmHighestLatestBlockNumber(ctx)
-	require.Equal(t, int64(99), served1,
-		"first call: cluster MIN of [99,100,100] = 99")
+	require.Equal(t, int64(100), served1,
+		"first call: majority of [100,100,99] = 100")
 
 	// All upstreams retreat (e.g., transient outage causing pollers to lose
 	// state, or a partial chain reorg perceived by some upstreams).
@@ -297,11 +284,9 @@ func TestServedTip_MonotonicClamp_HoldsLastServedOnRegression(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	served2 := network.EvmHighestLatestBlockNumber(ctx)
-	// NOTE: the per-upstream poller is itself monotonic via CounterInt64.
-	// Its TryUpdate will reject the retreat — SuggestLatestBlock(80) won't
-	// actually move u1's GetValue() down from 100. So this test ALSO checks
-	// that the network method correctly relies on the (clamped) per-upstream
-	// state and stays at 99, not on raw SuggestLatestBlock arguments.
+	// The per-upstream poller is monotonic via CounterInt64: its TryUpdate
+	// rejects the small retreat, so the majority over the (clamped) poller
+	// state cannot regress either.
 	assert.GreaterOrEqual(t, served2, served1,
 		"served tip must never regress; expected >= %d, got %d", served1, served2)
 }
@@ -464,32 +449,31 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 			"id glob selector also scopes the tip")
 	})
 
-	t.Run("ClusterMode", func(t *testing.T) {
+	t.Run("MajorityMode", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		util.SetupMocksForEvmStatePoller()
 		defer util.ResetGock()
-		// Cluster-min served tip enabled for latest+finalized.
+		// Majority served tip enabled for latest+finalized.
 		nw, _ := setupServedTipNetwork(t, ctx, fixtures)
 
-		// No selector: dominant agreement cluster. 2 fast(2000) vs 2 slow(1000)
-		// is a size tie, broken toward the higher min => 2000. This call also
-		// advances the network-wide monotonic counter to 2000.
-		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(ctx),
-			"no selector: dominant cluster min")
-		// family:slow: cluster-min over the slow subset, computed statelessly so
-		// the network counter (now 2000) does NOT clamp it up.
+		// No selector: 2 fast(2000) vs 2 slow(1000) — only half the upstreams
+		// have 2000, so the strict majority (3 of 4) head is 1000. Deliberate
+		// semantics: never advertise a block the routed-to upstream may lack.
+		// (The old cluster tie-break advertised 2000 here.)
+		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(ctx),
+			"no selector: strict-majority head across both families")
+		// family:slow: majority over the slow subset only.
 		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:slow")),
-			"family:slow: cluster-min within the slow family, ignoring the 2000 network tip")
+			"family:slow: majority within the slow family")
 		assert.Equal(t, int64(2000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "family:fast")),
-			"family:fast: cluster-min within the fast family")
+			"family:fast: majority within the fast family — the fast pair both have 2000")
 	})
 
 	// Group selectors (id PATTERNS or tags) that carve out a real sub-group
-	// (>=2 upstreams and < all) each materialize ONE cross-pod monotonic tracker,
-	// keyed by the matched upstream SET — so `flashblocks*`/`!flashblocks*`-style
-	// patterns create two groups automatically, equivalent selectors dedup, and
-	// garbage selectors can never inflate state (DDoS-safe).
+	// (>=2 upstreams and < all) each materialize ONE telemetry lane (gauge
+	// label + watchdog anchor), keyed by the matched upstream SET — equivalent
+	// selectors dedup, and garbage selectors can never inflate state (DDoS-safe).
 	t.Run("GroupSelectors_MaterializeDedupAndBound", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -504,7 +488,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 		assert.Equal(t, int64(1000), nw.EvmHighestLatestBlockNumber(withSel(ctx, "!fast*")),
 			"!fast* -> the complement (slow) group's own tip")
 		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
-			"a pattern and its negation create exactly two group trackers")
+			"a pattern and its negation create exactly two lanes")
 
 		// Each partition is named by common.LaneName of its matched id set:
 		// {fast-1,fast-2} -> "fast", {slow-1,slow-2} -> "slow". A single vendor
@@ -524,7 +508,7 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 			nw.EvmHighestLatestBlockNumber(withSel(ctx, sel))
 		}
 		assert.Equal(t, int32(2), nw.servedTipPartitionCount.Load(),
-			"equivalent selectors (same matched set) must dedup, not create new trackers")
+			"equivalent selectors (same matched set) must dedup, not create new lanes")
 
 		// Non-group selectors NEVER materialize: match-all, single-node,
 		// no-match, or a boolean expression.
@@ -536,12 +520,11 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 	})
 }
 
-// A pod that never wins the advance race must still keep a fresh gate anchor:
-// the anchor tracks OBSERVED counter-value changes (whoever advanced it), not
-// only this pod's own successful TryUpdates. Otherwise multi-pod deployments
-// degrade — the losing pods' gates disarm via stale_anchor on every pick and
-// their advance-age gauge false-alarms while the counter is in fact moving.
-func TestServedTip_AnchorTracksExternallyAdvancedCounter(t *testing.T) {
+// The stuck-tip watchdog: the anchor stamps when the SERVED VALUE is seen to
+// change. The first observed value at boot deliberately does not stamp (there
+// is nothing to compare against); once the tip moves, the advance-age gauge
+// becomes live.
+func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -549,27 +532,22 @@ func TestServedTip_AnchorTracksExternallyAdvancedCounter(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "u1", chainID: 123, latestBlock: 100},
 		{id: "u2", chainID: 123, latestBlock: 100},
 		{id: "u3", chainID: 123, latestBlock: 99},
 	})
 
-	// Pick 1 seeds the shared counter from live heads (cluster min = 99). The
-	// boot transition (unseeded 0 -> first value) deliberately does not stamp
-	// the anchor: there is nothing to compare against yet.
-	require.Equal(t, int64(99), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
 	require.Negative(t, network.servedLatestAnchor.age(),
-		"boot seeding alone must not stamp the anchor")
+		"first observation alone must not stamp the watchdog")
 
-	// Another pod advances the shared counter; this pod's own picks would
-	// propose <= 99 and never win an advance themselves.
-	network.servedLatestBlockShared.TryUpdate(ctx, 120)
-
-	// Pick 2 observes the value change and stamps the anchor.
-	_ = network.EvmHighestLatestBlockNumber(ctx)
+	for _, u := range ups {
+		u.EvmStatePoller().SuggestLatestBlock(105)
+	}
+	require.Equal(t, int64(105), network.EvmHighestLatestBlockNumber(ctx))
 	age := network.servedLatestAnchor.age()
 	require.GreaterOrEqual(t, age, time.Duration(0),
-		"anchor must be stamped after observing an external advance")
-	require.Less(t, age, 5*time.Second, "anchor must be fresh, not inherited")
+		"watchdog must stamp once the served value moves")
+	require.Less(t, age, 5*time.Second)
 }

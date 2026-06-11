@@ -3,7 +3,6 @@ package erpc
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/require"
@@ -55,11 +54,15 @@ func TestServedTipInvariant_StaleInheritedCounter_RecoversAndTracks(t *testing.T
 
 	const liveHead = int64(10_000)
 	network, ups := setupServedTipNetwork(t, ctx, servedTipInvariantFixtures(liveHead))
-	network.servedTipBlockTimeOverride = 1.0 // arm the velocity gate, as in prod
 
-	// The counter a previous process life left in the shared store: thousands
-	// of blocks behind the live chain (prod saw 33k–4M).
-	network.servedLatestBlockShared.TryUpdate(ctx, 5_000)
+	// PRECONDITION NOTE: the original reproduction seeded the persistent
+	// shared counter to 5_000 (the value a previous process life left in the
+	// store — prod saw tips inherited 33k–4M blocks behind) with the velocity
+	// gate armed. The majority design holds NO persistent served-tip state
+	// and NO gate, so there is nothing left to seed or arm: the wedge's
+	// enabling state is gone by construction. The OUTCOME assertions below
+	// are unchanged and must hold for any future implementation, stateful or
+	// not.
 
 	// Drive the chain forward one block per pick, exactly like prod traffic.
 	served := int64(0)
@@ -94,7 +97,6 @@ func TestServedTipInvariant_ProcessRestart_KeepsTracking(t *testing.T) {
 
 	const liveHead = int64(10_000)
 	network, ups := setupServedTipNetwork(t, ctx, servedTipInvariantFixtures(liveHead))
-	network.servedTipBlockTimeOverride = 1.0
 
 	// Healthy steady state first.
 	for r := int64(1); r <= 5; r++ {
@@ -143,17 +145,18 @@ func TestServedTipInvariant_PoisonedCounter_NeverServed(t *testing.T) {
 
 	const liveHead = int64(10_000)
 	network, ups := setupServedTipNetwork(t, ctx, servedTipInvariantFixtures(liveHead))
-	network.servedTipBlockTimeOverride = 1.0 // serve margin = ~10 blocks at 1s blocks
 
-	// Rogue value lands in the shared store, ~500 blocks ahead of reality —
-	// deliberately the SNEAKIEST magnitude: too small for the store's own
-	// large-rollback self-heal to reject, far too large to be cross-pod skew,
-	// and exactly the kind of value a buggy pick or bad write would leave.
-	network.servedLatestBlockShared.TryUpdate(ctx, liveHead+500)
+	// PRECONDITION NOTE: the original reproduction poisoned the persistent
+	// shared counter (+500 — small enough to dodge the store's large-rollback
+	// self-heal, far beyond cross-pod skew). That state no longer exists; the
+	// only remaining served-tip inputs are the per-upstream poller heads, so
+	// the rogue value enters there instead: one upstream starts reporting a
+	// fantasy-future tip (the wrong-chain/garbage-endpoint prod scenario).
+	ups[0].EvmStatePoller().SuggestLatestBlock(10_000_000)
 
 	served := int64(0)
 	for r := int64(1); r <= 10; r++ {
-		for _, u := range ups {
+		for _, u := range ups[1:] { // the rogue upstream stays rogue
 			u.EvmStatePoller().SuggestLatestBlock(liveHead + r)
 		}
 		served = network.EvmHighestLatestBlockNumber(ctx)
@@ -183,7 +186,6 @@ func TestServedTipInvariant_SteadyState_NeverStalls(t *testing.T) {
 
 	const liveHead = int64(10_000)
 	network, ups := setupServedTipNetwork(t, ctx, servedTipInvariantFixtures(liveHead))
-	network.servedTipBlockTimeOverride = 1.0
 
 	var lastServed int64
 	stalls := 0
@@ -205,12 +207,11 @@ func TestServedTipInvariant_SteadyState_NeverStalls(t *testing.T) {
 	require.GreaterOrEqual(t, lastServed, liveHead+100-2, "must end at the live head")
 }
 
-// Sanity guard for the invariants themselves: the wedge precondition really is
-// what prod had (gate armed via known block time + inherited counter + fresh
-// process). If someone disables the gate in tests-only fashion, the first
-// invariant would pass vacuously — this test fails loudly if the override seam
-// stops arming the gate.
-func TestServedTipInvariant_Fixture_GateIsActuallyArmed(t *testing.T) {
+// Sanity guard for the invariants themselves: the fixture really runs the
+// majority served-tip mode (not the legacy max fallback) — if someone flips
+// the fixture default off, the invariants above would pass vacuously against
+// max mode and stop guarding the served-tip path.
+func TestServedTipInvariant_Fixture_ServedTipModeActive(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -218,24 +219,17 @@ func TestServedTipInvariant_Fixture_GateIsActuallyArmed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	network, ups := setupServedTipNetwork(t, ctx, servedTipInvariantFixtures(100))
-	network.servedTipBlockTimeOverride = 1.0
+	network, _ := setupServedTipNetwork(t, ctx, servedTipInvariantFixtures(100))
+	require.True(t, network.servedTipEnabledFor("latest"),
+		"invariant fixtures must exercise the served-tip path, not the max fallback")
 
-	cfg := network.buildServedTipConfig()
-	require.Greater(t, cfg.BlockTimeSeconds, 0.0,
-		"invariant fixtures must run with the velocity gate armable, as prod did")
-
-	// And the anchor must be stampable: picks over an ADVANCING counter arm
-	// the gate for real (observe -> change -> fresh anchor).
-	_ = network.EvmHighestLatestBlockNumber(ctx)
-	head := int64(100)
-	require.Eventually(t, func() bool {
-		head++
-		for _, u := range ups {
-			u.EvmStatePoller().SuggestLatestBlock(head)
-		}
-		_ = network.EvmHighestLatestBlockNumber(ctx)
-		return network.servedLatestAnchor.age() >= 0
-	}, 2*time.Second, 50*time.Millisecond,
-		"anchor must stamp once the counter is seen moving, arming the gate as in prod")
+	// MAX(heads) != majority(heads) for an uneven topology proves the pick
+	// actually goes through the served-tip algorithm.
+	network2, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "w1", chainID: 123, latestBlock: 200},
+		{id: "w2", chainID: 123, latestBlock: 100},
+		{id: "w3", chainID: 123, latestBlock: 99},
+	})
+	require.Equal(t, int64(100), network2.EvmHighestLatestBlockNumber(ctx),
+		"served-tip mode must be live (max mode would return 200)")
 }
