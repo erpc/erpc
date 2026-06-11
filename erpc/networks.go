@@ -16,7 +16,6 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
@@ -52,29 +51,30 @@ type Network struct {
 
 	// servedLatest / servedFinalized are STRICT-MONOTONIC at the network level:
 	// once we serve a tip of N to clients, EvmHighestLatest/FinalizedBlockNumber
-	// will never return a value < N for the lifetime of this Network. Backed
-	// by the same CounterInt64SharedVariable primitive each per-upstream
-	// poller uses, so the guarantee also holds across pods sharing a backing
-	// store. The atomic update timestamps feed the velocity-gate's elapsed
-	// input in evm.ComputeServedTipCandidate and are updated inline when
-	// TryUpdate advances the counter — no callback subscription needed.
-	servedLatestBlockShared    data.CounterInt64SharedVariable
-	servedFinalizedBlockShared data.CounterInt64SharedVariable
-	servedLatestUpdatedAtMs    atomic.Int64
-	servedFinalizedUpdatedAtMs atomic.Int64
+	// servedTipAnchor watchdogs track when this process last SAW the served
+	// value change — purely for the advance-age stuck-tip gauge. The pick
+	// itself is stateless (evm.PickServedTip); nothing here feeds back into
+	// what clients receive.
+	servedLatestAnchor    servedTipAnchor
+	servedFinalizedAnchor servedTipAnchor
 
-	// servedTipPartitions holds lazily-materialized, cross-pod strict-monotonic
-	// served-tip counters for GROUP-scoped requests (use-upstream selectors that
-	// carve out a real sub-group, e.g. `flashblocks*` / `!flashblocks*` / a
-	// `family:systx` tag), so each node group advertises its own monotonic
-	// latest/finalized tip instead of inheriting the network-wide one. DDoS-safe
-	// by construction: a partition is keyed by the HASH OF THE MATCHED UPSTREAM
-	// SET (see partitionKeyFor), so equivalent selectors dedup, garbage/prefix
-	// selectors can't inflate state beyond the topology's real groupings, and the
-	// count is capped (maxServedTipPartitions). Selectors that don't form a real
-	// sub-group fall back to the stateless subset candidate.
+	// servedTipPartitions holds lazily-materialized per-group LANES for
+	// use-upstream selectors that carve out a real sub-group (e.g.
+	// `flashblocks*` / `family:systx`): a stable gauge label (LaneName) plus
+	// watchdog anchors. TELEMETRY ONLY — the pick for any selector is the
+	// same stateless majority over the matched subset. Bounded by
+	// construction: keyed by the hash of the MATCHED UPSTREAM SET (equivalent
+	// selectors dedup; garbage selectors can't inflate state beyond the real
+	// topology) and capped by maxServedTipPartitions.
 	servedTipPartitions     sync.Map // map[string]*servedTipPartition (key = "grp:<hash>")
 	servedTipPartitionCount atomic.Int32
+
+	// servedTipBlockTimeOverride, when > 0, replaces the tracker's EMA block
+	// time in buildServedTipConfig. Set ONLY from package-internal tests: the
+	// EMA needs live timestamped blocks that test fixtures don't produce, and
+	// the prod-incident invariant tests must arm the velocity gate exactly the
+	// way prod had it armed.
+	servedTipBlockTimeOverride float64
 }
 
 // maxServedTipPartitions caps the number of materialized per-tag served-tip
@@ -83,16 +83,42 @@ type Network struct {
 // back to the stateless subset candidate.
 const maxServedTipPartitions = 16
 
-// servedTipPartition holds one node group's monotonic served-tip counters
-// (latest + finalized) and their velocity-gate timestamps. `lane` is the
-// human-readable group name (common.LaneName of the matched upstream set), used
-// as the `lane` label on the served-tip metric.
+// servedTipPartition is one node group's telemetry lane: the stable gauge
+// label (common.LaneName of the matched upstream set) and the group's
+// watchdog anchors. It holds NO pick state.
 type servedTipPartition struct {
-	lane                 string
-	latestShared         data.CounterInt64SharedVariable
-	finalizedShared      data.CounterInt64SharedVariable
-	latestUpdatedAtMs    atomic.Int64
-	finalizedUpdatedAtMs atomic.Int64
+	lane            string
+	latestAnchor    servedTipAnchor
+	finalizedAnchor servedTipAnchor
+}
+
+// servedTipAnchor tracks, per process, when the served-tip VALUE was last
+// seen to change — the advance-age watchdog's clock. Telemetry only: nothing
+// feeds back into the pick.
+//
+// The first observed value does NOT count as a change (there is nothing to
+// compare against): the anchor stays unset until the process witnesses the
+// value actually move.
+type servedTipAnchor struct {
+	seenValue   atomic.Int64
+	changedAtMs atomic.Int64
+}
+
+// observe records v as the latest served value, stamping the anchor when the
+// value changed since the last observation.
+func (a *servedTipAnchor) observe(v int64) {
+	if old := a.seenValue.Swap(v); old != v && old != 0 {
+		a.changedAtMs.Store(time.Now().UnixMilli())
+	}
+}
+
+// age returns time since the last observed value change, or -1 when no change
+// has been observed yet (the advance-age gauge is skipped on -1).
+func (a *servedTipAnchor) age() time.Duration {
+	if ms := a.changedAtMs.Load(); ms > 0 {
+		return time.Since(time.UnixMilli(ms))
+	}
+	return -1
 }
 
 // servedTipLaneAll is the lane label for the network-wide served tip.
@@ -402,13 +428,10 @@ func requestSelector(ctx context.Context) string {
 	return ""
 }
 
-// servedTipPartitionFor returns the lazily-materialized monotonic served-tip
-// counters for a GROUP-scoped request, or nil to signal the stateless fallback.
-// The partition key (and its bounded/DDoS-safe gating) is computed by
-// partitionKeyFor; the count is capped by maxServedTipPartitions and the
-// shared-state key is namespaced ("servedLatestBlock/<net>/grp:<hash>"). The
-// returned counters are shared across pods (same backing store), so each group's
-// tip is strict-monotonic just like the network-wide one.
+// servedTipPartitionFor returns the lazily-materialized telemetry lane for a
+// GROUP-scoped request, or nil to signal the unlabeled stateless path. The
+// partition key (and its bounded/DDoS-safe gating) is computed by
+// partitionKeyFor; the count is capped by maxServedTipPartitions.
 func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
 	key, ids := n.partitionKeyFor(ctx, selector)
 	if key == "" {
@@ -418,22 +441,11 @@ func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *s
 	if p, ok := n.servedTipPartitions.Load(key); ok {
 		return p.(*servedTipPartition)
 	}
-	if n.upstreamsRegistry == nil {
-		return nil
-	}
-	ssr := n.upstreamsRegistry.SharedStateRegistry()
-	if ssr == nil {
-		return nil
-	}
 	// Cap backstop (also bounds a race racing past the cap).
 	if n.servedTipPartitionCount.Load() >= maxServedTipPartitions {
 		return nil
 	}
-	p := &servedTipPartition{
-		lane:            common.LaneName(ids),
-		latestShared:    ssr.GetCounterInt64("servedLatestBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
-		finalizedShared: ssr.GetCounterInt64("servedFinalizedBlock/"+n.networkId+"/"+key, evm.DefaultToleratedBlockHeadRollback),
-	}
+	p := &servedTipPartition{lane: common.LaneName(ids)}
 	actual, loaded := n.servedTipPartitions.LoadOrStore(key, p)
 	if !loaded {
 		n.servedTipPartitionCount.Add(1)
@@ -508,12 +520,11 @@ func isSimpleGroupSelector(selector string) bool {
 // EvmHighestLatestBlockNumber returns the served latest block for this network.
 //
 // In the default max mode it is the MAX effective latest block across eligible
-// non-syncing upstreams. When the cluster-min served tip is enabled
-// (EvmServedTipConfig), it is instead the MIN of the dominant agreement cluster
-// of upstream tips — so any upstream in that cluster can serve the returned
-// block — strict-monotonic so subsequent calls never regress. Advertising a
-// block visible on only the single most-ahead upstream is what causes the
-// "block not found" churn the cluster mode avoids.
+// non-syncing upstreams. When the served tip is enabled (EvmServedTipConfig),
+// it is instead the freshest block a strict MAJORITY of the eligible upstreams
+// already have — so interpolated requests land on upstreams that can serve the
+// advertised block. Advertising a block visible on only the single most-ahead
+// upstream is what causes the "block not found" churn the majority mode avoids.
 func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
@@ -524,22 +535,19 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 		return n.evmHighestBlockMax(ctx, false)
 	}
 	if sel := requestSelector(ctx); sel != "" {
-		// Cluster mode + targeted request: the network-wide shared counter is
-		// the WRONG tip for a subset (it would leak one group's tip across
-		// groups). For a selector that names a real configured tag, use a
-		// per-group monotonic counter (cross-pod, bounded — see
-		// servedTipPartitionFor); otherwise fall back to a stateless cluster-min
-		// over the subset so arbitrary selectors create no state.
+		// Targeted request: the gather is already scoped to the selector's
+		// subset, so the majority is within-group. A selector that names a
+		// real configured group additionally gets its own lane (gauge labels
+		// + watchdog anchor); arbitrary selectors emit no gauges.
 		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			return n.clusteredServedTip(ctx, span, false, "latest", "*", p.latestShared, &p.latestUpdatedAtMs, p.lane)
+			return n.servedTip(ctx, span, false, "latest", &p.latestAnchor, p.lane)
 		}
-		return n.clusteredServedTip(ctx, span, false, "latest", "*", nil, nil, servedTipLaneNone)
+		return n.servedTip(ctx, span, false, "latest", nil, servedTipLaneNone)
 	}
-	return n.clusteredServedTip(ctx, span, false, "latest", "*",
-		n.servedLatestBlockShared, &n.servedLatestUpdatedAtMs, "")
+	return n.servedTip(ctx, span, false, "latest", &n.servedLatestAnchor, "")
 }
 
-// servedTipEnabledFor reports whether the cluster-min served tip is enabled for
+// servedTipEnabledFor reports whether the majority served tip is enabled for
 // the given block tag ("latest"/"finalized") on this (EVM) network. Default is
 // the max mode for every tag — see EvmServedTipConfig.
 func (n *Network) servedTipEnabledFor(tag string) bool {
@@ -548,7 +556,7 @@ func (n *Network) servedTipEnabledFor(tag string) bool {
 
 // evmHighestBlockMax returns the MAX effective latest/finalized block across the
 // eligible, non-syncing upstreams — the default max-mode served tip used when
-// the cluster-min served tip is not enabled for this network.
+// the majority served tip is not enabled for this network.
 func (n *Network) evmHighestBlockMax(ctx context.Context, useFinalized bool) int64 {
 	var maxBlock int64
 	for _, cu := range n.tipCandidateUpstreams(ctx, "*") {
@@ -575,7 +583,7 @@ func (n *Network) evmHighestBlockMax(ctx context.Context, useFinalized bool) int
 // null here skips that fan-out entirely.
 //
 // Safety: it compares against the MAX observed head across eligible upstreams
-// (not the cluster-min served tip), so it never nulls out a block the most-ahead
+// (not the majority served tip), so it never nulls out a block the most-ahead
 // upstream actually has. It is gated on served-tip being enabled for the latest
 // axis — the same opt-in that makes the head trustworthy — and the synthesized
 // response is returned directly from Forward, so it is never written to cache
@@ -609,72 +617,59 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	return resp, true
 }
 
-// clusteredServedTip computes the cluster-MIN served tip for one axis over the
-// selection-policy-eligible upstreams for `method`, applies the strict-monotonic
-// clamp via the shared counter, and returns the clamped value. Shared by the
-// latest and finalized axes — and by capability lanes, which pass a concrete
-// method instead of "*".
-func (n *Network) clusteredServedTip(
+// servedTip computes the majority served tip for one axis over the
+// selection-policy-eligible upstreams — the freshest block a strict majority
+// of them already has (see evm.PickServedTip) — applies the guaranteed-method
+// floor, and exports the gauges. STATELESS by design: nothing is persisted
+// and nothing predicted, so no inherited or rogue value can ever pin, freeze
+// or poison the result (networks_served_tip_invariants_test.go pins those
+// outcomes against the 2026-06 production incident).
+func (n *Network) servedTip(
 	ctx context.Context,
 	span trace.Span,
 	useFinalized bool,
 	axis string,
-	method string,
-	shared data.CounterInt64SharedVariable,
-	updatedAtMs *atomic.Int64,
+	anchor *servedTipAnchor,
 	lane string,
 ) int64 {
-	tips := n.gatherEvmTipInputsForMethod(ctx, useFinalized, method)
-	cfg := n.buildServedTipConfig()
+	tips := n.gatherEvmTipInputsForMethod(ctx, useFinalized, "*")
+	pick := evm.PickServedTip(tips)
 
-	var lastServed int64
-	var elapsed time.Duration
-	if shared != nil {
-		lastServed = shared.GetValue()
-		if ms := updatedAtMs.Load(); ms > 0 {
-			elapsed = time.Since(time.UnixMilli(ms))
+	// Capability guarantee (#855): the served tip must never exceed what any
+	// configured guaranteed-method's supporting upstreams can serve, so a
+	// request on such a method (e.g. trace_*) never resolves "latest" to a
+	// block only non-supporting upstreams have.
+	if pick.Tip > 0 {
+		if floor := n.guaranteedMethodFloor(ctx, useFinalized); floor > 0 && floor < pick.Tip {
+			pick.Tip = floor
 		}
 	}
 
-	res := evm.ComputeServedTipCandidate(tips, lastServed, elapsed, cfg)
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("served_tip.axis", axis),
+			attribute.Int64("served_tip.tip", pick.Tip),
+			attribute.Int64("served_tip.freshest", pick.Freshest),
+			attribute.Int("served_tip.inputs", pick.Inputs),
+		)
+	}
 
-	// Capability guarantee (#855): the global served tip must never exceed what
-	// any configured guaranteed-method's supporting upstreams can serve, so a
-	// request on such a method (e.g. trace_*) never resolves "latest" to a block
-	// only non-supporting upstreams have. Clamp down to the per-method floor.
-	if method == "*" && res.Candidate > 0 {
-		if floor := n.guaranteedMethodFloor(ctx, useFinalized); floor > 0 && floor < res.Candidate {
-			res.Candidate = floor
+	// Watchdog anchor: when did this process last see the served value
+	// change. Telemetry only — nothing feeds back into the pick.
+	advanceAge := time.Duration(-1)
+	if anchor != nil {
+		if pick.Tip > 0 {
+			anchor.observe(pick.Tip)
 		}
+		advanceAge = anchor.age()
 	}
-
-	n.observeServedTipResult(span, axis, &res)
-
-	// Apply the monotonic clamp via TryUpdate. A 0 candidate (no valid inputs)
-	// means no new information — fall through to GetValue, keeping the last
-	// served tip. When TryUpdate advances the counter, refresh the updatedAt
-	// timestamp so the next velocity-gate calculation has a recent anchor.
-	if res.Candidate > 0 && shared != nil {
-		shared.TryUpdate(ctx, res.Candidate)
-		if cur := shared.GetValue(); cur > lastServed {
-			updatedAtMs.Store(time.Now().UnixMilli())
-		}
-	}
-	// served is what clients actually get: the monotonic-clamped shared counter
-	// when present, else the raw candidate (test/misconfiguration).
-	served := res.Candidate
-	if shared != nil {
-		served = shared.GetValue()
-	}
-	// Export the gauges with the post-clamp served value (not the pre-clamp
-	// picker proposal) so the exported lag never over-reports during dips.
-	n.observeServedTipMetrics(axis, served, &res, lane)
-	return served
+	n.observeServedTipMetrics(axis, lane, pick, advanceAge)
+	return pick.Tip
 }
 
 // EvmHighestFinalizedBlockNumber is the finalized-axis sibling of
-// EvmHighestLatestBlockNumber. Same cluster + monotonic semantics, applied
-// to each upstream's EvmEffectiveFinalizedBlock.
+// EvmHighestLatestBlockNumber. Same majority semantics, applied to each
+// upstream's EvmEffectiveFinalizedBlock.
 func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestFinalizedBlockNumber", trace.WithAttributes(
 		attribute.String("network.id", n.networkId),
@@ -685,19 +680,18 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 		return n.evmHighestBlockMax(ctx, true)
 	}
 	if sel := requestSelector(ctx); sel != "" {
-		// See EvmHighestLatestBlockNumber: a configured-tag selector gets a
-		// per-group monotonic counter; any other selector falls back to a
-		// stateless cluster-min over the subset.
+		// See EvmHighestLatestBlockNumber: a configured-tag selector gets its
+		// own lane (telemetry labels + watchdog anchor); any other selector
+		// computes the same stateless majority without emitting gauges.
 		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			return n.clusteredServedTip(ctx, span, true, "finalized", "*", p.finalizedShared, &p.finalizedUpdatedAtMs, p.lane)
+			return n.servedTip(ctx, span, true, "finalized", &p.finalizedAnchor, p.lane)
 		}
-		return n.clusteredServedTip(ctx, span, true, "finalized", "*", nil, nil, servedTipLaneNone)
+		return n.servedTip(ctx, span, true, "finalized", nil, servedTipLaneNone)
 	}
-	return n.clusteredServedTip(ctx, span, true, "finalized", "*",
-		n.servedFinalizedBlockShared, &n.servedFinalizedUpdatedAtMs, "")
+	return n.servedTip(ctx, span, true, "finalized", &n.servedFinalizedAnchor, "")
 }
 
-// guaranteedMethodFloor returns the lowest cluster-min served tip across the
+// guaranteedMethodFloor returns the lowest majority served tip across the
 // configured GuaranteedMethods' supporting (eligible) upstream sets, or 0 when
 // no guaranteed methods are configured or none constrain the tip. Each method's
 // supporting set is the selection-policy-eligible set for that method (which,
@@ -711,7 +705,6 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 		return 0
 	}
 	eligible := n.tipCandidateUpstreams(ctx, "*")
-	pcfg := n.buildServedTipConfig()
 	var floor int64
 	for _, m := range methods {
 		tips := make([]evm.ServedTipInput, 0, len(eligible))
@@ -738,116 +731,42 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 			// rather than pinning the tip to 0).
 			continue
 		}
-		res := evm.ComputeServedTipCandidate(tips, 0, 0, pcfg)
-		if res.Candidate > 0 && (floor == 0 || res.Candidate < floor) {
-			floor = res.Candidate
+		if t := evm.PickServedTip(tips).Tip; t > 0 && (floor == 0 || t < floor) {
+			floor = t
 		}
 	}
 	return floor
 }
 
-// buildServedTipConfig wires the served-tip picker config from network state.
-// The block-time anchor comes from the EMA-estimated network block time
-// (returns 0 until enough samples accumulate, which disables the velocity
-// gate but keeps the cluster picker active). ClusterDelta is taken from the
-// per-network override when set (0 = auto-derive from block time).
-func (n *Network) buildServedTipConfig() evm.ServedTipConfig {
-	cfg := evm.ServedTipConfig{}
-	if n.metricsTracker != nil {
-		if bt := n.metricsTracker.GetNetworkBlockTime(n.networkId); bt > 0 {
-			cfg.BlockTimeSeconds = bt.Seconds()
-		}
-	}
-	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil {
-		cfg.ClusterDelta = n.cfg.Evm.ServedTip.ClusterDelta
-	}
-	return cfg
-}
-
-// observeServedTipResult records the cluster-picker's PROPOSAL (pre monotonic
-// clamp) on the parent span, only under detailed tracing. The actually-served
-// Prometheus gauges are emitted separately by observeServedTipMetrics after the
-// clamp, so the exported value matches what clients receive.
-func (n *Network) observeServedTipResult(
-	span trace.Span,
-	axis string,
-	res *evm.ServedTipResult,
-) {
-	if res == nil || !common.IsTracingDetailed {
-		return
-	}
-	span.SetAttributes(
-		attribute.String("served_tip.axis", axis),
-		attribute.Int64("served_tip.candidate", res.Candidate),
-		attribute.Int64("served_tip.max_observed", res.MaxObserved),
-		attribute.Int("served_tip.cluster_count", res.ClusterCount),
-		attribute.Int("served_tip.dominant_size", res.DominantSize),
-		attribute.Int("served_tip.outliers_count", res.OutliersCount),
-		attribute.Int("served_tip.velocity_dropped", len(res.VelocityDropped)),
-	)
-	if res.MaxObserved > res.Candidate {
-		span.SetAttributes(
-			attribute.Int64("served_tip.lag_vs_max", res.MaxObserved-res.Candidate),
-		)
-	}
-}
-
-// observeServedTipMetrics exports the served-tip gauges with the value clients
-// ACTUALLY receive (post monotonic clamp), so the lag reflects reality during
-// backward dips/reorgs, plus the per-upstream exclusion counters from the same
-// pick. axis ("latest"|"finalized") is a label rather than part of the metric
-// name — a deliberate divergence from the upstream_*_block_number naming, chosen
-// to keep the served-tip gauge set small. The per-call WithLabelValues lookups are
-// negligible next to the cluster pick + shared-counter update they ride along with.
-func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.ServedTipResult, lane string) {
-	if res == nil {
-		return
-	}
-	// A stateless selector-scoped tip (glob / single-node / match-all that did
-	// not form a use-upstream group) emits nothing — it must never overwrite any
-	// gauge with a subset value.
+// observeServedTipMetrics exports the served-tip gauges. axis
+// ("latest"|"finalized") is a label rather than part of the metric name to
+// keep the gauge set small. lane="all" is the network-wide pick; a named lane
+// is a use-upstream group's own pick; the stateless lane-none sentinel emits
+// nothing (a subset value must never overwrite a gauge).
+func (n *Network) observeServedTipMetrics(axis string, lane string, pick evm.ServedTipPick, advanceAge time.Duration) {
 	if lane == servedTipLaneNone {
 		return
 	}
-
-	// Block number and deliberate lag are both labelled by lane: "all" for the
-	// network-wide pick (lane == ""), else the use-upstream group's LaneName. The
-	// per-upstream exclusion counters below belong only to the whole-network pick.
 	laneLabel := lane
 	if laneLabel == "" {
 		laneLabel = servedTipLaneAll
 	}
-	if served > 0 {
+	if pick.Tip > 0 {
 		telemetry.MetricNetworkServedTipBlockNumber.
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(served))
-		// Deliberate served-tip lag for this pick: how far it sits behind the
-		// freshest velocity-eligible tip in the SAME set (the lane's subset for a
-		// named lane, all eligible upstreams for "all"). Measured against
-		// MaxEligible (not raw MaxObserved) so a garbage far-future upstream cannot
-		// inflate it. lane="all" is the network-wide lag; a named lane is the
-		// group's own deliberate cushion.
-		lag := res.MaxEligible - served
-		if lag < 0 {
-			lag = 0
-		}
+			Set(float64(pick.Tip))
+		// Deliberate lag: how far the majority tip sits behind the single
+		// freshest upstream view in the same set.
 		telemetry.MetricNetworkServedTipLagBlocks.
 			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
-			Set(float64(lag))
+			Set(float64(pick.Freshest - pick.Tip))
 	}
-	if lane != "" {
-		return
-	}
-
-	// Network-wide only from here: per-upstream exclusion counters are independent
-	// of whether a tip was served (even a 0-candidate pick is worth recording).
-	for _, up := range res.VelocityDropped {
-		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
-			WithLabelValues(n.projectId, n.Label(), up, axis, "velocity").Inc()
-	}
-	for _, up := range res.Outliers {
-		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.
-			WithLabelValues(n.projectId, n.Label(), up, axis, "outlier").Inc()
+	// Universal stuck-tip signal: seconds since this process last saw the
+	// served value change. Skipped until a first change is observed.
+	if advanceAge >= 0 {
+		telemetry.MetricNetworkServedTipAdvanceAgeSeconds.
+			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+			Set(advanceAge.Seconds())
 	}
 }
 

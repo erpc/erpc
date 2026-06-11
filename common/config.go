@@ -2262,30 +2262,30 @@ type EvmNetworkConfig struct {
 // non-syncing upstreams — which can advertise a block only the single most-ahead
 // upstream has, causing "block not found" churn when requests route to a
 // slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
-// served value is instead the MIN of the dominant agreement cluster among the
-// eligible upstreams, so any upstream in that cluster can serve the advertised
-// block.
+// served value is instead the freshest block a strict MAJORITY of the eligible
+// upstreams already have, so interpolated requests land on upstreams that can
+// serve the advertised block.
 type EvmServedTipConfig struct {
 	// EnabledFor lists the block tags whose served value uses the cluster-min tip
 	// instead of the default max. Valid entries: "latest" and "finalized" (the
 	// "safe" tag follows "finalized"). Empty selects the max mode for all tags.
 	EnabledFor []string `yaml:"enabledFor,omitempty" json:"enabledFor,omitempty"`
 
-	// ClusterDelta is the maximum block gap between adjacent sorted upstream heads
-	// that still groups them into one cluster. 0 auto-derives from the network's
-	// estimated block time (clamped to [2,10]).
+	// Deprecated: ClusterDelta configured the former cluster-based picker and is
+	// ignored — the majority order statistic needs no tuning. Kept only so
+	// existing configs keep parsing.
 	ClusterDelta int64 `yaml:"clusterDelta,omitempty" json:"clusterDelta,omitempty"`
 
 	// GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
 	// "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
 	// serve the advertised latest. For a request on a matching method, "latest"
-	// resolves against the dominant cluster of only the upstreams that support it
+	// resolves against the majority of only the upstreams that support it
 	// (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-	// Empty means only the global (all-eligible) cluster is computed.
+	// Empty means only the global (all-eligible) majority is computed.
 	GuaranteedMethods []string `yaml:"guaranteedMethods,omitempty" json:"guaranteedMethods,omitempty"`
 }
 
-// ServedTipEnabledFor reports whether the cluster-min served tip is enabled for
+// ServedTipEnabledFor reports whether the majority served tip is enabled for
 // the given block axis ("latest" or "finalized"). The "safe" tag resolves to the
 // finalized axis, so listing "safe" in EnabledFor enables it for "finalized".
 // Anything not listed uses the default max mode. Nil-receiver safe.

@@ -2,26 +2,14 @@ package evm
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
-// These tests are intentionally written BEFORE ComputeServedTipCandidate exists.
-// They define the contract for the cluster-based served-tip picker:
-//
-//   1. Returns the MIN block number of the DOMINANT cluster of upstreams whose
-//      tips are within ClusterDelta of each other.
-//   2. Dominant cluster = max by (size desc, then min desc). Larger clusters
-//      win; ties broken in the chain-forward direction.
-//   3. A velocity gate drops single-upstream fantasy-future tips BEFORE
-//      clustering, so a buggy upstream reporting tip+1000 can't pull the
-//      cluster forward.
-//   4. The picker does NOT enforce monotonicity itself — that's done by the
-//      caller via the shared-state TryUpdate. The picker is a pure function.
-//   5. Works at any upstream count (1, 2, 3, 5, 7, ...). No K/quorum knob.
-
-// ----- helpers ----------------------------------------------------------------
+// The served-tip contract: PickServedTip returns the freshest block a strict
+// MAJORITY of inputs have reached. These tests pin the order-statistic
+// semantics and the two protections that motivated the design — one rogue
+// far-future tip cannot move the pick, one stuck upstream cannot hold it back.
 
 func tipsFromInts(blocks ...int64) []ServedTipInput {
 	out := make([]ServedTipInput, len(blocks))
@@ -43,318 +31,138 @@ func itoa(i int) string {
 	return s
 }
 
-// defaultCfg disables velocity gating (BlockTimeSeconds=0) so tests can focus
-// on cluster semantics. Velocity-gate tests opt in explicitly.
-func defaultCfg(clusterDelta int64) ServedTipConfig {
-	return ServedTipConfig{ClusterDelta: clusterDelta}
+func TestPickServedTip_MajorityIndexAcrossN(t *testing.T) {
+	// N=1: the only head.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(100)).Tip)
+	// N=2: the LOWER — never advertise a block only one upstream claims.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(200, 100)).Tip)
+	// N=3: 2nd highest (2 of 3 have it).
+	assert.Equal(t, int64(101), PickServedTip(tipsFromInts(102, 101, 100)).Tip)
+	// N=4: 3rd highest (3 of 4 have it).
+	assert.Equal(t, int64(101), PickServedTip(tipsFromInts(103, 102, 101, 100)).Tip)
+	// N=5: 3rd highest (3 of 5 have it).
+	assert.Equal(t, int64(102), PickServedTip(tipsFromInts(104, 103, 102, 101, 100)).Tip)
+	// N=7: 4th highest (4 of 7 have it).
+	assert.Equal(t, int64(103), PickServedTip(tipsFromInts(106, 105, 104, 103, 102, 101, 100)).Tip)
 }
 
-// ----- variable upstream counts: healthy steady state -------------------------
+func TestPickServedTip_GarbageTipCannotMoveThePick(t *testing.T) {
+	// A rogue upstream reporting a fantasy-future block (wrong chain,
+	// misconfigured endpoint) is just one voice — the majority ignores it.
+	// This is the abstract/zora prod scenario that used to inflate lag gauges
+	// and (pre-2026-06 fix) could poison the persistent counter.
+	p := PickServedTip(tipsFromInts(999_999_999, 101, 100))
+	assert.Equal(t, int64(101), p.Tip)
+	assert.Equal(t, int64(101), p.Freshest,
+		"the lag reference (corroborated freshest) must ignore the lone rogue too")
 
-func TestComputeServedTipCandidate_OneUpstream(t *testing.T) {
-	res := ComputeServedTipCandidate(tipsFromInts(100), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Equal(t, int64(100), res.MaxObserved)
-	assert.Equal(t, 1, res.ClusterCount)
-	assert.Equal(t, 1, res.DominantSize)
-	assert.Equal(t, 0, res.OutliersCount)
+	// Even two agreeing rogues lose against a 5-upstream majority.
+	assert.Equal(t, int64(102), PickServedTip(tipsFromInts(999_999_999, 999_999_999, 102, 101, 100)).Tip)
+
+	// N=2 with one rogue: the SANE (lower) head wins — the old cluster
+	// tie-break picked the garbage here.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(999_999_999, 100)).Tip)
 }
 
-func TestComputeServedTipCandidate_TwoUpstreams_SameTip(t *testing.T) {
-	res := ComputeServedTipCandidate(tipsFromInts(100, 100), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Equal(t, 1, res.ClusterCount)
-	assert.Equal(t, 2, res.DominantSize)
+func TestPickServedTip_StuckUpstreamCannotHoldThePickBack(t *testing.T) {
+	// One frozen/lagging upstream cannot pin the advertised tip while the
+	// majority advances — the inverse of the garbage case.
+	assert.Equal(t, int64(200), PickServedTip(tipsFromInts(5, 201, 200)).Tip)
+	assert.Equal(t, int64(201), PickServedTip(tipsFromInts(5, 202, 201, 200, 201)).Tip)
 }
 
-func TestComputeServedTipCandidate_TwoUpstreams_OneBlockJitter(t *testing.T) {
-	// Normal vendor-to-vendor jitter; both in one cluster, MIN is conservative
-	// (servable by both).
-	res := ComputeServedTipCandidate(tipsFromInts(100, 99), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(99), res.Candidate)
-	assert.Equal(t, 1, res.ClusterCount)
-	assert.Equal(t, 2, res.DominantSize)
+func TestPickServedTip_AllAgreeingIsIdentity(t *testing.T) {
+	p := PickServedTip(tipsFromInts(100, 100, 100))
+	assert.Equal(t, int64(100), p.Tip)
+	assert.Equal(t, int64(100), p.Freshest)
+	assert.Equal(t, 3, p.Inputs)
 }
 
-func TestComputeServedTipCandidate_ManyUpstreams_AllAgree(t *testing.T) {
-	res := ComputeServedTipCandidate(tipsFromInts(101, 100, 100, 100, 99), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(99), res.Candidate)
-	assert.Equal(t, 1, res.ClusterCount)
-	assert.Equal(t, 5, res.DominantSize)
+func TestPickServedTip_ZeroAndEmptyInputs(t *testing.T) {
+	// Zero/negative heads are "no data yet" and filtered.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(0, 100, 0)).Tip)
+	assert.Equal(t, 1, PickServedTip(tipsFromInts(0, 100, 0)).Inputs)
+	assert.Equal(t, int64(0), PickServedTip(tipsFromInts(0, 0)).Tip)
+	assert.Equal(t, int64(0), PickServedTip(nil).Tip)
 }
 
-// ----- lagger scenarios: the matrix from the design discussion ---------------
-
-func TestComputeServedTipCandidate_ThreeUpstreams_OneLagger_ClusterMovesForward(t *testing.T) {
-	// User's case: 1 of 3 falling behind. Cluster {100, 100} dominates; the
-	// 95 outlier does NOT drag down.
-	res := ComputeServedTipCandidate(tipsFromInts(100, 100, 95), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(100), res.Candidate, "lagging upstream must not drag the dominant cluster down")
-	assert.Equal(t, 2, res.ClusterCount)
-	assert.Equal(t, 2, res.DominantSize)
-	assert.Equal(t, 1, res.OutliersCount)
-}
-
-func TestComputeServedTipCandidate_ThreeUpstreams_OneAhead_TwoLagging(t *testing.T) {
-	// User's "1 leader, all rest lagging" — trust the lagging cluster.
-	// Candidate is the laggers' MIN; the caller's monotonic clamp decides
-	// whether to actually serve it.
-	res := ComputeServedTipCandidate(tipsFromInts(100, 50, 49), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(49), res.Candidate, "trust the lagging cluster; do not believe the lone leader")
-	assert.Equal(t, 2, res.ClusterCount)
-	assert.Equal(t, 2, res.DominantSize)
-	assert.Equal(t, 1, res.OutliersCount)
-}
-
-func TestComputeServedTipCandidate_FiveUpstreams_ThreeClose_TwoWayBehind(t *testing.T) {
-	// User's "three close + one or two super lagging" case.
-	res := ComputeServedTipCandidate(tipsFromInts(100, 99, 98, 50, 49), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(98), res.Candidate, "must return MIN of the close (dominant) cluster")
-	assert.Equal(t, 2, res.ClusterCount)
-	assert.Equal(t, 3, res.DominantSize)
-}
-
-func TestComputeServedTipCandidate_SevenUpstreams_FiveLeaders_TwoStragglers(t *testing.T) {
-	res := ComputeServedTipCandidate(tipsFromInts(101, 101, 100, 100, 100, 95, 50), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Equal(t, 3, res.ClusterCount)
-	assert.Equal(t, 5, res.DominantSize)
-}
-
-func TestComputeServedTipCandidate_SevenUpstreams_FourLaggers_ThreeLeaders(t *testing.T) {
-	// Larger lagging cluster wins on size; monotonic clamp upstream will
-	// likely hold the previously-served tip instead.
-	res := ComputeServedTipCandidate(tipsFromInts(101, 100, 100, 95, 94, 94, 93), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(93), res.Candidate, "larger lagging cluster wins; caller's monotonic clamp will hold")
-	assert.Equal(t, 2, res.ClusterCount)
-	assert.Equal(t, 4, res.DominantSize)
-}
-
-// ----- tiebreak: equal-size clusters -----------------------------------------
-
-func TestComputeServedTipCandidate_TwoUpstreams_Split_TiebreakHigherMin(t *testing.T) {
-	// 1 ahead, 1 way behind: both are size-1 clusters. Tiebreak by higher
-	// MIN (chain-forward direction). Monotonic clamp upstream will refuse if
-	// this would create an unjustified forward jump.
-	res := ComputeServedTipCandidate(tipsFromInts(100, 50), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Equal(t, 2, res.ClusterCount)
-	assert.Equal(t, 1, res.DominantSize)
-}
-
-func TestComputeServedTipCandidate_EqualSizeClusters_TiebreakHigherMin(t *testing.T) {
-	// 2v2 split: both clusters size 2. Higher MIN cluster wins.
-	res := ComputeServedTipCandidate(tipsFromInts(100, 99, 50, 49), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(99), res.Candidate)
-	assert.Equal(t, 2, res.ClusterCount)
-	assert.Equal(t, 2, res.DominantSize)
-}
-
-// ----- edge cases ------------------------------------------------------------
-
-func TestComputeServedTipCandidate_NoInputs(t *testing.T) {
-	res := ComputeServedTipCandidate(nil, 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(0), res.Candidate)
-	assert.Equal(t, 0, res.ClusterCount)
-	assert.Equal(t, 0, res.DominantSize)
-}
-
-func TestComputeServedTipCandidate_AllZeroTips(t *testing.T) {
-	// Cold-start upstreams that haven't polled yet should be filtered out.
-	res := ComputeServedTipCandidate(tipsFromInts(0, 0, 0), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(0), res.Candidate, "zero tips are not valid candidates")
-}
-
-func TestComputeServedTipCandidate_MixedZeroAndReal(t *testing.T) {
-	res := ComputeServedTipCandidate(tipsFromInts(0, 100, 100, 99, 0), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(99), res.Candidate, "zeros excluded; cluster over real tips only")
-	assert.Equal(t, 3, res.DominantSize)
-}
-
-// ----- input ordering and duplication ----------------------------------------
-
-func TestComputeServedTipCandidate_UnsortedInputs(t *testing.T) {
-	// Same data as the 3-close + 2-behind case, but unsorted.
-	res := ComputeServedTipCandidate(tipsFromInts(50, 100, 49, 99, 98), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(98), res.Candidate)
-	assert.Equal(t, 3, res.DominantSize)
-}
-
-func TestComputeServedTipCandidate_DuplicateTips(t *testing.T) {
-	res := ComputeServedTipCandidate(tipsFromInts(100, 100, 100, 100), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Equal(t, 1, res.ClusterCount)
-	assert.Equal(t, 4, res.DominantSize)
-}
-
-// ----- velocity gate: fantasy-future rejection -------------------------------
-
-func TestComputeServedTipCandidate_VelocityGate_RejectsFantasyFutureTip(t *testing.T) {
-	// Last served = 100, elapsed = 2s, blockTime = 2s.
-	// Expected max = 100 + (2/2) × 2.0_slack + 5_buffer = 107.
-	// Upstream at 9999 is fantasy-future → dropped. Upstreams at 101, 101, 100
-	// dominate. Returned = MIN of dominant = 100.
-	cfg := ServedTipConfig{
-		ClusterDelta:         2,
-		BlockTimeSeconds:     2.0,
-		VelocitySlack:        2.0,
-		VelocityBufferBlocks: 5,
+func TestPickServedTip_TipNeverExceedsFreshestAndIsAlwaysAHead(t *testing.T) {
+	// Structural properties consumers rely on: the tip is one of the live
+	// heads (never an invented number) and never ahead of the freshest view.
+	cases := [][]int64{
+		{100}, {100, 200}, {1, 2, 3}, {7, 7, 9, 9},
+		{5, 100, 101, 102, 999999},
 	}
-	res := ComputeServedTipCandidate(
-		tipsFromInts(9999, 101, 101, 100),
-		100,           // lastServedBlock
-		2*time.Second, // elapsedSinceLast
-		cfg,
-	)
-	assert.Equal(t, int64(100), res.Candidate, "velocity gate must drop the 9999 fantasy tip")
-	assert.Len(t, res.VelocityDropped, 1, "exactly one upstream dropped by velocity gate")
-}
-
-func TestComputeServedTipCandidate_VelocityGate_AllowsLegitimateBurstCatchup(t *testing.T) {
-	// Last served = 100, elapsed = 10s, blockTime = 2s.
-	// Expected max = 100 + (10/2) × 2.0 + 5 = 115.
-	// All three at 110-112 are legitimate burst catch-up — none dropped.
-	cfg := ServedTipConfig{
-		ClusterDelta:         2,
-		BlockTimeSeconds:     2.0,
-		VelocitySlack:        2.0,
-		VelocityBufferBlocks: 5,
+	for _, heads := range cases {
+		p := PickServedTip(tipsFromInts(heads...))
+		assert.LessOrEqual(t, p.Tip, p.Freshest, "heads=%v", heads)
+		assert.Contains(t, heads, p.Tip, "tip must be a real observed head; heads=%v", heads)
 	}
-	res := ComputeServedTipCandidate(
-		tipsFromInts(112, 111, 110),
-		100,
-		10*time.Second,
-		cfg,
-	)
-	assert.Equal(t, int64(110), res.Candidate)
-	assert.Empty(t, res.VelocityDropped)
 }
 
-func TestComputeServedTipCandidate_MaxEligible_ExcludesVelocityDroppedGarbage(t *testing.T) {
-	// A wrong-chain / misbehaving upstream reports a tip ~10k blocks ahead. It is
-	// velocity-dropped, so MaxEligible (the deliberate-lag reference) reflects the
-	// sane fleet — NOT the garbage. This is what keeps the served_tip_lag gauge from
-	// exploding to hundreds of thousands of blocks when one endpoint goes rogue.
-	cfg := ServedTipConfig{
-		ClusterDelta:         2,
-		BlockTimeSeconds:     2.0,
-		VelocitySlack:        2.0,
-		VelocityBufferBlocks: 5,
-	}
-	res := ComputeServedTipCandidate(
-		tipsFromInts(9999, 101, 101, 100),
-		100,
-		2*time.Second,
-		cfg,
-	)
-	assert.Equal(t, int64(9999), res.MaxObserved, "raw max still records the garbage tip")
-	assert.Equal(t, int64(101), res.MaxEligible, "eligible max excludes the velocity-dropped garbage")
-	assert.Len(t, res.VelocityDropped, 1)
-	// Deliberate lag = MaxEligible - Candidate = 101 - 100 = 1 block (not 9899).
-	assert.Equal(t, int64(1), res.MaxEligible-res.Candidate)
+// ─── Scenarios the retired cluster+gate+counter pipeline existed for ─────────
+// Each case below is a REAL-WORLD situation the old machinery handled with a
+// dedicated mechanism (greedy clustering, ClusterDelta, the velocity gate,
+// fail-open, MaxEligible, the persistent monotonic counter). The majority pick
+// must keep handling every one of them — these tests are the proof, mapped
+// one-to-one from the old test matrix and the 2026-06 incident history.
+
+func TestPickServedTip_Scenario_VendorPropagationJitter(t *testing.T) {
+	// Old: ClusterDelta grouped heads within 1-2 blocks so vendor propagation
+	// jitter never split agreement. New: the majority head IS inside the
+	// jitter band — no grouping parameter needed.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(101, 100, 100)).Tip)
+	assert.Equal(t, int64(101), PickServedTip(tipsFromInts(101, 101, 100)).Tip,
+		"two fresh vs one 1-block lagger: tip moves forward")
 }
 
-func TestComputeServedTipCandidate_Outliers_ListNonDominantMembers(t *testing.T) {
-	// Two upstreams agree at 100/101 (dominant); one sits far ahead at 200 in its
-	// own cluster → recorded as an outlier (it survived the velocity gate but
-	// disagreed). With no velocity gate, MaxEligible == MaxObserved.
-	res := ComputeServedTipCandidate(tipsFromInts(100, 101, 200), 0, 0, defaultCfg(2))
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Equal(t, 1, res.OutliersCount)
-	assert.Equal(t, []string{"u2"}, res.Outliers, "the 200 tip (u2) is the outlier")
-	assert.Equal(t, int64(200), res.MaxEligible)
-	assert.Equal(t, int64(200), res.MaxObserved)
+func TestPickServedTip_Scenario_SingleLaggerDoesNotHoldBack(t *testing.T) {
+	// Old: the dominant (fresh) cluster outvoted a stuck/lagging upstream.
+	assert.Equal(t, int64(101), PickServedTip(tipsFromInts(101, 101, 50)).Tip)
 }
 
-func TestComputeServedTipCandidate_VelocityGate_DisabledWithoutBlockTime(t *testing.T) {
-	// With BlockTimeSeconds=0, the velocity gate is disabled (we can't
-	// compute expected max). Cluster picker runs unmodified.
-	res := ComputeServedTipCandidate(
-		tipsFromInts(9999, 101, 101, 100),
-		100,
-		1*time.Hour,
-		defaultCfg(2), // BlockTimeSeconds=0 disables gate
-	)
-	// 9999 alone, [100,101,101] is the dominant cluster of size 3.
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Empty(t, res.VelocityDropped, "velocity gate disabled without blockTime")
+func TestPickServedTip_Scenario_SingleLeaderDoesNotDefineTip(t *testing.T) {
+	// Old: a lone most-ahead node (flashblocks-style) formed a 1-node cluster
+	// and lost to the agreeing pair. Advertising the loner's head is exactly
+	// the "block not found" churn that motivated served-tip in PR #900.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(120, 100, 99)).Tip,
+		"the loner's head must never be advertised")
 }
 
-func TestComputeServedTipCandidate_VelocityGate_NoLastServed_DisablesGate(t *testing.T) {
-	// Cold start (lastServedBlock=0). Velocity gate is disabled because we
-	// have no anchor to compare against.
-	cfg := ServedTipConfig{
-		ClusterDelta:         2,
-		BlockTimeSeconds:     2.0,
-		VelocitySlack:        2.0,
-		VelocityBufferBlocks: 5,
-	}
-	res := ComputeServedTipCandidate(
-		tipsFromInts(9999, 101, 101, 100),
-		0, // cold start
-		0,
-		cfg,
-	)
-	// Without an anchor, we can't reject 9999. It becomes its own cluster.
-	// Cluster {100,101,101} dominates by size → 100.
-	assert.Equal(t, int64(100), res.Candidate)
-	assert.Empty(t, res.VelocityDropped)
+func TestPickServedTip_Scenario_MajorityLaggersWin(t *testing.T) {
+	// Old: 4 laggers outvoted 3 leaders by cluster size — the network truth
+	// is what most upstreams can serve. New: same outcome with a fresher
+	// representative (the BEST lagger instead of the worst).
+	assert.Equal(t, int64(50), PickServedTip(tipsFromInts(103, 102, 101, 50, 49, 48, 47)).Tip)
 }
 
-// ----- cluster delta auto-derivation ----------------------------------------
-
-func TestComputeServedTipCandidate_ClusterDelta_AutoDerivedFromBlockTime(t *testing.T) {
-	// When ClusterDelta is 0 (unset), derive from BlockTimeSeconds:
-	//   delta = clamp(ceil(2.0 / blockTimeSec), 2, 10)
-	//
-	// Verify on Arbitrum-like 0.25s blocks: delta = clamp(ceil(8), 2, 10) = 8.
-	// With delta=8, a 7-block lag stays inside the cluster.
-	cfg := ServedTipConfig{
-		ClusterDelta:     0,
-		BlockTimeSeconds: 0.25,
-	}
-	res := ComputeServedTipCandidate(tipsFromInts(100, 100, 93), 0, 0, cfg)
-	assert.Equal(t, int64(93), res.Candidate,
-		"on Arbitrum-like chains, 7-block lag is within normal jitter")
-	assert.Equal(t, 1, res.ClusterCount)
-	assert.Equal(t, 3, res.DominantSize)
+func TestPickServedTip_Scenario_BurstCatchupServedImmediately(t *testing.T) {
+	// Old: the velocity gate carried slack+buffer tuned to ALLOW legitimate
+	// burst catch-up (L2 sequencer batches, a halted chain resuming), plus
+	// fail-open for when that tuning was wrong — mis-tuning is what froze
+	// prod. New: stateless, so a jump is served the moment a majority
+	// reports it; there is no window to outrun and nothing to mis-arm.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(100, 100, 99)).Tip)
+	assert.Equal(t, int64(1100), PickServedTip(tipsFromInts(1100, 1100, 1099)).Tip)
 }
 
-func TestComputeServedTipCandidate_ClusterDelta_AutoMin2(t *testing.T) {
-	// On slow chains (Mainnet 12s), ceil(2/12) = 1, but we clamp floor to 2.
-	cfg := ServedTipConfig{
-		ClusterDelta:     0,
-		BlockTimeSeconds: 12.0,
-	}
-	res := ComputeServedTipCandidate(tipsFromInts(100, 99, 95), 0, 0, cfg)
-	// delta should be 2. So 99-95=4 splits.
-	assert.Equal(t, int64(99), res.Candidate)
-	assert.Equal(t, 2, res.ClusterCount)
+func TestPickServedTip_Scenario_GarbageCannotInflateLagReference(t *testing.T) {
+	// Old: MaxEligible (the velocity-gated max) kept a rogue far-future tip
+	// out of the lag gauge — without that, dashboards read "1.8 days behind"
+	// on healthy chains (the abstract/zora incident). New: Freshest is the
+	// 2nd-highest head, so a single rogue cannot touch the gauge either.
+	p := PickServedTip(tipsFromInts(999_999_999, 102, 101, 100))
+	assert.Equal(t, int64(101), p.Tip)
+	assert.Equal(t, int64(102), p.Freshest, "lag reference ignores the lone rogue")
+	assert.Equal(t, int64(1), p.Freshest-p.Tip, "deliberate lag stays in single digits")
 }
 
-func TestComputeServedTipCandidate_ClusterDelta_AutoMax10(t *testing.T) {
-	// On hypothetical chains with sub-100ms blocks, ceil(2 / 0.05) = 40, but
-	// we clamp ceiling to 10. So delta = 10.
-	cfg := ServedTipConfig{
-		ClusterDelta:     0,
-		BlockTimeSeconds: 0.05,
-	}
-	res := ComputeServedTipCandidate(tipsFromInts(100, 90, 89), 0, 0, cfg)
-	// delta=10. Gap 100-90 = 10 (within delta if inclusive), 90-89=1.
-	// All in one cluster, MIN = 89.
-	assert.Equal(t, int64(89), res.Candidate)
-	assert.Equal(t, 1, res.ClusterCount)
-}
-
-func TestComputeServedTipCandidate_ClusterDelta_ExplicitOverride(t *testing.T) {
-	// Explicit ClusterDelta wins over auto-derivation.
-	cfg := ServedTipConfig{
-		ClusterDelta:     5, // explicit
-		BlockTimeSeconds: 0.25,
-	}
-	// With delta=5, gap 100-93=7 splits; gap 100-95=5 doesn't (inclusive).
-	res := ComputeServedTipCandidate(tipsFromInts(100, 100, 93), 0, 0, cfg)
-	assert.Equal(t, int64(100), res.Candidate,
-		"explicit delta=5 overrides; 7-block gap excludes the lagger")
-	assert.Equal(t, 2, res.ClusterCount)
+func TestPickServedTip_Scenario_HaltedChainHoldsHonestly(t *testing.T) {
+	// Old: a halted chain froze the counter (and post-incident, tripped the
+	// stuck watchdog). New: picks over frozen heads keep returning the same
+	// honest consensus value — no invented progress; the advance-age
+	// watchdog still fires at the Network layer.
+	frozen := tipsFromInts(500, 500, 499)
+	assert.Equal(t, int64(500), PickServedTip(frozen).Tip)
+	assert.Equal(t, PickServedTip(frozen), PickServedTip(frozen), "pure function: same inputs, same pick")
 }

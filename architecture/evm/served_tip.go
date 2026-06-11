@@ -1,246 +1,91 @@
 package evm
 
-import (
-	"math"
-	"sort"
-	"time"
-)
+import "sort"
 
 // ServedTipInput is a single observation: an upstream's last-known tip block.
 // Callers are responsible for excluding syncing or cordoned upstreams BEFORE
 // passing observations here; the picker treats every input as a candidate.
 type ServedTipInput struct {
-	// UpstreamID is preserved only for telemetry attribution
-	// (e.g., per-upstream velocity-drop metrics). It is not used in the
-	// clustering math.
+	// UpstreamID is preserved only for telemetry attribution. It is not used
+	// in the pick.
 	UpstreamID string
 
 	// BlockNumber is the upstream's reported tip. Zero or negative values are
-	// treated as "no data yet" and filtered before clustering.
+	// treated as "no data yet" and filtered before picking.
 	BlockNumber int64
 }
 
-// ServedTipConfig controls the cluster picker's discrimination behavior.
-// Zero-value fields use sensible defaults (see field docs).
-type ServedTipConfig struct {
-	// ClusterDelta is the maximum gap between adjacent sorted candidates that
-	// still groups them into one cluster. A larger delta makes the algorithm
-	// MORE permissive (laggers stay inside the dominant cluster); a smaller
-	// delta is more aggressive about splitting them out.
-	//
-	// Default when 0: clamp(ceil(2.0 / BlockTimeSeconds), 2, 10). The 2s
-	// numerator targets ~2 seconds of vendor propagation slack; clamping to
-	// [2, 10] keeps the value sane across chains with very slow or very fast
-	// block times. When BlockTimeSeconds is also 0, defaults to 2.
-	ClusterDelta int64
+// ServedTipPick is the picker's output.
+type ServedTipPick struct {
+	// Tip is the value to advertise as latest/finalized: the highest block
+	// number that a strict MAJORITY of the inputs have already reached, or 0
+	// when there are no valid inputs.
+	Tip int64
 
-	// BlockTimeSeconds is the chain's nominal block time. Used to (a) auto-
-	// derive ClusterDelta when ClusterDelta is 0, and (b) compute the
-	// velocity-gate expected-max bound.
-	//
-	// When 0, velocity gating is disabled and ClusterDelta falls back to 2.
-	BlockTimeSeconds float64
+	// Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
+	// (or the only input when N=1) — the reference for the deliberate-lag
+	// gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
+	// means a single rogue far-future upstream cannot inflate the lag gauge
+	// (the problem the old velocity gate solved via MaxEligible: one
+	// wrong-chain endpoint used to make the gauge read hundreds of thousands
+	// of blocks). The absolute per-upstream maxima remain observable via
+	// erpc_upstream_latest_block_number.
+	Freshest int64
 
-	// VelocitySlack scales the expected-blocks-since-lastServed bound.
-	// Larger values are more lenient. Default 2.0 when 0.
-	VelocitySlack float64
-
-	// VelocityBufferBlocks is an additive buffer on top of the velocity gate
-	// to absorb burst catch-up. Default 5 when 0.
-	VelocityBufferBlocks int64
+	// Inputs is the number of valid (BlockNumber > 0) observations.
+	Inputs int
 }
 
-// ServedTipResult is the picker's output. The caller is responsible for
-// applying any monotonic clamp (e.g., via a shared-state TryUpdate) on top
-// of Candidate before serving the value to clients.
-type ServedTipResult struct {
-	// Candidate is the proposed served tip: the MIN block number of the
-	// dominant cluster, or 0 if no valid candidates exist.
-	Candidate int64
-
-	// MaxObserved is the highest block number across all inputs with
-	// BlockNumber > 0, computed BEFORE the velocity gate (so a velocity-rejected
-	// far-future tip still counts here). Useful for the lag-vs-max telemetry
-	// gauge.
-	MaxObserved int64
-
-	// ClusterCount is how many distinct clusters the inputs formed.
-	ClusterCount int
-
-	// DominantSize is the size of the dominant (winning) cluster.
-	DominantSize int
-
-	// OutliersCount is the number of inputs OUTSIDE the dominant cluster.
-	// Equal to (total valid inputs - DominantSize).
-	OutliersCount int
-
-	// VelocityDropped lists the UpstreamIDs whose tips were rejected by the
-	// velocity gate (claimed too-far-future given lastServedBlock and the
-	// elapsed time).
-	VelocityDropped []string
-
-	// MaxEligible is the highest block number among inputs that SURVIVED the
-	// velocity gate — the freshest sane tip. Equal to MaxObserved when the
-	// velocity gate is inactive (no prior anchor or unknown block time). Prefer
-	// this over MaxObserved for the deliberate-lag gauge: a garbage far-future
-	// tip (wrong-chain / misconfigured upstream) is velocity-dropped and so
-	// cannot inflate the lag here.
-	MaxEligible int64
-
-	// Outliers lists the UpstreamIDs that survived the velocity gate but landed
-	// OUTSIDE the dominant agreeing cluster (len == OutliersCount).
-	Outliers []string
-}
-
-// ComputeServedTipCandidate clusters the inputs and returns the MIN block
-// number of the dominant cluster — the most conservative tip that the
-// dominant agreement cluster of upstreams can all serve.
+// PickServedTip returns the freshest block number that a strict majority of
+// the eligible upstreams have already reached: the floor(N/2)-th highest head
+// (0-indexed, descending). This is the entire served-tip algorithm.
 //
-// Algorithm (pure function; the caller wires the monotonic clamp on top):
+// One order statistic over the live heads provides every protection the
+// previous cluster + velocity-gate + persistent-counter pipeline engineered
+// separately — with zero state and zero configuration:
 //
-//  1. Drop inputs with BlockNumber <= 0.
-//  2. Velocity-gate: if lastServedBlock > 0 and cfg.BlockTimeSeconds > 0,
-//     drop inputs whose tip exceeds the expected max derived from
-//     (lastServedBlock + elapsedBlocks × VelocitySlack + VelocityBufferBlocks).
-//  3. Sort surviving inputs ascending by block number.
-//  4. Cluster greedily: adjacent values whose gap exceeds ClusterDelta split.
-//  5. Pick the dominant cluster: max by (size desc, then min desc) — size
-//     wins; ties broken in the chain-forward direction.
-//  6. Return MIN of the dominant cluster as Candidate.
+//   - GARBAGE-RESISTANT: a far-future tip from a rogue/wrong-chain upstream
+//     cannot move the pick unless a strict majority agrees with it.
+//   - STUCK-RESISTANT: a frozen or lagging upstream cannot hold the pick
+//     back unless it IS the majority (a halted chain — where holding back is
+//     the correct answer).
+//   - SERVABLE: by construction at least floor(N/2)+1 upstreams already have
+//     the advertised block, so interpolated "latest" requests land on
+//     upstreams that can actually serve it.
+//   - MONOTONIC IN PRACTICE: each input is itself a monotonic, rollback-
+//     tolerant poller counter, and an order statistic over monotonic inputs
+//     only regresses when the ELIGIBLE SET changes — bounded by the live
+//     head spread (a couple of blocks), the same wobble any load-balanced
+//     provider exhibits.
+//   - WEDGE-IMMUNE: nothing is persisted and nothing is predicted — no
+//     inherited counter, no anchor clock, no block-time estimate, no
+//     absorbing state. The 2026-06 production incident (served tips silently
+//     frozen hours in the past, fleet-wide) is structurally impossible here;
+//     networks_served_tip_invariants_test.go (package erpc) pins that class
+//     of outcome forever.
 //
-// The picker does NOT enforce monotonic forward progress — that is the
-// caller's responsibility (typically via a CounterInt64SharedVariable
-// TryUpdate at the Network level).
-func ComputeServedTipCandidate(
-	tips []ServedTipInput,
-	lastServedBlock int64,
-	elapsedSinceLast time.Duration,
-	cfg ServedTipConfig,
-) ServedTipResult {
-	res := ServedTipResult{}
-
-	// Resolve defaults
-	clusterDelta := cfg.ClusterDelta
-	if clusterDelta == 0 {
-		clusterDelta = resolveAutoClusterDelta(cfg.BlockTimeSeconds)
-	}
-	velocitySlack := cfg.VelocitySlack
-	if velocitySlack == 0 {
-		velocitySlack = 2.0
-	}
-	velocityBuffer := cfg.VelocityBufferBlocks
-	if velocityBuffer == 0 {
-		velocityBuffer = 5
-	}
-
-	// 1. Filter zeros, compute MaxObserved across pre-velocity candidates.
-	valid := make([]ServedTipInput, 0, len(tips))
+// Examples (heads descending): N=1 → that head; N=2 → the LOWER (never
+// advertise a block only one upstream claims); N=3 → 2nd; N=4 → 3rd; N=5 → 3rd.
+func PickServedTip(tips []ServedTipInput) ServedTipPick {
+	heads := make([]int64, 0, len(tips))
 	for _, t := range tips {
 		if t.BlockNumber > 0 {
-			valid = append(valid, t)
-			if t.BlockNumber > res.MaxObserved {
-				res.MaxObserved = t.BlockNumber
-			}
+			heads = append(heads, t.BlockNumber)
 		}
 	}
-	if len(valid) == 0 {
-		return res
+	if len(heads) == 0 {
+		return ServedTipPick{}
 	}
-
-	// 2. Velocity gate: only active when BOTH a prior anchor exists AND the
-	//    chain's block time is known. Without either, we can't predict an
-	//    expected max — leave all candidates in and let clustering do the work.
-	if lastServedBlock > 0 && cfg.BlockTimeSeconds > 0 {
-		elapsedBlocks := elapsedSinceLast.Seconds() / cfg.BlockTimeSeconds
-		expectedAdvance := int64(math.Ceil(elapsedBlocks * velocitySlack))
-		expectedMax := lastServedBlock + expectedAdvance + velocityBuffer
-
-		filtered := make([]ServedTipInput, 0, len(valid))
-		for _, t := range valid {
-			if t.BlockNumber > expectedMax {
-				res.VelocityDropped = append(res.VelocityDropped, t.UpstreamID)
-				continue
-			}
-			filtered = append(filtered, t)
-		}
-		valid = filtered
-		if len(valid) == 0 {
-			return res
-		}
+	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
+	freshest := heads[0]
+	if len(heads) > 1 {
+		// Corroborated freshest: a single rogue far-future tip must not be
+		// able to inflate the lag reference (see ServedTipPick.Freshest).
+		freshest = heads[1]
 	}
-
-	// 3. Sort ascending.
-	sort.Slice(valid, func(i, j int) bool {
-		return valid[i].BlockNumber < valid[j].BlockNumber
-	})
-	// Freshest velocity-surviving tip — the sane "highest available" reference
-	// for the deliberate-lag gauge (excludes garbage tips the velocity gate
-	// dropped above).
-	res.MaxEligible = valid[len(valid)-1].BlockNumber
-
-	// 4. Greedy clustering: split when the gap exceeds clusterDelta.
-	clusters := [][]ServedTipInput{{valid[0]}}
-	for i := 1; i < len(valid); i++ {
-		last := clusters[len(clusters)-1]
-		gap := valid[i].BlockNumber - last[len(last)-1].BlockNumber
-		if gap > clusterDelta {
-			clusters = append(clusters, []ServedTipInput{valid[i]})
-		} else {
-			clusters[len(clusters)-1] = append(last, valid[i])
-		}
+	return ServedTipPick{
+		Tip:      heads[len(heads)/2],
+		Freshest: freshest,
+		Inputs:   len(heads),
 	}
-
-	// 5. Dominant cluster: max by (size desc, then min desc).
-	//    Since clusters are sorted ascending in input order AND each cluster's
-	//    members are themselves sorted, cluster[i][0] is the cluster's MIN.
-	dominantIdx := 0
-	for i := 1; i < len(clusters); i++ {
-		ci, cd := clusters[i], clusters[dominantIdx]
-		if len(ci) > len(cd) {
-			dominantIdx = i
-		} else if len(ci) == len(cd) && ci[0].BlockNumber > cd[0].BlockNumber {
-			dominantIdx = i
-		}
-	}
-
-	dominant := clusters[dominantIdx]
-	res.Candidate = dominant[0].BlockNumber
-	res.ClusterCount = len(clusters)
-	res.DominantSize = len(dominant)
-	res.OutliersCount = len(valid) - len(dominant)
-	// Attribute each non-dominant cluster member as an outlier for per-upstream
-	// exclusion telemetry (these survived the velocity gate but disagreed with
-	// the dominant cluster).
-	for i, c := range clusters {
-		if i == dominantIdx {
-			continue
-		}
-		for _, t := range c {
-			res.Outliers = append(res.Outliers, t.UpstreamID)
-		}
-	}
-	return res
-}
-
-// resolveAutoClusterDelta derives ClusterDelta from chain block time:
-//
-//	delta = clamp(ceil(2.0 / blockTimeSec), 2, 10)
-//
-// The 2.0s numerator targets vendor-to-vendor propagation slack typical on
-// EVM networks. Clamping keeps the result sane on slow chains (Mainnet 12s
-// → floor 2) and fast chains (sub-100ms hypothetical → ceiling 10).
-//
-// When blockTimeSec is 0 (not yet observed), returns the floor of 2.
-func resolveAutoClusterDelta(blockTimeSec float64) int64 {
-	if blockTimeSec <= 0 {
-		return 2
-	}
-	d := int64(math.Ceil(2.0 / blockTimeSec))
-	if d < 2 {
-		return 2
-	}
-	if d > 10 {
-		return 10
-	}
-	return d
 }

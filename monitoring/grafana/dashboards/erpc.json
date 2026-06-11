@@ -4051,7 +4051,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Network-scope FAILOVER retries/sec (retryable_error/pending_tx) — genuine upstream errors / tx hunting, NOT chain catch-up. A spike here means upstreams are erroring; drill into 'Upstream Errors by Type'.",
+          "description": "Network-scope FAILOVER retries/sec (retryable_error/pending_tx) \u2014 genuine upstream errors / tx hunting, NOT chain catch-up. A spike here means upstreams are erroring; drill into 'Upstream Errors by Type'.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4159,7 +4159,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Top upstream error sources by error CODE (ErrEndpointUnsupported, ErrEndpointCapacityExceeded, ...). The 'why' behind failover retries — e.g. an upstream sent methods it doesn't support, or rate-limited.",
+          "description": "Top upstream error sources by error CODE (ErrEndpointUnsupported, ErrEndpointCapacityExceeded, ...). The 'why' behind failover retries \u2014 e.g. an upstream sent methods it doesn't support, or rate-limited.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4373,7 +4373,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "p95 end-to-end latency (seconds) of chain-tip reads (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts) — the slowest 1-in-20 tip read. Sub-second is healthy; a high value means a slow upstream is dragging tip reads, so cross-check 'Tip culprits' and 'Upstream heads' for the offender.",
+          "description": "p95 end-to-end latency (seconds) of chain-tip reads (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts) \u2014 the slowest 1-in-20 tip read. Sub-second is healthy; a high value means a slow upstream is dragging tip reads, so cross-check 'Tip culprits' and 'Upstream heads' for the offender.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4454,7 +4454,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks the MAIN primary (the upstream most replicas currently route to) sits behind a fresher upstream we also have. 0 = the primary is the freshest available; only chains >2 are shown, where it's a routing-quality gap — we could be serving fresher data but aren't.",
+          "description": "Blocks the MAIN primary (the upstream most replicas currently route to) sits behind a fresher upstream we also have. 0 = the primary is the freshest available; only chains >2 are shown, where it's a routing-quality gap \u2014 we could be serving fresher data but aren't.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4535,7 +4535,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks we DELIBERATELY serve behind our own freshest upstream — the safety cushion that kills 'block not found' retries (we advertise the MIN of the dominant agreeing cluster, not the single most-ahead node). A few blocks is by design; only 1–100 is shown (>100 is hidden, as that's a misbehaving upstream rather than a real cushion).",
+          "description": "Blocks we DELIBERATELY serve behind our own freshest upstream \u2014 the safety cushion that kills 'block not found' retries (we advertise the MIN of the dominant agreeing cluster, not the single most-ahead node). A few blocks is by design; only 1\u2013100 is shown (>100 is hidden, as that's a misbehaving upstream rather than a real cushion).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4544,7 +4544,7 @@
               "displayName": "${__field.labels.network}",
               "mappings": [],
               "min": 0,
-              "noValue": "✓ none > 1 blk",
+              "noValue": "\u2713 none > 1 blk",
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
@@ -4617,7 +4617,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Served-tip lag on the FINALIZED axis — should be ~0, since upstreams shouldn't disagree on finalized blocks. Any value here (only >0 is shown) means they DO disagree: a reorg-depth or upstream-config issue worth investigating.",
+          "description": "Served-tip lag on the FINALIZED axis \u2014 should be ~0, since upstreams shouldn't disagree on finalized blocks. Any value here (only >0 is shown) means they DO disagree: a reorg-depth or upstream-config issue worth investigating.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4626,7 +4626,7 @@
               "displayName": "${__field.labels.network}",
               "mappings": [],
               "min": 0,
-              "noValue": "✓ all agree on finalized",
+              "noValue": "\u2713 all agree on finalized",
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
@@ -4699,7 +4699,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Share of a chain's requests that hit a catch-up wait — the data wasn't available on the chosen upstream yet, so we held and retried. Single-digit % is normal tip-race friction; >10% means an upstream is meaningfully behind and freshness is degrading for users.",
+          "description": "Share of a chain's requests that hit a catch-up wait \u2014 the data wasn't available on the chosen upstream yet, so we held and retried. Single-digit % is normal tip-race friction; >10% means an upstream is meaningfully behind and freshness is degrading for users.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4784,7 +4784,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Latest block each isolated use-upstream GROUP (lane) advertises as its tip — e.g. base 'flashblocks' vs the normal group. A lane appears only for networks receiving use-upstream traffic, and its name is the token shared by ALL the group's upstreams (a single vendor upstream is never a lane). Compare lanes on one chain to see which group leads; a steady gap is expected (flashblocks runs ahead by design).",
+          "description": "Latest block each isolated use-upstream GROUP (lane) advertises as its tip \u2014 e.g. base 'flashblocks' vs the normal group. A lane appears only for networks receiving use-upstream traffic, and its name is the token shared by ALL the group's upstreams (a single vendor upstream is never a lane). Compare lanes on one chain to see which group leads; a steady gap is expected (flashblocks runs ahead by design).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -4904,7 +4904,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Blocks each isolated use-upstream GROUP (lane) deliberately holds its served tip behind that lane's OWN freshest velocity-eligible upstream — the per-lane safety cushion that keeps a transient single-node spike from being advertised as the tip. Like the lane tip charts, a lane appears only while it receives use-upstream traffic, and its name is the token shared by ALL the group's upstreams. A small steady value is healthy (intentional lag); a lane trending up is falling behind its own fleet and worth investigating.",
+          "description": "Blocks each isolated use-upstream GROUP (lane) deliberately holds its served tip behind that lane's OWN single freshest upstream view \u2014 the per-lane safety cushion that keeps a transient single-node spike from being advertised as the tip. Like the lane tip charts, a lane appears only while it receives use-upstream traffic, and its name is the token shared by ALL the group's upstreams. A small steady value is healthy (intentional lag); a lane trending up is falling behind its own fleet and worth investigating.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5022,7 +5022,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Finalized block each use-upstream group (lane) advertises. Lanes should AGREE on finalized; a gap between two lanes on the same chain flags a finalized-view divergence between the node groups — worth a look.",
+          "description": "Finalized block each use-upstream group (lane) advertises. Lanes should AGREE on finalized; a gap between two lanes on the same chain flags a finalized-view divergence between the node groups \u2014 worth a look.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5142,7 +5142,125 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "How long ONE catch-up wait lasts at p95 (seconds), split by reason — roughly one block time when an upstream is briefly behind (~12s on mainnet, sub-second on fast chains). Only the small % of requests that wait pay this; a value far above one block time means an upstream is stuck, not just racing the tip.",
+          "description": "Universal stuck-tip detector: seconds since the served-tip value last changed. Alert when >> block time on a live chain \u2014 catches any freeze mechanism, including unknown ones.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineStyle": {
+                  "dash": [
+                    0,
+                    10
+                  ],
+                  "fill": "dot"
+                },
+                "lineWidth": 1,
+                "pointSize": 7,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 25,
+            "w": 24,
+            "h": 8
+          },
+          "id": 905,
+          "interval": "1m",
+          "maxDataPoints": 20,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(15, max by (network) (erpc_network_served_tip_advance_age_seconds{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\", axis=\"latest\"}))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} \u00b7 advance age (s)",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Tip advance age (stuck watch)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "How long ONE catch-up wait lasts at p95 (seconds), split by reason \u2014 roughly one block time when an upstream is briefly behind (~12s on mainnet, sub-second on fast chains). Only the small % of requests that wait pay this; a value far above one block time means an upstream is stuck, not just racing the tip.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5216,7 +5334,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 25,
+            "y": 33,
             "w": 24,
             "h": 8
           },
@@ -5406,7 +5524,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 33,
+            "y": 41,
             "w": 24,
             "h": 10
           },
@@ -5497,7 +5615,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Critical errors on chain-tip methods (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts), by upstream and error type (errors/sec) — the likely culprit when the tip is halted, slow, or lagging above. Harmless errors (reverts, bad params) are filtered out, so anything here is a real fault on a real upstream.",
+          "description": "Critical errors on chain-tip methods (eth_getBlockByNumber / getBlockByHash / blockNumber / getBlockReceipts), by upstream and error type (errors/sec) \u2014 the likely culprit when the tip is halted, slow, or lagging above. Harmless errors (reverts, bad params) are filtered out, so anything here is a real fault on a real upstream.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -5541,7 +5659,7 @@
                           "pattern": ".*RequestTimeout.*",
                           "result": {
                             "index": 0,
-                            "text": "⏱ Timeout — upstream too slow (raise timeout/capacity, or replace upstream)"
+                            "text": "\u23f1 Timeout \u2014 upstream too slow (raise timeout/capacity, or replace upstream)"
                           }
                         },
                         "type": "regex"
@@ -5551,7 +5669,7 @@
                           "pattern": ".*TransportFailure.*",
                           "result": {
                             "index": 1,
-                            "text": "🔌 Transport — unreachable / TLS / DNS"
+                            "text": "\ud83d\udd0c Transport \u2014 unreachable / TLS / DNS"
                           }
                         },
                         "type": "regex"
@@ -5561,7 +5679,7 @@
                           "pattern": ".*ServerSideException.*",
                           "result": {
                             "index": 2,
-                            "text": "💥 Upstream 5xx — provider-side error"
+                            "text": "\ud83d\udca5 Upstream 5xx \u2014 provider-side error"
                           }
                         },
                         "type": "regex"
@@ -5571,7 +5689,7 @@
                           "pattern": ".*NonceException.*",
                           "result": {
                             "index": 3,
-                            "text": "# Nonce — tx ordering / state"
+                            "text": "# Nonce \u2014 tx ordering / state"
                           }
                         },
                         "type": "regex"
@@ -5581,7 +5699,7 @@
                           "pattern": ".*CapacityExceeded.*",
                           "result": {
                             "index": 4,
-                            "text": "🚦 Rate-limited — raise limit or add capacity"
+                            "text": "\ud83d\udea6 Rate-limited \u2014 raise limit or add capacity"
                           }
                         },
                         "type": "regex"
@@ -5591,7 +5709,7 @@
                           "pattern": ".*Unsupported.*",
                           "result": {
                             "index": 5,
-                            "text": "🚫 Unsupported method — method-scope this upstream"
+                            "text": "\ud83d\udeab Unsupported method \u2014 method-scope this upstream"
                           }
                         },
                         "type": "regex"
@@ -5601,7 +5719,7 @@
                           "pattern": ".*BillingIssue.*",
                           "result": {
                             "index": 6,
-                            "text": "💳 Billing/credits — provider account"
+                            "text": "\ud83d\udcb3 Billing/credits \u2014 provider account"
                           }
                         },
                         "type": "regex"
@@ -5611,7 +5729,7 @@
                           "pattern": ".*Unauthorized.*",
                           "result": {
                             "index": 7,
-                            "text": "🔑 Auth — bad/expired key"
+                            "text": "\ud83d\udd11 Auth \u2014 bad/expired key"
                           }
                         },
                         "type": "regex"
@@ -5621,7 +5739,7 @@
                           "pattern": ".*ClientSideException.*",
                           "result": {
                             "index": 8,
-                            "text": "⚠ Bad request (4xx) — usually caller-side"
+                            "text": "\u26a0 Bad request (4xx) \u2014 usually caller-side"
                           }
                         },
                         "type": "regex"
@@ -5631,7 +5749,7 @@
                           "pattern": ".*BlockUnavailable.*",
                           "result": {
                             "index": 9,
-                            "text": "⏳ Block not on upstream yet (catch-up)"
+                            "text": "\u23f3 Block not on upstream yet (catch-up)"
                           }
                         },
                         "type": "regex"
@@ -5641,7 +5759,7 @@
                           "pattern": ".*ExecutionException.*",
                           "result": {
                             "index": 10,
-                            "text": "↩ Execution revert (usually benign)"
+                            "text": "\u21a9 Execution revert (usually benign)"
                           }
                         },
                         "type": "regex"
@@ -5699,7 +5817,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 43,
+            "y": 51,
             "w": 24,
             "h": 10
           },
@@ -5760,7 +5878,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Same critical-error breakdown for NON-tip methods (eth_call, getLogs, receipts, traces, …), by upstream and error (errors/sec). Use it to catch an upstream degrading on general traffic even when the chain tip itself looks healthy.",
+          "description": "Same critical-error breakdown for NON-tip methods (eth_call, getLogs, receipts, traces, \u2026), by upstream and error (errors/sec). Use it to catch an upstream degrading on general traffic even when the chain tip itself looks healthy.",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -5783,7 +5901,7 @@
                           "pattern": ".*RequestTimeout.*",
                           "result": {
                             "index": 0,
-                            "text": "⏱ Timeout — upstream too slow (raise timeout/capacity, or replace upstream)"
+                            "text": "\u23f1 Timeout \u2014 upstream too slow (raise timeout/capacity, or replace upstream)"
                           }
                         },
                         "type": "regex"
@@ -5793,7 +5911,7 @@
                           "pattern": ".*TransportFailure.*",
                           "result": {
                             "index": 1,
-                            "text": "🔌 Transport — unreachable / TLS / DNS"
+                            "text": "\ud83d\udd0c Transport \u2014 unreachable / TLS / DNS"
                           }
                         },
                         "type": "regex"
@@ -5803,7 +5921,7 @@
                           "pattern": ".*ServerSideException.*",
                           "result": {
                             "index": 2,
-                            "text": "💥 Upstream 5xx — provider-side error"
+                            "text": "\ud83d\udca5 Upstream 5xx \u2014 provider-side error"
                           }
                         },
                         "type": "regex"
@@ -5813,7 +5931,7 @@
                           "pattern": ".*NonceException.*",
                           "result": {
                             "index": 3,
-                            "text": "# Nonce — tx ordering / state"
+                            "text": "# Nonce \u2014 tx ordering / state"
                           }
                         },
                         "type": "regex"
@@ -5823,7 +5941,7 @@
                           "pattern": ".*CapacityExceeded.*",
                           "result": {
                             "index": 4,
-                            "text": "🚦 Rate-limited — raise limit or add capacity"
+                            "text": "\ud83d\udea6 Rate-limited \u2014 raise limit or add capacity"
                           }
                         },
                         "type": "regex"
@@ -5833,7 +5951,7 @@
                           "pattern": ".*Unsupported.*",
                           "result": {
                             "index": 5,
-                            "text": "🚫 Unsupported method — method-scope this upstream"
+                            "text": "\ud83d\udeab Unsupported method \u2014 method-scope this upstream"
                           }
                         },
                         "type": "regex"
@@ -5843,7 +5961,7 @@
                           "pattern": ".*BillingIssue.*",
                           "result": {
                             "index": 6,
-                            "text": "💳 Billing/credits — provider account"
+                            "text": "\ud83d\udcb3 Billing/credits \u2014 provider account"
                           }
                         },
                         "type": "regex"
@@ -5853,7 +5971,7 @@
                           "pattern": ".*Unauthorized.*",
                           "result": {
                             "index": 7,
-                            "text": "🔑 Auth — bad/expired key"
+                            "text": "\ud83d\udd11 Auth \u2014 bad/expired key"
                           }
                         },
                         "type": "regex"
@@ -5863,7 +5981,7 @@
                           "pattern": ".*ClientSideException.*",
                           "result": {
                             "index": 8,
-                            "text": "⚠ Bad request (4xx) — usually caller-side"
+                            "text": "\u26a0 Bad request (4xx) \u2014 usually caller-side"
                           }
                         },
                         "type": "regex"
@@ -5873,7 +5991,7 @@
                           "pattern": ".*BlockUnavailable.*",
                           "result": {
                             "index": 9,
-                            "text": "⏳ Block not on upstream yet (catch-up)"
+                            "text": "\u23f3 Block not on upstream yet (catch-up)"
                           }
                         },
                         "type": "regex"
@@ -5883,7 +6001,7 @@
                           "pattern": ".*ExecutionException.*",
                           "result": {
                             "index": 10,
-                            "text": "↩ Execution revert (usually benign)"
+                            "text": "\u21a9 Execution revert (usually benign)"
                           }
                         },
                         "type": "regex"
@@ -5941,7 +6059,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 53,
+            "y": 61,
             "w": 24,
             "h": 10
           },
@@ -8454,7 +8572,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "`sortByScore` output, HIGHER = better. Score = overall(u) / (1 + Σ metric×weight). Per-upstream `routing.scoreMultipliers.overall` boosts visibly lift the line.",
+          "description": "`sortByScore` output, HIGHER = better. Score = overall(u) / (1 + \u03a3 metric\u00d7weight). Per-upstream `routing.scoreMultipliers.overall` boosts visibly lift the line.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -8882,13 +9000,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Top-15 upstreams by how long they are CURRENTLY continuously excluded (erpc_selection_excluded_seconds, wall-clock). 0 = in rotation. This is duration, not event count — pair with the 'Active Primary Upstream' timeline to see the exclusion windows.",
+          "description": "Top-15 upstreams by how long they are CURRENTLY continuously excluded (erpc_selection_excluded_seconds, wall-clock). 0 = in rotation. This is duration, not event count \u2014 pair with the 'Active Primary Upstream' timeline to see the exclusion windows.",
           "fieldConfig": {
             "defaults": {
               "color": {
                 "mode": "thresholds"
               },
-              "displayName": "${__field.labels.network} · ${__field.labels.upstream}",
+              "displayName": "${__field.labels.network} \u00b7 ${__field.labels.upstream}",
               "mappings": [],
               "min": 0,
               "thresholds": {
@@ -8959,7 +9077,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: an upstream spiking on `error_rate_above` is a different problem from one spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: exclusion events per second across all eRPC instances (sum of per-instance × per-tick increments where this upstream tripped this rule). With N instances × 1Hz eval interval, a sustained N events/sec means every instance excludes this upstream every tick (always tripping); 1 event/sec means roughly 1 in N instances excludes per tick (intermittent / borderline).",
+          "description": "Per-upstream exclusion rate, by leaf-reason (top-20 series). Tells you exactly WHICH upstream is being dropped for WHICH rule (`error_rate_above`, `latency_p70_deviation_above`, `block_head_lag_above`, ...). Drives root-cause: an upstream spiking on `error_rate_above` is a different problem from one spiking on `throttle_rate_above`.\n\n**Reading the y-axis**: exclusion events per second across all eRPC instances (sum of per-instance \u00d7 per-tick increments where this upstream tripped this rule). With N instances \u00d7 1Hz eval interval, a sustained N events/sec means every instance excludes this upstream every tick (always tripping); 1 event/sec means roughly 1 in N instances excludes per tick (intermittent / borderline).",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -9052,7 +9170,7 @@
               "expr": "topk(20,\n  sum by (network, upstream, reason) (\n    rate(erpc_selection_exclusion_total{\n        namespace=~\"${namespace:regex}\",\n        cluster=~\"${cluster:regex}\",\n        region=~\"${region:regex}\",\n        project=~\"${project:regex}\",\n        network=~\"${network:regex}\",\n        network!~\"${ignore_network:regex}\",\n        upstream=~\"${upstream:regex}\"\n    }[5m])\n  )\n)",
               "format": "time_series",
               "instant": false,
-              "legendFormat": "{{network}} / {{upstream}} — {{reason}}",
+              "legendFormat": "{{network}} / {{upstream}} \u2014 {{reason}}",
               "range": true,
               "refId": "A"
             }
@@ -9365,7 +9483,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "`shadowExcludeIf` trips — upstreams that WOULD have been excluded if the rule were real. Compare to `selection_exclusion_total` to decide when to flip a shadow rule to a real `excludeIf`.",
+          "description": "`shadowExcludeIf` trips \u2014 upstreams that WOULD have been excluded if the rule were real. Compare to `selection_exclusion_total` to decide when to flip a shadow rule to a real `excludeIf`.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -12555,7 +12673,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Wall-clock age of the latest block each cache connector has ingested (now − its latest block timestamp). Self-contained cache catch-up signal; no join required. Source: cache_connector_latest_block_timestamp_seconds.",
+          "description": "Wall-clock age of the latest block each cache connector has ingested (now \u2212 its latest block timestamp). Self-contained cache catch-up signal; no join required. Source: cache_connector_latest_block_timestamp_seconds.",
           "fieldConfig": {
             "defaults": {
               "color": {

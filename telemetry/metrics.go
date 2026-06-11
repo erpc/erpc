@@ -119,47 +119,40 @@ var (
 	}, []string{"project", "network"})
 
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
-	// advertises/serves as the tip for a block tag (axis=latest|finalized), after
-	// the served-tip cluster picker + monotonic clamp. Previously only an OTel span
-	// attribute (served_tip.candidate); exposed here so the deliberate served-tip lag
-	// is directly observable. Compare to max(upstream_latest_block_number).
-	// lane="all" is the network-wide served tip; a named lane is a use-upstream
-	// group's own served tip (LaneName of the matched upstream set) and is only
-	// present for networks receiving targeted (use-upstream) traffic — so a
-	// network with no use-upstream groups has only lane="all".
+	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
+	// freshest block a strict MAJORITY of eligible upstreams already have (see
+	// evm.PickServedTip). lane="all" is the network-wide pick; a named lane is a
+	// use-upstream group's own pick (present only for networks receiving
+	// targeted traffic).
 	MetricNetworkServedTipBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_block_number",
-		Help:      "Block number served/advertised as the tip, after the served-tip cluster picker + monotonic clamp. lane=\"all\" = network-wide; a named lane = a use-upstream group's own tip.",
+		Help:      "Block number served/advertised as the tip (freshest block a strict majority of eligible upstreams already have). lane=\"all\" = network-wide; a named lane = a use-upstream group's own tip.",
 	}, []string{"project", "network", "lane", "axis"})
 
 	// MetricNetworkServedTipLagBlocks is the deliberate, bounded served-tip lag:
-	// blocks the served tip sits behind the freshest VELOCITY-ELIGIBLE upstream at
-	// pick time (MaxEligible - served). Using the velocity-gated max (not the raw
-	// MaxObserved) keeps a garbage far-future tip from a wrong-chain/misconfigured
-	// upstream from inflating the gauge — that tip is velocity-dropped and surfaces
-	// instead in network_served_tip_upstream_excluded_total{reason="velocity"}.
-	// Computed at the same instant as the pick, so it is exact (no cross-metric
-	// scrape skew). NOTE: the series is ABSENT (not 0) when served-tip is in default
-	// MAX mode (feature off) for that axis — that path early-returns before the emit.
+	// blocks the majority tip sits behind the single freshest upstream view at
+	// pick time (Freshest - Tip). Computed at the same instant as the pick, so it
+	// is exact (no cross-metric scrape skew). NOTE: the series is ABSENT (not 0)
+	// when served-tip is in default MAX mode (feature off) for that axis.
 	MetricNetworkServedTipLagBlocks = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_lag_blocks",
-		Help:      "Blocks the served tip sits behind the freshest velocity-eligible upstream at pick time (deliberate, outlier-guarded served-tip lag), per network, lane and axis. lane=\"all\" is the network-wide pick; a named lane is a use-upstream group's own pick (present only for networks receiving targeted traffic).",
+		Help:      "Blocks the majority served tip sits behind the single freshest upstream view at pick time, per network, lane and axis. lane=\"all\" is the network-wide pick; a named lane is a use-upstream group's own pick.",
 	}, []string{"project", "network", "lane", "axis"})
 
-	// MetricNetworkServedTipUpstreamExcludedTotal counts, per upstream, how often an
-	// upstream was excluded from the served-tip pick and why: reason="velocity" (its
-	// reported tip was too far ahead of the sane bound — typically a wrong-chain or
-	// misbehaving endpoint) or reason="outlier" (it survived the velocity gate but
-	// landed outside the dominant agreeing cluster). The served tip itself is
-	// unaffected; a sustained velocity count is the signal that an upstream is
-	// reporting bad block numbers. ABSENT in default MAX mode (feature off).
-	MetricNetworkServedTipUpstreamExcludedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	// MetricNetworkServedTipAdvanceAgeSeconds is the time since this process
+	// last observed the served-tip VALUE change, exported at pick time. This
+	// is the universal stuck-tip detector: regardless of WHICH mechanism would
+	// freeze the tip (a failure mode nobody predicted included), a healthy
+	// network advances every block or two, so `age >> block time` on a network
+	// with live traffic is always alert-worthy. Absent until the process
+	// observes its first change (and absent in default MAX mode).
+	MetricNetworkServedTipAdvanceAgeSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
-		Name:      "network_served_tip_upstream_excluded_total",
-		Help:      "Times an upstream was excluded from the served-tip pick, per reason (velocity|outlier).",
-	}, []string{"project", "network", "upstream", "axis", "reason"})
+		Name:      "network_served_tip_advance_age_seconds",
+		Help:      "Seconds since the served-tip value last changed (observed in-process, exported at pick time); sustained high values on a live chain = stuck tip.",
+	}, []string{"project", "network", "lane", "axis"})
 
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
