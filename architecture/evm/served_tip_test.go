@@ -53,7 +53,8 @@ func TestPickServedTip_GarbageTipCannotMoveThePick(t *testing.T) {
 	// and (pre-2026-06 fix) could poison the persistent counter.
 	p := PickServedTip(tipsFromInts(999_999_999, 101, 100))
 	assert.Equal(t, int64(101), p.Tip)
-	assert.Equal(t, int64(999_999_999), p.Freshest, "freshest still reports the rogue view for observability")
+	assert.Equal(t, int64(101), p.Freshest,
+		"the lag reference (corroborated freshest) must ignore the lone rogue too")
 
 	// Even two agreeing rogues lose against a 5-upstream majority.
 	assert.Equal(t, int64(102), PickServedTip(tipsFromInts(999_999_999, 999_999_999, 102, 101, 100)).Tip)
@@ -97,4 +98,71 @@ func TestPickServedTip_TipNeverExceedsFreshestAndIsAlwaysAHead(t *testing.T) {
 		assert.LessOrEqual(t, p.Tip, p.Freshest, "heads=%v", heads)
 		assert.Contains(t, heads, p.Tip, "tip must be a real observed head; heads=%v", heads)
 	}
+}
+
+// ─── Scenarios the retired cluster+gate+counter pipeline existed for ─────────
+// Each case below is a REAL-WORLD situation the old machinery handled with a
+// dedicated mechanism (greedy clustering, ClusterDelta, the velocity gate,
+// fail-open, MaxEligible, the persistent monotonic counter). The majority pick
+// must keep handling every one of them — these tests are the proof, mapped
+// one-to-one from the old test matrix and the 2026-06 incident history.
+
+func TestPickServedTip_Scenario_VendorPropagationJitter(t *testing.T) {
+	// Old: ClusterDelta grouped heads within 1-2 blocks so vendor propagation
+	// jitter never split agreement. New: the majority head IS inside the
+	// jitter band — no grouping parameter needed.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(101, 100, 100)).Tip)
+	assert.Equal(t, int64(101), PickServedTip(tipsFromInts(101, 101, 100)).Tip,
+		"two fresh vs one 1-block lagger: tip moves forward")
+}
+
+func TestPickServedTip_Scenario_SingleLaggerDoesNotHoldBack(t *testing.T) {
+	// Old: the dominant (fresh) cluster outvoted a stuck/lagging upstream.
+	assert.Equal(t, int64(101), PickServedTip(tipsFromInts(101, 101, 50)).Tip)
+}
+
+func TestPickServedTip_Scenario_SingleLeaderDoesNotDefineTip(t *testing.T) {
+	// Old: a lone most-ahead node (flashblocks-style) formed a 1-node cluster
+	// and lost to the agreeing pair. Advertising the loner's head is exactly
+	// the "block not found" churn that motivated served-tip in PR #900.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(120, 100, 99)).Tip,
+		"the loner's head must never be advertised")
+}
+
+func TestPickServedTip_Scenario_MajorityLaggersWin(t *testing.T) {
+	// Old: 4 laggers outvoted 3 leaders by cluster size — the network truth
+	// is what most upstreams can serve. New: same outcome with a fresher
+	// representative (the BEST lagger instead of the worst).
+	assert.Equal(t, int64(50), PickServedTip(tipsFromInts(103, 102, 101, 50, 49, 48, 47)).Tip)
+}
+
+func TestPickServedTip_Scenario_BurstCatchupServedImmediately(t *testing.T) {
+	// Old: the velocity gate carried slack+buffer tuned to ALLOW legitimate
+	// burst catch-up (L2 sequencer batches, a halted chain resuming), plus
+	// fail-open for when that tuning was wrong — mis-tuning is what froze
+	// prod. New: stateless, so a jump is served the moment a majority
+	// reports it; there is no window to outrun and nothing to mis-arm.
+	assert.Equal(t, int64(100), PickServedTip(tipsFromInts(100, 100, 99)).Tip)
+	assert.Equal(t, int64(1100), PickServedTip(tipsFromInts(1100, 1100, 1099)).Tip)
+}
+
+func TestPickServedTip_Scenario_GarbageCannotInflateLagReference(t *testing.T) {
+	// Old: MaxEligible (the velocity-gated max) kept a rogue far-future tip
+	// out of the lag gauge — without that, dashboards read "1.8 days behind"
+	// on healthy chains (the abstract/zora incident). New: Freshest is the
+	// 2nd-highest head, so a single rogue cannot touch the gauge either.
+	p := PickServedTip(tipsFromInts(999_999_999, 102, 101, 100))
+	assert.Equal(t, int64(101), p.Tip)
+	assert.Equal(t, int64(102), p.Freshest, "lag reference ignores the lone rogue")
+	assert.Equal(t, int64(1), p.Freshest-p.Tip, "deliberate lag stays in single digits")
+}
+
+func TestPickServedTip_Scenario_HaltedChainHoldsHonestly(t *testing.T) {
+	// Old: a halted chain froze the counter (and post-incident, tripped the
+	// stuck watchdog). New: picks over frozen heads keep returning the same
+	// honest consensus value — no invented progress; the advance-age
+	// watchdog still fires at the Network layer.
+	frozen := tipsFromInts(500, 500, 499)
+	assert.Equal(t, int64(500), PickServedTip(frozen).Tip)
+	assert.Equal(t, PickServedTip(frozen), PickServedTip(frozen), "pure function: same inputs, same pick")
 }

@@ -22,8 +22,14 @@ type ServedTipPick struct {
 	// when there are no valid inputs.
 	Tip int64
 
-	// Freshest is the highest valid input (the most-ahead upstream's view) —
-	// the reference for the deliberate-lag gauge (Freshest - Tip).
+	// Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
+	// (or the only input when N=1) — the reference for the deliberate-lag
+	// gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
+	// means a single rogue far-future upstream cannot inflate the lag gauge
+	// (the problem the old velocity gate solved via MaxEligible: one
+	// wrong-chain endpoint used to make the gauge read hundreds of thousands
+	// of blocks). The absolute per-upstream maxima remain observable via
+	// erpc_upstream_latest_block_number.
 	Freshest int64
 
 	// Inputs is the number of valid (BlockNumber > 0) observations.
@@ -71,9 +77,15 @@ func PickServedTip(tips []ServedTipInput) ServedTipPick {
 		return ServedTipPick{}
 	}
 	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
+	freshest := heads[0]
+	if len(heads) > 1 {
+		// Corroborated freshest: a single rogue far-future tip must not be
+		// able to inflate the lag reference (see ServedTipPick.Freshest).
+		freshest = heads[1]
+	}
 	return ServedTipPick{
 		Tip:      heads[len(heads)/2],
-		Freshest: heads[0],
+		Freshest: freshest,
 		Inputs:   len(heads),
 	}
 }

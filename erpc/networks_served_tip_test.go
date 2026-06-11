@@ -551,3 +551,103 @@ func TestServedTip_AnchorStampsOnServedValueChange(t *testing.T) {
 		"watchdog must stamp once the served value moves")
 	require.Less(t, age, 5*time.Second)
 }
+
+// ─── Network-level scenarios the retired machinery existed for ───────────────
+
+// Eligible-set churn (policy exclusion / cordon) may dip the advertised tip,
+// but only within the live head spread. The old persistent counter held the
+// value through churn; the bounded dip is the documented trade for
+// wedge-immunity (an order statistic over a changed set can step down by at
+// most the spread, and the per-upstream poller counters are monotonic).
+func TestServedTip_EligibleSetChurn_DipBoundedBySpread(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 103},
+		{id: "u2", chainID: 123, latestBlock: 102},
+		{id: "u3", chainID: 123, latestBlock: 101},
+		{id: "u4", chainID: 123, latestBlock: 100},
+	})
+
+	served1 := network.EvmHighestLatestBlockNumber(ctx)
+	require.Equal(t, int64(101), served1, "majority of [103,102,101,100] = 3rd highest")
+
+	// The two freshest upstreams get excluded (cordon / policy decision) —
+	// the worst-case churn direction.
+	network.PinUpstreamOrderForTest("u3", "u4")
+
+	served2 := network.EvmHighestLatestBlockNumber(ctx)
+	assert.Equal(t, int64(100), served2, "majority of the remaining [101,100]")
+	assert.GreaterOrEqual(t, served2, served1-3,
+		"a set-churn dip must stay within the pre-churn head spread")
+}
+
+// The network layer must add ZERO stickiness of its own: every pick reflects
+// the heads as they are NOW. This is what makes deep-reorg recovery
+// automatic — the per-upstream poller counters accept large rollbacks (their
+// own, unchanged layer), and the network tip simply follows. The OLD design
+// failed this half: its persistent counter pinned the tip AHEAD of the chain
+// for any reorg smaller than its 1024-block rollback tolerance. (The poller
+// suggestion path deliberately ignores lower values, so this test drives the
+// "heads got lower" condition via eligibility instead.)
+func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 10_000},
+		{id: "u2", chainID: 123, latestBlock: 10_000},
+		{id: "u3", chainID: 123, latestBlock: 9_000},
+	})
+	require.Equal(t, int64(10_000), network.EvmHighestLatestBlockNumber(ctx))
+
+	// The fresh pair drops out (cordon/policy); only the 9_000 view remains.
+	network.PinUpstreamOrderForTest("u3")
+	assert.Equal(t, int64(9_000), network.EvmHighestLatestBlockNumber(ctx),
+		"the pick must reflect current heads with no memory of the prior 10_000")
+
+	// And no downward stickiness either: the moment the remaining head
+	// advances, the pick follows it up.
+	ups[2].EvmStatePoller().SuggestLatestBlock(11_000)
+	assert.Equal(t, int64(11_000), network.EvmHighestLatestBlockNumber(ctx))
+}
+
+// A halted chain that resumes with a burst (sequencer outage ending, L2 batch
+// landing) must be served the moment a majority reports the jump. The old
+// velocity gate had to be tuned (slack/buffer) to permit exactly this, and a
+// mis-tuned gate freezing on the jump is what wedged prod; statelessness has
+// no window to outrun.
+func TestServedTip_HaltedChainResume_CatchesUpImmediately(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 100},
+		{id: "u3", chainID: 123, latestBlock: 99},
+	})
+
+	// Halted: repeated picks over frozen heads hold the same honest value.
+	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
+	require.Equal(t, int64(100), network.EvmHighestLatestBlockNumber(ctx))
+
+	// Resume with a 500-block burst.
+	for _, u := range ups {
+		u.EvmStatePoller().SuggestLatestBlock(600)
+	}
+	assert.Equal(t, int64(600), network.EvmHighestLatestBlockNumber(ctx),
+		"the post-halt burst must be served on the first pick that sees it")
+}
