@@ -282,6 +282,36 @@ func ComputeServedTipCandidate(
 	return res
 }
 
+// MajorityServedTip is the CANDIDATE REPLACEMENT for the cluster+gate+counter
+// pipeline, currently computed only as a shadow for prod evaluation: the
+// highest block number that a strict MAJORITY of the inputs have already
+// reached (the floor(N/2)-th highest head, 0-indexed descending).
+//
+// One order statistic gives every protection the pipeline above engineers
+// separately, with zero state and zero configuration:
+//   - a single garbage far-future tip cannot move it (needs a majority);
+//   - a single stuck/lagging upstream cannot hold it back;
+//   - per-upstream heads are already monotonic (poller counters), and an
+//     order statistic over monotonic inputs only regresses when the eligible
+//     SET changes — bounded by the live head spread;
+//   - nothing is persisted, so no boot inheritance, no anchor, no wedge.
+//
+// Examples (heads descending): N=1 → that head; N=2 → the lower (conservative:
+// never advertise a block only one upstream claims); N=3 → 2nd; N=5 → 3rd.
+func MajorityServedTip(tips []ServedTipInput) int64 {
+	heads := make([]int64, 0, len(tips))
+	for _, t := range tips {
+		if t.BlockNumber > 0 {
+			heads = append(heads, t.BlockNumber)
+		}
+	}
+	if len(heads) == 0 {
+		return 0
+	}
+	sort.Slice(heads, func(i, j int) bool { return heads[i] > heads[j] })
+	return heads[len(heads)/2]
+}
+
 // ClampServedValue bounds the shared monotonic counter's value by live pick
 // reality before it is served to clients, returning the value to serve and
 // how far the counter sat AHEAD of the freshest live eligible tip (0 when

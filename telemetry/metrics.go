@@ -203,6 +203,19 @@ var (
 		Help:      "Blocks the shared served-tip counter sits ahead of the freshest live eligible tip (0 = healthy); large sustained values = poisoned/rogue counter (serve-time ceiling protects clients).",
 	}, []string{"project", "network", "lane", "axis"})
 
+	// MetricNetworkServedTipShadowBlockNumber is what the CANDIDATE replacement
+	// design (evm.MajorityServedTip: the stateless majority order statistic over
+	// live heads) WOULD serve, computed alongside every real pick. Purely an
+	// evaluation shadow — it never affects what clients receive. Compare against
+	// network_served_tip_block_number across chains/lanes over time: sustained
+	// agreement is the evidence required to replace the cluster+gate+counter
+	// pipeline with the simple design; disagreements show exactly where and why.
+	MetricNetworkServedTipShadowBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_shadow_block_number",
+		Help:      "Shadow value of the candidate stateless majority-order-statistic served tip (evaluation only, never served); compare to network_served_tip_block_number.",
+	}, []string{"project", "network", "lane", "axis"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

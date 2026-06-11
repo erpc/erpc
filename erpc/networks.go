@@ -76,6 +76,13 @@ type Network struct {
 	// sub-group fall back to the stateless subset candidate.
 	servedTipPartitions     sync.Map // map[string]*servedTipPartition (key = "grp:<hash>")
 	servedTipPartitionCount atomic.Int32
+
+	// servedTipBlockTimeOverride, when > 0, replaces the tracker's EMA block
+	// time in buildServedTipConfig. Set ONLY from package-internal tests: the
+	// EMA needs live timestamped blocks that test fixtures don't produce, and
+	// the prod-incident invariant tests must arm the velocity gate exactly the
+	// way prod had it armed.
+	servedTipBlockTimeOverride float64
 }
 
 // maxServedTipPartitions caps the number of materialized per-tag served-tip
@@ -728,6 +735,19 @@ func (n *Network) clusteredServedTip(
 	// Export the gauges with the post-clamp served value (not the pre-clamp
 	// picker proposal) so the exported lag never over-reports during dips.
 	n.observeServedTipMetrics(axis, served, &res, lane, counterAhead, advanceAge)
+	// Shadow-evaluate the candidate replacement design (stateless majority
+	// order statistic) against the same inputs — export only, never served.
+	if lane != servedTipLaneNone {
+		if shadow := evm.MajorityServedTip(tips); shadow > 0 {
+			laneLabel := lane
+			if laneLabel == "" {
+				laneLabel = servedTipLaneAll
+			}
+			telemetry.MetricNetworkServedTipShadowBlockNumber.
+				WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+				Set(float64(shadow))
+		}
+	}
 	return served
 }
 
@@ -812,6 +832,16 @@ func (n *Network) guaranteedMethodFloor(ctx context.Context, useFinalized bool) 
 // per-network override when set (0 = auto-derive from block time).
 func (n *Network) buildServedTipConfig() evm.ServedTipConfig {
 	cfg := evm.ServedTipConfig{}
+	if n.servedTipBlockTimeOverride > 0 {
+		// Package-internal test seam (see networks_served_tip_invariants_test.go):
+		// the EMA needs live timestamped blocks that fixtures don't produce, and
+		// the prod-incident invariants must run with the velocity gate ARMED.
+		cfg.BlockTimeSeconds = n.servedTipBlockTimeOverride
+		if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil {
+			cfg.ClusterDelta = n.cfg.Evm.ServedTip.ClusterDelta
+		}
+		return cfg
+	}
 	if n.metricsTracker != nil {
 		if bt := n.metricsTracker.GetNetworkBlockTime(n.networkId); bt > 0 {
 			cfg.BlockTimeSeconds = bt.Seconds()

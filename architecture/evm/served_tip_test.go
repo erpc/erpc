@@ -398,6 +398,25 @@ func TestComputeServedTipCandidate_VelocityGate_StaleReanchorAfter_Override(t *t
 	assert.Equal(t, int64(101), res.Candidate)
 }
 
+func TestMajorityServedTip(t *testing.T) {
+	// N=1: the only head.
+	assert.Equal(t, int64(100), MajorityServedTip(tipsFromInts(100)))
+	// N=2: the lower — never advertise a block only one upstream claims.
+	assert.Equal(t, int64(100), MajorityServedTip(tipsFromInts(100, 200)))
+	// N=3: 2nd highest — one garbage tip cannot move it...
+	assert.Equal(t, int64(101), MajorityServedTip(tipsFromInts(999999, 101, 100)))
+	// ...and one stuck upstream cannot hold it back.
+	assert.Equal(t, int64(200), MajorityServedTip(tipsFromInts(5, 200, 201)))
+	// N=4: 3rd highest (held by a strict majority, 3 of 4).
+	assert.Equal(t, int64(101), MajorityServedTip(tipsFromInts(103, 102, 101, 100)))
+	// N=5: 3rd highest.
+	assert.Equal(t, int64(102), MajorityServedTip(tipsFromInts(104, 103, 102, 101, 100)))
+	// Zero/absent heads filtered; all-zero → 0.
+	assert.Equal(t, int64(100), MajorityServedTip(tipsFromInts(0, 100, 0)))
+	assert.Equal(t, int64(0), MajorityServedTip(tipsFromInts(0, 0)))
+	assert.Equal(t, int64(0), MajorityServedTip(nil))
+}
+
 func TestClampServedValue(t *testing.T) {
 	// Healthy: counter between candidate and maxEligible — untouched.
 	served, ahead := ClampServedValue(105, 100, 110, 1.0)
