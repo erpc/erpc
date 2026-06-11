@@ -26,6 +26,30 @@ const FullySyncedThreshold = 4
 // (e.g. when a new network is lazy-loaded from a Repository Provider)
 const DefaultToleratedBlockHeadRollback = 1024
 
+// The latest-block ingestion guard reuses the served-tip velocity bound
+// (VelocityForwardBound) to reject a reported head that jumps further forward
+// than the chain could plausibly have advanced since the upstream's own head
+// last moved — the signature of bad data such as a node serving another
+// chain's head. Rejection happens at the shared counter, so a bad value never
+// reaches the tracker, routing metrics, or peer instances.
+//
+// The ingestion gate is deliberately slower-twitch than the served-tip pick
+// gate: a false positive there costs one pick and self-heals; here it cordons
+// the upstream. blockHeadForwardJumpFloor bounds the gate from below — a jump
+// smaller than this is never rejected — absorbing burst block production
+// (chains that idle and then mint many blocks at once) that elapsed-time
+// velocity alone would misjudge.
+const (
+	blockHeadVelocitySlack    = 2.0
+	blockHeadVelocityBuffer   = int64(5)
+	blockHeadForwardJumpFloor = int64(10_000)
+
+	// blockHeadForwardJumpSitOut is how long an upstream stays cordoned after a
+	// forward-jump detection before it is automatically uncordoned and
+	// re-evaluated against live data.
+	blockHeadForwardJumpSitOut = 30 * time.Second
+)
+
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
 type EvmStatePoller struct {
@@ -92,6 +116,15 @@ type EvmStatePoller struct {
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
 	earliestInitialDetectionDone map[common.EvmAvailabilityProbeType]bool // tracks if THIS instance did initial detection
 	earliestMu                   sync.RWMutex
+
+	// forwardJumpSitOut is how long the upstream stays cordoned after a
+	// forward-jump detection (overridable in tests).
+	forwardJumpSitOut time.Duration
+	// Guards the forward-jump cordon/sit-out so repeated detections (which can
+	// fire on every poll while an upstream keeps serving a bad head) don't stack
+	// timers or churn the cordon. A non-nil timer means a sit-out is in flight.
+	forwardJumpSitOutMu    sync.Mutex
+	forwardJumpSitOutTimer *time.Timer
 }
 
 func NewEvmStatePoller(
@@ -121,7 +154,24 @@ func NewEvmStatePoller(
 		earliestByProbe:              make(map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable),
 		earliestSchedulerStarted:     make(map[common.EvmAvailabilityProbeType]bool),
 		earliestInitialDetectionDone: make(map[common.EvmAvailabilityProbeType]bool),
+		forwardJumpSitOut:            blockHeadForwardJumpSitOut,
 	}
+
+	// Latest-block ingestion guard: the same physics bound the served-tip
+	// velocity gate uses, anchored at the upstream's own established head and
+	// the time since it last moved. Inactive until the chain's block time EMA
+	// is known, and floored so burst block production is never misjudged.
+	lbs.SetForwardBound(func(currentVal int64, sinceChange time.Duration) int64 {
+		bt := tracker.GetNetworkBlockTime(networkId)
+		if bt <= 0 {
+			return 0
+		}
+		bound := VelocityForwardBound(currentVal, sinceChange, bt.Seconds(), blockHeadVelocitySlack, blockHeadVelocityBuffer)
+		if bound > 0 && bound < currentVal+blockHeadForwardJumpFloor {
+			bound = currentVal + blockHeadForwardJumpFloor
+		}
+		return bound
+	})
 
 	lbs.OnValue(func(value int64) {
 		// Always pass 0 timestamp to avoid using stale/incorrect timestamps from remote updates
@@ -139,7 +189,42 @@ func NewEvmStatePoller(
 		e.tracker.RecordBlockHeadLargeRollback(e.upstream, "finalized", currentVal, newVal)
 	})
 
+	// An implausible forward jump on the latest-block head means the upstream is
+	// almost certainly serving bad data. The counter has already rejected the
+	// value (so it can't poison anything downstream); here we cordon the
+	// upstream out of routing until it starts reporting a sane head again.
+	lbs.OnLargeForwardJump(func(currentVal, newVal int64) {
+		e.handleLatestBlockForwardJump(currentVal, newVal)
+	})
+
 	return e
+}
+
+// handleLatestBlockForwardJump records the rejected jump and cordons the
+// upstream for a sit-out window. The metric is recorded on every detection so
+// ongoing badness stays visible, but the cordon and its auto-recovery timer are
+// deduped: while a sit-out is already in flight we don't stack timers.
+func (e *EvmStatePoller) handleLatestBlockForwardJump(currentVal, newVal int64) {
+	e.tracker.RecordImplausibleBlockHeadForwardJump(e.upstream, "latest", currentVal, newVal)
+
+	e.forwardJumpSitOutMu.Lock()
+	defer e.forwardJumpSitOutMu.Unlock()
+
+	if e.forwardJumpSitOutTimer != nil {
+		return
+	}
+
+	sitOut := e.forwardJumpSitOut
+	if sitOut <= 0 {
+		sitOut = blockHeadForwardJumpSitOut
+	}
+	e.upstream.Cordon("*", fmt.Sprintf("implausible forward block-head jump (%d -> %d)", currentVal, newVal))
+	e.forwardJumpSitOutTimer = time.AfterFunc(sitOut, func() {
+		e.upstream.Uncordon("*", "end of forward-jump sit-out")
+		e.forwardJumpSitOutMu.Lock()
+		e.forwardJumpSitOutTimer = nil
+		e.forwardJumpSitOutMu.Unlock()
+	})
 }
 
 func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {

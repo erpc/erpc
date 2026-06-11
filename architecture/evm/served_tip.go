@@ -92,6 +92,20 @@ type ServedTipResult struct {
 	Outliers []string
 }
 
+// VelocityForwardBound returns the highest block number plausibly reachable
+// from anchor after elapsed wall-clock time on a chain with the given block
+// time: anchor + ceil(elapsedBlocks × slack) + buffer. Returns 0 ("no bound")
+// when the anchor or the block time is unknown — callers must treat 0 as
+// "gate inactive". This is the single physics bound shared by the served-tip
+// velocity gate and the block-head ingestion guard in the state poller.
+func VelocityForwardBound(anchor int64, elapsed time.Duration, blockTimeSeconds float64, slack float64, buffer int64) int64 {
+	if anchor <= 0 || blockTimeSeconds <= 0 {
+		return 0
+	}
+	elapsedBlocks := elapsed.Seconds() / blockTimeSeconds
+	return anchor + int64(math.Ceil(elapsedBlocks*slack)) + buffer
+}
+
 // ComputeServedTipCandidate clusters the inputs and returns the MIN block
 // number of the dominant cluster — the most conservative tip that the
 // dominant agreement cluster of upstreams can all serve.
@@ -148,13 +162,10 @@ func ComputeServedTipCandidate(
 	}
 
 	// 2. Velocity gate: only active when BOTH a prior anchor exists AND the
-	//    chain's block time is known. Without either, we can't predict an
-	//    expected max — leave all candidates in and let clustering do the work.
-	if lastServedBlock > 0 && cfg.BlockTimeSeconds > 0 {
-		elapsedBlocks := elapsedSinceLast.Seconds() / cfg.BlockTimeSeconds
-		expectedAdvance := int64(math.Ceil(elapsedBlocks * velocitySlack))
-		expectedMax := lastServedBlock + expectedAdvance + velocityBuffer
-
+	//    chain's block time is known (VelocityForwardBound returns 0 otherwise).
+	//    Without either, we can't predict an expected max — leave all
+	//    candidates in and let clustering do the work.
+	if expectedMax := VelocityForwardBound(lastServedBlock, elapsedSinceLast, cfg.BlockTimeSeconds, velocitySlack, velocityBuffer); expectedMax > 0 {
 		filtered := make([]ServedTipInput, 0, len(valid))
 		for _, t := range valid {
 			if t.BlockNumber > expectedMax {

@@ -340,7 +340,11 @@
     return this.filter(u => u.metrics.requestsTotal >= min);
   });
   define('removeCordoned', function () {
-    return this.filter(u => !u.metrics.cordonedReason);
+    // Cordons set at method "*" (poller forward-jump guard, consensus
+    // misbehavior) live only on the wildcard bucket, so under a per-method
+    // EvalScope u.metrics would miss them — check the cross-method
+    // aggregate too.
+    return this.filter(u => !u.metrics.cordonedReason && !u.metricsAcrossMethods.cordonedReason);
   });
   define('removeByLatency', function (opts) {
     return this.filter(u => {
