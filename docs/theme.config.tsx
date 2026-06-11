@@ -65,11 +65,20 @@ export default {
 		  config.frontMatter.description ||
 		  'open-source fault-tolerant evm rpc proxy and cache'
 		const title = config.title + (route === '/' ? '' : ' - eRPC')
-	
+		const llmsUrl =
+		  'https://docs.erpc.cloud' +
+		  (route === '/' ? '/llms.txt' : `${route.replace(/\/$/, '')}.llms.txt`)
+
 		return (
 		  <>
 			<title>{title}</title>
 	 		<link rel="icon" href="./assets/favicon.ico" type="image/x-icon"></link>
+			<link
+				rel="alternate"
+				type="text/markdown"
+				href={llmsUrl}
+				title="Machine-readable version of this page"
+			/>
 			<meta property="og:title" content={title} />
 			<meta name="description" content={description} />
 			<meta property="og:description" content={description} />

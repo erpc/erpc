@@ -1,0 +1,12 @@
+# eRPC documentation — https://docs.erpc.cloud
+#
+# Machine-readable docs for AI agents:
+#   Root index:   https://docs.erpc.cloud/llms.txt
+#   Everything:   https://docs.erpc.cloud/llms-full.txt
+#   Per page:     append .llms.txt to any docs URL
+#
+# Agents that send `Accept: text/markdown` (or a known AI fetcher
+# User-Agent) are 302-redirected to the .llms.txt twin automatically.
+
+User-agent: *
+Allow: /

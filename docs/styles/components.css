@@ -257,6 +257,22 @@ html.light .cv-ai-body {
  * <LLMsTxtLink> — floating "open as plain markdown" link
  * ============================================================ */
 
+/* Visually hidden but kept in the accessibility tree and — crucially — in
+ * what readability/HTML→markdown extractors see. Standard clip pattern, NOT
+ * display:none (extractors drop display:none nodes). */
+.cv-visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
 .cv-llms-link {
 	float: right;
 	display: inline-flex;
