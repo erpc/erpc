@@ -48,6 +48,17 @@ type ServedTipConfig struct {
 	// VelocityBufferBlocks is an additive buffer on top of the velocity gate
 	// to absorb burst catch-up. Default 5 when 0.
 	VelocityBufferBlocks int64
+
+	// StaleReanchorAfter disarms the velocity gate for a pick whose anchor is
+	// older than this duration: an anchor that has not advanced for many
+	// multiples of the block time can no longer predict a sane expected max
+	// (and if the block-time estimate is too high, the gate window expands
+	// SLOWER than the chain and would exclude fresh tips forever). Such picks
+	// run ungated — clustering still arbitrates outliers — and are flagged
+	// via ServedTipResult.StaleReanchor.
+	//
+	// Default when 0: clamp(60 × BlockTimeSeconds, 30s, 10m).
+	StaleReanchorAfter time.Duration
 }
 
 // ServedTipResult is the picker's output. The caller is responsible for
@@ -83,14 +94,20 @@ type ServedTipResult struct {
 	// VelocityFailOpen reports that the velocity gate would have rejected
 	// EVERY input, so the pick re-ran ungated. A bound that disagrees with all
 	// live tips at once means the ANCHOR is wrong, not the world — e.g. a
-	// stale persisted counter inherited at boot (the in-process elapsed starts
-	// at 0, collapsing the bound to lastServed+buffer), or a stall the window
-	// never caught up from. Without fail-open such a pick returns Candidate 0
+	// stale persisted counter inherited at boot, or a stall the window never
+	// caught up from. Without fail-open such a pick returns Candidate 0
 	// ("no new information") forever, and a strict-monotonic served-tip
 	// counter can never advance again. Outlier protection still applies: the
 	// ungated re-run goes through the same clustering, so a lone garbage tip
 	// still loses to the dominant cluster.
 	VelocityFailOpen bool
+
+	// StaleReanchor reports that the velocity gate was disarmed BEFORE
+	// filtering because the anchor is older than StaleReanchorAfter (no
+	// advance for many multiples of the block time). Unlike VelocityFailOpen
+	// (which reacts after the gate misfired), this prevents a too-slow gate
+	// window from excluding fresh tips at all. Clustering still applies.
+	StaleReanchor bool
 
 	// MaxEligible is the highest block number among inputs that SURVIVED the
 	// velocity gate — the freshest sane tip. Equal to MaxObserved when the
@@ -112,11 +129,14 @@ type ServedTipResult struct {
 // Algorithm (pure function; the caller wires the monotonic clamp on top):
 //
 //  1. Drop inputs with BlockNumber <= 0.
-//  2. Velocity-gate: if lastServedBlock > 0 and cfg.BlockTimeSeconds > 0,
+//  2. Velocity-gate: if lastServedBlock > 0, elapsedSinceLast > 0 (an anchor
+//     with no known age cannot bound anything) and cfg.BlockTimeSeconds > 0,
 //     drop inputs whose tip exceeds the expected max derived from
 //     (lastServedBlock + elapsedBlocks × VelocitySlack + VelocityBufferBlocks).
-//     If that would drop EVERY input the gate FAILS OPEN (nothing is dropped)
-//     — see ServedTipResult.VelocityFailOpen.
+//     An anchor older than StaleReanchorAfter disarms the gate for the pick
+//     (ServedTipResult.StaleReanchor); if filtering would drop EVERY input
+//     the gate FAILS OPEN (ServedTipResult.VelocityFailOpen). Either way the
+//     pick proceeds ungated — clustering below still arbitrates outliers.
 //  3. Sort surviving inputs ascending by block number.
 //  4. Cluster greedily: adjacent values whose gap exceeds ClusterDelta split.
 //  5. Pick the dominant cluster: max by (size desc, then min desc) — size
@@ -162,33 +182,50 @@ func ComputeServedTipCandidate(
 		return res
 	}
 
-	// 2. Velocity gate: only active when BOTH a prior anchor exists AND the
-	//    chain's block time is known. Without either, we can't predict an
-	//    expected max — leave all candidates in and let clustering do the work.
-	if lastServedBlock > 0 && cfg.BlockTimeSeconds > 0 {
-		elapsedBlocks := elapsedSinceLast.Seconds() / cfg.BlockTimeSeconds
-		expectedAdvance := int64(math.Ceil(elapsedBlocks * velocitySlack))
-		expectedMax := lastServedBlock + expectedAdvance + velocityBuffer
-
-		filtered := make([]ServedTipInput, 0, len(valid))
-		for _, t := range valid {
-			if t.BlockNumber > expectedMax {
-				res.VelocityDropped = append(res.VelocityDropped, t.UpstreamID)
-				continue
-			}
-			filtered = append(filtered, t)
+	// 2. Velocity gate: only active when a prior anchor exists, the chain's
+	//    block time is known, AND the anchor has a usable age
+	//    (elapsedSinceLast > 0). Zero elapsed means the caller has never
+	//    observed an advance in-process (e.g. a counter inherited from the
+	//    persistent store at boot, or a lazily-materialized partition): the
+	//    bound would collapse to lastServed+buffer — maximally strict exactly
+	//    when the anchor is stalest — so leave all candidates in and let
+	//    clustering decide.
+	if lastServedBlock > 0 && elapsedSinceLast > 0 && cfg.BlockTimeSeconds > 0 {
+		staleAfter := cfg.StaleReanchorAfter
+		if staleAfter == 0 {
+			staleAfter = resolveAutoStaleReanchorAfter(cfg.BlockTimeSeconds)
 		}
-		if len(filtered) == 0 {
-			// Fail open: a bound that rejects every live tip means the anchor
-			// (lastServedBlock/elapsed) is wrong, not the world. Dropping all
-			// inputs would yield Candidate 0 — "no new information" — so the
-			// caller's monotonic counter would never advance and every later
-			// pick would wedge the same way. Re-run ungated and let clustering
-			// arbitrate outliers instead.
-			res.VelocityFailOpen = true
-			res.VelocityDropped = nil
+		if elapsedSinceLast > staleAfter {
+			// Anchor too old to predict an expected max (and with an
+			// over-estimated block time the gate window expands SLOWER than
+			// the chain, so it would exclude fresh tips forever). Run ungated;
+			// clustering still arbitrates outliers.
+			res.StaleReanchor = true
 		} else {
-			valid = filtered
+			elapsedBlocks := elapsedSinceLast.Seconds() / cfg.BlockTimeSeconds
+			expectedAdvance := int64(math.Ceil(elapsedBlocks * velocitySlack))
+			expectedMax := lastServedBlock + expectedAdvance + velocityBuffer
+
+			filtered := make([]ServedTipInput, 0, len(valid))
+			for _, t := range valid {
+				if t.BlockNumber > expectedMax {
+					res.VelocityDropped = append(res.VelocityDropped, t.UpstreamID)
+					continue
+				}
+				filtered = append(filtered, t)
+			}
+			if len(filtered) == 0 {
+				// Fail open: a bound that rejects every live tip means the
+				// anchor (lastServedBlock/elapsed) is wrong, not the world.
+				// Dropping all inputs would yield Candidate 0 — "no new
+				// information" — so the caller's monotonic counter would never
+				// advance and every later pick would wedge the same way.
+				// Re-run ungated and let clustering arbitrate outliers instead.
+				res.VelocityFailOpen = true
+				res.VelocityDropped = nil
+			} else {
+				valid = filtered
+			}
 		}
 	}
 
@@ -243,6 +280,75 @@ func ComputeServedTipCandidate(
 		}
 	}
 	return res
+}
+
+// ClampServedValue bounds the shared monotonic counter's value by live pick
+// reality before it is served to clients, returning the value to serve and
+// how far the counter sat AHEAD of the freshest live eligible tip (0 when
+// not ahead).
+//
+// Floor: a counter below the live candidate means the store regressed or
+// returned garbage — the freshly computed candidate is strictly better
+// information. Ceiling: a counter further ahead of maxEligible than
+// CounterAheadServeMargin is poisoned (rogue store write / garbage pick);
+// advertising it guarantees "block not found" on every interpolated request,
+// and the monotonic clamp would preserve the poison for up to the rollback
+// tolerance — so clients receive maxEligible instead. The STORED counter is
+// deliberately left alone; only the served value is clamped, so normal
+// cross-pod monotonicity is unaffected outside the anomaly.
+func ClampServedValue(counterValue, candidate, maxEligible int64, blockTimeSec float64) (served int64, counterAhead int64) {
+	served = counterValue
+	if candidate > served {
+		served = candidate
+	}
+	if maxEligible > 0 {
+		if ahead := served - maxEligible; ahead > 0 {
+			counterAhead = ahead
+			if margin := CounterAheadServeMargin(blockTimeSec); margin > 0 && ahead > margin {
+				served = maxEligible
+			}
+		}
+	}
+	return served, counterAhead
+}
+
+// CounterAheadServeMargin returns how many blocks the shared served-tip
+// counter may sit ahead of the freshest live eligible tip before the
+// serve-time ceiling clamps what clients receive: ~10 seconds of chain
+// progress, clamped to [8, 1024]. Routine cross-pod poller skew (another pod
+// saw a block first) stays well inside the margin; a poisoned counter (rogue
+// store write, garbage pick) lands far outside it. Returns 0 when the block
+// time is unknown — without it skew cannot be judged, so the ceiling is
+// disabled rather than risking routine clamping.
+func CounterAheadServeMargin(blockTimeSec float64) int64 {
+	if blockTimeSec <= 0 {
+		return 0
+	}
+	m := int64(math.Ceil(10.0 / blockTimeSec))
+	if m < 8 {
+		return 8
+	}
+	if m > 1024 {
+		return 1024
+	}
+	return m
+}
+
+// resolveAutoStaleReanchorAfter derives the stale-anchor cutoff from chain
+// block time: 60 block intervals, clamped to [30s, 10m]. A healthy network
+// advances its served tip every block or two; an anchor that has not moved
+// for 60 intervals is either a halted chain (running ungated is then a no-op:
+// every tip agrees with the anchor and nothing moves) or a wedged/rogue
+// anchor (running ungated re-anchors to live reality on the next pick).
+func resolveAutoStaleReanchorAfter(blockTimeSec float64) time.Duration {
+	d := time.Duration(60 * blockTimeSec * float64(time.Second))
+	if d < 30*time.Second {
+		return 30 * time.Second
+	}
+	if d > 10*time.Minute {
+		return 10 * time.Minute
+	}
+	return d
 }
 
 // resolveAutoClusterDelta derives ClusterDelta from chain block time:

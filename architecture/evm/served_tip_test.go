@@ -302,11 +302,10 @@ func TestComputeServedTipCandidate_VelocityGate_NoLastServed_DisablesGate(t *tes
 }
 
 func TestComputeServedTipCandidate_VelocityGate_FailsOpenWhenAllDropped(t *testing.T) {
-	// The wedge scenario: a freshly-booted process inherits a stale persisted
-	// counter (lastServed=100) with no in-process advance yet (elapsed=0), so
-	// the bound collapses to 100+5=105 while every live tip is far past it.
-	// Pre-fail-open this dropped ALL inputs → Candidate 0 → the monotonic
-	// counter never advanced again (and elapsed stayed 0) → wedged forever.
+	// The wedge scenario: a stale anchor (lastServed=100, advanced 2s ago)
+	// bounds the pick to 100+ceil(1×2)+5=107 while every live tip is far past
+	// it. Pre-fail-open this dropped ALL inputs → Candidate 0 → the monotonic
+	// counter never advanced again → wedged forever.
 	cfg := ServedTipConfig{
 		ClusterDelta:         2,
 		BlockTimeSeconds:     2.0,
@@ -315,14 +314,132 @@ func TestComputeServedTipCandidate_VelocityGate_FailsOpenWhenAllDropped(t *testi
 	}
 	res := ComputeServedTipCandidate(
 		tipsFromInts(5000, 5001, 5001),
-		100, // stale inherited anchor
-		0,   // no in-process advance observed yet
+		100,           // stale anchor
+		2*time.Second, // recently observed advance → gate armed
 		cfg,
 	)
 	assert.True(t, res.VelocityFailOpen, "gate must fail open when it would drop every input")
 	assert.Empty(t, res.VelocityDropped, "nothing was actually dropped on fail-open")
 	assert.Equal(t, int64(5000), res.Candidate, "ungated re-run picks the real cluster min")
 	assert.Equal(t, int64(5001), res.MaxEligible, "eligible max is the unfiltered max on fail-open")
+	assert.False(t, res.StaleReanchor)
+}
+
+func TestComputeServedTipCandidate_VelocityGate_NoAnchorAge_DisarmsGate(t *testing.T) {
+	// Boot inheritance: lastServed comes from the persistent store but the
+	// process has never observed an advance (elapsed=0). The bound would
+	// collapse to lastServed+buffer — maximally strict with the stalest
+	// anchor — so the gate must not arm at all. Clustering alone decides:
+	// the agreeing majority wins, the garbage tip is an outlier, and the
+	// counter can re-anchor to live reality on the first pick.
+	cfg := ServedTipConfig{
+		ClusterDelta:         2,
+		BlockTimeSeconds:     2.0,
+		VelocitySlack:        2.0,
+		VelocityBufferBlocks: 5,
+	}
+	res := ComputeServedTipCandidate(
+		tipsFromInts(5000, 5001, 999999),
+		100, // inherited persisted anchor
+		0,   // unknown age → gate disarmed
+		cfg,
+	)
+	assert.False(t, res.VelocityFailOpen)
+	assert.False(t, res.StaleReanchor)
+	assert.Empty(t, res.VelocityDropped, "gate disarmed without a usable anchor age")
+	assert.Equal(t, int64(5000), res.Candidate)
+	assert.Equal(t, []string{"u2"}, res.Outliers, "garbage tip still loses via clustering")
+}
+
+func TestComputeServedTipCandidate_VelocityGate_StaleAnchor_Reanchors(t *testing.T) {
+	// An anchor that has not advanced for >> block time (here 10min vs the
+	// auto cutoff of 60×2s=120s) cannot bound anything — and with an
+	// over-estimated block time the window would expand slower than the
+	// chain, excluding fresh tips forever. The gate disarms pre-emptively
+	// (StaleReanchor) and clustering still handles the garbage tip.
+	cfg := ServedTipConfig{
+		ClusterDelta:         2,
+		BlockTimeSeconds:     2.0,
+		VelocitySlack:        2.0,
+		VelocityBufferBlocks: 5,
+	}
+	res := ComputeServedTipCandidate(
+		tipsFromInts(5000, 5001, 999999),
+		100,
+		10*time.Minute,
+		cfg,
+	)
+	assert.True(t, res.StaleReanchor, "anchor older than the cutoff disarms the gate")
+	assert.False(t, res.VelocityFailOpen)
+	assert.Empty(t, res.VelocityDropped)
+	assert.Equal(t, int64(5000), res.Candidate)
+	assert.Equal(t, []string{"u2"}, res.Outliers)
+}
+
+func TestComputeServedTipCandidate_VelocityGate_StaleReanchorAfter_Override(t *testing.T) {
+	// With an explicit (longer) StaleReanchorAfter the gate stays armed at an
+	// age that would have tripped the auto cutoff, and normal velocity
+	// filtering applies: expectedMax = 100 + ceil(300×2.0) + 5 = 705.
+	cfg := ServedTipConfig{
+		ClusterDelta:         2,
+		BlockTimeSeconds:     2.0,
+		VelocitySlack:        2.0,
+		VelocityBufferBlocks: 5,
+		StaleReanchorAfter:   30 * time.Minute,
+	}
+	res := ComputeServedTipCandidate(
+		tipsFromInts(101, 102, 9999),
+		100,
+		10*time.Minute,
+		cfg,
+	)
+	assert.False(t, res.StaleReanchor)
+	assert.Equal(t, []string{"u2"}, res.VelocityDropped, "gate armed under the override cutoff")
+	assert.Equal(t, int64(101), res.Candidate)
+}
+
+func TestClampServedValue(t *testing.T) {
+	// Healthy: counter between candidate and maxEligible — untouched.
+	served, ahead := ClampServedValue(105, 100, 110, 1.0)
+	assert.Equal(t, int64(105), served)
+	assert.Equal(t, int64(0), ahead)
+
+	// Floor: store regressed below the live pick → serve the candidate.
+	served, ahead = ClampServedValue(50, 100, 110, 1.0)
+	assert.Equal(t, int64(100), served)
+	assert.Equal(t, int64(0), ahead)
+
+	// Cross-pod skew: ahead of maxEligible but within the margin (10 @ 1s
+	// block time) → reported, NOT clamped (another pod legitimately saw a
+	// newer block first).
+	served, ahead = ClampServedValue(115, 100, 110, 1.0)
+	assert.Equal(t, int64(115), served)
+	assert.Equal(t, int64(5), ahead)
+
+	// Poisoned: counter far beyond anything live → clients get the freshest
+	// real tip; the ahead amount surfaces in the gauge.
+	served, ahead = ClampServedValue(999999, 100, 110, 1.0)
+	assert.Equal(t, int64(110), served)
+	assert.Equal(t, int64(999889), ahead)
+
+	// Unknown block time: skew can't be judged → ceiling disabled, ahead
+	// still reported.
+	served, ahead = ClampServedValue(999999, 100, 110, 0)
+	assert.Equal(t, int64(999999), served)
+	assert.Equal(t, int64(999889), ahead)
+
+	// No eligible inputs: nothing to judge against → counter passes through.
+	served, ahead = ClampServedValue(105, 0, 0, 1.0)
+	assert.Equal(t, int64(105), served)
+	assert.Equal(t, int64(0), ahead)
+}
+
+func TestCounterAheadServeMargin(t *testing.T) {
+	assert.Equal(t, int64(0), CounterAheadServeMargin(0), "unknown block time disables the ceiling")
+	assert.Equal(t, int64(8), CounterAheadServeMargin(12.0), "slow chains floor at 8")
+	assert.Equal(t, int64(10), CounterAheadServeMargin(1.0), "~10s of chain progress")
+	assert.Equal(t, int64(40), CounterAheadServeMargin(0.25), "fast chains scale up")
+	assert.Equal(t, int64(1024), CounterAheadServeMargin(0.001), "capped at 1024")
 }
 
 func TestComputeServedTipCandidate_VelocityGate_FailOpenStillClustersOutGarbage(t *testing.T) {

@@ -663,12 +663,25 @@ func (n *Network) clusteredServedTip(
 	// served is what clients actually get: the monotonic-clamped shared counter
 	// when present, else the raw candidate (test/misconfiguration).
 	served := res.Candidate
+	var counterAhead int64
 	if shared != nil {
-		served = shared.GetValue()
+		// Floor + poisoned-counter ceiling: never serve below the live pick
+		// (store regression/garbage) nor meaningfully beyond the freshest
+		// live eligible tip (rogue counter) — see evm.ClampServedValue.
+		served, counterAhead = evm.ClampServedValue(
+			shared.GetValue(), res.Candidate, res.MaxEligible, cfg.BlockTimeSeconds)
+	}
+	// Age of the last in-process observed advance: the universal stuck-tip
+	// signal (negative = no advance observed yet, gauge skipped).
+	advanceAge := time.Duration(-1)
+	if updatedAtMs != nil {
+		if ms := updatedAtMs.Load(); ms > 0 {
+			advanceAge = time.Since(time.UnixMilli(ms))
+		}
 	}
 	// Export the gauges with the post-clamp served value (not the pre-clamp
 	// picker proposal) so the exported lag never over-reports during dips.
-	n.observeServedTipMetrics(axis, served, &res, lane)
+	n.observeServedTipMetrics(axis, served, &res, lane, counterAhead, advanceAge)
 	return served
 }
 
@@ -785,6 +798,7 @@ func (n *Network) observeServedTipResult(
 		attribute.Int("served_tip.outliers_count", res.OutliersCount),
 		attribute.Int("served_tip.velocity_dropped", len(res.VelocityDropped)),
 		attribute.Bool("served_tip.velocity_failopen", res.VelocityFailOpen),
+		attribute.Bool("served_tip.stale_reanchor", res.StaleReanchor),
 	)
 	if res.MaxObserved > res.Candidate {
 		span.SetAttributes(
@@ -800,7 +814,7 @@ func (n *Network) observeServedTipResult(
 // name — a deliberate divergence from the upstream_*_block_number naming, chosen
 // to keep the served-tip gauge set small. The per-call WithLabelValues lookups are
 // negligible next to the cluster pick + shared-counter update they ride along with.
-func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.ServedTipResult, lane string) {
+func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.ServedTipResult, lane string, counterAhead int64, advanceAge time.Duration) {
 	if res == nil {
 		return
 	}
@@ -838,7 +852,20 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 			telemetry.MetricNetworkServedTipLagBlocks.
 				WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
 				Set(float64(lag))
+			// Poisoned-counter visibility: how far the shared counter sits
+			// AHEAD of the freshest live eligible tip (0 = healthy). Written
+			// whenever lag is, so dashboards get an explicit healthy 0.
+			telemetry.MetricNetworkServedTipCounterAheadBlocks.
+				WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+				Set(float64(counterAhead))
 		}
+	}
+	// Universal stuck-tip signal: seconds since this process last observed the
+	// counter advance. Skipped until a first advance is observed.
+	if advanceAge >= 0 {
+		telemetry.MetricNetworkServedTipAdvanceAgeSeconds.
+			WithLabelValues(n.projectId, n.Label(), laneLabel, axis).
+			Set(advanceAge.Seconds())
 	}
 	if lane != "" {
 		return
@@ -848,7 +875,11 @@ func (n *Network) observeServedTipMetrics(axis string, served int64, res *evm.Se
 	// of whether a tip was served (even a 0-candidate pick is worth recording).
 	if res.VelocityFailOpen {
 		telemetry.MetricNetworkServedTipVelocityFailOpenTotal.
-			WithLabelValues(n.projectId, n.Label(), axis).Inc()
+			WithLabelValues(n.projectId, n.Label(), axis, "all_dropped").Inc()
+	}
+	if res.StaleReanchor {
+		telemetry.MetricNetworkServedTipVelocityFailOpenTotal.
+			WithLabelValues(n.projectId, n.Label(), axis, "stale_anchor").Inc()
 	}
 	for _, up := range res.VelocityDropped {
 		telemetry.MetricNetworkServedTipUpstreamExcludedTotal.

@@ -5142,7 +5142,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Upstreams dropped from the tip pick (velocity|outlier); FAIL-OPEN = gate would have dropped every input (stale anchor) and re-ran ungated \u2014 sustained fail-open means a wrong anchor/block-time.",
+          "description": "Upstreams dropped from the tip pick (velocity|outlier); gate bypass = velocity gate disarmed for safety (all_dropped: would have rejected every input; stale_anchor: anchor older than the re-anchor cutoff). Sustained bypass = wrong anchor/block-time.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -5258,15 +5258,164 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "topk(10, sum by (network) (rate(erpc_network_served_tip_velocity_failopen_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}[$__rate_interval])) > 0)",
+              "expr": "topk(10, sum by (network, trigger) (rate(erpc_network_served_tip_velocity_failopen_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\"}[$__rate_interval])) > 0)",
               "format": "time_series",
               "instant": false,
-              "legendFormat": "{{network}} \u00b7 gate FAIL-OPEN",
+              "legendFormat": "{{network}} \u00b7 gate bypass ({{trigger}})",
               "range": true,
               "refId": "B"
             }
           ],
           "title": "Tip exclusions & gate fail-open",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Universal stuck-tip detector: seconds since the served-tip counter last advanced (alert when >> block time on a live chain), and how far the shared counter sits AHEAD of the freshest live tip (poisoned-counter signal; serve-time ceiling protects clients).",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisGridShow": false,
+                "axisLabel": "",
+                "axisPlacement": "hidden",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineStyle": {
+                  "dash": [
+                    0,
+                    10
+                  ],
+                  "fill": "dot"
+                },
+                "lineWidth": 1,
+                "pointSize": 7,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "always",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "B"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "short"
+                  },
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 33,
+            "w": 24,
+            "h": 8
+          },
+          "id": 905,
+          "interval": "1m",
+          "maxDataPoints": 20,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(15, max by (network) (erpc_network_served_tip_advance_age_seconds{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\", axis=\"latest\"}))",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} \u00b7 advance age (s)",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(10, max by (network) (erpc_network_served_tip_counter_ahead_blocks{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"^${network:regex}$\",project=~\"^${project:regex}$\", axis=\"latest\"}) > 0)",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{network}} \u00b7 counter ahead (blocks)",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Tip stuck/rogue watch",
           "type": "timeseries"
         },
         {
@@ -5348,7 +5497,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 33,
+            "y": 41,
             "w": 24,
             "h": 8
           },
@@ -5538,7 +5687,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 41,
+            "y": 49,
             "w": 24,
             "h": 10
           },
@@ -5831,7 +5980,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 51,
+            "y": 59,
             "w": 24,
             "h": 10
           },
@@ -6073,7 +6222,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 61,
+            "y": 69,
             "w": 24,
             "h": 10
           },

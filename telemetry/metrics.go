@@ -162,17 +162,46 @@ var (
 	}, []string{"project", "network", "upstream", "axis", "reason"})
 
 	// MetricNetworkServedTipVelocityFailOpenTotal counts picks where the velocity
-	// gate would have rejected EVERY input and therefore failed open (re-ran
-	// ungated). One-off ticks are normal (boot with a stale inherited counter,
-	// recovery from a stall); a SUSTAINED rate means the velocity anchor or the
-	// block-time estimate is wrong for this network and deserves a look. Before
-	// fail-open existed, this exact condition silently wedged the monotonic
-	// served-tip counter forever. ABSENT in default MAX mode (feature off).
+	// gate was bypassed for safety, per trigger: "all_dropped" (the gate would
+	// have rejected EVERY input and failed open) or "stale_anchor" (the anchor
+	// had not advanced for longer than the stale-reanchor cutoff, so the gate
+	// was disarmed pre-emptively). One-off ticks are normal (boot with a stale
+	// inherited counter, recovery from a stall); a SUSTAINED rate means the
+	// velocity anchor or the block-time estimate is wrong for this network and
+	// deserves a look. Before fail-open existed, the all_dropped condition
+	// silently wedged the monotonic served-tip counter forever. ABSENT in
+	// default MAX mode (feature off).
 	MetricNetworkServedTipVelocityFailOpenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_served_tip_velocity_failopen_total",
-		Help:      "Times the served-tip velocity gate would have dropped every input and failed open (re-ran ungated); sustained rate = stale/wrong anchor or block-time estimate.",
-	}, []string{"project", "network", "axis"})
+		Help:      "Times the served-tip velocity gate was bypassed for safety, per trigger (all_dropped|stale_anchor); sustained rate = stale/wrong anchor or block-time estimate.",
+	}, []string{"project", "network", "axis", "trigger"})
+
+	// MetricNetworkServedTipAdvanceAgeSeconds is the time since this process
+	// last observed the served-tip counter ADVANCE, exported at pick time. This
+	// is the universal stuck-tip detector: regardless of WHICH mechanism wedges
+	// the tip (a failure mode nobody predicted included), a healthy network
+	// advances every block or two, so `age >> block time` on a network with
+	// live traffic is always alert-worthy. Absent until the process observes
+	// its first advance (and absent in default MAX mode).
+	MetricNetworkServedTipAdvanceAgeSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_advance_age_seconds",
+		Help:      "Seconds since the served-tip counter last advanced (observed in-process, exported at pick time); sustained high values on a live chain = stuck tip.",
+	}, []string{"project", "network", "lane", "axis"})
+
+	// MetricNetworkServedTipCounterAheadBlocks is how far the shared monotonic
+	// counter sits AHEAD of the freshest live velocity-eligible tip (0 when
+	// behind or equal). Small transient values are normal cross-pod skew
+	// (another pod's poller saw a block first); large values mean the counter
+	// was poisoned (rogue store write, garbage pick) and we would be
+	// advertising blocks no local upstream can serve — the serve-time ceiling
+	// clamps what clients get, and this gauge makes the poisoning visible.
+	MetricNetworkServedTipCounterAheadBlocks = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_served_tip_counter_ahead_blocks",
+		Help:      "Blocks the shared served-tip counter sits ahead of the freshest live eligible tip (0 = healthy); large sustained values = poisoned/rogue counter (serve-time ceiling protects clients).",
+	}, []string{"project", "network", "lane", "axis"})
 
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
