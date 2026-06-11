@@ -273,6 +273,26 @@ YAML prefix: `auth.strategies[*].database`
 
 Negative cache: hardcoded 5-second TTL, 1 MiB MaxCost. Not configurable. Disabled/invalid keys stay rejected up to 5 seconds after change.
 
+**`database` strategy `Supports`**: accepts both `AuthTypeSecret` (token delivered via header/query) and `AuthTypeDatabase`. The `AuthTypeDatabase` enum value is never set by any current HTTP or gRPC payload extractor — it is reserved for future or programmatic use. <SourceLink file="auth/strategy_database.go" lines="118-120" />
+
+**database connector error classification** — determines whether `connectorDown` latch is set ([`auth/strategy_database.go:L487-L517`](https://github.com/erpc/erpc/blob/main/auth/strategy_database.go#L487-L517)):
+
+| Error | Label | Sets connectorDown? |
+|---|---|---|
+| `data.ErrConnectorNotReady` | `db_not_ready` | yes |
+| `context.DeadlineExceeded`, substring `"deadline exceeded"` or `"timeout"` | `db_timeout` | yes |
+| substrings: `"connection refused"`, `"connection reset"`, `"broken pipe"`, `"no route to host"`, `"EOF"`, `"use of closed network connection"` | `db_connection` | yes |
+| `ErrRecordNotFound` | *(treated separately; not error-classified)* | no — marks connector UP |
+| everything else (parse errors, Postgres `53300` "too many connections", syntax errors) | `db_query_error` | no |
+
+**`getWithRetries` abort conditions** ([`auth/strategy_database.go:L367-L417`](https://github.com/erpc/erpc/blob/main/auth/strategy_database.go#L367-L417)):
+- `ErrRecordNotFound` → abort immediately (DB is healthy; no retry needed).
+- `data.ErrConnectorNotReady` → abort immediately (connector's own reconnect loop handles recovery).
+- Context done → abort immediately.
+- Any other error → retry with `baseBackoff << (attempt-1)` up to `maxAttempts`.
+
+**Connector failsafe wrapping.** Auth-scope connectors support the same `failsafeForGets` and `failsafeForSets` wrapping as cache-scope connectors (`ConnectorConfig.failsafeForGets[*]` and `failsafeForSets[*]`). Each entry is a `FailsafeConfig` with fields `matchMethod` (default `"*"`), `matchFinality`, `retry`, `circuitBreaker`, `timeout`, `hedge`, and `consensus`. <SourceLink file="common/config.go" lines="349-350" />
+
 **PostgreSQL auth-scope defaults** (`connector.postgresql.*`):
 
 | Field | Auth-scope default | Notes |
@@ -284,26 +304,58 @@ Negative cache: hardcoded 5-second TTL, 1 MiB MaxCost. Not configurable. Disable
 | `getTimeout` | `1s` | <SourceLink file="common/defaults.go" lines="1051-1053" /> |
 | `setTimeout` | `2s` | <SourceLink file="common/defaults.go" lines="1054-1056" /> |
 
+**Memory connector** (`connector.memory.*`):
+
+| Field | Auth-scope default | Notes |
+|---|---|---|
+| `maxItems` | `100000` | Ristretto item count limit. <SourceLink file="common/defaults.go" lines="936-938" /> |
+| `maxTotalSize` | `"1GB"` | Max total size of values. <SourceLink file="common/defaults.go" lines="939-941" /> |
+| `emitMetrics` | `nil` (disabled) | When `true`, a background goroutine emits Ristretto metrics to Prometheus every 30 seconds. Must be explicitly set to `true` to enable. <SourceLink file="data/memory.go" lines="71" /> |
+
 **DynamoDB auth-scope defaults** (`connector.dynamodb.*`):
 
 | Field | Auth-scope default | Notes |
 |---|---|---|
 | `table` | `"erpc_auth"` | Differs from cache scope. <SourceLink file="common/defaults.go" lines="1068-1069" /> |
+| `region` | `""` | AWS region. Required unless resolved from environment/instance profile. <SourceLink file="common/config.go" lines="430" /> |
+| `endpoint` | `""` | Custom endpoint URL (for local DynamoDB or LocalStack). <SourceLink file="common/config.go" lines="431" /> |
+| `auth` | `nil` | AWS credential config; see `AwsAuthConfig` table below. <SourceLink file="common/config.go" lines="432" /> |
 | `partitionKeyName` | `"groupKey"` | <SourceLink file="common/defaults.go" lines="1074-1076" /> |
 | `rangeKeyName` | `"requestKey"` | <SourceLink file="common/defaults.go" lines="1077-1079" /> |
 | `reverseIndexName` | `"idx_requestKey_groupKey"` | GSI name. <SourceLink file="common/defaults.go" lines="1080-1082" /> |
 | `ttlAttributeName` | `"ttl"` | <SourceLink file="common/defaults.go" lines="1083-1085" /> |
+| `initTimeout` | `5s` | SDK init timeout. <SourceLink file="common/defaults.go" lines="1086-1088" /> |
+| `getTimeout` | `1s` | Per-get operation timeout. <SourceLink file="common/defaults.go" lines="1089-1091" /> |
+| `setTimeout` | `2s` | Per-set operation timeout. <SourceLink file="common/defaults.go" lines="1092-1094" /> |
+| `maxRetries` | `0` | Max DynamoDB SDK retries. Zero means use SDK default (typically 3). <SourceLink file="common/config.go" lines="440" /> |
+| `statePollInterval` | `5s` | Interval for polling DynamoDB connection state. <SourceLink file="common/defaults.go" lines="1095-1097" /> |
 | `lockRetryInterval` | `0` | **Footgun**: zero means busy-spin retries; set to e.g. `100ms` in production. <SourceLink file="common/config.go" lines="442" /> |
+
+**`AwsAuthConfig`** (used by `connector.dynamodb.auth`):
+
+| Field | Default | Notes |
+|---|---|---|
+| `mode` | `""` (SDK default chain) | Valid values: `"file"` (reads credentials file), `"env"` (reads `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`), `"secret"` (uses `accessKeyID`/`secretAccessKey` fields directly). Empty = AWS SDK default chain (env → shared credentials file → EC2 instance profile). <SourceLink file="common/config.go" lines="479-485" /> |
+| `credentialsFile` | `""` | Path to AWS credentials file (used when `mode="file"`). |
+| `profile` | `""` | AWS named profile. Only meaningful when `mode="file"` — passed to `credentials.NewSharedCredentials`. Ignored for `mode="env"`, `mode="secret"`, and the SDK default chain. <SourceLink file="data/dynamodb.go" lines="177-187" /> |
+| `accessKeyID` | `""` | AWS access key ID (used when `mode="secret"`). |
+| `secretAccessKey` | `""` | AWS secret access key (used when `mode="secret"`). Redacted in JSON marshal. <SourceLink file="common/config.go" lines="487-495" /> |
 
 **Redis auth-scope defaults** (`connector.redis.*`):
 
 | Field | Auth-scope default | Notes |
 |---|---|---|
-| `connPoolSize` | `8` | <SourceLink file="common/defaults.go" lines="955-957" /> |
+| `uri` | `""` | Full Redis URI (e.g., `redis://user:pass@host:6379/0`). Mutually exclusive with `addr` — providing both causes a startup error. When set, `addr`/`username`/`password`/`db` are ignored entirely. <SourceLink file="common/defaults.go" lines="946-950" /> |
+| `addr` | `""` | Redis `host:port`. Folded into `uri` and cleared by `SetDefaults`. Port defaults to `6379` when missing. After folding, `addr` is set to `""`. <SourceLink file="common/defaults.go" lines="978-1015" /> |
+| `username` | `""` | Redis username. Folded into `uri` and cleared (same as `addr`). `json:"-"` does NOT apply to username; only password is marshal-suppressed. |
+| `password` | `""` | Redis password. Folded into `uri` and cleared. Tagged `json:"-"` — never marshalled to JSON output. <SourceLink file="common/config.go" lines="386" /> |
+| `db` | `0` | Redis database index. Folded into `uri` path and cleared. Always appended as `"/<db>"` even for index 0. |
+| `connPoolSize` | `8` | Connection pool size. <SourceLink file="common/defaults.go" lines="955-957" /> |
 | `initTimeout` | `5s` | <SourceLink file="common/defaults.go" lines="958-960" /> |
 | `getTimeout` | `1s` | <SourceLink file="common/defaults.go" lines="961-963" /> |
 | `setTimeout` | `3s` | <SourceLink file="common/defaults.go" lines="964-966" /> |
 | `lockRetryInterval` | `500ms` | <SourceLink file="common/defaults.go" lines="967-969" /> |
+| `tls` | `nil` | Optional TLS config with sub-fields `enabled` (bool), `certFile`, `keyFile`, `caFile`, `insecureSkipVerify`. When `tls.enabled=true` and `addr` is set, `SetDefaults` sets the URI scheme to `rediss://`. When `uri` is provided with `rediss://` scheme, `tls.*` fields are merged onto the baseline TLS config. <SourceLink file="data/redis.go" lines="149-179" /> |
 
 **gRPC connector** (`connector.grpc.*`):
 
@@ -531,6 +583,8 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 - If no strategy's `Supports` returns true (e.g., a JWT token arrives but only `network` is configured), the response is `"no auth strategy matched"` — not a per-strategy auth failure. [<SourceLink file="auth/registry.go" lines="46-96" />]
 - For admin scope, when `adminCfg != nil` but `adminAuthRegistry == nil`, `AdminAuthenticate` returns a plain `fmt.Errorf` with no typed error code → HTTP 200 (not 401/500). When `adminCfg` is nil, the path returns `ErrAuthUnauthorized` → HTTP 401. [<SourceLink file="erpc/admin.go" lines="26-30" />]
 - `erpc_rate_limits_total` fires for auth-level budget exhaustion with `origin="auth"` and `auth="<type>:<index>"` (e.g. `"secret:0"`, `"database:1"`). [<SourceLink file="auth/authorizer.go" lines="137" />]
+- `ErrAuthRateLimitRuleExceeded` is auth-scope only — it fires when the auth-strategy-level rate-limit budget is exceeded. It does NOT fire for upstream/network rate-limit budgets (those produce `ErrProjectRateLimitRuleExceeded` or `ErrNetworkRateLimitRuleExceeded`). Retryability: `U:no` (upstreams will not retry), `N:yes` (network propagates 429 to caller). [<SourceLink file="common/errors.go" lines="545-568" />]
+- **gRPC required metadata**: `x-erpc-project` (required; missing → `codes.InvalidArgument "missing metadata"`), `x-erpc-chain-id` (required), `x-erpc-architecture` (optional, defaults to `"evm"`). [<SourceLink file="erpc/grpc_server.go" lines="138-145" />]
 
 ### Best practices
 
@@ -564,6 +618,11 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 18. **database.cache, database.retry, and database.failOpen are always auto-created.** Caching is always on with 1h TTL unless `ttl` is explicitly changed. There is no config to disable caching by omitting the block.
 19. **`type: "network"` auto-creates the `network {}` sub-struct; the converse is asymmetric.** Adding a `network:` block does NOT overwrite `type` — unlike `secret`/`database`/`jwt`/`siwe` which force-overwrite `type` when their sub-block is present.
 20. **When `admin.auth` is nil the admin endpoint hard-errors with HTTP 500.** `AdminAuthenticate` returns a plain `fmt.Errorf` (no typed error code) → HTTP 200 wire, not 401. Configure `admin.auth` to protect it properly.
+21. **`database` strategy also accepts `AuthTypeDatabase` in `Supports`.** The enum value `AuthTypeDatabase` exists but is never produced by any current HTTP or gRPC payload extractor. It is reserved for future or programmatic injection. In practice, database auth is triggered via `AuthTypeSecret` credentials (header/query token). [<SourceLink file="auth/strategy_database.go" lines="118-120" />]
+22. **Singleflight scope is per API key.** The singleflight group inside `DatabaseStrategy` uses the raw API key string as the deduplication key. Concurrent requests with the same API key during a cache miss are coalesced into a single DB lookup. Requests with different API keys run in parallel. [<SourceLink file="auth/strategy_database.go" lines="173-178" />]
+23. **`AuthConfig` is shared across all three scopes.** The same `AuthConfig` type is used for `projects[*].auth`, `admin.auth`, and `healthCheck.auth`. All five strategy types can be configured in any scope. The only scope-specific hazard is `healthCheck.auth` — the healthcheck auth registry is created with a nil `rateLimitersRegistry`, so setting `rateLimitBudget` on any healthcheck strategy causes a nil pointer panic.
+24. **Redis `addr`/`username`/`password`/`db` are cleared after `SetDefaults`.** After initialization, only `uri` is set; all discrete fields are zeroed. Config exports show only the URI (with credentials URL-encoded in it). Because `password` has `json:"-"`, a JSON export shows the URI but not the password field. [<SourceLink file="common/defaults.go" lines="1012-1015" />]
+25. **Admin auth registry DOES support rate-limit budgets.** Unlike the healthcheck scope, the admin `AuthRegistry` is created with the same `rateLimitersRegistry` as projects. Rate-limit budgets on admin auth strategies are applied when configured.
 
 ### Observability
 
@@ -578,8 +637,16 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 |---|---|---|
 | `warn` | `"database connector marked DOWN; subsequent requests will fast-path to fail-open until next probe succeeds"` | `connectorId` |
 | `warn` | `"database connector marked UP; resuming normal auth flow"` | `connectorId` |
+| `warn` | `"singleflight error; fail-open enabled, granting emergency user"` | `userId`, `err` |
+| `warn` | `"database authentication lookup failed; retrying"` | `driver`, `connectorId`, `attempt`, `backoff`, `err` |
 | `error` | `"database query failed during authentication"` | `apiKey`, `driver`, `connectorId`, `err` |
 | `error` | `"auth DB error; fail-open enabled, granting emergency user"` | `userId` |
+| `info` | `"initialized API key cache for database authentication strategy"` | `ttl`, `negTtl`, `maxSize`, `maxCost`, `numCounters` |
+| `debug` | `"API key found in cache"` / `"not found in cache"` | `apiKey` |
+| `debug` | `"API key found in negative cache"` | `apiKey` |
+| `debug` | `"cached API key data"` | `apiKey`, `ttl` |
+| `debug` | `"user authenticated successfully"` | `apiKey`, `userId`, `budget` |
+| `debug` | `"invalidated API key cache entry"` | `apiKey` |
 
 No dedicated auth trace spans — auth runs inline inside the HTTP handler goroutine within the OTel request span.
 

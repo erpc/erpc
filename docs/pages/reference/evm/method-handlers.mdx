@@ -99,10 +99,10 @@ https://docs.erpc.cloud/reference/evm/method-handlers.llms.txt`}
 1. **Project.PreForward** (`HandleProjectPreForward`, `architecture/evm/hooks.go:L10`) — fires before cache read. Handles `eth_blockNumber` (returns highest known, replaces real upstream response), `eth_call` (injects missing block param), `eth_chainId` (responds from config), and records `trace_filter`/`arbtrace_filter` range histogram.
 2. **Network.PreForward** (`HandleNetworkPreForward`, `architecture/evm/hooks.go:L40`) — fires after upstream selection. Handles `eth_chainId` (responds from config), and proactive `trace_filter`/`arbtrace_filter` auto-splitting when the request range exceeds the per-upstream threshold.
 3. **Upstream.PreForward** (`HandleUpstreamPreForward`, `architecture/evm/hooks.go:L86`) — fires once per upstream attempt. Handles `eth_getLogs`/`trace_filter` block-range availability, `eth_chainId` fallback (upstream config → network ID string → network config), and `eth_query*` shim translation.
-4. **Upstream.PostForward** (`HandleUpstreamPostForward`, `architecture/evm/hooks.go:L109`) — fires after each upstream response. Handles `eth_getBlockByNumber`/`eth_getBlockByHash` block validation, `eth_getBlockReceipts` integrity checks, and `eth_sendRawTransaction` nonce-exception interception. Also applies the configurable `markEmptyAsErrorMethods` gate to convert null/empty results to retryable `ErrEndpointMissingData`.
+4. **Upstream.PostForward** (`HandleUpstreamPostForward`, `architecture/evm/hooks.go:L109`) — fires after each upstream response. Handles `eth_getBlockByNumber`/`eth_getBlockByHash` block validation, `eth_getBlockReceipts` integrity checks, and `eth_sendRawTransaction` nonce-exception interception. Also applies the configurable `markEmptyAsErrorMethods` gate to convert null/empty results to retryable `ErrEndpointMissingData`. Conversion only fires when the `RetryEmpty` directive is `true` on the request; when `RetryEmpty=false`, null/empty passes through unchanged even for methods in the list.
 5. **Network.PostForward** (`HandleNetworkPostForward`, `architecture/evm/hooks.go:L62`) — fires once after the failsafe loop. Handles `eth_getBlockByNumber` highest-block enforcement, `eth_sendRawTransaction` exhausted-broadcast recovery, and reactive `trace_filter` splitting.
 
-**Block-tag interpolation.** `NormalizeHttpJsonRpc` (`architecture/evm/json_rpc.go:L92`) runs on every request before upstream selection. It resolves `"latest"` to the highest known block number and `"finalized"` to the highest known finalized block number (when available), normalizes numeric hex to canonical form, and caches the result in the request for downstream cache-key generation. `"safe"` and `"pending"` pass through unchanged.
+**Block-tag interpolation.** `NormalizeHttpJsonRpc` (`architecture/evm/json_rpc.go:L92`) runs on every request before upstream selection. It resolves `"latest"` to the highest known block number and `"finalized"` to the highest known finalized block number (when available), normalizes numeric hex to canonical form, caches the result in the request for downstream cache-key generation, and sets `EvmBlockRef` metadata (`"latest"`, `"finalized"`, or `"*"` when both appear) for routing and observability. `"safe"` and `"pending"` pass through unchanged. When a `ReqRefs` path points to a map/object param (rather than a scalar block tag), the function skips replacing that param — this prevents accidentally replacing a complex call-data object with a hex string.
 
 Resolution is lock-efficient: param values are extracted under a read lock, resolved outside the lock, then deep-copy + write-commit only occur when a change is actually needed. The `SkipInterpolation` directive and per-method `translateLatestTag`/`translateFinalizedTag` flags can disable interpolation on a per-request or per-method basis.
 
@@ -125,8 +125,10 @@ Upstream.PostForward runs opt-in block validation when directives are set: `Vali
 **eth_sendRawTransaction idempotency.** eRPC makes `eth_sendRawTransaction` idempotent across retries and failsafe exhaustion.
 
 Upstream-level (nonce exception handling): when an upstream returns `ErrCodeEndpointNonceException`:
-- `already_known` → synthesize success with the locally-derived tx hash immediately (no probe).
-- `nonce_too_low` → probe `eth_getTransactionByHash` on the same upstream. If the same tx is found (hash matches), return synthetic success. If a different tx with that nonce is found, re-raise as `-32003`.
+- `already_known` (`NonceExceptionReasonAlreadyKnown`, `common/errors.go:L2754`) → synthesize success with the locally-derived tx hash immediately (no probe). Matched message patterns: `"already known"`, `"known transaction"`, `"already imported"`, `"transaction already in mempool"`, `"tx already in mempool"`, `"already in the mempool"`, `"transaction already exists"`, `"already have transaction"`, `"already exists in mempool"`. Source: [`architecture/evm/error_normalizer.go:L304-L323`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L304-L323).
+- `nonce_too_low` (`NonceExceptionReasonNonceTooLow`, `common/errors.go:L2756`) → probe `eth_getTransactionByHash` on the same upstream. If the same tx is found (hash matches), return synthetic success. If a different tx with that nonce is found, re-raise as `-32003`. If probe itself errors, the original error is returned unchanged. Matched message patterns: `"nonce too low"`, `"nonce is too low"`, `"nonce has already been used"`. Source: [`architecture/evm/error_normalizer.go:L326-L340`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L326-L340).
+
+`ErrEndpointNonceException` always carries `retryableTowardNetwork=false` (`common/errors.go:L2773`). This means N:no: if the upstream-level idempotency hook does not intercept (e.g., `idempotentTransactionBroadcast: false`), the error will NOT be retried on another upstream. This is intentional — once "already known" is established, retrying on another upstream would either echo the same result or erroneously succeed.
 
 Network-level (exhausted broadcast recovery): after the failsafe loop exhausts all attempts (`ErrCodeUpstreamsExhausted`, `ErrCodeFailsafeRetryExceeded`, or `ErrCodeFailsafeTimeoutExceeded`), eRPC probes `eth_getTransactionByHash` across the network using `context.WithoutCancel` and a 3-second independent timeout — so the probe runs even when the parent context is already expired. The returned tx hash is cross-checked against the locally-derived hash before granting synthetic success; a mismatch or missing hash field returns the original error.
 
@@ -138,7 +140,7 @@ Error normalizer N:yes override for `eth_sendRawTransaction`: revert/VM-executio
 
 Proactive splitting (Network.PreForward): if the request's block range exceeds `min(TraceFilterAutoSplittingRangeThreshold)` across selected upstreams, the request is immediately split into contiguous chunks and dispatched concurrently. Re-entrancy is blocked via `ParentRequestId`.
 
-Reactive splitting (Network.PostForward): if an upstream returns a range-too-large error and `traceFilterSplitOnError: true`, eRPC bisects the request — halving block range first, then `fromAddress` list, then `toAddress` list. Returns an error if a single-block + single-address request still triggers the error.
+Reactive splitting (Network.PostForward): if an upstream returns a range-too-large error (`ErrCodeEndpointRequestTooLarge` or `JsonRpcErrorEvmLargeRange`) and `traceFilterSplitOnError: true`, eRPC bisects the request — halving block range first (splitting at midpoint `fromBlock + (range/2)`), then `fromAddress` list, then `toAddress` list. Returns an error if a single-block + single-address request still triggers the error. Both proactive and reactive splitting also reject `fromBlock > toBlock` immediately with `-32600` (InvalidRequest) before dispatching sub-requests.
 
 Sub-results are concatenated in index order with no deduplication. Any single sub-failure fails the entire merged response. The upstream post-forward hook normalizes `null`/`""`/`{}` results to `[]` — some older Parity/OpenEthereum nodes return `null` for empty ranges.
 
@@ -319,7 +321,7 @@ upstreams: [
 2. **eth_chainId skip-cache-read bypasses all synthetic levels** — `x-erpc-skip-cache-read: true` causes all three hook levels to fall through to real upstreams. Source: <SourceLink file="architecture/evm/eth_chainId.go" lines="26" />.
 3. **eth_blockNumber from-cache bypass** — cached responses skip the highest-block comparison; TTL is the correctness control for stale cached data. Source: <SourceLink file="architecture/evm/eth_blockNumber.go" lines="40-48" />.
 4. **enforceHighestBlock excludes stale upstream only when block was extracted** — if the upstream returned a JSON-RPC error, the extracted block number is 0 and the upstream is NOT excluded from the re-forward. Source: <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="196-202" />.
-5. **pickHighestBlock safety** — always compares old vs new response rather than blindly returning the re-fetched block, guarding against corrupt poller state. Source: <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="335-415" />.
+5. **pickHighestBlock safety** — always compares old vs new response rather than blindly returning the re-fetched block, guarding against corrupt poller state. If one response is null/empty, returns the other; if both are null/empty, returns the error from the re-forward rather than a null block. Source: <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="335-415" />.
 6. **eth_getBlockReceipts excluded from default markEmptyAsErrorMethods** — empty arrays are correct for 0-tx blocks; inclusion causes retry storms. Source: <SourceLink file="common/defaults.go" lines="2054-2064" />.
 7. **Polygon phantom transactions** — blocks with system transactions (from=0x0, gas=0x0) legitimately have `transactionsRoot = emptyTrieRoot` on a non-empty array; `validateTransactionsRoot` skips the inconsistency error. Source: <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="526-532" />.
 8. **trace_filter null-to-empty normalization** — older Parity/OpenEthereum nodes return `null` for empty ranges; `["result": null]` is converted to `[]`. Source: <SourceLink file="architecture/evm/trace_filter.go" lines="361-374" />.
@@ -335,6 +337,11 @@ upstreams: [
 18. **translateLatestTag=false breaks cache deduplication** — disabling tag translation causes cache keys to omit a concrete block number; `"latest"`-tagged and concrete-block requests for the same block produce different cache keys. Source: <SourceLink file="architecture/evm/json_rpc.go" lines="147-153" />.
 19. **integrity fields are deprecated** — `networks[].evm.integrity.*` is deprecated; values are migrated to `networks[].directiveDefaults` during `SetDefaults`. Source: <SourceLink file="common/defaults.go" lines="1957-1964" />.
 20. **ErrEndpointClientSideException returns HTTP 200 for revert-class codes** — `JsonRpcErrorEvmReverted` (3), `JsonRpcErrorCallException` (-32000), and `JsonRpcErrorTransactionRejected` (-32003) return HTTP 200, not 400; callers must check the JSON-RPC error code to distinguish execution failures from malformed requests. Source: <SourceLink file="common/errors.go" lines="1894-1905" />.
+21. **markEmptyAsErrorMethods requires RetryEmpty=true to fire** — methods in the list only have their null/empty results converted to `ErrEndpointMissingData` when the `RetryEmpty` directive is `true` on the request. When `RetryEmpty=false`, null/empty passes through unchanged regardless of the list. Methods NOT in the list are never converted. Source: <SourceLink file="architecture/evm/common.go" lines="62-89" />.
+22. **trace_filter fromBlock > toBlock returns -32600 immediately** — both the proactive network pre-forward hook and the upstream pre-forward block-range check reject requests where `fromBlock > toBlock` with a `-32600` (InvalidRequest) error before any sub-requests are dispatched. Source: <SourceLink file="architecture/evm/trace_filter.go" lines="122-200" />.
+23. **eth_sendRawTransaction upstream probe errors return the original error** — if the `eth_getTransactionByHash` probe issued during `nonce_too_low` handling itself fails (network error, timeout, etc.), the original nonce error is returned unchanged. The probe is a best-effort check, not a retry gate. Source: <SourceLink file="architecture/evm/eth_sendRawTransaction.go" lines="51-270" />.
+24. **NormalizeHttpJsonRpc skips top-level object params** — when a `ReqRefs` path points to a map/object param (e.g., the call object in `eth_call`), the function does not attempt to replace it with a hex block number even if the path resolves to a numeric value. Only scalar leaf-level block references within nested objects are replaced. Source: <SourceLink file="architecture/evm/json_rpc.go" lines="168-194" />.
+25. **queryShim `resolveBlockTag` treats `"safe"` as finalized-or-latest** — the shim resolves `"safe"` to `EvmHighestFinalizedBlockNumber` when available, or falls back to `EvmHighestLatestBlockNumber`. `"pending"` is unsupported and returns an error. `""` or `"latest"` resolve to `EvmHighestLatestBlockNumber`; `"earliest"` resolves to block 0. Source: <SourceLink file="architecture/evm/eth_query_helpers.go" lines="165-200" />.
 
 ### Observability
 
@@ -347,6 +354,25 @@ upstreams: [
 | `erpc_network_evm_trace_filter_forced_splits_total` | Counter | `project`, `network`, `method`, `dimension`, `user`, `agent_name` | Each split by dimension (`block_range`, `from_address`, `to_address`) |
 | `erpc_network_evm_trace_filter_split_success_total` | Counter | `project`, `network`, `method`, `user`, `agent_name` | Each successful sub-request in a split execution |
 | `erpc_network_evm_trace_filter_split_failure_total` | Counter | `project`, `network`, `method`, `user`, `agent_name` | Each failed sub-request in a split execution |
+
+**Trace span names** (for distributed tracing / APM):
+- `Project.PreForwardHook` — parent span for all project-level hooks
+- `Project.PreForwardHook.eth_chainId`, `Project.PreForwardHook.eth_blockNumber`
+- `Network.PreForwardHook`, `Network.PreForwardHook.eth_chainId`
+- `Network.PostForward.eth_getBlockByNumber`, `Network.PostForward.eth_sendRawTransaction`
+- `Upstream.PreForwardHook`, `Upstream.PreForwardHook.eth_chainId`, `Upstream.PreForwardHook.trace_filter`
+- `Upstream.PostForwardHook.eth_getBlockByNumber`, `Upstream.PostForwardHook.eth_getBlockReceipts`, `Upstream.PostForwardHook.eth_sendRawTransaction`
+- `Evm.PickHighestBlock`, `extractTxHashFromSendRawTransaction`, `createSyntheticSuccessResponse`, `verifyAndHandleNonceTooLow`
+
+**Notable log messages** (for debugging):
+- `"interpolated block tag to concrete block number"` (debug) — `NormalizeHttpJsonRpc` resolved `"latest"` or `"finalized"` to a concrete hex.
+- `"passed through block tag"` (trace) — `"safe"`, `"pending"`, etc. left unchanged.
+- `"upstream returned older block than we known, falling back to highest known block"` (debug) — `eth_blockNumber` and `eth_getBlockByNumber` stale enforcement.
+- `"skipping enforcement of highest block number as response is from cache"` (trace) — cache bypass in `eth_blockNumber` and `eth_getBlockByNumber`.
+- `"converting 'already known' error to idempotent success"` (info) — `eth_sendRawTransaction` upstream hook.
+- `"tx FOUND on-chain - converting 'nonce too low' to idempotent success"` (info) — `eth_sendRawTransaction` nonce-too-low probe success.
+- `"exhausted error overridden: tx found in network, returning synthetic success"` (info) — `eth_sendRawTransaction` network-level hook.
+- `"verification response carries a different tx hash than submitted — refusing synthetic success"` (warn) — hash mismatch guard.
 
 ### Source code entry points
 

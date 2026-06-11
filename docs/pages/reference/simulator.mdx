@@ -94,9 +94,11 @@ Each scenario step calls the same `Orchestrator.UpdateUpstream` code path as man
 
 **Knob live tuning.** Every synthetic upstream exposes `UpstreamKnobs` — latency, error rate, timeout rate, throttle rate, block lag, data availability, and a hard on/off toggle — changeable live via `set-knob` WebSocket messages without reloading the config. Default knob values are biased by tags: `premium` starts at `base=35ms, error=0.003`; `tier:fallback` starts at `base=180ms, error=0.080, blockLag=4`. The "inject 60s failure" button forces `errorRate ≥ 0.9, timeoutRate ≥ 0.3` for 60 seconds via `InjectFailureUntilMs`.
 
+**Pause.** `SetPaused(true)` stops `Execute` from forwarding requests (returns nil) AND pauses the policy engine's eval ticker via `net.SetPolicyEnginePaused(true)`. This keeps position/score pills in the upstream panel stable while paused. Both flags re-sync when a config or policy apply lands mid-pause — the new engine starts un-paused and is immediately re-paused. [<SourceLink file="internal/simulator/orchestrator.go" lines="219-234" />] [<SourceLink file="internal/simulator/orchestrator.go" lines="289-296" />]
+
 **Dump file.** Pass `-dump-file path/to/run.jsonl` to capture a JSONL forensic log. Every observable event is recorded: `boot`, `config.snapshot`, `config.apply`, `policy.apply`, `knob.change`, `knob.inject`, `scenario.start`, `scenario.stop`, `scenario.event`, `paused`, `request`, `stats`. The `request` event carries the full `TraceEvent` (per-attempt log, selection trail, outcome) plus raw params and JSON body. A companion `*.AGENTS.md` is written at open with field descriptions and idiomatic `jq` queries. Buffer is 64KB, flushed every 1s; a crash loses at most ~1s of trailing events. [<SourceLink file="internal/simulator/dump.go" />]
 
-**Rolling stats and WebSocket cadence.** `stats` frames are sent every 200ms; `traces` are batched every 50ms with a cap of 256 items per flush. The session's outbound channel holds 256 frames; when full, frames are dropped silently — the UI is lossy by design. `stats` is always fresh because it is rebuilt from rolling counters at send time. Per-upstream latency percentiles (p50/p70/p90/p95) keep the last 300 samples. [<SourceLink file="internal/simulator/ws.go" lines="19-64" />]
+**Rolling stats and WebSocket cadence.** `stats` frames are sent every 200ms; `traces` are batched every 50ms with a cap of 256 items per flush. The session's outbound channel holds 256 frames; when full, frames are dropped silently — the UI is lossy by design. A 1-second bucket rolls every second; `Stats()` returns the previous second's completed bucket for the RPS display. Per-upstream latency percentiles (p50/p70/p90/p95) keep the last 300 samples. Policy scores and health tracker metrics are read live from the engine and tracker on every `Stats()` call — the simulator has no parallel bookkeeping for these. [<SourceLink file="internal/simulator/orchestrator.go" lines="804-970" />] [<SourceLink file="internal/simulator/ws.go" lines="19-64" />]
 
 ### Config schema
 
@@ -118,6 +120,7 @@ All fields are live-tunable via `set-knob` WebSocket messages (`UpstreamKnobPatc
 | `ID` | `id` | string | (from YAML) | — | — | Upstream identity key. Immutable after boot. |
 | `Vendor` | `vendor` | string | (from YAML vendorName) | — | — | Display name in the upstream panel. |
 | `Tags` | `tags` | `[]string` | (from YAML) | — | — | Propagated to health tracker and policy stdlib `u.tags`. |
+| `Endpoint` | `endpoint` | string | `http://<hubAddr>/sim/<id>` | — | — | Loopback URL rewritten by `RewriteEndpoints` at every config apply. Source: <SourceLink file="internal/simulator/types.go" lines="50" /> |
 | `BaseLatencyMs` | `base` | `float64` | `50` | `35` | `180` | Mean latency in ms. Latency model: `max(1, base + \|gaussian()\| × jitter × 0.6)`. Source: <SourceLink file="internal/simulator/defaults.go" lines="14" /> |
 | `JitterMs` | `jitter` | `float64` | `20` | `12` | `110` | Gaussian sigma multiplier for latency variance. Source: <SourceLink file="internal/simulator/defaults.go" lines="15" /> |
 | `ErrorRate` | `error` | `float64` | `0.01` | `0.003` | `0.080` | Probability [0..1] of an error response. Mix: HTTP 500, 502, 503, JSON-RPC -32000, -32603. Source: <SourceLink file="internal/simulator/defaults.go" lines="16" /> |
@@ -198,9 +201,19 @@ The `*.AGENTS.md` companion lists every queryable field and idiomatic `jq` recip
 
 `TraceAttempt.selReason` values: `"primary"`, `"retry"`, `"hedge"`, `"consensus_slot"`, `"sweep"`. Source: <SourceLink file="internal/simulator/types.go" lines="165" />
 
-`StatsFrame.upstreams` map values (`UpstreamStatsRow`): `errorRate`, `throttleRate`, `misbehaviorRate` from the health tracker; `p50`, `p70`, `p90`, `p95` in ms; `blockHeadLag`, `finalizationLag` in blocks; `cordoned`, `cordonedReason`; `score` from `Engine.GetScores("*")`; `position` (0 = primary, 1..N = fallback, -1 = excluded); `selectionsLast`.
+`StatsFrame.upstreams` map values (`UpstreamStatsRow`): `errorRate`, `throttleRate`, `misbehaviorRate` from the health tracker; `p50`, `p70`, `p90`, `p95` in ms; `blockHeadLag`, `finalizationLag` in blocks; `blockHeadLagSeconds`, `finalizationLagSeconds` (block count × tracker's EMA block-time in seconds); `cordoned`, `cordonedReason`; `score` from `Engine.GetScores("*")`; `position` (0 = primary, 1..N = fallback, -1 = excluded); `selectionsLast` (count in previous 1-second bucket).
 
-`PolicyDecisionFrame` (in `policy-history`): `id`, `steps[]` (stdlib step chain — always populated in simulator, disabled in production), `metrics` (per-upstream metric snapshot), `perUpstreamScore`, `excluded[]`.
+`PolicyDecisionFrame` (in `policy-history`): `id` (slug formatted as `<network>/<method>/<unix-ms>`), `steps[]` (stdlib step chain — always populated in simulator, disabled in production), `metrics` (per-upstream metric snapshot the eval saw at that tick), `perUpstreamScore` (JS-produced scores from that tick), `excluded[]` (excluded upstreams with step and reason).
+
+**Outcome roll order** (per request, first match wins). Source: <SourceLink file="internal/simulator/upstream_sim.go" lines="401-465" />
+
+1. `roll < throttleRate` → HTTP 429 (no sleep)
+2. Sleep `max(1ms, base + |gaussian()| × jitter × 0.6)`
+3. `(roll - throttleRate) < timeoutRate` → hang 30s (simulates eRPC timeout)
+4. `(roll - throttleRate - timeoutRate) < errorRate` → error (5-way mix: HTTP 500, 502, 503, JSON-RPC -32000, -32603)
+5. Otherwise → success + `synthResult`
+
+**InjectedFailure override** — active when `InjectFailureUntilMs > 0` AND `now.UnixMilli() < InjectFailureUntilMs`. While active: `errRate = max(errRate, 0.9)`, `timeoutRate = max(timeoutRate, 0.3)`. Source: <SourceLink file="internal/simulator/types.go" lines="75-77" />
 
 **synthResult method coverage** — the fake upstream returns plausible responses for:
 - `eth_blockNumber` — hex(head - blockLag)
@@ -249,6 +262,11 @@ Source: <SourceLink file="internal/simulator/upstream_sim.go" lines="481-608" />
 12. **`AttemptErrorDetailMaxLen` is set to 0 (unlimited)** so the lifecycle drawer shows the full per-attempt error chain. Production binaries truncate this. Source: <SourceLink file="cmd/erpc-simulator/main.go" lines="79" />
 13. **Step log overhead.** `net.SetPolicyStepLogEnabled(true)` is called at every boot. Production has this off by default; the always-on step trail makes policy evals in the simulator slightly heavier than production. Source: <SourceLink file="internal/simulator/orchestrator.go" lines="287" />
 14. **Static delay `min`/`max` are ignored.** If you paste a hedge config with `quantile=0` (static mode) and also set `min`/`max`, those bounds are silently ignored — `Resolve` returns `base` unchanged.
+15. **`DecodeConfigYAML` uses `KnownFields(true)`.** Any unrecognized YAML key is a hard decode error — typos in the YAML editor fail immediately rather than being silently ignored. Source: <SourceLink file="internal/simulator/config.go" lines="208" />
+16. **`upstream_sim.go` uses `math/rand`, not `crypto/rand`, for all simulation randomness** (throttle/timeout/error dispatch, Box-Muller sampling). This is intentional for statistical sampling; `#nosec G404` annotations in the source acknowledge the deliberate choice. Source: <SourceLink file="internal/simulator/upstream_sim.go" lines="415" />
+17. **Policy engine pause state re-applied after every config/policy apply.** Because a fresh `*erpc.Network` is created each time, the new engine starts running by default. Without re-applying pause, the UI would show drifting policy decisions while the simulator is paused. Source: <SourceLink file="internal/simulator/orchestrator.go" lines="289-296" />
+18. **`SeedYAML` const retains `{SELECTION_POLICY_FUNC}` placeholder by design.** This is what the `snapshot` frame returns as `defaultYaml` for the browser's "↺ default" button (the frontend shows the templated view). Only `SeedYAMLExpanded` has the placeholder substituted; this is validated in `seed_boot_test.go:TestSeedYAMLExpanded_IsValid`.
+19. **WebSocket read limit is 8MB per message.** Messages larger than 8MB are rejected. Source: <SourceLink file="internal/simulator/ws.go" lines="53" />
 
 ### Observability
 
@@ -275,6 +293,8 @@ The simulator does NOT export Prometheus metrics. Observability surfaces are:
 - [`internal/simulator/config.go:L12-L22`](https://github.com/erpc/erpc/blob/main/internal/simulator/config.go#L12-L22) — `SeedYAML` const and `init()` expansion to `SeedYAMLExpanded`
 - [`internal/simulator/scenarios.go:L114-L145`](https://github.com/erpc/erpc/blob/main/internal/simulator/scenarios.go#L114-L145) — scenario `advanceScenario`: 250ms ticker, at-or-after step dispatch
 - [`internal/simulator/dump.go`](https://github.com/erpc/erpc/blob/main/internal/simulator/dump.go) — `Dumper`: JSONL event recorder, 64KB buffer, 1s flush loop, `*.AGENTS.md` companion template
+- [`internal/simulator/yaml_patch.go`](https://github.com/erpc/erpc/blob/main/internal/simulator/yaml_patch.go) — `injectPolicyIntoYAML`, `expandPolicyPlaceholder`
+- [`internal/simulator/seed_boot_test.go`](https://github.com/erpc/erpc/blob/main/internal/simulator/seed_boot_test.go) — `TestSeedYAMLExpanded_IsValid`: verifies `init()` expansion, placeholder absent, default policy body present, comments survive
 
 ### Related pages
 

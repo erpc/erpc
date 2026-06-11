@@ -848,7 +848,82 @@ pipeline, env-var semantics, validate/dump tooling — applies to whichever form
 
 #### Config schema
 
-Config formats own no YAML runtime fields. The table below documents the loader's environment contract and CLI flags.
+**Top-level `Config` fields** (<SourceLink file="common/config.go" lines="38-68" />)
+
+| YAML path | Type | Default | Behavior / notes |
+|---|---|---|---|
+| `logLevel` | string | `"INFO"` | Parsed by zerolog. Valid values: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, `disabled`. Invalid value defaults to `debug` with a warning. Overridable at runtime by `LOG_LEVEL` env var. <SourceLink file="common/defaults.go" lines="50-52" /> |
+| `clusterKey` | string | `"erpc-default"` | Identifies the logical replica group for shared-state scoping. Propagated to `database.sharedState.clusterKey` when that field is unset — an explicit `database.sharedState.clusterKey` always wins. <SourceLink file="common/defaults.go" lines="53-55" /> |
+| `server` | object | synthetic empty struct then `SetDefaults` | HTTP/gRPC server config; see [Server](/config/server). |
+| `metrics` | object | `enabled=true`, `port=4001`, `errorLabelMode="compact"` | Prometheus metrics server. |
+| `database` | object | nil | EVM JSON-RPC cache and/or shared state. |
+| `projects` | array | synthetic `main` project if empty | Ordered list of project configs. |
+| `rateLimiters` | object | nil | Rate limiter budgets. |
+| `healthCheck` | object | `mode=networks`, `defaultEval=any:initializedUpstreams` | Health check endpoint behaviour. |
+| `admin` | object | nil | Admin API; CORS defaults to `*` origin with no credentials. |
+| `tracing` | object | nil | OTel tracing; default protocol=grpc, endpoint=localhost:4317, sampleRate=1.0, serviceName=erpc. |
+| `proxyPools` | array | nil | HTTP proxy pool definitions. |
+
+**`MetricsConfig` fields** (<SourceLink file="common/config.go" lines="2543-2563" />, <SourceLink file="common/defaults.go" lines="749-767" />)
+
+| YAML path | Type | Default | Behavior |
+|---|---|---|---|
+| `metrics.enabled` | bool | `true` (non-test); unset in test builds | If false/nil, metrics server is not started. |
+| `metrics.hostV4` | string | `"0.0.0.0"` | Prometheus scrape endpoint IPv4 bind host. |
+| `metrics.hostV6` | string | `"[::]"` | IPv6 bind host. |
+| `metrics.port` | int | `4001` | Prometheus scrape port. |
+| `metrics.errorLabelMode` | string | `"compact"` | Controls the `error` label on error-count metrics. `"compact"` condenses error codes; `"verbose"` emits full class names. |
+| `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries for request-duration histograms. Validation rejects non-float values. |
+| `metrics.histogramDropLabels` | []string | nil | Label names removed from every histogram to reduce cardinality; counters/gauges unaffected. |
+| `metrics.histogramLabelOverrides` | map | nil | Per-metric label keep-list; key is metric name without `erpc_` prefix (e.g. `"network_request_duration_seconds"`). |
+
+**Default project synthesis.** When `projects` is empty, `SetDefaults` injects a synthetic `main` project (<SourceLink file="common/defaults.go" lines="100-167" />) with:
+- `repository` and `envio` providers
+- An aliasing rule so `/evm/<chainId>` resolves without a project prefix
+- Network defaults: `evm.getLogsMaxAllowedRange=30_000`, `getLogsSplitOnError=true`, integrity enforcement enabled
+- Network-level failsafe: retry(maxAttempts=5), timeout(120s), hedge(p70 quantile, maxCount=2)
+- Upstream-level failsafe: retry(maxAttempts=1, delay=500ms), timeout(60s)
+- Upstream defaults: `evm.getLogsAutoSplittingRangeThreshold=5000`
+
+**Validation rules** (<SourceLink file="common/validation.go" lines="15" />). Key rules beyond basic non-null checks:
+- `server.maxTimeout` must be non-zero
+- Each project needs at least one upstream or provider
+- `project.*.networks.*.alias` must match `[a-zA-Z0-9_-]+` and be unique within the project
+- Referenced `rateLimitBudget` IDs must exist in `rateLimiters.budgets`
+- `onlyNetworks` and `ignoreNetworks` on a provider are mutually exclusive
+- `selectionPolicy.evalTimeout` must be strictly less than `selectionPolicy.evalInterval`
+- `selectionPolicy.evalFunc` must compile (or be a TS sentinel)
+- Connector failsafe may not use `consensus` or `hedge.quantile` (no latency source at connector level)
+- `database.sharedState.lockMaxWait` and `updateMaxWait` must be less than `fallbackTimeout`
+
+**TypeScript scalar types.** (`typescript/config/src/types/generic.ts`)
+
+| TS type | Accepted forms | Footgun |
+|---|---|---|
+| `Duration` | `` `${number}ms` ``, `` `${number}s` ``, `` `${number}m` ``, `` `${number}h` ``, or bare `number` | Bare number → **milliseconds** (not nanoseconds). |
+| `ByteSize` | `` `${number}b` ``, `` `${number}kb` ``, `` `${number}mb` ``, or bare `number` | Only B/KB/MB parsed — **no `gb` form** for cache-policy `minItemSize`/`maxItemSize`. Memory connector `maxTotalSize` uses a different parser that does accept GB. |
+| `LogLevel` | `"trace"` \| `"debug"` \| `"info"` \| `"warn"` \| `"error"` \| `"disabled"` \| `undefined` | — |
+
+**TS enum values.** TS constants serialize as JSON numbers; the Go YAML decoder accepts both numbers and names:
+
+| Constant | Value | Notes |
+|---|---|---|
+| `DataFinalityStateRealtime` | `0` | Also accepted as `"realtime"` or `"0"` in YAML. |
+| `DataFinalityStateUnfinalized` | `1` | Also `"unfinalized"` or `"1"`. |
+| `DataFinalityStateFinalized` | `2` | Also `"finalized"` or `"2"`. |
+| `DataFinalityStateUnknown` | `3` | Also `"unknown"` or `"3"`. |
+| `CacheEmptyBehaviorIgnore` | `0` | — |
+| `CacheEmptyBehaviorAllow` | `1` | — |
+| `CacheEmptyBehaviorOnly` | `2` | — |
+| `RateLimitPeriodSecond` | `0` | Also `"1s"`; Go also accepts duration aliases like `"24h"`, `"7d"`. |
+
+**TS sobek runtime environment.** Inside a TS config (or `evalFunc`):
+- `process.env.X` — full OS environment as a key/value map (snapshot at runtime creation)
+- `env` global — raw `os.Environ()` string array (`"KEY=VALUE"` pairs)
+- `console.log/info/warn/debug/trace` — forwarded to zerolog at the matching level; suppressed below global log level
+- Node stdlib (`fs`, `http`, …) — **NOT available** in sobek; only env/process/console are installed
+
+Config formats own no additional YAML runtime fields. The table below documents the loader's environment contract and CLI flags.
 
 **CLI flags** (<SourceLink file="cmd/erpc/main.go" lines="76-94" />)
 
@@ -868,8 +943,16 @@ Config formats own no YAML runtime fields. The table below documents the loader'
 |---|---|---|---|
 | `$VAR` / `${VAR}` in YAML | YAML loader | `os.ExpandEnv` on raw bytes before parse; unset vars → empty string. Unquoted values containing `:` or `{` will break YAML parse. | <SourceLink file="common/config.go" lines="102" /> |
 | `process.env.X` in TS | TS runtime | Populated from `os.Environ()` when the sobek runtime is created; `.env` file loaded first. Snapshot — not updated if env changes after startup. | <SourceLink file="common/runtime.go" lines="23-36" /> |
-| `LOG_LEVEL` | bootstrap | Zerolog global level; overrides `logLevel` in config. Applied twice: at `init()` and again after decode. | [`cmd/erpc/main.go:L59-L66`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L59-L66) |
-| `LOG_WRITER` | bootstrap | When `"console"`, switches zerolog to human-readable output. Set at `init()` — cannot be changed at runtime. | [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) |
+| `LOG_LEVEL` | bootstrap | Zerolog global level; overrides `logLevel` in config. Applied twice: at `init()` and again after decode. Valid values: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, `disabled`. Invalid value falls back to `debug` with a warning. | [`cmd/erpc/main.go:L59-L66`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L59-L66) |
+| `LOG_WRITER` | bootstrap | When `"console"`, switches zerolog to human-readable output (`04:05.000ms` time format). Set at `init()` — cannot be changed at runtime. | [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) |
+| `INSTANCE_ID` | shared state + consensus | First in the instance-identity priority chain: `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → `os.Hostname()` → `"unknown"` (shared-state) or SHA-256 hash of (unixNano+pid) (consensus). Used as `UpdatedBy` field in shared-state writes and as the `{instanceId}` token in consensus dispute-log filenames. In Kubernetes, setting `POD_NAME` via the downward API is recommended. | [`data/shared_state_registry.go:L82-L98`](https://github.com/erpc/erpc/blob/main/data/shared_state_registry.go#L82-L98) |
+| `POD_NAME` | shared state + consensus | Second in priority chain (Kubernetes pod name). Same two contexts as `INSTANCE_ID`. | — |
+| `HOSTNAME` | shared state + consensus | Third in priority chain (OS hostname). Same two contexts as `INSTANCE_ID`. | — |
+| `ERPC_NOLOGS` | test builds only | When `"1"`, sets zerolog global level to `Disabled` and replaces the logger with `io.Discard`. Suppresses all log output. Only effective in non-production builds (build tag `!test` guard on `initflags.go`). | [`cmd/erpc/initflags.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/initflags.go) |
+| `ERPC_NOMETRICS` | test builds only | When `"1"`, swaps `prometheus.DefaultRegisterer`/`DefaultGatherer` with a no-op registry. Metric registrations succeed but accumulate no memory. Irreversible within the process. | [`cmd/erpc/initflags.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/initflags.go) |
+| `ERPC_PPROF_PORT` | pprof build only | Port for the pprof HTTP server (default `6060`). Only active when binary built with `-tags pprof`. **Security:** binds `0.0.0.0:<port>` (all interfaces, not localhost-only) — must be firewall-restricted in production. | [`cmd/erpc/pprof.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/pprof.go) |
+| `$VAR` in `server.responseHeaders` values | HTTP server init | Expanded once at startup via `os.ExpandEnv` during HTTP server construction (after full config decode, distinct from YAML-level expansion). Headers that expand to empty string are silently omitted. | [`erpc/http_server.go:L135-L148`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L135-L148) |
+| `$VAR` in provider-generated endpoints | provider resolution | After the vendor's `GenerateConfigs` returns each `UpstreamConfig`, `os.ExpandEnv` is called on each `Endpoint` string — distinct from (and after) YAML-level expansion. Double-expansion possible if `GenerateConfigs` builds an endpoint that itself contains `$VAR` literals. | [`thirdparty/provider.go:L67-L71`](https://github.com/erpc/erpc/blob/main/thirdparty/provider.go#L67-L71) |
 
 **`validate` command JSON output schema** (`erpc/config_analyzer.go:L76-L123`)
 
@@ -1071,6 +1154,12 @@ Config loading is a startup-phase operation, not a per-request path. No HTTP hea
 13. **`erpc dump` may print `__ts_fn__:fn_N`** for a TS `evalFunc` when source resolution fails (best-effort `.toString()`; any error leaves the sentinel). Source: [`internal/policy/dump.go:L32-L136`](https://github.com/erpc/erpc/blob/main/internal/policy/dump.go#L32-L136).
 14. **Strict decode applies to TS configs too.** `decoder.KnownFields(true)` on the JSON intermediary means a property typo still fails at load with the same unknown-field error YAML gives.
 15. **`AuthStrategyConfig` union is wrong for non-secret strategies in TS.** The hand-written `network`/`jwt`/`siwe` arms declare their payload under the key `secret` instead of the correct key names. Also, the `database` auth type is absent from the TS union. Source: [`typescript/config/src/types/generic.ts:L120-L141`](https://github.com/erpc/erpc/blob/main/typescript/config/src/types/generic.ts#L120-L141).
+16. **`grpc` cache-connector driver is unrepresentable in TS.** Go supports `DriverGrpc` + `ConnectorConfig.grpc`, but the hand-written `TsConnectorConfig` union used for `cache.connectors` has no `grpc` arm. Same for `UpstreamType` missing `evm+blockdaemon`. Source: [`typescript/config/src/types/generic.ts:L63-L83`](https://github.com/erpc/erpc/blob/main/typescript/config/src/types/generic.ts#L63-L83).
+17. **`scoreMetricsWindowSize` doc comment discrepancy.** The Go source comment claims "Defaults to 10m when zero"; the actual fallback in `projects_registry.go` is `1 * time.Minute`. The `erpc.dist.yaml` comment claims "Defaults to 5s". The code always wins — default is 1m. Source: [`erpc/projects_registry.go:L50,L133-L134`](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go#L50).
+18. **`ERPC_PPROF_PORT` binds all interfaces.** The pprof server uses `0.0.0.0:<port>`, not `127.0.0.1`. In production the port must be firewall-restricted or the binary must be built without `-tags pprof`; any host that can reach the port gets full Go runtime profiling access.
+19. **TS-required fields that Go would default.** Tygo marks non-`omitempty` fields as required, so `MemoryConnectorConfig` forces `maxItems` + `maxTotalSize` in TS even though Go defaults them to `100000` / `"1GB"`. YAML users can omit them. Source: [`common/defaults.go:L935-L944`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L935-L944).
+20. **Legacy YAML keys work in TS objects too.** Both formats share the same `UnmarshalYAML` hooks after the TS JSON round-trip, so e.g. `group: 'main'` on an upstream becomes a `tier:main` tag in both YAML and TS.
+21. **Metrics server is disabled in test builds.** `MetricsConfig.SetDefaults` sets `Enabled` only when `!util.IsTest()`. In `go test` runs, metrics are off by default. Tests needing metrics must set `metrics.enabled: true` explicitly. Source: [`common/defaults.go:L750-L752`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L750-L752).
 
 #### Observability
 
@@ -1078,15 +1167,27 @@ The config-loading and format subsystems emit no Prometheus metrics. Operational
 
 | Log message | Level | When |
 |---|---|---|
+| `"executing command"` | INFO | Every CLI action; includes `action`, `version`, `commit` fields |
 | `"looking for config file: <path>"` | INFO | Each path probed during auto-discovery |
 | `"resolved configuration file to: <path>"` | INFO | Winning path identified |
+| `"initializing eRPC core"` | INFO | Before `NewERPC` construction |
+| `"initializing transports"` | INFO | After core init, before server start |
+| `"networks bootstrap completed"` | INFO | After all configured networks are initialised |
+| `"shutting down gracefully..."` | INFO | On SIGINT/SIGTERM context cancel |
+| `"pprof server started at http://localhost:<port>"` | INFO | Only when built with `-tags pprof` |
 | `"failed to load configuration"` | ERROR | Any `LoadConfig` error before exit 1001 |
-| `"no projects found in config; will add a default 'main' project"` | WARN | `SetDefaults` synthetic project injection |
 | `"build failed: <messages>"` | ERROR | esbuild compilation error in `.ts`/`.js` file |
 | `"compile ts config: …"` | ERROR | sobek compile error after bundling |
+| `"ts config json-stringify: …"` | ERROR | JSON.stringify step failed on TS config object |
 | `"ts config decode: …"` | ERROR | Strict YAML decode of the TS JSON output failed (field typo) |
-| `"executing command"` | INFO | Every CLI action, with `action`/`version`/`commit` fields |
 | `"config default export serialized to null/undefined"` | ERROR | TS config did not produce a valid default export |
+| `"evaluate user TS config in policy runtime: …"` | ERROR | Policy engine failed to re-run `UserScript` in a pooled runtime |
+| `"ts selectionPolicy.evalFunc lookup: …"` | ERROR | Sentinel `__erpcFns` id not found or registry not populated |
+| `"no projects found in config; will add a default 'main' project"` | WARN | `SetDefaults` synthetic project injection |
+| `"no providers or upstreams found in project; will use default 'public' endpoints"` | WARN | Public fallback injected for a project with no upstreams/providers |
+| `"failed to initialize evm json rpc cache: …"` | WARN | Cache init failure is non-fatal; eRPC continues without caching |
+| `"failed to initialize shared state registry: …"` | WARN | Shared-state init failure is non-fatal |
+| `"invalid log level '...', defaulting to 'debug'"` | WARN | Emitted at init time and at runtime if `LOG_LEVEL` has an invalid value |
 
 #### Source code entry points
 

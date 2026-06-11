@@ -124,6 +124,15 @@ No `erpc.yaml` fields are specific to the Kubernetes deployment layer. The follo
 | `GOGC` | `40` | Lower GC target reduces heap swings; pair with `GOMEMLIMIT` |
 | `POD_NAME` | Downward API `metadata.name` | Used for shared-state lock ownership; resolution order: `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → random UUID |
 | `LOG_LEVEL` | `info` or `warn` | `trace` is extremely verbose at high RPC traffic; can saturate log shippers |
+| `LOG_WRITER` | `console` | If set to `"console"`, switches to a zerolog console writer with `04:05.000ms` time format; default is JSON structured output |
+
+**CLI subcommands** available in the container binary ([`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go)):
+
+| Subcommand | Purpose |
+|---|---|
+| `erpc start` (or `erpc [config]`) | Start the server |
+| `erpc validate [--format json\|md]` | Parse config, run validation report, exit non-zero on errors — useful in CI pre-deploy checks |
+| `erpc dump [--format yaml\|json]` | Parse config and dump the resolved effective config (including selection policy expansion) to stdout |
 
 Reference resource specs from the kube manifest (the only code-grounded recommendations):
 
@@ -208,6 +217,8 @@ kubectl scale deployment/erpc --replicas=5 -n erpc
 8. **No official Helm chart**: The repository provides raw manifests under `kube/`. Community-maintained charts may exist on Artifact Hub.
 9. **Network policy egress**: eRPC makes outbound connections to upstream RPC endpoints (443/TCP, 80/TCP) and optional cache backends (5432/TCP PostgreSQL, 6379/TCP Redis). Allow ingress on 4000/TCP from app pods and 4001/TCP from the Prometheus scraper.
 10. **`kube/postgres.yml` uses `postgres:latest`**: Pin a specific PostgreSQL version and digest for production.
+11. **gRPC and HTTP share port 4000 by default**: `server.grpcPortV4` and `server.httpPortV4` both default to `4000`. If you override the gRPC port to a different value, a second listener is bound and you must add a corresponding `containerPort` and Service port entry. The manifest only exposes 4000 and 4001.
+12. **pprof binary present but never invoked by default**: The image ships `/erpc-server-pprof` (built with `-tags pprof`) alongside the default `/erpc-server`. To enable profiling on port 6060, override the container `command` to `/erpc-server-pprof`; the default `CMD` runs the non-pprof binary.
 
 ### Observability
 
@@ -217,7 +228,7 @@ Scraped by Prometheus via PodMonitor at `4001/metrics` every 10s. Key metrics fo
 |---|---|---|
 | `erpc_upstream_request_errors_total` | counter | Every upstream request error (used in `HighErrorRate` alert) |
 | `erpc_upstream_request_duration_seconds_budget` | histogram | Per-upstream request duration (used in `SlowRequests` p95 alert) |
-| `erpc_upstream_request_total` | counter | Every upstream request (used in rate alerts) |
+| `erpc_upstream_request_total` | counter | Every upstream request; drives `HighRequestRate` alert (&gt; 1000 req/s for 5 min) and `LowRequestRate` alert (&lt; 1 req/s for 15 min, warning) |
 | `erpc_upstream_request_self_rate_limited_total` | counter | Upstream self-rate-limiting events |
 | `erpc_network_request_self_rate_limited_total` | counter | Network-level self-rate-limiting events |
 

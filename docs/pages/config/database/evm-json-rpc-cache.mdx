@@ -154,6 +154,34 @@ A result is "emptyish" if the raw JSON bytes are `null`, `""`, `"0x"`, `"0x0"`, 
 
 **gRPC connector (BDS read-through).** `GrpcConnector` is a read-only connector backed by BDS gRPC servers. It does not support `Set`. Supported methods: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, `eth_blockNumber`. `eth_blockNumber` is derived by fetching the latest block internally — there is no native BDS gRPC call for it. The gRPC connector performs a fast-miss check: if the request block number is below the connector's earliest known block, it returns `ErrRecordNotFound` immediately without a network call.
 
+**CacheHash derivation (range key).** The range key `{method}:{sha256(params)}` is computed by `JsonRpcRequest.CacheHash` (`common/json_rpc.go:L1385-L1409`). It hashes params positionally using SHA-256 over a recursive type-aware `hashValue` function, producing a hex string prefixed with the method name. The hash is memoized on the request object — multiple policies referencing the same request compute it only once.
+
+**reqRefs and respRefs — block reference extraction.** These per-method config fields (`networks[*].methods.definitions.<method>.reqRefs` / `respRefs`) tell the block-reference extraction logic where in a JSON-RPC request or response to find a block number, tag, or hash. They determine whether a request is cacheable and what partition key to use.
+
+Built-in path variables in `common/defaults.go`:
+
+| Variable | Path | Used by |
+|---|---|---|
+| `FirstParam` | `[[0]]` | `eth_getBlockByNumber`, `eth_getBlockByHash`, … |
+| `SecondParam` | `[[1]]` | `eth_getStorageAt`, `eth_getCode`, … |
+| `ThirdParam` | `[[2]]` | `eth_getProof` |
+| `NumberOrHashParam` | `[["number"], ["hash"]]` | response object fields |
+| `BlockNumberOrBlockHashParam` | `[["blockNumber"], ["blockHash"]]` | receipt-like responses |
+| `ArbitraryBlock` | `[["*"]]` | `eth_getTransactionByHash`, `eth_getTransactionReceipt` — tx-hash methods |
+
+Path format: each selector is an `[]interface{}` where integers index JSON arrays and strings key into JSON objects. An empty path (`[]`) means the value at that position IS the scalar. A single-element path `["*"]` means "arbitrary block" — produces `blockRef = "*"` which routes to the reverse index.
+
+**reqRefs extraction algorithm** (`architecture/evm/block_ref.go:L277-L310`):
+1. If `reqRefs` has exactly one path of length 1 and that element is `"*"`: return `blockRef="*"` immediately.
+2. Otherwise for each path, parse the value as a block parameter (hex number, decimal, or named tag).
+3. If multiple paths yield different block references (e.g. `eth_getLogs` with different `fromBlock`/`toBlock`): set `blockRef = "*"` (composite range).
+4. Accumulate the highest block number seen across all paths.
+5. If no path resolves: `blockRef = ""` → cache bypassed entirely, trace attribute `cache.skip_reason = "empty_block_ref"` set.
+
+**respRefs extraction algorithm** (`architecture/evm/block_ref.go:L343-L368`): Called only after a response exists. First non-`"*"` block ref wins; result supplements or overrides the request-derived ref for the cache key.
+
+Custom `reqRefs`/`respRefs` in user config **override built-in defaults entirely** — there is no merge.
+
 ### Config schema
 
 All fields are under `database.evmJsonRpcCache`. `Duration` values accept Go duration strings or bare integers (milliseconds).
@@ -737,6 +765,14 @@ in `erpc_cache_set_success_total`:
 
 18. **Compression is auto-enabled — you cannot disable it by omitting the block.** `CacheConfig.SetDefaults` always creates `&CompressionConfig{}` and calls `SetDefaults()` on it (sets `enabled=true`). The only escape is explicitly setting `compression.enabled: false`. Source: <SourceLink file="common/defaults.go" lines="482-488" />.
 
+19. **Cancellation guard uses `fanCtx.Err()`, not `errors.Is(err, context.Canceled)`.** An inner failsafe wrapper can produce an opaque typed error that `errors.Is` cannot unwind. The fan-out loop trusts `fanCtx.Err()` as the authoritative cancellation signal so a losing peer's wrapped error never inflates `erpc_cache_get_error_total`. Source: [`erpc/evm_json_rpc_cache_fanout_test.go`](https://github.com/erpc/erpc/blob/main/erpc/evm_json_rpc_cache_fanout_test.go).
+
+20. **Empty results for future (not-yet-produced) blocks are never cached, regardless of `empty` policy setting.** `emptyResultBeyondConfidence` compares the requested block number against the network's latest (or finalized) head. If the block hasn't been produced yet, the empty result is silently discarded — preventing the cache from poisoning responses for blocks that simply don't exist yet. Source: [`architecture/evm/json_rpc_cache.go:L1079-L1082`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L1079-L1082), [`architecture/evm/common.go:L55-L89`](https://github.com/erpc/erpc/blob/main/architecture/evm/common.go#L55-L89).
+
+21. **gRPC connector's block-head timestamp is set to zero when timestamp parse fails.** This is intentional: storing a stale timestamp from a previous poll would make `CacheLatestBlockTimestamp` report a dangerously stale age. Storing 0 makes the realtime guard fail-open (accept the cached result) rather than reject based on wrong age data. Source: [`data/grpc.go:L350-L356`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L350-L356).
+
+22. **`appliesTo: "get"` enables independent write/read policies with different TTLs or finality.** Setting `appliesTo: "get"` on a policy means it will never be written to — a separate write-only policy (possibly with a different finality bucket or size limit) can populate the connector while the read-only policy controls what is served. The default `"both"` means the same policy governs both directions.
+
 ### Observability
 
 | Metric | Type | Labels | When it fires |
@@ -748,18 +784,22 @@ in `erpc_cache_set_success_total`:
 | `erpc_cache_get_age_guard_reject_total` | counter | project, network, **method**, connector, policy, ttl | Block timestamp age exceeded policy TTL; only realtime requests with non-zero TTL. Label is `method` not `category` — unique among cache metrics |
 | `erpc_cache_get_success_hit_duration_seconds` | histogram | project, network, category, connector, policy, ttl | Latency of a cache hit |
 | `erpc_cache_get_success_miss_duration_seconds` | histogram | project, network, category, connector, policy, ttl | Latency of a cache miss |
+| `erpc_cache_get_error_duration_seconds` | histogram | project, network, category, connector, policy, ttl, error | Latency when a connector returns a transport error |
 | `erpc_cache_set_success_total` | counter | project, network, category, connector, policy, ttl | Connector Set succeeded |
 | `erpc_cache_set_error_total` | counter | project, network, category, connector, policy, ttl, error | Connector Set failed |
 | `erpc_cache_set_skipped_total` | counter | project, network, category, connector, policy, ttl | `shouldCacheResponse` returned false (size limit, error field, empty-ignore, future block) |
 | `erpc_cache_set_original_bytes_total` | counter | project, network, category, connector, policy, ttl | Cumulative uncompressed bytes before any compression attempt; emitted for every successful set |
 | `erpc_cache_set_compressed_bytes_total` | counter | project, network, category, connector, policy, ttl | Cumulative bytes after zstd compression. Only emitted when compression was actually applied (enabled, value ≥ threshold, compressed &lt; original). A zero value does NOT indicate a bug — it means compression was not applied in that window |
 | `erpc_cache_set_success_duration_seconds` | histogram | project, network, category, connector, policy, ttl | Latency of a successful set |
+| `erpc_cache_set_error_duration_seconds` | histogram | project, network, category, connector, policy, ttl, error | Latency when a connector Set returns an error |
 | `erpc_ristretto_cache_current_cost` | gauge | connector | Memory connector current cost in bytes |
 | `erpc_ristretto_cache_sets_failed_total` | counter | connector | Ristretto dropped or rejected a set |
-| `erpc_cache_connector_earliest_block_number` | gauge | connector, network | gRPC connector block head (refreshed every 60 s) |
-| `erpc_cache_connector_latest_block_number` | gauge | connector, network | gRPC connector block head (refreshed every 60 s) |
-| `erpc_cache_connector_finalized_block_number` | gauge | connector, network | gRPC connector block head (refreshed every 60 s) |
+| `erpc_cache_connector_earliest_block_number` | gauge | connector, network | gRPC connector earliest known block number (refreshed every 60 s) |
+| `erpc_cache_connector_latest_block_number` | gauge | connector, network | gRPC connector latest block number (refreshed every 60 s) |
+| `erpc_cache_connector_finalized_block_number` | gauge | connector, network | gRPC connector finalized block number (refreshed every 60 s) |
+| `erpc_cache_connector_earliest_block_timestamp_seconds` | gauge | connector, network | gRPC connector earliest block unix timestamp (refreshed every 60 s) |
 | `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | connector, network | gRPC connector latest block unix timestamp (refreshed every 60 s) |
+| `erpc_cache_connector_finalized_block_timestamp_seconds` | gauge | connector, network | gRPC connector finalized block unix timestamp (refreshed every 60 s) |
 
 **OTel trace spans:**
 
@@ -770,8 +810,30 @@ in `erpc_cache_set_success_total`:
 | `Cache.GetForPolicy` | `architecture/evm/json_rpc_cache.go:L241` |
 | `Cache.Set` | `architecture/evm/json_rpc_cache.go:L572` |
 | `Evm.ExtractBlockReferenceFromRequest` | `architecture/evm/block_ref.go:L18` |
+| `Evm.ExtractBlockTimestampFromResponse` | `architecture/evm/block_ref.go:L190` |
+| `Request.GenerateCacheHash` | `common/json_rpc.go:L1387` |
 
-Span attributes on `Cache.GetForPolicy`: `cache.get_outcome` values are `found`, `miss`, `ttl_rejected`, `empty_ignored`, `error`, `cancelled`.
+Span attributes on `Cache.Get`: `network.id`, `request.method`, `request.finality`, `cache.policies_matched`, `cache.hit` (bool), `cache.miss_reason`, `cache.miss_connector_id`, `cache.miss_policy`.
+
+Span attributes on `Cache.GetForPolicy`: `cache.policy_summary`, `cache.connector_id`, `cache.method`, `cache.get_outcome` (`found`/`miss`/`ttl_rejected`/`empty_ignored`/`error`/`cancelled`), `cache.block_ref`, `cache.group_key`, `cache.request_key`.
+
+### Debug log messages
+
+These `DEBUG`-level log messages appear in eRPC output and are useful for tracing cache behavior:
+
+| Message | Condition |
+|---|---|
+| `"will not cache the response because we cannot resolve a block reference"` | `blockRef` is empty on Set — method not in the cacheable set |
+| `"skip caching because response contains an error"` | `shouldCacheResponse` skipped due to JSON-RPC error field |
+| `"skip caching because response size does not match policy limits"` | result length outside `minItemSize`/`maxItemSize` |
+| `"skip caching empty result for a not-yet-produced (future) block"` | `emptyResultBeyondConfidence` — block number is ahead of network head |
+| `"rejecting cached result because block age exceeds policy TTL"` | age guard rejection in `shouldAcceptCachedResult` |
+| `"cached result rejected due to age exceeding TTL"` | same, logged at the Get fan-out level |
+| `"cache connector errored during GET"` | connector transport error (not a semantic miss) |
+| `"skipping cache connector due to skip-cache-read directive pattern"` | `SkipCacheRead` directive matched a connector ID glob |
+| `"returning cached response"` | hit served (Trace level also logs raw result) |
+| `"compressed cache value"` | zstd compression applied (includes original/compressed/savings) |
+| `"decompressed cache value"` | zstd decompression applied on read |
 
 ### Source code entry points
 

@@ -126,8 +126,10 @@ supplied, eRPC starts with a synthetic `main` project using public RPC providers
 
 **YAML loading.** `LoadConfig` reads the file, runs `os.ExpandEnv` on raw bytes
 (`common/config.go:L102`), then decodes with `gopkg.in/yaml.v3` in strict mode
-(`KnownFields(true)` — unknown keys are fatal). After decode: legacy migration hook,
-then `SetDefaults`, then `Validate`.
+(`KnownFields(true)` — unknown keys are fatal). After decode: legacy migration hook
+(`LegacyTranslateFn`, wired to `legacy.TranslateFromConfig` at `cmd/erpc/main.go:L36`)
+fires first, potentially emitting zerolog Warn messages for deprecated fields, then
+`SetDefaults`, then `Validate`. Tests that exercise legacy YAML must set `LegacyTranslateFn` manually.
 
 **TypeScript/JS loading.** `loadConfigFromTypescript` (`common/config.go:L2686`):
 
@@ -165,6 +167,15 @@ pprof — build with `-tags pprof` to activate.
 
 ### Config schema
 
+**CLI subcommands** — <SourceLink file="cmd/erpc/main.go" lines="200-244" />
+
+| Subcommand | Flags | Behavior |
+|------------|-------|----------|
+| `erpc [config]` (root / no subcommand) | `--config`, `--endpoint/-e`, `--require-config` | Same as `start`: load config, run `erpc.Init`. |
+| `erpc start` | `--endpoint/-e` (repeatable), `--require-config`; root `--config` also honored via flag lookup | Start the proxy service. |
+| `erpc validate` | `--format json\|md` (default `json`) | Validate config; exit 1 on any errors; logs suppressed. |
+| `erpc dump` | `--format yaml\|json` (default `yaml`) | Dump effective config with resolved selection policies; exit 1 on load/marshal error or unsupported format. |
+
 **CLI flags** — <SourceLink file="cmd/erpc/main.go" lines="76-94" />
 
 | Flag | Type | Default | Behavior / footguns |
@@ -183,6 +194,14 @@ pprof — build with `-tags pprof` to activate.
 |-----------|------|---------|---------------------|
 | `logLevel` | string | `"INFO"` | Zerolog level. Invalid value defaults to `debug` with a warning. Overridable at runtime by `LOG_LEVEL` env var. Valid: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, `disabled`. |
 | `clusterKey` | string | `"erpc-default"` | Logical replica group ID for shared-state scoping. Propagated to `database.sharedState.clusterKey` only if that field is empty. Precedence: explicit `database.sharedState.clusterKey` &gt; `clusterKey` &gt; hard-coded default. |
+| `server` | \*ServerConfig | empty struct then `SetDefaults` | HTTP/gRPC server config (bind addresses, timeouts, graceful-shutdown windows). See [HTTP server](/operation/http-server). |
+| `healthCheck` | \*HealthCheckConfig | mode=`networks`, defaultEval=`any:initializedUpstreams` | Health check endpoint behaviour. |
+| `admin` | \*AdminConfig | nil | Admin JSON-RPC API; CORS defaults to `*` origin with no credentials when section is present. |
+| `database` | \*DatabaseConfig | nil | EVM JSON-RPC cache and/or shared-state connector. |
+| `projects` | []\*ProjectConfig | synthetic `main` project with public + envio providers when empty | Ordered list of project configs. When empty, `SetDefaults` injects a `main` project. |
+| `rateLimiters` | \*RateLimiterConfig | nil | Rate limiter budgets. Budget IDs referenced by projects/upstreams/networks must exist here. |
+| `proxyPools` | []\*ProxyPoolConfig | nil | HTTP proxy pool definitions. |
+| `tracing` | \*TracingConfig | nil | OTel tracing; defaults when set: protocol=grpc, endpoint=localhost:4317, sampleRate=1.0, serviceName=erpc. |
 | `metrics.enabled` | \*bool | `true` (non-test builds) | If `false` or nil, metrics server is not started. In test builds the default is nil. |
 | `metrics.port` | \*int | `4001` | Prometheus scrape port. |
 | `metrics.hostV4` | \*string | `"0.0.0.0"` | IPv4 bind address for the metrics server. |
@@ -197,21 +216,26 @@ pprof — build with `-tags pprof` to activate.
 | Env var | Where applied | Effect |
 |---------|---------------|--------|
 | `LOG_LEVEL` | `init()` and after config decode | Zerolog global level. Applied twice: first during config-loading so those logs respect it; second after decode to override `cfg.LogLevel`. Invalid value falls back to `debug`. Valid: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`, `disabled`. |
-| `LOG_WRITER` | `init()` | When `"console"`, switches from JSON to a human-readable colored writer. Must be set before process start; cannot be changed at runtime. |
+| `LOG_WRITER` | `init()` | When `"console"`, switches from JSON to a human-readable colored writer (time format `"04:05.000ms"`). Must be set before process start; cannot be changed at runtime. |
 | `ERPC_NOLOGS` | `init()` (build tag `!test`) | When `"1"`, silences zerolog globally and replaces the writer with `io.Discard`. Intended for test runs. |
 | `ERPC_NOMETRICS` | `init()` (build tag `!test`) | When `"1"`, swaps the Prometheus default registry with a no-op. Irreversible within the process. |
 | `ERPC_PPROF_PORT` | `init()` (build tag `pprof`) | pprof listener port; default `6060`. Only effective when built with `-tags pprof`. Binds `0.0.0.0` — all interfaces. |
+| `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION` | config analyzer | When `"true"`, skips validation of non-HTTP and local (loopback/localhost) upstream endpoints in `erpc validate`. [<SourceLink file="erpc/config_analyzer.go" lines="1024-1031" />] |
 | `INSTANCE_ID` | shared-state + consensus | First in the instance-identity chain. Used as `UpdatedBy` in shared-state writes and as `{instanceId}` in consensus dispute-log filenames. |
 | `POD_NAME` | shared-state + consensus | Second in the chain (Kubernetes pod name). |
 | `HOSTNAME` | shared-state + consensus | Third in the chain (OS hostname). |
 | `FORCE_TEST_LISTEN_V4` | `common/defaults.go` | When `"true"` in test builds, forces `server.listenV4=true`. |
 | `$VAR` / `${VAR}` in YAML | before YAML parse | `os.ExpandEnv` on raw bytes. Unset vars resolve to empty string. Footgun: if the expanded value contains `:` or `{`, quote the YAML value. |
-| `process.env.<KEY>` in TS | sobek runtime creation | Full `os.Environ()` snapshot passed to TS/JS config runtime. A snapshot — not a live view. |
+| `$VAR` / `${VAR}` in `server.responseHeaders` | HTTP server construction | Expanded once at server startup via `os.ExpandEnv`. If the expanded value is empty, the header entry is silently dropped from all responses. Runs after full config decode; distinct from YAML-level expansion. [<SourceLink file="erpc/http_server.go" lines="135-148" />] |
+| `$VAR` / `${VAR}` in provider-generated upstream endpoints | provider resolution | Expanded when the vendor's `GenerateConfigs` returns each `UpstreamConfig.Endpoint` string. Distinct from YAML-level expansion — runs at request time, not config-load time. [<SourceLink file="thirdparty/provider.go" lines="67-71" />] |
+| `process.env.<KEY>` in TS | sobek runtime creation | Full `os.Environ()` snapshot passed to TS/JS config runtime as a `process.env` object; also exposed as a flat `env` array of `"KEY=VALUE"` strings. A snapshot — not a live view. Because `.env` is loaded in `init()` before the TS bundle is evaluated, `.env` values are available here too. |
 
 **Instance-identity priority chain.** Two functions resolve instance ID:
 
-- Shared-state: `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → `os.Hostname()` → `"unknown"`. <SourceLink file="data/shared_state_registry.go" lines="82-98" />
-- Consensus: same order but final fallback is SHA-256(unixNano+pid) truncated to 8 hex chars. <SourceLink file="consensus/export_utils.go" lines="26-48" /> Setting `INSTANCE_ID` explicitly avoids both failure modes.
+- Shared-state: `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → `os.Hostname()` → `"unknown"`. Whitespace is trimmed at each step. <SourceLink file="data/shared_state_registry.go" lines="82-98" />
+- Consensus: same env-var priority order but final fallback is SHA-256(unixNano+pid) truncated to 8 hex chars (computed once via `sync.Once`). Characters problematic for filenames (`:`, `/`, `\`, ` `, `*`, `?`, `"`) are sanitized to `_` before the value is used as the `{instanceId}` token in dispute-log filenames. <SourceLink file="consensus/export_utils.go" lines="26-48" />
+
+Setting `INSTANCE_ID` explicitly avoids both failure modes.
 
 **`validate` command output schema** (JSON):
 
@@ -396,13 +420,13 @@ the bootstrap interacts with the process environment.
   `logLevel: error` can be trumped by `LOG_LEVEL=debug` without editing the file.
   [<SourceLink file="cmd/erpc/main.go" lines="354-363" />]
 - **`validate` and `dump` suppress all log output.** `zerolog.SetGlobalLevel(zerolog.Disabled)`
-  is called before `getConfig` runs; `LOG_LEVEL` has no effect during these commands.
-  [<SourceLink file="cmd/erpc/main.go" lines="109" />]
+  is called before `getConfig` runs (`validate`: `cmd/erpc/main.go:L109`; `dump`: `cmd/erpc/main.go:L156`); `LOG_LEVEL` has no effect during these commands.
 - **YAML strict-mode** rejects unknown fields (`KnownFields(true)`); this applies to the
   JSON round-trip from TypeScript configs too. [<SourceLink file="common/config.go" lines="103" />]
 - **Shorthand upstream URLs** (`alchemy://KEY`, `infura://KEY`, etc.) are converted to
   `ProviderConfig` and removed from `p.Upstreams` at `SetDefaults` time; after load they
   appear in `p.Providers`, not `p.Upstreams`. [<SourceLink file="common/defaults.go" lines="1164-1172" />]
+- **Key validation rules** enforced by `Config.Validate()`: `server.maxTimeout` must be non-zero; each project needs at least one upstream or provider; `selectionPolicy.evalTimeout` must be strictly less than `evalInterval`; `onlyNetworks` and `ignoreNetworks` on a provider are mutually exclusive; `database.sharedState.lockMaxWait` and `updateMaxWait` must each be less than `fallbackTimeout`; `database.sharedState.lockTtl` must be at least as long as `fallbackTimeout`; connector-level failsafe may not use `consensus` or `hedge.quantile`. [<SourceLink file="common/validation.go" lines="15" />]
 
 ### Best practices
 
@@ -507,7 +531,9 @@ messages (zerolog JSON unless `LOG_WRITER=console`):
 | `"initializing transports"` | INFO | After core init, before server start |
 | `"shutting down gracefully..."` | INFO | On context cancel |
 | `"no projects found in config; will add a default 'main' project"` | WARN | Synthetic project injected |
+| `"no providers or upstreams found in project; will use default 'public' endpoints repository"` | WARN | Public fallback provider injected when project has no upstreams or providers |
 | `"failed to initialize evm json rpc cache: ..."` | WARN | Cache init failure (non-fatal) |
+| `"failed to initialize shared state registry: ..."` | WARN | Shared-state init failure (non-fatal) |
 | `"invalid log level '...', defaulting to 'debug'"` | WARN | Invalid `LOG_LEVEL` or `logLevel` value |
 | `"pprof server started at http://localhost:<port>"` | INFO | Only when built with `-tags pprof` |
 | `"networks bootstrap completed"` | INFO | After all configured networks initialised |
@@ -524,6 +550,8 @@ messages (zerolog JSON unless `LOG_WRITER=console`):
 - [`cmd/erpc/initflags.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/initflags.go) — build-tag `!test`: `ERPC_NOLOGS` and `ERPC_NOMETRICS` init hooks
 - [`util/exit.go:L7-L10`](https://github.com/erpc/erpc/blob/main/util/exit.go#L7-L10) — exit codes `1001` (start failed) and `1002` (HTTP/gRPC server fatal)
 - [`erpc/config_analyzer.go`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go) — `GenerateValidationReport`, `RenderValidationReportJSON`, `RenderValidationReportMarkdown`
+- [`common/runtime.go`](https://github.com/erpc/erpc/blob/main/common/runtime.go) — `NewRuntime()`: creates a sobek runtime, populates `process.env` map and `env` array from `os.Environ()`; used for TypeScript selection-policy evaluation
+- [`common/compiler.go`](https://github.com/erpc/erpc/blob/main/common/compiler.go) — `CompileTypeScript` (esbuild IIFE bundle), `CompileFunction` (sobek single-function eval), `CompileProgram` (sobek.Compile with paren-wrap)
 
 ### Related pages
 

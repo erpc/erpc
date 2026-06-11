@@ -100,6 +100,8 @@ Any request whose HTTP method is neither POST nor OPTIONS has `isHealthCheck` fo
 
 **Network alias resolution.** Inside path parsing, whenever a single unresolved segment is being interpreted as architecture or chainId, the parser calls `project.networksRegistry.ResolveAlias(segment)`. If it matches, the stored `(architecture, chainId)` override the raw segment — enabling `POST /main/arbitrum` instead of `POST /main/evm/42161`. Aliases are registered eagerly at startup from all statically configured networks, and lazily when a network is first bootstrapped. [Source: <SourceLink file="erpc/http_server.go" lines="860-866" />]
 
+**Global `NetworkAlias` resolver.** A process-global atomic function pointer (`common.networkAliasResolver`) is installed at startup via `common.SetNetworkAliasResolver(f)`. `common.NetworkAlias(networkId)` calls the installed resolver and returns the alias if found, or the raw `networkId` unchanged. Components without project context (e.g., the gRPC cache connector) use this for consistent metric label emission. This is distinct from the per-project URL routing alias maps. [Source: <SourceLink file="common/network_alias.go" lines="10-34" />]
+
 **Full set of accepted proxy URL shapes after alias resolution:**
 
 | URL shape | Pre-populated by alias | Segments needed |
@@ -126,6 +128,29 @@ Any request whose HTTP method is neither POST nor OPTIONS has `isHealthCheck` fo
 | default | project + chain, no arch | always 400 — impossible combination |
 
 Source: [<SourceLink file="erpc/http_server.go" lines="852-991" />]
+
+**Invalid and impossible path combinations** (after the case switch, post-switch checks at L993-L999 apply):
+
+| Condition | HTTP status | Error message |
+|---|---|---|
+| `projectId` still empty (not healthcheck) | 400 | `"project is required either in path or via domain aliasing"` |
+| Architecture fails `IsValidArchitecture` | 400 | `"architecture is not valid (must be 'evm')"` |
+| `projectId` + `chainId` pre-selected but no `architecture` (default case) | 400 | `"it is not possible to alias for project and chain WITHOUT architecture"` |
+| 4+ segments with no pre-selection | 400 | `"must only provide /<project>/<architecture>/<chainId>"` |
+
+**Healthcheck URL shapes.** The following GET (or any non-POST/non-OPTIONS) URL patterns reach healthcheck handlers — alias resolution and architecture validation still apply to the path segments:
+
+| URL shape | Scope |
+|---|---|
+| `GET /` | Global (all projects) |
+| `GET /healthcheck` | Global (all projects) |
+| `GET /<project>/healthcheck` | Per-project |
+| `GET /<project>/<arch>/<chain>/healthcheck` | Per-network (explicit) |
+| `GET /<project>/<network-alias>/healthcheck` | Per-network (alias resolved) |
+| Aliased domain `GET /healthcheck` | Scope matches what alias pre-selects |
+| Aliased domain `GET /` | Same as above |
+
+Note: `GET /main/foo/healthcheck` where `foo` is neither a valid alias nor `"evm"` returns HTTP 400, not 200, because architecture validation runs before healthcheck dispatch.
 
 ### Config schema
 
@@ -227,16 +252,19 @@ Content-Type: application/json
 - All proxy responses use a JSON-RPC envelope regardless of HTTP status code; 404s are never plain-text.
 - HTTP status codes are derived by `httpStatusCode(err)`:
 
-| HTTP status | Condition |
-|---|---|
-| 400 | Invalid URL path, bad JSON, invalid architecture, impossible alias combination, corrupt gzip body |
-| 401 | Auth failure at project or upstream level |
-| 404 | Unknown `projectId` (`ErrProjectNotFound`) or unknown `networkId` (`ErrNetworkNotFound`) |
-| 429 | Rate limiter exceeded at any level |
-| 200 | All other outcomes — including upstream errors, which return HTTP 200 with a JSON-RPC error body |
+| HTTP status | Error codes | Condition |
+|---|---|---|
+| 400 | `ErrCodeInvalidUrlPath`, `ErrCodeJsonRpcRequestUnmarshal`, `ErrCodeInvalidRequest` | Invalid URL path, bad JSON, invalid architecture, impossible alias combination, corrupt gzip body |
+| 401 | `ErrCodeAuthUnauthorized`, `ErrCodeEndpointUnauthorized` | Auth failure at project or upstream level |
+| 404 | `ErrCodeProjectNotFound`, `ErrCodeNetworkNotFound`, `ErrCodeNetworkNotSupported` | Unknown `projectId`, unknown `networkId`, or unsupported network |
+| 429 | `ErrCodeAuthRateLimitRuleExceeded`, `ErrCodeProjectRateLimitRuleExceeded`, `ErrCodeNetworkRateLimitRuleExceeded`, `ErrCodeEndpointCapacityExceeded` | Rate limiter exceeded at any level |
+| 200 | (all other) | All other outcomes — including upstream errors, which return HTTP 200 with a JSON-RPC error body |
+
+[Source: <SourceLink file="erpc/http_server.go" lines="1285-1317" />]
 
 - Non-POST/non-OPTIONS methods: `isHealthCheck` is forced `true` after path parsing; the client receives a healthcheck response with no indication the substitution occurred. [<SourceLink file="erpc/http_server.go" lines="1001-1003" />]
-- Networks are lazily initialized: `ErrNetworkNotFound` (HTTP 404) is returned only when the networkId format is valid but resolution definitively fails. A network that has never been requested may succeed on first call for provider-based projects.
+- Unknown project (`ErrProjectNotFound`): `s.erpc.GetProject(projectId)` returns HTTP 404 with a JSON-RPC envelope and message `"project <id> is not configured"`. [Source: <SourceLink file="erpc/projects_registry.go" lines="118" />]
+- Networks are lazily initialized: `ErrNetworkNotFound` (HTTP 404) is returned only when the networkId format is valid but resolution definitively fails. A network that has never been requested may succeed on first call for provider-based projects. [Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />]
 - Batch detection fires on `body[0] == '['` — no Content-Type gate, no pre-parse. A body like `[invalid json` is detected as batch then fails unmarshalling with a 400. [<SourceLink file="erpc/http_server.go" lines="405-409" />]
 - Request gzip decompression is unconditional: `Content-Encoding: gzip` always triggers decompression regardless of the `server.enableGzip` setting (which controls response compression only). Corrupt gzip → 400 `ErrInvalidRequest` immediately. [<SourceLink file="erpc/http_server.go" lines="349-370" />]
 - `MaxHeaderBytes` is `1 MiB` on both IPv4 and IPv6 servers; requests with oversized headers are rejected at the Go net/http layer with HTTP 431 before any eRPC handler runs. Body size has no configured cap. [<SourceLink file="erpc/http_server.go" lines="186" />]
@@ -254,21 +282,22 @@ Content-Type: application/json
 
 ### Edge cases & gotchas
 
-1. **`GET /main/evm/1` is a healthcheck, not a proxy request.** Any non-POST/non-OPTIONS method forces `isHealthCheck=true` after path parsing. The response gives no indication this substitution occurred. This is intentional for load-balancer probes. Source: <SourceLink file="erpc/http_server.go" lines="1001-1003" />
-2. **`serveProject` + `serveChain` without `serveArchitecture` always errors.** The combination is detected as an impossible alias and returns 400 immediately. Source: <SourceLink file="erpc/http_server.go" lines="985-988" />
-3. **First domain alias rule wins; no merging.** Order rules from most-specific to least-specific. A `matchDomain: "*"` before specific rules captures everything. Source: <SourceLink file="erpc/http_server.go" lines="244-256" />
-4. **Network aliases are per-project, not global.** The alias map is stored per `NetworksRegistry` per `PreparedProject`. Source: <SourceLink file="erpc/networks_registry.go" lines="31" />
-5. **Alias collision: first-registration wins, silently for callers.** If a provider dynamically creates a network whose alias matches a statically configured one, the static alias wins. The dynamic registration is dropped with a WARN log but no error is returned. Source: <SourceLink file="erpc/networks_registry.go" lines="340-344" />
-6. **Alias resolution only in specific path positions.** In a fully-explicit 3-segment path (`/project/evm/42161`), no alias resolution is attempted — an alias named `"evm"` would NOT intercept the architecture position. Source: <SourceLink file="erpc/http_server.go" lines="860-866" />
-7. **Body `networkId` requires valid JSON.** If the body is not valid JSON when `architecture` is still empty, a JSON-RPC parse error is returned. This only applies to proxy requests; healthcheck does not read the body. Source: <SourceLink file="erpc/http_server.go" lines="617-622" />
-8. **Healthcheck paths pass through architecture validation.** `GET /main/foo/healthcheck` where `foo` is not a known alias and not `"evm"` returns HTTP 400, not 200. Source: <SourceLink file="erpc/http_server.go" lines="997-999" />
-9. **`path.Clean` normalizes unusual paths.** `/main//evm/1` becomes `/main/evm/1`; `/main/../other/evm/1` resolves to `/other/evm/1`. Source: <SourceLink file="erpc/http_server.go" lines="821" />
-10. **Batch detection has no Content-Type gate.** A body starting with `[` is treated as batch even if `Content-Type: text/plain` or omitted entirely. A malformed batch like `[invalid json` is detected as batch and then fails unmarshal with a 400. Source: <SourceLink file="erpc/http_server.go" lines="405-414" />
-11. **`server.enableGzip` controls response compression only.** Request decompression is unconditional. Operators cannot disable inbound gzip decompression via config. Source: <SourceLink file="erpc/http_server.go" lines="349-370" />
-12. **Body size has no configured cap.** The 1 MiB limit is headers only. Arbitrarily large bodies are read into memory. Apply body-size limits at the reverse-proxy layer. Source: <SourceLink file="erpc/http_server.go" lines="186" />, <SourceLink file="erpc/http_server.go" lines="374" />
-13. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
-14. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
-15. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
+1. **Domain aliasing matches the `Host` header after port stripping.** If an ingress forwards `Host: api.example.com:443`, the colon and port are stripped before matching. A rule `matchDomain: "api.example.com"` works regardless of the port in the `Host` header. Source: <SourceLink file="erpc/http_server.go" lines="234-237" />
+2. **`GET /main/evm/1` is a healthcheck, not a proxy request.** Any non-POST/non-OPTIONS method forces `isHealthCheck=true` after path parsing. The response gives no indication this substitution occurred. This is intentional for load-balancer probes. Source: <SourceLink file="erpc/http_server.go" lines="1001-1003" />
+3. **`serveProject` + `serveChain` without `serveArchitecture` always errors.** The combination is detected as an impossible alias and returns 400 immediately. Source: <SourceLink file="erpc/http_server.go" lines="985-988" />
+4. **First domain alias rule wins; no merging.** Order rules from most-specific to least-specific. A `matchDomain: "*"` before specific rules captures everything. Source: <SourceLink file="erpc/http_server.go" lines="244-256" />
+5. **Network aliases are per-project, not global.** The alias map is stored per `NetworksRegistry` per `PreparedProject`. Source: <SourceLink file="erpc/networks_registry.go" lines="31" />
+6. **Alias collision: first-registration wins, silently for callers.** If a provider dynamically creates a network whose alias matches a statically configured one, the static alias wins. The dynamic registration is dropped with a WARN log but no error is returned. Source: <SourceLink file="erpc/networks_registry.go" lines="340-344" />
+7. **Alias resolution only in specific path positions.** In a fully-explicit 3-segment path (`/project/evm/42161`), no alias resolution is attempted — an alias named `"evm"` would NOT intercept the architecture position. Source: <SourceLink file="erpc/http_server.go" lines="860-866" />
+8. **Body `networkId` requires valid JSON.** If the body is not valid JSON when `architecture` is still empty, a JSON-RPC parse error is returned. This only applies to proxy requests; healthcheck does not read the body. Source: <SourceLink file="erpc/http_server.go" lines="617-622" />
+9. **Healthcheck paths pass through architecture validation.** `GET /main/foo/healthcheck` where `foo` is not a known alias and not `"evm"` returns HTTP 400, not 200. Source: <SourceLink file="erpc/http_server.go" lines="997-999" />
+10. **`path.Clean` normalizes unusual paths.** `/main//evm/1` becomes `/main/evm/1`; `/main/../other/evm/1` resolves to `/other/evm/1`. Source: <SourceLink file="erpc/http_server.go" lines="821" />
+11. **Batch detection has no Content-Type gate.** A body starting with `[` is treated as batch even if `Content-Type: text/plain` or omitted entirely. A malformed batch like `[invalid json` is detected as batch and then fails unmarshal with a 400. Source: <SourceLink file="erpc/http_server.go" lines="405-414" />
+12. **`server.enableGzip` controls response compression only.** Request decompression is unconditional. Operators cannot disable inbound gzip decompression via config. Source: <SourceLink file="erpc/http_server.go" lines="349-370" />
+13. **Body size has no configured cap.** The 1 MiB limit is headers only. Arbitrarily large bodies are read into memory. Apply body-size limits at the reverse-proxy layer. Source: <SourceLink file="erpc/http_server.go" lines="186" />, <SourceLink file="erpc/http_server.go" lines="374" />
+14. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
+15. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
+16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
 
 ### Observability
 
@@ -301,6 +330,7 @@ Content-Type: application/json
 - [`common/network_alias.go:L10-L34`](https://github.com/erpc/erpc/blob/main/common/network_alias.go#L10-L34) — process-global `NetworkAlias` resolver (cross-component metric-label consistency)
 - [`common/network.go:L35-L37`](https://github.com/erpc/erpc/blob/main/common/network.go#L35-L37) — `IsValidArchitecture` (currently only `"evm"`)
 - [`erpc/http_server_test.go:L3378-L3709`](https://github.com/erpc/erpc/blob/main/erpc/http_server_test.go#L3378-L3709) — `TestHttpServer_ParseUrlPath`: 30+ cases covering all alias combinations, network alias resolution, invalid architectures, healthcheck suffix placement
+- [`erpc/projects_registry.go:L118`](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go#L118) — `ErrProjectNotFound` returned by `GetProject` on unknown projectId
 
 ### Related pages
 

@@ -70,7 +70,7 @@ capture heap and CPU profiles to investigate high memory usage. Work with my exi
 
 **Config discovery.** At startup eRPC searches for a config file in this order: `--config` flag → positional arg → `./erpc.yaml`, `./erpc.yml`, `./erpc.ts`, `./erpc.js`, then the same paths under `/` and `/root/`. The simplest production mount is `-v $(pwd)/erpc.yaml:/erpc.yaml`.
 
-**Compose stack.** The repo's `docker-compose.yml` defines a `monitoring` service (Grafana on `:3000`, Prometheus on `:9090`) and a `redis` service (`:6379`). The eRPC container entry is commented out by default — operators add it back with a volume-mounted config. Point monitoring at a running eRPC instance:
+**Compose stack.** The repo's `docker-compose.yml` defines a `monitoring` service (Grafana on `:3000`, Prometheus on `:9090`) and a `redis` service (`redis:latest`, port `6379:6379`, restart always, on the `erpc` bridge network). The eRPC container entry is commented out by default (references `ghcr.io/erpc/erpc:main`) — operators add it back with a volume-mounted config. Additional optional services (Jaeger with OTLP gRPC/HTTP and UI, PostgreSQL, ScyllaDB in Alternator mode) are also present as commented-out blocks. Point monitoring at a running eRPC instance:
 
 ```bash
 SERVICE_ENDPOINT=host.docker.internal SERVICE_PORT=4001 docker compose up monitoring
@@ -81,6 +81,13 @@ SERVICE_ENDPOINT=host.docker.internal SERVICE_PORT=4001 docker compose up monito
 **Distroless/nonroot implications.** The final image has no shell, no package manager, and no standard utilities. You cannot exec into it with a shell. Attaching debug tools or copying files at runtime requires a privileged ephemeral sidecar. All file paths must be absolute. If you mount a config that does not exist, the process exits cleanly (non-zero) — it does not hang.
 
 TypeScript configs (`erpc.ts`) are supported: the image includes compiled TypeScript SDK files and node_modules. Node itself is not present as a standalone binary, but the bundled runtime path invoked by eRPC for TS config evaluation does work. If you strip `node_modules` from the image, TypeScript configs fail silently and fall back to YAML.
+
+**Layer caching.** `go.mod` and `go.sum` are copied into the builder stage first and `go mod download` runs before the source copy, so dependency layers are cached across rebuilds ([`Dockerfile:L16-L21`](https://github.com/erpc/erpc/blob/main/Dockerfile#L16-L21)). The pnpm stages use `--mount=type=cache,id=pnpm,target=/pnpm/store` to avoid re-downloading npm packages across builds ([`Dockerfile:L51`](https://github.com/erpc/erpc/blob/main/Dockerfile#L51), [`L63`](https://github.com/erpc/erpc/blob/main/Dockerfile#L63)).
+
+**CLI subcommands.** The `erpc` binary supports three subcommands:
+- `erpc [config]` or `erpc start` — start the server
+- `erpc validate [--format json|md]` — parse config and run a validation report; exits non-zero on errors
+- `erpc dump [--format yaml|json]` — parse config, resolve effective selection policies, and dump to stdout
 
 **Monitoring container internals.** `monitoring/Dockerfile` pulls Prometheus `v3.9.1` and Grafana `12.3.3` (both pinned by digest) into an `ubuntu:22.10` base. The entrypoint substitutes `SERVICE_ENDPOINT` and `SERVICE_PORT` into `prometheus.yml` using `sed`, then starts both processes in the background and tails `/dev/null` to keep the container alive. If either process crashes, the container stays up but becomes non-functional. This design is intentional for local dev convenience; run separate Prometheus and Grafana containers in production.
 
@@ -130,7 +137,15 @@ docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
 
 Access pprof endpoints at `http://localhost:6060/debug/pprof/`.
 
-**4. Pinned production image.** Never run `:latest` in production — pin a specific tag or SHA:
+**4. `make docker-run`.** The Makefile wraps the single-container run: it maps ports `4000:4000` and `4001:4001`, mounts `./erpc.yaml:/erpc.yaml`, and explicitly invokes `/erpc-server --config /erpc.yaml` rather than relying on the image's default CMD. Equivalent to: [`Makefile:L127-L129`](https://github.com/erpc/erpc/blob/main/Makefile#L127-L129)
+
+```bash
+docker run -p 4000:4000 -p 4001:4001 \
+  -v ./erpc.yaml:/erpc.yaml \
+  ghcr.io/erpc/erpc:latest /erpc-server --config /erpc.yaml
+```
+
+**5. Pinned production image.** Never run `:latest` in production — pin a specific tag or SHA:
 
 ```bash
 docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
@@ -167,7 +182,13 @@ docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
 
 ### Observability
 
-All eRPC metrics are emitted at port `4001` path `/metrics`. The monitoring container's Prometheus scrapes this endpoint at `scrape_interval: 10s`. Key alert expressions from `monitoring/prometheus/alert.rules`:
+All eRPC metrics are emitted at port `4001` path `/metrics`. The monitoring container's Prometheus scrapes this endpoint at `scrape_interval: 10s` and `evaluation_interval: 10s`. The local Prometheus config (`monitoring/prometheus/prometheus.yml`) defines two scrape jobs: `prometheus` (self-scrape at `localhost:9090`) and `erpc` (dual targets: `host.docker.internal:4001` plus a placeholder replaced by `SERVICE_ENDPOINT`/`SERVICE_PORT` at container start).
+
+**Grafana configuration.** `monitoring/grafana/grafana.ini` sets `http_addr=0.0.0.0`, `http_port=3000`, disables anonymous access and user sign-up, enables the `publicDashboards` feature toggle, and sets `default_home_dashboard_path` to point at the pre-built eRPC dashboard JSON. The datasource provisioning file (`monitoring/grafana/datasources/prometheus.yml`) registers `http://localhost:9090` as the default Prometheus datasource. The dashboard provider (`monitoring/grafana/dashboards/default.yml`) scans `/etc/grafana/dashboards` every 10 seconds for JSON files and loads them with UI editing allowed.
+
+**Dashboard template variables.** The Grafana dashboard uses `$datasource` to select the Prometheus datasource and `$finality` to filter Vendor Share panels by finality type.
+
+Key alert expressions from `monitoring/prometheus/alert.rules`:
 
 | Alert | Expression basis | Severity |
 |---|---|---|
@@ -190,6 +211,11 @@ The Grafana dashboard (`monitoring/grafana/dashboards/erpc.json`, 80+ panels) co
 - [`docker-compose.yml:L84-L86`](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L84-L86) — named volumes `prometheus_data` and `grafana_data`
 - [`Makefile:L114`](https://github.com/erpc/erpc/blob/main/Makefile#L114) — `make down` passes `--volumes`, destroying monitoring state
 - [`Makefile:L121-L123`](https://github.com/erpc/erpc/blob/main/Makefile#L121-L123) — `make docker-build` defaults to `linux/amd64`
+- [`Makefile:L127-L129`](https://github.com/erpc/erpc/blob/main/Makefile#L127-L129) — `make docker-run`: mounts config, maps ports, invokes `/erpc-server --config /erpc.yaml`
+- [`monitoring/grafana/grafana.ini`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/grafana.ini) — Grafana server config (port 3000, provisioning, publicDashboards feature toggle)
+- [`monitoring/grafana/datasources/prometheus.yml`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/datasources/prometheus.yml) — auto-provisions Prometheus datasource at `localhost:9090`
+- [`monitoring/grafana/dashboards/default.yml`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/dashboards/default.yml) — dashboard file provider scanning `/etc/grafana/dashboards` every 10s
+- [`monitoring/prometheus/prometheus.yml`](https://github.com/erpc/erpc/blob/main/monitoring/prometheus/prometheus.yml) — local scrape config (self at `localhost:9090` + eRPC at `host.docker.internal:4001`)
 
 ### Related pages
 

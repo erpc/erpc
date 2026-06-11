@@ -104,17 +104,21 @@ cleanup setup. Explain what changes and what behavior to expect. Work with my ex
 
 Two index constants control lookup paths: `ConnectorMainIndex` (`"idx_main"`) for direct key lookups and `ConnectorReverseIndex` (`"idx_reverse"`) for wildcard range-key resolution. `Set` always writes the main index and, for `evm:`-prefixed partition keys, also writes a reverse index entry so wildcard gets resolve without full scans.
 
-**Memory connector (ristretto).** The memory connector uses [dgraph-io/ristretto v2](https://github.com/dgraph-io/ristretto) as an in-process LRU with cost-based eviction. Each entry costs `len(value) + 256` bytes against `maxTotalSize`. TTL is enforced by ristretto internally — no background cleanup goroutine. Reverse index entries for EVM keys are stored without TTL; after the main entry expires the stale pointer resolves to a miss. `List` is not implemented; ristretto has no iteration API. `Lock` uses a `sync.Map` of `*sync.Mutex` with `TryLock` plus a backoff loop (2ms to 20ms). `WatchCounterInt64` and `PublishCounterInt64` are no-ops.
+**Key encoding.** The composite storage key is `<partitionKey>:<rangeKey>`. For EVM cache entries the partition key typically starts with `evm:` (e.g., `evm:1:0x12345678`). Reverse index entries for memory and Redis use the key format `rvi#<wildcardPartitionKey>#<rangeKey>` where `wildcardPartitionKey` is `evm:<chainId>:*`. PostgreSQL and DynamoDB store a dedicated reverse-index row or GSI entry instead.
 
-**Redis connector.** Redis is the recommended connector for multi-instance deployments. It supports `List` (cursor-based `SCAN`), distributed locking via [go-redsync](https://github.com/go-redsync/redsync), and pub/sub through a self-healing `RedisPubSubManager`. Reverse index entries inherit the same TTL as the main entry. Connection setup is non-blocking: `NewRedisConnector` enqueues a bootstrap task and returns immediately. Reconnection fires only on a narrow allowlist of critical failure strings (`"connection refused"`, `"broken pipe"`, `"invalid connection"`, etc.) to avoid spurious reconnects. When `rediss://` URI and `tls.enabled: true` are both configured, YAML cert/CA overrides merge onto the URI-derived TLS baseline. A `rediss://`-only URI without a YAML `tls:` block produces `InsecureSkipVerify=true`.
+**Distributed counter payload.** `WatchCounterInt64` and `PublishCounterInt64` exchange a JSON-serialized `CounterInt64State` struct: `{"v": 42, "t": 1718000000000, "b": "pod-name"}` where `v` is the counter value, `t` is unix milliseconds (`t ≤ 0` means uninitialized), and `b` is the best-effort reporter identity (hostname/pod). — [data/connector.go:L34-L38](https://github.com/erpc/erpc/blob/main/data/connector.go#L34-L38)
 
-**PostgreSQL connector.** PostgreSQL stores cache entries with columns `(partition_key, range_key, value BYTEA, expires_at TIMESTAMPTZ)`. Schema migration (including a `TEXT -> BYTEA` column migration), indexes, and an optional `pg_cron` cleanup job run once per process lifetime — reconnects do not re-run them. Distributed locking uses `pg_try_advisory_xact_lock`, which is non-blocking: if the lock is held the call returns immediately with an error. TTL enforcement is exact via server-side `expires_at` filtering; pg_cron or a local ticker deletes expired rows every 5 minutes.
+**Memory connector (ristretto).** The memory connector uses [dgraph-io/ristretto v2](https://github.com/dgraph-io/ristretto) as an in-process LRU with cost-based eviction. Ristretto is initialized with `NumCounters = 3 × maxItems`, `MaxCost = maxTotalSizeBytes`, and `BufferItems = 64`. Each entry costs `len(value) + 256` bytes against `maxTotalSize`. TTL is enforced by ristretto internally — no background cleanup goroutine. Reverse index entries for EVM keys are stored without TTL; after the main entry expires the stale pointer resolves to a miss. `List` is not implemented; ristretto has no iteration API. `Lock` uses a `sync.Map` of `*sync.Mutex` with `TryLock` plus a backoff loop (starts at 2ms, increments by 1ms per attempt, caps at 20ms). `WatchCounterInt64` and `PublishCounterInt64` are no-ops.
 
-**DynamoDB connector.** DynamoDB uses separate read (2048 max idle connections) and write (256 max idle connections) HTTP/2 clients. The table is created with `PAY_PER_REQUEST` billing if absent. TTL is stored as a numeric unix epoch attribute; AWS native TTL expiry is eventually consistent and can lag up to ~48 hours. The connector guards with a client-side epoch comparison on every `Get`, returning `ErrRecordExpired` for items past TTL. `WatchCounterInt64` uses periodic polling (5s default) — DynamoDB has no native pub/sub.
+**Redis connector.** Redis is the recommended connector for multi-instance deployments. It supports `List` (cursor-based `SCAN` — main index scans all keys with `*`; reverse index scans with `rvi#*` prefix, values fetched in pipeline), distributed locking via [go-redsync](https://github.com/go-redsync/redsync), and pub/sub through a self-healing `RedisPubSubManager` (channel name: `counter:<key>`). Reverse index entries inherit the same TTL as the main entry. On reverse-index Get, the connector verifies the resolved key's TTL: `-2s` means the key does not exist → `ErrRecordNotFound`; `-1s` means persistent (accepted); positive value means it has an active TTL (accepted). Connection setup is non-blocking: `NewRedisConnector` enqueues a bootstrap task and returns immediately. Reconnection fires only on a narrow allowlist of critical failure strings (`"connection refused"`, `"broken pipe"`, `"invalid connection"`, `"connection reset by peer"`, `"no such host"`, `"network is unreachable"`, `"connection closed"`) to avoid spurious reconnects. When `rediss://` URI and `tls.enabled: true` are both configured, YAML cert/CA overrides merge onto the URI-derived TLS baseline and disable `InsecureSkipVerify`. A `rediss://`-only URI without a YAML `tls:` block produces `InsecureSkipVerify=true`.
 
-**gRPC connector (read-only).** The gRPC connector is a read-through layer backed by BDS (Blockchain Data Standards) gRPC servers that hold historical EVM chain data. It supports no writes. Configure it alongside a write-capable connector in a multi-connector cache policy. Server discovery supports both a static `servers` list and a `bootstrap` HTTP URL. A background goroutine polls chain head every 60 seconds, implementing the `CacheHeadReporter` interface used by the real-time cache freshness gate. `eth_blockNumber` has no native BDS method; the connector intercepts it, calls `eth_getBlockByNumber("latest", false)` internally, and returns only the `number` field.
+**PostgreSQL connector.** PostgreSQL stores cache entries with columns `(partition_key, range_key, value BYTEA, expires_at TIMESTAMPTZ)`. Schema migration (including a `TEXT -> BYTEA` column migration), indexes, and an optional `pg_cron` cleanup job run once per process lifetime — reconnects do not re-run them. Connection pool settings are hardcoded at `MaxConnLifetime = 5h` and `MaxConnIdleTime = 30m`. The old pool is closed only after the lock is released during reconnect, preventing hot-path serialization. Wildcard Get translates `*` to `%` and uses SQL LIKE: for `ConnectorReverseIndex` the query is `WHERE range_key = $1 AND partition_key LIKE $2`; for main index: `WHERE partition_key = $1 AND range_key LIKE $2`, returning the first row ordered by `partition_key DESC`. Distributed locking uses `pg_try_advisory_xact_lock(hash64(key))` (FNV-64a hashes the key to an int64 lock ID), which is non-blocking: if the lock is held the call returns immediately with an error. TTL enforcement is exact via server-side `expires_at` filtering; pg_cron or a local ticker deletes expired rows every 5 minutes. `WatchCounterInt64` uses PostgreSQL `LISTEN/NOTIFY` (pub/sub), falling back to 30-second polling if `LISTEN` is unavailable. Channel names are sanitized to valid PostgreSQL identifier characters (max 63 bytes).
 
-**FailsafeConnector.** Any connector can be wrapped by setting `failsafeForGets` and/or `failsafeForSets`. Each entry specifies a `matchMethod` pattern and optional `matchFinality` list, plus one or more of retry, circuit-breaker, hedge, and timeout policies. The most-specific match wins: (method + finality) &gt; (method only) &gt; (finality only) &gt; wildcard. `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64` bypass all failsafe policies. Retry fires only on transport errors — cache misses, expired records, and context cancellation are never retried. Hedge supports only static delays at the connector layer; quantile-based delays are rejected at construction time.
+**DynamoDB connector.** DynamoDB uses separate read (2048 max idle connections) and write (256 max idle connections) HTTP/2 clients. The table is created with `PAY_PER_REQUEST` billing if absent. TTL is stored as a numeric unix epoch attribute; AWS native TTL expiry is eventually consistent and can lag up to ~48 hours. The connector guards with a client-side epoch comparison on every `Get`, returning `ErrRecordExpired` for items past TTL. For reverse-index Query, up to 10 items are fetched with a server-side `FilterExpression` and the first non-expired item is chosen client-side. Both `B` (binary) and `S` (string) value attribute types are read for backward compatibility — legacy string values are returned as `[]byte`. `WatchCounterInt64` uses periodic polling (5s default) — DynamoDB has no native pub/sub. `PublishCounterInt64` is a no-op; callers rely on polling to pick up state changes.
+
+**gRPC connector (read-only).** The gRPC connector is a read-through layer backed by BDS (Blockchain Data Standards) gRPC servers that hold historical EVM chain data. It supports no writes. Configure it alongside a write-capable connector in a multi-connector cache policy. Server discovery supports both a static `servers` list and a `bootstrap` HTTP URL. Only a specific allowlist of methods is forwarded to BDS: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, and `eth_blockNumber`; unsupported methods return a fast miss (`(nil, nil)`) without an RPC call. Fast-miss rejection: if the request block number is below `earliestByNetwork[networkId]` (and that value is &gt; 0), `ErrRecordNotFound` is returned immediately without an RPC. A background goroutine polls chain head every 60 seconds, implementing the `CacheHeadReporter` interface used by the real-time cache freshness gate. `eth_blockNumber` has no native BDS method; the connector intercepts it, calls `eth_getBlockByNumber("latest", false)` internally, and returns only the `number` field as a canonical hex string with leading zeros normalized via uint64 round-trip (zero block → `"0x0"`). On failure it returns `ErrRecordNotFound` so the request falls through to live upstreams.
+
+**FailsafeConnector.** Any connector can be wrapped by setting `failsafeForGets` and/or `failsafeForSets`. Each entry specifies a `matchMethod` pattern and optional `matchFinality` list, plus one or more of retry, circuit-breaker, hedge, and timeout policies. Executor selection (`pickCacheExecutor`) reads the method and finality from `ctx.Value(common.RequestContextKey)`; if no request is attached (background prefetch, tests), `method = ""` and `finality = 0`. The most-specific match wins: (method + finality) &gt; (method only) &gt; (finality only) &gt; wildcard. A no-op executor is always appended so unmatched operations proceed unconditionally. `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64` bypass all failsafe policies. Retry fires only on transport errors — cache misses, expired records, and context cancellation are never retried. Transport errors recognized by `isTransportError` include net.Error timeouts, io.EOF/ErrUnexpectedEOF, syscall connection errors, gRPC status codes `Unavailable`/`DeadlineExceeded`/`Aborted`, Redis cluster transients (`CLUSTERDOWN`, `MASTERDOWN`, `TRYAGAIN`, `LOADING`), HTTP/2 GOAWAY, and `"use of closed network connection"`. Hedge supports only static delays at the connector layer; quantile-based delays are rejected at construction time.
 
 ### Config schema
 
@@ -214,6 +218,14 @@ Each `FailsafeConfig` entry under `failsafeForGets` / `failsafeForSets`:
 | `grpc.servers` | []string | — | Explicit server list. Combined with bootstrap results when both present. |
 | `grpc.headers` | map[string]string | — | Headers sent on every gRPC call. |
 | `grpc.getTimeout` | Duration | `100ms` | Per-Get call timeout. Applied only when shorter than existing context deadline. |
+
+#### Timeout buffer constants — <SourceLink file="data/timeout_constants.go" lines="7-15" />
+
+| Constant | Value | Usage |
+|---|---|---|
+| `DefaultOperationBuffer` | `10s` | Time reserved after lock acquisition for in-lock operations. Used by Redis lock retry budget calculation. |
+| `PollOperationBuffer` | `15s` | Reserved in the state poller after lock acquisition. |
+| `MinPollTimeout` | `30s` | Minimum timeout for a complete poll cycle. |
 
 ### Worked examples
 
@@ -523,7 +535,17 @@ contention, which can exhaust provisioned throughput:
 
 18. **`FailsafeConnector` wrapping does not break `CacheHeadReporter`.** `FailsafeConnector` forwards `CacheLatestBlockTimestamp` to the wrapped connector, so the freshness gate works correctly even when the gRPC connector has failsafe policies. [`data/failsafe.go:L211-L216`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L211-L216)
 
+19. **gRPC freshness gate: response timestamp takes precedence over connector head.** `shouldAcceptCachedResult` first extracts a block timestamp from the cached response itself. Only if the response carries no timestamp does it fall back to `CacheLatestBlockTimestamp`. For `eth_getBlockByNumber` (which returns a full block with a timestamp), the response timestamp is used regardless of the connector's polled head. [`architecture/evm/json_rpc_cache.go:L862-L920`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L862-L920)
+
+20. **PostgreSQL pub/sub falls back to 30-second polling.** If `LISTEN/NOTIFY` is unavailable (e.g., connection pooler that strips it), `WatchCounterInt64` falls back to a 30-second polling interval. Channel names are sanitized to valid PostgreSQL identifier characters with a maximum of 63 bytes. [`data/postgresql.go:L1103-L1127`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L1103-L1127)
+
+21. **DynamoDB backward compatibility: `S` and `B` attribute types both accepted.** When reading items, both binary (`B`) and legacy string (`S`) value attributes are handled. Legacy string values are returned as `[]byte`. If neither attribute is present, the item is skipped. [`data/dynamodb.go:L512-L566`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L512-L566)
+
+22. **PostgreSQL pool lock timing.** During reconnect, `connectTask` holds the write lock only for the field swap (nanoseconds). Schema setup and pool creation happen outside the lock. The old pool is closed after releasing the lock to prevent blocking hot-path reads/writes during pool drain. [`data/postgresql.go:L176-L250`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L176-L250)
+
 ### Observability
+
+#### Prometheus metrics — <SourceLink file="telemetry/metrics.go" lines="73-107" />, <SourceLink file="telemetry/metrics.go" lines="628-638" />
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
@@ -536,11 +558,61 @@ contention, which can exhaust provisioned throughput:
 | `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | `connector`, `network` | Unix timestamp of the latest block. Drives the freshness gate via `CacheLatestBlockTimestamp`. Alert when this lags wall-clock by more than your expected block interval. Zero means unknown → freshness gate fails open. |
 | `erpc_cache_connector_finalized_block_timestamp_seconds` | gauge | `connector`, `network` | Unix timestamp of the finalized block. Set only when block timestamp &gt; 0. |
 
+#### Trace spans
+
+| Span name | Connector | Notable attributes |
+|---|---|---|
+| `RedisConnector.Set` | Redis | `partition_key`, `range_key`, `value_size` |
+| `RedisConnector.Get` | Redis | `index`, `partition_key`, `range_key`, `value_size` |
+| `RedisConnector.Delete` | Redis | |
+| `RedisConnector.List` | Redis | `index`, `limit` |
+| `RedisConnector.Lock` | Redis | `lock_key`, `ttl_ms` |
+| `RedisConnector.Unlock` | Redis | `lock_key` |
+| `RedisConnector.PublishCounterInt64` | Redis | `key`, `value`, `updated_at`, `updated_by` |
+| `DynamoDBConnector.Set` | DynamoDB | |
+| `DynamoDBConnector.Get` | DynamoDB | |
+| `DynamoDBConnector.Delete` | DynamoDB | |
+| `DynamoDBConnector.List` | DynamoDB | |
+| `DynamoDBConnector.Lock` | DynamoDB | |
+| `DynamoDBConnector.Unlock` | DynamoDB | |
+| `DynamoDBConnector.getSimpleValue` | DynamoDB | Detail span |
+| `PostgreSQLConnector.Set` | PostgreSQL | |
+| `PostgreSQLConnector.Get` | PostgreSQL | |
+| `PostgreSQLConnector.Delete` | PostgreSQL | |
+| `PostgreSQLConnector.List` | PostgreSQL | |
+| `PostgreSQLConnector.Lock` | PostgreSQL | |
+| `PostgreSQLConnector.Unlock` | PostgreSQL | |
+| `PostgreSQLConnector.PublishCounterInt64` | PostgreSQL | |
+| `PostgreSQLConnector.getCurrentValue` | PostgreSQL | Detail span |
+| `PostgreSQLConnector.getWithWildcard` | PostgreSQL | Detail span |
+| `ConnectorFailsafe.Get` | FailsafeConnector | `connector.id`, `connector.partition_key`, `connector.range_key`, `failsafe.match_method`, `result.bytes` |
+| `ConnectorFailsafe.Set` | FailsafeConnector | `connector.id`, `connector.partition_key`, `connector.range_key`, `failsafe.match_method`, `value.bytes`, `ttl.ms` |
+| `ConnectorFailsafe.Delete` | FailsafeConnector | |
+
+#### Notable log messages
+
+| Message | Level | Driver | Meaning |
+|---|---|---|---|
+| `"redis is not connected (state: %s), errors: %v"` | Warn | Redis | Every Get/Set/Lock attempt while connector is not ready. |
+| `"detected critical connection failure, marking for reconnection"` | Warn | Redis | `markConnectionAsLostIfNecessary` fired; reconnect enqueued. |
+| `"successfully connected to Redis"` | Info | Redis | Ping succeeded after (re)connect. |
+| `"postgres connection lost; marking connector as failed for reinitialization"` | Warn | PostgreSQL | `handleConnectionFailure` triggered reconnect. |
+| `"successfully connected to postgres"` | Info | PostgreSQL | Pool swap complete. |
+| `"migrating value column from TEXT to BYTEA"` / `"successfully migrated value column to BYTEA"` | Info | PostgreSQL | One-time schema migration. |
+| `"successfully configured pg_cron cleanup job"` | Info | PostgreSQL | pg_cron extension detected and job installed. |
+| `"starting local expired items cleanup routine"` | Debug | PostgreSQL | pg_cron absent; local 5-minute ticker used instead. |
+| `"List operation on MemoryConnector is not efficiently supported"` | Warn | Memory | `List` called on memory connector (unimplemented). |
+| `"gRPC client initialized for network"` | Info | gRPC | Chain probe succeeded for a server. |
+| `"duplicate gRPC server for network detected; ignoring"` | Error | gRPC | Two servers returned the same `chainId`. |
+| `"Starting Ristretto metrics collection loop"` | Info | Memory | `emitMetrics=true`, background goroutine started. |
+
 ### Source code entry points
 
 - [`data/connector.go:L40-L103`](https://github.com/erpc/erpc/blob/main/data/connector.go#L40-L103) — `Connector` interface; `CacheHeadReporter`; `NewConnector` factory; `ConnectorMainIndex` / `ConnectorReverseIndex` constants
 - [`data/memory.go:L1-L321`](https://github.com/erpc/erpc/blob/main/data/memory.go#L1-L321) — ristretto-backed connector; TTL; reverse index; no-op pub/sub; TryLock; background metrics; unimplemented `List`
 - [`data/redis.go:L1-L784`](https://github.com/erpc/erpc/blob/main/data/redis.go#L1-L784) — Redis connector; URI construction; TLS merging; narrow reconnect detection; redsync locking; SCAN-based `List`
+- [`data/redis_pubsub_manager.go`](https://github.com/erpc/erpc/blob/main/data/redis_pubsub_manager.go) — self-healing pub/sub manager; transparent reconnection; copy-on-write subscriber management
+- [`data/timeout_constants.go`](https://github.com/erpc/erpc/blob/main/data/timeout_constants.go) — `DefaultOperationBuffer` (10s), `PollOperationBuffer` (15s), `MinPollTimeout` (30s)
 - [`data/postgresql.go:L1-L1270`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L1-L1270) — pgxpool connector; schema migration; pg_cron or local cleanup ticker; advisory locks; LISTEN/NOTIFY pub/sub; connection failure coalescing
 - [`data/dynamodb.go:L1-L983`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L1-L983) — DynamoDB connector; split read/write clients; GSI; native TTL + client-side expiry check; conditional-PutItem locking; polling `WatchCounterInt64`
 - [`data/grpc.go:L1-L478`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L1-L478) — Read-only gRPC BDS connector; bootstrap; chain probing; `eth_blockNumber` translation; fast-miss rejection; 60s head poller; `CacheLatestBlockTimestamp`

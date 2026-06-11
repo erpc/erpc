@@ -65,11 +65,11 @@ likely cause. Reference: https://docs.erpc.cloud/reference/lanes.llms.txt`}
 
 A **lane** is not a config object. It is an emergent artifact: when a request carries a `use-upstream` selector (via `X-ERPC-Use-Upstream` header, `?use-upstream=` query parameter, or `directivesDefaults.useUpstream` in config), eRPC resolves which upstreams match. If the matched set is a proper subset of at least two upstreams — and the selector is "simple" (see below) — eRPC derives a stable key by SHA-256-hashing the sorted upstream IDs, then lazily creates a `servedTipPartition` for that key. That partition holds two `CounterInt64SharedVariable` counters (latest and finalized blocks), shared across pods via the shared-state registry.
 
-**LaneName algorithm.** `LaneName(ids)` sorts the upstream IDs alphabetically, then walks the hyphen-split tokens of the first sorted ID and returns the first token that appears in every other ID. If no universally shared token exists, it falls back to a concatenation of the first two characters of each ID (up to five IDs). The result is deterministic and order-independent — every pod reaches the same name from the same upstream topology. Source: <SourceLink file="common/lane.go" lines="25" />
+**LaneName algorithm.** `LaneName(ids)` sorts the upstream IDs alphabetically, then builds a set of non-empty hyphen-split tokens for each ID (empty strings from consecutive hyphens are discarded). It walks the tokens of the first sorted ID and returns the first token that appears in every other ID's token set. If no universally shared token exists, it falls back to a concatenation of the first two characters of each ID (up to five IDs). The result is deterministic and order-independent — every pod reaches the same name from the same upstream topology. Source: <SourceLink file="common/lane.go" lines="25" />
 
 **What counts as a "simple" selector.** `isSimpleGroupSelector` rejects selectors that contain whitespace, `|`, `&`, `(`, `)`, or `,` (no boolean combinators), or more than one `!` not at position 0, or length &gt; 128 characters. Qualifying examples: `flashblocks*`, `!flashblocks*`, `family:systx`, `alchemy-*`. Non-qualifying: `alchemy | quicknode`, `(a | b)`.
 
-**Partition lifecycle and cap.** Partitions are stored in a `sync.Map` keyed by `"grp:<hex8>"`. On the fast path, `sync.Map.Load` returns an existing partition with no locking. On the slow path, an `atomic.Int32` counter is checked against `maxServedTipPartitions = 16`; if at the cap, the request falls through to the stateless fallback. Because the check-and-create is not atomic, up to `16 + goroutine-concurrency` partitions can transiently exist — `LoadOrStore` guarantees exactly one partition wins per key.
+**Partition lifecycle and cap.** Partitions are stored in a `sync.Map` keyed by `"grp:<hex16>"` (the first 8 bytes of the SHA-256 digest encoded as 16 hex characters). On the fast path, `sync.Map.Load` returns an existing partition with no locking. On the slow path, an `atomic.Int32` counter is checked against `maxServedTipPartitions = 16`; if at the cap, the request falls through to the stateless fallback. Because the check-and-create is not atomic, up to `16 + goroutine-concurrency` partitions can transiently exist — `LoadOrStore` guarantees exactly one partition wins per key.
 
 The partition key is derived from the **matched upstream set**, not the selector text. `flashblocks*` and `fl*` targeting the same three upstreams produce the same key and share one partition. Cardinality is bounded by the actual upstream topology, not selector diversity.
 
@@ -146,7 +146,8 @@ export default createConfig({
 7. **Negated selectors match by ID only, never by tag.** A pattern containing `!` skips tag evaluation entirely. `!alchemy-*` excludes by ID but will not rescue non-matching IDs via tags.
 8. **Stateless fallback emits no gauge.** `servedTipLaneNone` causes `observeServedTipMetrics` to return before any write, ensuring a complex-selector request cannot overwrite `lane="all"` with an incorrect subset value.
 9. **`LaneName` sort is alphabetical.** For `(quicknode-systx, systx-quicknode)`, sorted order puts `quicknode-systx` first; `LaneName` returns `"quicknode"`, not `"systx"`. Source: `common/lane_test.go` (`order independent` test).
-10. **`servedTip` must be configured for lanes to have effect.** In MAX mode (default), `EvmHighestLatestBlockNumber` takes the non-cluster path and no partition is ever consulted.
+10. **`servedTip` must be configured for lanes to have effect.** In MAX mode (default), `EvmHighestLatestBlockNumber` takes the non-cluster path and no partition is ever consulted. Because `observeServedTipMetrics` is only called from the cluster path, even the `lane="all"` gauge is absent in MAX mode — no `lane`-labelled metrics of any kind are emitted.
+11. **`LaneName` output is written to Prometheus labels as-is, without sanitization.** If upstream IDs contain unusual characters that cause `LaneName` to produce an unexpected string, that string becomes the label value verbatim. The label is never normalized or escaped beyond what `LaneName` itself produces.
 
 ### Observability
 
@@ -172,6 +173,8 @@ Per-upstream exclusion counters (`erpc_network_served_tip_upstream_excluded_tota
 - [`common/matcher.go:L73-L112`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L73-L112) — `MatchesSelector` + `UpstreamMatchesSelector`: ID + tag matching primitive.
 - [`common/request.go:L739-L741`](https://github.com/erpc/erpc/blob/main/common/request.go#L739-L741) — `X-ERPC-Use-Upstream` header extraction.
 - [`common/request.go:L811-L812`](https://github.com/erpc/erpc/blob/main/common/request.go#L811-L812) — `?use-upstream=` query-param extraction.
+- [`common/request.go:L1424-L1445`](https://github.com/erpc/erpc/blob/main/common/request.go#L1424-L1445) — `UpstreamMatchesSelector` call in the upstream selection loop; filters which upstreams receive the forwarded request.
+- [`erpc/networks.go:L396-L402`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L396-L402) — `requestSelector(ctx)`: reads `UseUpstream` directive from the bound request context for both served-tip and forwarding use.
 - [`common/config.go:L2109`](https://github.com/erpc/erpc/blob/main/common/config.go#L2109) — `DirectivesConfig.UseUpstream` field.
 - [`telemetry/metrics.go:L130-L162`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L130-L162) — metric definitions.
 

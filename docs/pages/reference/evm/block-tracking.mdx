@@ -101,7 +101,7 @@ Each upstream gets its own `EvmStatePoller` background goroutine. On each tick o
 
 On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to catch every block, conservative enough that concurrent pollers share one actual RPC call per window. In Redis-backed multi-pod deployments, the shared counter coalesces fetches across replicas too.
 
-**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever an upstream advances the network-level latest block. On fast chains where consecutive blocks share the same integer second, block gaps accumulate and samples are normalized. The EMA is not published until ≥3 samples are collected, and values outside `[10 ms, 120 s]` are rejected and reset to the last valid value to prevent runaway spikes after a chain halt. Consumers receive 0 until warm-up completes.
+**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever an upstream advances the network-level latest block. On fast chains where consecutive blocks share the same integer second, block gaps accumulate and samples are normalized. The EMA is not published until ≥3 samples are collected (requiring 4 total `SetLatestBlockNumber` calls, because the first call stores the baseline without incrementing the sample counter). Values outside `[10 ms, 120 s]` are rejected and reset to the last valid value to prevent runaway spikes after a chain halt. Consumers receive 0 until warm-up completes.
 
 **Per-upstream block counters.** Both `latestBlockShared` and `finalizedBlockShared` are forward-only shared counters: `TryUpdate` rejects values ≤ the current value. A value that would regress more than 1024 blocks fires an `OnLargeRollback` callback and records `erpc_upstream_block_head_large_rollback`.
 
@@ -111,7 +111,7 @@ On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to
 
 When `servedTip.enabledFor` includes `"latest"` or `"finalized"`, the pure function `ComputeServedTipCandidate` runs instead:
 1. Drop inputs with `BlockNumber ≤ 0`.
-2. **Velocity gate** (requires a prior served anchor AND a known block time): discard any upstream reporting a block implausibly far ahead of elapsed time.
+2. **Velocity gate** (requires a prior served anchor AND a known block time): compute `expectedMax = lastServedBlock + ceil(elapsedBlocks × VelocitySlack) + VelocityBufferBlocks` (defaults: `VelocitySlack = 2.0`, `VelocityBufferBlocks = 5`); discard any upstream reporting a block above `expectedMax`. `MaxEligible` is set to the maximum of the remaining (post-gate) inputs, so velocity-dropped upstreams never inflate the lag gauge.
 3. Sort remaining inputs ascending.
 4. **Greedy clustering**: split into clusters when adjacent inputs differ by more than `clusterDelta` blocks (auto-derived from block time; 2 for Ethereum, up to 10 for sub-100 ms chains).
 5. Pick the **dominant cluster** (largest by member count; ties go to the chain-forward cluster).
@@ -119,9 +119,11 @@ When `servedTip.enabledFor` includes `"latest"` or `"finalized"`, the pure funct
 
 The result is monotonically clamped via a cross-pod shared counter so the served tip never regresses, even across pods.
 
-**Selector-scoped served tip.** When a `use-upstream` selector is present, `tipCandidateUpstreams` narrows to the matching upstreams. For simple group selectors (single glob pattern, optionally negated, 2–(N−1) matched upstreams), a per-group `servedTipPartition` is lazily materialized with its own cross-pod monotonic counter. Up to 16 partitions are allowed per network; beyond this, extra selectors fall back to stateless cluster-min. Boolean-expression selectors (containing `|`, `&`, `(`, `)`) always use the stateless path.
+**Selector-scoped served tip.** When a `use-upstream` selector is present, `tipCandidateUpstreams` narrows to the matching upstreams. A "simple group selector" is a single glob pattern (optionally negated with `!` at position 0), containing no whitespace or `()|&,` characters, of length ≤128, that matches 2–(N−1) upstreams. For such selectors, a per-group `servedTipPartition` is lazily materialized: `partitionKeyFor` resolves the matched upstream ID set, sorts it, SHA-256 hashes the sorted `\0`-joined IDs, truncates to 8 bytes, and encodes as hex (key = `"grp:" + hex`). Equivalent selectors (same matched set) share one partition. Up to 16 partitions are allowed per network; beyond this, extra selectors fall back to stateless cluster-min. Boolean-expression selectors (containing `|`, `&`, `(`, `)`) always use the stateless path. Source: [`erpc/networks.go:L466-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L466-L506)
 
-**Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter. After 10 consecutive failures with no prior success, `skipSyncingCheck` is set permanently and the state is fixed at `Unknown` for the process lifetime.
+**Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter to 1. The non-standard `{Ok: bool}` response shape is supported: `Ok=false` is treated as still-syncing. After 10 consecutive failures with no prior success, `skipSyncingCheck` is set permanently and the state is fixed at `Unknown` for the process lifetime.
+
+**Skip-on-failure semantics.** Both `skipLatestBlockCheck` and `skipFinalizedCheck` follow the same pattern: 10 consecutive failures with no prior successful poll sets the skip flag permanently and the poller stops calling that method. Once the upstream has had at least one success (`*SuccessfulOnce = true`), failures are only logged and never trigger the skip. This prevents false-positive disablement during transient degradations. Source: [`architecture/evm/evm_state_poller.go:L420-L445`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L420-L445)
 
 **`IsBlockFinalized` decision tree:**
 1. Both `finalizedBlock == 0` and `latestBlock == 0` → `ErrFinalizedBlockUnavailable`.
@@ -150,7 +152,7 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 | `networks[*].evm.dynamicBlockTimeDebounceMultiplier` | \*float64 | `0.7` | Scales the EMA block time to compute the debounce. **`0` is silently treated as unset** — the default 0.7 is used. Valid useful range: `0.1`–`1.0`; values above `1.0` make the debounce longer than one block time, causing stale data between polls. To eliminate the EMA-derived debounce, use `statePollerDebounce` on the upstream instead. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="368-372" /> |
 | `networks[*].evm.servedTip` | \*EvmServedTipConfig | `nil` (max mode) | When nil, `EvmHighestLatestBlockNumber` returns the simple maximum. Set any sub-field to enable cluster mode. Source: <SourceLink file="erpc/networks.go" lines="521" /> |
 | `networks[*].evm.servedTip.enabledFor` | []string | `[]` (max mode for all tags) | Tags for which cluster-min mode is active. Valid: `"latest"`, `"finalized"`, `"safe"` (`"safe"` is an alias for `"finalized"`). Source: <SourceLink file="common/config.go" lines="2272" /> |
-| `networks[*].evm.servedTip.clusterDelta` | int64 | `0` (auto-derive) | Max block gap between adjacent sorted upstream tips that still groups them into one cluster. Auto-derive: `clamp(ceil(2.0 / blockTimeSec), 2, 10)`. Examples: Ethereum (12 s) → 2; Arbitrum (0.25 s) → 8; sub-100 ms → 10. When block time is unknown (EMA not warmed up) the fallback is 2. Source: <SourceLink file="architecture/evm/served_tip.go" lines="225-246" /> |
+| `networks[*].evm.servedTip.clusterDelta` | int64 | `0` (auto-derive) | Max block gap between adjacent sorted upstream tips that still groups them into one cluster. Auto-derive: `clamp(ceil(2.0 / blockTimeSec), 2, 10)`. Examples: Ethereum (12 s) → 2; Polygon (2 s) → 1, clamped to 2; Arbitrum (0.25 s) → 8; sub-100 ms → 10 (ceiling). When block time is unknown (EMA not warmed up) the fallback is 2. Source: <SourceLink file="architecture/evm/served_tip.go" lines="225-246" /> |
 | `networks[*].evm.servedTip.guaranteedMethods` | []string | `[]` | Glob patterns (e.g. `"trace_*"`). For each pattern the served tip is clamped down to the cluster-min of supporting upstreams only, ensuring `"latest"` is always servable for these methods. Source: <SourceLink file="erpc/networks.go" lines="705-747" /> |
 
 ### Worked examples
@@ -267,6 +269,10 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 13. **`OnValue` callback passes `blockTimestamp=0` for cross-pod replications.** Only the replica that actually fetches feeds the EMA with a real timestamp; replicas receiving shared-counter updates use `blockTimestamp=0`, so only one pod per network feeds the EMA per debounce window.
 14. **`ErrFinalizedBlockUnavailable` never fires if only `latestBlock == 0`.** The error requires BOTH counters to be 0. If the upstream supports `eth_getBlockByNumber("latest")` but not `"finalized"`, `IsBlockFinalized` falls back to `latestBlock − FallbackFinalityDepth` instead of returning the error.
 15. **`SuggestFinalizedBlock` may drop updates under load.** It uses `TryLock`; if an update is already in progress the suggestion is discarded. Finalized block updates may lag under high request volume.
+16. **`SuggestLatestBlock` monotonic within a process but not across pod restarts.** It calls `TryUpdate` which the shared counter rejects if the value is ≤ current. Across pod restarts the shared counter (Redis) retains the last value, so a restarted upstream reporting a lower block number after a reorg is silently ignored for up to 1024 blocks of rollback.
+17. **`eth_syncing` result `{Ok: false}` is interpreted as SYNCING.** The non-standard `{Ok: bool}` response shape is handled by `!Ok`: `Ok=false` means not-ok = still syncing. Source: [`architecture/evm/evm_state_poller.go:L1087-L1100`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L1087-L1100)
+18. **`erpc_network_served_tip_lag_blocks` uses `MaxEligible` (post-velocity-gate), not `MaxObserved`.** A far-future tip from a misbehaving upstream is velocity-dropped and does not inflate the lag gauge. The gauge accurately reflects deliberate lag vs. the highest plausible eligible upstream tip.
+19. **Finalized block polling is permanently skipped on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` failures without any prior success, `skipFinalizedCheck = true`. `IsBlockFinalized` then falls back exclusively to `latestBlock − FallbackFinalityDepth`. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
 
 ### Observability
 
@@ -276,8 +282,8 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 | `erpc_upstream_finalized_block_number` | gauge | project, vendor, network, upstream | Updated on every `SetFinalizedBlockNumber` call |
 | `erpc_upstream_block_head_lag` | gauge | project, vendor, network, upstream | Recomputed on each `SetLatestBlockNumber`; value = `max_network_latest − upstream_latest` |
 | `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Recomputed on each `SetFinalizedBlockNumber`; value = `max_network_finalized − upstream_finalized` |
-| `erpc_upstream_latest_block_polled_total` | counter | project, vendor, network, upstream | Incremented before each actual `eth_getBlockByNumber("latest")` call (debounce elapsed); incremented by both timer-driven and forced-fresh paths |
-| `erpc_upstream_finalized_block_polled_total` | counter | project, vendor, network, upstream | Same semantics as `latest_block_polled_total` for the finalized axis |
+| `erpc_upstream_latest_block_polled_total` | counter | project, vendor, network, upstream | Incremented before each actual `eth_getBlockByNumber("latest")` call (debounce elapsed). Two paths increment this counter: (1) proactive timer-driven `Poll()` on the background goroutine, and (2) forced-fresh polls triggered by block-availability checks (`EvmAssertBlockAvailability` / `EvmIsBlockFinalized`) when a request arrives for a block above the current known latest. Both paths still respect the debounce window — if a pod already fetched within the window, `TryUpdateIfStale` returns the cached value without incrementing. |
+| `erpc_upstream_finalized_block_polled_total` | counter | project, vendor, network, upstream | Same dual-path semantics as `latest_block_polled_total` for the finalized axis |
 | `erpc_upstream_block_head_large_rollback` | gauge | project, vendor, network, upstream | Fired when a new value would regress &gt;1024 blocks |
 | `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | Current EMA block-time estimate in ms; absent until ≥3 samples |
 | `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `(now_ms − block.timestamp × 1000) / 1000`; `origin="evm_state_poller"` |
@@ -286,6 +292,19 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 | `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream excluded from pick; `reason="velocity"` or `"outlier"`; **cluster mode only, network-wide pick only** |
 
 **OTel trace spans** (under detailed tracing): `EvmStatePoller.PollLatestBlockNumber`, `EvmStatePoller.PollFinalizedBlockNumber`, `Network.EvmHighestLatestBlockNumber`, `Network.EvmHighestFinalizedBlockNumber`, `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`. The network span includes attributes: `served_tip.axis`, `served_tip.candidate`, `served_tip.max_observed`, `served_tip.cluster_count`, `served_tip.dominant_size`, `served_tip.outliers_count`, `served_tip.velocity_dropped`, `served_tip.lag_vs_max`. Source: <SourceLink file="erpc/networks.go" lines="777-793" />
+
+**Notable log messages:**
+
+| Level | Message | Trigger |
+|---|---|---|
+| `INFO` | `"bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states"` | Successful `Bootstrap` |
+| `INFO` | `"node is marked as fully synced"` | `synced counter >= 4` consecutive not-syncing responses |
+| `WARN` | `"upstream does not support fetching syncing state ... after N consecutive failures, will give up"` | `skipSyncingCheck` flip (10 failures, no prior success) |
+| `WARN` | `"upstream does not support fetching latest block number ... after N consecutive failures, will give up"` | `skipLatestBlockCheck` flip |
+| `WARN` | `"upstream does not support fetching finalized block number ... after N consecutive failures, will give up"` | `skipFinalizedCheck` flip |
+| `WARN` | `"failed to poll evm state"` | `Poll()` returns a non-cancel error |
+| `INFO` | `"initial earliest block detection completed for this instance"` | Binary search for `earliestBlockPlus` bound completes |
+| `INFO` | `"started periodic scheduler for earliest block availability bound"` | `updateRate` configured and scheduler goroutine launched |
 
 ### Source code entry points
 

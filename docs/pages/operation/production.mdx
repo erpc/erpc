@@ -128,6 +128,12 @@ points the agent at this page's machine-readable reference so it can do the work
 
 **Chain ID explicit configuration.** Without explicit `evm.chainId` in network and upstream config, eRPC calls `eth_chainId` on every upstream at startup. With many replicas and upstreams this produces a startup request burst. Set `evm.chainId` explicitly to eliminate it.
 
+**Config file discovery.** At startup eRPC searches for a config file in this order: `--config <path>` CLI flag → first positional argument → first match among `./erpc.yaml`, `./erpc.yml`, `./erpc.ts`, `./erpc.js`, `/erpc.yaml`, `/erpc.yml`, `/erpc.ts`, `/erpc.js`, `/root/erpc.yaml`, `/root/erpc.yml`, `/root/erpc.ts`, `/root/erpc.js`. If `--require-config` is set (or an explicit path was given) and no file is found, startup fails. Source: [`cmd/erpc/main.go:L279-L294`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L294)
+
+**CLI subcommands.** Three subcommands are available: `erpc [config]` / `erpc start` starts the server; `erpc validate [--format json|md]` parses config, runs `erpc.GenerateValidationReport`, and exits non-zero on errors — useful for CI gates before a production deploy; `erpc dump [--format yaml|json]` parses config, resolves effective selection policies, and writes the merged config to stdout. Source: [`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go)
+
+**Runtime log environment variables.** Two env vars control logging at runtime without touching the config file: `LOG_LEVEL` overrides `cfg.LogLevel` and is parsed as a zerolog level (`trace`, `debug`, `info`, `warn`, `error`); `LOG_WRITER=console` switches to a human-readable zerolog console writer with `04:05.000ms` time format (useful in local dev or when piping to a log aggregator that cannot parse JSON). Source: [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363)
+
 ### Config schema
 
 Fields relevant to production hardening. All under `server.` or `metrics.` unless noted.
@@ -149,6 +155,8 @@ Fields relevant to production hardening. All under `server.` or `metrics.` unles
 | `metrics.errorLabelMode` | `string` | `"compact"` — <SourceLink file="common/defaults.go" lines="762-763" /> | `"compact"` = short stable error codes (bounded cardinality). `"verbose"` = full messages including block numbers / IPs (unbounded cardinality risk). |
 | `metrics.histogramDropLabels` | `[]string` | `nil` | Labels dropped from all `LabeledHistogram` instances. Counters unaffected. |
 | `GOMEMLIMIT` (env) | string | not set in any manifest — <SourceLink file="kube/erpc.yml" lines="33-36" /> | Set to ~90% of container memory limit. Without it, Go GC may allow heap to approach the hard limit before triggering, causing OOM kill. |
+| `LOG_LEVEL` (env) | string | value of `cfg.LogLevel` | Overrides the config file's `logLevel`. Parsed as a zerolog level: `trace`, `debug`, `info`, `warn`, `error`. Useful for elevating verbosity on a running pod without a config change. Source: [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363) |
+| `LOG_WRITER` (env) | string | `""` (JSON lines) | Set to `"console"` for human-readable output with `04:05.000ms` time format. Default is structured JSON. Source: [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) |
 
 **Hardcoded constants (not configurable):**
 - `http.Server.IdleTimeout` = 300 s — <SourceLink file="erpc/http_server.go" lines="185" />
@@ -382,13 +390,18 @@ metrics: {
 11. **`trustedIPHeaders: []` (the default) means all requests appear to originate from the load-balancer IP.** IP-based rate limits and `network` auth strategies become effectively global rather than per-client. Source: <SourceLink file="common/defaults.go" lines="730-733" />
 12. **`includeErrorDetails: true` in production exposes upstream endpoint URLs and potentially embedded API keys** in JSON-RPC `error.data`. Source: <SourceLink file="erpc/http_server.go" lines="1424-1433" />
 13. **gRPC traffic on the shared port bypasses `maxTimeout` and the gzip handler.** By default `server.grpcPortV4 = server.httpPortV4 = 4000`. When `grpcEnabled: true`, gRPC and HTTP share port 4000 via in-handler mux. If you separate the ports (e.g. gRPC on 4002), add the explicit Docker `-p 4002:4002` flag — only ports 4000, 4001, and 6060 are `EXPOSE`d in the Dockerfile. Source: <SourceLink file="erpc/http_server.go" lines="158-177" />, <SourceLink file="Dockerfile" lines="84" />
+14. **The distroless/nonroot image has no shell, no package manager, and no debug tools.** The final container runs as a nonroot user with the minimal distroless base. Exec-ing into the container, mounting files dynamically, or attaching profilers requires a privileged sidecar. The default `CMD` is `/erpc-server`, not a shell wrapper. Source: `Dockerfile`
+15. **TypeScript config files (`erpc.ts`) require Node.js, which is NOT in the distroless image.** The compiled TypeScript SDK and `node_modules` are present, and eRPC invokes a bundled Node execution path for `.ts` config loading. If `node_modules` is stripped from a custom image layer, TypeScript config loading fails silently and the process may not find a valid config file.
+16. **`erpc-server-pprof` is present in every image but is never the default CMD.** The pprof binary is always built into the image at `/erpc-server-pprof` but the default `CMD` is `/erpc-server`. Operators must override the container command to use pprof — it is not activated by any env var or config flag. Source: `Dockerfile:L84`, `Makefile` (`run-pprof` target)
+17. **The `prometheus.yaml` at the repo root is NOT the monitoring container's config.** It is the production Prometheus Operator config (with `remote_write` to Mimir, in-cluster job discovery). The monitoring container at `monitoring/prometheus/prometheus.yml` is a separate file with different scrape targets. Loading the wrong one into the monitoring container will produce empty or incorrect dashboards. Source: `prometheus.yaml`, `monitoring/prometheus/prometheus.yml`
 
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity | upstream attempt errored; used by `HighErrorRate` alert |
-| `erpc_upstream_request_duration_seconds` | LabeledHistogram | project, vendor, network, upstream, category | upstream attempt duration; used by `SlowRequests` alert (p95) |
+| `erpc_upstream_request_duration_seconds` | LabeledHistogram | project, vendor, network, upstream, category | upstream attempt duration |
+| `erpc_upstream_request_duration_seconds_budget` | LabeledHistogram | project, vendor, network, upstream, category | upstream attempt duration (budget variant); used by `SlowRequests` alert (p95 `histogram_quantile`) |
 | `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category | each upstream attempt; used by `HighRequestRate` / `LowRequestRate` alerts |
 | `erpc_rate_limits_total` | counter | project, network, vendor, upstream, category, budget, scope, origin | rate-limit event (local or remote upstream 429); replaces stale `self_rate_limited_total` alert metrics |
 | `erpc_unexpected_panic_total` | counter | scope, extra, error | recovered panic by location; alert on any non-zero rate |
@@ -416,6 +429,10 @@ metrics: {
 - [`common/defaults.go:L749-L767`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L749-L767) — `MetricsConfig.SetDefaults`: enabled, port, errorLabelMode
 - [`kube/erpc.yml:L33-L36`](https://github.com/erpc/erpc/blob/main/kube/erpc.yml#L33-L36) — reference kube resource spec (3 Gi / 2 CPU; no GOMEMLIMIT)
 - [`monitoring/prometheus/alert.rules`](https://github.com/erpc/erpc/blob/main/monitoring/prometheus/alert.rules) — 6 bundled alerting rules
+- [`cmd/erpc/main.go:L279-L294`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L294) — config file discovery: 12-path ordered search
+- [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363) — `LOG_LEVEL` env var override
+- [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) — `LOG_WRITER=console` zerolog console writer
+- [`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go) — `validate` and `dump` CLI subcommands
 
 ### Related pages
 

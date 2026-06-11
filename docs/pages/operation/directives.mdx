@@ -145,7 +145,7 @@ Config struct: [`common/config.go:2105-2152`](https://github.com/erpc/erpc/blob/
 | 1 | `X-ERPC-Retry-Empty` | `retry-empty` | bool | `retryEmpty` | `false` | Retry on null/empty upstream response. Subject to `EmptyResultMaxAttempts` cap. | [`erpc/network_executor.go:427-442`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L427-L442) |
 | 2 | `X-ERPC-Retry-Pending` | `retry-pending` | bool | `retryPending` | `false` (struct comment "true by default" is **stale**) | Retry `eth_getTransactionReceipt` / `eth_getTransactionByHash` / `eth_getTransactionByBlockHashAndIndex` / `eth_getTransactionByBlockNumberAndIndex` while tx is pending. `EmptyResultMaxAttempts` cap applies. | [`erpc/network_executor.go:445-459`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L445-L459) |
 | 3 | `X-ERPC-Skip-Cache-Read` | `skip-cache-read` | string (bool in config YAML normalized to string) | `skipCacheRead` | `""` (no skip) | `"true"` = skip all; `"false"`/`""` = use cache; other string = connector-ID WildcardMatch pattern. YAML `true`/`false` normalized to strings via `fmt.Sprintf("%v", v)`. Header NOT trimmed; query IS trimmed. | [`common/request.go:898-914`](https://github.com/erpc/erpc/blob/main/common/request.go#L898-L914) |
-| 4 | `X-ERPC-Use-Upstream` | `use-upstream` | string | `useUpstream` | `""` (no filter) | Selector matched against upstream `id`; for purely-positive patterns also against upstream `Tags` (any tag match wins). Negated patterns (`!`) match ID only. Header NOT trimmed; query IS trimmed. No match → `ErrUpstreamsExhausted`. Activates selector-scoped served-tip partitioning. | [`upstream/upstream.go:1526-1534`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1526-L1534) |
+| 4 | `X-ERPC-Use-Upstream` | `use-upstream` | string | `useUpstream` | `""` (no filter) | Selector matched against upstream `id`; for purely-positive patterns also against upstream `Tags` (any tag match wins). Negated patterns (`!`) match ID only. Header NOT trimmed; query IS trimmed. No match → `ErrUpstreamsExhausted`. Activates selector-scoped served-tip partitioning. Stateful methods with multiple matching upstreams fail with `ErrNotImplemented`. | [`upstream/upstream.go:1526-1534`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1526-L1534) |
 | 5 | `X-ERPC-Skip-Interpolation` | `skip-interpolation` | bool | `skipInterpolation` | `false` | Suppresses block-tag → hex substitution in forwarded params. Internal block refs still computed/cached. | [`architecture/evm/json_rpc.go:132`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc.go#L132) |
 | 6 | `X-ERPC-Skip-Consensus` | `skip-consensus` | bool | `skipConsensus` | `false` | Bypasses consensus branch; uses standard `retry(hedge(upstreamSweep))`. Retry/hedge/breaker/timeout still apply. | [`erpc/network_executor.go:179-188`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L179-L188) |
 | 7 | `X-ERPC-Enforce-Highest-Block` | `enforce-highest-block` | bool | `enforceHighestBlock` | **`true`** (SetDefaults) | `eth_getBlockByNumber` with `"latest"`/`"finalized"`: re-routes if response is behind known highest block. Skipped for cached responses. | [`architecture/evm/eth_getBlockByNumber.go:111-170`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L111-L170) |
@@ -153,7 +153,7 @@ Config struct: [`common/config.go:2105-2152`](https://github.com/erpc/erpc/blob/
 | 9 | `X-ERPC-Enforce-Non-Null-Tagged-Blocks` | `enforce-non-null-tagged-blocks` | bool | `enforceNonNullTaggedBlocks` | **`true`** (SetDefaults) | Treats null block for tag-based `eth_getBlockByNumber` as an error. Disable for chains that legitimately return null for certain tags (e.g., zkSync). | [`architecture/evm/eth_getBlockByNumber.go:304`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L304) |
 | 10 | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` | bool | `enforceLogIndexStrictIncrements` | `false` | `eth_getBlockReceipts`: log indices must increment by exactly 1 **globally** across all receipts (counter does not reset per receipt). | [`architecture/evm/eth_getBlockReceipts.go:399-416`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L399-L416) |
 | 11 | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | bool | `validateLogsBloomEmptiness` | `false` | Logs exist → bloom non-zero; no logs → bloom zero. | [`architecture/evm/eth_getBlockReceipts.go:307-321`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L307-L321) |
-| 12 | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | bool | `validateLogsBloomMatch` | `false` | Recomputes 2048-bit Bloom filter from receipt logs (keccak256) and verifies against `logsBloom`. CPU-intensive. For `eth_getBlockReceipts` only (no ground truth needed). | [`architecture/evm/eth_getBlockReceipts.go:419-480`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L419-L480) |
+| 12 | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | bool | `validateLogsBloomMatch` | `false` | Recomputes 2048-bit Bloom filter from receipt logs (keccak256) and verifies against `logsBloom`. CPU-intensive. For `eth_getBlockReceipts` only (no ground truth needed — logs are embedded in each receipt). **Bloom algorithm:** for each log, feeds the 20-byte address and each 32-byte topic into `bloomAdd`; computes three bit positions using keccak256 — for each k = 0..2, pos equals bytes 2k and 2k+1 of keccak256(value) joined as a big-endian 16-bit value masked to 11 bits (`& 0x7FF`); each position sets one bit in the big-endian 256-byte array. Receipts with empty logs are skipped. Source: [`architecture/evm/eth_getBlockReceipts.go:419-480`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L419-L480) |
 | 13 | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` | bool | `validateTxHashUniqueness` | `false` | Rejects empty `transactionHash` AND duplicates — stricter than always-on dedup (which only catches duplicates among non-empty hashes). | [`architecture/evm/eth_getBlockReceipts.go:202-213`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L202-L213) |
 | 14 | `X-ERPC-Validate-Transaction-Index` | `validate-transaction-index` | bool | `validateTransactionIndex` | `false` | Each receipt's `transactionIndex` must equal its array position `i`. Absent fields skipped. | [`architecture/evm/eth_getBlockReceipts.go:217-233`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L217-L233) |
 | 15 | `X-ERPC-Receipts-Count-Exact` | `receipts-count-exact` | int64 | `receiptsCountExact` | nil | `eth_getBlockReceipts` must return exactly N receipts. Parse failure silently skips. | [`architecture/evm/eth_getBlockReceipts.go:149-155`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L149-L155) |
@@ -170,8 +170,10 @@ Config struct: [`common/config.go:2105-2152`](https://github.com/erpc/erpc/blob/
 
 | Field | Config path | Default | Notes |
 |---|---|---|---|
-| `validateReceiptTransactionMatch` | `directiveDefaults.validateReceiptTransactionMatch` | `false` | Requires `GroundTruthTransactions` (library mode). Silently no-op over HTTP. Source: [`architecture/evm/eth_getBlockReceipts.go:235-300`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L235-L300) |
-| `validateContractCreation` | `directiveDefaults.validateContractCreation` | `false` | Only active inside `ValidateReceiptTransactionMatch` loop; requires `GroundTruthTransactions`. |
+| `validateReceiptTransactionMatch` | `directiveDefaults.validateReceiptTransactionMatch` | `false` | Requires `GroundTruthTransactions` (library mode). Silently no-op over HTTP. **Algorithm:** asserts `len(receipts) == len(GroundTruthTransactions)` (count mismatch → `ErrEndpointContentValidation`), then for each index `i`: `receipt[i].transactionHash` decoded from hex must equal `GroundTruthTransactions[i].Hash` (raw bytes). Source: [`architecture/evm/eth_getBlockReceipts.go:235-300`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L235-L300) |
+| `validateContractCreation` | `directiveDefaults.validateContractCreation` | `false` | Only active inside the `ValidateReceiptTransactionMatch` loop; requires `GroundTruthTransactions`. **Algorithm:** for each transaction `gtTx`: if `gtTx.To` is nil/empty (contract-creation tx), receipt MUST have a non-empty `contractAddress` decoding to exactly 20 bytes; if `gtTx.To` is non-empty (regular tx), receipt MUST NOT have `contractAddress`. Any violation → `ErrEndpointContentValidation`. Source: [`architecture/evm/eth_getBlockReceipts.go:264-299`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockReceipts.go#L264-L299) |
+| `GroundTruthTransactions` | Go library mode only (`json:"-"`) | n/a (inject at call site) | Slice of `*GroundTruthTransaction` (fields: `Hash []byte`, `To []byte`, `TransactionIndex *uint32`). Required to activate `validateReceiptTransactionMatch` and `validateContractCreation`. Cannot be supplied over HTTP. Source: [`common/request.go:206-226`](https://github.com/erpc/erpc/blob/main/common/request.go#L206-L226) |
+| `GroundTruthLogs` | Go library mode only (`json:"-"`) | n/a (inject at call site) | Slice of `*GroundTruthLog` (fields: `Address []byte`, `Topics [][]byte`). Enables bloom validation (`validateLogsBloomMatch`) for methods where logs are not embedded in the response (e.g., `eth_getBlockByNumber`). For `eth_getBlockReceipts`, logs are embedded in each receipt so no ground truth is needed. Source: [`common/request.go:212-214`](https://github.com/erpc/erpc/blob/main/common/request.go#L212-L214) |
 
 #### `server.executionHeaders` — response diagnostic header mode
 
@@ -300,12 +302,24 @@ Retry, hedge, circuit-breaker, and timeout still apply — only the dispute/agre
 
 **Request headers — canonical truthy value.** All 23 directive headers require `"true"` (any case, optional surrounding whitespace). `"1"` and `"yes"` evaluate to `false` and silently have no effect. Exception: `X-ERPC-Force-Trace` (tracing subsystem, not a directive) accepts `"true"`, `"1"`, or `"yes"`. Always use `"true"`.
 
-**Response headers always emitted:**
+**Directive-adjacent request inputs** (not in the 23-directive registry):
 
-| Header | Value |
-|---|---|
-| `X-ERPC-Version` | eRPC version string |
-| `X-ERPC-Commit` | git commit SHA |
+| Input | Kind | Values / behavior | Source |
+|---|---|---|---|
+| `X-ERPC-Force-Trace` | header | `"true"`, `"1"`, or `"yes"` → bypass OTel trace sampling for that request (attribute `erpc.force_trace = true`) | [`common/tracing_util.go:107-115`](https://github.com/erpc/erpc/blob/main/common/tracing_util.go#L107-L115) |
+| `force-trace` | query param | same three truthy values | [`common/tracing_core.go:31`](https://github.com/erpc/erpc/blob/main/common/tracing_core.go#L31) |
+| `user-agent` | query param | overrides `User-Agent` header for agent-name metrics tracking | [`common/request.go:1299-1314`](https://github.com/erpc/erpc/blob/main/common/request.go#L1299-L1314) |
+| `User-Agent` | header | stored raw or simplified per `project.userAgentMode`; drives agent-name metric labels | [`common/request.go:1300-1311`](https://github.com/erpc/erpc/blob/main/common/request.go#L1300-L1311) |
+| `networkId` | JSON body field | `"evm:42161"`-style network selection when architecture/chain are absent from the URL path | [`erpc/http_server.go:613-634`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L613-L634) |
+
+**Response headers always emitted (every HTTP response, not controlled by `executionHeaders`):**
+
+| Header | Value | Source |
+|---|---|---|
+| `Content-Type` | `application/json` | [`erpc/http_server.go:259`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L259) |
+| `X-ERPC-Version` | eRPC version string | [`erpc/http_server.go:260`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L260) |
+| `X-ERPC-Commit` | git commit SHA | [`erpc/http_server.go:261`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L261) |
+| custom `server.responseHeaders` | static values, env-expanded at startup | [`erpc/http_server.go:263-266`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L263-L266) |
 
 **Execution diagnostic headers** (single responses only; controlled by `server.executionHeaders`; never emitted for batch):
 
@@ -319,9 +333,9 @@ Retry, hedge, circuit-breaker, and timeout still apply — only the dispute/agre
 | `X-ERPC-Cache` | `HIT` or `MISS` | when response metadata present |
 | `X-ERPC-Upstream` | winning upstream id | when known |
 | `X-ERPC-Duration` | milliseconds | NormalizedResponse only |
-| `X-ERPC-Upstreams` | per-attempt trace: `upstreamId=reason:outcome:durationMs[:won]` segments joined by `;` | `all` mode only; when `len(attempts) > 0` |
+| `X-ERPC-Upstreams` | per-attempt trace: `upstreamId=reason:outcome:durationMs[:won]` segments joined by `;`. Known `reason` values: `primary`, `hedge`, `retry`, `consensus_slot`. Known `outcome` values: `success`, `timeout`, `exec_revert`, `rate_limited`. `:won` suffix appended only when the attempt's response contributed to the final answer. | `all` mode only; when `len(attempts) > 0` |
 
-Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms`.
+Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms;drpc=consensus_slot:exec_revert:20ms`.
 
 **Error shapes produced by directive checks.** Failed validation directives return `ErrEndpointContentValidation`. A `UseUpstream` selector that matches no upstream returns `ErrUpstreamsExhausted` (wrapping `ErrUpstreamNotAllowed` per candidate) — there is no distinct "selector matched nothing" error code.
 
@@ -342,18 +356,19 @@ Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=he
 3. **Headers #20–23 lack `TrimSpace`.** `"  true  "` → `false` for `X-ERPC-Validate-Header-Field-Lengths`, `X-ERPC-Validate-Transaction-Fields`, `X-ERPC-Validate-Transaction-Block-Info`, `X-ERPC-Validate-Log-Fields`. All other boolean directive headers do trim. Source: [`common/request.go:798,801,804,807`](https://github.com/erpc/erpc/blob/main/common/request.go#L798-L807).
 4. **`"1"` and `"yes"` are NOT truthy for directive headers.** Only `"true"` (any case). This differs from `X-ERPC-Force-Trace`. Source: [`common/request_test.go:406-427`](https://github.com/erpc/erpc/blob/main/common/request_test.go#L406-L427).
 5. **`UseUpstream` failure produces `ErrUpstreamsExhausted`, not a selector-specific error.** Operators must parse the error message text to diagnose selector mismatches. Source: [`common/errors.go:1432-1440`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1432-L1440).
-6. **`EnforceGetLogsBlockRange` cannot be overridden per-request via HTTP.** `SetDefaults` copies `DirectiveDefaults` values into `Evm.Integrity`; the architecture layer reads from the network config struct, not the per-request directive. Source: [`common/defaults.go:1957-1964`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1957-L1964).
-7. **`EnforceLogIndexStrictIncrements` counts globally, not per-receipt.** Indices must be contiguous across all receipts in the block response. Upstreams that reset `logIndex` per-receipt fail this check.
-8. **`ValidateTxHashUniqueness` rejects empty hashes; always-on dedup does not.** Enabling this on a chain that legitimately omits transaction hashes causes all responses to fail.
-9. **`ReceiptsCountExact` / `ReceiptsCountAtLeast` parse failures are silent.** A non-integer value leaves the pointer nil; no check fires and no warning is logged.
-10. **`ValidateReceiptTransactionMatch` and `ValidateContractCreation` are silently no-ops over HTTP.** `GroundTruthTransactions` cannot be supplied via headers; both directives only activate in Go library mode.
-11. **`ValidateTransactionFields` and `ValidateTransactionBlockInfo` skip hash-only blocks.** When `eth_getBlockByNumber` returns hash-only transactions, the validation loop is entirely bypassed.
-12. **Batch responses never emit `X-ERPC-*` diagnostic headers.** Use per-response `id` fields for batch diagnostics.
-13. **`executionHeaders: summary` removes only `X-ERPC-Upstreams`.** All counter and metadata headers still emit. Use `"off"` to suppress everything.
-14. **Selector-scoped served-tip partitions are capped.** Beyond `maxServedTipPartitions` per network, no partition is created and the stateless fallback is used silently — no error. Source: [`erpc/networks.go:429`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L429).
-15. **`ValidateLogFields` cross-checks log fields against the enclosing receipt, not the block.** Absent log context fields (e.g., `blockHash` missing from a log entry) pass silently even when the receipt's field is set.
-16. **`nil *bool` in `DirectiveDefaultsConfig` ≠ `false *bool`.** Nil means "not set — skip"; a `*false` pointer means "explicitly disable". Only non-nil pointers are applied in `ApplyDirectiveDefaults`. Source: [`common/request.go:570-580`](https://github.com/erpc/erpc/blob/main/common/request.go#L570-L580).
-17. **`ValidateHeaderFieldLengths` struct comment is stale.** `common/request.go:172` says "only via config/library, not HTTP headers" — incorrect. The directive is fully HTTP-settable. Source: [`common/request.go:797-798`](https://github.com/erpc/erpc/blob/main/common/request.go#L797-L798).
+6. **`X-ERPC-Skip-Consensus: false` actively disables consensus bypass.** Sending the header with the value `"false"` is NOT the same as omitting the header. A header value `"false"` parses to `false` and overrides a `directiveDefaults.skipConsensus: true` config entry — the consensus branch then runs normally. Omitting the header leaves `SkipConsensus` at its config-default value. Tested: [`common/request_test.go:409`](https://github.com/erpc/erpc/blob/main/common/request_test.go#L409), [`erpc/skip_consensus_directive_test.go:125-153`](https://github.com/erpc/erpc/blob/main/erpc/skip_consensus_directive_test.go#L125-L153).
+7. **`EnforceGetLogsBlockRange` cannot be overridden per-request via HTTP.** `SetDefaults` copies `DirectiveDefaults` values into `Evm.Integrity`; the architecture layer reads from the network config struct, not the per-request directive. Source: [`common/defaults.go:1957-1964`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1957-L1964).
+8. **`EnforceLogIndexStrictIncrements` counts globally, not per-receipt.** Indices must be contiguous across all receipts in the block response. Upstreams that reset `logIndex` per-receipt fail this check.
+9. **`ValidateTxHashUniqueness` rejects empty hashes; always-on dedup does not.** Enabling this on a chain that legitimately omits transaction hashes causes all responses to fail.
+10. **`ReceiptsCountExact` / `ReceiptsCountAtLeast` parse failures are silent.** A non-integer value leaves the pointer nil; no check fires and no warning is logged.
+11. **`ValidateReceiptTransactionMatch` and `ValidateContractCreation` are silently no-ops over HTTP.** `GroundTruthTransactions` cannot be supplied via headers; both directives only activate in Go library mode.
+12. **`ValidateTransactionFields` and `ValidateTransactionBlockInfo` skip hash-only blocks.** When `eth_getBlockByNumber` returns hash-only transactions, the validation loop is entirely bypassed.
+13. **Batch responses never emit `X-ERPC-*` diagnostic headers.** Use per-response `id` fields for batch diagnostics.
+14. **`executionHeaders: summary` removes only `X-ERPC-Upstreams`.** All counter and metadata headers still emit. Use `"off"` to suppress everything.
+15. **Selector-scoped served-tip partitions are capped.** Beyond `maxServedTipPartitions` per network, no partition is created and the stateless fallback is used silently — no error. Source: [`erpc/networks.go:429`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L429).
+16. **`ValidateLogFields` cross-checks log fields against the enclosing receipt, not the block.** Absent log context fields (e.g., `blockHash` missing from a log entry) pass silently even when the receipt's field is set.
+17. **`nil *bool` in `DirectiveDefaultsConfig` ≠ `false *bool`.** Nil means "not set — skip"; a `*false` pointer means "explicitly disable". Only non-nil pointers are applied in `ApplyDirectiveDefaults`. Source: [`common/request.go:570-580`](https://github.com/erpc/erpc/blob/main/common/request.go#L570-L580).
+18. **`ValidateHeaderFieldLengths` struct comment is stale.** `common/request.go:172` says "only via config/library, not HTTP headers" — incorrect. The directive is fully HTTP-settable. Source: [`common/request.go:797-798`](https://github.com/erpc/erpc/blob/main/common/request.go#L797-L798).
 
 ### Observability
 
@@ -366,7 +381,7 @@ Directives have no dedicated Prometheus metrics; their effects appear in existin
 | `erpc_upstream_request_retries_total{reason="integrity_validation"}` | counter | Each retry due to a failed validation directive |
 | `erpc_network_consensus_rounds_total` | counter | Consensus rounds; `SkipConsensus=true` prevents increment |
 
-**Trace / log.** `X-ERPC-Force-Trace: true` forces OTel sampler to record the span regardless of sampling rate (attribute `erpc.force_trace = true`). Source: [`common/tracing_util.go:89-100`](https://github.com/erpc/erpc/blob/main/common/tracing_util.go#L89-L100). At `trace` level, `applied request directives` is logged with `Interface("directives", ...)` after every `EnrichFromHttp` call. Source: [`erpc/http_server.go:659`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L659).
+**Trace / log.** `X-ERPC-Force-Trace: true` (or `force-trace` query param) forces OTel sampler to record the span regardless of sampling rate (attribute `erpc.force_trace = true`). Source: [`common/tracing_util.go:89-100`](https://github.com/erpc/erpc/blob/main/common/tracing_util.go#L89-L100). `Request.Lock` / `Request.RLock` detail spans are emitted inside directive mutations ([`common/request.go:924-934`](https://github.com/erpc/erpc/blob/main/common/request.go#L924-L934)). At `trace` level, `applied request directives` is logged with `Interface("directives", ...)` after every `EnrichFromHttp` call. Source: [`erpc/http_server.go:659`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L659).
 
 ### Source code entry points
 

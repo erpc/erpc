@@ -144,6 +144,28 @@ no change. The tuner adjusts rules on the budget — which may be shared with ot
 upstreams. If two upstreams share a budget and both have auto-tuners, the tuner that fires
 last wins; there is no coordination.
 
+**Envoy status codes.** The Envoy ratelimit library produces three response codes per descriptor. eRPC only inspects `OVER_LIMIT`:
+
+| Status | Counter range after increment | eRPC action | Internal stats |
+|---|---|---|---|
+| `OK` | `counter ≤ nearLimitThreshold` | Allow | `Stats.WithinLimit` |
+| `OK` (near limit) | `nearLimitThreshold < counter ≤ maxCount` | Allow | `Stats.WithinLimit` + `Stats.NearLimit` |
+| `OVER_LIMIT` | `counter > maxCount` | Block | `Stats.OverLimit` |
+
+Where `nearLimitThreshold = floor(maxCount × nearLimitRatio)`. Default ratio 0.8: for `maxCount=100`, requests 81–100 are allowed (near-limit stats only); request 101 is blocked. eRPC never surfaces `NEAR_LIMIT` to callers. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="306" />
+
+**`TryAcquirePermit` flow.** (1) If cache is nil → fail-open `(true, nil)`. (2) `GetRulesByMethod` returns empty → allow (no rules match). (3) If any matching rule uses `perIP`/`perUser`/`perNetwork` and `req == nil` → return error. (4) Single matching rule: evaluate directly without spawning a goroutine. (5) Multiple rules: fan-out goroutines, `atomic.Bool` short-circuits on first `OVER_LIMIT`. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="153-244" />
+
+**Cache key format.** `{cacheKeyPrefix}{domain}_{descriptor_entries_concatenated}_{time_window_bucket}`. The `erpc_rl_` prefix ensures isolation from other Envoy ratelimit users on the same Redis. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="76" />
+
+**Memory store eviction.** Each shard prunes lazily: on every `DoLimit` call, if the shard's last-prune timestamp differs from the current unix second, all buckets with `expiry ≤ now` are deleted. This is O(#buckets) per shard — not O(#keys). Source: <SourceLink file="upstream/ratelimiter_mem_cache.go" lines="91-100" />
+
+**Admission cap derivation.** `remoteAdmissionCap = max(256, connPoolSize × 32)`. The ×32 multiplier accounts for radix's implicit pipelining window (up to 32 commands per connection). Pool of 8 → cap 256 (floor). Pool of 64 → cap 2048. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="281-291" />
+
+**Auto-tuner minimum sample floor.** The tuner skips adjustment when `totalCount < 10` — insufficient signal. Counters are reset at the start of `maybeAdjust` regardless, so a sustained pattern of exactly 9 requests per period will perpetually reset the clock. Source: <SourceLink file="upstream/ratelimiter_autotuner.go" lines="83-142" />
+
+**Auto-tuner requires a budget.** An upstream without `rateLimitBudget` set never gets an auto-tuner instance, even if `rateLimitAutoTune` is explicitly configured. Source: <SourceLink file="upstream/upstream.go" lines="1322" />
+
 **Shared budgets.** A budget ID is a plain string. Any number of attachment points — across
 projects, networks, upstreams, and auth strategies — can reference the same ID, sharing the
 same counters. In Redis mode this sharing extends across eRPC instances.
@@ -172,7 +194,9 @@ limiter. Remove `waitTime` from any existing config to suppress the warning.
 | `rateLimiters.store.redis.connPoolSize` | int | `8` | Radix connection pool size. Derives admission cap: `max(256, connPoolSize × 32)`. Source: <SourceLink file="common/defaults.go" lines="955" /> |
 | `rateLimiters.store.redis.initTimeout` | Duration | `5s` | Connection establishment timeout. Source: <SourceLink file="common/defaults.go" lines="958" /> |
 | `rateLimiters.store.redis.getTimeout` | Duration | `1s` | Per-call DoLimit timeout. When exceeded, request **fail-opens** and `erpc_rate_limiter_failopen_total{reason="limit_timeout"}` increments. Source: <SourceLink file="common/defaults.go" lines="961" /> |
-| `rateLimiters.store.nearLimitRatio` | float32 | `0.8` | Envoy near-limit threshold fraction. **Has no effect on eRPC blocking decisions** — eRPC only checks `OVER_LIMIT`; `NEAR_LIMIT` is never returned to callers. Only alters internal Envoy stats counters. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="74" /> |
+| `rateLimiters.store.redis.setTimeout` | Duration | `3s` | **Unused by the rate limiter** — present for struct sharing with the data-connector Redis config. Source: <SourceLink file="common/defaults.go" lines="964" /> |
+| `rateLimiters.store.redis.lockRetryInterval` | Duration | `500ms` | **Unused by the rate limiter** — present for struct sharing with the data-connector Redis config. Source: <SourceLink file="common/defaults.go" lines="967" /> |
+| `rateLimiters.store.nearLimitRatio` | float32 | `0.8` | Envoy near-limit threshold fraction (`nearLimitThreshold = floor(maxCount × nearLimitRatio)`). **Has no effect on eRPC blocking decisions** — eRPC only checks `OVER_LIMIT`; `NEAR_LIMIT` is never returned to callers. Only alters internal Envoy stats counters, which are not exported to Prometheus. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="74" /> |
 | `rateLimiters.store.cacheKeyPrefix` | string | `"erpc_rl_"` | Prefix for all Redis/memory cache keys. **Footgun:** two eRPC deployments sharing the same Redis with the same prefix will merge their counters. Use distinct prefixes per deployment (`"erpc_prod_"`, `"erpc_staging_"`). Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="76" /> |
 
 #### `rateLimiters.budgets[]`
@@ -182,8 +206,8 @@ limiter. Remove `waitTime` from any existing config to suppress the warning.
 | `budgets[].id` | string | required | Unique identifier referenced by `rateLimitBudget` fields. Source: <SourceLink file="common/config.go" lines="1806" /> |
 | `budgets[].rules[]` | list | required (min 1) | At least one rule required; empty list fails validation. Source: <SourceLink file="common/validation.go" lines="199" /> |
 | `budgets[].rules[].method` | string | `"*"` | JSON-RPC method name or glob (`eth_*`, `*`). Default set by `SetDefaults`. Source: <SourceLink file="common/defaults.go" lines="2818" /> |
-| `budgets[].rules[].maxCount` | uint32 | required | Max requests per `period`. Mutable at runtime by auto-tuner. **Footgun: `maxCount: 0` means always-blocked**, not unlimited — the Envoy library sets `overLimitThreshold=0` so every request is immediately `OVER_LIMIT`. Omit `rateLimitBudget` entirely for unrestricted access. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="109-119" /> |
-| `budgets[].rules[].period` | RateLimitPeriod | `second` | Window granularity. Valid strings: `second`/`1s`, `minute`/`1m`, `hour`/`1h`, `day`/`1d`, `week`/`7d`, `month`/`30d`, `year`/`365d`. **Footgun:** `"2h"` is rejected even though it parses — only values exactly equal to a canonical duration are accepted. Source: <SourceLink file="common/config.go" lines="1882-1950" /> |
+| `budgets[].rules[].maxCount` | uint32 | required | Max requests per `period`. Mutable at runtime by auto-tuner. **Footgun: `maxCount: 0` means always-blocked**, not unlimited — the Envoy library sets `overLimitThreshold=0` so every request is immediately `OVER_LIMIT`. Omit `rateLimitBudget` entirely for unrestricted access. **uint32 overflow guard:** `AdjustBudgetByFactor` computes the new value as float64 and clamps to `math.MaxUint32` (4,294,967,295) before narrowing to uint32, preventing wrap-around from a large `increaseFactor`. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="109-119" /> |
+| `budgets[].rules[].period` | RateLimitPeriod | `second` | Window granularity. Accepted string aliases (case-insensitive): `second`/`1s`, `minute`/`1m`/`60s`, `hour`/`1h`/`3600s`, `day`/`1d`/`24h`/`86400s`, `week`/`7d`/`168h`/`604800s`, `month`/`30d`/`720h`/`2592000s`, `year`/`365d`/`8760h`/`31536000s`. Integer enum values `0`–`6` also accepted. **Footgun:** `"2h"` is rejected even though it parses — only values exactly equal to a canonical duration are accepted. Similarly, `"90s"` (= 1.5 minutes) is rejected. Source: <SourceLink file="common/config.go" lines="1882-1950" /> |
 | `budgets[].rules[].perIP` | bool | `false` | Partition counters by client IP. **Footgun:** when `clientIP` is empty or `"n/a"` (e.g. non-HTTP transport), the `ip` descriptor is silently omitted and the rule uses a shared global counter for all IP-less callers. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="256-264" /> |
 | `budgets[].rules[].perUser` | bool | `false` | Partition counters by authenticated user ID. Falls back to global counter when user label is empty or `"n/a"`. Source: <SourceLink file="common/config.go" lines="1816" /> |
 | `budgets[].rules[].perNetwork` | bool | `false` | Partition counters by network ID. Source: <SourceLink file="common/config.go" lines="1818" /> |
@@ -201,6 +225,9 @@ limiter. Remove `waitTime` from any existing config to suppress the warning.
 | `projects[].networks[].rateLimitBudget` | Network-level | 3rd | <SourceLink file="erpc/networks.go" lines="1112" /> |
 | `projects[].upstreamDefaults.rateLimitBudget` | Default for all upstreams | 4th | <SourceLink file="common/defaults.go" lines="1514" /> |
 | `projects[].upstreams[].rateLimitBudget` | Upstream-level | 4th | <SourceLink file="upstream/upstream.go" lines="460" /> |
+| `projects[].auth.strategies[].siwe.rateLimitBudget` | SIWE per-session | 1st | <SourceLink file="auth/strategy_siwe.go" lines="53" /> |
+| `projects[].auth.strategies[].network.rateLimitBudget` | IP-network strategy | 1st | <SourceLink file="auth/strategy_network.go" lines="65" /> |
+| `projects[].auth.strategies[].database.failOpen.rateLimitBudget` | DB fail-open | 1st | <SourceLink file="auth/strategy_database.go" lines="526" /> |
 
 User-level budget (set by auth strategy on the user object) overrides strategy-level `rateLimitBudget`. Source: <SourceLink file="auth/authorizer.go" lines="119-122" />
 
@@ -491,16 +518,18 @@ projects: [{
 
 ### Request/response behavior
 
-- **Auth, project, and network-level blocks** return HTTP 429 with a JSON-RPC error body.
-  Error codes: `ErrAuthRateLimitRuleExceeded`, `ErrProjectRateLimitRuleExceeded`,
-  `ErrNetworkRateLimitRuleExceeded`.
-- **Upstream-level blocks** (`ErrUpstreamRateLimitRuleExceeded`) do NOT return HTTP 429
-  on the wire. The HTTP status switch at `erpc/http_server.go:1484-1490` omits this code;
-  the error wraps into `ErrNoUpstreamsAvailable` and returns HTTP 200 with a JSON-RPC error
-  body. The `ErrorStatusCode()=429` only affects the gRPC adapter path.
-- **`ErrRateLimitBudgetNotFound`** is a runtime error, not a startup error. A typo in
-  `rateLimitBudget` is not caught at config validation; the error fires on the first request
-  to hit that code path and returns HTTP 200 (wrapped).
+Full error code reference:
+
+| Error | HTTP status on wire | When produced |
+|---|---|---|
+| `ErrAuthRateLimitRuleExceeded` | 429 | Auth-level budget rule fires. Source: <SourceLink file="common/errors.go" lines="545" /> |
+| `ErrProjectRateLimitRuleExceeded` | 429 | Project-level budget rule fires. Source: <SourceLink file="common/errors.go" lines="1738" /> |
+| `ErrNetworkRateLimitRuleExceeded` | 429 | Network-level budget rule fires. |
+| `ErrUpstreamRateLimitRuleExceeded` | **200** (despite `ErrorStatusCode()=429`) | Upstream-level budget rule fires; wrapped into `ErrNoUpstreamsAvailable`. The `ErrorStatusCode()=429` only affects the gRPC adapter path. Source: <SourceLink file="common/errors.go" lines="1801-1821" /> |
+| `ErrRateLimitBudgetNotFound` | 200 (wrapped) | Budget ID typo — runtime error, not caught at startup. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="224" /> |
+| `ErrRateLimitRuleNotFound` | 200 (wrapped) | **No production call sites** — reserved for future use. Source: <SourceLink file="common/errors.go" lines="1723" /> |
+
+- **`rateLimiters` absent from config = full passthrough.** When `rateLimiters` is omitted entirely, `bootstrap()` logs `"no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used"` at debug level and returns immediately — no budgets are registered and every request is allowed. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="48-51" />
 - No response carries a `Retry-After` header from eRPC.
 
 ### Best practices
@@ -545,6 +574,9 @@ projects: [{
 16. **Auto-tuner only increases when `errorRate == 0.0` exactly.** Partial improvement in `(0, threshold]` produces no adjustment — budget will not grow back until error rate reaches exactly zero. Source: [`upstream/ratelimiter_autotuner.go:L107-L112`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_autotuner.go#L107-L112)
 17. **`minBudget: 0` is no floor.** Default `minBudget=0` means no clamping floor — the auto-tuner can drive `maxCount` to 0, making the budget always-blocked. Set to at least 1. Source: <SourceLink file="common/config.go" lines="1057" />
 18. **`nearLimitRatio` has no effect on blocking decisions.** eRPC only inspects `OVER_LIMIT`; `NEAR_LIMIT` is never surfaced. The field only affects internal Envoy stats counters, which are not exported to Prometheus. Source: [`upstream/ratelimiter_budget.go:L306`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go#L306)
+19. **No enforcement on nil request when all rules are non-scoped.** If `req == nil` is passed and all matching rules have `perIP=false`, `perUser=false`, `perNetwork=false`, validation does not reject the nil request — it proceeds with the method-only descriptor. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="188-191" />
+20. **`ErrRateLimitRuleNotFound` has no production call sites.** The error type is defined in `common/errors.go` but no production code calls `NewErrRateLimitRuleNotFound` — it appears reserved for future use. Source: <SourceLink file="common/errors.go" lines="1723" />
+21. **Admission cap floor of 256 applies regardless of pool size.** Even with `connPoolSize: 1`, the admission cap is 256. Small pools on low-traffic instances still allow 256 concurrent Redis calls per budget before shedding. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="281-291" />
 
 ### Observability
 
@@ -556,9 +588,24 @@ projects: [{
 | `erpc_rate_limiter_remote_inflight` | gauge | `budget` | Incremented when a Redis DoLimit goroutine starts; decremented on completion or panic |
 | `erpc_rate_limiter_remote_admission_shedded_total` | counter | `budget` | Admission semaphore was full; request fail-opened without spawning a goroutine |
 | `erpc_rate_limiter_remote_duration_seconds` | histogram | `budget, result` | Duration of each Redis DoLimit call; `result` ∈ `{ok, over_limit, fail_open}` |
+| `erpc_rate_limiter_budget_decision_total` | counter | `project, network, category, finality, user, agent_name, budget, method, scope, decision` | **DEPRECATED** — replaced by `erpc_rate_limits_total`. Zero call sites in production code. Source: <SourceLink file="telemetry/metrics.go" lines="515" /> |
 | `erpc_unexpected_panic_total` | counter | `origin, store, fingerprint` | Redis DoLimit goroutine panicked and was recovered; `origin="ratelimiter-redis-dolimit"` |
 
 Trace spans: `RateLimiter.TryAcquirePermit` (attrs: `budget`, `method`) and `RateLimiter.DoLimit` (attrs: `budget`, `method`, `scope`, `result`, one per rule evaluated). Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="161" />, <SourceLink file="upstream/ratelimiter_budget.go" lines="279" />
+
+**Log messages.**
+
+| Level | Message | When |
+|---|---|---|
+| `Debug` | `"no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used"` | `cfg == nil` at bootstrap. |
+| `Debug` | `"initializing rate limiter budget"` | Each budget initialized. |
+| `Debug` | `"preparing rate limiter rule: ..."` | Each rule added to budget. |
+| `Warn` | `"failed to initialize Redis rate limiter on first attempt (rate limiting will fail-open until connected, retrying in background)"` | Redis first-connect fails. |
+| `Info` | `"successfully connected to Redis for rate limiting"` | Redis connected. |
+| `Debug` | `"rate limiter timeout exceeded, failing open"` | `doLimitWithTimeout` timer fires. Logged at debug level only to avoid spam under sustained Redis pressure. |
+| `Warn` | `"adjusting rate limiter budget from: X to: Y"` | Auto-tuner changes `maxCount`. |
+| `Info` | `"auto-tuner: adjusting rate limit budget"` | Auto-tuner fires (method, prev, next, errorRate, samples, direction). |
+| `Warn` | `"rateLimiter.*.budget.rules.*.waitTime is deprecated and will be ignored"` | `waitTime != 0` at validation. |
 
 ### Source code entry points
 

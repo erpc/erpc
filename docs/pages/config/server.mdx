@@ -157,6 +157,15 @@ All fields live under `server.` unless noted. `Duration` accepts Go duration str
 | `server.trustedIPHeaders` | `[]string` | `[]` (none trusted by default) | Header names parsed XFF-style for real client IP, only when the direct peer is a trusted forwarder. RFC 7239 `Forwarded` is not supported. <SourceLink file="common/defaults.go" lines="730-733" /> |
 | `server.responseHeaders` | `map[string]string` | `nil` | Static headers added to every response. Values are env-expanded once at startup (`${VAR}` and `$VAR`). **Footgun:** headers whose value expands to empty string are silently dropped with only a Debug log — no warning, no error. <SourceLink file="erpc/http_server.go" lines="135-148" /> |
 | `server.executionHeaders` | `*ExecutionHeadersMode` | `"all"` | `"all"` = counters + metadata + per-attempt `X-ERPC-Upstreams` log; `"summary"` = counters + metadata; `"off"` = no `X-ERPC-*` diagnostic headers. <SourceLink file="common/defaults.go" lines="720-723" /> |
+| `healthCheck.mode` | `HealthCheckMode` | `"networks"` | `"simple"` = plain `OK` text; `"networks"` = per-network JSON; `"verbose"` = full JSON. <SourceLink file="erpc/healthcheck.go" lines="337-396" /> |
+| `healthCheck.auth` | `*AuthConfig` | `nil` | When set, a dedicated auth registry guards healthcheck endpoints. <SourceLink file="erpc/http_server.go" lines="201-207" /> |
+| `healthCheck.defaultEval` | `string` | `"any:initializedUpstreams"` | Default eval strategy when `?eval=` query param is absent. <SourceLink file="erpc/healthcheck.go" lines="106-112" /> |
+| `projects[].cors.allowedOrigins` | `[]string` | `["*"]` | Wildcard-matched against `Origin` header. Configured per-project (and on admin) but enforced by the HTTP server. <SourceLink file="erpc/http_server.go" lines="1022-1033" /> |
+| `cors.allowedMethods` | `[]string` | `["GET","POST","OPTIONS"]` | Joined into `Access-Control-Allow-Methods`. <SourceLink file="erpc/http_server.go" lines="1055" /> |
+| `cors.allowedHeaders` | `[]string` | `["content-type","authorization","x-erpc-secret-token"]` | Joined into `Access-Control-Allow-Headers`. <SourceLink file="erpc/http_server.go" lines="1056" /> |
+| `cors.exposedHeaders` | `[]string` | `nil` | Joined into `Access-Control-Expose-Headers`. <SourceLink file="erpc/http_server.go" lines="1057" /> |
+| `cors.allowCredentials` | `*bool` | `false` | Emits `Access-Control-Allow-Credentials: true` only when true. <SourceLink file="erpc/http_server.go" lines="1059-1061" /> |
+| `cors.maxAge` | `int` | `3600` | Emits `Access-Control-Max-Age` when > 0. <SourceLink file="erpc/http_server.go" lines="1063-1065" /> |
 
 **Hardcoded constants (non-configurable):**
 - `IdleTimeout` = 300s on both servers
@@ -355,18 +364,24 @@ Note: `writeFatalError` (panics, write failures) and the timeout/cancel paths fo
 - Batch responses are always HTTP 200 and carry no `X-ERPC-*` diagnostic headers; each element is written as a streaming JSON array. Source: <SourceLink file="erpc/http_server.go" lines="703-720" />
 
 **Diagnostic response headers** (single responses only; `setResponseHeaders`):
-- `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts/-Retries/-Hedges`, `X-ERPC-Network-Attempts/-Retries/-Hedges` — counters, zero-filled on early errors; `mode: off` removes them entirely
+- `X-ERPC-Version`, `X-ERPC-Commit` — emitted on every response (build-time ldflags vars, defaults `"dev"` and `"none"`). <SourceLink file="erpc/http_server.go" lines="260-261" />
+- `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts/-Retries/-Hedges`, `X-ERPC-Network-Attempts/-Retries/-Hedges` — counters, **zero-filled on early errors** (not omitted; only `mode: off` removes them). <SourceLink file="erpc/http_server.go" lines="1149-1166" />
+- `X-ERPC-Cache-Attempts/-Retries/-Hedges` — emitted only when the cache scope was exercised. <SourceLink file="erpc/http_server.go" lines="1170-1174" />
+- `X-ERPC-Consensus-Slots`, `X-ERPC-Consensus-Disputes`, `X-ERPC-Consensus-Low-Participants` — emitted only when consensus was exercised and the count is > 0. <SourceLink file="erpc/http_server.go" lines="1175-1183" />
 - `X-ERPC-Cache: HIT|MISS`, `X-ERPC-Upstream`, `X-ERPC-Duration` — response metadata
 - `X-ERPC-Upstreams` (mode `all` only): per-attempt participation log in the form `<id>=<reason>:<outcome>:<duration>ms[:won]`
+- `traceparent` (+ `tracestate`) — injected when tracing is enabled. <SourceLink file="common/tracing_util.go" lines="58-65" />
 
 **Request headers with server-level effects:**
 - `Host` — aliasing match (port stripped)
 - `Content-Encoding: gzip` — inbound body decompression (always, regardless of `enableGzip`)
 - `Accept-Encoding: gzip` — response compression eligibility
-- `Content-Type: application/grpc` over HTTP/2 — gRPC mux on shared port (bypasses `TimeoutHandler`)
+- `Content-Type: application/grpc` over HTTP/2 — gRPC mux on shared port (bypasses `TimeoutHandler` and gzip)
 - `Origin` — CORS evaluation; absent Origin bypasses CORS entirely
-- `X-ERPC-Force-Trace: true|1|yes` — force-sample the OTel trace for this request
-- Auth headers: `X-ERPC-Secret-Token`, `Authorization: Basic|Bearer`, `?secret=`, `?jwt=`, `?signature=&message=`, `X-Siwe-*`
+- `X-ERPC-Force-Trace: true|1|yes` or `?force-trace=true|1|yes` — force-sample the OTel trace for this request. <SourceLink file="common/tracing_util.go" lines="106-119" />
+- `traceparent` / `tracestate` — W3C trace-context extraction on ingress. <SourceLink file="common/tracing_util.go" lines="67-73" />
+- `?eval=` — healthcheck strategy override (bypasses `healthCheck.defaultEval`). <SourceLink file="erpc/healthcheck.go" lines="106-112" />
+- Auth headers: `?token=` (deprecated), `X-ERPC-Secret-Token`, `Authorization: Basic|Bearer`, `?secret=`, `?jwt=`, `?signature=&message=`, `X-Siwe-Message`/`X-Siwe-Signature`. <SourceLink file="auth/http.go" lines="13" />
 
 ### Best practices
 
@@ -400,6 +415,13 @@ Note: `writeFatalError` (panics, write failures) and the timeout/cancel paths fo
 18. **RFC 7239 `Forwarded` is dead code** — only headers named in `trustedIPHeaders` are consulted, parsed XFF-style. Source: <SourceLink file="erpc/http_server.go" lines="1856-1881" />
 19. **CORS metric label mismatch.** The label named `project` is populated with the URL path, not the project ID. Source: <SourceLink file="erpc/http_server.go" lines="1020" />
 20. **`serveArchitecture`-only aliasing requires a project in the URL path.** Combining `serveArchitecture` + `serveChain` without `serveProject` is always `ErrInvalidUrlPath`. Source: <SourceLink file="erpc/http_server.go" lines="963-990" />
+21. **OPTIONS to a project without CORS config falls through to normal request handling.** The OPTIONS early-return lives inside the `CORS != nil` branch; a project with no `cors:` block sends an empty body OPTIONS through the full JSON-RPC path, returning a JSON-RPC error (not a 204). Source: <SourceLink file="erpc/http_server.go" lines="343-347" />
+22. **Gzip decision is first-write-only.** A response whose first chunk is smaller than 1024 bytes is never compressed, even if subsequent writes are large. Source: <SourceLink file="erpc/http_server.go" lines="1708-1717" />
+23. **Done/canceled race silently drops the response.** If the inner handler finishes but the request context has already errored (e.g. a race between handler return and deadline), nothing is written to the socket. The timeout layer has already responded. Source: <SourceLink file="erpc/http_timeout.go" lines="72-80" />
+24. **Counter headers are zero-filled on early errors, not omitted.** Even URL-parse or project-lookup failures emit `X-ERPC-Attempts: 0`, `X-ERPC-Upstream-Attempts: 0`, etc., because `writeCounterHeaders` runs against a nil-safe snapshot. Only `executionHeaders: "off"` suppresses them entirely. Source: <SourceLink file="erpc/http_server.go" lines="1149-1166" />
+25. **`ErrUnknown` fallback body is not JSON-RPC shaped.** When `processErrorBody` receives an error that survives all unwrapping as neither a `*common.BaseError` nor `common.StandardError`, it produces `{"code":"ErrUnknown","message":"unexpected server error","cause":{...}}` — a struct dump, not `{"jsonrpc":"2.0","error":{...}}`. Clients parsing `response.error.code` as an integer will fail; detection must branch on whether the outer object has a `code` string key vs an `error` object key. Source: <SourceLink file="erpc/http_server.go" lines="1450-1454" />
+26. **`ErrorStatusCode()` on error types is dead code.** Every error type in `common/errors.go` implements `ErrorStatusCode() int`, but there are no call sites. The wire HTTP status is determined exclusively by the two switch blocks in `determineResponseStatusCode` and `handleErrorResponse` using `common.HasErrorCode`. Reading an error type's `ErrorStatusCode()` to infer the wire status gives wrong answers for many types (e.g. `ErrNetworkInitializing` → 503, `ErrUpstreamRateLimitRuleExceeded` → 429 per the method, but neither appears in the switch). Source: <SourceLink file="erpc/http_server.go" lines="1280-1317" />
+27. **Sonic encoder writes a trailing newline and disables HTML escaping globally.** The early-error path uses `encoder.Encode` (trailing `\n`) and sonic's HTML escaping is off (`common/sonic.go`). JSON field values such as URLs are not HTML-escaped in error bodies. Source: <SourceLink file="erpc/http_server.go" lines="229-230" />
 
 ### Observability
 
@@ -412,12 +434,17 @@ Note: `writeFatalError` (panics, write failures) and the timeout/cancel paths fo
 
 **Trace spans:** `Http.ReceivedRequest` (SpanKind=server; attrs `http.method`, `http.url`, `http.scheme`, `http.user_agent`); `Request.Handle` per sub-request; detail spans `Http.ReadBody`, `Http.ParseRequests`, `HttpServer.WriteResponse`; `w3c traceparent`/`tracestate` extraction on ingress, injection on egress.
 
+**Note:** there is no generic `http_requests_total`-style server metric; request accounting happens at the network/upstream layers.
+
 **Notable log lines:**
 - `"received http request"` at **Info** — includes the full raw JSON body; sensitive params appear at default log level
 - `"entering draining mode → healthcheck will fail"` on SIGTERM
 - `"starting IPv4/IPv6 HTTP server on <addr>"` at listen
+- `"TLS enabled for IPv4/IPv6 HTTP server"` when TLS is active
+- `"http server forced to shutdown"` / `"http server stopped"` on graceful drain completion
 - `"custom response header configured"` / `"custom response header skipped (empty value after env expansion)"` for `responseHeaders`
 - `"invalid CIDR/IP in trusted forwarders; ignoring"` for malformed forwarder entries
+- `"CORS request from disallowed origin..."` at Debug when an origin is rejected
 
 ### Source code entry points
 

@@ -318,6 +318,92 @@ Entry point: <SourceLink file="common/grpc_errors.go" lines="12" />. BDS error c
 | gRPC `NotFound`, `OutOfRange` | `ErrEndpointMissingData` | −32014 | yes | yes |
 | gRPC `Internal`, `Unknown`, `Unavailable`, default | `ErrEndpointServerSideException` | −32603 | yes | yes |
 
+### `IsNonRetryableWriteMethod` — write-method guard
+
+[`architecture/evm/util.go:L7-L17`](https://github.com/erpc/erpc/blob/main/architecture/evm/util.go#L7-L17). Returns `true` for methods that MUST NOT be retried or hedged because they mutate state non-idempotently:
+
+```
+eth_sendTransaction
+eth_createAccessList
+eth_submitTransaction
+eth_submitWork
+eth_newFilter
+eth_newBlockFilter
+eth_newPendingTransactionFilter
+```
+
+**`eth_sendRawTransaction` is deliberately excluded.** The comment explains: it supports idempotency handling (the `ErrEndpointNonceException` `already_known`/`nonce_too_low` path lets eRPC detect and safely retry/hedge `sendRawTransaction` without double-submission risk).
+
+**Call sites** — used in two places in [`upstream/upstream_executor.go`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go):
+1. **Retry guard** (L243): if the method is a non-retryable write, `isRetryableTowardsUpstream` returns `false` even if the error would otherwise qualify.
+2. **Hedge guard** (L281): if the method is a non-retryable write, the hedge path is bypassed entirely.
+
+**Interaction with `ErrEndpointExecutionException` N-flag override.** For `eth_sendRawTransaction`, the normalizer overrides `retryableTowardNetwork=true` for revert/out-of-gas results (rules 9 and 14). This is safe precisely because `eth_sendRawTransaction` is NOT in `IsNonRetryableWriteMethod` — the two predicates are complementary.
+
+### `ErrUpstreamsExhausted.SummarizeCauses()` — bucket categories
+
+[`common/errors.go:L955-L1101`](https://github.com/erpc/erpc/blob/main/common/errors.go#L955-L1101). Iterates joined children and buckets into 19 categories. Category labels appended to error message as `"(N upstream X, M upstream Y)"`:
+
+| Category label | Codes detected |
+|---|---|
+| unsupported | `ErrCodeEndpointUnsupported` |
+| missing | `ErrCodeEndpointMissingData` |
+| rateLimit | `ErrCodeEndpointCapacityExceeded`, `ErrCodeUpstreamRateLimitRuleExceeded` |
+| billing | `ErrCodeEndpointBillingIssue` |
+| cbOpen | `ErrCodeFailsafeCircuitBreakerOpen` |
+| timeout | `context.DeadlineExceeded`, `ErrCodeEndpointRequestTimeout`, `ErrCodeNetworkRequestTimeout`, `ErrCodeFailsafeTimeoutExceeded` |
+| serverError | `ErrCodeEndpointServerSideException` |
+| cancelled | `ErrCodeUpstreamHedgeCancelled` |
+| client | `ErrCodeEndpointClientSideException`, `ErrCodeJsonRpcRequestUnmarshal`, `ErrCodeInvalidRequest`, `ErrCodeInvalidUrlPath` |
+| transport | `ErrCodeEndpointTransportFailure` |
+| unsynced | `ErrCodeUpstreamSyncing`, `ErrCodeUpstreamBlockUnavailable` |
+| excluded | `ErrCodeUpstreamExcludedByPolicy` |
+| nodeTypeMismatch | `ErrCodeUpstreamNodeTypeMismatch` |
+| ignores | `ErrCodeUpstreamMethodIgnored` |
+| skips | `ErrCodeUpstreamRequestSkipped` |
+| tooLarge | `ErrCodeEndpointRequestTooLarge`, `ErrCodeGetLogsExceededMaxAllowedRange`, `ErrCodeGetLogsExceededMaxAllowedAddresses`, `ErrCodeGetLogsExceededMaxAllowedTopics` |
+| auth | `ErrCodeEndpointUnauthorized` |
+| validation | `ErrCodeEndpointContentValidation` |
+| other | anything not matched above |
+
+### `TranslateToJsonRpcException` — ordered translation steps
+
+Entry: [`common/json_rpc.go:L1501`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1501). Steps applied in order — first match wins:
+
+| Step | Input condition | Output code / behavior |
+|---|---|---|
+| 1 | `ErrUpstreamsExhausted` | Scan children for dominant code (highest count; `ErrCodeUpstreamRequestSkipped` and `ErrCodeEndpointUnsupported` excluded; earliest per code wins ties). Replace with dominant child. When NO children exist, translate `ErrUpstreamsExhausted` itself (→ −32603). When all children are skipped/unsupported, client sees the first child's code (typically −32601 or −32603). |
+| 2 | Chain already contains `ErrCodeJsonRpcExceptionInternal` | Return as-is (upstream-derived normalized code preserved). |
+| 3 | `ErrCodeAuthRateLimitRuleExceeded` / `ErrCodeProjectRateLimitRuleExceeded` / `ErrCodeNetworkRateLimitRuleExceeded` / `ErrCodeUpstreamRateLimitRuleExceeded` | −32005 CapacityExceeded, message `"rate-limit exceeded"` |
+| 4 | `ErrCodeAuthUnauthorized` | −32016 Unauthorized, message `"unauthorized"` |
+| 5 | `ErrCodeUpstreamMethodIgnored` | −32601 UnsupportedException, message `"method ignored by upstream: <deepest msg>"` |
+| 6 | `ErrCodeJsonRpcRequestUnmarshal` | −32700 ParseException, message `"failed to parse json-rpc request"` |
+| 7 | `ErrCodeInvalidRequest` / `ErrCodeInvalidUrlPath` | −32602 InvalidArgument, message `"invalid request url and/or body"` |
+| 8 | `ErrCodeGetLogsExceededMaxAllowedRange` / `...Addresses` / `...Topics` | −32012 EvmLargeRange, message `"getLogs request exceeded max allowed range"` |
+| 9 | Fallback (anything else) | −32603 ServerSideException with deepest message |
+
+### Helper predicates
+
+| Predicate | Returns false / behavior | Source |
+|---|---|---|
+| `HasErrorCode(err, codes...)` | Traverses StandardError cause chain AND joined multi-errors; a non-retryable code anywhere poisons the whole chain | [`common/errors.go:L2333-L2359`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2333-L2359) |
+| `IsCapacityIssue(err)` | Returns true for: `ErrCodeProjectRateLimitRuleExceeded`, `ErrCodeNetworkRateLimitRuleExceeded`, `ErrCodeUpstreamRateLimitRuleExceeded`, `ErrCodeAuthRateLimitRuleExceeded`, `ErrCodeEndpointCapacityExceeded` | [`common/errors.go:L2500-L2509`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2500-L2509) |
+| `IsClientError(err)` | Returns true for: `ErrCodeEndpointClientSideException`, `ErrCodeJsonRpcRequestUnmarshal`, `ErrCodeGetLogsExceededMaxAllowedRange`, `ErrCodeGetLogsExceededMaxAllowedAddresses`, `ErrCodeGetLogsExceededMaxAllowedTopics` | [`common/errors.go:L2511-L2520`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2511-L2520) |
+| `IsClientDisconnect(err)` | Returns true for `context.Canceled`, `context.DeadlineExceeded`, or error message containing: `"use of closed network connection"`, `"broken pipe"`, `"connection reset by peer"`, `"ECONNRESET"`, `"EPIPE"` | [`common/errors.go:L129-L150`](https://github.com/erpc/erpc/blob/main/common/errors.go#L129-L150) |
+| `IsRetryableTowardsUpstream(err)` | Returns false if `HasErrorCode` finds any of: `ErrCodeFailsafeCircuitBreakerOpen`, `ErrCodeUpstreamRequestSkipped`, `ErrCodeUpstreamMethodIgnored`, `ErrCodeEndpointUnsupported`, `ErrCodeEndpointBillingIssue`, `ErrCodeJsonRpcRequestUnmarshal`, `ErrCodeEndpointExecutionException`, `ErrCodeEndpointUnauthorized`, `ErrCodeEndpointRequestTooLarge`, `ErrCodeEndpointContentValidation`, or any `IsCapacityIssue` code. For `ErrUpstreamsExhausted` recurses over children — retryable iff ANY child is retryable. | [`common/errors.go:L2438-L2498`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2438-L2498) |
+
+### Extractor plumbing
+
+| Component | Role | Source |
+|---|---|---|
+| `JsonRpcErrorExtractor` interface | Injects arch-specific normalization into HTTP clients; avoids import cycles | [`common/error_extractor.go:L10-L12`](https://github.com/erpc/erpc/blob/main/common/error_extractor.go#L10-L12) |
+| `JsonRpcErrorExtractorFunc` | `http.HandlerFunc`-style adapter | [`common/error_extractor.go:L17-L21`](https://github.com/erpc/erpc/blob/main/common/error_extractor.go#L17-L21) |
+| `evm.JsonRpcErrorExtractor` | EVM impl delegating to `ExtractJsonRpcError` | [`architecture/evm/extractor.go:L11-L17`](https://github.com/erpc/erpc/blob/main/architecture/evm/extractor.go#L11-L17) |
+| Injection site | `evm.NewJsonRpcErrorExtractor()` passed to client registry | [`upstream/registry.go:L79`](https://github.com/erpc/erpc/blob/main/upstream/registry.go#L79) |
+| HTTP invocation | `c.errorExtractor.Extract(r, nr, jr, c.upstream)` | [`clients/http_json_rpc_client.go:L930`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L930) |
+| gRPC invocation | `common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)` | [`clients/grpc_bds_client.go:L925`](https://github.com/erpc/erpc/blob/main/clients/grpc_bds_client.go#L925) |
+| Vendor hook | `getVendorSpecificErrorIfAny` → `vn.GetVendorSpecificErrorIfAny(...)` fires BEFORE all generic rules | [`architecture/evm/error_normalizer.go:L878-L900`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L878-L900) |
+
 ### Worked examples
 
 **1. Diagnosing why a request exhausted all upstreams.** You see `erpc_network_failed_request_total` spike with `error="ErrUpstreamsExhausted/ErrEndpointRequestTimeout"`. The compound label (compact mode) tells you the inner code. Check `erpc_upstream_request_errors_total` filtered by `error` containing `Timeout` to see which upstream timed out most. Switch `metrics.errorLabelMode` to `"verbose"` temporarily in a staging environment to read the full message — never in production.
@@ -355,6 +441,10 @@ Entry point: <SourceLink file="common/grpc_errors.go" lines="12" />. BDS error c
 13. **`TranslateToJsonRpcException` skips `UpstreamRequestSkipped` and `EndpointUnsupported` when counting dominant error.** When all upstreams returned one of these codes, the first child's wire code is used (typically −32601 or −32603). Source: [`common/json_rpc.go:L1523-L1526`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1523-L1526)
 14. **BDS gRPC legacy extractor diverges from live path.** `evm.ExtractGrpcError` (no call sites) maps `TIMEOUT_ERROR`/`DeadlineExceeded` to `ErrEndpointServerSideException`; live `common.ExtractGrpcErrorFromGrpcStatus` maps both to `ErrEndpointRequestTimeout`. If the legacy function is ever restored, BDS timeout retry behavior will regress.
 15. **`ErrConsensusDispute` and `ErrConsensusLowParticipants` retryability follows the any-child rule.** Both aggregate per-upstream participant errors via `errors.Join`. If ANY single child is retryable, the consensus error is retryable network-wide. Source: [`common/errors.go:L2397-L2411`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2397-L2411)
+16. **`ErrEndpointClientSideException.ErrorStatusCode()` returns 200 for revert-class causes.** When the inner `ErrJsonRpcExceptionInternal` has `normalizedCode` of `3` (`JsonRpcErrorEvmReverted`), `-32000` (`JsonRpcErrorCallException`), or `-32003` (`JsonRpcErrorTransactionRejected`), the method returns 200 rather than 400 — an EVM revert is a valid execution outcome. Note that `ErrorStatusCode()` is dead code (zero call sites), but the wire behavior is consistent: `determineResponseStatusCode`/`handleErrorResponse` always return 200 for these cases via the default switch branch. Source: [`common/errors.go:L1894-L1905`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1894-L1905)
+17. **Legacy `evm.ExtractGrpcError` (dead code) has no `Canceled` branch.** The live `common.ExtractGrpcErrorFromGrpcStatus` maps gRPC `Canceled` to `ErrEndpointRequestCanceled`; the dead legacy function falls through to the default `ErrEndpointServerSideException` case. Additionally, the legacy function maps both BDS `TIMEOUT_ERROR` and gRPC `DeadlineExceeded` to `ErrEndpointServerSideException` (live path maps both to `ErrEndpointRequestTimeout`). If the legacy function is ever restored, BDS/gRPC timeout and cancellation retry behavior will regress. Source: [`architecture/evm/error_normalizer.go:L660-L876`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L660-L876) vs [`common/grpc_errors.go:L86-L97`](https://github.com/erpc/erpc/blob/main/common/grpc_errors.go#L86-L97)
+18. **`buildErrorResponseBody` sets `error.data` only under two conditions.** The `data` field is included only when `includeErrorDetails` is true AND the method is NOT `eth_call`. For `eth_call`, the revert data is intentionally suppressed in the top-level error body. Source: [`erpc/http_server.go:L1425-L1433`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1425-L1433)
+19. **`ErrJsonRpcExceptionInternal` prefixes its `CodeChain()` with the numeric normalized code.** The overridden `CodeChain()` produces `"<normalizedCode> &lt;- ErrJsonRpcExceptionInternal"` (e.g. `"-32014 <- ErrJsonRpcExceptionInternal"`). `NormalizedCode()` returns `details["normalizedCode"]` as a `JsonRpcErrorNumber`; `OriginalCode()` handles both `int` and `float64` types (JSON round-trip issue). Source: [`common/errors.go:L2202-L2222`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2202-L2222)
 
 ### Observability
 
@@ -367,6 +457,8 @@ Entry point: <SourceLink file="common/grpc_errors.go" lines="12" />. BDS error c
 | `erpc_unexpected_panic_total` | counter | scope, extra, **error** | Recovered panic |
 
 Alert on `severity="critical"` only. `severity="info"` covers client errors and EVM reverts; `severity="warning"` covers hedge discards and client disconnects.
+
+**Tracing.** `common.ErrorSummary(err)` is used as the OTel span status description on error. The `error.summary` span attribute is set in failsafe operations. Cache errors set `cache.error` / `cache.connector_error` span attributes. gRPC send errors set a `grpc.send_error` attribute. Source: [`common/tracing_core.go:L181`](https://github.com/erpc/erpc/blob/main/common/tracing_core.go#L181), [`data/failsafe.go:L240`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L240)
 
 ### Source code entry points
 

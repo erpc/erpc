@@ -327,14 +327,19 @@ appears as its own upstream span without follower short-circuiting:
 **Outbound batch**
 - `batchMaxSize: 0` means `len(batchRequests) >= 0` is always true → immediate flush on every request (equivalent to no batching). Always set a non-zero value.
 - Earliest deadline across all queued requests sets the batch HTTP context deadline. A short-deadline request can cut off the entire batch; all receive `ErrEndpointRequestTimeout`. Source: [`clients/http_json_rpc_client.go:L362-L372`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L362-L372).
+- A request whose context is already cancelled when `queueRequest` is called is failed immediately and never added to the batch map. Source: [`clients/http_json_rpc_client.go:L241-L253`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L241-L253).
+- On network error, all batched requests receive the error after a 5 ms grace window that lets per-request failsafe sentinels (`ErrDynamicTimeoutExceeded`) become observable before error classification. Source: [`clients/http_json_rpc_client.go:L470-L476`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L470-L476).
+- If the application context is cancelled during shutdown, `processBatch` drains silently without signalling pending requests (intentional — supervisor is shutting down). Source: [`clients/http_json_rpc_client.go:L305-L330`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L305-L330).
 - Duplicate JSON-RPC `id` in the pending map triggers an immediate flush before re-queuing the conflicting request. Source: [`clients/http_json_rpc_client.go:L255-L262`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L255-L262).
 - A single-object upstream response is treated as a broadcast error for all queued requests.
 - A non-JSON upstream body causes all queued requests to receive `ErrUpstreamMalformedResponse`.
 
 **Multiplexer**
-- Follower response `id` is always overwritten with the follower's original request `id` before delivery. Source: [`common/response.go:L641`](https://github.com/erpc/erpc/blob/main/common/response.go#L641).
+- Follower response `id` is always overwritten with the follower's original request `id` before delivery. `CopyResponseForRequest` also copies metadata fields (`upstream`, `fromCache`, `attempts`, `retries`, `hedges`, `evmBlockRef`, `evmBlockNumber`) verbatim from the leader's response. Source: [`common/response.go:L581-L647`](https://github.com/erpc/erpc/blob/main/common/response.go#L581-L647).
 - `X-ERPC-Skip-Cache-Read` on a follower has no effect — the directive is evaluated only on the leader's path; followers always receive the leader's (possibly cached) result. Source: [`erpc/networks.go:L983-L1001`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L983-L1001).
 - A cache hit on the leader closes the multiplexer; all followers receive the cached response. Followers cannot force a cache miss.
+- Deduplication scope is per `Network` instance: one `sync.Map` (`inFlightRequests`) is allocated per network in `NewNetwork`. Source: [`erpc/networks_registry.go:L164`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L164).
+- `CacheHash()` `hashValue()` handles `bool`, `int`, `float64`, `string`, `[]interface{}`, and `map[string]interface{}` recursively. Param types outside this set cause `CacheHash()` to return an error, silently bypassing the multiplexer. Source: [`common/json_rpc.go:L1453-L1500`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1453-L1500).
 
 ### Best practices
 
@@ -394,6 +399,9 @@ The leader's `Forward` span receives `multiplexer.hash` and `multiplexer.role = 
 | `DEBUG` | `"queuing request %+v for batch (current batch size: %d)"` | Each request added to outbound batch |
 | `DEBUG` | `"processing batch with %d requests"` | Each outbound batch flush |
 | `TRACE` | `"starting batch timer"` | First request in an empty batch |
+| `TRACE` | `"committing batch to process total of %d requests"` | Size-limit flush (batch reached `batchMaxSize`) |
+| `WARN` | `"unexpected response received without ID"` | Element in upstream batch array has null or missing `id` |
+| `WARN` | `"unexpected response received with ID: %s"` | Element `id` from upstream not found in the pending request map |
 | `ERROR` | `"some requests did not receive a response (matching ID)"` | Upstream returned fewer responses than sent |
 
 ### Source code entry points
@@ -408,8 +416,10 @@ The leader's `Forward` span receives `multiplexer.hash` and `multiplexer.role = 
 - [`common/json_rpc.go:L1385-L1409`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1385-L1409) — `JsonRpcRequest.CacheHash()`: `method:sha256(params)` with atomic caching
 - [`common/response.go:L581-L647`](https://github.com/erpc/erpc/blob/main/common/response.go#L581-L647) — `CopyResponseForRequest`: deep-clone with follower `id` overwrite
 - [`telemetry/metrics.go:L413-L417`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L413-L417) — `MetricNetworkMultiplexedRequests` counter
+- [`erpc/networks_registry.go:L164`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L164) — `NewNetwork`: allocates `inFlightRequests *sync.Map` used by the multiplexer
 - [`erpc/networks_multiplexer_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_multiplexer_test.go) — concurrent follower, stress, multi-wave, slow-upstream tests
 - [`clients/http_json_json_client_test.go:L105-L421`](https://github.com/erpc/erpc/blob/main/clients/http_json_json_client_test.go#L105-L421) — outbound batch race condition, timeout, partial response, single-object error, non-JSON response tests
+- [`erpc/networks_client_test.go:L130-L322`](https://github.com/erpc/erpc/blob/main/erpc/networks_client_test.go#L130-L322) — `TestNetwork_BatchRequests`: simple batch, duplicate IDs, single-object upstream error
 
 ### Related pages
 

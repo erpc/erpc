@@ -139,7 +139,7 @@ For domain-aliased deployments where a domain preselects all three of project + 
 
 **Evaluation strategies.** The `?eval=` query parameter (or `healthCheck.defaultEval`, or the hard-coded default `any:initializedUpstreams`) selects the evaluation strategy. An unknown eval value returns HTTP 502 with `"unknown evaluation strategy: <value>"` — not HTTP 400. The `?eval=` parameter always overrides `healthCheck.defaultEval` per-request.
 
-**Error-rate strategies.** These compute `errorsTotal / requestsTotal` from the health tracker's `*`-method and `DataFinalityStateAll` bucket. Only upstreams with at least one request are included. If all upstreams have zero traffic, the result is unhealthy: `"no error rate data available yet"`.
+**Error-rate strategies.** These compute `errorsTotal / requestsTotal` from the health tracker's `*`-method and `DataFinalityStateAll` bucket. Only upstreams with at least one request are included; upstreams with zero requests are completely excluded — they do not count toward threshold violations, but they also do not count as healthy for the `all:…` variants. If all upstreams have zero traffic, the result is unhealthy: `"no error rate data available yet"`.
 
 **Chain-ID strategy.** `checkEvmChainId` fans out concurrent `eth_chainId` RPC calls (semaphore capped at 10, 5-second per-upstream timeout) and compares each response to `ups.Config().Evm.ChainId`. For `any:`, one success passes the probe; for `all:`, every upstream must pass. With partial success under `any:`, the message is `"N / M upstreams passed (K failed)"`.
 
@@ -395,6 +395,7 @@ monitoring agents typically run on a pod IP, not `127.0.0.1`:
       "status": "OK",
       "message": "...",
       "config": {"networks": 2, "upstreams": 3, "providers": 0},
+      "initializer": {"...": "InitializerStatus"},
       "upstreams": {
         "upsId": {
           "network": "evm:1",
@@ -441,6 +442,7 @@ The body is a structured `ErrHealthCheckFailed` JSON-RPC error — not a plain s
 9. **`all:activeUpstreams` with provider-only projects bypasses the initialization check.** Even if the provider has 0 initialized upstreams, `hasUninitializedUpstreams` is forced `false`. The probe can still fail if 0 upstreams AND 0 providers are configured. Source: <SourceLink file="erpc/healthcheck.go" lines="663-670" />
 10. **`verbose` mode metrics use `*` wildcard aggregate.** `metricsTracker.GetUpstreamMethodMetrics(ups, "*", DataFinalityStateAll)` is rolled up across all methods and finality states. Method-level breakdown requires Prometheus. Source: <SourceLink file="erpc/healthcheck.go" lines="259-262" />
 11. **`any:evm:eth_chainId` with partial success is healthy.** If some upstreams fail but at least one passes, the result is HTTP 200 with message `"N / M upstreams passed (K failed)"`. Under `all:`, any single failure makes the probe unhealthy. Source: <SourceLink file="erpc/healthcheck.go" lines="896-905" />
+12. **`LastEvalAt` is non-zero after Bootstrap.** The health tracker records the timestamp of the most recent evaluation in `LastEvalAt`. Health-check exporters and external probers can use this field to detect stale selection state (no policy evaluation tick has occurred since startup). Source: [`erpc/healthcheck_test.go:L26-L45`](https://github.com/erpc/erpc/blob/main/erpc/healthcheck_test.go#L26-L45)
 
 ### Observability
 
@@ -455,6 +457,7 @@ The healthcheck handler does not emit any dedicated Prometheus metrics. The gene
 **Log messages:**
 - `"entering draining mode → healthcheck will fail"` — INFO when app context is cancelled
 - `"failed to encode health check response"` — ERROR on JSON encoding failure
+- `"registered network alias"` — DEBUG on each successful alias registration. Source: [`erpc/networks_registry.go:L347`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L347)
 - `"skipping duplicate alias registration with different target"` — WARN on duplicate network alias
 
 ### Source code entry points
@@ -466,6 +469,7 @@ The healthcheck handler does not emit any dedicated Prometheus metrics. The gene
 - [`common/config.go:L186-L208`](https://github.com/erpc/erpc/blob/main/common/config.go#L186-L208) — `HealthCheckConfig` struct, `HealthCheckMode` constants, eval-strategy constants
 - [`common/defaults.go:L738-L741`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L738-L741) — `HealthCheckConfig.SetDefaults`; canonical default mode `"networks"`
 - [`erpc/healthcheck_test.go`](https://github.com/erpc/erpc/blob/main/erpc/healthcheck_test.go) — integration tests for all eval strategies, drain mode, auth, provider-only, specific network scoping
+- [`erpc/networks_registry.go:L247-L255`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L247-L255) — `ResolveAlias` used to expand per-project network aliases during healthcheck path parsing
 
 ### Related pages
 

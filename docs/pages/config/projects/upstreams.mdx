@@ -147,6 +147,23 @@ with up to 256 idle connections per host (unlimited active), TCP keepalive at 15
 intervals, and a 60-second end-to-end call timeout. Proxy pools let you route outbound
 traffic through SOCKS5 or HTTP proxies, round-robined by an atomic counter.
 
+Fixed transport parameters (not user-configurable; same values for direct and proxy transports):
+
+| Parameter | Value |
+|---|---|
+| `MaxIdleConns` | `1024` |
+| `MaxIdleConnsPerHost` | `256` |
+| `MaxConnsPerHost` | `0` (unlimited) — prevents connection queuing under high RPS / high latency |
+| `IdleConnTimeout` | `90s` |
+| `ResponseHeaderTimeout` | `30s` |
+| `TLSHandshakeTimeout` | `10s` |
+| `ExpectContinueTimeout` | `1s` |
+| `http.Client.Timeout` (end-to-end) | `60s` |
+| Dial timeout | `10s` |
+| TCP keepalive interval | `15s` |
+
+(<SourceLink file="clients/http_json_rpc_client.go" lines="109-128" />; proxy transports: <SourceLink file="clients/proxy_pool_registry.go" lines="82-98" />)
+
 ### Config schema
 
 All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`ApplyDefaults`.
@@ -200,6 +217,10 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].evm.getLogsAutoSplittingRangeThreshold` | int64 | `0` | Proactive `eth_getLogs` range splitting at upstream scope. Details in [getLogs splitting](/reference/evm/getlogs-splitting). |
 | `upstreams[*].evm.traceFilterAutoSplittingRangeThreshold` | int64 | `0` | Same for `trace_filter` / `arbtrace_filter`. |
 | `upstreams[*].evm.integrity.eth_getBlockReceipts.enabled` | bool | `false` | Per-upstream receipt integrity checking. |
+| `upstreams[*].evm.integrity.eth_getBlockReceipts.checkLogIndexStrictIncrements` | `*bool` | nil | Sub-check: verify log indices strictly increment within a block. |
+| `upstreams[*].evm.integrity.eth_getBlockReceipts.checkLogsBloom` | `*bool` | nil | Sub-check: verify logs bloom filter consistency. |
+| `upstreams[*].evm.getLogsMaxAllowedRange` / `getLogsMaxAllowedAddresses` / `getLogsMaxAllowedTopics` / `getLogsSplitOnError` / `getLogsMaxBlockRange` | int64 / int64 / int64 / `*bool` / int64 | all zero/nil | **Deprecated and ignored at runtime.** Tagged `json:"-"` so invisible in JSON config dumps. A WARN is logged at registration if any `maxAllowed*` value `> 0` or `getLogsSplitOnError != nil`. Migrate to `networks[*].evm.*` equivalents. (<SourceLink file="upstream/registry.go" lines="107-118" />) |
+| `upstreams[*].evm.queryShim.*` | object | all zero/nil | Query-shim feature config (`enabled`, `allowedMethods`, `concurrency`, `maxBlockRange`, `maxLimit`, `defaultLimit`). Covered by the query-shim reference; listed here because the fields live on `EvmUpstreamConfig`. |
 | `upstreamDefaults` | `*UpstreamConfig` | nil | Project-level template. Gets its own `SetDefaults(nil)` first. Each upstream runs `ApplyDefaults` then `SetDefaults`. |
 | `proxyPools[*].id` | string | required | Pool name referenced by `upstreams[*].jsonRpc.proxyPool`. |
 | `proxyPools[*].urls` | `[]string` | required, min 1 | Proxy URLs. Accepted schemes: `http://`, `https://`, `socks5://` (case-insensitive prefix check — `socks4://` rejected at startup). |
@@ -778,20 +799,33 @@ export default createConfig({
 18. **Forwarded headers are NOT sent on batch requests.** `req.ForwardHeaders` is consulted
     only in `sendSingleRequest`; callers relying on bearer-token forwarding must not use
     batching for those requests.
+19. **Duplicate JSON-RPC IDs within a batch window flush the current batch.** If a second
+    request arrives with the same `id` as one already queued, the pending batch fires
+    immediately and the new request starts a fresh batch. This preserves ID-to-response
+    mapping correctness but reduces batch efficiency for clients that reuse IDs.
+    (<SourceLink file="clients/http_json_rpc_client.go" lines="255-261" />)
+20. **`ErrUpstreamMalformedResponse` is retryable.** Raised when a batch response body is
+    neither a JSON array nor a JSON object. Because it is not in the non-retryable
+    allowlist, eRPC retries on another upstream. If all upstreams return malformed
+    responses the request ends as `ErrUpstreamsExhausted`. HTTP status code on propagation
+    is 400 (method-level), but the JSON-RPC wire response to the caller is still HTTP 200.
 
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality | Every attempt including hedges |
-| `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality | Attempt errors except skipped/missing-data/cancelled |
-| `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality | `ErrUpstreamRequestSkipped` returned |
+| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name | Every attempt including hedges |
+| `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name | Attempt errors except skipped/missing-data/cancelled |
+| `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | `ErrUpstreamRequestSkipped` returned |
+| `erpc_upstream_request_missing_data_error_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | `ErrCodeEndpointMissingData` response |
+| `erpc_upstream_request_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Successful but emptyish result |
+| `erpc_upstream_response_size_bytes` | histogram | project, network, category, finality | Decoded result size of successful responses (buckets 4 KiB … 100 MiB) |
 | `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Once per attempt at classification |
 | `erpc_upstream_selection_total` | counter | project, network, upstream, category, reason, finality | Once per attempt start; reason = primary/retry/hedge |
 | `erpc_upstream_breaker_state_change_total` | counter | project, upstream, transition | Breaker state transition |
 | `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | 1 on cordon, 0 on uncordon |
 | `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Edge transitions (cordon/uncordon) only |
-| `erpc_upstream_cordon_duration_seconds` | histogram | project, network, upstream | Observed on each uncordon |
+| `erpc_upstream_cordon_duration_seconds` | histogram (1 s … 86 400 s) | project, network, upstream | Observed on each uncordon |
 | `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block above upper bound or not yet finalized |
 | `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block below lower bound / outside pruning window |
 

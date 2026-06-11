@@ -159,10 +159,10 @@ All fields are under `networks[].failsafe[].hedge` (or `upstreams[].failsafe[].h
 |---|---|---|---|
 | `hedge.delay` | `Duration \| AdaptiveDuration` | — (no hedge if absent) | Scalar sets `base` only (static mode). Object `{base, quantile, min, max}` enables adaptive mode. After `SetDefaults`, if `min==0` it becomes `100ms`; if `max==0` it becomes `999s`. Source: <SourceLink file="common/config.go" lines="1490" /> |
 | `hedge.delay.base` | `Duration` | `0` | Static addend. When `quantile==0`, this is the entire delay. When `quantile>0`, added to the quantile value before clamping. A scalar shorthand sets this field exclusively. |
-| `hedge.delay.quantile` | `float64` | `0` (static mode) | Percentile queried from the per-method `QuantileTracker`. Valid range `[0, 1]`. Not allowed for cache-scope failsafe. System template default: `0.7`. Source: <SourceLink file="common/adaptive_duration.go" lines="83-109" /> |
+| `hedge.delay.quantile` | `float64` | `0` (static mode) | Percentile queried from the per-method `QuantileTracker`. Valid range `[0, 1]`. When `> 0`, `base` or `max` must also be set (enforced by `AdaptiveDuration.validate` at <SourceLink file="common/adaptive_duration.go" lines="129" />). Not allowed for cache-scope failsafe. System template default: `0.7`. Source: <SourceLink file="common/adaptive_duration.go" lines="83-109" /> |
 | `hedge.delay.min` | `Duration` | `100ms` (auto-set by `SetDefaults` when `0`) | Floor applied when `quantile>0`. Cold-start fallback when no latency data exists. **Footgun:** manually setting `min: 0` on a quantile-mode spec causes hedges to fire immediately on cold start. Source: <SourceLink file="common/defaults.go" lines="2324-2326" /> |
 | `hedge.delay.max` | `Duration` | `999s` (auto-set by `SetDefaults` when `0`) | Ceiling applied when `quantile>0`. Prevents a runaway quantile from deferring the hedge indefinitely. Source: <SourceLink file="common/defaults.go" lines="2327-2329" /> |
-| `hedge.maxCount` | `int` | `1` (from `SetDefaults`); system auto-template uses `2` | Max *additional* attempts beyond the primary. `maxCount=1` means 2 total concurrent requests. `maxCount=0` disables hedging silently (`HasHedge()` returns false). **Footgun:** the system template (applied when no `projects` block exists) defaults to `2`; manual configs get `1`. Source: <SourceLink file="common/defaults.go" lines="2331-2337" /> |
+| `hedge.maxCount` | `int` | `1` (from `SetDefaults`); system auto-template uses `2` | Max *additional* attempts beyond the primary. `maxCount=1` means 2 total concurrent requests. `maxCount=0` disables hedging silently (`HasHedge()` returns false). Negative values are treated as `0` inside `RunHedged`. **Footgun:** the system template (applied when no `projects` block exists) defaults to `2`; manual configs get `1`. Source: <SourceLink file="common/defaults.go" lines="2331-2337" /> |
 
 **Legacy sibling fields** (backward-compatible, folded into `delay.*` at parse time by <SourceLink file="common/config.go" lines="1555-1571" />):
 
@@ -180,6 +180,23 @@ hedge:
   maxDelay: 2s
   maxCount: 1
 ```
+
+**Mixed use (object + legacy siblings).** When `delay` is given as an object AND a legacy sibling is present, legacy siblings only fill sub-fields left at zero by the object form. The `delay` object always takes precedence for any sub-field it sets:
+
+```yaml
+# delay.base and delay.quantile come from the object;
+# minDelay fills delay.min because the object left it at zero;
+# the bare quantile: 0.50 is IGNORED because delay.quantile is already 0.95
+hedge:
+  delay:
+    base: 100ms
+    quantile: 0.95
+  minDelay: 50ms   # → delay.min = 50ms (object did not set min)
+  quantile: 0.50   # → IGNORED (delay.quantile already 0.95 from object)
+  maxCount: 1
+```
+
+Source: <SourceLink file="common/config.go" lines="1507-1571" />
 
 ### Worked examples
 
@@ -326,14 +343,22 @@ static delay to race a slow shared-cache read (e.g. a remote gRPC cache connecto
 
 - Each hedge fire (idx &gt; 0) increments both `NetworkAttempts` and `NetworkHedges`; the
   final response carries `X-ERPC-Attempts` and `X-ERPC-Hedges` headers reflecting them.
-  [<SourceLink file="erpc/network_executor.go" lines="631-641" />]
+  The primary attempt does NOT increment `NetworkHedges`. [<SourceLink file="erpc/network_executor.go" lines="631-641" />]
 - Losing legs are cancelled via context; their responses are released back to buffer pools
   (`r.Release()`), never surfaced to the client. [<SourceLink file="erpc/network_executor.go" lines="626-630" />]
 - A hedge race that ends with a non-retryable error (e.g. execution revert) returns that
   error verbatim — hedging never converts error shapes.
-- Cancelled legs produce `ErrUpstreamHedgeCancelled` internally (retryable toward the
-  network); in `ErrUpstreamsExhausted.SummarizeCauses` they appear in the `cancelled`
-  bucket. [<SourceLink file="common/errors.go" lines="1447-1462" />]
+- `MetricNetworkHedgeWinnerTotal` fires for every kept result, including when the primary
+  wins without any hedge having fired. It identifies which upstream won the race.
+  [<SourceLink file="erpc/network_executor.go" lines="553-570" />]
+- When all legs return unkept results, the final response is the **last** unkept result
+  (not the first); each new unkept result replaces the previous `lastResult` until the
+  race ends. [<SourceLink file="failsafe/hedge.go" lines="243-253" />]
+- Cancelled legs produce `ErrUpstreamHedgeCancelled` (error code #33) internally, with
+  the message `"hedged request cancelled in favor of another upstream response"` and
+  `upstreamId` in details. This error is retryable toward the network (U:yes N:yes); in
+  `ErrUpstreamsExhausted.SummarizeCauses` it appears in the `cancelled` bucket, producing
+  log summaries like `"exhausted(cancelled=2)"`. [<SourceLink file="common/errors.go" lines="1447-1462" />] [<SourceLink file="common/errors.go" lines="1000-1002" />]
 
 ### Best practices
 
@@ -366,6 +391,8 @@ static delay to race a slow shared-cache read (e.g. a remote gRPC cache connecto
 10. **`erpc_network_hedge_delay_seconds` is dormant.** The metric is registered but has no production `Observe` call — only a test touches it. Do not alert on it. Source: <SourceLink file="telemetry/metrics.go" lines="813" />
 11. **System template vs. manual default.** The built-in project template (applied when `projects` is absent) sets `maxCount=2`. Manually-written `networks[].failsafe[].hedge` blocks get `maxCount=1` from `SetDefaults`. These are different defaults. Source: <SourceLink file="common/defaults.go" lines="137-141" />
 12. **Single upstream + hedge = primary wins eventually.** The hedge leg gets `ErrNoUpstreamsLeftToSelect`, `keep` returns `false`, and the race waits for the primary; no error is surfaced. Source: `erpc/http_server_hedge_test.go` (SingleUpstreamHedgeContinuesPrimary).
+13. **Timer pool stale-tick safety.** Hedge timers are drawn from a `sync.Pool` (`hedgeTimerPool`) to avoid per-request `time.NewTimer` allocations. `releaseHedgeTimer` calls `t.Stop()` and drains `t.C` with a non-blocking select before returning to the pool — without this, the next borrower could fire immediately on a stale tick from a previous lifecycle. Source: <SourceLink file="failsafe/hedge.go" lines="9-60" />
+14. **Delay is per-method, not per-attempt-index.** `delayFn` is called with a 1-based hedge index for each fire, but in the network executor the same `AdaptiveDuration.ResolveForRequest(req)` is returned for every index — the delay is determined by observed per-method latency, not by which hedge attempt is firing. The index parameter exists for extensibility. Source: <SourceLink file="erpc/network_executor.go" lines="542-544" />
 
 ### Observability
 
@@ -374,21 +401,25 @@ static delay to race a slow shared-cache read (e.g. a remote gRPC cache connecto
 | `erpc_network_hedged_request_total` | counter | project, network, upstream, category, attempt, finality, user, agent_name | Each time a hedge request fires (primary counted when `hedges > 0`) |
 | `erpc_network_hedge_discards_total` | counter | project, network, upstream, category, attempt, hedge, finality, user, agent_name | Hedge goroutine's context was cancelled by a sibling winner |
 | `erpc_network_hedge_winner_total` | counter | project, network, upstream, category, finality | Each hedge race that produced a kept result; identifies which upstream won |
-| `erpc_network_hedge_delay_seconds` | histogram | project, network, category, finality | **Dormant** — registered, no production `Observe` call |
+| `erpc_network_hedge_delay_seconds` | histogram | project, network, category, finality | **Dormant** — registered with buckets `[0.01, 0.03, 0.05, 0.2, 0.3, 0.5, 0.7, 1, 3]`, no production `Observe` call (only a test touches it) |
 | `erpc_upstream_selection_total{reason="hedge"}` | counter | project, network, upstream, category, reason, finality | Upstream selected for a hedge attempt |
 | `erpc_upstream_attempt_outcome_total{is_hedge="true"}` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Hedge attempt terminal outcome |
 
 ### Source code entry points
 
 - [`failsafe/hedge.go:L111-L255`](https://github.com/erpc/erpc/blob/main/failsafe/hedge.go#L111-L255) — `RunHedged[R]`: generic race loop, timer pool, `siblingCtx`, winner selection
+- [`failsafe/hedge.go:L9-L60`](https://github.com/erpc/erpc/blob/main/failsafe/hedge.go#L9-L60) — `hedgeTimerPool` (`sync.Pool`): timer borrow/release with stale-tick drain
 - [`erpc/network_executor.go:L516-L645`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L516-L645) — `runHedge`: wires `AdaptiveDuration.ResolveForRequest` as `delayFn`, implements `keep`, `release`, `OnFire` hooks
 - [`erpc/network_executor.go:L141-L203`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L141-L203) — `Run` / `runRetryHedge`: composition ordering (`retry(hedge(runUpstreamSweep))`)
+- [`erpc/networks.go:L1284-L1306`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1284-L1306) — `MetricNetworkHedgedRequestTotal` increment + discard detection (`ErrEndpointRequestCanceled` → `recordHedgeDiscard`)
+- [`erpc/networks.go:L1883-L1903`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1883-L1903) — `recordHedgeDiscard`: increments `MetricNetworkHedgeDiscardsTotal`, returns `ErrUpstreamHedgeCancelled`
 - [`common/config.go:L1489-L1571`](https://github.com/erpc/erpc/blob/main/common/config.go#L1489-L1571) — `HedgePolicyConfig` struct, YAML/JSON unmarshal, `applyLegacySiblings`
 - [`common/adaptive_duration.go:L83-L109`](https://github.com/erpc/erpc/blob/main/common/adaptive_duration.go#L83-L109) — `AdaptiveDuration.Resolve`: static/quantile/cold-start branches
 - [`common/defaults.go:L2307-L2340`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2307-L2340) — `HedgePolicyConfig.SetDefaults`; constants `defaultHedgeMinDelay=100ms`, `defaultHedgeMaxDelay=999s`
-- [`common/errors.go:L1447-L1462`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1447-L1462) — `ErrUpstreamHedgeCancelled` / `ErrCodeUpstreamHedgeCancelled`
+- [`common/errors.go:L1447-L1462`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1447-L1462) — `ErrUpstreamHedgeCancelled` / `ErrCodeUpstreamHedgeCancelled` (error code #33)
+- [`common/errors.go:L955-L1035`](https://github.com/erpc/erpc/blob/main/common/errors.go#L955-L1035) — `ErrUpstreamsExhausted.SummarizeCauses`; `cancelled` bucket for `ErrCodeUpstreamHedgeCancelled` at L1000-L1002
 - [`architecture/evm/util.go:L7-L17`](https://github.com/erpc/erpc/blob/main/architecture/evm/util.go#L7-L17) — `IsNonRetryableWriteMethod`
-- [`erpc/http_server_hedge_test.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server_hedge_test.go) — behavior-locking tests incl. single-upstream race semantics
+- [`erpc/http_server_hedge_test.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server_hedge_test.go) — behavior-locking tests incl. single-upstream race semantics, retry interaction tests
 
 ### Related pages
 

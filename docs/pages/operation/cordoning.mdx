@@ -266,11 +266,17 @@ Source: <SourceLink file="internal/policy/default_policy.js" lines="1" /> — `.
 | `erpc_selection_position{upstream=…}` | gauge | project, network, method, upstream | Set to `-1` for every excluded (including cordoned) upstream after each eval tick |
 | `erpc_selection_rejection_total{step="removeCordoned"}` | counter | project, network, method, upstream, step | Per tick × upstream dropped by the `.removeCordoned()` step |
 
+Log messages emitted on cordon state changes (DEBUG level, `health/tracker.go:L795-798` and `L822-824`):
+- `"cordoning upstream to disable routing"` — emitted on every `Cordon` call (including repeated calls that only update the reason).
+- `"uncordoning upstream to enable routing"` — emitted on every `Uncordon` call.
+
 ### Source code entry points
 
 - [`health/tracker.go:L793-849`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L793-L849) — `Cordon` and `Uncordon` methods: state storage, timestamp, gauge, event counter, duration histogram
 - [`health/tracker.go:L853-890`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L853-L890) — `IsCordoned` and `CordonedReason`: wildcard-first lookup logic
 - [`erpc/admin.go:L590-729`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L590-L729) — `erpc_cordonUpstream`, `erpc_uncordonUpstream`, `erpc_listCordoned` handlers and param parsing
+- [`erpc/admin.go:L641-654`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L641-L654) — upstream lookup by ID across the project's upstream registry (the step before calling `upstream.Cordon`)
+- [`upstream/upstream.go:L1568-1580`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1568-L1580) — `Cordon`, `Uncordon`, `CordonedReason` pass-throughs from `Upstream` to the health tracker
 - [`health/tracker.go:L207-224`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L207-L224) — `Rotate()` skipping cordoned cells (window rotation cannot clear a cordon)
 - [`health/tracker.go:L598-615`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L598-L615) — idle-sweep exclusion for cordoned cells
 - [`internal/policy/eval.go:L98-100`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L98-L100) — `cordonedReason` exposed to JS eval context

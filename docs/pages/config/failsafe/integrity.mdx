@@ -127,6 +127,8 @@ https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 - `projectPreForward_eth_blockNumber` — replaces a stale block number with a synthetic highest-known result (reads legacy `EvmIntegrityConfig`, not directive).
 - `networkPostForward_eth_getBlockByNumber` — enforces highest-block then non-null after the full failsafe round (reads directive).
 - `upstreamPreForward_eth_getLogs` / `upstreamPreForward_trace_filter` — checks block-range availability before each upstream attempt (read legacy `EvmIntegrityConfig`).
+- `upstreamPostForward_eth_getLogs` — normalizes empty arrays in `eth_getLogs` upstream responses. <SourceLink file="architecture/evm/eth_getLogs.go" lines="349-362" />
+- `networkPostForward_eth_getLogs` — network post-forward; handles reactive range splitting on 413-like oversized-range errors. <SourceLink file="architecture/evm/eth_getLogs.go" lines="364" />
 - `upstreamPostForward_eth_getBlockByNumber` — validates block header and transaction fields.
 - `upstreamPostForward_eth_getBlockReceipts` — validates receipt/log structure including Bloom.
 
@@ -138,7 +140,7 @@ https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 
 **Future-block empty-result guard.** Both `enforceNonNullBlock` and `upstreamPostForward_markUnexpectedEmpty` call `emptyResultBeyondConfidence`. If the concrete block number is beyond the confidence head (latest or finalized, per `emptyResultConfidence`), the empty result is returned truthfully rather than being retried — preventing infinite retry storms on not-yet-produced blocks. Fail-open: if the network's head is unknown (≤ 0) or the request uses a block tag, the empty is always promoted to `ErrEndpointMissingData` and retried. <SourceLink file="architecture/evm/common.go" lines="55-89" />
 
-**Validation error semantics.** Structural failures produce `ErrEndpointContentValidation` — retryable at network scope (try another upstream), not retryable at the same upstream. On the wire, clients receive HTTP 200 with a JSON-RPC error body (`code: -32603`). `ErrorStatusCode()` returns 502 but is dead code with zero call sites. <SourceLink file="common/errors.go" lines="2719-2747" />
+**Validation error semantics.** Structural failures produce `ErrEndpointContentValidation` — retryable at network scope (try another upstream), not retryable at the same upstream. It feeds the `validation` bucket in `ErrUpstreamsExhausted` exhaustion accounting. On the wire, clients receive HTTP 200 with a JSON-RPC error body (`code: -32603`). `ErrorStatusCode()` returns 502 but is dead code with zero call sites. <SourceLink file="common/errors.go" lines="2719-2747" />
 
 ### Config schema
 
@@ -168,15 +170,41 @@ All boolean fields under this path set the default `RequestDirectives` value for
 | `validationExpectedBlockHash` | `*string` | `nil` | `eth_getBlockReceipts` only. Compares `receipt.blockHash` (lowercased, `0x` stripped) against this value. Receipts with empty `blockHash` are skipped. Header: `X-ERPC-Validation-Block-Hash`. <SourceLink file="architecture/evm/eth_getBlockReceipts.go" lines="168-179" /> |
 | `validationExpectedBlockNumber` | `*int64` | `nil` | `eth_getBlockReceipts` only. Validates every `receipt.blockNumber` equals this value. Receipts with empty `blockNumber` are skipped. Header: `X-ERPC-Validation-Block-Number`. <SourceLink file="architecture/evm/eth_getBlockReceipts.go" lines="181-199" /> |
 
+#### Per-request override: HTTP headers and query parameters
+
+All directives can be overridden per-request without redeploying. Booleans accept `"true"` (case-insensitive) to enable; any other value disables. Integer directives (`receiptsCountExact`, `receiptsCountAtLeast`, `validationExpectedBlockNumber`) accept a decimal integer string. `validationExpectedBlockHash` accepts an optional `0x` prefix. <SourceLink file="common/request.go" lines="45-114" />
+
+| Directive | HTTP Header | Query Parameter |
+|---|---|---|
+| `enforceHighestBlock` | `X-ERPC-Enforce-Highest-Block` | `enforce-highest-block` |
+| `enforceGetLogsBlockRange` | `X-ERPC-Enforce-GetLogs-Range` | `enforce-getlogs-range` |
+| `enforceNonNullTaggedBlocks` | `X-ERPC-Enforce-Non-Null-Tagged-Blocks` | `enforce-non-null-tagged-blocks` |
+| `enforceLogIndexStrictIncrements` | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` |
+| `validateLogsBloomEmptiness` | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` |
+| `validateLogsBloomMatch` | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` |
+| `validateTxHashUniqueness` | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` |
+| `validateTransactionIndex` | `X-ERPC-Validate-Transaction-Index` | `validate-transaction-index` |
+| `validateTransactionsRoot` | `X-ERPC-Validate-Transactions-Root` | `validate-transactions-root` |
+| `validateHeaderFieldLengths` | `X-ERPC-Validate-Header-Field-Lengths` | `validate-header-field-lengths` |
+| `validateTransactionFields` | `X-ERPC-Validate-Transaction-Fields` | `validate-transaction-fields` |
+| `validateTransactionBlockInfo` | `X-ERPC-Validate-Transaction-Block-Info` | `validate-transaction-block-info` |
+| `validateLogFields` | `X-ERPC-Validate-Log-Fields` | `validate-log-fields` |
+| `receiptsCountExact` | `X-ERPC-Receipts-Count-Exact` | `receipts-count-exact` |
+| `receiptsCountAtLeast` | `X-ERPC-Receipts-Count-At-Least` | `receipts-count-at-least` |
+| `validationExpectedBlockHash` | `X-ERPC-Validation-Block-Hash` | `validation-block-hash` |
+| `validationExpectedBlockNumber` | `X-ERPC-Validation-Block-Number` | `validation-block-number` |
+
+`GroundTruthTransactions` and `GroundTruthLogs` are **not exposable via HTTP** — they can only be set programmatically on `NormalizedRequest`. <SourceLink file="common/request.go" lines="210-215" />
+
 #### `networks[].evm.integrity` — deprecated (`EvmIntegrityConfig`)
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enforceHighestBlock` | `*bool` | `nil` → `true` via `SetDefaults` | **@deprecated** — use `directiveDefaults.enforceHighestBlock`. Still read directly by `projectPreForward_eth_blockNumber` at runtime. Setting `directiveDefaults.enforceHighestBlock: false` without also setting this to `false` leaves `eth_blockNumber` enforcement active. <SourceLink file="common/config.go" lines="2310" /> |
-| `enforceGetLogsBlockRange` | `*bool` | `nil` → `true` via `SetDefaults` | **@deprecated** — use `directiveDefaults.enforceGetLogsBlockRange`. Still read by `eth_getLogs` and `trace_filter` hooks at runtime. <SourceLink file="common/config.go" lines="2312" /> |
-| `enforceNonNullTaggedBlocks` | `*bool` | `nil` → `true` via `SetDefaults` | **@deprecated** — use `directiveDefaults.enforceNonNullTaggedBlocks`. Only acts as migration source; not read at runtime. <SourceLink file="common/config.go" lines="2314" /> |
+| `enforceHighestBlock` | `*bool` | `nil` → `true` via `EvmIntegrityConfig.SetDefaults` | **@deprecated** — use `directiveDefaults.enforceHighestBlock`. Still read directly by `projectPreForward_eth_blockNumber` at runtime. Setting `directiveDefaults.enforceHighestBlock: false` without also setting this to `false` leaves `eth_blockNumber` enforcement active. <SourceLink file="common/config.go" lines="2310" /> <SourceLink file="common/defaults.go" lines="2117-2120" /> |
+| `enforceGetLogsBlockRange` | `*bool` | `nil` → `true` via `EvmIntegrityConfig.SetDefaults` | **@deprecated** — use `directiveDefaults.enforceGetLogsBlockRange`. Still read by `eth_getLogs` and `trace_filter` hooks at runtime. <SourceLink file="common/config.go" lines="2312" /> <SourceLink file="common/defaults.go" lines="2121-2123" /> |
+| `enforceNonNullTaggedBlocks` | `*bool` | `nil` → `true` via `EvmIntegrityConfig.SetDefaults` | **@deprecated** — use `directiveDefaults.enforceNonNullTaggedBlocks`. Only acts as migration source; not read at runtime. <SourceLink file="common/config.go" lines="2314" /> <SourceLink file="common/defaults.go" lines="2124-2126" /> |
 
-Migration: if `evm.integrity` is populated and the corresponding `directiveDefaults` field is nil, the value is copied into `directiveDefaults` during `SetDefaults`. No warning is emitted. <SourceLink file="common/defaults.go" lines="1952-1964" />
+Migration: `NetworkConfig.SetDefaults` performs the migration in this order: (1) if `DirectiveDefaults == nil`, initialize to an empty struct; (2) if `evm.Integrity != nil` (user populated the deprecated block) AND `directiveDefaults.<field> == nil` (user has NOT set the new field), copy the value; (3) call `DirectiveDefaultsConfig.SetDefaults()` which fills `true` for any still-nil boolean fields. The migration is best-effort copy that preserves explicit `false` values from the old config. No warning is emitted. <SourceLink file="common/defaults.go" lines="1952-1964" />
 
 #### `networks[].evm.emptyResultConfidence`
 
@@ -372,6 +400,10 @@ checks without paying the CPU cost on every request.
 
 12. **`pickHighestBlock` protects against a corrupted state pointer.** After re-fetching against the highest-known block, if the re-fetch returns a lower block than the original response, `pickHighestBlock` returns the original. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="335-415" />
 
+13. **`validateLogsBloomMatch` uses a 2048-bit bloom filter with big-endian bit-setting.** The `bloomAdd` function follows the standard EIP bloom algorithm: 3 byte-positions set per value, derived from keccak256 of the input; bit position index computed as `byteIndex = 255 - int(bitpos>>3)` (big-endian). The recomputed bloom is compared byte-for-byte with `receipt.logsBloom`. <SourceLink file="architecture/evm/eth_getBlockReceipts.go" lines="468-482" />
+
+14. **Numeric block requests for `eth_getBlockByNumber` ALWAYS error on null — no directive gate.** `enforceNonNullBlock` treats numeric (non-tag) block requests as unconditionally erroring when the response is null, unless `emptyResultBeyondConfidence` exempts the block (i.e., the block is beyond the confidence head). The `enforceNonNullTaggedBlocks` directive only gates the tagged-block path. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="279-333" />
+
 ### Observability
 
 | Metric | Type | Labels | When it fires |
@@ -395,6 +427,7 @@ checks without paying the CPU cost on every request.
 - `DEBUG "upstream returned older block than we known, falling back to highest known block"` — `eth_blockNumber` stale detection.
 - `DEBUG "enforcing highest latest block"` / `"enforcing highest finalized block"` — `eth_getBlockByNumber` stale detection.
 - `TRACE "skipping enforcement of highest block number as response is from cache"` — cache bypass.
+- `WARN "passed upstream is not a common.EvmUpstream"` — emitted in `eth_getLogs` and `trace_filter` pre-forward hooks when the upstream type assertion fails; the range check is skipped.
 
 ### Source code entry points
 

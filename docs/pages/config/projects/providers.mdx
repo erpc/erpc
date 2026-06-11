@@ -126,7 +126,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 
 **Default providers.** A project with zero upstreams, zero providers, and no CLI `--endpoint` flags automatically gets `{id:"public", vendor:"repository"}` + `{id:"envio", vendor:"envio"}` injected with all defaults, and logs a warning. Setting `providers: []` explicitly still satisfies the zero-providers condition — the injection fires unless you have at least one upstream or one CLI endpoint. <SourceLink file="common/defaults.go" lines="1113-1146" />
 
-**Vendors also serve statically-configured upstreams.** At `NewUpstream`, `LookupByUpstream` finds a vendor by explicit `upstream.vendorName` (exact match, wins) or the first vendor whose `OwnsUpstream` matches the endpoint. The vendor's `GenerateConfigs` is invoked with `settings == nil` to apply vendor defaults (e.g. dRPC forcing `autoIgnoreUnsupportedMethods: false`, envio's method allow-list). Vendor-specific JSON-RPC error mapping fires before generic normalization: `GetVendorSpecificErrorIfAny` is called on the upstream's attached vendor first. <SourceLink file="architecture/evm/error_normalizer.go" lines="878-900" />
+**Vendors also serve statically-configured upstreams.** At `NewUpstream`, `LookupByUpstream` finds a vendor by explicit `upstream.vendorName` (exact match, wins — if the name is unknown, `OwnsUpstream` is NOT consulted and the result is nil) or the first vendor whose `OwnsUpstream` matches the endpoint (in registration order). If no vendor matches, `vendorName` is guessed as `unknown-<rootDomain>` from the endpoint host. The vendor's `GenerateConfigs` is invoked with `settings == nil` to apply vendor defaults (e.g. dRPC forcing `autoIgnoreUnsupportedMethods: false`, envio's method allow-list). Vendor-specific JSON-RPC error mapping fires before generic normalization: `GetVendorSpecificErrorIfAny` is called on the upstream's attached vendor first. <SourceLink file="architecture/evm/error_normalizer.go" lines="878-900" /> <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
 
 ### Config schema
 
@@ -226,7 +226,7 @@ Static map of 56 chains (exported `BlockPiNetworkNames`). URL: `https://{netName
 
 #### chainstack
 
-Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes/` with `Authorization: Bearer {apiKey}` and optional filter params; chain ids discovered by `eth_chainId` probe per node (concurrency-limited, 10 s). Cache key includes all filter values so providers sharing an apiKey but different filters get separate snapshots. Missing `apiKey` → `(false, nil)` (silent skip). Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching running node.
+Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes/` with `Authorization: Bearer {apiKey}` and optional filter params; chain ids discovered by `eth_chainId` probe per node (concurrency-limited, semaphore 10, 10 s client timeout). Cache key includes all filter values so providers sharing an apiKey but different filters get separate snapshots. Missing `apiKey` → `(false, nil)` (silent skip). Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching running node; upstream endpoint = `https_endpoint + "/" + auth_key`; id suffix `-<nodeID>`. Node decode is intentionally lenient: each node is decoded individually from the paginated response and malformed nodes (type mismatches, missing fields) are skipped rather than failing the entire refresh. OwnsUpstream: scheme prefixes or `.core.chainstack.com`.
 
 | key | required | default |
 |---|---|---|
@@ -242,7 +242,7 @@ Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes
 
 #### conduit
 
-Dynamic-only discovery from `networksUrl`; no static fallback → cold start returns `ErrRemoteCacheCold`. URL: `{httpEndpoint}/{apiKey}`. OwnsUpstream: scheme prefixes or `vendorName=="conduit"` only (no domain heuristic — chains live on customer domains).
+Dynamic-only discovery from `networksUrl`; no static fallback → cold start returns `ErrRemoteCacheCold`. URL: `{httpEndpoint}/{apiKey}`. OwnsUpstream: scheme prefixes or `vendorName=="conduit"` only (no domain heuristic — chains live on customer domains). Preset endpoint bypasses discovery entirely. Error mapping: `-32600` + auth/api-key message → `ErrEndpointUnauthorized`; message `"limit exceeded"`/`"capacity limit"` → `ErrEndpointCapacityExceeded`; code in range `[-32099, -32000]` → `ErrEndpointServerSideException` (note: as written the condition `code >= -32000 && code <= -32099` is never true — same impossible-range pattern as alchemy, so this branch is dead code).
 
 | key | required | default |
 |---|---|---|
@@ -254,7 +254,7 @@ Dynamic-only discovery from `networksUrl`; no static fallback → cold start ret
 
 #### drpc
 
-Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static fallback; after a successful fetch the fallback is **fully replaced** (no merge). **Forces `autoIgnoreUnsupportedMethods: false`** on every config (even preset endpoints) because dRPC transiently returns method-not-found responses that must stay retryable. URL: `https://lb.drpc.org/ogrpc?network={name}&dkey={apiKey}`.
+Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static fallback; after a successful fetch the fallback is **fully replaced** (no merge). **Forces `autoIgnoreUnsupportedMethods: false`** on every config (even preset endpoints) because dRPC transiently returns method-not-found responses that must stay retryable. URL: `https://lb.drpc.org/ogrpc?network={name}&dkey={apiKey}`. Catalog filters to premium EVM JSON-RPC chains only (`blockchain_type=="eth" && api_type=="jsonrpc" && has_premium`); when multiple names map to one chain id, the highest `priority` value wins. Error mapping: message `"token is invalid"` → `ErrEndpointUnauthorized`; `"ChainException: Unexpected error (code=40000)"` or `"invalid block range"` → `ErrEndpointMissingData`.
 
 | key | required | default |
 |---|---|---|
@@ -266,7 +266,7 @@ Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static 
 
 #### dwellir
 
-Static map of 70 chains → subdomain prefixes. URL: `https://{subdomain}.dwellir.com/{apiKey}`. OwnsUpstream: only `dwellir://` prefix (NOT `evm+dwellir://`) or `.dwellir.com` — the `evm+` form still works because shorthand conversion runs first.
+Static map of 70 chains → subdomain prefixes. URL: `https://{subdomain}.dwellir.com/{apiKey}`. OwnsUpstream: only `dwellir://` prefix (NOT `evm+dwellir://`) or `.dwellir.com` — the `evm+` form still works because shorthand conversion runs first. Avalanche appends `/ext/bc/C/rpc` to the URL. `SupportsNetwork` quirk: an unparseable numeric chain id part returns `(false, nil)` rather than an error (unlike every other static-map vendor which propagates the parse error).
 
 | key | required | default |
 |---|---|---|
@@ -348,7 +348,7 @@ ERC-4337 bundler/paymaster. **Method allow-list injected**: `ignoreMethods: ["*"
 
 #### quicknode
 
-Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoints` with `x-api-key` header and optional tag filters; chain ids discovered by `eth_chainId` probe per endpoint (concurrency-limited). **Cache key is `apiKey` only** — two providers sharing an apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Missing `apiKey` → `(false, nil)`. Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching endpoint. Error mapping: `-32614` or `eth_getLogs` + range message → `ErrEndpointRequestTooLarge`; `-32009`/`-32007` → capacity.
+Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoints?limit=100&offset=N` with `x-api-key` header and optional tag filters; a response-level `error` field aborts the refresh; chain ids discovered by `eth_chainId` probe per endpoint (concurrency-limited, semaphore 10, 10 s timeout). **Cache key is `apiKey` only** — two providers sharing an apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Missing `apiKey` → `(false, nil)`. Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching endpoint; id `{upstreamId}-{endpointID}`. Full error mapping: `-32614` or (`eth_getLogs` + message `"limited to"`) → `ErrEndpointRequestTooLarge`; `-32009`/`-32007` → capacity exceeded; `-32612`/`-32613` → `ErrEndpointUnsupported`; message `"failed to parse"` → client-side, not retryable toward network; `-32010` (tx cost exceeds gas limit) → client-side but network-retryable (per-client gas caps differ); `-32602` + `"cannot unmarshal hex string"` → invalid-argument client-side, not retryable; message `"UNAUTHORIZED"` → unauthorized; code `3` → EVM revert. Note: the error handler builds a fresh local details map, so per-request `details` passed by the caller are not modified.
 
 | key | required | default |
 |---|---|---|
@@ -361,7 +361,7 @@ Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoint
 
 #### repository
 
-Fetches `repositoryUrl` returning `{"<chainId>": {"endpoints": [...]}}`. No static fallback → `ErrRemoteCacheCold` on cold start. **Defaults `autoIgnoreUnsupportedMethods: true`** — public RPCs are inconsistent in method support. GenerateConfigs fans out one upstream per http endpoint; ids embed `RedactEndpoint(ep)` (`https#redacted=ab12c`) so dashboards can distinguish endpoints without exposing them. One half of the implicit default provider pair.
+Fetches `repositoryUrl` returning `{"<chainId>": {"endpoints": [...]}}`. No static fallback → `ErrRemoteCacheCold` on cold start. **Defaults `autoIgnoreUnsupportedMethods: true`** — public RPCs are inconsistent in method support. GenerateConfigs fans out one upstream per http endpoint (http/https prefix only; ws/wss skipped); ids embed `RedactEndpoint(ep)` (`https#redacted=ab12c`) so dashboards can distinguish endpoints without exposing them. Each generated upstream gets deep copies of `Evm`, `JsonRpc`, `Failsafe` (per-element), `RateLimitAutoTune`, and `Tags` from the base config, and inherits `IgnoreMethods`, `AllowMethods`, and `RateLimitBudget`. OwnsUpstream: only `repository://`/`evm+repository://` scheme prefixes (no domain matching — generated upstreams have arbitrary third-party hosts). One half of the implicit default provider pair.
 
 | key | required | default |
 |---|---|---|
@@ -383,7 +383,7 @@ No chain catalog — SupportsNetwork always probes live `eth_chainId`. Missing `
 
 #### superchain
 
-OP Superchain registry. `parseSuperchainSpec` accepts GitHub UI URLs, `github.com/org/repo[/branch[/file]]`, or full HTTPS URLs. Registry JSON is an array of `{chainId, rpc:[...]}`; no static fallback → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per rpc URL with id suffix `-{index}`.
+OP Superchain registry. `parseSuperchainSpec` accepts: `github.com/org/repo` (defaults branch `main`, file `chainList.json`), `github.com/org/repo/branch`, `github.com/org/repo/branch/path/to/file.json`, GitHub UI blob/tree URLs (the `/blob/` or `/tree/` segment is stripped), full `http(s)://` URLs passed through, or bare `domain/path` (https prepended). GitHub specs are rewritten to raw.githubusercontent.com. Registry JSON is an array of `{chainId, rpc:[...]}`; entries with chainId ≤ 0 or empty rpc list dropped; no static fallback → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per rpc URL with id suffix `-{index}` (e.g. `{id}-0`, `{id}-1`, …). OwnsUpstream: scheme prefixes or `vendorName=="superchain"` only (no domain matching).
 
 | key | required | default |
 |---|---|---|
@@ -394,7 +394,7 @@ OP Superchain registry. `parseSuperchainSpec` accepts GitHub UI URLs, `github.co
 
 #### tenderly
 
-Remote catalog from hardcoded `https://api.tenderly.co/api/v1/supported-networks` (not overridable via settings). No static fallback → `ErrRemoteCacheCold`. URL: `https://{slug}.gateway.tenderly.co/{apiKey}`.
+Remote catalog from hardcoded `https://api.tenderly.co/api/v1/supported-networks` (not overridable via settings — there is no `chainsUrl`-style override). No static fallback → `ErrRemoteCacheCold`. Catalog decodes `chain_id` + `network_slugs`; slug preference: `node_rpc_slug` &gt; `vnet_rpc_slug` &gt; `explorer_slug`; entries with no usable slug or unparseable chain id are skipped. URL: `https://{slug}.gateway.tenderly.co/{apiKey}`. OwnsUpstream: scheme prefixes, `vendorName=="tenderly"`, or `.gateway.tenderly.co`.
 
 | key | required | default |
 |---|---|---|
@@ -695,6 +695,10 @@ export default createConfig({
 16. **Tenderly `"not found"` becomes `ErrEndpointClientSideException`** (retryable), not `ErrEndpointMissingData` — the `"Unsupported"` block in the normalizer intentionally runs after `"Not found"` to avoid misclassifying Tenderly's bare `"not found"`. <SourceLink file="architecture/evm/error_normalizer.go" lines="394-477" />
 17. **dwellir `OwnsUpstream` only matches `dwellir://` prefix** (not `evm+dwellir://`) or `.dwellir.com` domain; the `evm+` shorthand still works because shorthand conversion runs before vendor lookup. <SourceLink file="thirdparty/dwellir.go" lines="173-180" />
 18. **Live-probe vendors dial out during routing decisions**: envio/erpc/pimlico/routemesh/thirdweb perform a real `eth_chainId` HTTP call (10 s timeout) on the provider bootstrap path. Probe clients are cached forever in `sync.Map`s keyed by chain id or `"{url}-{chainId}"`.
+19. **`PrepareUpstreamsForNetwork` succeeds as soon as one upstream registers** (`minReady=1`). Slow providers continue adding upstreams in the background without blocking the first request. If all provider tasks finish with zero upstreams, there is a 100 ms grace re-check before the retryable `ErrNetworkNotSupported` is returned; if tasks are still running, the caller receives `ErrNetworkInitializing`. <SourceLink file="upstream/registry.go" lines="188-293" />
+20. **`LookupByUpstream` with an explicit but non-existent `vendorName` returns nil** — it does not fall through to `OwnsUpstream` matching. If `upstream.vendorName` is set to an unregistered name, vendor error-mapping is silently lost. Registration order of the 22 vendors determines which vendor wins when multiple `OwnsUpstream` checks return true for the same endpoint. <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
+21. **`llama` and `routemesh` `OwnsUpstream` do not check their own scheme prefixes**: `llama.OwnsUpstream` only matches `.llamarpc.com`; `routemesh.OwnsUpstream` only matches `vendorName=="routemesh"` or endpoint containing `routemes.sh`. Both shorthands (`llama://`, `routemesh://`) work only because shorthand conversion in `common/defaults.go` runs before vendor lookup. <SourceLink file="thirdparty/llama.go" lines="95-97" /> <SourceLink file="thirdparty/routemesh.go" lines="135-140" />
+22. **dwellir `SupportsNetwork` returns `(false, nil)` for an unparseable chain id** — unlike every other static-map vendor which propagates the parse error. <SourceLink file="thirdparty/dwellir.go" lines="109-113" />
 
 ### Observability
 
@@ -708,10 +712,18 @@ No provider-specific Prometheus metrics exist. The `vendor` label on all upstrea
 
 Bootstrap task progress is visible in initializer task names: `network/<networkId>/provider/<providerId>` (scheduling) and `network/<networkId>/upstream/<upstreamId>` (per-generated upstream). <SourceLink file="upstream/registry.go" lines="423-481" />
 
+Trace spans: `buildProviderBootstrapTask` emits a detail span per provider task; `buildUpstreamBootstrapTask` emits one for each registered upstream. <SourceLink file="upstream/registry.go" lines="423-485" />
+
 Notable log messages:
 - warn `no providers or upstreams found in project; will use default 'public' endpoints repository`
-- debug `provider does not support network; skipping upstream creation` / info `registering N upstream(s) from provider`
+- debug `attempting to create upstream(s) from provider` / debug `provider does not support network; skipping upstream creation` / info `registering N upstream(s) from provider`
+- error `failed to execute provider bootstrap tasks` / info `provider bootstrap tasks executed successfully`
 - warn `vendor remote-data refresh failed; keeping previous snapshot` with `vendor` + `cacheKey` fields
+- error `panic recovered during vendor remote-data async refresh`
+- warn `some quicknode chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some QuickNode endpoints`
+- warn `some chainstack chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some Chainstack nodes`
+- info `successfully fetched dRPC network names` (with count + url)
+- debug `generated upstream from alchemy provider` / `generated upstream from conduit provider` / `generated upstreams from repository provider` / `generated upstreams from superchain provider`
 
 ### Source code entry points
 

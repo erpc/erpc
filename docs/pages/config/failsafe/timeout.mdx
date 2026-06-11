@@ -157,6 +157,21 @@ scopes are lifecycle-scoped. A 500ms network timeout with `maxAttempts: 3` gives
 budget shared across all three attempts — not 500ms each. This is intentional and test-locked
 (`erpc/networks_timeout_test.go:L378`).
 
+**`NewTimeoutFunc` construction path.** `common.NewTimeoutFunc(logger, cfg)` builds a `TimeoutFunc`
+from `TimeoutPolicyConfig`. The returned function is called per-request and returns `*time.Duration`
+(nil disables the timeout). Construction steps:
+1. `cfg == nil || cfg.Duration.IsZero()` → return nil (no timeout for this scope)
+2. `quantile <= 0` → pre-compute `dur = spec.Resolve(nil)` once at construction, return a constant function
+3. `quantile > 0` and `min == 0` → apply the auto-floor to a local copy, then build a per-request closure
+4. Per-request closure calls `ntw.GetMethodMetrics(method).GetResponseQuantiles()` then `resolved.Resolve(qt)`, and emits `MetricNetworkTimeoutDurationSeconds` on each call
+Source: <SourceLink file="common/timeout_func.go" lines="23-83" />.
+
+**`ErrDynamicTimeoutExceeded` sentinel type.** Declared as `var ErrDynamicTimeoutExceeded = errors.New("dynamic timeout exceeded")` at <SourceLink file="common/errors.go" lines="1981-1984" />. It is a plain `*errors.errorString` — NOT a `StandardError` (has no `Code`, `Message`, or `Details` fields). This is intentional: it is a control-flow signal, not a client-facing domain error. Detection via `errors.Is(err, common.ErrDynamicTimeoutExceeded)` works through context propagation. After classification it is wrapped by `NewErrFailsafeTimeoutExceeded(scope, cause, &startTime)` into a `StandardError` with code `ErrCodeFailsafeTimeoutExceeded`. Source: <SourceLink file="common/errors.go" lines="1588-1603" />.
+
+**Per-method quantile tracking implementation.** The `QuantileTracker` maintained by the network's method-metrics registry uses a streaming quantile algorithm (not a fixed histogram). It accumulates actual wall-clock response durations per method and answers `GetQuantile(q)` queries. `eth_call` and `eth_getLogs` accumulate independent trackers. The `AdaptiveDuration.ResolveForRequest` utility bridges from a request context to the tracker. Source: <SourceLink file="common/network.go" lines="51-60" />, <SourceLink file="common/adaptive_duration.go" lines="270-290" />.
+
+**`TimeoutHandler` response buffering.** `TimeoutHandler` buffers the entire response in a pooled `bytes.Buffer` via `timeoutWriter`. On timeout it discards the buffer and writes the fixed JSON-RPC error body. On normal completion within the deadline it copies buffered headers and body to the wire. Source: <SourceLink file="erpc/http_timeout.go" lines="36-143" />.
+
 **Static mode.** Set `duration` to a scalar (`"30s"`) or an object with only `base`. The timeout
 is a fixed constant. `min` and `max` are ignored in static mode — `Resolve` returns `base` unchanged.
 Source: <SourceLink file="common/adaptive_duration.go" lines="88-89" />.
@@ -196,6 +211,14 @@ fires before any leg wins, all legs are cancelled.
 (failsafe) are different sentinels. The network executor checks for `ErrDynamicTimeoutExceeded`
 specifically — it will never misclassify an HTTP-server timeout as `ErrFailsafeTimeoutExceeded`.
 Source: <SourceLink file="erpc/networks.go" lines="1427-1432" />.
+
+**Timeout attribution and counter guards.** `MetricNetworkTimeoutFiredTotal` is incremented by the
+scope that owns the policy. Four guards prevent double-counting at `erpc/networks.go:L1435-L1438`:
+1. `failsafeExecutor.HasTimeout()` — this scope has a configured timeout policy.
+2. `errors.Is(execErr, common.ErrDynamicTimeoutExceeded)` — the eRPC-specific sentinel is present; generic `context.DeadlineExceeded` from a parent context does not satisfy this.
+3. `!HasErrorCode(execErr, ErrCodeFailsafeRetryExceeded)` — retry-exhausted suppression: when retry exhausts and the last attempt timed out, `ErrFailsafeRetryExceeded` wins and the timeout counter does not fire.
+4. `!HasErrorCode(execErr, ErrCodeFailsafeTimeoutExceeded)` — cross-scope suppression: when an upstream-scope timeout already classified the error, the network-scope counter does NOT double-count it.
+Source: <SourceLink file="erpc/networks.go" lines="1424-1451" />, <SourceLink file="erpc/networks_timeout_test.go" lines="495-538" />.
 
 ### Config schema
 
@@ -573,12 +596,40 @@ warms up:
     `min: 0` bypasses the auto-floor because `== 0` check fails.
     Source: <SourceLink file="common/timeout_func.go" lines="27-36" />.
 
+13. **Network-only timeout does not fire the upstream-scope counter.** When only the network scope
+    has a timeout policy and the upstream scope has none, the context cancellation propagates into
+    the upstream's attempt. Because `failsafeExecutor.timeout == nil` at the upstream level, the
+    upstream does NOT increment `erpc_network_timeout_fired_total` and does NOT wrap the error as
+    `ErrFailsafeTimeoutExceeded`. The network scope handles all classification.
+    Source: <SourceLink file="erpc/networks_timeout_test.go" lines="540-586" />.
+
+14. **`applyLegacySiblings` early-exit: all-zero flat siblings are free.** When `quantile == 0`
+    and `minDuration == 0` and `maxDuration == 0`, `applyLegacySiblings` returns immediately without
+    allocating a `Duration` object. Configs that use only `duration: 5s` (no flat siblings) pay no
+    allocation cost.
+    Source: <SourceLink file="common/config.go" lines="1465-1467" />.
+
+15. **Legacy `quantile`-only flat form (no `duration:` key at all) allocates `Duration` from nil.**
+    A block containing only `quantile: 0.7` with no `duration:` field is valid: `applyLegacySiblings`
+    allocates `c.Duration = &AdaptiveDuration{}` and sets only `Quantile = 0.7`, leaving `Base`,
+    `Min`, and `Max` at zero. At `NewTimeoutFunc` build time `quantile > 0` and `base == 0` — the
+    auto-floor sets `min = 500ms`, but on cold start `coldStartFallback` returns `max` (zero) → nil
+    (fail-open). Add `maxDuration` to avoid cold-start fail-open when using the legacy flat form.
+    Source: <SourceLink file="common/config.go" lines="1468-1473" />.
+
+16. **`context.WithTimeoutCause` cause discrimination.** `errors.Is(ctx.Err(), context.DeadlineExceeded)`
+    is true for both the HTTP-server timeout and a failsafe timeout, but `context.Cause(ctx)`
+    returns different sentinels: `ErrHandlerTimeout` for the server level and `ErrDynamicTimeoutExceeded`
+    for failsafe. The network executor uses this distinction to avoid misclassifying an HTTP-server
+    deadline as `ErrFailsafeTimeoutExceeded`.
+    Source: <SourceLink file="erpc/networks.go" lines="1427-1432" />.
+
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_network_timeout_fired_total` | counter | `project`, `network`, `category`, `finality`, `scope` | Timeout policy killed a request. `scope=network` or `scope=upstream`. Suppressed when `ErrFailsafeRetryExceeded` wins; suppressed when a lower scope already fired. Source: <SourceLink file="erpc/networks.go" lines="1440" />. |
-| `erpc_network_timeout_duration_seconds` | histogram | `project`, `network`, `category`, `finality` | Computed per request in quantile mode only — reflects the budget computed, not whether it fired. Buckets: `[0.05, 0.1, 0.3, 0.5, 1, 3, 5, 10, 30]`. Source: <SourceLink file="common/timeout_func.go" lines="73-80" />. |
+| `erpc_network_timeout_fired_total` | counter | `project`, `network`, `category`, `finality`, `scope` | Timeout policy killed a request. `scope=network` or `scope=upstream`. Suppressed when `ErrFailsafeRetryExceeded` wins; suppressed when a lower scope already fired. Network-scope source: <SourceLink file="erpc/networks.go" lines="1440" />; upstream-scope source: `upstream/upstream.go:L845`; metric declaration: `telemetry/metrics.go:L437-L441`. |
+| `erpc_network_timeout_duration_seconds` | histogram | `project`, `network`, `category`, `finality` | Computed per request in quantile mode only — reflects the budget computed, not whether it fired. Buckets: `[0.05, 0.1, 0.3, 0.5, 1, 3, 5, 10, 30]`. Source: <SourceLink file="common/timeout_func.go" lines="73-80" />; metric declaration: `telemetry/metrics.go:L820-L824`. |
 
 ```promql
 # Rate of timeout fires by scope
@@ -599,11 +650,18 @@ histogram_quantile(0.99,
 - [`common/timeout_func.go:L23-L94`](https://github.com/erpc/erpc/blob/main/common/timeout_func.go#L23-L94) — `NewTimeoutFunc`; auto-floor; `coldStartFallback`; quantile resolution; metric observation
 - [`common/adaptive_duration.go:L83-L109`](https://github.com/erpc/erpc/blob/main/common/adaptive_duration.go#L83-L109) — `AdaptiveDuration.Resolve`; full resolution algorithm
 - [`erpc/network_executor.go:L164-L171`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L164-L171) — network-scope `context.WithTimeoutCause` applied to `networkExecutor.Run`
-- [`erpc/networks.go:L1424-L1451`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1424-L1451) — timeout error classification; `MetricNetworkTimeoutFiredTotal` with all three guards
+- [`erpc/networks.go:L1424-L1451`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1424-L1451) — timeout error classification; `MetricNetworkTimeoutFiredTotal` with all four guards
 - [`common/defaults.go:L134-L157`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L134-L157) — system-level defaults (network `120s`, upstream `60s`)
 - [`common/config.go:L1398-L1480`](https://github.com/erpc/erpc/blob/main/common/config.go#L1398-L1480) — `TimeoutPolicyConfig` struct; YAML/JSON unmarshal; `applyLegacySiblings`
-- [`common/errors.go:L1588-L1603`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1588-L1603) — `NewErrFailsafeTimeoutExceeded`; `ErrDynamicTimeoutExceeded` sentinel
+- [`common/errors.go:L1588-L1603`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1588-L1603) — `NewErrFailsafeTimeoutExceeded`; `ErrCodeFailsafeTimeoutExceeded`
+- [`common/errors.go:L1981-L1984`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1981-L1984) — `ErrDynamicTimeoutExceeded` sentinel declaration
 - [`erpc/networks_timeout_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_timeout_test.go) — behavior-locking tests: lifecycle scoping, cold-start, scope attribution, double-count regression
+- [`common/network.go:L51-L60`](https://github.com/erpc/erpc/blob/main/common/network.go#L51-L60) — `QuantileTracker` and `TrackedMetrics` interfaces
+- [`common/adaptive_duration_test.go`](https://github.com/erpc/erpc/blob/main/common/adaptive_duration_test.go) — unit tests locking resolution semantics: static mode, quantile mode, clamp, nil spec, cold-start
+- [`common/adaptive_duration_compat_test.go`](https://github.com/erpc/erpc/blob/main/common/adaptive_duration_compat_test.go) — backward-compat tests for legacy flat-sibling folding and precedence rules
+- [`erpc/network_executor.go:L86-L88`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L86-L88) — `NewNetworkExecutor` wires `NewTimeoutFunc`; `HasTimeout` method
+- [`telemetry/metrics.go:L437-L441`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L437-L441) — `MetricNetworkTimeoutFiredTotal` declaration
+- [`telemetry/metrics.go:L820-L824`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L820-L824) — `MetricNetworkTimeoutDurationSeconds` declaration
 
 ### Related pages
 

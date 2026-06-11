@@ -223,7 +223,7 @@ curl ... -d '{"jsonrpc":"2.0","id":3,"method":"erpc_deleteApiKey","params":[{
   ]
 }
 ```
-Lists all loaded projects, their networks (with aliases if configured), and per-network upstreams with vendor name. `vendor` is empty string when no vendor is detected. Source: [`erpc/admin.go:L474-L541`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L474-L541)
+Lists all loaded projects, their networks (with aliases if configured), and per-network upstreams with vendor name. `vendor` is empty string when no vendor is detected. The `providers` field is present in the response struct but is always an empty array in the current implementation — only `upstreams` is populated. Source: [`erpc/admin.go:L474-L541`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L474-L541)
 
 ---
 
@@ -302,7 +302,7 @@ Applies patch semantics: `null` values in `updates` delete fields from the store
 
 **Response**:
 ```json
-{"success": true, "apiKey": "<key>", "updated": {}}
+{"success": true, "apiKey": "<key>", "updated": {/* mirror of the updates object passed in */}}
 ```
 
 ---
@@ -370,7 +370,7 @@ Fetches the current record to retrieve `userId` (range key for deletion), then c
 erpc validate --config <path> [--format json|md]
 ```
 
-Default format: `json`. Exit code 0 = clean; exit code 1 = errors present or config load failed. Logs are suppressed during validation. Set `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION=true` to skip live checks for local/private endpoints.
+Default format: `json`. Exit code 0 = clean; exit code 1 = errors present or config load failed. Logs are suppressed during validation. Set `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION=true` to skip live checks for local/private endpoints. An endpoint is considered local when its hostname is `localhost`, `127.0.0.1`, `::1`, matches `*.cluster.local`, or resolves to a private-range IP address. Source: [`erpc/config_analyzer.go:L28-L59`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L28-L59)
 
 **Static checks** — orphan rate-limit budgets, budgets used without `rateLimitAutoTune`, networks missing failsafe policies, upstreams with empty endpoints, invalid `metrics.histogramBuckets`.
 
@@ -430,12 +430,48 @@ Source: [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd
 6. **`erpc_updateApiKey` uses patch semantics.** `null` in `updates` deletes the field; non-null overwrites. No schema validation; any JSON field name is accepted. Source: [`erpc/admin.go:L351-L357`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L351-L357)
 7. **Cordon state does not survive process restart.** It persists in-memory across window rotations only. Source: [`erpc/admin.go:L641-L654`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L641-L654)
 8. **Config validator genesis check is skipped for full nodes.** `evm.nodeType: full` or `evm.maxAvailableRecentBlocks > 0` suppresses genesis hash fetching since full nodes may not retain block 0. Source: [`erpc/config_analyzer.go:L400-L403`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L400-L403)
-9. **Config validator groups by resolved chain ID.** If `eth_chainId` fails, the upstream is grouped under `"unknown"`. Two `"unknown"` upstreams skip cross-comparison to avoid false positives. Source: [`erpc/config_analyzer.go:L475-L489`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L475-L489)
+9. **Config validator groups by resolved chain ID.** If `eth_chainId` fails, the upstream is grouped under `"unknown"`. Two `"unknown"` upstreams skip cross-comparison to avoid false positives from different chains. The config-declared chain ID is used as a fallback grouping key when the live fetch fails. Source: [`erpc/config_analyzer.go:L449-L489`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L449-L489)
 10. **Config validator uses `finalized - 64` for historical hash comparison.** Falls back to `latest - 1024` when finalized is unsupported. This avoids reorg false-positives. Source: [`erpc/config_analyzer.go:L589-L631`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L589-L631)
 11. **Block heatmap `category` label uses the full JSON-RPC method name.** High-cardinality method sets significantly increase the number of time-series written to your metrics store.
-12. **`eth_blockNumber` always emits bucket label `"TIP"`.** No block number extraction occurs for this method; it is special-cased in `recordEvmBlockRangeHeatmap`. Source: [`erpc/block_heatmap.go:L37-L40`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L37-L40)
+12. **`eth_blockNumber` always emits bucket label `"TIP"` and `finality="Realtime"`.** No block number extraction occurs for this method; it is special-cased as a direct TIP/Realtime emit in `recordEvmBlockRangeHeatmap`. Source: [`erpc/block_heatmap.go:L37-L40`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L37-L40)
 13. **CORS `exposedHeaders` is never set by defaults.** If browser clients need to read custom eRPC response headers, `admin.cors.exposedHeaders` must be set explicitly.
 14. **Batched admin requests fan out to per-method goroutines.** Each goroutine independently authenticates. A failed auth on one method in a batch does not block the others. Source: [`erpc/http_server.go:L404-L427`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L404-L427)
+15. **Block heatmap bucket start is always size-aligned.** `start = (blockNumber / size) * size` (integer floor-division). Two requests for blocks N and N+1 that straddle a size boundary land in different buckets. Source: [`erpc/block_heatmap.go:L91-L178`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L91-L178)
+16. **Block heatmap tip-unknown fallback.** When `tip ≤ 0`, `ComputeBlockHeatmapBucket` returns `size = 0`; the caller falls back to `telemetry.EvmBlockRangeBucketSize` (default `100000`) and formats absolute bucket labels. Source: [`erpc/block_heatmap.go:L63-L72`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L63-L72)
+
+### Block heatmap algorithm
+
+`ComputeBlockHeatmapBucket(blockNumber, tip, blockRef)` produces the `bucket` and `size` label values for `erpc_network_evm_block_range_requested_total`. Key details:
+
+**`selectDynamicBucketSize` — distance from tip → bucket size:**
+
+| Distance from tip | Bucket size |
+|---|---|
+| ≤ 1,000 | 100 |
+| ≤ 5,000 | 1,000 |
+| ≤ 20,000 | 5,000 |
+| ≤ 50,000 | 10,000 |
+| ≤ 100,000 | 30,000 |
+| ≤ 300,000 | 50,000 |
+| ≤ 1,000,000 | 100,000 |
+| ≤ 10,000,000 | 1,000,000 |
+| ≤ 30,000,000 | 10,000,000 |
+| ≤ 100,000,000 | 50,000,000 |
+| &gt; 100,000,000 | 50,000,000 |
+
+Source: [`erpc/block_heatmap.go:L91-L178`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L91-L178)
+
+**Label selection (first match wins):**
+- `blockRef == "latest"` → `"LATEST"`
+- `blockRef == "finalized"` → `"FINALIZED"`
+- `blockRef == "safe"` → `"SAFE"`
+- `blockRef == "pending"` → `"PENDING"`
+- `|blockNumber - tip| ≤ 4` → `"TIP"` (±4 block tolerance)
+- `blockNumber > tip + 4` → `"FUTURE"`
+- Near-tip zone (`tip - start ≤ 5,000,000`):
+  - If `end == tip`: `"L<size>"` (e.g. `"L100k"`)
+  - Otherwise: `"L<roundedStart>-L<roundedEnd>"`; if `roundedEnd == 0` the `-L0` suffix is omitted
+- Beyond 5M blocks from tip: absolute `"<start><unit>-<end><unit>"` using k/m/b suffixes (size &lt; 1M → thousands, &lt; 1B → millions, else billions)
 
 ### Observability
 
@@ -445,7 +481,7 @@ Source: [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd
 | `erpc_upstream_cordoned` | gauge | `project`, `vendor`, `network`, `upstream`, `category`, `reason` | Set to 1 on cordon, 0 on uncordon. Source: [`telemetry/metrics.go:L164-L168`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L164-L168) |
 | `erpc_upstream_cordon_duration_seconds` | histogram | `project`, `network`, `upstream` | Recorded on uncordon: time spent in cordoned state. Buckets 1–86400 seconds. Source: [`telemetry/metrics.go:L299`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L299) |
 
-No dedicated trace spans for admin methods. The HTTP server's standard OTel server span covers the entire request. The `component=admin` logger is used for all admin requests.
+No dedicated trace spans for admin methods. The HTTP server's standard OTel server span covers the entire request. The `component=admin` logger is used for all admin requests. The config analyzer uses a silent `zerolog.New(io.Discard)` logger during live upstream checks so that ephemeral upstream probes do not pollute CLI output. Source: [`erpc/config_analyzer.go:L282`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L282)
 
 ### Source code entry points
 
@@ -458,6 +494,8 @@ No dedicated trace spans for admin methods. The HTTP server's standard OTel serv
 - [`common/defaults.go:L775-L784`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L775-L784) — `AdminConfig.SetDefaults`: auto-synthesised CORS with full default values
 - [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L97-L142) — `validate` subcommand: config load, `GenerateValidationReport`, render, exit code
 - [`erpc/block_heatmap_test.go`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap_test.go) — bucket label tests with real Arbitrum block numbers, TIP tolerance, no-L0 guarantee
+- [`erpc/projects.go:L189-L190`](https://github.com/erpc/erpc/blob/main/erpc/projects.go#L189-L190) — `recordEvmBlockRangeHeatmap` call site in `project.Forward` (post-successful-forward)
+- [`data/connector.go`](https://github.com/erpc/erpc/blob/main/data/connector.go) — `ConnectorMainIndex = "idx_main"` constant used by API key management methods as the index key
 
 ### Related pages
 

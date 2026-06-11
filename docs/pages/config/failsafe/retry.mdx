@@ -171,6 +171,10 @@ The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.m
 
 **`eth_sendRawTransaction` special-case.** If retries are exhausted and the final cause is `ErrEndpointExecutionException` for `eth_sendRawTransaction`, the raw execution error is returned unwrapped — the "execution reverted" IS the answer. Source: <SourceLink file="erpc/network_executor.go" lines="279-283" />
 
+**First-informative-error capture.** The network retry loop captures the first non-degenerate error in `firstInformativeErr`. Later retry rounds can degenerate into bare `ErrNoUpstreamsLeftToSelect` (all previously-tried upstreams marked consumed). On final wrap, the richer first error is surfaced rather than the degenerate one. Source: <SourceLink file="erpc/network_executor.go" lines="302-309" />
+
+**Upstream-scope retry differences.** The upstream executor does NOT have data-unavailability logic in `computeDelay` — it always uses `ComputeBackoff` regardless of retry reason. It does not track `bestResp` for emptyish responses. Its `shouldRetry` is simpler: only error-based, no response-based retry, no reason string. Non-retryable write methods (`evm.IsNonRetryableWriteMethod`) are also blocked at the upstream scope — `eth_sendRawTransaction` still uses network-scope retry for idempotency handling, but the upstream executor will not re-issue it. Source: <SourceLink file="upstream/upstream_executor.go" lines="243-246" />
+
 ### Config schema
 
 #### Envelope selector fields (`failsafe[i]` level, above `retry`)
@@ -178,7 +182,7 @@ The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.m
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
 | `matchMethod` | string | `"*"` | WildcardMatch pattern against JSON-RPC method. Empty string is a **validation error** after `SetDefaults` — use `"*"` explicitly. Legacy single-object YAML failsafe format forces `"*"` automatically. Source: <SourceLink file="common/validation.go" lines="985-988" /> |
-| `matchFinality` | []string | `[]` (any) | Finality states: `finalized`, `unfinalized`, `realtime`, `unknown`. Empty = wildcard. At defaults-merge time: two arrays match if either is empty OR they share an element. At dispatch time: `slices.Contains`. No glob syntax inside the array. Source: <SourceLink file="common/defaults.go" lines="17-34" /> |
+| `matchFinality` | []string | `[]` (any) | Finality states: `finalized`, `unfinalized`, `realtime`, `unknown`. Empty = wildcard. At defaults-merge time: two arrays match if either is empty OR they share an element. At dispatch time: `slices.Contains`. No glob syntax inside the array. Numeric string values `"0"`–`"3"` are also accepted by YAML unmarshal for backward compatibility; any other string causes an unmarshal error at config load time. Source: <SourceLink file="common/defaults.go" lines="17-34" /> |
 
 **`SelectExecutor` 4-tier priority** (first match wins within each tier):
 1. Specific method + specific finality
@@ -430,20 +434,24 @@ is cold:
 1. **`emptyResultMaxAttempts` gates ALL data-availability reasons via one shared counter.** With default `emptyResultMaxAttempts: 2`, only one empty-type retry fires across the entire request lifetime, regardless of `maxAttempts`. Confirmed by `TestNetworkExecutor_ShouldRetry_DataUnavailableSharesOneCap`.
 2. **Zero EMA + zero `emptyResultDelay` → immediate empty retry.** During startup (first minutes) the EMA is cold. If `emptyResultDelay` is also `0`, missing-data retries fire with no delay, hammering upstreams. Set `emptyResultDelay: 1s` for Ethereum, `~200ms` for fast chains. Confirmed by `TestNetworkExecutor_ComputeDelay_EmptyResultFallsBackToFixed`.
 3. **`emptyResultDelay` is NOT a floor; EMA overrides it unconditionally when warm.** Do not rely on `emptyResultDelay` as a minimum spacing in steady state — it only applies during cold start. See [`common/config.go:L1355-L1361`](https://github.com/erpc/erpc/blob/main/common/config.go#L1355-L1361).
-4. **`emptyResultAccept` silences empty-result retry but NOT `missing_data` retry.** If an upstream returns an explicit JSON-RPC error classified as `ErrEndpointMissingData` (e.g., `missing trie node`), it bypasses `emptyResultAccept` and triggers retry unless `retryEmpty == false`. Confirmed by `TestNetworkForward_TryAllUpstreams_AllEmpty_DelayBetweenRounds`.
-5. **Within-round upstream fallback has no delay.** Delays fire between retry rounds, not between upstreams within a round. Upstream A fails → upstream B is tried immediately within the same sweep. Confirmed by `TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound`.
-6. **All-upstreams-missing-data = `maxAttempts` rounds × N upstreams calls.** With `maxAttempts: 3` and 2 upstreams both returning `ErrEndpointMissingData`, 6 total upstream calls are made. Confirmed by `AllUpstreamsMissingData_NetworkRetryHappens`.
-7. **`bestResp` masks later errors.** A prior empty response (round 1) beats a subsequent hard error (round 2) — caller receives `(emptyResp, nil)`. This can hide retry-round errors behind an empty-but-valid shell. Confirmed by `TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty`.
-8. **`emptyResultIgnore` + `emptyResultAccept` both set → `emptyResultIgnore` silently dropped.** The migration condition is `emptyResultAccept == nil`. If both are present, only `emptyResultAccept` takes effect. Field is not cleared. Source: [`common/defaults.go:L2262`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2262).
-9. **`backoffFactor: 0` or `backoffMaxDelay: 0` are validation errors.** Since `SetDefaults` always fills `1.2` and `3s`, these only surface when explicitly set to `0` in config. Source: [`common/validation.go:L1020-L1027`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1020-L1027).
-10. **Client-side errors (`ErrEndpointClientSideException`, -32600) ARE retryable at network scope.** No `retryableTowardNetwork: false` flag — another upstream might accept the request. Confirmed by `TestIsRetryableTowardNetwork_ClientError`.
-11. **`ErrFailsafeConfiguration` aborts startup, never raised at request time.** Triggers: (a) circuit breaker in a network-scope failsafe entry; (b) consensus in an upstream-scope failsafe entry.
-12. **Backoff attempt index is 0-based.** First retry = attempt 0, so `BackoffFactor^0 = 1` — the first retry always uses exactly `Delay`. Only second retry onward grows. Differs from libraries where attempt 0 is the initial request.
-13. **`blockUnavailableDelay` migration does not overwrite user-set `emptyResultDelay`.** If both are set, `blockUnavailableDelay` is discarded (deprecation warning still fires). Source: [`common/defaults.go:L2269`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2269).
-14. **Wrong-empty punishment respects block availability bounds.** When an upstream returns null for a method in `markEmptyAsErrorMethods` but the block is outside its configured `blockAvailability` range, the upstream's `MisbehaviorsTotal` is NOT incremented. Confirmed by `TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds`.
-15. **Failsafe defaults merge uses wildcard method matching.** A default entry `matchMethod: "eth_*"` provides defaults for network entry `matchMethod: "eth_getBlockByNumber"`. A catch-all `matchMethod: "*"` is required to cover all entries uniformly. Source: [`common/defaults.go:L1793-L1832`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1793-L1832).
-16. **Upstreams that returned MissingData in round N are eligible again in round N+1.** Missing-data errors do not permanently block re-selection in the next retry round. Confirmed by `TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry`.
-17. **`IsRetryableTowardNetwork` uses explicit iteration over multi-error wrappers.** The function handles `errors.Join`-style wrappers by iterating children explicitly — if ANY child is retryable, the bundle is retryable. If the wrapper doesn't implement `Unwrap() []error`, the code falls through to single-cause chain walk (only first child is seen). Source: <SourceLink file="common/errors.go" lines="2400-2410" />
+4. **`emptyResultDelay` is the unified fallback for BOTH `empty_result` AND `block_unavailable` retries.** The former `blockUnavailableDelay` field was merged into `emptyResultDelay`. A config with `blockUnavailableDelay` set still loads but emits a deprecation warning, then uses the value as `emptyResultDelay`. Confirmed by `TestNetworkExecutor_ComputeDelay_BlockUnavailableUsesEmptyResultDelay`.
+5. **`retryEmpty == false` gates BOTH the upstream mark-empty-as-error conversion AND network/upstream retry decisions.** When `retryEmpty: false`, `upstreamPostForward_markUnexpectedEmpty` returns the raw null without converting it to `ErrEndpointMissingData`. Even if a null is converted by some other path, `shouldRetryWithReason` and `shouldRetry` check the directive again and block the retry. Confirmed by `TestNetworkForward_RetryEmptyDisabled_BlocksMissingData`.
+6. **`emptyResultAccept` silences empty-result retry but NOT `missing_data` retry.** If an upstream returns an explicit JSON-RPC error classified as `ErrEndpointMissingData` (e.g., `missing trie node`), it bypasses `emptyResultAccept` and triggers retry unless `retryEmpty == false`. Confirmed by `TestNetworkForward_TryAllUpstreams_AllEmpty_DelayBetweenRounds`.
+7. **Within-round upstream fallback has no delay.** Delays fire between retry rounds, not between upstreams within a round. Upstream A fails → upstream B is tried immediately within the same sweep. Confirmed by `TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound`.
+8. **All-upstreams-missing-data = `maxAttempts` rounds × N upstreams calls.** With `maxAttempts: 3` and 2 upstreams both returning `ErrEndpointMissingData`, 6 total upstream calls are made. Confirmed by `AllUpstreamsMissingData_NetworkRetryHappens`.
+9. **`bestResp` masks later errors.** A prior empty response (round 1) beats a subsequent hard error (round 2) — caller receives `(emptyResp, nil)`. This can hide retry-round errors behind an empty-but-valid shell. Confirmed by `TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty`.
+10. **`emptyResultIgnore` + `emptyResultAccept` both set → `emptyResultIgnore` silently dropped.** The migration condition is `emptyResultAccept == nil`. If both are present, only `emptyResultAccept` takes effect. Field is not cleared. Source: [`common/defaults.go:L2262`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2262).
+11. **`backoffFactor: 0` or `backoffMaxDelay: 0` are validation errors.** Since `SetDefaults` always fills `1.2` and `3s`, these only surface when explicitly set to `0` in config. Source: [`common/validation.go:L1020-L1027`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1020-L1027).
+12. **Client-side errors (`ErrEndpointClientSideException`, -32600) ARE retryable at network scope.** No `retryableTowardNetwork: false` flag — another upstream might accept the request. Confirmed by `TestIsRetryableTowardNetwork_ClientError`.
+13. **`ErrFailsafeConfiguration` aborts startup, never raised at request time.** Triggers: (a) circuit breaker in a network-scope failsafe entry; (b) consensus in an upstream-scope failsafe entry.
+14. **Backoff attempt index is 0-based.** First retry = attempt 0, so `BackoffFactor^0 = 1` — the first retry always uses exactly `Delay`. Only second retry onward grows. Differs from libraries where attempt 0 is the initial request.
+15. **`blockUnavailableDelay` migration does not overwrite user-set `emptyResultDelay`.** If both are set, `blockUnavailableDelay` is discarded (deprecation warning still fires). Source: [`common/defaults.go:L2269`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2269).
+16. **Wrong-empty punishment respects block availability bounds.** When an upstream returns null for a method in `markEmptyAsErrorMethods` but the block is outside its configured `blockAvailability` range, the upstream's `MisbehaviorsTotal` is NOT incremented. Confirmed by `TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds`.
+17. **Failsafe defaults merge uses wildcard method matching.** A default entry `matchMethod: "eth_*"` provides defaults for network entry `matchMethod: "eth_getBlockByNumber"`. A catch-all `matchMethod: "*"` is required to cover all entries uniformly. Source: [`common/defaults.go:L1793-L1832`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1793-L1832).
+18. **Upstreams that returned MissingData in round N are eligible again in round N+1.** Missing-data errors do not permanently block re-selection in the next retry round. Confirmed by `TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry`.
+19. **`IsRetryableTowardNetwork` uses explicit iteration over multi-error wrappers.** The function handles `errors.Join`-style wrappers by iterating children explicitly — if ANY child is retryable, the bundle is retryable. If the wrapper doesn't implement `Unwrap() []error`, the code falls through to single-cause chain walk (only first child is seen). Source: <SourceLink file="common/errors.go" lines="2400-2410" />
+20. **`IsRetryableTowardsUpstream` blocklist.** The following error codes are never retried at upstream scope: `ErrCodeFailsafeCircuitBreakerOpen`, `ErrCodeUpstreamRequestSkipped`, `ErrCodeUpstreamMethodIgnored`, `ErrCodeEndpointUnsupported`, `ErrCodeEndpointBillingIssue`, `ErrCodeJsonRpcRequestUnmarshal`, `ErrCodeEndpointExecutionException`, `ErrCodeEndpointUnauthorized`, `ErrCodeEndpointRequestTooLarge`, `ErrCodeEndpointContentValidation`. Any `IsCapacityIssue` error (rate-limits) is also blocked. Source: <SourceLink file="common/errors.go" lines="2455-2497" />
+21. **`IsRetryableTowardNetwork` full classification by error type.** `ErrUpstreamsExhausted` with no cause → false; wrapping all `ErrEndpointExecutionException` → false; wrapping any `ErrEndpointMissingData`, `ErrEndpointServerSideException`, or mixed timeout+missing-data → true. Standalone `ErrEndpointClientSideException` (-32600) → true (no `retryableTowardNetwork: false` flag). Confirmed by `common/errors_retry_test.go`. Source: <SourceLink file="common/errors.go" lines="2379-2436" />
 
 ### Observability
 
@@ -455,14 +463,23 @@ is cold:
 | `erpc_network_failed_request_total` | counter | project, network, category, attempt, error, severity, finality, user, agent_name | Final failed request after all retries exhausted; `attempt` label = total attempt count |
 
 **OTel span attributes** (set on the span wrapping each upstream attempt):
-- `execution.network_attempts`, `execution.network_retries` — network-scope counters
-- `execution.upstream_attempts`, `execution.upstream_retries` — upstream-scope counters
-- `execution.hedges`, `execution.upstream_hedges`, `execution.network_hedges` — hedge fire counts
+- `execution.attempts`, `execution.retries` — aggregate totals across all scopes
+- `execution.hedges` — total hedge fires across all scopes
+- `execution.network_attempts`, `execution.network_retries`, `execution.network_hedges` — network-scope counters
+- `execution.upstream_attempts`, `execution.upstream_retries`, `execution.upstream_hedges` — upstream-scope counters
 
 Source: <SourceLink file="common/exec_state.go" lines="279-285" />
 
+**Error codes produced:**
+
+| Error | When produced |
+|---|---|
+| `ErrFailsafeConfiguration` | Startup only — invalid policy placement (circuit breaker at network scope, consensus at upstream scope). Server aborts before serving any request. Source: <SourceLink file="common/errors.go" lines="1573-1584" /> |
+| `ErrFailsafeRetryExceeded` | After all retry rounds exhausted; wraps the last error with `ScopeNetwork` or `ScopeUpstream` and `durationMs`. For `eth_sendRawTransaction` with `ErrEndpointExecutionException`, the error is returned unwrapped (not inside `ErrFailsafeRetryExceeded`). Source: <SourceLink file="erpc/network_executor.go" lines="279-283" /> |
+
 **Log messages:**
 - `config: retry.blockUnavailableDelay is deprecated and has been merged into retry.emptyResultDelay; please update your config` — emitted as `log.Warn` at `RetryPolicyConfig.SetDefaults` time whenever `BlockUnavailableDelay > 0` is found, even if the value was discarded. Source: <SourceLink file="common/defaults.go" lines="2272" />
+- `config: evm.maxFutureBlockRetryDistance is deprecated and ignored; use evm.emptyResultConfidence (blockHead|finalizedBlock) instead` — emitted as `log.Warn` at `EvmNetworkConfig.SetDefaults` time. Source: <SourceLink file="common/defaults.go" lines="2081" />
 
 ### Source code entry points
 
@@ -472,7 +489,9 @@ Source: <SourceLink file="common/exec_state.go" lines="279-285" />
 - [`upstream/upstream_executor.go:L186-L255`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L186-L255) — `upstreamExecutor.runRetry`: upstream-scope loop; simpler semantics, always `ComputeBackoff`, no data-availability logic
 - [`failsafe/backoff.go:L21-L65`](https://github.com/erpc/erpc/blob/main/failsafe/backoff.go#L21-L65) — `ComputeBackoff` (pure function) and `SleepCtx` (context-aware sleep)
 - [`architecture/evm/common.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/common.go) — `upstreamPostForward_markUnexpectedEmpty`, `emptyResultBeyondConfidence`; `null` → `ErrEndpointMissingData` conversion
-- [`common/errors.go:L2379-L2436`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2379-L2436) — `IsRetryableTowardNetwork`: multi-error explicit iteration (L2400-L2410); `IsRetryableTowardsUpstream` blocklist
+- [`architecture/evm/hooks.go:L109-L183`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go#L109-L183) — `HandleUpstreamPostForward` dispatcher that calls `markUnexpectedEmpty` for methods in `markEmptyAsErrorMethods`
+- [`common/config.go:L2105-L2152`](https://github.com/erpc/erpc/blob/main/common/config.go#L2105-L2152) — `DirectiveDefaultsConfig` (`retryEmpty`, `retryPending` fields)
+- [`common/errors.go:L2379-L2436`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2379-L2436) — `IsRetryableTowardNetwork`: multi-error explicit iteration (L2400-L2410); `IsRetryableTowardsUpstream` blocklist (L2455-L2497)
 - [`erpc/networks_registry.go:L98-L137`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L98-L137) — constructs `dynamicBlockUnavailableDelay` closure (EMA × multiplier) and wires into each `networkExecutor`
 - [`erpc/networks_retry_missing_data_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_retry_missing_data_test.go) — integration tests covering network retry, missing data, execution exception, retry-empty directive, upstream re-selection, wrong-empty punishment
 

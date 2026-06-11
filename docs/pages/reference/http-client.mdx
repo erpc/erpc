@@ -312,12 +312,15 @@ Same headers except forwarded headers (absent). Body is a JSON array of `JsonRpc
 | Unparseable JSON body | `ErrJsonRpcExceptionInternal/ParseException` |
 | Upstream `error` field in response | `ErrJsonRpcExceptionInternal/ServerSideException` (after extractor) |
 | Batch response body is not array or object | `ErrUpstreamMalformedResponse` (retryable) |
+| Pre-request creation error (e.g. failed to build `http.Request`) | `ErrHttp` (BaseError) |
 
 **Behavioral invariants:**
 - `ClientRegistry.GetOrCreateClient` uses `sync.Map` + `sync.Once`; all callers for the same upstream share exactly one client instance. [<SourceLink file="clients/registry.go" lines="47-125" />]
 - OTel `traceparent` + `baggage` are injected on every request, including retried and batched calls. [<SourceLink file="clients/http_json_rpc_client.go" lines="845-847" />]
 - Both single and batch paths decompress gzip responses whenever `Content-Encoding: gzip` is present. [<SourceLink file="clients/http_json_rpc_client.go" lines="852-867" />]
 - At shutdown, `appCtx.Done()` triggers `processBatch(true)` to drain in-flight batches; already-canceled contexts in the queue are dropped silently. [<SourceLink file="clients/http_json_rpc_client.go" lines="211-217" />]
+- **Pre-queue cancellation check.** `queueRequest` inspects `req.ctx.Err()` before inserting into the batch map. Already-canceled requests are immediately failed with `ErrEndpointRequestTimeout` or `ErrEndpointRequestCanceled` without touching the network. [<SourceLink file="clients/http_json_rpc_client.go" lines="241-253" />]
+- **Post-queue pre-send cancellation drop.** Inside `processBatch`, a pass over the queued requests drops any entry whose `ctx.Err()` is non-nil before the HTTP call is made. [<SourceLink file="clients/http_json_rpc_client.go" lines="349-361" />]
 
 ### Best practices
 
@@ -348,6 +351,9 @@ Same headers except forwarded headers (absent). Body is a JSON array of `JsonRpc
 15. **`ErrUpstreamMalformedResponse` is retryable.** Raised when a batch response body is neither a JSON array nor object. Not in the non-retryable allowlist — eRPC will try another upstream. If all upstreams return malformed responses, the request ends as `ErrUpstreamsExhausted`. Source: <SourceLink file="common/errors.go" lines="835-858" />
 16. **`ErrEndpointServerSideException.originalStatusCode` zero-value fallback is 500.** When `originalStatusCode == 0` (e.g. synthetic gRPC status), `ErrorStatusCode()` returns 500. A 500 from eRPC does not necessarily mean the upstream returned 500. Source: <SourceLink file="common/errors.go" lines="1974-1979" />
 17. **`JsonRpcErrorExtractor` is wired once at startup.** The EVM extractor is injected at `UpstreamsRegistry` construction and cannot be changed at runtime. Non-EVM architectures require a code change to swap extractors. Source: <SourceLink file="upstream/registry.go" lines="79" />
+18. **`ErrUpstreamMalformedResponse` method-level 400 vs wire-level 200 discrepancy.** `ErrorStatusCode()` returns 400, which appears in eRPC logs and metrics labels. However, the HTTP response to the calling client is sent with wire-level HTTP 200 (standard JSON-RPC transport), and the 400 appears only inside the JSON-RPC error envelope's metadata. The 400 is not visible in the HTTP response line seen by callers — only in logs and `erpc_upstream_request_errors_total`. Source: <SourceLink file="common/errors.go" lines="856-858" />
+19. **`ErrEndpointServerSideException` is retryable toward both upstream and network.** The error code is not in the non-retryable allowlist in `IsRetryableTowardsUpstream`, so eRPC will attempt another upstream. A 500 fallback (when `originalStatusCode == 0`) does not mean the error is deterministic. Source: <SourceLink file="common/errors.go" lines="1951-1979" />
+20. **`proxyPool` is set twice when `jsonRpcCfg != nil`.** `NewGenericHttpJsonRpcClient` assigns `client.proxyPool = proxyPool` in the struct literal and then again unconditionally inside the `if jsonRpcCfg != nil` block. The net effect is always the passed value — harmless but worth noting when reading the code. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="91-148" />
 
 ### Observability
 
@@ -364,9 +370,13 @@ The HTTP client layer emits no Prometheus metrics directly. All upstream-level m
 **Log messages (key entries):**
 - `DEBUG` `"sending json rpc POST request (single|batch)"` — host, raw request body, headers
 - `DEBUG` `"queuing request ... for batch (current batch size: N)"`
+- `DEBUG` `"processing batch with N requests"`
 - `TRACE` `"using client from proxy pool"` — pool ID, transport pointer, resolved proxy URL
+- `TRACE` `"starting batch timer"`, `"setting batch deadline to earliest request deadline"`, `"committing batch to process total of N requests"`
+- `TRACE` response body (first 20 KiB + last 20 KiB when response body is oversized)
 - `ERROR` `"failed to get client from proxy pool"` — when `ProxyPool.GetClient` returns error (empty pool)
-- `WARN` `"unexpected response received with ID: <id>"` — batch response ID mismatch
+- `WARN` `"unexpected response received without ID"` — batch response element has no `id` field
+- `WARN` `"unexpected response received with ID: <id>"` — batch response ID not in pending request map
 - `ERROR` `"some requests did not receive a response (matching ID)"` — with full response body
 
 ### Source code entry points
@@ -382,6 +392,9 @@ The HTTP client layer emits no Prometheus metrics directly. All upstream-level m
 - [`common/errors.go:L835-L858`](https://github.com/erpc/erpc/blob/main/common/errors.go#L835-L858) — `ErrUpstreamMalformedResponse`: meaning, `ErrorStatusCode` returns 400, retryable
 - [`common/errors.go:L1951-L1979`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1951-L1979) — `ErrEndpointServerSideException`: `originalStatusCode` field, 500 fallback
 - [`clients/http_connection_test.go`](https://github.com/erpc/erpc/blob/main/clients/http_connection_test.go) — behavior-locking tests validating `MaxConnsPerHost: 0` fix under load
+- [`common/config.go:L1072-L1079`](https://github.com/erpc/erpc/blob/main/common/config.go#L1072-L1079) — `JsonRpcUpstreamConfig` struct definition
+- [`common/config.go:L1985-L1988`](https://github.com/erpc/erpc/blob/main/common/config.go#L1985-L1988) — `ProxyPoolConfig` struct definition
+- [`common/defaults.go:L1700-L1704`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1700-L1704) — unconditional `u.JsonRpc = &JsonRpcUpstreamConfig{}` if nil before `SetDefaults()`
 
 ### Related pages
 

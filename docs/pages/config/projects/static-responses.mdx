@@ -127,7 +127,10 @@ upstream metadata — `Upstream()` is nil and `FromCache()` is false.
 
 **Numeric type tolerance.** YAML config deserializes integers as Go `int`; inbound JSON
 deserializes them as `float64`. `valueEqual` normalizes both to `float64`, so a config
-param of `0` matches an inbound `0` (or `0.0`) without any special handling.
+param of `0` matches an inbound `0` (or `0.0`) without any special handling. All numeric
+types (float32/64, int/8/16/32/64, uint/8/16/32/64) are converted to float64 before
+comparison. Maps are compared key-count-first then recursively, order-independently.
+Other types fall back to `reflect.DeepEqual`.
 
 **Hex strings are not normalized.** `"0x0"` and `"0x00"` are different values. If your
 client sends `"0x00"` but your config uses `"0x0"`, no match occurs and the request falls
@@ -153,7 +156,7 @@ All fields live under `networks[*].staticResponses[*]`.
 | `networks[*].staticResponses[*].response` | `*StaticResponseBodyConfig` | required | Exactly one of `result` or `error` must be set; nil rejected at startup. Source: <SourceLink file="common/config.go" lines="2017" />, <SourceLink file="common/validation.go" lines="1285-1298" /> |
 | `networks[*].staticResponses[*].response.result` | `interface{}` | `nil` | Any JSON-serializable value; set to serve a successful response. Mutually exclusive with `error`. `result: null` YAML is treated as set (non-nil interface wrapping nil). Source: <SourceLink file="common/config.go" lines="2023" /> |
 | `networks[*].staticResponses[*].response.error` | `*StaticResponseErrorConfig` | `nil` | Set to return a JSON-RPC error response. Mutually exclusive with `result`. Requires `message` to be non-empty. Source: <SourceLink file="common/config.go" lines="2024" /> |
-| `networks[*].staticResponses[*].response.error.code` | `int` | `0` (no range enforced) | JSON-RPC error code. **Footgun:** code `0` passes validation but is omitted from wire JSON because `ErrJsonRpcExceptionExternal.Code` uses `json:"code,omitempty"`. Always set a non-zero value. Source: <SourceLink file="common/config.go" lines="2029" />, <SourceLink file="common/errors.go" lines="2226" /> |
+| `networks[*].staticResponses[*].response.error.code` | `int` | `0` (no range enforced) | JSON-RPC error code. Typical values: `-32700` parse error, `-32600` invalid request, `-32601` method not found, `-32602` invalid params, `-32603` internal error. **Footgun:** code `0` passes validation but is omitted from wire JSON because `ErrJsonRpcExceptionExternal.Code` uses `json:"code,omitempty"`. Always set a non-zero value. Source: <SourceLink file="common/config.go" lines="2029" />, <SourceLink file="common/errors.go" lines="2226" /> |
 | `networks[*].staticResponses[*].response.error.message` | `string` | required when `error` is set | Human-readable error description. Empty string rejected at startup with `"response.error.message is required"`. Source: <SourceLink file="common/config.go" lines="2030" />, <SourceLink file="common/validation.go" lines="1296-1298" /> |
 | `networks[*].staticResponses[*].response.error.data` | `interface{}` | `nil` | Optional extra data in the JSON-RPC error object. Any JSON-serializable value. Omitted from wire JSON when nil (`omitempty`). Source: <SourceLink file="common/config.go" lines="2031" /> |
 
@@ -355,6 +358,10 @@ JSON, which is the correct "not found" shape for receipt lookups:
 - If `req.JsonRpcRequest()` fails (malformed request), the function returns `(nil, false)`
   and the request falls through to normal handling — it is not aborted.
   [<SourceLink file="erpc/networks_static_responses.go" lines="23" />]
+- If `NewJsonRpcResponse` fails during response construction (rare — only if result/error
+  marshaling panics), the function logs an error (`"failed to build static response"`) and
+  returns `(nil, false)`, falling through to normal handling.
+  [<SourceLink file="erpc/networks_static_responses.go" lines="48" />]
 - OTel span attribute `static_response.hit=true` is set on the `Network.Forward` span on
   every hit. [<SourceLink file="erpc/networks.go" lines="978" />]
 
@@ -401,6 +408,7 @@ JSON, which is the correct "not found" shape for receipt lookups:
 - OTel span attribute `static_response.hit=true` is set on the `Network.Forward` span on a hit. [<SourceLink file="erpc/networks.go" lines="978" />]
 - Debug log: `"served static response (no upstream contacted)"` emitted with the matched `method` field. [<SourceLink file="erpc/networks_static_responses.go" lines="60-63" />]
 - Debug log on match-check failure: `"skipping static response: cannot inspect request"`. [<SourceLink file="erpc/networks_static_responses.go" lines="23" />]
+- Error log: `"failed to build static response"` on `NewJsonRpcResponse` failure (rare). [<SourceLink file="erpc/networks_static_responses.go" lines="48" />]
 
 ### Source code entry points
 

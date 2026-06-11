@@ -135,6 +135,8 @@ the pattern contains **no `!` anywhere** (purely-positive), it also iterates the
 `"!other-upstream"` — disables tag matching entirely. This is intentional: a tag match must never
 rescue an upstream the operator meant to exclude.
 
+**`matchMethodPattern` helper.** Inside `SelectExecutor`, method matching uses a helper that treats both empty string and `"*"` as match-anything, and tries exact equality before calling `WildcardMatch` to reduce overhead on common exact-match patterns. Source: <SourceLink file="common/match.go" lines="83-92" />
+
 **`SelectExecutor` — 4-tier priority for failsafe dispatch.** Given executors with `(matchMethod,
 matchFinality)` fields and the request's `(method, finality)`, `SelectExecutor` selects the first
 matching executor across four tiers in priority order (single pass):
@@ -224,11 +226,21 @@ connector `failsafeForGets[]`/`failsafeForSets[]`)
 | `network` | string | `""` (absent = any) | `WildcardMatch` against network ID. Both `network` AND `method` must match. Source: <SourceLink file="common/config.go" lines="241" />, <SourceLink file="common/tracing_core.go" lines="306-329" /> |
 | `method` | string | `""` (absent = any) | `WildcardMatch` against method. Source: <SourceLink file="common/config.go" lines="245" /> |
 
+**Served-tip guaranteed methods** — `networks[].evm.servedTip.guaranteedMethods[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `networks[].evm.servedTip.guaranteedMethods[]` | []string | — | Each element validated by `ValidatePattern` at config load (the only config field with startup validation). At runtime, `WildcardMatch` against the request method determines whether the served-tip mechanism applies. Source: <SourceLink file="common/validation.go" lines="1323-1326" /> |
+
 **Provider network overrides** — `providers[].overrides` (map keys)
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
 | `providers[].overrides` (map key) | string | — | `WildcardMatch` pattern against network ID. First matching key wins. Source: [`thirdparty/provider.go:L80-L91`](https://github.com/erpc/erpc/blob/main/thirdparty/provider.go#L80-L91) |
+
+**Consensus quota tags** — `consensus/quota.go`
+
+Tag membership for quota matching uses `WildcardMatch(pattern, t)` against each tag string in the upstream config's `Tags` slice. Source: [`consensus/quota.go:L96`](https://github.com/erpc/erpc/blob/main/consensus/quota.go#L96)
 
 **Static responses** — `networks[].staticResponses[]` (**NOT** WildcardMatch)
 
@@ -245,6 +257,8 @@ connector `failsafeForGets[]`/`failsafeForSets[]`)
 | `"unfinalized"` | `DataFinalityStateUnfinalized` | 1 | Block known and &gt; upstream finalized block. |
 | `"realtime"` | `DataFinalityStateRealtime` | 2 | Fresh, block-unbound data (e.g., `eth_gasPrice`). |
 | `"unknown"` | `DataFinalityStateUnknown` | 3 | Block number cannot be determined (trace-by-hash, etc.). |
+
+YAML/JSON accepts string names or their numeric iota indices (`"0"` = `finalized`, `"1"` = `unfinalized`, `"2"` = `realtime`, `"3"` = `unknown`).
 
 Source: <SourceLink file="common/data.go" lines="8-76" />
 
@@ -540,9 +554,10 @@ rule, a heavy-method request consumes from both buckets:
 12. **`WildcardMatch` concurrent calls are safe** (no shared mutable state per call) but `RateLimiterBudget.GetRulesByMethod` holds a `sync.RWMutex` during iteration. Re-tokenization cost is paid under the read lock on every matching call. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="63-78" />
 13. **`paramToString` on float64 from JSON.** JSON numbers decode as `float64`; `strconv.FormatFloat(v, 'f', -1, 64)` produces `"1234"` not `"1234.0"`. A string pattern `"123*"` would match numeric param `1234`. Source: <SourceLink file="data/cache_policy.go" lines="234-249" />
 14. **Cache `MatchesForGet` returns `true` for `unknown` finality across all policies.** A request with indeterminate finality can be served from a `finalized` policy's cache, potentially returning stale data. Source: <SourceLink file="data/cache_policy.go" lines="146-149" />
-15. **Legacy single-object failsafe migration is silent.** An old `failsafe: {…}` (object form) is quietly converted to a 1-element slice. No log or warning is emitted. Source: <SourceLink file="common/config.go" lines="2041-2103" />
+15. **Legacy single-object failsafe migration is silent.** An old `failsafe: {…}` (object form) is quietly converted to a 1-element slice. No log or warning is emitted. The migration only forces `matchMethod` to `"*"` when the field is empty — an explicitly-set non-empty `matchMethod` value (e.g., `"eth_call"`) is preserved as-is. The migration applies at YAML parse time across `NetworkConfig`, `NetworkDefaults`, and `UpstreamConfig`. Source: <SourceLink file="common/config.go" lines="2041-2103" />
 16. **Zero-config auto-generated project only when `projects:` is entirely absent.** Even `projects: []` skips the auto-generated 'main' project defaults. Source: <SourceLink file="common/defaults.go" lines="100-167" />
 17. **`DataFinalityStateAll = -1` is an internal sentinel.** It must never appear in config or on requests — it only lives in health-tracker cross-finality rollup keys. Source: <SourceLink file="common/data.go" lines="29-36" />
+18. **Empty pattern in `MatchesSelector` always returns `false`.** The function guards against empty patterns at entry and immediately returns `false`. Callers must ensure the `use-upstream` directive value is non-empty — an empty `X-ERPC-Use-Upstream` header or query param results in no upstream being selected by that directive. Source: <SourceLink file="common/matcher.go" lines="73" />
 
 ### Observability
 
@@ -557,6 +572,12 @@ Trace span attributes set during network-level failsafe selection:
 
 Source: <SourceLink file="erpc/networks.go" lines="1179-1180" />
 
+Notable log lines:
+- `"method support result"` — Debug, `upstream/upstream.go`, fields: `allowed` (bool), `method` (string). Emitted after each upstream method-support check.
+- `"skipping static response: cannot inspect request"` — Debug, `erpc/networks_static_responses.go`. Emitted when params cannot be read for static-response matching.
+- `"served static response (no upstream contacted)"` — Debug, `erpc/networks_static_responses.go`. Emitted on a static-response cache hit.
+- `"error matching ignore method … with method …"` — Error, `auth/authorizer.go`. Emitted when `WildcardMatch` returns an error during auth method-filter evaluation.
+
 ### Source code entry points
 
 - [`common/matcher.go:L221-L272`](https://github.com/erpc/erpc/blob/main/common/matcher.go#L221-L272) — `tokenize`: byte-by-byte tokenizer producing `tokenOr`, `tokenAnd`, `tokenNot`, `tokenLParen`, `tokenRParen`, `tokenPattern`
@@ -568,6 +589,7 @@ Source: <SourceLink file="erpc/networks.go" lines="1179-1180" />
 - [`upstream/upstream.go:L372-L408`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L372-L408) — upstream-level `getFailsafeExecutor`: manual 4-tier loop
 - [`erpc/networks.go:L910-L928`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L910-L928) — network-level `getFailsafeExecutor`: config-order first-match scan
 - [`auth/authorizer.go:L80-L115`](https://github.com/erpc/erpc/blob/main/auth/authorizer.go#L80-L115) — `shouldApplyToMethod`: ignore-then-allow semantics
+- [`consensus/quota.go:L96`](https://github.com/erpc/erpc/blob/main/consensus/quota.go#L96) — `WildcardMatch` on upstream tag strings for consensus quota matching
 - [`common/matcher_test.go`](https://github.com/erpc/erpc/blob/main/common/matcher_test.go) — comprehensive table-driven tests for `WildcardMatch`, `MatchesSelector`, `ValidatePattern`
 
 ### Related pages

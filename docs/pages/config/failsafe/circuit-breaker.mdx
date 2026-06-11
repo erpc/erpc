@@ -145,9 +145,11 @@ HalfOpen --[ any failure OR trial fills but successCount < threshold ]--> Open (
 ```
 
 **Closed state — ring-buffer window.** The breaker maintains a circular ring buffer of
-the last `failureThresholdCapacity` outcomes (success or failure). The open condition is
-evaluated only once the buffer is full: if `failures >= failureThresholdCount`, the breaker
-trips to Open and records `openedAt = time.Now()`. <SourceLink file="failsafe/breaker.go" lines="280-300" />
+the last `failureThresholdCapacity` outcomes (success or failure). The buffer is pre-allocated
+at construction with capacity `max(failureThresholdCapacity, failureThresholdCount, 1)`.
+<SourceLink file="failsafe/breaker.go" lines="107-125" /> The open condition is evaluated
+only once the buffer is full: if `failures >= failureThresholdCount`, the breaker trips to
+Open and records `openedAt = time.Now()`. <SourceLink file="failsafe/breaker.go" lines="280-300" />
 
 **Open state.** While Open, every call to `TryAcquirePermit()` returns false immediately —
 no transport dial occurs, no timeout ticks. The upstream returns
@@ -155,11 +157,36 @@ no transport dial occurs, no timeout ticks. The upstream returns
 incoming request transitions the breaker to HalfOpen and is allowed through as a probe.
 <SourceLink file="failsafe/breaker.go" lines="158-176" />
 
-**HalfOpen state.** Up to `successThresholdCapacity` concurrent trial permits are issued.
-When `halfOpenSuccess + halfOpenFailure >= successThresholdCapacity` (trial window full),
+**HalfOpen state.** Up to `max(successThresholdCapacity, successThresholdCount, 1)` concurrent
+trial permits are issued (tracked via `halfOpenInflight`). When
+`halfOpenSuccess + halfOpenFailure >= successThresholdCapacity` (trial window full),
 the breaker closes if `successThresholdCount` successes were recorded; otherwise it re-opens
 and `openedAt` resets. A single failure in HalfOpen re-opens immediately without waiting
 for the window to fill. <SourceLink file="failsafe/breaker.go" lines="232-237" />
+
+**`TryAcquirePermit()` per-state logic.** <SourceLink file="failsafe/breaker.go" lines="139-176" />
+
+- **StateClosed**: always returns `true` immediately (atomic load, no lock needed).
+- **StateHalfOpen**: acquires `mu`, re-checks state (race guard), computes
+  `cap = max(successThresholdCapacity, successThresholdCount, 1)`, returns
+  `halfOpenInflight < cap`; if permitted, increments `halfOpenInflight`.
+- **StateOpen**: acquires `mu`, re-checks state (race guard with one level of recursive
+  re-evaluation if another goroutine races to HalfOpen first), checks
+  `time.Since(openedAt) >= halfOpenAfter`; if elapsed → transitions to HalfOpen, sets
+  `halfOpenInflight = 1`, returns `true`; otherwise returns `false`.
+
+**`Record(outcome)` per-state logic.** <SourceLink file="failsafe/breaker.go" lines="187-247" />
+
+- **OutcomeIgnore**: no-op — returns immediately without touching counters.
+- **StateClosed**: calls `pushLocked(isFailure)`, increments lifetime counters, calls
+  `checkOpenLocked()` which opens if `b.count >= failCap && b.failures >= failCount`.
+- **StateHalfOpen**: decrements `halfOpenInflight`, increments trial success/failure counter.
+  Two paths: (a) if `halfOpenSuccess + halfOpenFailure >= successCap` (trial window full),
+  sufficient successes → `resetWindowLocked(); transitionLocked(Closed)`, insufficient →
+  re-opens; (b) if `OutcomeFailure` and `halfOpenFailure > 0` → immediately re-opens even
+  if the window is not yet full.
+- **StateOpen**: only increments lifetime counters (should not normally be reached because
+  the caller should not have bypassed `TryAcquirePermit`).
 
 **What counts as a failure.** The `upstreamBreakerOutcome` function classifies each
 (response, error) pair: <SourceLink file="upstream/upstream_executor.go" lines="391-421" />
@@ -194,8 +221,19 @@ upstream out of rotation regardless of metrics or breaker state.
 
 **Cache connector breaker.** Cache connectors have their own circuit breaker via
 `FailsafeConnector`. The outcome classifier is different: only transport errors count as
-`OutcomeFailure`; cache misses (`RecordNotFound`) are `OutcomeIgnore`.
+`OutcomeFailure`; cache misses (`RecordNotFound`) and context cancellations are `OutcomeIgnore`.
+The error produced uses scope `"connector"` rather than `"upstream"`.
 <SourceLink file="data/cache_executor.go" lines="220-234" />
+
+The `isTransportError` helper (used by the cache breaker outcome classifier) matches:
+`ErrCodeEndpointTransportFailure`; `net.Error` with `Timeout()`; `io.EOF`,
+`io.ErrUnexpectedEOF`, `syscall.ECONNREFUSED`, `syscall.ECONNRESET`, `syscall.EPIPE`,
+`syscall.ETIMEDOUT`; gRPC codes `Unavailable`, `DeadlineExceeded`, `Aborted`; and string
+substrings: `"connection refused"`, `"connection reset"`, `"broken pipe"`, `"no such host"`,
+`"network is unreachable"`, `"tls handshake"`, `"i/o timeout"`, `"operation timed out"`,
+`"use of closed network connection"`, `"client is closed"`, `"unexpectedly closed"`,
+`"goaway"`, `"clusterdown"`, `"masterdown"`, `"tryagain"`, `"redis is loading"`.
+<SourceLink file="data/failsafe.go" lines="21-92" />
 
 **Window reset.** Both Closed→Open tripping and HalfOpen→Closed recovery call
 `resetWindowLocked()` — every cycle starts with a fresh ring buffer. <SourceLink file="failsafe/breaker.go" lines="302-310" />
@@ -423,8 +461,10 @@ window and require a high success ratio. This pairs well with the fast-trip brea
   `ErrFailsafeCircuitBreakerOpen` with scope `"upstream"` without dialing the transport.
   <SourceLink file="common/errors.go" lines="1665-1692" />
 - The error code `ErrCodeFailsafeCircuitBreakerOpen` is non-retryable towards the same
-  upstream (`IsRetryableTowardsUpstream = false`). The network routing loop tries the next
-  upstream; if all upstreams are open the aggregated error includes the count `"N upstream
+  upstream (`IsRetryableTowardsUpstream = false`) but IS retryable at the network level
+  (`IsRetryableTowardNetwork = true` — the default, since the error does not set the
+  `retryableTowardNetwork=false` detail field). The network routing loop therefore tries the
+  next upstream; if all upstreams are open the aggregated error includes the count `"N upstream
   circuit breaker open"`. <SourceLink file="common/errors.go" lines="1054-1055" />
 - `erpc_upstream_attempt_outcome_total` records `outcome="breaker_open"` for each refused
   permit. The client sees the upstream failure only if ALL upstreams are exhausted.
@@ -497,13 +537,29 @@ window and require a high success ratio. This pairs well with the fast-trip brea
 12. **Cache connector breakers do not emit the state-change metric.** The `OnTransition` hook
     is not wired for cache executors — `erpc_upstream_breaker_state_change_total` only fires
     for upstream breakers.
+13. **Race safety in Open→HalfOpen.** When two goroutines race to call `TryAcquirePermit`
+    while the breaker is Open and `halfOpenAfter` has just elapsed, the second goroutine
+    re-checks state after acquiring `mu` and, seeing HalfOpen, recursively re-evaluates —
+    bounded to one extra call. No double-transition is possible.
+    <SourceLink file="failsafe/breaker.go" lines="160-166" />
+14. **`halfOpenAfter` is required at validation, but `SetDefaults` fills it.** `Validate()`
+    errors with `"failsafe.circuitBreaker.halfOpenAfter is required"` if the field is zero.
+    In practice eRPC's config loading calls `SetDefaults` (which fills `5m`) before
+    `Validate`, so omitting the field from YAML is safe. If you call `Validate` before
+    `SetDefaults` in custom tooling, the zero value will be rejected.
+    [`common/validation.go:L1038-L1040`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1038-L1040)
 
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_breaker_state_change_total` | Counter | `project`, `upstream`, `transition` | Every upstream breaker state transition. `transition` values: `closed_to_open`, `open_to_half_open`, `half_open_to_closed`, `half_open_to_open`. Not emitted for cache connector breakers. |
-| `erpc_upstream_attempt_outcome_total` | Counter | `project`, `network`, `upstream`, `category`, `outcome`, `is_hedge`, `is_retry`, `finality` | Every attempt terminal. `outcome="breaker_open"` when the breaker refused a permit. |
+| `erpc_upstream_breaker_state_change_total` | Counter | `project`, `upstream`, `transition` | Every upstream breaker state transition. `transition` values: `closed_to_open`, `open_to_half_open`, `half_open_to_closed`, `half_open_to_open`. Not emitted for cache connector breakers. Defined at [`telemetry/metrics.go:L485-L489`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L485-L489); wired at [`upstream/upstream.go:L91-L99`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L91-L99). |
+| `erpc_upstream_attempt_outcome_total` | Counter | `project`, `network`, `upstream`, `category`, `outcome`, `is_hedge`, `is_retry`, `finality` | Every attempt terminal. `outcome="breaker_open"` when the breaker refused a permit. Defined at [`telemetry/metrics.go:L457-L462`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L457-L462); incremented at [`upstream/upstream.go:L551-L560`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L551-L560). |
+
+**Programmatic access.** The breaker exposes a `Metrics()` method that returns
+`(failures, successes, executions uint64)` as lifetime atomic counters.
+<SourceLink file="failsafe/breaker.go" lines="345-350" /> These are not surfaced as
+Prometheus gauges — use the counters above for dashboards.
 
 **Log messages.** On every state transition, `transitionLocked` emits a `WARN`-level log:
 
@@ -516,11 +572,17 @@ Reason strings: `"failure_threshold"` (Closed→Open), `"half_open_delay_elapsed
 
 ### Source code entry points
 
-- [`failsafe/breaker.go`](https://github.com/erpc/erpc/blob/main/failsafe/breaker.go#L107) — self-contained circuit breaker state machine: ring buffer, `TryAcquirePermit`, `Record`, `transitionLocked`, `OnTransition` hook
+- [`failsafe/breaker.go`](https://github.com/erpc/erpc/blob/main/failsafe/breaker.go#L107) — self-contained circuit breaker state machine: ring buffer, `TryAcquirePermit`, `Record`, `transitionLocked`, `OnTransition` hook, `State`/`Metrics` accessors
 - [`upstream/upstream_executor.go:L368-L421`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L368-L421) — `upstreamBreakerEligible` and `upstreamBreakerOutcome` classifiers; `callBreakerWithTimeout` wrapper
-- [`upstream/upstream.go:L87-L99`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L87-L99) — `makeBreakerTransitionHook` wires `OnTransition` to the Prometheus counter
+- [`upstream/upstream.go:L87-L99`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L87-L99) — `makeBreakerTransitionHook` wires `OnTransition` to the Prometheus counter; `classifyUpstreamOutcome` maps `ErrCodeFailsafeCircuitBreakerOpen` to `UpstreamOutcomeBreakerOpen`
+- [`data/cache_executor.go:L220-L234`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L220-L234) — `cacheBreakerOutcome` classifier for cache connector breakers
+- [`data/failsafe.go:L21-L133`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L21-L133) — `FailsafeConnector` wrapper for cache connectors; `isTransportError` helper
+- [`common/config.go:L1381-L1396`](https://github.com/erpc/erpc/blob/main/common/config.go#L1381-L1396) — `CircuitBreakerPolicyConfig` struct and `Copy()`
 - [`common/defaults.go:L2342-L2387`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2342-L2387) — `CircuitBreakerPolicyConfig.SetDefaults()` including the double-assignment dead-code bug at L2357-L2384
-- [`common/errors.go:L1665-L1692`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1665-L1692) — `ErrFailsafeCircuitBreakerOpen` type and constructor
+- [`common/validation.go:L1037-L1059`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1037-L1059) — `CircuitBreakerPolicyConfig.Validate()` with all field constraints
+- [`common/errors.go:L1665-L1703`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1665-L1703) — `ErrFailsafeCircuitBreakerOpen` type, constructor, and `DeepestMessage`
+- [`common/errors.go:L2455-L2459`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2455-L2459) — `IsRetryableTowardsUpstream`: `ErrCodeFailsafeCircuitBreakerOpen` → not upstream-retryable
+- [`telemetry/metrics.go:L482-L489`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L482-L489) — `MetricUpstreamBreakerStateChange` counter definition
 - [`erpc/network_executor.go:L68-L73`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L68-L73) — enforces network-scope restriction
 - [`erpc/networks_skip_test.go:L174-L262`](https://github.com/erpc/erpc/blob/main/erpc/networks_skip_test.go#L174-L262) — integration test confirming breaker-open causes rotation to next upstream without dialing the failing one
 - [`erpc/networks_test.go:L6088-L6521`](https://github.com/erpc/erpc/blob/main/erpc/networks_test.go#L6088-L6521) — integration tests for threshold tripping, half-open recovery, and full open/close cycle

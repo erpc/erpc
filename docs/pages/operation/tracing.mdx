@@ -192,14 +192,54 @@ JSON field in a startup log line. All secrets are redacted before this serializa
 **Secret redaction.** Two layers:
 
 1. `MarshalJSON`/`MarshalYAML` overrides on config types — called whenever config is
-   serialized — replace `password`, `secretAccessKey`, `settings`, and `value` fields with
-   `"REDACTED"`.
-2. `util.RedactEndpoint` — computes a SHA-256 of the full original URL, takes the first 5
-   hex chars as a stable identifier, then strips path and credentials. Standard `http`/
-   `https` URLs become `scheme#redacted=<hash>` (hostname also dropped). Native-protocol
-   endpoints (`alchemyv2://`, etc.) preserve `scheme://host#redacted=<hash>`.
+   serialized — replace secret fields with `"REDACTED"` or apply `util.RedactEndpoint`:
 
-[<SourceLink file="util/redact.go" lines="10-36" />], [<SourceLink file="common/config.go" lines="397-503" />]
+   | Config type | Field | Replacement |
+   |---|---|---|
+   | `RedisConnectorConfig` | `password` | `"REDACTED"` |
+   | `RedisConnectorConfig` | `uri` | `util.RedactEndpoint(uri)` |
+   | `PostgreSQLConnectorConfig` | `connectionUri` | `util.RedactEndpoint(connectionUri)` |
+   | `AwsAuthConfig` | `secretAccessKey` | `"REDACTED"` |
+   | `ProviderConfig` | `settings` | `"REDACTED"` |
+   | `UpstreamConfig` | `endpoint` | `util.RedactEndpoint(endpoint)` |
+   | `SecretStrategyConfig` | `value` | `"REDACTED"` |
+
+   [<SourceLink file="common/config.go" lines="397-503" />]
+
+2. `util.RedactEndpoint` — computes a SHA-256 of the full original URL, takes the first 5
+   hex chars as a stable identifier, then strips path and credentials according to scheme:
+   - Native-protocol endpoints (`alchemyv2://`, `erigon://`, etc.): `scheme://host#redacted=<hash>`
+   - Envio-suffix schemes: `scheme://host` (no hash needed — no secrets in path)
+   - Repository-suffix schemes: `scheme://host#redacted=<hash>`
+   - Standard `http`/`https` RPC endpoints: `scheme#redacted=<hash>` — **hostname is also dropped**
+   - Unparseable URL: `"redacted=<hash>"`
+
+   Two endpoints with the same scheme but different paths (API keys) produce different hashes,
+   enabling correlation without exposing secrets.
+
+[<SourceLink file="util/redact.go" lines="10-36" />]
+
+**OTel resource attributes.** The `TracerProvider` is built with a resource that includes
+`service.name` (from `tracing.serviceName`), `service.version` (the compiled-in `ErpcVersion`
+constant), `commit.sha` (the compiled-in `ErpcCommitSha` constant), and any key/value pairs
+from `tracing.resourceAttributes`. Environment variables in `resourceAttributes` values are
+expanded via `os.ExpandEnv` at config load; empty values after expansion are silently skipped.
+[<SourceLink file="common/tracing_core.go" lines="93-102" />]
+
+The OTel instrumentation name registered by eRPC is `"github.com/erpc/erpc"`.
+[<SourceLink file="common/tracing_core.go" lines="26" />]
+
+**Error recording.** `SetTraceSpanError` checks `span.IsRecording()` before acting. For
+`StandardError` types it sets an `error.code` span attribute (the full error-code chain) and
+records the error as a span event; for plain `error` values it calls `span.RecordError` and
+sets the span status to `codes.Error`.
+[<SourceLink file="common/tracing_core.go" lines="163-183" />]
+
+**Force-flush.** `common.ForceFlushTraces(ctx)` calls `tracerProvider.ForceFlush(ctx)`,
+flushing all batched but not-yet-exported spans to the collector immediately. It is called
+automatically on graceful shutdown and exposed for callers that need guaranteed delivery of
+critical traces.
+[<SourceLink file="common/tracing_core.go" lines="237-245" />]
 
 **Graceful shutdown.** A goroutine watches `appCtx.Done` and flushes buffered spans with a
 5-second grace period before the process exits.
@@ -246,6 +286,7 @@ empty matcher (neither field) never matches (<SourceLink file="common/tracing_co
 |---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | **Overridden.** eRPC always passes `WithEndpoint(cfg.Endpoint)`; this env var is silently ignored. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | **Partially overridden.** Only takes effect when `tracing.headers` is nil/empty in config. |
+| `OTEL_SERVICE_NAME` | **Not explicitly overridden, but eRPC always sets `service.name`.** eRPC builds its resource with `semconv.ServiceNameKey.String(cfg.ServiceName)`. If the OTel SDK's default detectors also read `OTEL_SERVICE_NAME`, last-writer-wins resource merge semantics apply; eRPC's explicit value is always present. |
 | `OTEL_TRACES_SAMPLER` | **Ignored.** eRPC supplies its own sampler via explicit SDK option. |
 | `OTEL_PROPAGATORS` | **Ignored.** eRPC explicitly sets TraceContext + Baggage propagators. |
 | `OTEL_SDK_DISABLED` | **Honored.** Disables all OTel SDK operations globally before `InitializeTracing` runs. |
@@ -362,18 +403,34 @@ are recorded. Use `sampleRate: 0.0000001` because `sampleRate: 0` is rewritten t
 | Attribute | Mode | Value |
 |---|---|---|
 | `request.method` | always | JSON-RPC method name |
+| `erpc.force_trace` | always, when forced | `true` (bool, internal — used by sampler to force `RecordAndSample`; not a user-visible exported attribute) |
 | `erpc.forced_trace_reason` | when forced | `"header_or_query"` or `"network:<n>,method:<m>"` etc. |
 | `request.id` | detailed only | JSON-RPC request ID as string |
 | `request.jsonrpc.params` | detailed only | JSON-serialized params array |
 | `network.id` | detailed only, on response | Network ID string |
 | `user.id` | detailed only, on response | Auth user ID |
 | `request.finality` | detailed only, on response | Finality label (e.g. `"realtime"`, `"finalized"`) |
+| `response.finality` | detailed only, on response | Response finality |
 | `execution.attempts` | detailed only, on response | Total attempts |
 | `execution.retries` | detailed only, on response | Number of retries |
 | `execution.hedges` | detailed only, on response | Number of hedges |
 | `response.result_size` | detailed only, on response | Length of JSON-RPC result field |
 | `upstream.id` | always (if non-nil), on response | Upstream identifier |
 | `cache.hit` | always (if non-nil), on response | bool: whether response was served from cache |
+
+**Span attributes on `Http.ReceivedRequest`** (set by `StartHTTPServerSpan`/`EnrichHTTPServerSpan`):
+
+| Attribute | Phase | Value |
+|---|---|---|
+| `http.method` | on request | HTTP method (semconv) |
+| `http.url` | on request | Full request URL |
+| `http.scheme` | on request | URL scheme |
+| `http.user_agent` | on request | User-Agent header value |
+| `erpc.force_trace` | on request, when forced | `true` (if forced via header/query) |
+| `erpc.forced_trace_reason` | on request, when forced | `"header_or_query"` |
+| `http.status_code` | on response | HTTP response status code (semconv) |
+
+[<SourceLink file="common/tracing_util.go" lines="80-138" />]
 
 ### Best practices
 
@@ -442,12 +499,154 @@ not increment any counter.
 |---|---|---|
 | info | `"OpenTelemetry tracing is disabled"` | `tracing.enabled = false` |
 | info | `"initializing OpenTelemetry tracing"` + endpoint/protocol/sampleRate/detailed | Before exporter creation |
+| info | `"OpenTelemetry debug logging enabled"` | Only if zerolog level ≤ debug at init time |
 | info | `"OpenTelemetry tracing initialized successfully"` | After successful init |
 | info | `"force-trace matcher configured"` + index/network/method | Once per configured matcher |
 | trace | `"open telemetry export error"` | OTLP export failure |
 | error | `"failed to create span exporter"` | Exporter init failure |
+| error | `"failed to create resource"` | OTel resource build failure |
+| error | `"failed to initialize tracing"` | From `NewERPC` when `InitializeTracing` errors |
+| error | `"failed to shutdown tracer provider"` | On process shutdown |
 | warn | `"invalid log level '%s', defaulting to 'debug'"` | Unrecognized `logLevel` value |
 | info | (empty message, `config` JSON field) | Startup when level ≤ info: full redacted config dump |
+
+**OTel span name inventory.** "normal" = emitted when `tracing.enabled`; "detail" = emitted
+only when `tracing.enabled && tracing.detailed`; "direct" = calls `tracer.Start` directly
+(same threshold as normal). OTel instrumentation name: `"github.com/erpc/erpc"`.
+
+<details>
+<summary>All 126 span names (expand)</summary>
+
+| Span name | Mode | Call site |
+|---|---|---|
+| `Cache.FindGetPolicies` | detail | `architecture/evm/json_rpc_cache.go:L173` |
+| `Cache.Get` | normal | `architecture/evm/json_rpc_cache.go:L153` |
+| `Cache.GetForPolicy` | detail | `architecture/evm/json_rpc_cache.go:L241` |
+| `Cache.Set` | normal | `architecture/evm/json_rpc_cache.go:L572` |
+| `ConnectorFailsafe.Delete` | detail | `data/failsafe.go:L286` |
+| `ConnectorFailsafe.Get` | detail | `data/failsafe.go:L224` |
+| `ConnectorFailsafe.Set` | detail | `data/failsafe.go:L253` |
+| `Consensus.CollectResponses` | detail | `consensus/executor.go:L189` |
+| `Consensus.Run` | normal | `consensus/executor.go:L1282` |
+| `CounterInt64.TryUpdate` | normal | `data/shared_state_variable.go:L365` |
+| `CounterInt64.TryUpdateIfStale` | normal | `data/shared_state_variable.go:L391` |
+| `CounterInt64.TryUpdateIfStale.AcquireMutex` | normal | `data/shared_state_variable.go:L405` |
+| `CounterInt64.TryUpdateIfStale.ExecuteRefresh` | normal | `data/shared_state_variable.go:L430` |
+| `DynamoDBConnector.Delete` | normal | `data/dynamodb.go:L833` |
+| `DynamoDBConnector.Get` | normal | `data/dynamodb.go:L414` |
+| `DynamoDBConnector.List` | normal | `data/dynamodb.go:L874` |
+| `DynamoDBConnector.Lock` | normal | `data/dynamodb.go:L579` |
+| `DynamoDBConnector.Set` | normal | `data/dynamodb.go:L355` |
+| `DynamoDBConnector.Unlock` | normal | `data/dynamodb.go:L691` |
+| `DynamoDBConnector.getSimpleValue` | detail | `data/dynamodb.go:L766` |
+| `Evm.ExtractBlockReferenceFromRequest` | detail | `architecture/evm/block_ref.go:L19` |
+| `Evm.ExtractBlockReferenceFromResponse` | detail | `architecture/evm/block_ref.go:L118` |
+| `Evm.ExtractBlockTimestampFromResponse` | detail | `architecture/evm/block_ref.go:L191` |
+| `Evm.PickHighestBlock` | detail | `architecture/evm/eth_getBlockByNumber.go:L336` |
+| `Evm.extractRefFromJsonRpcRequest` | detail | `architecture/evm/block_ref.go:L240` |
+| `Evm.extractRefFromJsonRpcResponse` | detail | `architecture/evm/block_ref.go:L314` |
+| `EvmStatePoller.PollFinalizedBlockNumber` | detail | `architecture/evm/evm_state_poller.go:L491` |
+| `EvmStatePoller.PollLatestBlockNumber` | detail | `architecture/evm/evm_state_poller.go:L394` |
+| `GrpcBdsClient.GetBlockByHash` | detail | `clients/grpc_bds_client.go:L365` |
+| `GrpcBdsClient.GetBlockByNumber` | detail | `clients/grpc_bds_client.go:L422` |
+| `GrpcBdsClient.GetLogs` | detail | `clients/grpc_bds_client.go:L632` |
+| `GrpcBdsClient.QueryBlocks` | detail | `clients/grpc_bds_client.go:L1097` |
+| `GrpcBdsClient.QueryLogs` | detail | `clients/grpc_bds_client.go:L1173` |
+| `GrpcBdsClient.QueryTraces` | detail | `clients/grpc_bds_client.go:L1209` |
+| `GrpcBdsClient.QueryTransactions` | detail | `clients/grpc_bds_client.go:L1138` |
+| `GrpcBdsClient.QueryTransfers` | detail | `clients/grpc_bds_client.go:L1245` |
+| `GrpcBdsClient.SendRequest` | normal | `clients/grpc_bds_client.go:L194` |
+| `Http.ParseRequests` | detail | `erpc/http_server.go:L397` |
+| `Http.ReadBody` | detail | `erpc/http_server.go:L373` |
+| `Http.ReceivedRequest` | normal | `common/tracing_util.go:L96` |
+| `HttpJsonRpcClient.sendSingleRequest` | normal | `clients/http_json_rpc_client.go:L675` |
+| `HttpServer.WriteResponse` | detail | `erpc/http_server.go:L680` |
+| `JsonRpcRequest.Lock` | detail | `common/json_rpc.go:L1229` |
+| `JsonRpcRequest.RLock` | detail | `common/json_rpc.go:L1235` |
+| `JsonRpcResponse.IsResultEmptyish` | detail | `common/json_rpc.go:L799` |
+| `JsonRpcResponse.ParseFromStream` | detail | `common/json_rpc.go:L288` |
+| `JsonRpcResponse.PeekBytesByPath` | detail | `common/json_rpc.go:L486` |
+| `JsonRpcResponse.PeekStringByPath` | detail | `common/json_rpc.go:L464` |
+| `Multiplexer.Close` | detail | `erpc/multiplexer.go:L37` |
+| `Network.EnrichStatePoller` | detail | `erpc/networks.go:L2146` |
+| `Network.EvmHighestFinalizedBlockNumber` | detail | `erpc/networks.go:L679` |
+| `Network.EvmHighestLatestBlockNumber` | detail | `erpc/networks.go:L518` |
+| `Network.EvmLowestFinalizedBlockNumber` | detail | `erpc/networks.go:L855` |
+| `Network.Forward` | normal | `erpc/networks.go:L943` |
+| `Network.GetFinality` | detail | `erpc/networks.go:L1646` |
+| `Network.NormalizeResponse` | detail | `erpc/networks.go:L2235` |
+| `Network.PostForward.eth_getBlockByNumber` | detail | `architecture/evm/eth_getBlockByNumber.go:L44` |
+| `Network.PostForward.eth_sendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L280` |
+| `Network.PostForwardHook` | detail | `architecture/evm/hooks.go:L64` |
+| `Network.PreForwardHook` | detail | `architecture/evm/hooks.go:L41` |
+| `Network.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L79` |
+| `Network.TryForward` | detail | `erpc/networks.go:L1137` |
+| `Network.UpstreamLoop` | detail | `erpc/networks.go:L1227` |
+| `Network.WaitForMultiplexResult` | normal | `erpc/networks.go:L2058` |
+| `Network.forwardAttempt` | normal | `erpc/networks.go:L1188` |
+| `PolicyEngine.GetOrdered` | detail | `erpc/networks.go:L1023` |
+| `PostgreSQLConnector.Delete` | normal | `data/postgresql.go:L1130` |
+| `PostgreSQLConnector.Get` | normal | `data/postgresql.go:L466` |
+| `PostgreSQLConnector.List` | normal | `data/postgresql.go:L1165` |
+| `PostgreSQLConnector.Lock` | normal | `data/postgresql.go:L526` |
+| `PostgreSQLConnector.PublishCounterInt64` | normal | `data/postgresql.go:L683` |
+| `PostgreSQLConnector.Set` | normal | `data/postgresql.go:L409` |
+| `PostgreSQLConnector.Unlock` | normal | `data/postgresql.go:L589` |
+| `PostgreSQLConnector.getCurrentValue` | detail | `data/postgresql.go:L974` |
+| `PostgreSQLConnector.getWithWildcard` | detail | `data/postgresql.go:L1006` |
+| `Project.Forward` | detail | `erpc/projects.go:L103` |
+| `Project.PreForwardHook` | detail | `architecture/evm/hooks.go:L14` |
+| `Project.PreForwardHook.eth_blockNumber` | detail | `architecture/evm/eth_blockNumber.go:L16` |
+| `Project.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L30` |
+| `Project.executeShadowRequest` | detail | `erpc/shadow.go:L82` |
+| `Query.Execute` | detail | `erpc/query_executor.go:L45` |
+| `Query.ForwardSubrequest` | detail | `erpc/query_shim.go:L427` |
+| `Query.ResolveQueryBounds` | detail | `erpc/query_executor.go:L277` |
+| `Query.ShimBlocks` | detail | `erpc/query_shim.go:L18` |
+| `Query.ShimLogs` | detail | `erpc/query_shim.go:L112` |
+| `Query.ShimTraces` | detail | `erpc/query_shim.go:L187` |
+| `Query.ShimTransactions` | detail | `erpc/query_shim.go:L55` |
+| `QueryStream.Handle` | normal | `erpc/request_processor.go:L76` |
+| `RateLimiter.DoLimit` | normal | `upstream/ratelimiter_budget.go:L279` |
+| `RateLimiter.TryAcquirePermit` | detail | `upstream/ratelimiter_budget.go:L161` |
+| `RedisConnector.Delete` | normal | `data/redis.go:L636` |
+| `RedisConnector.Get` | normal | `data/redis.go:L341` |
+| `RedisConnector.List` | normal | `data/redis.go:L682` |
+| `RedisConnector.Lock` | normal | `data/redis.go:L435` |
+| `RedisConnector.PublishCounterInt64` | normal | `data/redis.go:L558` |
+| `RedisConnector.Set` | normal | `data/redis.go:L281` |
+| `RedisConnector.Unlock` | normal | `data/redis.go:L612` |
+| `Request.GenerateCacheHash` | detail | `common/json_rpc.go:L1387` |
+| `Request.Handle` | direct | `common/tracing_util.go:L165` |
+| `Request.Lock` | detail | `common/request.go:L925` |
+| `Request.RLock` | detail | `common/request.go:L931` |
+| `Request.ResolveJsonRpc` | detail | `common/request.go:L939` |
+| `Response.IsObjectNull` | detail | `common/response.go:L420` |
+| `Response.Lock` | detail | `common/response.go:L84` |
+| `Response.RLock` | detail | `common/response.go:L90` |
+| `Response.ResolveJsonRpc` | detail | `common/response.go:L293` |
+| `Upstream.Forward` | normal | `upstream/upstream.go:L416` |
+| `Upstream.PostForwardHook` | detail | `architecture/evm/hooks.go:L110` |
+| `Upstream.PostForwardHook.eth_getBlockByNumber` | detail | `architecture/evm/eth_getBlockByNumber.go:L435` |
+| `Upstream.PostForwardHook.eth_getBlockReceipts` | detail | `architecture/evm/eth_getBlockReceipts.go:L31` |
+| `Upstream.PostForwardHook.eth_getLogs` | detail | `architecture/evm/eth_getLogs.go:L350` |
+| `Upstream.PostForwardHook.eth_sendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L59` |
+| `Upstream.PostForwardHook.trace_filter` | detail | `architecture/evm/trace_filter.go:L362` |
+| `Upstream.PreForwardHook` | detail | `architecture/evm/hooks.go:L87` |
+| `Upstream.PreForwardHook.eth_chainId` | detail | `architecture/evm/eth_chainId.go:L124` |
+| `Upstream.PreForwardHook.eth_getLogs` | detail | `architecture/evm/eth_getLogs.go:L289` |
+| `Upstream.PreForwardHook.trace_filter` | detail | `architecture/evm/trace_filter.go:L298` |
+| `Upstream.tryForward.PreRequest` | detail | `upstream/upstream.go:L572` |
+| `Upstream.tryForward.SendRequest` | detail | `upstream/upstream.go:L630` |
+| `UpstreamsRegistry.GetNetworkUpstreams` | detail | `upstream/registry.go:L349` |
+| `UpstreamsRegistry.GetSortedUpstreams` | detail | `upstream/registry.go:L387` |
+| `UpstreamsRegistry.buildProviderBootstrapTask` | detail | `upstream/registry.go:L485` |
+| `UpstreamsRegistry.buildUpstreamBootstrapTask` | detail | `upstream/registry.go:L431` |
+| `createSyntheticSuccessResponse` | detail | `architecture/evm/eth_sendRawTransaction.go:L179` |
+| `extractTxHashFromSendRawTransaction` | detail | `architecture/evm/eth_sendRawTransaction.go:L136` |
+| `verifyAndHandleNonceTooLow` | detail | `architecture/evm/eth_sendRawTransaction.go:L206` |
+
+</details>
 
 ### Source code entry points
 
@@ -461,6 +660,10 @@ not increment any counter.
 - [`erpc/erpc.go:L31-L99`](https://github.com/erpc/erpc/blob/main/erpc/erpc.go#L31-L99) — calls `InitializeTracing` on startup, registers shutdown goroutine with 5-second grace period
 - [`erpc/http_server.go:L285-L288`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L285-L288) — network context for force-trace matcher evaluation
 - [`erpc/http_server.go:L701`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L701) — W3C traceparent injection into HTTP response headers
+- [`erpc/init.go:L27-L42`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L27-L42) — parses `cfg.LogLevel` into zerolog level; logs full redacted config at info level
+- [`common/console.go:L15-L29`](https://github.com/erpc/erpc/blob/main/common/console.go#L15-L29) — JS/TS `console.{debug,info,log,trace,warn}` → zerolog bridge (note: `console.error` is absent)
+- [`common/runtime.go:L39`](https://github.com/erpc/erpc/blob/main/common/runtime.go#L39) — installs `console` object into every Sobek runtime
+- [`cmd/erpc/initflags.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/initflags.go) — `ERPC_NOLOGS=1` → zerolog.Disabled + io.Discard writer (build-tagged, non-test only)
 
 ### Related pages
 
