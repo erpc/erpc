@@ -1,541 +1,632 @@
 ---
-description: Drivers define the storage backend for the eRPC cache — memory, Redis, PostgreSQL, DynamoDB. Each driver has its own timing, pool, and lock-retry knobs.
+title: Storage drivers
+description: Five interchangeable cache back-ends — memory, Redis, PostgreSQL, DynamoDB, and a read-only gRPC BDS connector — all behind one uniform interface, with optional per-operation failsafe policies that keep transient storage hiccups invisible to your upstreams.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../../components";
-
-## Drivers
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
 
 <LLMsTxtLink />
 
-Depending on your use-case storage and performance requirements, you can use different drivers.
+# Storage drivers
 
-### Memory
+Pick the back-end that fits your deployment — in-process LRU for a single node, Redis for multi-instance scale, PostgreSQL or DynamoDB for managed persistence, or a read-only gRPC BDS layer for historical chain data. Swap drivers by changing one line. Wrap any connector with retry, circuit-breaker, hedge, or timeout policies so a slow cache never slows down your upstream calls.
 
-Mainly useful when you want fast access for limited amount of cached data. Use this driver for high-frequency RPC calls.
+## Quick taste
 
-<ConfigTabs
-	path="database > evmJsonRpcCache > connectors[]"
-	focus="4-8"
-	yaml={`database:
-  evmJsonRpcCache:
-    connectors:
-      - id: memory-cache
-        driver: memory
-        memory:
-          maxItems: 10000
-          maxTotalSize: '1GB'
-          # For debugging purposes, enable metrics collection (expect 10% performance hit)
-          emitMetrics: false
-    policies:
-      - network: '*'
-        method: '*'
-        finality: finalized
-        connector: memory-cache`}
-	ts={`import {
-  createConfig,
-  DataFinalityStateFinalized
-} from "@erpc-cloud/config";
-
-export default createConfig({
-  database: {
-    evmJsonRpcCache: {
-      connectors: [{
-        id: "memory-cache",
-        driver: "memory",
-        memory: {
-          maxItems: 10000,
-          maxTotalSize: "1GB",
-          // For debugging purposes, enable metrics collection (expect 10% performance hit)
-          emitMetrics: false,
-        },
-      }],
-      policies: [{
-        network: "*",
-        method: "*",
-        finality: DataFinalityStateFinalized,
-        connector: "memory-cache",
-      }],
-    },
-  },
-});`}
-/>
-
-### Redis
-
-Redis is useful when you need to store cached data temporarily with **eviction policy** (e.g. certain amount of memory).
+Illustrative, not a tuned production config — add a Redis connector:
 
 <ConfigTabs
-	path="database > evmJsonRpcCache > connectors[]"
-	focus="4-14"
-	yaml={`database:
+  path="database.evmJsonRpcCache.connectors[]"
+  focusYaml="4-9"
+  focusTs="4-7"
+  yaml={`database:
   evmJsonRpcCache:
     connectors:
-      - id: redis-cache
+      - id: my-redis
+        # swap one line to change back-end: memory | redis | postgresql | dynamodb | grpc
         driver: redis
         redis:
-          # Connection URI (Required)
-          # Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=...&pool_size=...]
-          # Example: redis://:some-secret@redis.svc.cluster.local:6379/?pool_size=10
-          uri: 'redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10'
-          tls:
-            enabled: false # or true if redis is configured with TLS
-            certFile: /path/to/client.crt # Optional
-            keyFile: /path/to/client.key # Optional
-            caFile: /path/to/ca.crt # Optional
-    policies:
-      - network: '*'
-        method: '*'
-        finality: finalized
-        connector: redis-cache`}
-	ts={`import {
-  createConfig,
-  DataFinalityStateFinalized
-} from "@erpc-cloud/config";
+          uri: redis://localhost:6379/0
+          connPoolSize: 8`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [{
+      id: "my-redis",
+      // swap one line to change back-end: memory | redis | postgresql | dynamodb | grpc
+      driver: "redis",
+      redis: { uri: "redis://localhost:6379/0", connPoolSize: 8 },
+    }],
+  },
+}`}
+/>
 
-export default createConfig({
-  database: {
-    evmJsonRpcCache: {
-      connectors: [{
-        id: "redis-cache",
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="add a Redis cache for multi-instance deployments"
+	defaultOpen
+	prompt={`I'm running eRPC on multiple pods and need a shared Redis cache so all instances
+share cached responses. Add a Redis connector with a sensible connection pool,
+per-operation timeouts, a circuit-breaker on Gets so a Redis outage doesn't stall
+upstream fan-out, and a retry on Sets. Work with my existing eRPC config. Read the
+reference first: https://docs.erpc.cloud/config/database/drivers.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="layer a read-only gRPC BDS connector for historical data"
+	prompt={`I want to add a read-only gRPC BDS connector for historical EVM chain data in
+front of my existing Redis connector — so finalized block responses are served from
+the BDS layer and only cache misses go to live upstreams. Add failsafe policies
+(hedge + timeout + retry) on Gets so a slow gRPC call doesn't block requests. My
+Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/database/drivers.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="tune memory connector sizing for my workload"
+	prompt={`My eRPC instance uses the in-process memory connector. I'm seeing high eviction
+rates in Grafana and want to resize maxItems and maxTotalSize correctly for 8 GB of
+RAM and a workload of ~2 million cached EVM responses. Also enable emitMetrics so I
+can track ristretto cost going forward. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/database/drivers.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug DynamoDB lock contention causing high request volume"
+	prompt={`My eRPC DynamoDB connector is causing a spike of DynamoDB requests under load —
+I think the lockRetryInterval is zero and the retry loop is spinning. Audit my
+my eRPC config DynamoDB connector config, fix the lock retry interval, and explain
+the other DynamoDB footguns I should watch for (TTL lag, accessKeyID casing, etc.).
+Reference: https://docs.erpc.cloud/config/database/drivers.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="migrate from memory to PostgreSQL without downtime"
+	prompt={`I currently have a single in-process memory connector in my eRPC config and want
+to migrate to PostgreSQL for persistence. Show me the full connector config with
+correct timeout values (not from the URI), connection pool sizing, and a pg_cron
+cleanup setup. Explain what changes and what behavior to expect. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/config/database/drivers.llms.txt`}
+/>
+
+<AISection title="Storage drivers — full agent reference">
+
+### How it works
+
+`NewConnector` reads `cfg.Driver`, instantiates the matching back-end, then optionally wraps it in `FailsafeConnector` when `failsafeForGets` or `failsafeForSets` is non-empty. The `Connector` interface exposes `Get`, `Set`, `Delete`, `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64`. All five drivers implement every method — except `List` on memory (intentionally unimplemented) and all write methods on gRPC (read-only).
+
+Two index constants control lookup paths: `ConnectorMainIndex` (`"idx_main"`) for direct key lookups and `ConnectorReverseIndex` (`"idx_reverse"`) for wildcard range-key resolution. `Set` always writes the main index and, for `evm:`-prefixed partition keys, also writes a reverse index entry so wildcard gets resolve without full scans.
+
+**Key encoding.** The composite storage key is `<partitionKey>:<rangeKey>`. For EVM cache entries the partition key typically starts with `evm:` (e.g., `evm:1:0x12345678`). Reverse index entries for memory and Redis use the key format `rvi#<wildcardPartitionKey>#<rangeKey>` where `wildcardPartitionKey` is `evm:<chainId>:*`. PostgreSQL and DynamoDB store a dedicated reverse-index row or GSI entry instead.
+
+**Distributed counter payload.** `WatchCounterInt64` and `PublishCounterInt64` exchange a JSON-serialized `CounterInt64State` struct: `{"v": 42, "t": 1718000000000, "b": "pod-name"}` where `v` is the counter value, `t` is unix milliseconds (`t ≤ 0` means uninitialized), and `b` is the best-effort reporter identity (hostname/pod). — [data/connector.go:L34-L38](https://github.com/erpc/erpc/blob/main/data/connector.go#L34-L38)
+
+**Memory connector (ristretto).** The memory connector uses [dgraph-io/ristretto v2](https://github.com/dgraph-io/ristretto) as an in-process LRU with cost-based eviction. Ristretto is initialized with `NumCounters = 3 × maxItems`, `MaxCost = maxTotalSizeBytes`, and `BufferItems = 64`. Each entry costs `len(value) + 256` bytes against `maxTotalSize`. TTL is enforced by ristretto internally — no background cleanup goroutine. Reverse index entries for EVM keys are stored without TTL; after the main entry expires the stale pointer resolves to a miss. `List` is not implemented; ristretto has no iteration API. `Lock` uses a `sync.Map` of `*sync.Mutex` with `TryLock` plus a backoff loop (starts at 2ms, increments by 1ms per attempt, caps at 20ms). `WatchCounterInt64` and `PublishCounterInt64` are no-ops.
+
+**Redis connector.** Redis is the recommended connector for multi-instance deployments. It supports `List` (cursor-based `SCAN` — main index scans all keys with `*`; reverse index scans with `rvi#*` prefix, values fetched in pipeline), distributed locking via [go-redsync](https://github.com/go-redsync/redsync), and pub/sub through a self-healing `RedisPubSubManager` (channel name: `counter:<key>`). Reverse index entries inherit the same TTL as the main entry. On reverse-index Get, the connector verifies the resolved key's TTL: `-2s` means the key does not exist → `ErrRecordNotFound`; `-1s` means persistent (accepted); positive value means it has an active TTL (accepted). Connection setup is non-blocking: `NewRedisConnector` enqueues a bootstrap task and returns immediately. Reconnection fires only on a narrow allowlist of critical failure strings (`"connection refused"`, `"broken pipe"`, `"invalid connection"`, `"connection reset by peer"`, `"no such host"`, `"network is unreachable"`, `"connection closed"`) to avoid spurious reconnects. When `rediss://` URI and `tls.enabled: true` are both configured, YAML cert/CA overrides merge onto the URI-derived TLS baseline and disable `InsecureSkipVerify`. A `rediss://`-only URI without a YAML `tls:` block produces `InsecureSkipVerify=true`.
+
+**PostgreSQL connector.** PostgreSQL stores cache entries with columns `(partition_key, range_key, value BYTEA, expires_at TIMESTAMPTZ)`. Schema migration (including a `TEXT -> BYTEA` column migration), indexes, and an optional `pg_cron` cleanup job run once per process lifetime — reconnects do not re-run them. Connection pool settings are hardcoded at `MaxConnLifetime = 5h` and `MaxConnIdleTime = 30m`. The old pool is closed only after the lock is released during reconnect, preventing hot-path serialization. Wildcard Get translates `*` to `%` and uses SQL LIKE: for `ConnectorReverseIndex` the query is `WHERE range_key = $1 AND partition_key LIKE $2`; for main index: `WHERE partition_key = $1 AND range_key LIKE $2`, returning the first row ordered by `partition_key DESC`. Distributed locking uses `pg_try_advisory_xact_lock(hash64(key))` (FNV-64a hashes the key to an int64 lock ID), which is non-blocking: if the lock is held the call returns immediately with an error. TTL enforcement is exact via server-side `expires_at` filtering; pg_cron or a local ticker deletes expired rows every 5 minutes. `WatchCounterInt64` uses PostgreSQL `LISTEN/NOTIFY` (pub/sub), falling back to 30-second polling if `LISTEN` is unavailable. Channel names are sanitized to valid PostgreSQL identifier characters (max 63 bytes).
+
+**DynamoDB connector.** DynamoDB uses separate read (2048 max idle connections) and write (256 max idle connections) HTTP/2 clients. The table is created with `PAY_PER_REQUEST` billing if absent. TTL is stored as a numeric unix epoch attribute; AWS native TTL expiry is eventually consistent and can lag up to ~48 hours. The connector guards with a client-side epoch comparison on every `Get`, returning `ErrRecordExpired` for items past TTL. For reverse-index Query, up to 10 items are fetched with a server-side `FilterExpression` and the first non-expired item is chosen client-side. Both `B` (binary) and `S` (string) value attribute types are read for backward compatibility — legacy string values are returned as `[]byte`. `WatchCounterInt64` uses periodic polling (5s default) — DynamoDB has no native pub/sub. `PublishCounterInt64` is a no-op; callers rely on polling to pick up state changes.
+
+**gRPC connector (read-only).** The gRPC connector is a read-through layer backed by BDS (Blockchain Data Standards) gRPC servers that hold historical EVM chain data. It supports no writes. Configure it alongside a write-capable connector in a multi-connector cache policy. Server discovery supports both a static `servers` list and a `bootstrap` HTTP URL. Only a specific allowlist of methods is forwarded to BDS: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, and `eth_blockNumber`; unsupported methods return a fast miss (`(nil, nil)`) without an RPC call. Fast-miss rejection: if the request block number is below `earliestByNetwork[networkId]` (and that value is &gt; 0), `ErrRecordNotFound` is returned immediately without an RPC. A background goroutine polls chain head every 60 seconds, implementing the `CacheHeadReporter` interface used by the real-time cache freshness gate. `eth_blockNumber` has no native BDS method; the connector intercepts it, calls `eth_getBlockByNumber("latest", false)` internally, and returns only the `number` field as a canonical hex string with leading zeros normalized via uint64 round-trip (zero block → `"0x0"`). On failure it returns `ErrRecordNotFound` so the request falls through to live upstreams.
+
+**FailsafeConnector.** Any connector can be wrapped by setting `failsafeForGets` and/or `failsafeForSets`. Each entry specifies a `matchMethod` pattern and optional `matchFinality` list, plus one or more of retry, circuit-breaker, hedge, and timeout policies. Executor selection (`pickCacheExecutor`) reads the method and finality from `ctx.Value(common.RequestContextKey)`; if no request is attached (background prefetch, tests), `method = ""` and `finality = 0`. The most-specific match wins: (method + finality) &gt; (method only) &gt; (finality only) &gt; wildcard. A no-op executor is always appended so unmatched operations proceed unconditionally. `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64` bypass all failsafe policies. Retry fires only on transport errors — cache misses, expired records, and context cancellation are never retried. Transport errors recognized by `isTransportError` include net.Error timeouts, io.EOF/ErrUnexpectedEOF, syscall connection errors, gRPC status codes `Unavailable`/`DeadlineExceeded`/`Aborted`, Redis cluster transients (`CLUSTERDOWN`, `MASTERDOWN`, `TRYAGAIN`, `LOADING`), HTTP/2 GOAWAY, and `"use of closed network connection"`. Hedge supports only static delays at the connector layer; quantile-based delays are rejected at construction time.
+
+### Config schema
+
+#### Top-level `ConnectorConfig` — <SourceLink file="common/config.go" lines="341-352" />
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `id` | string | `"<scope>-<driver>"` e.g. `"cache-memory"` — <SourceLink file="common/defaults.go" lines="847-848" /> | Unique identifier; appears as the `connector` label on all metrics. |
+| `driver` | string | Inferred from whichever sub-config is present; explicit `driver` wins when both are set — <SourceLink file="common/defaults.go" lines="876-930" /> | One of: `memory`, `redis`, `postgresql`, `dynamodb`, `grpc`. Unknown value → `ErrInvalidConnectorDriver` at startup. |
+| `failsafeForGets` | `[]*FailsafeConfig` | nil | Policies applied to `Get`. Evaluated by `pickCacheExecutor` in declaration order. |
+| `failsafeForSets` | `[]*FailsafeConfig` | nil | Policies applied to `Set` and `Delete`. |
+
+Each `FailsafeConfig` entry under `failsafeForGets` / `failsafeForSets`:
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `matchMethod` | string | `"*"` — <SourceLink file="common/defaults.go" lines="855-857" /> | Glob pattern matched against the request method. `"*"` = all methods. |
+| `matchFinality` | `[]DataFinalityState` | nil (any) | Filter by finality; nil matches any finality. |
+| `retry.maxAttempts` | int | — | Retries only on `isTransportError`. |
+| `retry.delay` | Duration | — | Base delay between attempts. |
+| `retry.backoffMaxDelay` | Duration | — | Max delay with exponential backoff. |
+| `retry.backoffFactor` | float64 | — | Backoff multiplier per attempt. |
+| `circuitBreaker.*` | — | — | Standard breaker fields. `ErrRecordNotFound` and `ErrRecordExpired` count as `OutcomeIgnore`, not failures. |
+| `timeout.duration` | Duration | — | Per-operation timeout via `context.WithTimeoutCause`. |
+| `hedge.delay` | Duration | — | **Static delay only.** Quantile-based hedge is rejected at construction: `"hedge quantile is not supported for connector-level failsafe"` — <SourceLink file="data/cache_executor.go" lines="37-41" /> |
+| `hedge.maxCount` | int | — | Max additional hedged copies. |
+| `consensus` | — | nil | **Rejected at construction** with `"consensus is not supported for connector-level failsafe"` — <SourceLink file="data/cache_executor.go" lines="31-35" /> |
+
+#### Memory connector — <SourceLink file="common/config.go" lines="361-365" />, defaults <SourceLink file="common/defaults.go" lines="935-943" />
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `memory.maxItems` | int | `100000` | Sets `NumCounters = 3 × maxItems` (ristretto frequency sketch). Must be &gt; 0 or init fails. |
+| `memory.maxTotalSize` | string | `"1GB"` | Parsed by `go-humanize`; becomes ristretto `MaxCost` in bytes. Must be &gt; 0. |
+| `memory.emitMetrics` | *bool | nil (disabled) | When `true`, background goroutine emits ristretto metrics every 30s — <SourceLink file="data/memory.go" lines="212-294" /> |
+
+#### Redis connector — <SourceLink file="common/config.go" lines="383-395" />, defaults <SourceLink file="common/defaults.go" lines="946-1018" />
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `redis.uri` | string | — | Redis URI (`redis://` or `rediss://`). Mutually exclusive with `addr`. |
+| `redis.addr` | string | — | `host:port`; converted to URI at defaults time then cleared. |
+| `redis.username` | string | — | Folded into URI; cleared afterward. |
+| `redis.password` | string | — | Redacted in logs/JSON. Folded into URI; cleared afterward. |
+| `redis.db` | int | `0` | Database index appended as `/<db>` in URI. |
+| `redis.tls.enabled` | bool | `false` | Uses `rediss://` scheme; merges with URI-inferred TLS if both present. |
+| `redis.tls.certFile` | string | — | Client certificate for mTLS. |
+| `redis.tls.keyFile` | string | — | Client private key for mTLS. |
+| `redis.tls.caFile` | string | — | Custom CA bundle for server cert verification. |
+| `redis.tls.insecureSkipVerify` | bool | `false` | Skip server certificate verification. |
+| `redis.connPoolSize` | int | `8` | go-redis connection pool size. |
+| `redis.initTimeout` | Duration | `5s` | Ping timeout per connection attempt. Falls back to `DialTimeout` from URI when zero. |
+| `redis.getTimeout` | Duration | `1s` | Per-Get deadline. Falls back to `ReadTimeout` from URI when zero. |
+| `redis.setTimeout` | Duration | `3s` | Per-Set/Delete deadline. Falls back to `WriteTimeout` from URI when zero. |
+| `redis.lockRetryInterval` | Duration | `500ms` | Sleep between redsync mutex acquisition retries. |
+
+#### PostgreSQL connector — <SourceLink file="common/config.go" lines="445-453" />, defaults <SourceLink file="common/defaults.go" lines="1021-1058" />
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `postgresql.connectionUri` | string | — | pgx connection string (required). Redacted in logs. |
+| `postgresql.table` | string | `"erpc_json_rpc_cache"` (cache), `"erpc_shared_state"` (shared-state), `"erpc_auth"` (auth) | Table created on first connect. |
+| `postgresql.minConns` | int32 | `4` (non-auth), `1` (auth) | pgxpool `MinConns`. |
+| `postgresql.maxConns` | int32 | `32` (non-auth), `4` (auth) | pgxpool `MaxConns`. Pool lifecycle: `MaxConnLifetime=5h`, `MaxConnIdleTime=30m`. |
+| `postgresql.initTimeout` | Duration | `5s` | Context deadline for pool creation. **NOT read from URI** — always explicit. |
+| `postgresql.getTimeout` | Duration | `1s` | Per-Get/List query deadline. Never falls back to URI values. |
+| `postgresql.setTimeout` | Duration | `2s` | Per-Set/Delete query deadline. Never falls back to URI values. |
+
+#### DynamoDB connector — <SourceLink file="common/config.go" lines="428-443" />, defaults <SourceLink file="common/defaults.go" lines="1061-1099" />
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `dynamodb.table` | string | `"erpc_json_rpc_cache"` / `"erpc_shared_state"` / `"erpc_auth"` | Created with `PAY_PER_REQUEST` if absent. |
+| `dynamodb.region` | string | — | AWS region (required; fatal if empty). |
+| `dynamodb.endpoint` | string | — | Custom endpoint (e.g., DynamoDB Local). |
+| `dynamodb.auth.mode` | string | — | `"file"` / `"env"` / `"secret"`. Nil auth uses default credential chain. |
+| `dynamodb.auth.credentialsFile` | string | — | Path to AWS credentials file (mode=`file`). |
+| `dynamodb.auth.profile` | string | — | AWS profile name. |
+| `dynamodb.auth.accessKeyID` | string | — | **Case-sensitive**: struct tag is `yaml:"accessKeyID"` (capital `I` and `D`). Using `accessKeyId` (lowercase `d`) silently skips the field. — <SourceLink file="common/config.go" lines="483" /> |
+| `dynamodb.auth.secretAccessKey` | string | — | Static secret key (mode=`secret`). |
+| `dynamodb.partitionKeyName` | string | `"groupKey"` | DynamoDB partition key attribute name. |
+| `dynamodb.rangeKeyName` | string | `"requestKey"` | DynamoDB sort key attribute name. |
+| `dynamodb.reverseIndexName` | string | `"idx_requestKey_groupKey"` | GSI name for reverse lookups. Added if absent. |
+| `dynamodb.ttlAttributeName` | string | `"ttl"` | Numeric attribute holding unix epoch seconds for TTL. |
+| `dynamodb.initTimeout` | Duration | `5s` | Session creation and table/index init timeout. |
+| `dynamodb.getTimeout` | Duration | `1s` | Per-Get deadline. |
+| `dynamodb.setTimeout` | Duration | `2s` | Per-Set/Delete/Lock deadline. |
+| `dynamodb.maxRetries` | int | `0` (SDK default) | AWS SDK retry count for transient errors. |
+| `dynamodb.statePollInterval` | Duration | `5s` | `WatchCounterInt64` polling interval. |
+| `dynamodb.lockRetryInterval` | Duration | **no default** (zero) | **Footgun**: zero duration → retry loop spins as fast as the API under lock contention. Always set to `100ms` in production. — <SourceLink file="data/dynamodb.go" lines="660-688" /> |
+
+#### gRPC connector — <SourceLink file="common/config.go" lines="354-359" />, defaults <SourceLink file="common/defaults.go" lines="927-929" />
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `grpc.bootstrap` | string | — | HTTP URL returning JSON array or newline-separated gRPC server URLs. Fetched once at startup; failure → connector init error. |
+| `grpc.servers` | []string | — | Explicit server list. Combined with bootstrap results when both present. |
+| `grpc.headers` | map[string]string | — | Headers sent on every gRPC call. |
+| `grpc.getTimeout` | Duration | `100ms` | Per-Get call timeout. Applied only when shorter than existing context deadline. |
+
+#### Timeout buffer constants — <SourceLink file="data/timeout_constants.go" lines="7-15" />
+
+| Constant | Value | Usage |
+|---|---|---|
+| `DefaultOperationBuffer` | `10s` | Time reserved after lock acquisition for in-lock operations. Used by Redis lock retry budget calculation. |
+| `PollOperationBuffer` | `15s` | Reserved in the state poller after lock acquisition. |
+| `MinPollTimeout` | `30s` | Minimum timeout for a complete poll cycle. |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Split memory caches for unfinalized vs. finalized data.** Production deployments
+keep two separate in-process connectors — a large one for the high-volume unfinalized
+stream (recently mined blocks, txs still propagating) and a smaller one for
+immutable finalized data. This lets ristretto tune its frequency sketch and cost
+budget independently for each access pattern:
+
+<ConfigTabs
+  path="database.evmJsonRpcCache.connectors[]"
+  yaml={`database:
+  evmJsonRpcCache:
+    connectors:
+      - id: memory-cache-unfinalized
+        driver: memory
+        memory:
+          # high-traffic: recent blocks, pending txs, unconfirmed receipts
+          maxItems: 2000000
+          # NumCounters = 3 × maxItems = 6 M — enough sketch space for 2 M hot keys
+          maxTotalSize: "8GB"
+      - id: memory-cache-finalized
+        driver: memory
+        memory:
+          # lower traffic: immutable block/tx data older than ~128 blocks
+          maxItems: 500000
+          maxTotalSize: "4GB"`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [
+      {
+        id: "memory-cache-unfinalized",
+        driver: "memory",
+        memory: {
+          // high-traffic: recent blocks, pending txs, unconfirmed receipts
+          maxItems: 2000000,
+          // NumCounters = 3 × maxItems = 6 M — enough sketch space for 2 M hot keys
+          maxTotalSize: "8GB",
+        },
+      },
+      {
+        id: "memory-cache-finalized",
+        driver: "memory",
+        memory: {
+          // lower traffic: immutable block/tx data older than ~128 blocks
+          maxItems: 500000,
+          maxTotalSize: "4GB",
+        },
+      },
+    ],
+  },
+}`}
+/>
+
+**2. gRPC BDS connector with hedge + timeout failsafe.** The canonical production
+pattern: a gRPC historical-data reader as the first connector, wrapped with a 400ms
+timeout and a 100ms static hedge so a slow BDS server fires a backup rather than
+stalling the request. Quantile hedge is rejected at this layer — static delay only:
+
+<ConfigTabs
+  path="database.evmJsonRpcCache.connectors[]"
+  yaml={`database:
+  evmJsonRpcCache:
+    connectors:
+      - id: bds-cache
+        driver: grpc
+        grpc:
+          # static server list — or use bootstrap: URL for dynamic discovery
+          servers:
+            - grpc://bds-reader.example.com:50051
+          # cap total gRPC call time; past this, go to live upstreams instead
+          getTimeout: 400ms
+        failsafeForGets:
+          - matchMethod: "*"
+            retry:
+              maxAttempts: 2
+              # retry immediately — a slow BDS call beats a fast empty one
+              delay: "0"
+            timeout:
+              # 400ms = the same as getTimeout; belt-and-suspenders at the
+              # failsafe layer in case gRPC context propagation is delayed
+              duration: 400ms
+            hedge:
+              # static delay only — quantile hedge is rejected for connectors
+              delay: 100ms
+              maxCount: 1`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [{
+      id: "bds-cache",
+      driver: "grpc",
+      grpc: {
+        // static server list — or use bootstrap URL for dynamic discovery
+        servers: ["grpc://bds-reader.example.com:50051"],
+        // cap total gRPC call time; past this, go to live upstreams instead
+        getTimeout: "400ms",
+      },
+      failsafeForGets: [{
+        matchMethod: "*",
+        retry: { maxAttempts: 2, delay: "0" },
+        // 400ms = same as getTimeout; belt-and-suspenders at failsafe layer
+        timeout: { duration: "400ms" },
+        // static delay only — quantile hedge is rejected for connectors
+        hedge: { maxCount: 1, delay: "100ms" },
+      }],
+    }],
+  },
+}`}
+/>
+
+**3. gRPC connector with bearer-authenticated edge API and a Redis write layer.**
+The gRPC connector is read-only; pair it with Redis for writes. Production configs
+using a public BDS edge gateway attach auth headers per-connector — secrets stay
+in environment variables, not in the config file:
+
+<ConfigTabs
+  path="database.evmJsonRpcCache.connectors[]"
+  yaml={`database:
+  evmJsonRpcCache:
+    connectors:
+      - id: bds-edge
+        driver: grpc
+        grpc:
+          servers:
+            - grpc://bds-edge-api.example.com:443
+          getTimeout: 400ms
+          headers:
+            # bearer token loaded from env — never hardcode secrets in config
+            Authorization: "Bearer \${BDS_API_TOKEN}"
+        failsafeForGets:
+          - matchMethod: "*"
+            retry: { maxAttempts: 2, delay: "0" }
+            timeout: { duration: 400ms }
+            hedge: { maxCount: 1, delay: 100ms }
+      - id: redis-write
+        driver: redis
+        redis:
+          uri: "\${REDIS_URL}"
+          connPoolSize: 16`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [
+      {
+        id: "bds-edge",
+        driver: "grpc",
+        grpc: {
+          servers: ["grpc://bds-edge-api.example.com:443"],
+          getTimeout: "400ms",
+          // bearer token loaded from env — never hardcode secrets in config
+          headers: { Authorization: "Bearer \${BDS_API_TOKEN}" },
+        },
+        failsafeForGets: [{
+          matchMethod: "*",
+          retry: { maxAttempts: 2, delay: "0" },
+          timeout: { duration: "400ms" },
+          hedge: { maxCount: 1, delay: "100ms" },
+        }],
+      },
+      {
+        id: "redis-write",
         driver: "redis",
-        redis: {
-          // Connection URI (Required)
-          // Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=...&pool_size=...]
-          uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10",
-          tls: {
-            enabled: false, // or true if redis is configured with TLS
-            certFile: "/path/to/client.crt", // Optional
-            keyFile: "/path/to/client.key",  // Optional
-            caFile: "/path/to/ca.crt",       // Optional
-          },
-        },
-      }],
-      policies: [{
-        network: "*",
-        method: "*",
-        finality: DataFinalityStateFinalized,
-        connector: "redis-cache",
-      }],
-    },
+        redis: { uri: "\${REDIS_URL}", connPoolSize: 16 },
+      },
+    ],
   },
-});`}
+}`}
 />
 
+**4. Redis shared state for multi-pod deployments.** When multiple eRPC instances
+need to coordinate (shared scoring state, distributed locking), use Redis for
+`sharedState`. This is separate from the cache connector — a single Redis URI with
+no extra config needed:
 
-#### TLS options
-
-The `tls` block uses the shared `TLSConfig` struct. See [TLS configuration](/config/server#tls-configuration) for the full field reference.
-
-When your Redis endpoint already uses **rediss://** (for example, Railway or Upstash), TLS is negotiated automatically and you can omit the entire `tls:` block.  
-Add the `tls:` section only when you need **mutual‑TLS** (client certificate/key) or your server uses a **private CA**:
-
-```yaml
-redis:
-  uri: rediss://user:pass@redis.internal:6380/0
-  tls:
-    enabled: true
-    certFile: /secrets/redis-client.crt   # sent to server (mTLS)
-    keyFile:  /secrets/redis-client.key
-    caFile:   /secrets/redis-rootCA.pem   # trust this CA instead of system roots
-```
-
-#### Redis URI Format
-
-The Redis URI format follows this pattern:
-```
-redis://[[username]:[password]@][host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
-```
-
-Examples:
-- `redis://localhost:6379/0` - Basic connection to localhost
-- `redis://user:pass@redis.example.com:6379/0` - Connection with authentication
-- `redis://:password@redis.example.com:6379/0` - Connection with password only (no username)
-- `redis://redis.example.com:6379` - Connection without database number (defaults to 0)
-- `redis://redis.example.com:6379/0?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10` - Connection with timeouts and pool size
-- `redis://global-shared-states-redis-master.redis.svc.cluster.local:6379` - Kubernetes service deployed via [Bitnami charts](https://github.com/bitnami/charts/tree/master/bitnami/redis)
-
-You can include these parameters directly in the URI:
-- `dial_timeout` - Timeout for initial connection (e.g., `5s`)
-- `read_timeout` - Timeout for read operations (e.g., `1s`)
-- `write_timeout` - Timeout for write operations (e.g., `2s`)
-- `pool_size` - Connection pool size (e.g., `10`)
-
-
-#### Configuration Notes
-
-```conf
-maxmemory 2000mb
-maxmemory-policy allkeys-lru
-```
-
-### PostgreSQL
-
-Useful when you need to store cached data permanently without TTL i.e. forever.
-
-<Callout type="info">
-  You don't need to create the table, the driver will automatically create the
-  table and requried indexes.
-</Callout>
 <ConfigTabs
-	path="database > evmJsonRpcCache > connectors[]"
-	focus="4-11"
-	yaml={`database:
-  evmJsonRpcCache:
-    connectors:
-      - id: postgres-cache
-        driver: postgresql
-        postgresql:
-          connectionUri: postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
-          table: rpc_cache
-          initTimeout: 5s
-          getTimeout: 1s
-          setTimeout: 2s
-    policies:
-      - network: '*'
-        method: '*'
-        finality: finalized
-        connector: postgres-cache`}
-	ts={`import {
-  createConfig,
-  DataFinalityStateFinalized
-} from "@erpc-cloud/config";
-
-export default createConfig({
-  database: {
-    evmJsonRpcCache: {
-      connectors: [{
-        id: "postgres-cache",
-        driver: "postgresql",
-        postgresql: {
-          connectionUri: "postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name",
-          table: "rpc_cache",
-          initTimeout: "5s",
-          getTimeout: "1s",
-          setTimeout: "2s",
-        },
-      }],
-      policies: [{
-        network: "*",
-        method: "*",
-        finality: DataFinalityStateFinalized,
-        connector: "postgres-cache",
-      }],
+  path="database.sharedState"
+  yaml={`database:
+  sharedState:
+    # must be unique across all eRPC clusters sharing this Redis
+    clusterKey: my-erpc-prod
+    connector:
+      driver: redis
+      redis:
+        # credentials via env var — never inline in config
+        uri: "\${SHARED_STATE_REDIS_URL}"`}
+  ts={`database: {
+  sharedState: {
+    // must be unique across all eRPC clusters sharing this Redis
+    clusterKey: "my-erpc-prod",
+    connector: {
+      driver: "redis",
+      redis: {
+        // credentials via env var — never inline in config
+        uri: "\${SHARED_STATE_REDIS_URL}",
+      },
     },
   },
-});`}
+}`}
 />
 
-### DynamoDB
+**5. DynamoDB for serverless deployments.** Useful when you want fully managed
+persistence without operating Redis. Set `lockRetryInterval` explicitly — the
+default is zero and the retry loop spins as fast as the DynamoDB API under
+contention, which can exhaust provisioned throughput:
 
-When you need to have scalable (compared to Postgres) permanent caching and are happy with the costs.
 <ConfigTabs
-	path="database > evmJsonRpcCache > connectors[]"
-	focus="4-19"
-	yaml={`database:
+  path="database.evmJsonRpcCache.connectors[]"
+  yaml={`database:
   evmJsonRpcCache:
     connectors:
-      - id: dynamodb-cache
+      - id: ddb-cache
         driver: dynamodb
         dynamodb:
+          region: us-east-1
           table: erpc_json_rpc_cache
-          region: eu-west-1
-          initTimeout: 5s
+          # CRITICAL: no default — zero = spin loop under lock contention
+          lockRetryInterval: 100ms
           getTimeout: 1s
           setTimeout: 2s
-          endpoint: https://dynamodb.eu-west-1.amazonaws.com # Optional
-          # Auth is optional if you are running within AWS.
           auth:
-            mode: secret # file, or env
-            accessKeyId: YOUR_ACCESS_KEY_ID # Only if mode is secret
-            secretAccessKey: YOUR_SECRET_ACCESS_KEY # Only if mode is secret
-            profile: xxxxx # Only if mode is file
-            credentialsFile: xxxx # Only if mode is file
-    policies:
-      - network: '*'
-        method: '*'
-        finality: finalized
-        connector: dynamodb-cache`}
-	ts={`import {
-  createConfig,
-  DataFinalityStateFinalized
-} from "@erpc-cloud/config";
-
-export default createConfig({
-  database: {
-    evmJsonRpcCache: {
-      connectors: [{
-        id: "dynamodb-cache",
-        driver: "dynamodb",
-        dynamodb: {
-          table: "erpc_json_rpc_cache",
-          region: "eu-west-1",
-          endpoint: "https://dynamodb.eu-west-1.amazonaws.com", // Optional
-          initTimeout: "5s",
-          getTimeout: "1s",
-          setTimeout: "2s",
-          // Auth is optional if you are running within AWS.
-          auth: {
-            mode: "secret", // "file" or "env"
-            accessKeyId: process.env.DYNAMODB_ACCESS_KEY_ID,    // Only if mode is secret
-            secretAccessKey: process.env.DYNAMODB_SECRET_ACCESS_KEY, // Only if mode is secret
-            profile: process.env.DYNAMODB_PROFILE,              // Only if mode is file
-            credentialsFile: process.env.DYNAMODB_CREDENTIALS_FILE,  // Only if mode is file
-          },
+            mode: env   # or "file" / "secret"
+            # YAML key is accessKeyID (capital I and D) — accessKeyId silently fails
+            accessKeyID: "\${AWS_ACCESS_KEY_ID}"
+            secretAccessKey: "\${AWS_SECRET_ACCESS_KEY}"`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [{
+      id: "ddb-cache",
+      driver: "dynamodb",
+      dynamodb: {
+        region: "us-east-1",
+        table: "erpc_json_rpc_cache",
+        // CRITICAL: no default — zero = spin loop under lock contention
+        lockRetryInterval: "100ms",
+        getTimeout: "1s",
+        setTimeout: "2s",
+        auth: {
+          mode: "env",
+          // YAML key is accessKeyID (capital I and D) — accessKeyId silently fails
+          accessKeyID: "\${AWS_ACCESS_KEY_ID}",
+          secretAccessKey: "\${AWS_SECRET_ACCESS_KEY}",
         },
-      }],
-      policies: [{
-        network: "*",
-        method: "*",
-        finality: DataFinalityStateFinalized,
-        connector: "dynamodb-cache",
-      }],
-    },
+      },
+    }],
   },
-});`}
+}`}
 />
 
-#### IAM Permissions
+### Request/response behavior
 
-Make sure the IAM role/user has the necessary permissions to create and/or access the DynamoDB table:
+- `NewConnector` dispatches on `cfg.Driver`. Unknown driver → `ErrInvalidConnectorDriver` at startup; never returned during live request processing. [<SourceLink file="data/connector.go" lines="63-103" />]
+- `Set` always writes `ConnectorMainIndex` and, for `evm:`-prefixed partition keys, also writes a reverse index entry. Memory reverse index entries carry no TTL; stale pointers after main entry expiry resolve to cache misses. [<SourceLink file="data/memory.go" lines="124-131" />]
+- DynamoDB applies a client-side epoch check on every `Get` and returns `ErrRecordExpired` for items past TTL regardless of AWS purge lag. Callers must distinguish `ErrRecordExpired` from `ErrRecordNotFound`. [<SourceLink file="data/dynamodb.go" lines="547-556" />]
+- gRPC intercepts `eth_blockNumber` and translates it to `eth_getBlockByNumber("latest", false)`, returning only the `number` field as a canonical hex string. On failure returns `ErrRecordNotFound` (falls through to real upstreams). [<SourceLink file="data/grpc.go" lines="265-278" />]
+- `FailsafeConnector` bypasses failsafe policies for `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64`. Only `Get`, `Set`, and `Delete` get failsafe treatment. [<SourceLink file="data/failsafe.go" lines="308-322" />]
+- `FailsafeConnector` forwards `CacheLatestBlockTimestamp` to the wrapped connector so the freshness gate works even when the gRPC connector is wrapped. [<SourceLink file="data/failsafe.go" lines="211-216" />]
+- `isTransportError` is the sole retryability gate: `ErrRecordNotFound`, `ErrRecordExpired`, `context.Canceled`, and `context.DeadlineExceeded` are not transport errors and are never retried. [<SourceLink file="data/failsafe.go" lines="25-92" />]
+- `pickCacheExecutor` four-tier priority: (method + finality) &gt; (method only) &gt; (finality only) &gt; (wildcard). A no-op executor is always appended so unmatched operations proceed unconditionally. [<SourceLink file="data/failsafe.go" lines="159-201" />]
 
-* Table Management:
-  * `dynamodb:CreateTable` - For creating the table if it doesn't exist
-  * `dynamodb:DescribeTable` - For checking table existence and configuration
-  * `dynamodb:UpdateTable` - For adding the global secondary index
-  * `dynamodb:UpdateTimeToLive` - For configuring TTL attributes
-* Data Operations:
-  * `dynamodb:PutItem` - For storing data and creating locks
-  * `dynamodb:GetItem` - For retrieving data (certain cache queries such as eth_getBlockByNumber with a hex block number)
-  * `dynamodb:Query` - For querying with the reverse index (certain cache queries such as eth_getBlockReceipts by blockHash)
-  * `dynamodb:DeleteItem` - For removing locks
-  * `dynamodb:UpdateItem` - For counter operations with conditions
+### Best practices
 
-<Callout type="info">
-  You can create the table and the reverse GSI index manually and avoid "Table management" permissions:
-  * Table name: `erpc_json_rpc_cache`
-  * Reverse GSI index name: `idx_requestKey_groupKey` with primary key `requestKey` and sort key `groupKey` and projection type `ALL`
-</Callout>
+- **Use Redis for multi-instance deployments** — memory is single-process only and `List` is unimplemented; any shared-state or admin endpoint that needs `List` silently breaks with memory.
+- **Set `dynamodb.lockRetryInterval: 100ms` explicitly in production.** DynamoDB has no default; zero means the retry loop spins as fast as the HTTP API responds under contention. Redis defaults to `500ms`.
+- **Set PostgreSQL timeouts explicitly; do not rely on the connection URI.** Unlike Redis, `initTimeout`, `getTimeout`, and `setTimeout` are always Go context deadlines and are never read from `connectionUri`. Setting `connect_timeout=5` in the DSN has no effect on these fields.
+- **Always supply a `caFile` or client cert when using `rediss://` in production.** A `rediss://`-only URI without a YAML `tls:` block produces `InsecureSkipVerify=true`.
+- **Never use `dynamodb.auth.accessKeyId` (lowercase `d`).** The struct tag is `yaml:"accessKeyID"` — a lowercase `d` silently skips the field and falls through to the default credential chain.
+- **Plan for a 60-second warm-up when using the gRPC connector with the freshness gate.** The block-head poller first fires at T+60s. During this window `CacheLatestBlockTimestamp` returns `ok=false` and the freshness gate fails open — stale realtime responses may be served.
+- **Wrap the gRPC connector with a circuit-breaker** in `failsafeForGets` to avoid hammering a BDS server that is returning errors; without it, every cache request makes a gRPC call when the BDS layer is unhealthy.
 
-<AISection title="Copy for your AI assistant — full driver reference">
+### Edge cases & gotchas
 
-### Common connector fields (all drivers)
+1. **Memory `List` is not implemented.** Returns an error with guidance to use Redis/PostgreSQL/DynamoDB. Any subsystem needing `List` (admin endpoints, shared-state enumeration) must not use the memory driver. [`data/memory.go:L316-L321`](https://github.com/erpc/erpc/blob/main/data/memory.go#L316-L321)
 
-| Field | Notes |
-|---|---|
-| `id` | Unique identifier; referenced from `policies[].connector`. |
-| `driver` | One of `memory`, `redis`, `postgresql`, `dynamodb`. |
-| `failsafeForGets[]` | Optional. Failsafe policies (`matchMethod`, `timeout`, `retry`, ...) applied to read operations on this connector. Useful for short-timeout best-effort reads. |
-| `failsafeForSets[]` | Optional. Failsafe policies applied to write operations on this connector. Useful for stricter retry on writes. |
+2. **Memory reverse index has no TTL.** Main entries expire; their reverse index pointers remain until cost-based eviction. Stale pointers resolve to misses — no incorrect data is served. Redis correctly propagates TTL to reverse index entries. [`data/memory.go:L128-L130`](https://github.com/erpc/erpc/blob/main/data/memory.go#L128-L130)
 
-### `memory` driver
+3. **Memory cost overhead is 256 bytes per entry.** Even a 1-byte value costs 257 bytes against `maxTotalSize`. Small-value workloads require a proportionally larger `maxTotalSize`. [`data/memory.go:L78-L80`](https://github.com/erpc/erpc/blob/main/data/memory.go#L78-L80)
 
-```yaml
-connectors:
-  - id: hot
-    driver: memory
-    memory:
-      maxItems: 100000
-      maxTotalSize: 1GB
-      emitMetrics: false   # default; turning on incurs ~10% performance hit
-```
+4. **DynamoDB TTL lag (~48h).** AWS native TTL expiry is eventually consistent. The connector applies a client-side epoch check returning `ErrRecordExpired`, but callers must distinguish `ErrRecordExpired` from `ErrRecordNotFound` since the expired item still exists in DynamoDB. [`data/dynamodb.go:L547-L556`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L547-L556)
 
-| Field | Default | Notes |
+5. **DynamoDB `lockRetryInterval` has no default.** Zero duration → retry loop spins as fast as the DynamoDB API under contention. Set `dynamodb.lockRetryInterval: 100ms` in production. Contrast: Redis defaults to `500ms`. [`data/dynamodb.go:L660-L688`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L660-L688)
+
+6. **PostgreSQL advisory lock is non-blocking.** `pg_try_advisory_xact_lock` returns immediately with `false` if locked. No built-in retry loop — callers must implement their own. [`data/postgresql.go:L558-L573`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L558-L573)
+
+7. **PostgreSQL timeouts cannot be set via connection URI.** Unlike Redis, `initTimeout`, `getTimeout`, and `setTimeout` are always Go context deadlines. Setting `connect_timeout=5` in the DSN does NOT populate `initTimeout`. Configure all three explicitly in YAML. [`data/postgresql.go:L130-L134`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L130-L134)
+
+8. **PostgreSQL `cron.schedule` is not idempotent.** `applySchema` is gated by a `schemaApplied` flag (set once per process lifetime) to prevent duplicate pg_cron jobs on reconnect. [`data/postgresql.go:L257-L268`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L257-L268)
+
+9. **gRPC connector supports no writes.** If configured as the sole connector for a write-through cache policy, all writes silently fail. Use it only as a read-through layer alongside a write-capable connector. [`data/grpc.go:L454-L478`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L454-L478)
+
+10. **gRPC head poller first fires at T+60s.** Block-head gauges are zero for the first 60 seconds. During this window the freshness gate fails open — cached realtime responses may be served. [`data/grpc.go:L302-L313`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L302-L313)
+
+11. **gRPC bootstrap fetch is not retried.** If `fetchGrpcServers` fails at startup, `NewGrpcConnector` returns an error. Individual per-server connection tasks ARE retried by the initializer. [`data/grpc.go:L88-L95`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L88-L95)
+
+12. **gRPC freshness gate fails open for non-gRPC connectors.** Memory, Redis, PostgreSQL, and DynamoDB do not implement `CacheHeadReporter`. When `eth_blockNumber` or `eth_gasPrice` is fetched from one of these connectors, `shouldAcceptCachedResult` cannot determine response age and unconditionally accepts the cached result. [`architecture/evm/json_rpc_cache.go:L862-L920`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L862-L920)
+
+13. **gRPC block-head poller: zero `latestTs` means "unknown", not genesis block.** When `eth_getBlockByNumber("latest")` returns a block with a zero or absent `timestamp` field, `CacheLatestBlockTimestamp` returns `ok=false` and the freshness gate fails open. [`data/grpc.go:L349-L357`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L349-L357)
+
+14. **Hedge quantile rejected for connector-level failsafe.** Only static `delay.base` / `delay.min` work. `hedge.delay.quantile > 0` fails validation with `"hedge quantile is not supported for connector-level failsafe"`. [`data/cache_executor.go:L37-L41`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L37-L41)
+
+15. **Consensus rejected for connector-level failsafe.** `consensus` non-nil at construction → `ErrFailsafeConfiguration` at startup. [`data/cache_executor.go:L31-L35`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L31-L35)
+
+16. **`dynamodb.auth.accessKeyID` is case-sensitive.** The struct tag is `yaml:"accessKeyID"` (capital `I` and `D`). Using `accessKeyId` (lowercase `d`) silently skips the field; AWS falls through to the default credential chain. [`common/config.go:L483`](https://github.com/erpc/erpc/blob/main/common/config.go#L483)
+
+17. **Redis TLS merging with `rediss://` URIs.** When both a `rediss://` URI and `tls.enabled: true` are configured, YAML cert/CA overrides merge onto the URI-derived TLS baseline and disable `InsecureSkipVerify`. A `rediss://`-only URI without a YAML `tls:` block produces `InsecureSkipVerify=true`. Always supply a `caFile` or client cert when using `rediss://` in production. [`data/redis.go:L156-L180`](https://github.com/erpc/erpc/blob/main/data/redis.go#L156-L180)
+
+18. **`FailsafeConnector` wrapping does not break `CacheHeadReporter`.** `FailsafeConnector` forwards `CacheLatestBlockTimestamp` to the wrapped connector, so the freshness gate works correctly even when the gRPC connector has failsafe policies. [`data/failsafe.go:L211-L216`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L211-L216)
+
+19. **gRPC freshness gate: response timestamp takes precedence over connector head.** `shouldAcceptCachedResult` first extracts a block timestamp from the cached response itself. Only if the response carries no timestamp does it fall back to `CacheLatestBlockTimestamp`. For `eth_getBlockByNumber` (which returns a full block with a timestamp), the response timestamp is used regardless of the connector's polled head. [`architecture/evm/json_rpc_cache.go:L862-L920`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L862-L920)
+
+20. **PostgreSQL pub/sub falls back to 30-second polling.** If `LISTEN/NOTIFY` is unavailable (e.g., connection pooler that strips it), `WatchCounterInt64` falls back to a 30-second polling interval. Channel names are sanitized to valid PostgreSQL identifier characters with a maximum of 63 bytes. [`data/postgresql.go:L1103-L1127`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L1103-L1127)
+
+21. **DynamoDB backward compatibility: `S` and `B` attribute types both accepted.** When reading items, both binary (`B`) and legacy string (`S`) value attributes are handled. Legacy string values are returned as `[]byte`. If neither attribute is present, the item is skipped. [`data/dynamodb.go:L512-L566`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L512-L566)
+
+22. **PostgreSQL pool lock timing.** During reconnect, `connectTask` holds the write lock only for the field swap (nanoseconds). Schema setup and pool creation happen outside the lock. The old pool is closed after releasing the lock to prevent blocking hot-path reads/writes during pool drain. [`data/postgresql.go:L176-L250`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L176-L250)
+
+### Observability
+
+#### Prometheus metrics — <SourceLink file="telemetry/metrics.go" lines="73-107" />, <SourceLink file="telemetry/metrics.go" lines="628-638" />
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_ristretto_cache_current_cost` | gauge | `connector` | Every 30s by memory connector when `emitMetrics=true`. Bytes currently used by ristretto. |
+| `erpc_ristretto_cache_sets_failed_total` | counter | `connector` | Every 30s; delta of `SetsDropped + SetsRejected` from ristretto stats. |
+| `erpc_cache_connector_earliest_block_number` | gauge | `connector`, `network` | Set every 60s when gRPC `fetchTaggedBlock("earliest")` succeeds. Drives fast-miss rejection. Not reset on transient poll failure. |
+| `erpc_cache_connector_latest_block_number` | gauge | `connector`, `network` | Set every 60s when gRPC `fetchTaggedBlock("latest")` succeeds. |
+| `erpc_cache_connector_finalized_block_number` | gauge | `connector`, `network` | Set every 60s when finalized block is fetchable. |
+| `erpc_cache_connector_earliest_block_timestamp_seconds` | gauge | `connector`, `network` | Unix timestamp (seconds) of the earliest known block. Set only when block timestamp &gt; 0. |
+| `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | `connector`, `network` | Unix timestamp of the latest block. Drives the freshness gate via `CacheLatestBlockTimestamp`. Alert when this lags wall-clock by more than your expected block interval. Zero means unknown → freshness gate fails open. |
+| `erpc_cache_connector_finalized_block_timestamp_seconds` | gauge | `connector`, `network` | Unix timestamp of the finalized block. Set only when block timestamp &gt; 0. |
+
+#### Trace spans
+
+| Span name | Connector | Notable attributes |
 |---|---|---|
-| `maxItems` | none | Max entries in the LRU. Either this or `maxTotalSize` (or both) should be set. |
-| `maxTotalSize` | none | Max total cache size (`100MB`, `1GB`). Evicts LRU entries when exceeded. |
-| `emitMetrics` | `false` | Emit per-key hit/miss metrics. ~10% perf hit; intended for debugging. |
+| `RedisConnector.Set` | Redis | `partition_key`, `range_key`, `value_size` |
+| `RedisConnector.Get` | Redis | `index`, `partition_key`, `range_key`, `value_size` |
+| `RedisConnector.Delete` | Redis | |
+| `RedisConnector.List` | Redis | `index`, `limit` |
+| `RedisConnector.Lock` | Redis | `lock_key`, `ttl_ms` |
+| `RedisConnector.Unlock` | Redis | `lock_key` |
+| `RedisConnector.PublishCounterInt64` | Redis | `key`, `value`, `updated_at`, `updated_by` |
+| `DynamoDBConnector.Set` | DynamoDB | |
+| `DynamoDBConnector.Get` | DynamoDB | |
+| `DynamoDBConnector.Delete` | DynamoDB | |
+| `DynamoDBConnector.List` | DynamoDB | |
+| `DynamoDBConnector.Lock` | DynamoDB | |
+| `DynamoDBConnector.Unlock` | DynamoDB | |
+| `DynamoDBConnector.getSimpleValue` | DynamoDB | Detail span |
+| `PostgreSQLConnector.Set` | PostgreSQL | |
+| `PostgreSQLConnector.Get` | PostgreSQL | |
+| `PostgreSQLConnector.Delete` | PostgreSQL | |
+| `PostgreSQLConnector.List` | PostgreSQL | |
+| `PostgreSQLConnector.Lock` | PostgreSQL | |
+| `PostgreSQLConnector.Unlock` | PostgreSQL | |
+| `PostgreSQLConnector.PublishCounterInt64` | PostgreSQL | |
+| `PostgreSQLConnector.getCurrentValue` | PostgreSQL | Detail span |
+| `PostgreSQLConnector.getWithWildcard` | PostgreSQL | Detail span |
+| `ConnectorFailsafe.Get` | FailsafeConnector | `connector.id`, `connector.partition_key`, `connector.range_key`, `failsafe.match_method`, `result.bytes` |
+| `ConnectorFailsafe.Set` | FailsafeConnector | `connector.id`, `connector.partition_key`, `connector.range_key`, `failsafe.match_method`, `value.bytes`, `ttl.ms` |
+| `ConnectorFailsafe.Delete` | FailsafeConnector | |
 
-### `redis` driver
+#### Notable log messages
 
-```yaml
-connectors:
-  - id: redis-cache
-    driver: redis
-    redis:
-      # Connection — pick ONE of these two ways:
-      uri: redis://user:pass@host:6379/0?dial_timeout=5s&pool_size=10
-      # OR explicit fields:
-      addr: host:6379
-      username: user
-      password: pass
-      db: 0
-      connPoolSize: 10
+| Message | Level | Driver | Meaning |
+|---|---|---|---|
+| `"redis is not connected (state: %s), errors: %v"` | Warn | Redis | Every Get/Set/Lock attempt while connector is not ready. |
+| `"detected critical connection failure, marking for reconnection"` | Warn | Redis | `markConnectionAsLostIfNecessary` fired; reconnect enqueued. |
+| `"successfully connected to Redis"` | Info | Redis | Ping succeeded after (re)connect. |
+| `"postgres connection lost; marking connector as failed for reinitialization"` | Warn | PostgreSQL | `handleConnectionFailure` triggered reconnect. |
+| `"successfully connected to postgres"` | Info | PostgreSQL | Pool swap complete. |
+| `"migrating value column from TEXT to BYTEA"` / `"successfully migrated value column to BYTEA"` | Info | PostgreSQL | One-time schema migration. |
+| `"successfully configured pg_cron cleanup job"` | Info | PostgreSQL | pg_cron extension detected and job installed. |
+| `"starting local expired items cleanup routine"` | Debug | PostgreSQL | pg_cron absent; local 5-minute ticker used instead. |
+| `"List operation on MemoryConnector is not efficiently supported"` | Warn | Memory | `List` called on memory connector (unimplemented). |
+| `"gRPC client initialized for network"` | Info | gRPC | Chain probe succeeded for a server. |
+| `"duplicate gRPC server for network detected; ignoring"` | Error | gRPC | Two servers returned the same `chainId`. |
+| `"Starting Ristretto metrics collection loop"` | Info | Memory | `emitMetrics=true`, background goroutine started. |
 
-      # Operation timeouts
-      initTimeout: 5s
-      getTimeout: 1s
-      setTimeout: 2s
+### Source code entry points
 
-      # Lock retry interval (for shared-state lock semantics, if used here)
-      lockRetryInterval: 100ms
+- [`data/connector.go:L40-L103`](https://github.com/erpc/erpc/blob/main/data/connector.go#L40-L103) — `Connector` interface; `CacheHeadReporter`; `NewConnector` factory; `ConnectorMainIndex` / `ConnectorReverseIndex` constants
+- [`data/memory.go:L1-L321`](https://github.com/erpc/erpc/blob/main/data/memory.go#L1-L321) — ristretto-backed connector; TTL; reverse index; no-op pub/sub; TryLock; background metrics; unimplemented `List`
+- [`data/redis.go:L1-L784`](https://github.com/erpc/erpc/blob/main/data/redis.go#L1-L784) — Redis connector; URI construction; TLS merging; narrow reconnect detection; redsync locking; SCAN-based `List`
+- [`data/redis_pubsub_manager.go`](https://github.com/erpc/erpc/blob/main/data/redis_pubsub_manager.go) — self-healing pub/sub manager; transparent reconnection; copy-on-write subscriber management
+- [`data/timeout_constants.go`](https://github.com/erpc/erpc/blob/main/data/timeout_constants.go) — `DefaultOperationBuffer` (10s), `PollOperationBuffer` (15s), `MinPollTimeout` (30s)
+- [`data/postgresql.go:L1-L1270`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L1-L1270) — pgxpool connector; schema migration; pg_cron or local cleanup ticker; advisory locks; LISTEN/NOTIFY pub/sub; connection failure coalescing
+- [`data/dynamodb.go:L1-L983`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L1-L983) — DynamoDB connector; split read/write clients; GSI; native TTL + client-side expiry check; conditional-PutItem locking; polling `WatchCounterInt64`
+- [`data/grpc.go:L1-L478`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L1-L478) — Read-only gRPC BDS connector; bootstrap; chain probing; `eth_blockNumber` translation; fast-miss rejection; 60s head poller; `CacheLatestBlockTimestamp`
+- [`data/failsafe.go:L25-L216`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L25-L216) — `FailsafeConnector`; `pickCacheExecutor` four-tier selection; `isTransportError`; `CacheHeadReporter` forwarding
+- [`data/cache_executor.go:L1-L160`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L1-L160) — `cacheExecutor` retry/hedge/breaker/timeout pipeline; transport-error-only retry; consensus/hedge-quantile rejection
+- [`architecture/evm/json_rpc_cache.go:L834-L924`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L834-L924) — `shouldAcceptCachedResult`: freshness gate; response-timestamp path; `CacheHeadReporter` fallback; fail-open logic
+- [`common/defaults.go:L846-L1099`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L846-L1099) — `SetDefaults` for all connector configs; driver inference; default table names by scope
 
-      # TLS — only needed for mTLS or private CA;
-      # rediss:// URIs negotiate TLS automatically.
-      tls:
-        enabled: true
-        certFile: /secrets/redis-client.crt
-        keyFile: /secrets/redis-client.key
-        caFile: /secrets/redis-rootCA.pem
-        insecureSkipVerify: false
-```
+### Related pages
 
-| Field | Notes |
-|---|---|
-| `uri` | Full Redis URI. When set, takes precedence over individual fields below. URI query-string params (`dial_timeout`, `read_timeout`, `write_timeout`, `pool_size`) override the equivalent fields. |
-| `addr` | Host:port — explicit alternative to `uri`. |
-| `username`, `password`, `db` | Auth + database number; alternatives to embedding in `uri`. |
-| `connPoolSize` | Maximum number of TCP connections to keep open. Default `10`. |
-| `tls` | TLS configuration. See [TLS configuration](/config/server#tls-configuration) for all fields. |
-| `initTimeout` | How long startup waits for the connection to become healthy. |
-| `getTimeout` | Timeout for a single GET operation. |
-| `setTimeout` | Timeout for a single SET operation. |
-| `lockRetryInterval` | Interval between lock-acquisition retries. Applies when this Redis connector backs [`sharedState`](/config/database/shared-state) or when the cache uses optimistic locking on writes. Default `500ms`. |
-
-Recommended Redis server config for cache use cases:
-
-```conf
-maxmemory 2000mb
-maxmemory-policy allkeys-lru
-```
-
-### `postgresql` driver
-
-```yaml
-connectors:
-  - id: postgres-cache
-    driver: postgresql
-    postgresql:
-      connectionUri: postgres://user:pass@host:5432/erpc
-      table: rpc_cache
-      minConns: 2
-      maxConns: 20
-      initTimeout: 5s
-      getTimeout: 1s
-      setTimeout: 2s
-```
-
-| Field | Default | Notes |
-|---|---|---|
-| `connectionUri` | required | Standard `postgres://` URI. Driver creates the table + indexes on first connect; no manual schema work needed. |
-| `table` | `erpc_json_rpc_cache` | Table name. |
-| `minConns` | `0` | Minimum connections kept open in the pool. Useful to keep a warm pool ready. |
-| `maxConns` | `100` | Maximum connections in the pool. Tune based on your Postgres `max_connections`. |
-| `initTimeout` | `5s` | Connection-pool startup timeout. |
-| `getTimeout` | `1s` | Per-GET timeout. |
-| `setTimeout` | `2s` | Per-SET timeout. |
-
-PostgreSQL is the recommended permanent-cache backend when you want forever TTLs and operational simplicity.
-
-### `dynamodb` driver
-
-```yaml
-connectors:
-  - id: dynamodb-cache
-    driver: dynamodb
-    dynamodb:
-      table: erpc_json_rpc_cache
-      region: eu-west-1
-      endpoint: https://dynamodb.eu-west-1.amazonaws.com   # optional
-
-      # Schema attribute overrides (only set these if you provisioned the table manually)
-      partitionKeyName: requestKey
-      rangeKeyName: groupKey
-      reverseIndexName: idx_requestKey_groupKey
-      ttlAttributeName: ttl
-
-      # AWS SDK behavior
-      maxRetries: 3
-
-      # Timing
-      initTimeout: 5s
-      getTimeout: 1s
-      setTimeout: 2s
-      statePollInterval: 250ms
-      lockRetryInterval: 100ms
-
-      # Auth (optional when running inside AWS with an instance role)
-      auth:
-        mode: secret           # secret | file | env
-        accessKeyId: AKIA...
-        secretAccessKey: ...
-        # OR for mode: file
-        profile: erpc-prod
-        credentialsFile: /home/erpc/.aws/credentials
-```
-
-| Field | Default | Notes |
-|---|---|---|
-| `table` | `erpc_json_rpc_cache` | Table name. Driver auto-creates if it doesn't exist (requires `dynamodb:CreateTable`). |
-| `region` | required | AWS region. |
-| `endpoint` | none | Override the default DynamoDB endpoint. Set when using DynamoDB Local or a regional override. |
-| `auth.mode` | uses AWS SDK default chain | `secret` = use `accessKeyId`/`secretAccessKey`; `file` = read from `credentialsFile`/`profile`; `env` = AWS_* env vars. Omit `auth` entirely to use the instance-role / IAM-role chain. |
-| `partitionKeyName` | `requestKey` | DynamoDB partition key attribute. Only override if you provisioned the table manually with different schema. |
-| `rangeKeyName` | `groupKey` | Sort/range key attribute. Same caveat. |
-| `reverseIndexName` | `idx_requestKey_groupKey` | Name of the reverse GSI; used for `eth_getBlockReceipts` and similar block-hash → block-number lookups. |
-| `ttlAttributeName` | `ttl` | TTL attribute name. eRPC writes Unix epoch (seconds) values into this attribute and DynamoDB sweeps expired rows. |
-| `maxRetries` | `3` | Max retries for transient AWS errors (throttling, 5xx). |
-| `statePollInterval` | `5s` | How often the DynamoDB connector polls for counter-value updates when watching shared-state keys (e.g. latest/finalized block numbers). |
-| `lockRetryInterval` | `100ms` | Backoff between lock-acquisition attempts. |
-| `initTimeout` | | Startup timeout. |
-| `getTimeout` | | Per-GET timeout. |
-| `setTimeout` | | Per-SET timeout. |
-
-### `auth` sub-config (DynamoDB and other AWS-backed clients)
-
-| Field | Notes |
-|---|---|
-| `mode` | `secret`, `file`, or `env`. Determines how credentials are sourced. |
-| `accessKeyID` | When `mode: secret`. |
-| `secretAccessKey` | When `mode: secret`. Redacted in `erpc_config` output. |
-| `profile` | When `mode: file`. AWS shared-credentials profile name. |
-| `credentialsFile` | When `mode: file`. Path to the credentials file. |
-
-Omit the `auth` block entirely to use the AWS SDK's default credentials chain (instance role → IRSA → env vars → shared file). This is the recommended path for production deployments.
-
-### IAM permissions (DynamoDB)
-
-| Operation | Permission |
-|---|---|
-| Table management | `dynamodb:CreateTable`, `dynamodb:DescribeTable`, `dynamodb:UpdateTable`, `dynamodb:UpdateTimeToLive` |
-| Data ops | `dynamodb:PutItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:DeleteItem`, `dynamodb:UpdateItem` |
-
-You can skip table-management permissions by provisioning the table manually:
-
-- Table name matches `dynamodb.table` (default `erpc_json_rpc_cache`)
-- Reverse GSI with name matching `reverseIndexName` (default `idx_requestKey_groupKey`), partition key `requestKey`, sort key `groupKey`, projection type `ALL`
-- TTL enabled on attribute matching `ttlAttributeName` (default `ttl`)
-
-### Per-connector failsafe (read vs write asymmetry)
-
-```yaml
-connectors:
-  - id: remote-redis
-    driver: redis
-    redis: { uri: redis://... }
-    failsafeForGets:           # reads are best-effort: short timeout, no retry
-      - matchMethod: "*"
-        timeout: { duration: 50ms }
-    failsafeForSets:           # writes can wait longer + retry
-      - matchMethod: "*"
-        timeout: { duration: 500ms }
-        retry: { maxAttempts: 2, delay: 100ms }
-```
-
-Cache reads being slow shouldn't slow the request path (cache is best-effort fall-through); cache writes can afford longer timeouts because they're async to the response.
-
-### Common pitfalls
-
-- **Setting both `uri` and explicit fields** — `uri` query-string params win; explicit fields without a counterpart in the URI still apply. Avoid the mix; prefer one source of truth.
-- **`auth.mode` missing** — DynamoDB tries the SDK default chain and may fail silently if no chain provides creds. Set explicit `auth` for non-AWS environments.
-- **PostgreSQL `maxConns` higher than the server's `max_connections`** — Postgres rejects new connections once its global limit is hit. Size `maxConns` relative to your total client fleet.
-- **Memory driver without bounds** — set `maxItems` or `maxTotalSize` (or both). Without either, the cache grows unbounded.
-- **`emitMetrics: true` on a hot memory connector** — adds per-key labels and can balloon `/metrics` cardinality + cost ~10% perf. Only for debugging.
+- [Cache policies](/config/database/cache-policies) — configure which methods get cached and with what TTL; connectors are selected here.
+- [Real-time cache](/config/database/realtime) — the freshness gate that uses gRPC connector's `CacheHeadReporter`.
+- [Retry](/config/failsafe/retry) — the same retry semantics available in `failsafeForGets` / `failsafeForSets`.
+- [Circuit breaker](/config/failsafe/circuit-breaker) — breaker semantics for connector-level failsafe; cache misses count as ignored, not failures.
+- [Hedge](/config/failsafe/hedge) — static-only hedge available at connector layer (quantile hedge is upstream-only).
 
 </AISection>

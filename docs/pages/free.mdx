@@ -1,62 +1,265 @@
 ---
 title: Free & Public RPCs
-description: Run an eRPC proxy against 2,000+ chains and 4,000+ free public RPC endpoints with zero config.
+description: Zero config, zero API keys — eRPC auto-connects to thousands of free public EVM endpoints the moment you start it.
 ---
 
-import { Tabs, Tab } from "nextra/components";
-import { LLMsTxtLink } from "../components";
-
-## Free & Public RPC Endpoints
+import { AISection, SourceLink, LLMsTxtLink } from "../components";
 
 <LLMsTxtLink />
 
-Get immediate access to 2,000+ chains and 4,000+ public free EVM RPC endpoints:
+# Free & Public RPCs
 
-1. Run an eRPC instance:
-<Tabs items={["NPM", "Docker"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+No config file, no API keys, no provider signup. Start eRPC and it immediately
+routes every EVM chain through two auto-injected providers — a curated public
+endpoint catalog and Envio HyperRPC — backed by eRPC's full resilience stack.
+The fastest way to go from zero to any chain in development or prototyping.
+
+## Quick taste
+
+Illustrative — this is the default behavior with no config:
+
+import { Tabs } from "nextra/components";
+
+<Tabs items={["npm", "Docker"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```bash
 npx start-erpc
 ```
-</Tabs.Tab>
+  </Tabs.Tab>
   <Tabs.Tab>
 ```bash
 docker run -p 4000:4000 ghcr.io/erpc/erpc
 ```
-</Tabs.Tab>
+  </Tabs.Tab>
 </Tabs>
 
-You can also deploy it to `Railway`:
+Or deploy instantly to Railway:
 
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/template/10iW1q?referralCode=PpPFJd)
 
-
-2. Send requests to the eRPC instance based on chainId:
+Then query any chain by its EVM chain ID:
 
 ```bash
-curl 'http://localhost:4000/evm/42161' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "eth_getBlockByNumber",
-    "params": [
-        "latest",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
+curl 'http://localhost:4000/main/evm/42161' \
+  --header 'Content-Type: application/json' \
+  --data '{"method":"eth_blockNumber","params":[],"id":1,"jsonrpc":"2.0"}'
 ```
 
-3. 🚀 Profit!
+<AISection title="Free & Public RPCs — full agent reference">
 
-![../public/assets/romulus.gif](../public/assets/romulus.gif)
+### How it works
 
-### How it works?
+When a project has zero `providers`, zero `upstreams`, and no CLI `--endpoint` flags, eRPC
+logs a warning and auto-injects two providers before any request is processed:
 
-When running eRPC without a configuration file, it will use a basic configuration using the special [repository](/config/projects/providers#repository) provider. 
+- **`repository` (id `public`)** — fetches `https://evm-public-endpoints.erpc.cloud` on
+  first request for a chain and re-checks every hour. The catalog is a JSON map of
+  `{ "<chainId>": { "endpoints": [...] } }`. Each `http`/`https` entry becomes a separate
+  upstream with `autoIgnoreUnsupportedMethods: true`; `wss`/`ws` entries are silently
+  skipped. Upstream ids embed a redacted endpoint (`https#redacted=ab12c`) so no raw URLs
+  appear in logs or metrics.
+- **`envio`** — HyperRPC at `rpc.hypersync.xyz`. A 14-method read-only allow-list is
+  injected (`eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getBlockByHash`,
+  `eth_getTransactionByHash`, `eth_getTransactionByBlockHashAndIndex`,
+  `eth_getTransactionByBlockNumberAndIndex`, `eth_getTransactionReceipt`,
+  `eth_getBlockReceipts`, `eth_getLogs`, `eth_getFilterLogs`, `eth_getFilterChanges`,
+  `eth_uninstallFilter`, `eth_newFilter`). Write methods fall through to `repository`
+  upstreams only.
 
-This provider automatically fetches (every 1 hour) RPC public endpoints from [https://evm-public-endpoints.erpc.cloud](https://evm-public-endpoints.erpc.cloud) which is a combination of [Chainlist](https://chainlist.org/), [ChainID.Network](https://chainid.network/), and [Viem](https://viem.sh/) public RPC endpoints.
+On the first request for a chain, eRPC schedules bootstrap tasks for both providers and
+waits up to 30 seconds (capped by the request deadline) polling every 200 ms until at least
+one upstream is ready. Subsequent requests on the same chain reuse the prepared upstreams.
+Failed bootstrap tasks are auto-retried with exponential backoff (factor 1.5, 3 s → 130 s).
 
-### Next steps
+The hot-path data path is lock-free: both providers cache catalog data in a `RemoteDataCache`
+backed by an `atomic.Pointer`, so reads on warm chains involve no I/O and no mutex.
 
-This setup is recommended for development and testing purposes. For production environments, we recommend [extending eRPC config](https://docs.erpc.cloud/config/example) with dedicated premium providers and advanced failover configs.
+### Config schema
+
+Auto-injected providers are not configurable through YAML. To understand their exact defaults:
+
+| Field | Type | Auto-injected value | Behavior / footguns |
+|---|---|---|---|
+| `providers[].id` | string | `"public"` (repository), `"envio"` (envio) | Appears in upstream task names and metric labels. Do not reuse `"public"` if you later add explicit providers — id collisions cause undefined upstream selection behavior. |
+| `providers[].vendor` | string | `"repository"` / `"envio"` | Selects the vendor integration. |
+| `providers[].settings` | map | `{}` (all vendor defaults) | Cannot be customized without opting out of auto-injection by explicitly adding a provider or upstream. |
+| `repository` › `repositoryUrl` | string | `"https://evm-public-endpoints.erpc.cloud"` | Remote JSON catalog. Non-integer chain id keys are silently skipped. Only `http`/`https` entries produce upstreams. |
+| `repository` › `recheckInterval` | duration | `1h` | Catalog freshness window. **YAML footgun**: the value is read with a Go `.(time.Duration)` type assertion; YAML decodes scalars to `string`/`int64`, so the assertion always fails silently and the 1 h default is used regardless of what you write. Only Go programmatic config (`common.VendorSettings{"recheckInterval": 1*time.Hour}`) can override it. |
+| `repository` › `autoIgnoreUnsupportedMethods` | bool | `true` | Public RPCs vary wildly in method support; unsupported-method errors are treated as permanent and that method is skipped on that upstream. |
+| `envio` › `rootDomain` | string | `"rpc.hypersync.xyz"` | URL template `https://{chainId}.{rootDomain}`. |
+| `envio` › `apiKey` | string | `""` (omitted from URL) | Appended as a path segment when non-empty. |
+| `envio` method allow-list | injected | `ignoreMethods: ["*"]` + 14 explicit `allowMethods` | Listed under "How it works". Any method not in the list is blocked and falls through to `repository` upstreams. |
+
+### Worked examples
+
+**1. Prototyping on Arbitrum with no setup.** No config needed — just start and query:
+
+```bash
+npx start-erpc
+# then
+curl 'http://localhost:4000/main/evm/42161' \
+  -d '{"method":"eth_getLogs","params":[{"fromBlock":"latest"}],"id":1,"jsonrpc":"2.0"}'
+```
+
+When using a human-readable alias in a project config, the URL shortens:
+
+```yaml
+projects:
+  - id: main
+    networks:
+      - id: evm:42161
+        alias: arbitrum
+# then: curl http://localhost:4000/main/arbitrum
+```
+
+**2. Switching to explicit providers once you have an API key.** Auto-injection turns off
+the moment any provider or upstream is present. To graduate from zero-config:
+
+```yaml
+projects:
+  - id: main
+    providers:
+      - id: alchemy
+        vendor: alchemy
+        settings:
+          apiKey: ${ALCHEMY_KEY}
+```
+
+This disables both `repository` and `envio` auto-injection entirely.
+
+**3. Pointing `repository` at a private mirror (Go programmatic config only).** Because
+`recheckInterval` and `repositoryUrl` cannot be overridden from YAML, the only path that
+works is Go config:
+
+```go
+providers: []common.ProviderConfig{{
+  Id:     "custom-repo",
+  Vendor: "repository",
+  Settings: common.VendorSettings{
+    "repositoryUrl":   "https://my-internal-catalog.example.com",
+    "recheckInterval": 30 * time.Minute,
+  },
+}}
+```
+
+This is an explicit provider (not auto-injected) so `envio` is no longer auto-added.
+
+**4. Read-only chain fan-out behind Envio.** Because `envio` covers 14 read methods with
+sub-millisecond latency for 61 well-known chains, a workload heavy on `eth_getLogs` or
+`eth_getBlockReceipts` benefits from the zero-config default even in staging environments
+where you already have API keys — add Envio as an explicit upstream alongside your provider:
+
+```yaml
+upstreams:
+  - id: envio-hyper
+    endpoint: envio://rpc.hypersync.xyz
+```
+
+### Request/response behavior
+
+- URL path format: `POST /<project>/<architecture>/<chainId>` — e.g. `/main/evm/42161`.
+  A human-readable network alias (`alias: arbitrum` in `networks[]`) makes the path
+  `/main/arbitrum`. See [URL structure](/reference/evm/url-structure) for all accepted shapes.
+- Only `POST` and `OPTIONS` reach the proxy; any other method (`GET`, etc.) is silently
+  treated as a healthcheck and returns a JSON health envelope, not a JSON-RPC response.
+- Write methods (`eth_sendRawTransaction`, etc.) are not blocked by eRPC — but they cannot
+  route through the `envio` provider (14-method allow-list). If `repository` upstreams for
+  the chain are available they will carry the write.
+- Responses carry standard `X-ERPC-*` headers (attempts, upstream, etc.) even on
+  zero-config setups.
+- Unknown chain IDs return HTTP 404 with a JSON-RPC error body (`ErrNetworkNotSupported`)
+  after all provider tasks complete without producing any upstream for that chain.
+
+### Best practices
+
+- **Use zero-config only for development and prototyping.** Public endpoints have no SLA,
+  unpredictable rate limits, and no authentication — not suitable for production traffic.
+- **Graduate to explicit providers before going live.** Adding a single `providers[]` entry
+  disables auto-injection and gives you full resilience control. See
+  [Providers](/config/projects/providers).
+- **Add auth and rate limits when exposing eRPC externally.** Zero-config has no
+  per-project auth, no rate limiter, and no circuit-breaker budget configured on
+  auto-injected upstreams. See [Auth](/config/auth) and [Rate limiters](/config/rate-limiters).
+- **Expect cold-start latency on first request per chain.** `repository` has no static
+  fallback — the first request for a new chain may wait for the HTTP catalog fetch (retried
+  with 3 s → 130 s backoff). Warm the chain before serving user traffic.
+- **Do not reuse provider id `"public"` in explicit configs.** It is reserved by the
+  auto-injected repository provider; a collision causes upstream-id overlap.
+- **`recheckInterval` only works from Go programmatic config.** YAML silently ignores the
+  value; the 1 h default always applies in YAML/TS setups.
+- **Monitor `erpc_upstream_request_total{vendor="repository"}` to spot slow public endpoints.**
+  The `upstream` label carries the redacted endpoint id for drill-down without leaking URLs.
+
+### Edge cases & gotchas
+
+1. **Explicit `providers: []` in YAML still triggers auto-injection** if `upstreams` is
+   also empty and no CLI `--endpoint` flags were passed. There is no YAML opt-out flag; you
+   must add at least one explicit provider or upstream to disable it.
+   Source: <SourceLink file="common/defaults.go" lines="1113-1115" />
+2. **`recheckInterval` from YAML is always silently ignored** — `VendorSettings` is a
+   `map[string]interface{}`; YAML decodes duration strings/integers to `string`/`int64`, not
+   `time.Duration`, so the `.(time.Duration)` type assertion fails and the vendor default is
+   used. Only Go programmatic config can override it.
+   Source: <SourceLink file="thirdparty/repository.go" lines="56-59" />
+3. **`repository` catalog cold start is not instant** — first request for any chain may
+   wait for the HTTP fetch (no static fallback). `envio` cold start is fast for 61 known
+   chains but requires a live `eth_chainId` probe for unknown ones (10 s timeout).
+   Source: <SourceLink file="thirdparty/repository.go" lines="61-64" />; <SourceLink file="thirdparty/envio.go" lines="22-84" />
+4. **`envio` TLS error on unknown subdomain = unsupported** — Envio's k8s load-balancer
+   returns a bad certificate for unrecognized chain subdomains; eRPC treats
+   `"failed to verify certificate"` as `(false, nil)` (chain not supported), not an error.
+   Source: <SourceLink file="thirdparty/envio.go" lines="139-141" />
+5. **`wss`/`ws` endpoints in the repository catalog are silently skipped** — only
+   `http`/`https` entries produce upstreams.
+   Source: <SourceLink file="thirdparty/repository.go" lines="121-166" />
+6. **Write methods are unavailable via envio** — the 14-method allow-list blocks
+   `eth_sendRawTransaction` and all state-mutation calls. Writes fall through to `repository`
+   upstreams only; if no repository upstream supports the method it will fail.
+7. **Rate limits on public endpoints are uncontrolled** — no rate-limit budget or per-upstream
+   circuit-breaker is configured on auto-injected upstreams. A misbehaving upstream will only
+   be flagged once the upstream's circuit-breaker window fills (if a project-wide policy is
+   configured).
+8. **Provider id `"public"` is reserved** by the auto-injected repository provider. Adding
+   an explicit provider with the same id causes upstream-id collisions; the upstream registry
+   will deduplicate by id, silently merging them.
+   Source: <SourceLink file="common/defaults.go" lines="1126-1133" />
+9. **`envio` nil Evm dereference in GenerateConfigs** — `GenerateConfigs` dereferences
+   `upstream.Evm` without a nil check (envio.go:202). In practice the provider bootstrap
+   always sets `Evm` for `evm:` networks, but a manually-constructed upstream without `Evm`
+   would panic here.
+   Source: <SourceLink file="thirdparty/envio.go" lines="202" />
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_request_total` | counter | `project, vendor, network, upstream, ...` | Every request forwarded to a repository or envio upstream. `vendor` label is `"repository"` or `"envio"`. |
+| `erpc_upstream_request_duration_seconds` | histogram | `project, vendor, network, upstream` | Latency of each upstream call; useful for spotting slow public endpoints. |
+| `erpc_selection_score` | gauge | `project, network, method, upstream` | Per-upstream score produced by the selection policy (`sortByScore`). Lower = better. |
+
+Notable log messages:
+- `warn: no providers or upstreams found in project; will use default 'public' endpoints repository` — fires at project setup when auto-injection triggers.
+- `debug: provider does not support network; skipping upstream creation` — fires when a chain is not in the catalog.
+- `warn: vendor remote-data refresh failed; keeping previous snapshot` — catalog fetch failed; previous data used.
+
+### Source code entry points
+
+- [`common/defaults.go:L1113-L1142`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1113-L1142) — auto-injection conditions and injected provider construction (`len(providers)==0 && len(upstreams)==0 && no CLI endpoints`)
+- [`thirdparty/repository.go:L41-L92`](https://github.com/erpc/erpc/blob/main/thirdparty/repository.go#L41-L92) — `SupportsNetwork`, `autoIgnoreUnsupportedMethods` default, cold-start guard (`ErrRemoteCacheCold`)
+- [`thirdparty/repository.go:L121-L166`](https://github.com/erpc/erpc/blob/main/thirdparty/repository.go#L121-L166) — `GenerateConfigs` fan-out: one upstream per `http`/`https` endpoint, redacted ids
+- [`thirdparty/envio.go:L22-L167`](https://github.com/erpc/erpc/blob/main/thirdparty/envio.go#L22-L167) — 61-chain fast path + live `eth_chainId` probe for unknown chains; TLS-error-as-unsupported branch
+- [`thirdparty/envio.go:L174-L194`](https://github.com/erpc/erpc/blob/main/thirdparty/envio.go#L174-L194) — 14-method allow-list injection
+- [`thirdparty/remote_cache.go:L13-L78`](https://github.com/erpc/erpc/blob/main/thirdparty/remote_cache.go#L13-L78) — `RemoteDataCache` design rationale: lock-free hot path, single-flight async refresh, copy-on-write
+- [`upstream/registry.go:L155-L293`](https://github.com/erpc/erpc/blob/main/upstream/registry.go#L155-L293) — lazy provider bootstrap, 30 s readiness wait, `ErrNetworkInitializing` / `ErrNetworkNotSupported`
+- [`util/initializer.go:L179-L182`](https://github.com/erpc/erpc/blob/main/util/initializer.go#L179-L182) — exponential retry parameters for failed bootstrap tasks (factor 1.5, 3 s → 130 s)
+- [`util/redact.go:L10-L36`](https://github.com/erpc/erpc/blob/main/util/redact.go#L10-L36) — endpoint redaction for repository upstream ids (`https#redacted=ab12c`)
+
+### Related pages
+
+- [Providers](/config/projects/providers) — add explicit providers with API keys to replace zero-config.
+- [Auth](/config/auth) — add project-level authentication before exposing eRPC externally.
+- [Rate limiters](/config/rate-limiters) — protect public endpoints from overuse.
+- [Failsafe policies](/config/failsafe) — hedge, retry, timeout applied on top of any provider.
+- [URL structure & routing](/reference/evm/url-structure) — how `/<project>/<arch>/<chainId>` paths are parsed.
+
+</AISection>

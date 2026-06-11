@@ -1,0 +1,381 @@
+---
+title: getLogs auto-splitting
+description: Large eth_getLogs queries silently split into parallel chunks and merge back — no more range-limit errors from any provider, no client changes required.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
+
+<LLMsTxtLink />
+
+# getLogs auto-splitting
+
+Most RPC providers reject `eth_getLogs` requests that span too many blocks. eRPC fixes this
+transparently: it splits large queries into parallel sub-requests before any upstream sees
+them, then merges the results into a single ordered response. If an upstream rejects a
+smaller range than expected, eRPC bisects and retries automatically. Your indexer just works.
+
+## Quick taste
+
+Illustrative, not a tuned production config — split proactively at 5 000 blocks, fall back to bisection on provider rejection:
+
+<ConfigTabs
+  path="projects[].networks[].evm + projects[].upstreams[].evm"
+  focusYaml="7-10,12,17-18"
+  focusTs="7-10,12,19-20"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # hard cap — requests over this are rejected before splitting
+          getLogsMaxAllowedRange: 30000
+          # bisect and retry when an upstream rejects a range as too large
+          getLogsSplitOnError: true
+          # max concurrent sub-requests per split operation
+          getLogsSplitConcurrency: 10
+    upstreams:
+      - id: alchemy
+        endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
+        evm:
+          # split proactively at 5 000 blocks before the upstream complains
+          getLogsAutoSplittingRangeThreshold: 5000`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: {
+      chainId: 1,
+      // hard cap — requests over this are rejected before splitting
+      getLogsMaxAllowedRange: 30000,
+      // bisect and retry when an upstream rejects a range as too large
+      getLogsSplitOnError: true,
+      // max concurrent sub-requests per split operation
+      getLogsSplitConcurrency: 10,
+    },
+  }],
+  upstreams: [{
+    id: "alchemy",
+    endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+    evm: {
+      // split proactively at 5 000 blocks before the upstream complains
+      getLogsAutoSplittingRangeThreshold: 5000,
+    },
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="configure proactive splitting for my indexer"
+	defaultOpen
+	prompt={`My indexer sends large eth_getLogs queries and keeps hitting "block range exceeded" errors
+from Alchemy and Infura. Configure eRPC in my eRPC config to proactively split those queries
+into per-provider-sized chunks before any upstream sees them, and enable reactive bisection
+as a fallback. Read the full reference first:
+https://docs.erpc.cloud/reference/evm/getlogs-splitting.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="audit splitting config across a multi-upstream pool"
+	prompt={`Review my eRPC config at my eRPC config: I have multiple upstreams with different
+getLogsAutoSplittingRangeThreshold values. Tell me what effective threshold eRPC will use
+at runtime, whether getLogsMaxAllowedRange is set correctly as a client-protection cap,
+and whether getLogsSplitConcurrency could trigger rate-limit failures on any of my providers.
+Reference: https://docs.erpc.cloud/reference/evm/getlogs-splitting.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug why large getLogs queries are returning errors"
+	prompt={`My clients are getting HTTP 413 errors from eRPC on eth_getLogs requests that span
+large block ranges, but I expected the splitting to handle those transparently. Walk me
+through what could cause that (hard limits vs reactive splitting, re-entrancy guard,
+partial failure behavior) given my config in my eRPC config. Reference:
+https://docs.erpc.cloud/reference/evm/getlogs-splitting.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="tune concurrency to avoid 429s during heavy indexing"
+	prompt={`My eRPC instance is hammering provider rate limits during bulk getLogs indexing — I'm
+seeing 429 errors that fail entire split operations. Help me set getLogsSplitConcurrency
+and per-upstream thresholds in my eRPC config to stay under provider rate limits while keeping
+throughput high. Reference:
+https://docs.erpc.cloud/reference/evm/getlogs-splitting.llms.txt`}
+/>
+
+<AISection title="getLogs auto-splitting — full agent reference">
+
+### How it works
+
+Two independent splitting paths handle different failure modes.
+
+**Proactive path (network pre-forward)** fires before any upstream sees the request. When
+the block range exceeds the effective threshold, eRPC generates contiguous sub-requests of
+exactly `getLogsAutoSplittingRangeThreshold` blocks each (last chunk may be smaller),
+dispatches all of them concurrently (bounded by `getLogsSplitConcurrency`), and returns the
+merged result. The upstream never sees the oversized parent.
+
+The **effective threshold** for proactive splitting is the minimum positive
+`getLogsAutoSplittingRangeThreshold` across all selected upstreams (upstreams with value
+`0` are excluded). This result is then capped at `getLogsMaxAllowedRange`.
+
+**Reactive path (network post-forward)** fires when an upstream returns a too-large error
+(`ErrCodeEndpointRequestTooLarge` or JSON-RPC code `-32012`). Unlike proactive splitting,
+it always **bisects** the block range at the midpoint rather than producing threshold-sized
+chunks. If the bisected sub-request also triggers a too-large error, bisection recurses:
+block range first, then address list (when block range = 1), then `topics[0]` OR-list
+(when single block, single address). This continues until the request cannot be split
+further.
+
+**What happens when one sub-request fails.** Any single sub-request failure aborts the
+entire split. If 9 of 10 sub-requests succeed and 1 fails, eRPC calls `errors.Join`
+across all errors and returns an error response to the caller. Partial results from
+successful sub-requests are discarded. There is no partial-results mode. This applies
+equally to proactive and reactive splits.
+
+**Re-entrancy guard.** Sub-requests generated by proactive splitting have `ParentRequestId`
+set. The re-entrancy guard at network post-forward skips reactive bisection for any
+sub-request that carries this flag. This means if a proactively-generated sub-request
+receives a too-large error from its upstream, that error propagates upward and fails the
+entire parent request — it is not retried by bisection.
+
+**Merge ordering.** Sub-requests are dispatched concurrently, but results are stored in a
+positionally-indexed slice matching the original split order. The `GetLogsMultiResponseWriter`
+iterates this slice in insertion order, so the output is always deterministic and reflects
+ascending block range regardless of goroutine completion order. No deduplication is
+performed. Empty or `null` sub-responses are silently skipped during the merge write.
+
+**Hard limits before splitting.** Three hard limits fire at network pre-forward before any
+proactive splitting, in this order: block range (`getLogsMaxAllowedRange`, default 30 000),
+address count (`getLogsMaxAllowedAddresses`), topics OR-list length
+(`getLogsMaxAllowedTopics`). Exceeding any of these returns HTTP 413 immediately — they do
+NOT trigger `getLogsSplitOnError` reactive splitting. Only upstream-originated errors
+(HTTP 413 or JSON-RPC `-32012`) trigger the reactive path.
+
+**Block tag handling.** Block tags `latest` and `finalized` are resolved to hex numbers
+using the highest known block from the network's state poller. Tags `safe`, `pending`,
+and `earliest` — and any unresolvable tag — cannot be resolved to a numeric block. When
+either `fromBlock` or `toBlock` is one of these unresolvable tags, all range validation
+and proactive splitting are skipped and the request is forwarded verbatim. Requests using
+a `blockHash` filter (EIP-234) bypass all splitting logic entirely at every hook stage.
+
+**Cache interaction.** Sub-requests flow through the full eRPC forward path independently:
+cache reads and writes, upstream selection, failsafe, and retry all apply to each chunk.
+The merged parent response is marked `fromCache = true` only when every sub-request was a
+cache hit; any single cache miss sets it to `false`. The parent's `SkipCacheRead`
+directive is propagated verbatim to all sub-requests.
+
+### Config schema
+
+#### Upstream-level (`upstreams[].evm`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `getLogsAutoSplittingRangeThreshold` | `int64` | `5000` | Proactive split threshold in blocks. If the request's block range exceeds this value, the network pre-forward hook splits it into chunks of this size. `0` disables proactive splitting for that upstream (excluded from effective-threshold computation). Source: <SourceLink file="common/defaults.go" lines="146" />, <SourceLink file="common/config.go" lines="1129" /> |
+
+**Deprecated upstream fields** (accepted for back-compat; functionality moved to network-level):
+
+| Field | YAML key | Note |
+|---|---|---|
+| `DeprecatedGetLogsMaxAllowedRange` | `getLogsMaxAllowedRange` | Moved to `networks[].evm.getLogsMaxAllowedRange` |
+| `DeprecatedGetLogsMaxAllowedAddresses` | `getLogsMaxAllowedAddresses` | Moved to `networks[].evm.getLogsMaxAllowedAddresses` |
+| `DeprecatedGetLogsMaxAllowedTopics` | `getLogsMaxAllowedTopics` | Moved to `networks[].evm.getLogsMaxAllowedTopics` |
+| `DeprecatedGetLogsSplitOnError` | `getLogsSplitOnError` | Moved to `networks[].evm.getLogsSplitOnError` |
+| `DeprecatedGetLogsMaxBlockRange` | `getLogsMaxBlockRange` | Unused (no-op at runtime) |
+
+Source: <SourceLink file="common/config.go" lines="1138-1151" />
+
+#### Network-level (`networks[].evm`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `getLogsMaxAllowedRange` | `int64` | `30000` | Hard cap on block range. Requests exceeding this are rejected with HTTP 413 (`ErrGetLogsExceededMaxAllowedRange`) before any splitting. The proactive split threshold is also capped to this value. `0` = no limit (not recommended). Source: <SourceLink file="common/defaults.go" lines="121" />, <SourceLink file="common/config.go" lines="2189" /> |
+| `getLogsMaxAllowedAddresses` | `int64` | `0` (no limit) | Hard cap on number of addresses. Only counted when `address` is a JSON array; a single-string address is never counted. `0` = no limit. Source: <SourceLink file="common/defaults.go" lines="1862-1863" /> |
+| `getLogsMaxAllowedTopics` | `int64` | `0` (no limit) | Hard cap on `topics[0]` OR-list length. Only `topics[0]` is counted; positions 1–3 are not. If `topics[0]` is a single string, count = 1. **Footgun:** this cap does not trigger reactive splitting — the client gets HTTP 413 and must reduce the query. Source: <SourceLink file="common/defaults.go" lines="1865-1866" /> |
+| `getLogsSplitOnError` | `*bool` | `true` | When enabled, upstream-originated too-large errors (`ErrCodeEndpointRequestTooLarge` or JSON-RPC `-32012`) trigger reactive bisection and retry. Source: <SourceLink file="common/defaults.go" lines="122" />, <SourceLink file="common/config.go" lines="2192" /> |
+| `getLogsSplitConcurrency` | `int` | `10` | Maximum concurrent in-flight sub-requests **per split operation**. Two simultaneous splitting operations can each dispatch up to 10 sub-requests concurrently. **Footgun:** high values on rate-limited providers trigger 429 errors, which are not `ErrCodeEndpointRequestTooLarge` and will fail the parent request without further splitting. Source: <SourceLink file="common/defaults.go" lines="2098-2099" />, <SourceLink file="architecture/evm/eth_getLogs.go" lines="660-665" /> |
+
+#### Directive defaults (`networks[].directiveDefaults` or deprecated `networks[].evm.integrity`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `enforceGetLogsBlockRange` | `*bool` | `true` | When true, the upstream pre-forward hook verifies both `fromBlock` and `toBlock` are within the upstream's known available block range. Unavailable blocks produce `ErrUpstreamBlockUnavailable` (retryable). Source: <SourceLink file="common/defaults.go" lines="118" />, <SourceLink file="common/config.go" lines="2115" /> |
+
+### Worked examples
+
+**1. Archive indexer querying multi-million block spans.** Set a generous `getLogsMaxAllowedRange` and a per-upstream `getLogsAutoSplittingRangeThreshold` that matches provider limits. eRPC fans out proactively and assembles the ordered result in a single response:
+
+<ConfigTabs
+  path="projects[].networks[].evm + upstreams[].evm"
+  yaml={`networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+      getLogsMaxAllowedRange: 100000
+      getLogsSplitOnError: true
+      getLogsSplitConcurrency: 20
+upstreams:
+  - id: alchemy
+    evm:
+      getLogsAutoSplittingRangeThreshold: 2000`}
+  ts={`networks: [{
+  architecture: "evm",
+  evm: {
+    chainId: 1,
+    getLogsMaxAllowedRange: 100000,
+    getLogsSplitOnError: true,
+    getLogsSplitConcurrency: 20,
+  },
+}],
+upstreams: [{
+  id: "alchemy",
+  evm: { getLogsAutoSplittingRangeThreshold: 2000 },
+}]`}
+/>
+
+**2. Multi-upstream pool where providers have different limits.** Set each upstream's threshold to its known limit. eRPC uses the minimum across all selected upstreams as the effective split threshold — requests are proactively chunked to the most restrictive provider's limit:
+
+<ConfigTabs
+  path="upstreams[].evm"
+  yaml={`upstreams:
+  - id: alchemy
+    evm:
+      getLogsAutoSplittingRangeThreshold: 2000
+  - id: infura
+    evm:
+      getLogsAutoSplittingRangeThreshold: 10000`}
+  ts={`upstreams: [
+  { id: "alchemy", evm: { getLogsAutoSplittingRangeThreshold: 2000 } },
+  { id: "infura",  evm: { getLogsAutoSplittingRangeThreshold: 10000 } },
+]`}
+/>
+
+Effective threshold = 2 000 (the minimum). Infura receives 2 000-block chunks even though it could handle 10 000.
+
+**3. Reactive-only mode for unknown provider limits.** Disable proactive splitting (set threshold to `0`) and rely entirely on bisection when the upstream complains. Useful when you do not know the provider's block-range limit ahead of time:
+
+<ConfigTabs
+  path="projects[].networks[].evm + upstreams[].evm"
+  yaml={`networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+      getLogsSplitOnError: true
+upstreams:
+  - id: unknown-provider
+    evm:
+      getLogsAutoSplittingRangeThreshold: 0`}
+  ts={`networks: [{
+  architecture: "evm",
+  evm: { chainId: 1, getLogsSplitOnError: true },
+}],
+upstreams: [{
+  id: "unknown-provider",
+  evm: { getLogsAutoSplittingRangeThreshold: 0 },
+}]`}
+/>
+
+Reactive bisection will recurse until chunks fit: 1 000 blocks → 500 → 250 → … Each recursion level requires a round-trip to the upstream, so this is slower than proactive splitting for large ranges.
+
+**4. Address-count-heavy queries on Alchemy.** When your filter has many contract addresses, Alchemy rejects with `"exceed max addresses or topics per search position"`. eRPC normalizes this to `ErrCodeEndpointRequestTooLarge`, triggering reactive splitting. The split priority is: block-range bisection first; once block range = 1, address-list bisection. Enable both mechanisms:
+
+<ConfigTabs
+  path="projects[].networks[].evm"
+  yaml={`networks:
+  - architecture: evm
+    evm:
+      chainId: 1
+      getLogsSplitOnError: true
+      getLogsSplitConcurrency: 10`}
+  ts={`networks: [{
+  architecture: "evm",
+  evm: { chainId: 1, getLogsSplitOnError: true, getLogsSplitConcurrency: 10 },
+}]`}
+/>
+
+### Request/response behavior
+
+- Proactive sub-requests have `ParentRequestId` set to the parent request's ID. They are excluded from both proactive and reactive re-splitting by the re-entrancy guard. [<SourceLink file="architecture/evm/eth_getLogs.go" lines="141-143" />]
+- Reactive splitting always bisects (never uses threshold): `mid = fromBlock + blockRange/2`. A 1 000-block range produces `[500, 500]`; a 5-block range `[1,2]` + `[3,5]` (`mid = 1 + 5/2 = 3`). [<SourceLink file="architecture/evm/eth_getLogs.go" lines="562-577" />]
+- Any sub-request failure causes `errors.Join` across all errors; the caller receives the joined error and all partial results are discarded. [<SourceLink file="architecture/evm/eth_getLogs.go" lines="783-787" />]
+- Merged response `fromCache = true` only when every sub-request was a cache hit. [<SourceLink file="architecture/evm/eth_getLogs.go" lines="796" />]
+- Empty or `null` sub-responses are normalized to `[]` at upstream post-forward, then silently skipped during merge. If all sub-ranges return empty, the merged output is `[]`. [<SourceLink file="architecture/evm/eth_getLogs.go" lines="349-362" />, <SourceLink file="architecture/evm/eth_getLogs.go" lines="442-443" />]
+- `blockHash` filter requests (EIP-234) bypass all splitting logic at every hook stage. [<SourceLink file="architecture/evm/eth_getLogs.go" lines="101-104" />]
+- Vendor-specific address-count and filter-count messages are normalized to `ErrCodeEndpointRequestTooLarge` by the error normalizer, enabling reactive splitting: Alchemy/DRPC `"exceed max addresses or topics per search position"`, Infura `"This query contains N filters. The current limit is 5000."`, and the generic pattern `"please specify less number of address in the getLogs query"`. [<SourceLink file="architecture/evm/error_normalizer.go" lines="102-116" />]
+- HTTP 413 errors triggered by eRPC's own hard limits (`ErrGetLogsExceededMaxAllowedRange`, `ErrGetLogsExceededMaxAllowedAddresses`, `ErrGetLogsExceededMaxAllowedTopics`) are distinct error codes and do **not** trigger reactive splitting. The client must reduce query dimensions itself.
+
+### Best practices
+
+- Set `getLogsAutoSplittingRangeThreshold` per upstream to that provider's documented block-range limit. This eliminates the round-trip cost of reactive bisection for typical queries.
+- Keep `getLogsSplitOnError: true` (the default) as a backstop for providers that have tighter limits than configured or that enforce address/topic count limits (Alchemy, Infura, DRPC).
+- Do not set `getLogsSplitConcurrency` above 20 on rate-limited providers — 429 errors are not `ErrCodeEndpointRequestTooLarge` and will fail the parent request without further splitting. Monitor `erpc_network_evm_get_logs_split_failure_total` for a spike in failures.
+- Use `getLogsMaxAllowedRange` as a client-protection cap, not as the split trigger. Set it to the largest range your slowest downstream consumer might legitimately request; eRPC will split within that cap automatically.
+- Avoid setting `getLogsMaxAllowedTopics` if you intend to rely on reactive topic splitting — the hard cap returns HTTP 413 before any upstream sees the request, bypassing the reactive path. Set it only when you want to fail fast on pathologically large topic filters.
+- With reactive-only mode (`threshold: 0`), large ranges bisect recursively: 1 000 blocks at a 100-block upstream limit requires ~10 round-trips. Prefer proactive splitting when the upstream limit is known.
+- `enforceGetLogsBlockRange: true` (default) pre-validates that both `fromBlock` and `toBlock` are available on the upstream before forwarding. Leave it enabled to avoid sending requests for blocks beyond an upstream's archive depth — unavailable-block errors are retryable, which can cascade into unexpected latency for archive queries.
+
+### Edge cases & gotchas
+
+1. **Any single sub-request failure aborts the entire split.** 9/10 success still means caller gets an error. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="783-787" />.
+2. **Proactive sub-requests cannot trigger reactive splitting.** The `ParentRequestId` re-entrancy guard skips reactive bisection for any sub-request generated by proactive splitting. A too-large error from such a sub-request propagates as a parent failure. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="373-374" />.
+3. **`safe` and `pending` tags skip all validation and splitting.** Requests with these unresolvable tags in `fromBlock` or `toBlock` are forwarded verbatim — no range check, no proactive split. Source: <SourceLink file="architecture/evm/json_rpc.go" lines="77-80" />.
+4. **`ErrGetLogsExceededMaxAllowedRange` does NOT trigger reactive splitting.** eRPC's own hard-limit error has a distinct error code not matched by the `isTooLarge` check. The client must reduce the query. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="379" />.
+5. **Reactive splitting always bisects — never uses the configured threshold.** A 1 000-block range triggers two 500-block sub-requests regardless of `getLogsAutoSplittingRangeThreshold`. If the upstream limit is 100 blocks, bisection recurses many times, each round-trip reaching the upstream. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="562-577" />.
+6. **`getLogsSplitConcurrency` is per-operation, not global.** N concurrent splitting operations each hold up to `getLogsSplitConcurrency` in-flight sub-requests. 429 errors from rate-limited providers fail the parent request and are not re-split. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="660-665" />.
+7. **Merged `fromCache = false` if any sub-request was a cache miss.** Even if 9 of 10 sub-requests hit cache, the merged response is not marked from cache. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="796" />.
+8. **Address-count errors from Alchemy/DRPC/Infura trigger reactive splitting.** The error normalizer maps vendor address/filter-count messages to `ErrCodeEndpointRequestTooLarge`. Three patterns are matched: Alchemy/DRPC `"exceed max addresses or topics per search position"`, Infura `"This query contains N filters. The current limit is 5000."`, and the generic `"please specify less number of address in the getLogs query"`. On a multi-block request, block-range bisection fires first — the address list is not split until the block range is reduced to 1 block. Source: <SourceLink file="architecture/evm/error_normalizer.go" lines="102-116" />.
+9. **`getLogsMaxAllowedTopics` and reactive topic bisection are orthogonal.** The hard cap rejects the request before any upstream sees it; reactive topic bisection handles upstream-originated too-large errors. `getLogsMaxAllowedTopics: 0` (no cap) combined with `getLogsSplitOnError: true` is a valid configuration. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="215-217" />.
+10. **Merge output is never deduplicated.** eRPC's own splitting produces non-overlapping ranges. If overlapping ranges were somehow produced externally, duplicate log entries would appear in the output. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="426-473" />.
+11. **Empty `eth_getLogs` results are normalized to `[]`, never retried.** eRPC does not treat an empty `eth_getLogs` response as an error — not even for blocks ahead of the chain tip. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="349-362" />.
+12. **`fromBlock > toBlock` is rejected immediately** with `ErrInvalidRequest` (HTTP 400) at network pre-forward, but only when both tags can be resolved to numeric blocks. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="196-200" />.
+13. **Sub-requests inherit `SkipCacheRead` but `UseUpstream` is not forced.** The parent request's `SkipCacheRead` directive is propagated to every sub-request. However, `UseUpstream` is not set on sub-requests — they go through full upstream selection, health checks, failsafe, and retry independently. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="696-699" />.
+14. **`GetLogsMultiResponseWriter.Release()` is idempotent.** Calling it multiple times is safe. `Size()` after `Release()` returns 0. Concurrent `WriteTo` and `Release` calls are safe — `WriteTo` holds a read lock, `Release` holds a write lock. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="511-528" />.
+15. **Reactive splitting applied to sub-requests from reactive splits recursively.** Unlike proactive sub-requests (which have `ParentRequestId` set and are excluded from further splitting), sub-requests produced by reactive splitting go through the full network forward path and can themselves trigger further reactive bisection if they also receive a too-large error. Source: <SourceLink file="architecture/evm/eth_getLogs_test.go" lines="1052-1157" />.
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_evm_get_logs_range_requested` | histogram | `project`, `network`, `category`, `user`, `finality` | Once per parent `eth_getLogs` call with resolvable numeric blocks; buckets at 1, 10, 100, 500, 1000, 5000, 10000, 30000 |
+| `erpc_network_evm_get_logs_split_success_total` | counter | `project`, `network`, `user`, `agent_name` | Each successful sub-request during any split (proactive or reactive) |
+| `erpc_network_evm_get_logs_split_failure_total` | counter | `project`, `network`, `user`, `agent_name` | Each failed sub-request during any split (build error, forward error, nil response, JSON-RPC error) |
+| `erpc_network_evm_get_logs_forced_splits_total` | counter | `project`, `network`, `dimension`, `user`, `agent_name` | Each reactive split; `dimension` ∈ `{block_range, addresses, topics0}`. Proactive splits do NOT increment this counter. |
+
+OTel spans are created for each hook stage: `Upstream.PreForwardHook.eth_getLogs` (only when `enforceGetLogsBlockRange` is enabled), `Upstream.PostForwardHook.eth_getLogs`, and the wrapper spans `Project.PreForwardHook`, `Network.PreForwardHook`, `Network.PostForwardHook`, `Upstream.PreForwardHook`, `Upstream.PostForwardHook`.
+
+**Notable log messages:**
+
+| Level | Message | Notes |
+|---|---|---|
+| `DEBUG` | `"executing eth_getLogs sub-request"` | Emitted for each sub-request before dispatch; includes the full `JsonRpcRequest` object. Source: <SourceLink file="architecture/evm/eth_getLogs.go" lines="679-682" /> |
+
+### Source code entry points
+
+- [`architecture/evm/eth_getLogs.go:L135-L271`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L135-L271) — `networkPreForward_eth_getLogs`: tag resolution, hard limits, effective threshold, proactive split generation
+- [`architecture/evm/eth_getLogs.go:L364-L412`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L364-L412) — `networkPostForward_eth_getLogs`: reactive split trigger, re-entrancy guard
+- [`architecture/evm/eth_getLogs.go:L537-L626`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L537-L626) — `splitEthGetLogsRequest`: bisection priority (block range → addresses → topics0)
+- [`architecture/evm/eth_getLogs.go:L650-L797`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L650-L797) — `executeGetLogsSubRequests`: concurrent fan-out, semaphore, positional result storage, failure handling
+- [`architecture/evm/eth_getLogs.go:L799-L804`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L799-L804) — `mergeEthGetLogsResults` and `GetLogsMultiResponseWriter`: lazy ordered merge, empty-skip logic
+- [`architecture/evm/hooks.go:L14-L139`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go#L14-L139) — Hook registration for all `eth_getLogs` hook points
+- [`architecture/evm/error_normalizer.go:L102-L116`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L102-L116) — Vendor too-large message normalization (Alchemy, DRPC, Infura)
+- [`common/defaults.go:L121-L122`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L121-L122) — `GetLogsMaxAllowedRange=30000`, `GetLogsSplitOnError=true` network defaults
+- [`architecture/evm/eth_getLogs_test.go:L1011-L1050`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs_test.go#L1011-L1050) — `TestExecuteGetLogsSubRequests_DeterministicOrder`: concurrent ordering guarantee
+- [`erpc/http_server_logs_test.go:L168-L307`](https://github.com/erpc/erpc/blob/main/erpc/http_server_logs_test.go#L168-L307) — `TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse`: end-to-end proactive split
+
+### Related pages
+
+- [Cache](/config/database) — sub-requests hit the cache independently; merged result is cached when all sub-requests hit cache.
+- [Retry](/config/failsafe/retry) — each sub-request runs through failsafe and retry independently.
+- [Rate limiters](/config/rate-limiters) — high `getLogsSplitConcurrency` can trigger provider rate limits; cap upstream call rates here.
+- [Block availability](/reference/evm/block-availability) — `enforceGetLogsBlockRange` uses the block availability check before forwarding each sub-request.
+- [Upstream selection](/config/projects/selection-policies) — the effective split threshold is computed from all selected upstreams at request time.
+
+</AISection>

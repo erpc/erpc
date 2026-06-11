@@ -1,79 +1,181 @@
-import { Steps } from "nextra/components";
-import { HeroDiagram, LLMsTxtLink } from "../components";
+---
+title: "Quick start"
+description: "Stop babysitting RPC providers. eRPC handles failover, caching, and multi-chain routing so your stack stays fast even when providers don't."
+---
 
-# Introducing eRPC
+import { Steps } from "nextra/components";
+import { HeroDiagram, LLMsTxtLink, AISection } from "../components";
 
 <LLMsTxtLink />
 
-eRPC is a fault-tolerant EVM RPC proxy and permanent caching solution. It is built with read-heavy use-cases in mind such as data indexing and high-load frontend usage.
+# Introducing eRPC
+
+Stop babysitting RPC providers. eRPC sits in front of every upstream you have —
+Alchemy, QuickNode, your own node, anything — and handles failover, retries,
+response caching, and multi-chain routing automatically. One URL pattern,
+every EVM chain, zero provider lock-in.
 
 <HeroDiagram />
 
-# Quick start
+## Quick start
 
 <Steps>
 
-### Create configuration
+### Write a minimal config
 
-Create your [`erpc.yaml`](/config/example) configuration file based on the `erpc.dist.yaml` file:
+Create `erpc.yaml` in the current directory:
 
-```bash
-cp erpc.dist.yaml erpc.yaml
-code erpc.yaml
+```yaml
+# erpc.yaml — minimal single-project config
+logLevel: info
+projects:
+  - id: main
+    upstreams:
+      - id: my-alchemy
+        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
 ```
 
-See [a complete config example](/config/example) for inspiration.
+Prefer TypeScript for full type safety and closures in selection policies:
+
+```ts
+// erpc.ts
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  logLevel: "info",
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        { id: "my-alchemy", endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY" },
+      ],
+    },
+  ],
+});
+```
+
+See the [example config](/config/example) for a production-ready starting point, including YAML vs. TypeScript tradeoffs.
 
 ### Run with Docker
 
-Use the Docker image:
+Mount the config file and expose the RPC and metrics ports:
 
 ```bash
-docker run -v $(pwd)/erpc.yaml:/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
+docker run \
+  -v $(pwd)/erpc.yaml:/erpc.yaml \
+  -p 4000:4000 \
+  -p 4001:4001 \
+  ghcr.io/erpc/erpc:latest
 ```
 
-### Test the setup
-
-Send your first request:
+Or with `npx` (requires Node 18+):
 
 ```bash
-curl --location 'http://localhost:4000/main/evm/42161' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "eth_getBlockByNumber",
-    "params": [
-        "0x1203319",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
+npx @erpc-cloud/cli start ./erpc.yaml
 ```
 
-### Setup monitoring (optional)
+The server listens on `4000` for JSON-RPC traffic and `4001` for Prometheus metrics.
 
-Bring up monitoring stack (Prometheus, Grafana) using docker-compose:
+### Send a request
 
 ```bash
-# clone the repo if you haven't
-git clone https://github.com/erpc/erpc.git
-cd erpc
+curl -s http://localhost:4000/main/evm/1 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
 
-# bring up the monitoring stack
+URL pattern: `/<project>/<architecture>/<chainId>`. Use `/main/evm/42161` for Arbitrum, `/main/evm/137` for Polygon — no config change needed to add a chain if your upstream supports it.
+
+### Validate your config (optional)
+
+```bash
+docker run --rm -v $(pwd)/erpc.yaml:/erpc.yaml ghcr.io/erpc/erpc:latest validate
+```
+
+Exits 0 when config is valid; prints a structured JSON report with `errors`, `warnings`, and `notices` on any issue.
+
+### Bring up monitoring (optional)
+
+The repo ships a combined Prometheus + Grafana container with an 80+ panel dashboard pre-loaded:
+
+```bash
+git clone https://github.com/erpc/erpc.git && cd erpc
 docker-compose up -d
 ```
 
-### Access Grafana
-
-Open Grafana at [http://localhost:3000](http://localhost:3000) and login with the following credentials:
-
-- username: `admin`
-- password: `admin`
-
-### Monitor metrics
-
-Send more requests and watch the metrics being collected and visualized in Grafana.
+Grafana opens at [http://localhost:3000](http://localhost:3000) (admin / admin). Prometheus scrapes eRPC at `host.docker.internal:4001` every 10 seconds.
 
 ![eRPC Grafana Dashboard](/assets/monitoring-example-erpc.png)
 
 </Steps>
+
+<AISection title="eRPC homepage — full agent reference">
+
+### How it works
+
+eRPC is a fault-tolerant EVM RPC proxy and permanent caching layer. The bootstrap sequence: config file (YAML, TypeScript, or JavaScript) is loaded and validated, then the engine initialises database connectors, rate limiters, the ERPC core, HTTP/gRPC transports, metrics, and tracing — all bound to a context that cancels on SIGINT/SIGTERM for graceful drain.
+
+**Config discovery order** (no `--config` flag needed): `./erpc.yaml`, `./erpc.yml`, `./erpc.ts`, `./erpc.js`, `/erpc.yaml`, `/erpc.yml`, `/erpc.ts`, `/erpc.js`, `/root/erpc.yaml`, `/root/erpc.yml`, `/root/erpc.ts`, `/root/erpc.js` — first match wins.
+
+**URL routing**: `/<project>/<architecture>/<chainId>`. Domain aliasing and per-network aliases let you shorten this — e.g. `/main/arbitrum` instead of `/main/evm/42161`. Unknown projects return HTTP 404; invalid architecture returns HTTP 400, both as JSON-RPC envelopes.
+
+**TypeScript configs** are compiled in-process via esbuild (IIFE bundle) and evaluated with the sobek JS runtime, so closures and module-level helpers in selection-policy `evalFunc` functions are preserved natively — no function serialisation.
+
+**No-config mode**: when `projects` is empty, a synthetic `main` project with public repository + Envio providers is injected, and `/evm/<chainId>` resolves without a project prefix.
+
+### Config schema
+
+See individual feature pages for per-field tables. Top-level keys: `logLevel`, `clusterKey`, `server`, `healthCheck`, `admin`, `database`, `projects`, `rateLimiters`, `metrics`, `proxyPools`, `tracing`.
+
+Key environment variables:
+
+| Variable | Effect |
+|---|---|
+| `LOG_LEVEL` | Override `logLevel` at runtime without a config edit |
+| `LOG_WRITER=console` | Switch from JSON logs to human-readable output (dev only) |
+| `GOMEMLIMIT` | Not set by default — set to ~90% of container memory limit to avoid OOM kills |
+
+### Best practices
+
+- Use TypeScript (`erpc.ts`) over YAML for any config that needs selection-policy closures or env-var helpers.
+- Always run `erpc validate` in CI before deploying — it exits non-zero on errors and prints a structured JSON report.
+- Set `GOMEMLIMIT` in your Kubernetes pod spec (e.g. `2700MiB` for a 3Gi limit). The kube manifest ships without it, which can cause OOM kills under load.
+- Pin a specific image tag (e.g. `ghcr.io/erpc/erpc:v0.x.y`) rather than `:latest` in production.
+- For the combined Prometheus+Grafana monitoring container: it is a single-process convenience for local dev. Run Prometheus and Grafana as separate services in production.
+- Quote YAML values that contain environment variable references: `password: "${REDIS_PASSWORD}"` — bare `${VAR}` with special characters can break YAML parsing before the variable is even read.
+
+### Edge cases & gotchas
+
+- **`--set` / `-s` is not implemented.** Passing `-s logLevel=debug` produces a CLI framework error. Use `LOG_LEVEL=debug` instead.
+- **`erpc dump --format csv`** (or any unknown format) exits 1 with a clear error — only `yaml`, `yml`, and `json` are valid.
+- **`validate` and `dump` suppress all log output** via a global zerolog disable before config loading. If a failure is hard to diagnose, pipe stdout through `jq .errors` — warnings from `SetDefaults` are silenced and won't appear on stderr.
+- **`.env` is loaded before CLI parsing**: variables in a local `.env` file are available for `${VAR}` substitution in YAML configs.
+- **`GET /<project>/evm/<chainId>`** is a healthcheck, not an error — any non-POST/non-OPTIONS method on a proxy path is silently treated as a network-scoped health probe.
+- **`docker-compose down --volumes`** (via `make down`) destroys `prometheus_data` and `grafana_data`. Use `docker compose down` without `--volumes` to preserve monitoring state.
+
+### Observability
+
+Port `4001` exposes Prometheus metrics. The repo's monitoring container bundles a pre-built Grafana dashboard (`monitoring/grafana/dashboards/erpc.json`, 80+ panels) covering request rates, latency, failover events, consensus, cache, selection policy, and block-head lag.
+
+Five built-in alert rules: `HighErrorRate` (upstream error rate >5% for 5 min), `SlowRequests` (p95 >1s), `HighRateLimiting`, `NetworkRateLimiting`, `HighRequestRate` / `LowRequestRate`.
+
+### Source code entry points
+
+- [`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go) — CLI entry point: config discovery, `start`/`validate`/`dump` subcommands, env-var overrides
+- [`erpc/init.go`](https://github.com/erpc/erpc/blob/main/erpc/init.go) — full startup orchestration: log level, database init, ERPC core, transports, graceful drain
+- [`common/config.go`](https://github.com/erpc/erpc/blob/main/common/config.go) — `Config` struct, `LoadConfig`, TypeScript compilation pipeline
+- [`common/defaults.go`](https://github.com/erpc/erpc/blob/main/common/defaults.go) — `SetDefaults`, synthetic project injection, vendor shorthand URL parsing
+- [`erpc/http_server.go:L810-L1006`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L810-L1006) — `parseUrlPath`: full routing state machine
+- [`kube/erpc.yml`](https://github.com/erpc/erpc/blob/main/kube/erpc.yml) — Kubernetes Namespace + Deployment + ConfigMap + Service + PodMonitor
+- [`monitoring/grafana/dashboards/erpc.json`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/dashboards/erpc.json) — pre-built Grafana dashboard
+
+### Related pages
+
+- [How eRPC works](/use-cases/how-it-works) — request lifecycle, failsafe layers, and caching in one diagram
+- [Survive provider outages](/use-cases/survive-provider-outages) — automatic failover in action
+- [Cut costs and latency](/use-cases/cut-costs-and-latency) — permanent EVM JSON-RPC cache
+- [Scale chains and providers](/use-cases/scale-chains-and-providers) — multi-upstream routing and scoring
+- [Resilience config](/config/failsafe) — retry, hedge, timeout, circuit breaker, consensus
+- [Full machine-readable reference](/llms.txt) — `/llms.txt` for LLM agents and tooling
+
+</AISection>

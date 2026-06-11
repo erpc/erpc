@@ -1,125 +1,459 @@
 ---
-title: Providers
-description: One-line endpoints that fan out across every chain a third-party RPC vendor supports.
+title: Providers & vendors
+description: One API key, every chain — declare a single provider entry and eRPC auto-generates upstreams for each network on first request, with 22 built-in vendor integrations.
 ---
 
-import { Callout } from "nextra/components";
 import {
-	ConfigTabs,
-	ConfigCode,
 	AISection,
+	ConfigTabs,
+	SourceLink,
 	LLMsTxtLink,
+	PromptExample,
 } from "../../../components";
-
-# Providers
 
 <LLMsTxtLink />
 
-A provider adds a third-party RPC service to eRPC with one line — eRPC discovers every chain that vendor supports and lazy-loads each one on first request. Without providers you'd write a separate `upstream` for every (vendor, chain) pair.
+# Providers & vendors
 
-**You can configure:**
+One API key, every chain. Instead of wiring one upstream per (vendor, network) pair, you
+declare a single provider and eRPC lazy-generates concrete upstreams the moment a new
+network is first requested. 22 vendor integrations are built in — from general-purpose node
+providers to ERC-4337 bundlers to public-endpoint catalogs — and a project with no config
+at all gets a sensible zero-cost default automatically.
 
-- **URL shorthand** — `vendor://API_KEY` style endpoint, works for every supported vendor
-- **Long-form** — `providers[]` config when you need per-network overrides, scoped upstream IDs, or network allow/deny lists
-- **Network filtering** — `onlyNetworks` / `ignoreNetworks` to bound the lazy-load surface
-- **Per-network overrides** — `overrides` map keyed by network pattern (`evm:1`, `evm:*`, `evm:1|evm:10`)
-- **Vendor-specific settings** — e.g. Chainstack region/project filters, HyperRPC root domain, repository recheck interval
+**What you get**
 
-## Quick start — the URL shorthand
+- One line to cover all chains a vendor supports — no manual network list.
+- Hot-path chain discovery with no I/O: static maps and lock-free remote caches keep routing decisions off the slow path.
+- Zero-config fallback: eRPC auto-injects `repository` + `envio` providers when no upstreams or providers are configured.
 
-Pick a vendor, drop in your API key, and you're done. eRPC will lazy-load every chain that vendor supports.
+## Quick taste
+
+Illustrative, not a tuned production config — one key, every Alchemy chain:
 
 <ConfigTabs
-	path="projects > upstreams[]"
-	focus="6"
+	path="projects[].upstreams[]"
+	focusYaml="4-5"
+  focusTs="4-5"
 	yaml={`projects:
   - id: main
     upstreams:
-      # Auto-imports every Alchemy-supported EVM chain on first request.
-      # Same shape works for any vendor in the table below.
-      - endpoint: alchemy://YOUR_ALCHEMY_API_KEY`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    upstreams: [
-      // Auto-imports every Alchemy-supported EVM chain on first request.
-      { endpoint: "alchemy://YOUR_ALCHEMY_API_KEY" },
-    ],
+      - # URL shorthand — one line, all Alchemy chains
+        endpoint: alchemy://YOUR_API_KEY`}
+	ts={`projects: [{
+  id: "main",
+  upstreams: [{
+    // URL shorthand — one line, all Alchemy chains
+    endpoint: "alchemy://YOUR_API_KEY",
   }],
-});`}
+}]`}
 />
 
-<Callout type="info">
-	eRPC also supports any plain EVM JSON-RPC endpoint via the [`evm` upstream type](/config/projects/upstreams) — providers are an optimization for vendors with many chains.
-</Callout>
+## Agent reference
 
-## Supported vendors
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-| Vendor | URL shorthand | What it adds |
+<PromptExample
+	n={1}
+	title="set up providers from scratch"
+	defaultOpen
+	prompt={`I want to configure eRPC providers so a single API key per vendor covers all EVM
+chains automatically. Add Alchemy and dRPC as providers, restrict Alchemy to the
+chains we actually need (mainnet, Arbitrum, Base, Polygon), and leave everything
+else to dRPC. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/projects/providers.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="add per-network overrides to an existing provider"
+	prompt={`My eRPC config already has providers for Alchemy and QuickNode.
+I need Arbitrum (evm:42161) to pre-split eth_getLogs at 1000 blocks and have a
+lower score multiplier for QuickNode on mainnet. Apply these as provider overrides
+without touching the upstreams list. Reference:
+https://docs.erpc.cloud/config/projects/providers.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug a provider not generating upstreams on cold start"
+	prompt={`My eRPC instance logs ErrNetworkInitializing for evm:130 on every first request
+after a redeploy, even though I have a conduit provider configured. Explain why
+conduit returns ErrRemoteCacheCold on cold start and what I can pair it with to
+avoid the first-request delay. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/projects/providers.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="route ERC-4337 bundler traffic to pimlico"
+	prompt={`Add Pimlico as a provider in my eRPC config so all bundler
+methods (eth_sendUserOperation, pimlico_*, pm_*) route to Pimlico while
+general eth_* methods still hit Alchemy. Explain the method allow-list that
+Pimlico injects automatically. Reference:
+https://docs.erpc.cloud/config/projects/providers.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="split QuickNode endpoint groups by tag"
+	prompt={`I have two logical QuickNode endpoint groups: one tagged "archive" and one
+tagged "realtime". Wire them as separate providers in my eRPC config so each
+group's endpoints are used for the right traffic, and explain the apiKey
+cache-key footgun so I don't accidentally share snapshots. Reference:
+https://docs.erpc.cloud/config/projects/providers.llms.txt`}
+/>
+
+<AISection title="Providers & vendors — full agent reference">
+
+### How it works
+
+**Two distinct concepts.** A *vendor* (`common.Vendor` interface) is stateless integration logic: `Name()`, `OwnsUpstream(cfg)`, `SupportsNetwork(ctx, logger, settings, networkId)`, `GenerateConfigs(...)`, and `GetVendorSpecificErrorIfAny(...)`. A *provider* is a configured instance of a vendor: `ProviderConfig{Id, Vendor, Settings, OnlyNetworks, IgnoreNetworks, UpstreamIdTemplate, Overrides}`. All 22 vendors are registered in a global `VendorsRegistry` at startup; a per-project `ProvidersRegistry` resolves each `providers[].vendor` string and fails startup if the name is unknown. <SourceLink file="thirdparty/vendors_registry.go" lines="9-35" /> <SourceLink file="thirdparty/providers_registry.go" lines="15-34" />
+
+**Lazy upstream generation.** When a request arrives for a network with no prepared upstreams, `UpstreamsRegistry.PrepareUpstreamsForNetwork` schedules — exactly once per network via `sync.Once` — one bootstrap task per declared provider named `network/<networkId>/provider/<providerId>`. Each task: (1) calls `Provider.SupportsNetwork`, applying `ignoreNetworks` deny-list first, then `onlyNetworks` allow-list, then delegating to the vendor; (2) calls `Provider.GenerateUpstreamConfigs`, which copies the first wildcard-matching `overrides` entry (or creates a fresh defaults-filled config), stamps `VendorName`, renders the upstream id from `upstreamIdTemplate`, and runs `os.ExpandEnv` over every generated endpoint; (3) registers the resulting configs as ordinary upstream bootstrap tasks. The caller waits up to 30 seconds (polling every 200 ms) for at least one upstream to become ready. While tasks run, clients receive the retryable `ErrNetworkInitializing`; if all tasks finish without producing any upstreams, the error becomes the retryable `ErrNetworkNotSupported`. Failed tasks auto-retry with exponential backoff (factor 1.5, 3 s → 130 s). <SourceLink file="upstream/registry.go" lines="155-293" />
+
+**Vendor chain-support strategies.** Vendors answer "do you support this network?" in four ways:
+
+1. **Static in-code map** (ankr, blastapi, blockdaemon, blockpi, dwellir, infura, llama, onfinality, etherspot): instant, no I/O, works on cold start.
+2. **Remote catalog with static fallback** (alchemy — 134-chain map; drpc — 150-chain map): fetches on warm paths; cold start falls back to the built-in map so the first request never blocks on I/O.
+3. **Remote catalog, no fallback** (conduit, superchain, tenderly, quicknode, chainstack, repository): cold start returns the retryable sentinel `ErrRemoteCacheCold`; the initializer retries with 3 s → 130 s exponential backoff until the first fetch lands.
+4. **Live `eth_chainId` probe** (envio for unknown chains, erpc, pimlico for unknown chains, routemesh, thirdweb): sends a real JSON-RPC call to the candidate endpoint with a 10 s timeout; probe clients are cached per chain id in `sync.Map`.
+
+**The request-path safety rule.** Any vendor consulting remote data on the hot path uses the shared `RemoteDataCache[T]`: reads are a single `atomic.Pointer` load — never a mutex, never I/O. Staleness triggers a single-flight async refresh in a goroutine with its own 90 s timeout, fully decoupled from the caller's context. <SourceLink file="thirdparty/remote_cache.go" lines="13-78" />
+
+**URL shorthand scheme.** Any upstream whose endpoint scheme is not `http`, `https`, `grpc`, or `grpc+bds` is converted to a `ProviderConfig` at config-defaults time. The `evm+` prefix is stripped first (`evm+alchemy://` equals `alchemy://`). The original upstream config (failsafe, rate limits, method filters, etc.) is placed into `overrides: {"*": ...}` so it applies to every generated upstream. The provider id defaults to `<vendor>-<n>` (process-wide counter per vendor name). Unknown scheme is a config-load error. <SourceLink file="common/defaults.go" lines="1113-1241" />
+
+**Default providers.** A project with zero upstreams, zero providers, and no CLI `--endpoint` flags automatically gets `{id:"public", vendor:"repository"}` + `{id:"envio", vendor:"envio"}` injected with all defaults, and logs a warning. Setting `providers: []` explicitly still satisfies the zero-providers condition — the injection fires unless you have at least one upstream or one CLI endpoint. <SourceLink file="common/defaults.go" lines="1113-1146" />
+
+**Vendors also serve statically-configured upstreams.** At `NewUpstream`, `LookupByUpstream` finds a vendor by explicit `upstream.vendorName` (exact match, wins — if the name is unknown, `OwnsUpstream` is NOT consulted and the result is nil) or the first vendor whose `OwnsUpstream` matches the endpoint (in registration order). If no vendor matches, `vendorName` is guessed as `unknown-<rootDomain>` from the endpoint host. The vendor's `GenerateConfigs` is invoked with `settings == nil` to apply vendor defaults (e.g. dRPC forcing `autoIgnoreUnsupportedMethods: false`, envio's method allow-list). Vendor-specific JSON-RPC error mapping fires before generic normalization: `GetVendorSpecificErrorIfAny` is called on the upstream's attached vendor first. <SourceLink file="architecture/evm/error_normalizer.go" lines="878-900" /> <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
+
+### Config schema
+
+#### `projects[].providers[]` — ProviderConfig
+
+| field | type | default | behavior / footguns |
+|---|---|---|---|
+| `id` | string | vendor name (`p.Id = p.Vendor`) | Unique handle; appears in `<PROVIDER>` placeholder and bootstrap task names `network/<networkId>/provider/<id>`. Shorthand-converted providers get `<vendor>-<n>` (process-wide counter). No duplicate-id check — two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="common/defaults.go" lines="1474-1476" /> <SourceLink file="util/ids.go" lines="32-41" /> |
+| `vendor` | string | — (required) | Must exactly match one of 22 registered `Name()` strings: `alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-33" /> |
+| `settings` | `map[string]any` (VendorSettings) | `nil` | Free-form, vendor-interpreted. Redacted in JSON/YAML marshaling (never echoed in admin dump). See per-vendor tables below. <SourceLink file="common/config.go" lines="667-700" /> |
+| `onlyNetworks` | `[]string` | `nil` | Exhaustive allow-list (`evm:<positiveInt>` format, validated). If set, vendor's own `SupportsNetwork` is **not** called. Mutually exclusive with `ignoreNetworks` (validation error). <SourceLink file="thirdparty/provider.go" lines="42-49" /> |
+| `ignoreNetworks` | `[]string` | `nil` | Exact-match deny-list checked **before** `onlyNetworks` and before vendor. Same `evm:<positiveInt>` validation. Omitted from `MarshalJSON` (present in YAML marshal). <SourceLink file="thirdparty/provider.go" lines="34-40" /> |
+| `upstreamIdTemplate` | string | `"<PROVIDER>-<NETWORK>"` | Placeholders: `<VENDOR>`, `<PROVIDER>`, `<NETWORK>` (full network id e.g. `evm:1`), `<EVM_CHAIN_ID>` (numeric; `N/A` for non-evm networks). Validation requires non-empty. <SourceLink file="common/defaults.go" lines="1477-1479" /> |
+| `overrides` | `map[string]*UpstreamConfig` | `nil` | Keys are wildcard patterns (WildcardMatch grammar: `*`, `?`, `\|` OR, `&` AND, `!` NOT). First match from Go map iteration (nondeterministic for overlapping keys) is copied as the base config; no match → fresh `UpstreamConfig` with defaults. Pattern-match errors silently skipped. Each override validated with endpoint check skipped. <SourceLink file="thirdparty/provider.go" lines="77-101" /> |
+
+#### URL shorthand derivation
+
+| shorthand | derived settings |
+|---|---|
+| `alchemy://<key>` | `{apiKey: key}` |
+| `ankr://<key>` | `{apiKey: key}` |
+| `blastapi://<key>` | `{apiKey: key}` |
+| `blockdaemon://<key>` | `{apiKey: key}` |
+| `blockpi://<key>` | `{apiKey: key}` |
+| `chainstack://<key>[?project=&region=&…]` | `{apiKey: key}` + all query params copied verbatim |
+| `conduit://<key>` | `{apiKey: key}` |
+| `drpc://<key>` | `{apiKey: key}` |
+| `dwellir://<key>` | `{apiKey: key}` |
+| `envio://<rootDomain>` | `{rootDomain: host}` |
+| `erpc://<host>[/<path>][?secret=]` | `{endpoint: "https://"+host+"/"+path}` + `secret` from query |
+| `etherspot://<key>` | `{apiKey: key}` |
+| `infura://<key>` | `{apiKey: key}` |
+| `llama://<key>` | `{apiKey: key}` |
+| `onfinality://<key>` | `{apiKey: key}` |
+| `pimlico://<key>` | `{apiKey: key}` |
+| `quicknode://<key>[?tagIds=1,2&tagLabels=a,b]` | `{apiKey: key}` + parsed `tagIds`/`tagLabels` |
+| `repository://<host>/<path>[?query]` | `{repositoryUrl: "https://"+host+"/"+path+"?"+query}` |
+| `routemesh://<host>/rpc/<chainId>/<apiKey>` | `{baseURL: host, apiKey: pathParts[2]}` — path must match exactly |
+| `superchain://<spec>` | `{registryUrl: host+path}` |
+| `tenderly://<key>` | `{apiKey: key}` |
+| `thirdweb://<clientId>` | `{clientId: host}` |
+| unknown scheme | config-load error: `unsupported vendor name in vendor.settings: <scheme>` |
+
+### Vendor catalog
+
+#### alchemy
+
+Chain discovery: remote catalog (default `https://app-api.alchemy.com/trpc/config.getNetworkConfig`) keyed by URL via `RemoteDataCache`; **cold-start fallback** to a 134-chain built-in map; after a successful fetch the API result is merged with static defaults (API wins on conflict, static fills gaps). URL template: `https://{subdomain}.g.alchemy.com/v2/{apiKey}`. Error mapping: `-32600` + authenticated message → `ErrEndpointUnauthorized`; code `3` → EVM revert.
+
+| key | required | default |
 |---|---|---|
-| [`alchemy`](#alchemy) | `alchemy://API_KEY` | All Alchemy EVM chains |
-| [`ankr`](#ankr) | `ankr://API_KEY` | All Ankr EVM chains |
-| [`blastapi`](#blastapi) | `blastapi://API_KEY` | All BlastAPI EVM chains |
-| [`blockdaemon`](#blockdaemon) | `blockdaemon://API_KEY` | All Blockdaemon EVM chains |
-| [`blockpi`](#blockpi) | `blockpi://API_KEY` | All BlockPi EVM chains |
-| [`chainstack`](#chainstack) | `chainstack://API_KEY[?project=…&region=…]` | Chainstack EVM chains with optional filters |
-| [`conduit`](#conduit) | `conduit://API_KEY` | All Conduit rollup chains |
-| [`drpc`](#drpc) | `drpc://API_KEY` | All dRPC EVM chains |
-| [`dwellir`](#dwellir) | `dwellir://API_KEY` | All Dwellir EVM chains |
-| [`envio`](#envio) | `envio://rpc.hypersync.xyz` | HyperRPC-accelerated read methods on supported chains |
-| [`erpc`](#erpc) | `erpc://HOST/project/evm[?secret=…]` | Another eRPC instance as a recursive upstream |
-| [`etherspot`](#etherspot) | `etherspot://public` or `etherspot://API_KEY` | ERC-4337 account-abstraction bundler |
-| [`infura`](#infura) | `infura://API_KEY` | All Infura EVM chains |
-| [`llama`](#llama) | `llama://API_KEY` | All Llama Nodes EVM chains |
-| [`onfinality`](#onfinality) | `onfinality://API_KEY` | All OnFinality EVM chains |
-| [`pimlico`](#pimlico) | `pimlico://public` or `pimlico://API_KEY` | ERC-4337 account-abstraction bundler |
-| [`quicknode`](#quicknode) | `quicknode://API_KEY` | All QuickNode EVM chains |
-| [`repository`](#repository) | `repository://URL` | 4,000+ public endpoints from a JSON registry |
-| [`routemesh`](#routemesh) | `routemesh://API_KEY` | All RouteMesh EVM chains |
-| [`superchain`](#superchain) | `superchain://github.com/.../chainList.json` | All chains from a Superchain registry JSON |
-| [`tenderly`](#tenderly) | `tenderly://API_KEY` | All Tenderly EVM chains |
-| [`thirdweb`](#thirdweb) | `thirdweb://CLIENT_ID` | All Thirdweb EVM chains |
+| `apiKey` | yes | — |
+| `chainsUrl` | no | `https://app-api.alchemy.com/trpc/config.getNetworkConfig` |
+| `recheckInterval` | no | `24h` |
 
-<Callout type="warning">
-	`repository`, `superchain`, and `envio` accept a URL instead of an API key. `pimlico` and `etherspot` accept the literal string `public` for keyless tier. See the per-vendor reference below for the exact syntax.
-</Callout>
+OwnsUpstream: `alchemy://`/`evm+alchemy://` prefix, `vendorName=="alchemy"`, or endpoint contains `.alchemy.com`/`.alchemyapi.io`. <SourceLink file="thirdparty/alchemy.go" lines="156-326" />
 
-## Advanced — `providers[]` long-form
+#### ankr
 
-When the URL shorthand isn't enough — per-network overrides, scoped upstream IDs, restricting the lazy-load surface — switch to the explicit `providers[]` block:
+Static map of 47 chains. URL: `https://rpc.ankr.com/{netName}/{apiKey}` (URL-escaped). OwnsUpstream: scheme prefixes or `rpc.ankr.com`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/ankr.go" lines="15-144" />
+
+#### blastapi
+
+Static map of 79 chains. URL: `https://{netName}.blastapi.io/{apiKey}`; Avalanche appends `/ext/bc/C/rpc`. OwnsUpstream: scheme prefixes or `.blastapi.io`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/blastapi.go" lines="15-181" />
+
+#### blockdaemon
+
+Static map of 18 chains with heterogeneous path shapes. **Auth is always header-based**: `apiKey` is injected as `Authorization: Bearer <apiKey>` on every request regardless of whether the endpoint was preset or generated — a static upstream pointing at `svc.blockdaemon.com` fails at `NewUpstream` without `apiKey`. HTTP 401 → `ErrEndpointUnauthorized`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes (even with preset endpoint) | — |
+
+<SourceLink file="thirdparty/blockdaemon.go" lines="24-156" />
+
+#### blockpi
+
+Static map of 56 chains (exported `BlockPiNetworkNames`). URL: `https://{netName}.blockpi.network/v1/rpc/{escapedKey}`; chain `movement` uses `/rpc/v1/{escapedKey}/v1`. Error mapping: message containing `apikey is on another chain` → `ErrEndpointUnauthorized`. OwnsUpstream: scheme prefixes or `.blockpi.network`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/blockpi.go" lines="15-173" />
+
+#### chainstack
+
+Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes/` with `Authorization: Bearer {apiKey}` and optional filter params; chain ids discovered by `eth_chainId` probe per node (concurrency-limited, semaphore 10, 10 s client timeout). Cache key includes all filter values so providers sharing an apiKey but different filters get separate snapshots. Missing `apiKey` → `(false, nil)` (silent skip). Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching running node; upstream endpoint = `https_endpoint + "/" + auth_key`; id suffix `-<nodeID>`. Node decode is intentionally lenient: each node is decoded individually from the paginated response and malformed nodes (type mismatches, missing fields) are skipped rather than failing the entire refresh. OwnsUpstream: scheme prefixes or `.core.chainstack.com`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+| `recheckInterval` | no | `1h` |
+| `project` | no | `""` |
+| `organization` | no | `""` |
+| `region` | no | `""` |
+| `provider` | no | `""` |
+| `type` | no | `""` |
+
+<SourceLink file="thirdparty/chainstack.go" lines="51-429" />
+
+#### conduit
+
+Dynamic-only discovery from `networksUrl`; no static fallback → cold start returns `ErrRemoteCacheCold`. URL: `{httpEndpoint}/{apiKey}`. OwnsUpstream: scheme prefixes or `vendorName=="conduit"` only (no domain heuristic — chains live on customer domains). Preset endpoint bypasses discovery entirely. Error mapping: `-32600` + auth/api-key message → `ErrEndpointUnauthorized`; message `"limit exceeded"`/`"capacity limit"` → `ErrEndpointCapacityExceeded`; code in range `[-32099, -32000]` → `ErrEndpointServerSideException` (note: as written the condition `code >= -32000 && code <= -32099` is never true — same impossible-range pattern as alchemy, so this branch is dead code).
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+| `networksUrl` | no | `https://api.conduit.xyz/public/network/all` |
+| `recheckInterval` | no | `24h` |
+
+<SourceLink file="thirdparty/conduit.go" lines="16-222" />
+
+#### drpc
+
+Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static fallback; after a successful fetch the fallback is **fully replaced** (no merge). **Forces `autoIgnoreUnsupportedMethods: false`** on every config (even preset endpoints) because dRPC transiently returns method-not-found responses that must stay retryable. URL: `https://lb.drpc.org/ogrpc?network={name}&dkey={apiKey}`. Catalog filters to premium EVM JSON-RPC chains only (`blockchain_type=="eth" && api_type=="jsonrpc" && has_premium`); when multiple names map to one chain id, the highest `priority` value wins. Error mapping: message `"token is invalid"` → `ErrEndpointUnauthorized`; `"ChainException: Unexpected error (code=40000)"` or `"invalid block range"` → `ErrEndpointMissingData`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+| `chainsUrl` | no | `https://lb.drpc.org/networks` |
+| `recheckInterval` | no | `24h` |
+
+<SourceLink file="thirdparty/drpc.go" lines="19-422" />
+
+#### dwellir
+
+Static map of 70 chains → subdomain prefixes. URL: `https://{subdomain}.dwellir.com/{apiKey}`. OwnsUpstream: only `dwellir://` prefix (NOT `evm+dwellir://`) or `.dwellir.com` — the `evm+` form still works because shorthand conversion runs first. Avalanche appends `/ext/bc/C/rpc` to the URL. `SupportsNetwork` quirk: an unparseable numeric chain id part returns `(false, nil)` rather than an error (unlike every other static-map vendor which propagates the parse error).
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/dwellir.go" lines="15-180" />
+
+#### envio
+
+**Method allow-list injected on every upstream** (even preset static ones): `ignoreMethods: ["*"]` + 14 read-oriented methods (`eth_getLogs`, `eth_blockNumber`, `eth_getBlockByNumber`, etc.). SupportsNetwork: 61 known chain ids short-circuit true; unknown chains are live-probed via `eth_chainId` (10 s timeout; TLS error with `"failed to verify certificate"` → false). URL: `https://{chainId}.{rootDomain}[/{apiKey}]`.
+
+| key | required | default |
+|---|---|---|
+| `rootDomain` | no | `rpc.hypersync.xyz` |
+| `apiKey` | no | `""` |
+
+<SourceLink file="thirdparty/envio.go" lines="20-258" />
+
+#### erpc
+
+Chains to another eRPC instance. SupportsNetwork probes live `eth_chainId`. `parseEndpointURL` appends `/{chainId}` and optionally sets `?secret=`. Port-based scheme inference applies in `settings.endpoint`; the shorthand `erpc://host:8080` forces HTTPS. Probe clients are cached per `"{url}-{chainId}"`.
+
+| key | required | default |
+|---|---|---|
+| `endpoint` | yes | — |
+| `secret` | no | `""` |
+
+<SourceLink file="thirdparty/erpc.go" lines="35-265" />
+
+#### etherspot
+
+ERC-4337 bundler (Skandha). **Method allow-list injected**: `ignoreMethods: ["*"]` + 6 bundler methods (`skandha_*`, `eth_sendUserOperation`, etc.). Static map of 15 mainnets + 11 testnets. URL shape differs by network type: mainnet `https://{networkName}-bundler.etherspot.io/`, testnet `https://testnet-rpc.etherspot.io/v1/{chainId}`; `?apikey=` appended unless apiKey is `"public"` or empty.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/etherspot.go" lines="15-146" />
+
+#### infura
+
+Static map of 31 chains. URL: `https://{netName}.infura.io/v3/{apiKey}`. Error mapping: `-32600` auth message → unauthorized; `-32001`/`-32004` → unsupported; `-32005` → capacity exceeded.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/infura.go" lines="15-163" />
+
+#### llama
+
+Static map of 6 chains (eth, arbitrum, base, binance, optimism, polygon). URL: `https://{netName}.llamarpc.com/{apiKey}`. OwnsUpstream matches `.llamarpc.com` domain only (no `llama://` scheme check — shorthand still works because conversion runs first). Cloudflare rate-limit message (`code: 1015`) → `ErrEndpointCapacityExceeded`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/llama.go" lines="14-97" />
+
+#### onfinality
+
+Static map of 25 chains. URL: `https://{netName}.api.onfinality.io/rpc?apikey={escapedKey}` (apiKey as query param). OwnsUpstream: scheme prefixes or `.api.onfinality.io`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+
+<SourceLink file="thirdparty/onfinality.go" lines="15-122" />
+
+#### pimlico
+
+ERC-4337 bundler/paymaster. **Method allow-list injected**: `ignoreMethods: ["*"]` + 11 bundler/paymaster methods (`pimlico_*`, `pm_*`, `eth_sendUserOperation`, etc.). SupportsNetwork: 67-chain static set short-circuits true; unknown chains probe live `eth_chainId` — **missing `apiKey` is an error** (unlike quicknode/chainstack which return `false, nil`). URL: `"public"` → `https://public.pimlico.io/v2/{chainId}/rpc`; else `https://api.pimlico.io/v2/{chainId}/rpc?apikey={apiKey}`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes (error if missing, even for SupportsNetwork) | — |
+
+<SourceLink file="thirdparty/pimlico.go" lines="21-252" />
+
+#### quicknode
+
+Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoints?limit=100&offset=N` with `x-api-key` header and optional tag filters; a response-level `error` field aborts the refresh; chain ids discovered by `eth_chainId` probe per endpoint (concurrency-limited, semaphore 10, 10 s timeout). **Cache key is `apiKey` only** — two providers sharing an apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Missing `apiKey` → `(false, nil)`. Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching endpoint; id `{upstreamId}-{endpointID}`. Full error mapping: `-32614` or (`eth_getLogs` + message `"limited to"`) → `ErrEndpointRequestTooLarge`; `-32009`/`-32007` → capacity exceeded; `-32612`/`-32613` → `ErrEndpointUnsupported`; message `"failed to parse"` → client-side, not retryable toward network; `-32010` (tx cost exceeds gas limit) → client-side but network-retryable (per-client gas caps differ); `-32602` + `"cannot unmarshal hex string"` → invalid-argument client-side, not retryable; message `"UNAUTHORIZED"` → unauthorized; code `3` → EVM revert. Note: the error handler builds a fresh local details map, so per-request `details` passed by the caller are not modified.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+| `recheckInterval` | no | `1h` |
+| `tagIds` | no | `nil` |
+| `tagLabels` | no | `nil` |
+
+<SourceLink file="thirdparty/quicknode.go" lines="44-452" />
+
+#### repository
+
+Fetches `repositoryUrl` returning `{"<chainId>": {"endpoints": [...]}}`. No static fallback → `ErrRemoteCacheCold` on cold start. **Defaults `autoIgnoreUnsupportedMethods: true`** — public RPCs are inconsistent in method support. GenerateConfigs fans out one upstream per http endpoint (http/https prefix only; ws/wss skipped); ids embed `RedactEndpoint(ep)` (`https#redacted=ab12c`) so dashboards can distinguish endpoints without exposing them. Each generated upstream gets deep copies of `Evm`, `JsonRpc`, `Failsafe` (per-element), `RateLimitAutoTune`, and `Tags` from the base config, and inherits `IgnoreMethods`, `AllowMethods`, and `RateLimitBudget`. OwnsUpstream: only `repository://`/`evm+repository://` scheme prefixes (no domain matching — generated upstreams have arbitrary third-party hosts). One half of the implicit default provider pair.
+
+| key | required | default |
+|---|---|---|
+| `repositoryUrl` | no | `https://evm-public-endpoints.erpc.cloud` |
+| `recheckInterval` | no | `1h` |
+
+<SourceLink file="thirdparty/repository.go" lines="17-232" />
+
+#### routemesh
+
+No chain catalog — SupportsNetwork always probes live `eth_chainId`. Missing `apiKey` → error (provider task retries forever). URL: `https://{baseURL}/rpc/{chainId}/{apiKey}`. Shorthand requires exact path shape `/rpc/<chainId>/<apiKey>` or config-load error.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes (error if missing) | — |
+| `baseURL` | no | `lb.routemes.sh` |
+
+<SourceLink file="thirdparty/routemesh.go" lines="20-167" />
+
+#### superchain
+
+OP Superchain registry. `parseSuperchainSpec` accepts: `github.com/org/repo` (defaults branch `main`, file `chainList.json`), `github.com/org/repo/branch`, `github.com/org/repo/branch/path/to/file.json`, GitHub UI blob/tree URLs (the `/blob/` or `/tree/` segment is stripped), full `http(s)://` URLs passed through, or bare `domain/path` (https prepended). GitHub specs are rewritten to raw.githubusercontent.com. Registry JSON is an array of `{chainId, rpc:[...]}`; entries with chainId ≤ 0 or empty rpc list dropped; no static fallback → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per rpc URL with id suffix `-{index}` (e.g. `{id}-0`, `{id}-1`, …). OwnsUpstream: scheme prefixes or `vendorName=="superchain"` only (no domain matching).
+
+| key | required | default |
+|---|---|---|
+| `registryUrl` | no | `https://raw.githubusercontent.com/ethereum-optimism/superchain-registry/main/chainList.json` |
+| `recheckInterval` | no | `24h` |
+
+<SourceLink file="thirdparty/superchain.go" lines="16-312" />
+
+#### tenderly
+
+Remote catalog from hardcoded `https://api.tenderly.co/api/v1/supported-networks` (not overridable via settings — there is no `chainsUrl`-style override). No static fallback → `ErrRemoteCacheCold`. Catalog decodes `chain_id` + `network_slugs`; slug preference: `node_rpc_slug` &gt; `vnet_rpc_slug` &gt; `explorer_slug`; entries with no usable slug or unparseable chain id are skipped. URL: `https://{slug}.gateway.tenderly.co/{apiKey}`. OwnsUpstream: scheme prefixes, `vendorName=="tenderly"`, or `.gateway.tenderly.co`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes | — |
+| `recheckInterval` | no | `24h` |
+
+<SourceLink file="thirdparty/tenderly.go" lines="34-285" />
+
+#### thirdweb
+
+No chain catalog — SupportsNetwork always probes live `eth_chainId`. Missing `clientId` → error. URL: `https://{chainId}.rpc.thirdweb.com/{clientId}`.
+
+| key | required | default |
+|---|---|---|
+| `clientId` | yes (error if missing) | — |
+
+<SourceLink file="thirdparty/thirdweb.go" lines="35-141" />
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Multi-vendor setup with score de-weighting.** Production fleets use Alchemy as the
+premium primary and cheaper providers (dRPC, Envio) as volume fillers. The `scoreMultipliers`
+`overall` factor deliberately de-weights weaker vendors so the scorer favors Alchemy on
+latency-sensitive methods while still using them as backfill:
 
 <ConfigTabs
-	path="projects > providers[]"
-	focus="6-25"
+	path="projects[].providers[]"
 	yaml={`projects:
   - id: main
     providers:
-      # (optional) Prefix for the dynamically generated upstream IDs.
-      - id: alchemy-prod
-        # (REQUIRED) The vendor name; see the table above.
+      - id: alchemy
         vendor: alchemy
-        # (optional) Vendor-specific settings (see AI reference below).
         settings:
-          apiKey: YOUR_KEY
-        # (optional) Restrict lazy-load to a specific chain list.
-        onlyNetworks:
-          - evm:1
-          - evm:137
-        # (optional) Exclude specific chains.
-        ignoreNetworks:
-          - evm:56
-        # (optional) Template for the generated upstream IDs.
-        upstreamIdTemplate: "<PROVIDER>-<NETWORK>"
-        # (optional) Per-network overrides; keys accept matcher syntax.
+          # premium vendor — no score penalty
+          apiKey: \${ALCHEMY_KEY}
+        # keep Alchemy away from chains where it adds no value or costs more
+        ignoreNetworks: [evm:999]
         overrides:
-          "evm:1":
-            failsafe:
-              - matchMethod: "*"
-                retry: { maxAttempts: 5 }
+          # catch-all: apply rate limit budget + light de-weight so fast vendors win
           "evm:*":
-            rateLimitBudget: free-tier`}
+            rateLimitBudget: alchemy-global
+            routing:
+              scoreMultipliers:
+                - network: ""
+                  method: ""
+                  # 0.2 = use as 20% of baseline score — Alchemy only wins when
+                  # others are slow, erroring, or behind on block head
+                  overall: 0.2
+      - id: drpc
+        vendor: drpc
+        settings:
+          apiKey: \${DRPC_KEY}
+      - id: envio
+        vendor: envio
+        settings:
+          rootDomain: rpc.hypersync.xyz`}
 	ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
@@ -127,399 +461,288 @@ export default createConfig({
     id: "main",
     providers: [
       {
-        id: "alchemy-prod",
+        id: "alchemy",
         vendor: "alchemy",
-        settings: { apiKey: "YOUR_KEY" },
-        onlyNetworks: ["evm:1", "evm:137"],
-        ignoreNetworks: ["evm:56"],
-        upstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+        settings: { apiKey: process.env.ALCHEMY_KEY },
+        ignoreNetworks: ["evm:999"],
         overrides: {
-          "evm:1": {
-            failsafe: [{ matchMethod: "*", retry: { maxAttempts: 5 } }],
+          "evm:*": {
+            rateLimitBudget: "alchemy-global",
+            routing: {
+              scoreMultipliers: [{ network: "", method: "", overall: 0.2 }],
+            },
           },
-          "evm:*": { rateLimitBudget: "free-tier" },
         },
+      },
+      {
+        id: "drpc",
+        vendor: "drpc",
+        settings: { apiKey: process.env.DRPC_KEY },
+      },
+      {
+        id: "envio",
+        vendor: "envio",
+        settings: { rootDomain: "rpc.hypersync.xyz" },
       },
     ],
   }],
 });`}
 />
 
-<AISection title="Copy for your AI assistant — full provider reference">
-
-### Every supported vendor with its URL syntax and notes
-
-#### `repository`
-
-Reads a remote JSON file listing RPC endpoints across chains and lazy-loads each on first request.
-
-```yaml
-upstreams:
-  - endpoint: repository://evm-public-endpoints.erpc.cloud
-```
-
-The default eRPC-curated repository (`evm-public-endpoints.erpc.cloud`) is a regularly-updated IPFS file aggregating 4,000+ public endpoints from [chainlist.org](https://chainlist.org), [chainid.network](https://chainid.network), and the [viem library](https://viem.sh). Test before relying on it in production — eRPC handles unreliable endpoints gracefully but quality varies.
-
-Long-form settings: `settings.repositoryUrl`, `settings.recheckInterval` (default `1h`).
-
-#### `erpc`
-
-Connect to another eRPC instance as a recursive upstream. Chain ID is auto-detected per request.
-
-```yaml
-upstreams:
-  - endpoint: erpc://xxx.aws.erpc.cloud/project/evm
-  - endpoint: erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx  # with auth
-```
-
-Long-form settings: `settings.endpoint`, `settings.secret`.
-
-#### `alchemy`
-
-```yaml
-upstreams:
-  - endpoint: alchemy://YOUR_ALCHEMY_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `drpc`
-
-```yaml
-upstreams:
-  - endpoint: drpc://YOUR_DRPC_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `blastapi`
-
-```yaml
-upstreams:
-  - endpoint: blastapi://YOUR_BLASTAPI_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `infura`
-
-```yaml
-upstreams:
-  - endpoint: infura://YOUR_INFURA_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `thirdweb`
-
-Production traffic: consult the Thirdweb team about which chains you'll use and your expected request volume.
-
-```yaml
-upstreams:
-  - endpoint: thirdweb://YOUR_THIRDWEB_CLIENT_ID
-```
-
-Long-form settings: `settings.clientId`.
-
-#### `envio`
-
-Envio's [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) accelerates [a subset of read methods](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc) (e.g. `eth_getLogs`) by routing them to HyperSync indexers. When a request is for an unsupported method, the upstream skips it. Recommended for indexing workloads.
-
-```yaml
-upstreams:
-  - endpoint: envio://rpc.hypersync.xyz
-```
-
-Long-form settings: `settings.rootDomain` (default `rpc.hypersync.xyz`).
-
-#### `pimlico`
-
-Adds [Pimlico](https://pimlico.io) account-abstraction (ERC-4337) support. AA-related requests are routed to Pimlico; eth_* requests stay on your normal upstreams.
-
-```yaml
-upstreams:
-  - endpoint: pimlico://public           # keyless tier
-  - endpoint: pimlico://YOUR_API_KEY     # authenticated
-```
-
-Long-form settings: `settings.apiKey` (accepts `"public"` or your API key).
-
-#### `etherspot`
-
-Same role as Pimlico — [Etherspot](https://etherspot.io/) handles AA-related (ERC-4337) requests.
-
-```yaml
-upstreams:
-  - endpoint: etherspot://public
-  - endpoint: etherspot://YOUR_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `dwellir`
-
-Register at [dashboard.dwellir.com](https://dashboard.dwellir.com/register) for a key. Supports `onlyNetworks` filtering if you don't want every chain.
-
-```yaml
-upstreams:
-  - endpoint: dwellir://YOUR_DWELLIR_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `conduit`
-
-For [Conduit](https://conduit.xyz/) rollup customers — auto-imports every rollup chain you have access to.
-
-```yaml
-upstreams:
-  - endpoint: conduit://YOUR_CONDUIT_API_KEY
-```
-
-Long-form settings: `settings.apiKey`, `settings.networksUrl` (default `https://api.conduit.xyz/public/network/all`), `settings.recheckInterval` (default `24h`).
-
-#### `superchain`
-
-Reads a Superchain-registry JSON file and adds every chain in it. `blob` segments in GitHub URLs are stripped automatically.
-
-```yaml
-upstreams:
-  - endpoint: superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json
-```
-
-Long-form settings: `settings.registryUrl`, `settings.recheckInterval` (default `24h`).
-
-#### `tenderly`
-
-```yaml
-upstreams:
-  - endpoint: tenderly://YOUR_TENDERLY_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `chainstack`
-
-The API key must come from the [Platform API Key](https://docs.chainstack.com/reference/platform-api-getting-started) settings page. Query-string filters let you scope to specific Chainstack projects/regions/providers/types.
-
-```yaml
-upstreams:
-  - endpoint: chainstack://YOUR_KEY
-  - endpoint: chainstack://YOUR_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated
-```
-
-Supported filters:
-
-| Filter | Values |
-|---|---|
-| `project` | Project ID |
-| `organization` | Organization ID |
-| `region` | `asia-southeast1`, `ap-southeast-1`, `us-west-2`, `us-east-1`, `uksouth`, `eu3` |
-| `provider` | `aws`, `azure`, `gcloud`, `vzo` |
-| `type` | `shared`, `dedicated` |
-
-Long-form settings: `settings.apiKey`, `settings.recheckInterval` (default `1h`), plus the filter fields above (`project`, `organization`, `region`, `provider`, `type`).
-
-See also [Chainstack's eRPC quickstart](https://docs.chainstack.com/docs/using-erpc-with-chainstack-quickstart).
-
-#### `onfinality`
-
-```yaml
-upstreams:
-  - endpoint: onfinality://YOUR_ONFINALITY_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `blockpi`
-
-Contact [BlockPi support](https://docs.blockpi.io/supports/contact-us) to request a global API key that works across all your EVM chains.
-
-```yaml
-upstreams:
-  - endpoint: blockpi://YOUR_BLOCKPI_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `ankr`
-
-```yaml
-upstreams:
-  - endpoint: ankr://YOUR_ANKR_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `quicknode`
-
-Get keys at the [QuickNode dashboard](https://dashboard.quicknode.com/api-keys).
-
-```yaml
-upstreams:
-  - endpoint: quicknode://YOUR_QUICKNODE_API_KEY
-```
-
-Long-form settings: `settings.apiKey`, `settings.recheckInterval` (default `1h`).
-
-#### `llama`
-
-[Llama Nodes](https://llamanodes.com/) RPC service — currently only available via the long-form `providers[]` syntax with a settings block.
-
-```yaml
-providers:
-  - vendor: llama
-    settings:
-      apiKey: YOUR_LLAMA_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-#### `routemesh`
-
-[RouteMesh](https://routemesh.io) only supports the long-form `providers[]` syntax (no URL shorthand).
-
-```yaml
-providers:
-  - vendor: routemesh
-    settings:
-      apiKey: YOUR_ROUTEMESH_API_KEY
-      baseURL: lb.routemes.sh  # optional, this is the default
-```
-
-Long-form settings: `settings.apiKey`, `settings.baseURL` (default `lb.routemes.sh`).
-
-#### `blockdaemon`
-
-A single key grants access to every EVM chain Blockdaemon's RPC service supports. Get one from the [Blockdaemon dashboard](https://app.blockdaemon.com/).
-
-```yaml
-upstreams:
-  - endpoint: blockdaemon://YOUR_BLOCKDAEMON_API_KEY
-```
-
-Long-form settings: `settings.apiKey`.
-
-### `providers[]` fields reference
-
-Every field on a `providers[]` entry:
-
-| Field | Type | Purpose |
-|---|---|---|
-| `id` | string | Optional unique ID, used as a prefix on every dynamically generated upstream ID. |
-| `vendor` | string (**required**) | One of the supported vendor names (see table). |
-| `settings` | object | Vendor-specific settings; see per-vendor sections above. |
-| `onlyNetworks` | string[] | Restrict the lazy-load to these networks (e.g. `evm:1`, `evm:137`). When omitted, every supported chain is lazy-loaded. |
-| `ignoreNetworks` | string[] | Exclude these networks from the lazy-load. Combines with `onlyNetworks`. |
-| `upstreamIdTemplate` | string | Template for generated upstream IDs. Supports `<PROVIDER>` and `<NETWORK>` placeholders. Default: `<PROVIDER>-<NETWORK>`. |
-| `overrides` | map[string→UpstreamConfig] | Per-network overrides. Keys accept [matcher syntax](/config/matcher) (`evm:1`, `evm:*`, `evm:1|evm:10`). Values are full [upstream configs](/config/projects/upstreams). |
-
-### Combining onlyNetworks + overrides + upstreamIdTemplate
-
-A realistic production setup — Alchemy on mainnet/Polygon with stricter retries on mainnet and a cheap rate-limit budget elsewhere:
-
-```yaml
-projects:
+**2. Per-chain getLogs splitting via provider overrides.** High-throughput chains (Arbitrum,
+Sei) routinely hit block-range limits when indexers issue large `eth_getLogs` queries.
+Production sets `getLogsAutoSplittingRangeThreshold` per chain inside the provider's
+`overrides` so every upstream that vendor auto-generates for that chain inherits the limit
+without wiring individual upstreams:
+
+<ConfigTabs
+	path="projects[].providers[]"
+	yaml={`projects:
   - id: main
     providers:
-      - id: alchemy
-        vendor: alchemy
+      - id: quicknode
+        vendor: quicknode
         settings:
-          apiKey: ${ALCHEMY_KEY}
-        onlyNetworks:
-          - evm:1
-          - evm:137
-          - evm:42161
-        upstreamIdTemplate: "alchemy-<NETWORK>"
+          apiKey: \${QN_KEY}
+        ignoreNetworks: [evm:1, evm:8453, evm:42161]
         overrides:
-          # Mainnet: aggressive retries
-          "evm:1":
-            failsafe:
-              - matchMethod: "*"
-                retry: { maxAttempts: 5, delay: 100ms }
-          # Everywhere else: stay under a per-vendor budget
+          # catch-all: slow down state polling on every QN chain (it polls fast by default)
           "evm:*":
-            rateLimitBudget: alchemy-shared
-```
+            evm:
+              # 10s is a safe floor; most chains don't need sub-second head tracking
+              statePollerInterval: 10s
+            routing:
+              scoreMultipliers:
+                - network: ""
+                  method: ""
+                  # 0.3 = mid-tier weight; QN is good but not the fastest in tests
+                  overall: 0.3
+          # Arbitrum produces enormous logs — split at 1000 blocks before upstream rejects
+          "evm:42161":
+            evm:
+              getLogsAutoSplittingRangeThreshold: 1000
+          # Sei has aggressive range limits — split at 500
+          "evm:1329":
+            evm:
+              getLogsAutoSplittingRangeThreshold: 500`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-### Vendor-settings cheatsheet (all vendors, copy-paste ready)
+export default createConfig({
+  projects: [{
+    id: "main",
+    providers: [{
+      id: "quicknode",
+      vendor: "quicknode",
+      settings: { apiKey: process.env.QN_KEY },
+      ignoreNetworks: ["evm:1", "evm:8453", "evm:42161"],
+      overrides: {
+        "evm:*": {
+          evm: { statePollerInterval: "10s" },
+          routing: {
+            scoreMultipliers: [{ network: "", method: "", overall: 0.3 }],
+          },
+        },
+        "evm:42161": { evm: { getLogsAutoSplittingRangeThreshold: 1000 } },
+        "evm:1329":  { evm: { getLogsAutoSplittingRangeThreshold: 500 } },
+      },
+    }],
+  }],
+});`}
+/>
 
-```yaml
-providers:
-  - vendor: alchemy
-    settings: { apiKey: xxxxx }
-  - vendor: blastapi
-    settings: { apiKey: xxxxx }
-  - vendor: drpc
-    settings: { apiKey: xxxxx }
-  - vendor: envio
-    settings: { rootDomain: rpc.hypersync.xyz }
-  - vendor: erpc
-    settings: { endpoint: xxx.aws.erpc.cloud/project/evm, secret: xxxxx }
-  - vendor: etherspot
-    settings: { apiKey: xxxxx }
-  - vendor: infura
-    settings: { apiKey: xxxxx }
-  - vendor: llama
-    settings: { apiKey: xxxxx }
-  - vendor: pimlico
-    settings: { apiKey: xxxxx }      # or "public"
-  - vendor: thirdweb
-    settings: { clientId: xxxxx }
-  - vendor: repository
-    settings:
-      repositoryUrl: https://evm-public-endpoints.erpc.cloud
-      recheckInterval: 1h            # how often to refresh the repository
-  - vendor: dwellir
-    settings: { apiKey: xxxxx }
-  - vendor: conduit
-    settings:
-      apiKey: xxxxx
-      networksUrl: https://api.conduit.xyz/public/network/all
-      recheckInterval: 24h
-  - vendor: superchain
-    settings:
-      registryUrl: github.com/ethereum-optimism/superchain-registry/main/chainList.json
-      recheckInterval: 24h
-  - vendor: tenderly
-    settings: { apiKey: xxxxx }
-  - vendor: chainstack
-    settings:
-      apiKey: xxxxx
-      recheckInterval: 1h
-      project: xxxxx                  # filter by project ID
-      organization: xxxxx             # filter by organization ID
-      region: us-east-1               # asia-southeast1, ap-southeast-1, us-west-2, us-east-1, uksouth, eu3
-      provider: aws                   # aws, azure, gcloud, vzo
-      type: dedicated                 # shared, dedicated
-  - vendor: onfinality
-    settings: { apiKey: xxxxx }
-  - vendor: blockpi
-    settings: { apiKey: xxxxx }
-  - vendor: ankr
-    settings: { apiKey: xxxxx }
-  - vendor: quicknode
-    settings:
-      apiKey: xxxxx
-      recheckInterval: 1h
-  - vendor: routemesh
-    settings:
-      apiKey: xxxxx
-      baseURL: lb.routemes.sh
-  - vendor: blockdaemon
-    settings: { apiKey: xxxxx }
-```
+**3. Provider-level method exclusions to avoid bad upstreams.** Some vendors (dwellir,
+blockpi) do not support `trace_filter` reliably on testnets. Production adds
+`ignoreMethods` per-chain inside `overrides` so auto-generated upstreams for those
+chains never receive trace requests that would 405-error and burn retry budget:
 
-### Common pitfalls
+<ConfigTabs
+	path="projects[].providers[]"
+	yaml={`projects:
+  - id: main
+    providers:
+      - id: dwellir
+        vendor: dwellir
+        settings:
+          apiKey: \${DWELLIR_KEY}
+        # skip chains covered by better vendors — avoids redundant SupportsNetwork probes
+        ignoreNetworks: [evm:1, evm:137, evm:42161, evm:8453]
+        overrides:
+          # Sepolia and BSC testnet: trace_filter returns errors on dwellir — exclude it
+          # so the scorer doesn't keep retrying it
+          "evm:11155111":
+            ignoreMethods: [trace_filter]
+          "evm:97":
+            ignoreMethods: [trace_filter]`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
 
-- **URL shorthand vs long-form on the same vendor** — the URL shorthand silently maps to `providers[]` internally, so you can't mix-and-match for one vendor. Pick one form per project.
-- **`onlyNetworks` doesn't lazy-load** — listed networks are still lazy-loaded on first request. The list just bounds *which* networks may load.
-- **Matcher keys in `overrides`** — only `|` (OR), `*` (wildcard), and `!` (NOT) are supported. Comma-separated lists are NOT a matcher.
-- **`recheckInterval`** — for vendors that fetch a network list (`repository`, `superchain`, `conduit`, `chainstack`, `quicknode`), this controls how often eRPC refreshes the list. Newly added chains won't appear until the next recheck.
-- **API key in `endpoint` vs `settings.apiKey`** — they're equivalent. URL shorthand stuffs the key into `settings.apiKey` automatically.
+export default createConfig({
+  projects: [{
+    id: "main",
+    providers: [{
+      id: "dwellir",
+      vendor: "dwellir",
+      settings: { apiKey: process.env.DWELLIR_KEY },
+      ignoreNetworks: ["evm:1", "evm:137", "evm:42161", "evm:8453"],
+      overrides: {
+        "evm:11155111": { ignoreMethods: ["trace_filter"] },
+        "evm:97":        { ignoreMethods: ["trace_filter"] },
+      },
+    }],
+  }],
+});`}
+/>
+
+**4. ERC-4337 bundler alongside general RPC.** Pimlico and etherspot auto-inject method
+allow-lists so only bundler methods route to them — combine with a general-purpose provider
+for all other methods. No manual `allowMethods` needed; the vendor injects it at
+`NewUpstream` time:
+
+<ConfigTabs
+	path="projects[].upstreams[]"
+	yaml={`projects:
+  - id: main
+    upstreams:
+      - endpoint: alchemy://\${ALCHEMY_KEY}
+      # pimlico auto-injects: ignoreMethods: ["*"] + allowMethods: [eth_sendUserOperation,
+      # pimlico_*, pm_*] — bundler traffic routes here automatically
+      - endpoint: pimlico://\${PIMLICO_KEY}`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    upstreams: [
+      { endpoint: \`alchemy://\${process.env.ALCHEMY_KEY}\` },
+      // pimlico auto-injects ignoreMethods/allowMethods — no manual filter needed
+      { endpoint: \`pimlico://\${process.env.PIMLICO_KEY}\` },
+    ],
+  }],
+});`}
+/>
+
+**5. QuickNode with tag-based endpoint groups.** Use separate `apiKey` values per tag
+group — the RemoteDataCache is keyed by `apiKey` only, so two providers sharing one key
+with different `tagIds`/`tagLabels` both see whichever snapshot the first refresh produced:
+
+<ConfigTabs
+	path="projects[].providers[]"
+	yaml={`projects:
+  - id: main
+    providers:
+      # archive-grade endpoints tagged in the QuickNode dashboard as "archive"
+      - id: quicknode-archive
+        vendor: quicknode
+        settings:
+          # must be a DIFFERENT apiKey than the realtime group —
+          # same apiKey + different tagLabels still shares one endpoint snapshot
+          apiKey: \${QN_ARCHIVE_KEY}
+          tagLabels: archive
+      # fast tip-of-chain endpoints on a separate key
+      - id: quicknode-realtime
+        vendor: quicknode
+        settings:
+          apiKey: \${QN_REALTIME_KEY}
+          tagLabels: realtime`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    providers: [
+      {
+        id: "quicknode-archive",
+        vendor: "quicknode",
+        // must be a DIFFERENT apiKey than the realtime group
+        settings: { apiKey: process.env.QN_ARCHIVE_KEY, tagLabels: "archive" },
+      },
+      {
+        id: "quicknode-realtime",
+        vendor: "quicknode",
+        settings: { apiKey: process.env.QN_REALTIME_KEY, tagLabels: "realtime" },
+      },
+    ],
+  }],
+});`}
+/>
+
+### Best practices
+
+- Use **URL shorthands** (`alchemy://KEY`) for the common case — they are equivalent to a full `providers[]` entry with a `"*"` override and avoid boilerplate.
+- Use **`onlyNetworks`** to restrict expensive vendors to the chains you actually need; it also prevents the vendor's `SupportsNetwork` from being called for irrelevant chains.
+- Use **exact `evm:<chainId>` keys** in `overrides` — never mix a catch-all `"*"` with more-specific patterns in the same map. Go map iteration is nondeterministic; overlapping keys produce different results across restarts.
+- For **QuickNode** with multiple logical endpoint groups, use a separate `apiKey` per group (provisioned in the QuickNode dashboard). Sharing one `apiKey` with different `tagIds`/`tagLabels` shares one endpoint snapshot due to the apiKey-only cache key.
+- **`recheckInterval` cannot be set from YAML or TypeScript config.** The type assertion `.(time.Duration)` fails on YAML strings and JSON numbers. Use programmatic Go config (`common.VendorSettings{"recheckInterval": 12 * time.Hour}`) if you need a custom freshness window.
+- Vendors with no static fallback (conduit, superchain, tenderly, quicknode, chainstack, repository) return `ErrRemoteCacheCold` on cold start. The initializer retries with backoff, but first requests for those networks will see `ErrNetworkInitializing` until the remote catalog fetches. Pair these vendors with a fallback provider that has a static map if cold-start latency matters.
+- **Do not use `providers: []` to "disable" auto-injection** — an explicit empty providers list still triggers default injection if upstreams is also empty. Provide at least one upstream or one provider to take full control.
+
+### Edge cases & gotchas
+
+1. **`recheckInterval` from YAML is silently ignored** — every vendor reads it with `.(time.Duration)`. YAML scalars decode to `string`/`int64` so the assertion fails and the vendor default applies. Only Go programmatic config can set it. <SourceLink file="thirdparty/repository.go" lines="56-59" />
+2. **Cold-start contract differs by vendor**: alchemy/drpc fall back to built-in maps; conduit/superchain/tenderly/quicknode/chainstack/repository return `ErrRemoteCacheCold` and block until the first remote fetch lands. <SourceLink file="thirdparty/remote_cache.go" lines="85" />
+3. **drpc replaces its fallback after a successful fetch** (no merge); alchemy merges fetched data with its static defaults (API wins on conflict, static fills gaps). <SourceLink file="thirdparty/drpc.go" lines="360-422" /> <SourceLink file="thirdparty/alchemy.go" lines="386-405" />
+4. **Missing-apiKey behavior is inconsistent**: pimlico/routemesh/thirdweb `SupportsNetwork` return an error (provider task retries forever); quicknode/chainstack return `(false, nil)` and are silently skipped. <SourceLink file="thirdparty/pimlico.go" lines="120-123" />
+5. **blockdaemon requires `apiKey` even with a preset endpoint** — static upstreams pointing at `svc.blockdaemon.com` fail at `NewUpstream` because `GenerateConfigs` is called with `settings=nil`. <SourceLink file="thirdparty/blockdaemon.go" lines="85-88" />
+6. **Impossible range conditions in alchemy/conduit error mapping**: alchemy's `code >= -32099 && code <= -32599` can never be true; only the message-match and code-3 branches actually fire. <SourceLink file="thirdparty/alchemy.go" lines="275-326" />
+7. **infura's Avalanche `/ext/bc/C/rpc` branch is unreachable** — map keys are `avalanche-mainnet`/`avalanche-fuji` but branch tests `ava-mainnet`/`ava-testnet`. <SourceLink file="thirdparty/infura.go" lines="90-93" />
+8. **`overrides` first-match is Go map-iteration order** (nondeterministic for overlapping patterns). Pattern-match errors are silently skipped. <SourceLink file="thirdparty/provider.go" lines="81-91" />
+9. **quicknode cache key is `apiKey` only** — two providers with the same apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Chainstack includes filters in its cache key and is safe. <SourceLink file="thirdparty/quicknode.go" lines="184-205" />
+10. **`erpc://host:8080` shorthand forces HTTPS** — `buildProviderSettings` hardcodes `https://`. Use `providers[].settings.endpoint` with an explicit URL for non-TLS targets. <SourceLink file="common/defaults.go" lines="1389-1404" />
+11. **`onlyNetworks`/`ignoreNetworks` are exact string matches** (not wildcards), require `evm:<positiveInt>`, and are mutually exclusive. `ignoreNetworks` is dropped from `MarshalJSON`. <SourceLink file="thirdparty/provider.go" lines="34-49" />
+12. **`os.ExpandEnv` runs on every provider-generated endpoint** — a literal `$` in an API key is substituted from the environment (often to empty). Static upstreams do not get this treatment. <SourceLink file="thirdparty/provider.go" lines="63-71" />
+13. **Provider ids must be unique only by convention** — no duplicate-id check; two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="thirdparty/providers_registry.go" lines="15-34" />
+14. **repository upstream ids embed a redacted endpoint** (`https#redacted=ab12c` = scheme + 5-char sha256 prefix) so dashboards can distinguish public endpoints without exposing them. <SourceLink file="util/redact.go" lines="10-36" />
+15. **OP-stack `"sender is over rate limit"` is the only capacity error with `retryableTowardNetwork=false`** — all OP providers proxy the same sequencer, so retrying on a different upstream hits the same limit. Expect this error to surface to clients on OP-stack chains. <SourceLink file="architecture/evm/error_normalizer.go" lines="125-139" />
+16. **Tenderly `"not found"` becomes `ErrEndpointClientSideException`** (retryable), not `ErrEndpointMissingData` — the `"Unsupported"` block in the normalizer intentionally runs after `"Not found"` to avoid misclassifying Tenderly's bare `"not found"`. <SourceLink file="architecture/evm/error_normalizer.go" lines="394-477" />
+17. **dwellir `OwnsUpstream` only matches `dwellir://` prefix** (not `evm+dwellir://`) or `.dwellir.com` domain; the `evm+` shorthand still works because shorthand conversion runs before vendor lookup. <SourceLink file="thirdparty/dwellir.go" lines="173-180" />
+18. **Live-probe vendors dial out during routing decisions**: envio/erpc/pimlico/routemesh/thirdweb perform a real `eth_chainId` HTTP call (10 s timeout) on the provider bootstrap path. Probe clients are cached forever in `sync.Map`s keyed by chain id or `"{url}-{chainId}"`.
+19. **`PrepareUpstreamsForNetwork` succeeds as soon as one upstream registers** (`minReady=1`). Slow providers continue adding upstreams in the background without blocking the first request. If all provider tasks finish with zero upstreams, there is a 100 ms grace re-check before the retryable `ErrNetworkNotSupported` is returned; if tasks are still running, the caller receives `ErrNetworkInitializing`. <SourceLink file="upstream/registry.go" lines="188-293" />
+20. **`LookupByUpstream` with an explicit but non-existent `vendorName` returns nil** — it does not fall through to `OwnsUpstream` matching. If `upstream.vendorName` is set to an unregistered name, vendor error-mapping is silently lost. Registration order of the 22 vendors determines which vendor wins when multiple `OwnsUpstream` checks return true for the same endpoint. <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
+21. **`llama` and `routemesh` `OwnsUpstream` do not check their own scheme prefixes**: `llama.OwnsUpstream` only matches `.llamarpc.com`; `routemesh.OwnsUpstream` only matches `vendorName=="routemesh"` or endpoint containing `routemes.sh`. Both shorthands (`llama://`, `routemesh://`) work only because shorthand conversion in `common/defaults.go` runs before vendor lookup. <SourceLink file="thirdparty/llama.go" lines="95-97" /> <SourceLink file="thirdparty/routemesh.go" lines="135-140" />
+22. **dwellir `SupportsNetwork` returns `(false, nil)` for an unparseable chain id** — unlike every other static-map vendor which propagates the parse error. <SourceLink file="thirdparty/dwellir.go" lines="109-113" />
+
+### Observability
+
+No provider-specific Prometheus metrics exist. The `vendor` label on all upstream-level metrics is populated from the attached vendor's `Name()`, the config's `vendorName`, or `unknown-<rootDomain>` for unrecognized endpoints.
+
+| metric | type | key labels | when it fires |
+|---|---|---|---|
+| `erpc_upstream_request_total` | counter | `project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name` | Every upstream request attempt |
+| `erpc_upstream_request_duration_seconds` | histogram | `project, vendor, network, upstream, category, composite, finality, user` | Upstream round-trip latency |
+| `erpc_upstream_request_errors_total` | counter | `project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name` | Failed upstream requests |
+
+Bootstrap task progress is visible in initializer task names: `network/<networkId>/provider/<providerId>` (scheduling) and `network/<networkId>/upstream/<upstreamId>` (per-generated upstream). <SourceLink file="upstream/registry.go" lines="423-481" />
+
+Trace spans: `buildProviderBootstrapTask` emits a detail span per provider task; `buildUpstreamBootstrapTask` emits one for each registered upstream. <SourceLink file="upstream/registry.go" lines="423-485" />
+
+Notable log messages:
+- warn `no providers or upstreams found in project; will use default 'public' endpoints repository`
+- debug `attempting to create upstream(s) from provider` / debug `provider does not support network; skipping upstream creation` / info `registering N upstream(s) from provider`
+- error `failed to execute provider bootstrap tasks` / info `provider bootstrap tasks executed successfully`
+- warn `vendor remote-data refresh failed; keeping previous snapshot` with `vendor` + `cacheKey` fields
+- error `panic recovered during vendor remote-data async refresh`
+- warn `some quicknode chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some QuickNode endpoints`
+- warn `some chainstack chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some Chainstack nodes`
+- info `successfully fetched dRPC network names` (with count + url)
+- debug `generated upstream from alchemy provider` / `generated upstream from conduit provider` / `generated upstreams from repository provider` / `generated upstreams from superchain provider`
+
+### Source code entry points
+
+- <SourceLink file="thirdparty/vendors_registry.go" lines="9-35" /> — global 22-vendor registry; `LookupByName` / `LookupByUpstream` / `SupportedVendors`
+- <SourceLink file="thirdparty/providers_registry.go" lines="15-34" /> — per-project ProviderConfig → Provider binding; unknown-vendor startup error
+- <SourceLink file="thirdparty/provider.go" lines="13-162" /> — `SupportsNetwork` gating, `GenerateUpstreamConfigs`, id templating, env expansion
+- <SourceLink file="thirdparty/remote_cache.go" lines="13-78" /> — `RemoteDataCache[T]` algorithm; request-path safety rationale; `ErrRemoteCacheCold`
+- <SourceLink file="common/defaults.go" lines="1113-1241" /> — default-provider injection, shorthand upstream→provider conversion
+- <SourceLink file="common/defaults.go" lines="1243-1425" /> — `buildProviderSettings` per-vendor settings derivation
+- <SourceLink file="upstream/registry.go" lines="155-293" /> — lazy `PrepareUpstreamsForNetwork`, provider task scheduling, readiness wait loop
+- <SourceLink file="common/validation.go" lines="780-815" /> — ProviderConfig validation rules
+- <SourceLink file="architecture/evm/error_normalizer.go" lines="878-900" /> — vendor-specific error hook invocation
+
+### Related pages
+
+- [Upstreams](/config/projects/upstreams) — static upstream entries; providers generate these dynamically.
+- [Selection policies](/config/projects/selection-policies) — controls which generated upstream handles each request.
+- [Failsafe](/config/failsafe/retry) — configure retry/hedge/timeout inside `overrides` per network.
+- [Rate limiters](/config/rate-limiters) — cap per-vendor request rates to stay within API budgets.
+- [Auth](/config/auth) — protect your eRPC instance when proxying to paid vendor endpoints.
 
 </AISection>
-
-<Callout type="tip">
-	Want this entire reference as plain markdown for an AI assistant? Use the **AI** link at the top of the page, or append `.llms.txt` to any docs URL.
-</Callout>

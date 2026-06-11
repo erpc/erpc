@@ -1,306 +1,468 @@
 ---
 title: Server
-description: HTTP + gRPC listeners, TLS, timeouts, shutdown grace, trusted-proxy IP detection, response headers, error-detail controls, and domain-based project aliasing.
+description: eRPC's front door — dual-stack listeners, TLS/mTLS, a hard global timeout, gzip, drain-aware shutdown, and domain aliasing so any Host header routes to the right chain without touching a URL path.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# Server
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-The top-level `server:` block configures eRPC's HTTP and gRPC listeners, their TLS, the request timing envelope, graceful shutdown grace, IP-extraction rules behind reverse proxies, response headers, and domain-based project aliasing.
+# Server
 
-**You can configure:**
+eRPC's `server:` block is your front door to every chain. One setting gives every deploy a clean drain window so zero requests drop during rollouts. Another collapses a sprawling URL scheme into bare hostnames like `eth.example.com`. Configure it once and stop worrying about dropped connections, spoofed IPs, or timeout mismatches between your LB and eRPC's own retry loop.
 
-- **HTTP listeners** — IPv4 + IPv6 independently, custom host + port per stack
-- **gRPC listeners** — optional second protocol for streaming `eth_getLogs` / `trace_filter`
-- **TLS** — cert + key, optional CA chain, optional client-cert verification
-- **Timeouts** — `maxTimeout` (the overall envelope), `readTimeout` / `writeTimeout` (TCP-level)
-- **Compression** — gzip on both inbound and outbound bodies
-- **Shutdown grace** — wait before SIGTERM-triggered drain (`waitBeforeShutdown`) and after (`waitAfterShutdown`)
-- **Trusted-proxy IP extraction** — `trustedIPForwarders` + `trustedIPHeaders` for behind-LB deployments
-- **Custom response headers** — `responseHeaders` for any static header you want every response to carry
-- **Error detail surfacing** — `includeErrorDetails` toggles verbose error payloads
-- **Domain aliasing** — `server.aliasing.rules[]` to map `eth.example.com` → `/main/evm/1` (see [URL & aliasing](/operation/url))
+**What you get**
+- Dual IPv4/IPv6 HTTP listeners with optional gRPC sharing on the same port
+- TLS and mutual TLS with a single extra field
+- Graceful two-phase drain so load balancers deplete before the process exits
+- Domain-based aliasing: map any `Host` header directly to a project and chain
 
-## Minimum useful config
+## Quick taste
 
-The defaults are sane — these are the only fields you typically need to set.
+Illustrative, not a tuned production config — minimal HTTP server with a 30-second ceiling:
 
 <ConfigTabs
-	path="server"
-	focus="2-5"
-	yaml={`server:
+  path="server"
+  focusYaml="2-6"
+  focusTs="5-9"
+  yaml={`server:
   listenV4: true
   httpHostV4: "0.0.0.0"
   httpPortV4: 4000
-  maxTimeout: 30s          # overall request timeout envelope`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
+  # hard ceiling for the full request lifecycle — must be > sum of retry delays + hedge delay
+  maxTimeout: 30s`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   server: {
     listenV4: true,
     httpHostV4: "0.0.0.0",
     httpPortV4: 4000,
+    // hard ceiling for the full request lifecycle — must be > sum of retry delays + hedge delay
     maxTimeout: "30s",
   },
 });`}
 />
 
-## Behind a reverse proxy / load balancer
+## Agent reference
 
-If clients reach eRPC through an LB, ingress, or CDN that sets `X-Forwarded-For`, configure `trustedIPForwarders` so the proxy's IP isn't mistaken for the client. eRPC walks the X-F-F chain left-to-right and picks the first IP that's NOT in `trustedIPForwarders`.
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="configure server for production behind a load balancer"
+	defaultOpen
+	prompt={`Set up the eRPC server block in my eRPC config for production: behind an AWS ALB or
+Cloudflare, I need real client IPs extracted for per-IP rate limiting, a
+graceful drain window long enough for my LB health checks, and a maxTimeout
+that sits above my longest retry+hedge chain. Read the full reference first:
+https://docs.erpc.cloud/config/server.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="enable gRPC on a dedicated port without disrupting HTTP"
+	prompt={`I want to enable the gRPC endpoint on eRPC but keep it on a separate port
+so HTTP traffic doesn't share the gRPC mux (and lose TimeoutHandler coverage).
+Update my eRPC config accordingly. Reference:
+https://docs.erpc.cloud/config/server.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="add mTLS so only my internal services can reach eRPC"
+	prompt={`Lock down my eRPC instance so only services that present a certificate signed
+by my internal CA can connect. I only want to add the minimum fields needed —
+no unnecessary TLS knobs. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/server.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug clients seeing wrong IPs or rate limits misfiring"
+	prompt={`My per-IP rate limits are all firing against the load balancer address instead
+of the real client IP. Help me fix trustedIPForwarders and trustedIPHeaders in
+my eRPC config, and explain which headers are safe to trust given my proxy topology.
+Reference: https://docs.erpc.cloud/config/server.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="map subdomains to chains without changing URL paths"
+	prompt={`I want eth.example.com and arb.example.com to route to Ethereum mainnet and
+Arbitrum without clients needing a /project/evm/1 path. Set up domain-based
+aliasing rules in my eRPC config. Reference:
+https://docs.erpc.cloud/config/server.llms.txt`}
+/>
+
+<AISection title="Server — full agent reference">
+
+### How it works
+
+**Handler chain.** `NewHttpServer` composes the stack innermost to outermost: `createRequestHandler` → optional `gzipHandler` (response compression) → custom `TimeoutHandler` (global deadline = `maxTimeout`) → optionally an h2c/gRPC mux on IPv4 when gRPC shares the HTTP port. Two independent `http.Server` instances handle IPv4 and IPv6; only those whose `listenV4`/`listenV6` flag is true are created, and `Start()` fails if neither is set. gRPC sharing only ever applies to the IPv4 server. Source: <SourceLink file="erpc/http_server.go" lines="150-199" />
+
+**Timeout machinery.** eRPC does NOT use `net/http`'s built-in `TimeoutHandler`. Its own implementation buffers the entire response body in a pooled `bytes.Buffer` and stages headers privately; only when the inner handler finishes within the deadline does it flush to the real connection. On timeout: JSON-RPC `-32603` body at HTTP 200 (POST) or 504 (other). On client cancel: "request cancelled by client" at HTTP 200 (POST) or 503 with empty body (other). Source: <SourceLink file="erpc/http_timeout.go" lines="20-143" />
+
+**Request and response gzip.** `enableGzip: true` wraps the handler in a `conditionalGzipWriter`. The first write decides once: if the chunk is smaller than 1024 bytes, no compression is applied; otherwise `Content-Length` is deleted, `Content-Encoding: gzip` + `Vary: Accept-Encoding` are set, and subsequent writes flow through a pooled `gzip.Writer`. Inbound gzip bodies (`Content-Encoding: gzip`) are always accepted and decompressed using a pooled reader, regardless of `enableGzip`. Source: <SourceLink file="erpc/http_server.go" lines="1685-1780" />
+
+**gRPC port sharing.** When `grpcEnabled: true` and the gRPC v4 host:port equal the HTTP v4 host:port (the default derivation), the IPv4 HTTP handler multiplexes: HTTP/2 + `Content-Type: application/grpc` → in-process gRPC server, bypassing `TimeoutHandler` and `gzipHandler` entirely. Without TLS the combined handler is wrapped in h2c to accept cleartext HTTP/2. Sharing never applies to IPv6. To run a standalone gRPC server on a different port, set `grpcPortV4` to a different value. Source: <SourceLink file="erpc/grpc_server.go" lines="42-53" />
+
+**TLS and mTLS.** When `tls.enabled` is true, both listeners use `ListenAndServeTLS` with TLS 1.2 as the minimum version, and gRPC uses TLS credentials. Setting `caFile` is the only knob needed to enable mTLS: it populates `ClientCAs` and sets `ClientAuth = RequireAndVerifyClientCert`, forcing every client to present a valid certificate. Source: <SourceLink file="erpc/http_server.go" lines="1537-1637" />
+
+**Trusted-proxy IP extraction.** `resolveRealClientIP` trusts forwarding headers only when the direct peer is inside `trustedIPForwarders` (default: loopback only). It walks `trustedIPHeaders` in order, parses each value XFF-style, strips trailing trusted-proxy entries right-to-left, and returns the nearest untrusted hop. If every hop is trusted, it falls back to the direct peer IP. RFC 7239 `Forwarded` is not supported. Source: <SourceLink file="erpc/http_server.go" lines="1782-1905" />
+
+**Domain-based aliasing.** `server.aliasing.rules[]` maps a request `Host` header to a pre-selected `(project, architecture, chain)` so callers can use a bare URL like `https://eth.example.com`. Rules are evaluated in order; first wildcard match wins. Not every combination of `serveProject`/`serveArchitecture`/`serveChain` is valid — see Edge cases. Source: <SourceLink file="erpc/http_server.go" lines="232-257" />
+
+**Graceful shutdown.** Two goroutines watch the app context on SIGTERM: one flips a `draining` flag immediately so `GET /healthcheck` returns 503 "shutting down" (letting the LB drain traffic); after sleeping `waitBeforeShutdown` (default `10s`), `http.Server.Shutdown` is called with a hardcoded 30s budget. After the context is done, `Init` sleeps an additional `waitAfterShutdown` (default `10s`) before process exit, letting telemetry exporters flush. Source: <SourceLink file="erpc/http_server.go" lines="209-221" />
+
+### Config schema
+
+All fields live under `server.` unless noted. `Duration` accepts Go duration strings (`"30s"`) or bare integers interpreted as **milliseconds** (`"150"` = 150 ms, not 150 s). Struct at <SourceLink file="common/config.go" lines="130-200" />.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `server.listenV4` | `*bool` | `true` (except under `go test`) | Enables the IPv4 `http.Server`. Validation requires `httpHostV4` + `httpPortV4` when true. <SourceLink file="common/defaults.go" lines="640-644" /> |
+| `server.httpHostV4` | `*string` | `"0.0.0.0"` | IPv4 bind host. <SourceLink file="common/defaults.go" lines="645-647" /> |
+| `server.httpPortV4` | `*int` | `4000` | IPv4 HTTP port. Startup fails with "server.httpPortV4 is not configured" if nil while `listenV4` is true. <SourceLink file="common/defaults.go" lines="655-657" /> |
+| `server.listenV6` | `*bool` | unset (OFF) | IPv6 must be opted in; `SetDefaults` never sets it. <SourceLink file="erpc/http_server.go" lines="191" /> |
+| `server.httpHostV6` | `*string` | `"[::]"` | IPv6 bind host. <SourceLink file="common/defaults.go" lines="648-650" /> |
+| `server.httpPortV6` | `*int` | `httpPortV4 + 1000` (default `5000`) | Derived to avoid collision with the default metrics port 4001. <SourceLink file="common/defaults.go" lines="658-668" /> |
+| `server.httpPort` | `*int` | deprecated alias of `httpPortV4` | If set and `httpPortV4` is unset, `httpPortV4` is assigned its value. After `SetDefaults` both always agree. No warning is emitted. New configs must use `httpPortV4`. <SourceLink file="common/defaults.go" lines="652-661" /> |
+| `server.grpcEnabled` | `*bool` | `false` | Enables gRPC. With default port derivation, gRPC shares the HTTP v4 port (in-handler mux + h2c). <SourceLink file="common/defaults.go" lines="669-671" /> |
+| `server.grpcHostV4` | `*string` | copy of `httpHostV4` | <SourceLink file="common/defaults.go" lines="672-675" /> |
+| `server.grpcPortV4` | `*int` | copy of `httpPortV4` | Equal to HTTP by default — triggers port sharing. Set a different value for a standalone gRPC server. <SourceLink file="common/defaults.go" lines="676-679" /> |
+| `server.grpcHostV6` | `*string` | copy of `httpHostV6` | No IPv6 port-sharing logic exists. <SourceLink file="common/defaults.go" lines="680-683" /> |
+| `server.grpcPortV6` | `*int` | copy of `httpPortV6` | <SourceLink file="common/defaults.go" lines="684-687" /> |
+| `server.grpcMaxRecvMsgSize` | `*int` | `104857600` (100 MiB) | gRPC max receive message size. <SourceLink file="common/defaults.go" lines="688-690" /> |
+| `server.grpcMaxSendMsgSize` | `*int` | `104857600` (100 MiB) | gRPC max send message size. <SourceLink file="common/defaults.go" lines="691-693" /> |
+| `server.maxTimeout` | `*Duration` | `150s` | Global per-HTTP-request deadline. **Required non-zero** — validation fails with "server.maxTimeout is required" if absent or zero. Bare integer YAML values are milliseconds: `maxTimeout: 150` = 150 ms. <SourceLink file="common/defaults.go" lines="694-697" /> |
+| `server.readTimeout` | `*Duration` | `30s` | `http.Server.ReadTimeout` — covers reading headers and body. <SourceLink file="common/defaults.go" lines="698-701" /> |
+| `server.writeTimeout` | `*Duration` | `120s` | `http.Server.WriteTimeout` — covers writing the response. The entire response is buffered by `TimeoutHandler` before reaching the socket, so this only matters at final flush. <SourceLink file="common/defaults.go" lines="702-705" /> |
+| `server.enableGzip` | `*bool` | `true` | Wraps handler in `gzipHandler` for response compression. Inbound gzip is always accepted regardless of this flag. <SourceLink file="common/defaults.go" lines="706-708" /> |
+| `server.tls.enabled` | `bool` | `false` | When true, both listeners use `ListenAndServeTLS` with TLS 1.2 minimum; gRPC also uses TLS. Disables h2c on the shared port. <SourceLink file="erpc/http_server.go" lines="1537-1554" /> |
+| `server.tls.certFile` | `string` | `""` | PEM cert path. Load failure → "failed to load TLS certificate and key". |
+| `server.tls.keyFile` | `string` | `""` | PEM key path. |
+| `server.tls.caFile` | `string` | `""` | When set, enables **mandatory mTLS**: `ClientAuth = RequireAndVerifyClientCert`. All clients must present a valid cert. Setting this field alone is sufficient — no other change needed. <SourceLink file="erpc/http_server.go" lines="1621-1633" /> |
+| `server.tls.insecureSkipVerify` | `bool` | `false` | **No effect on inbound TLS.** Go's TLS stack ignores this in server mode. Inbound cert verification is controlled only by `caFile`. This field only matters when the same struct is reused for outbound connections (Redis, tracing exporters). <SourceLink file="erpc/http_server.go" lines="1635" /> |
+| `server.aliasing.rules` | `[]*AliasingRuleConfig` | `nil` (auto-injected when zero projects) | Evaluated per request against `Host` (port stripped) in order; first wildcard match wins. <SourceLink file="erpc/http_server.go" lines="232-257" /> |
+| `server.aliasing.rules[].matchDomain` | `string` | — | Wildcard/boolean pattern (`*`, `\|`, `&`, `!`, parens) matched against the request host. <SourceLink file="common/matcher.go" lines="34-47" /> |
+| `server.aliasing.rules[].serveProject` | `string` | `""` | Pre-selected project ID. |
+| `server.aliasing.rules[].serveArchitecture` | `string` | `""` | Pre-selected architecture. Without `serveProject`, requires project in the URL path. Combining with `serveChain` but without `serveProject` is always `ErrInvalidUrlPath`. |
+| `server.aliasing.rules[].serveChain` | `string` | `""` | Pre-selected chainId. Combining `serveProject` + `serveChain` without `serveArchitecture` is rejected at request time. |
+| `server.waitBeforeShutdown` | `*Duration` | `10s` | Sleep after app-ctx cancel before calling `http.Server.Shutdown`. Lets readiness probes fail so the LB drains traffic first. <SourceLink file="common/defaults.go" lines="709-712" /> |
+| `server.waitAfterShutdown` | `*Duration` | `10s` | Sleep in `Init` after both listeners stop, before process exit. Lets telemetry exporters flush. <SourceLink file="common/defaults.go" lines="713-716" /> |
+| `server.includeErrorDetails` | `*bool` | `true` | When true, error responses include `error.data` = full original error object, except for `eth_call` (clients expect string revert data). Many early/client-side error paths force `true` regardless of this flag. <SourceLink file="common/defaults.go" lines="717-719" /> |
+| `server.trustedIPForwarders` | `[]string` | `["127.0.0.1/8", "::1/128"]` | IPs/CIDRs of proxies whose forwarding headers are trusted. Invalid entries are warned and ignored at runtime. <SourceLink file="common/defaults.go" lines="725-729" /> |
+| `server.trustedIPHeaders` | `[]string` | `[]` (none trusted by default) | Header names parsed XFF-style for real client IP, only when the direct peer is a trusted forwarder. RFC 7239 `Forwarded` is not supported. <SourceLink file="common/defaults.go" lines="730-733" /> |
+| `server.responseHeaders` | `map[string]string` | `nil` | Static headers added to every response. Values are env-expanded once at startup (`${VAR}` and `$VAR`). **Footgun:** headers whose value expands to empty string are silently dropped with only a Debug log — no warning, no error. <SourceLink file="erpc/http_server.go" lines="135-148" /> |
+| `server.executionHeaders` | `*ExecutionHeadersMode` | `"all"` | `"all"` = counters + metadata + per-attempt `X-ERPC-Upstreams` log; `"summary"` = counters + metadata; `"off"` = no `X-ERPC-*` diagnostic headers. <SourceLink file="common/defaults.go" lines="720-723" /> |
+| `healthCheck.mode` | `HealthCheckMode` | `"networks"` | `"simple"` = plain `OK` text; `"networks"` = per-network JSON; `"verbose"` = full JSON. <SourceLink file="erpc/healthcheck.go" lines="337-396" /> |
+| `healthCheck.auth` | `*AuthConfig` | `nil` | When set, a dedicated auth registry guards healthcheck endpoints. <SourceLink file="erpc/http_server.go" lines="201-207" /> |
+| `healthCheck.defaultEval` | `string` | `"any:initializedUpstreams"` | Default eval strategy when `?eval=` query param is absent. <SourceLink file="erpc/healthcheck.go" lines="106-112" /> |
+| `projects[].cors.allowedOrigins` | `[]string` | `["*"]` | Wildcard-matched against `Origin` header. Configured per-project (and on admin) but enforced by the HTTP server. <SourceLink file="erpc/http_server.go" lines="1022-1033" /> |
+| `cors.allowedMethods` | `[]string` | `["GET","POST","OPTIONS"]` | Joined into `Access-Control-Allow-Methods`. <SourceLink file="erpc/http_server.go" lines="1055" /> |
+| `cors.allowedHeaders` | `[]string` | `["content-type","authorization","x-erpc-secret-token"]` | Joined into `Access-Control-Allow-Headers`. <SourceLink file="erpc/http_server.go" lines="1056" /> |
+| `cors.exposedHeaders` | `[]string` | `nil` | Joined into `Access-Control-Expose-Headers`. <SourceLink file="erpc/http_server.go" lines="1057" /> |
+| `cors.allowCredentials` | `*bool` | `false` | Emits `Access-Control-Allow-Credentials: true` only when true. <SourceLink file="erpc/http_server.go" lines="1059-1061" /> |
+| `cors.maxAge` | `int` | `3600` | Emits `Access-Control-Max-Age` when > 0. <SourceLink file="erpc/http_server.go" lines="1063-1065" /> |
+
+**Hardcoded constants (non-configurable):**
+- `IdleTimeout` = 300s on both servers
+- `MaxHeaderBytes` = 1 MiB — the only hard inbound size limit
+- No request-body size limit — `util.ReadAll` copies until EOF with no upper bound; effective limits are `readTimeout` and process memory
+- Graceful shutdown budget = 30s
+- Response compression threshold = 1024 bytes on the first write
+- TLS `MinVersion` = TLS 1.2
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Public edge gateway behind an Anycast load balancer.** Many PaaS proxies inject the real client IP into a platform header (e.g. `Fly-Client-IP`, `CF-Connecting-IP`); the RFC-1918 trusted-forwarder CIDRs cover the platform mesh. `includeErrorDetails: false` strips internal stack traces from public responses. `waitBeforeShutdown: 30s` covers a couple of LB health-check intervals so rolling deploys drain fully before shutdown:
 
 <ConfigTabs
-	path="server"
-	focus="3-9"
-	yaml={`server:
-  httpPortV4: 4000
-  trustedIPHeaders:                # which headers carry the client IP
-    - X-Forwarded-For
-    - X-Real-IP
-  trustedIPForwarders:             # IPs/CIDRs allowed to set those headers
-    - 10.0.0.0/8                   # internal LB range
+  path="server"
+  yaml={`server:
+  # platform machines typically sit in RFC-1918 space; trust private CIDRs
+  trustedIPForwarders:
+    - 10.0.0.0/8
     - 172.16.0.0/12
-    - 192.168.0.0/16`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
+    - 192.168.0.0/16
+  # your platform injects the real client IP here — prefer it over spoofable X-Forwarded-For
+  trustedIPHeaders:
+    - CF-Connecting-IP
+  # strip internal error details from public 5xx responses
+  includeErrorDetails: false
+  # 30s covers a couple of LB health-check intervals before Shutdown is called
+  waitBeforeShutdown: 30s
+  # keep the process alive long enough for telemetry exporters to flush
+  waitAfterShutdown: 30s
+  responseHeaders:
+    # expose which region handled this request — useful for latency debugging
+    X-ERPC-Region: \${REGION}
+    X-ERPC-Machine: \${MACHINE_ID}`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   server: {
-    httpPortV4: 4000,
-    trustedIPHeaders: ["X-Forwarded-For", "X-Real-IP"],
+    // platform machines typically sit in RFC-1918 space; trust private CIDRs
     trustedIPForwarders: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+    // your platform injects the real client IP here — prefer it over spoofable X-Forwarded-For
+    trustedIPHeaders: ["CF-Connecting-IP"],
+    // strip internal error details from public 5xx responses
+    includeErrorDetails: false,
+    // 30s covers a couple of LB health-check intervals before Shutdown is called
+    waitBeforeShutdown: "30s",
+    // keep the process alive long enough for telemetry exporters to flush
+    waitAfterShutdown: "30s",
+    responseHeaders: {
+      // expose which region handled this request — useful for latency debugging
+      "X-ERPC-Region": "\${REGION}",
+      "X-ERPC-Machine": "\${MACHINE_ID}",
+    },
   },
 });`}
 />
 
-<Callout type="warning">
-	Without `trustedIPForwarders`, the X-Forwarded-For chain is taken at face value — a client can spoof their IP by setting their own X-F-F header. Always set this in any production deployment behind a proxy.
-</Callout>
+**2. Internal Kubernetes deployment with gRPC shared on the HTTP port.** Internal indexing fleets enable gRPC so indexer workers can use the gRPC connector without a separate endpoint. The default port derivation (`grpcPortV4` = `httpPortV4`) activates the in-process h2c mux — no separate `grpcPortV4` needed. Note that gRPC traffic on the shared port bypasses `TimeoutHandler` and gzip:
 
-## TLS
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  # gRPC shares port 4000 via the h2c in-process mux
+  # (grpcPortV4 defaults to httpPortV4 — no explicit value needed)
+  grpcEnabled: true
+  # 30s matches two readiness-probe intervals in most K8s LB configs
+  waitBeforeShutdown: 30s
+  waitAfterShutdown: 30s`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
 
-```yaml
-server:
+export default createConfig({
+  server: {
+    // gRPC shares port 4000 via the h2c in-process mux
+    // (grpcPortV4 defaults to httpPortV4 — no explicit value needed)
+    grpcEnabled: true,
+    // 30s matches two readiness-probe intervals in most K8s LB configs
+    waitBeforeShutdown: "30s",
+    waitAfterShutdown: "30s",
+  },
+});`}
+/>
+
+**3. Standalone gRPC on a dedicated port (when TimeoutHandler must cover all traffic).** When `grpcPortV4` differs from `httpPortV4`, eRPC starts a fully independent gRPC server instead of muxing. HTTP requests flow through `TimeoutHandler` and gzip as normal; gRPC has its own listener. Use this when you need `maxTimeout` enforcement on HTTP while still serving gRPC:
+
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  httpPortV4: 4000
+  grpcEnabled: true
+  # different port → standalone gRPC server, HTTP keeps its TimeoutHandler
+  grpcPortV4: 4010`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    httpPortV4: 4000,
+    grpcEnabled: true,
+    // different port → standalone gRPC server, HTTP keeps its TimeoutHandler
+    grpcPortV4: 4010,
+  },
+});`}
+/>
+
+**4. Mutual TLS for a private RPC gateway.** Adding `caFile` is the only field needed to flip mTLS on — it sets `ClientAuth = RequireAndVerifyClientCert` automatically. All clients must present a valid certificate signed by that CA. `waitBeforeShutdown: 20s` is two readiness-probe intervals for an NLB (10s probe interval × 2):
+
+<ConfigTabs
+  path="server"
+  yaml={`server:
   httpPortV4: 4443
   tls:
     enabled: true
     certFile: /etc/erpc/tls.crt
     keyFile: /etc/erpc/tls.key
-    caFile: /etc/erpc/ca.crt              # optional, for verifying client certs
-    insecureSkipVerify: false             # never set true in production
-```
-
-For most deployments, terminate TLS at the load balancer / ingress and run eRPC over plaintext HTTP inside the cluster. Native TLS is for self-hosted setups where you want eRPC to handle certs directly.
-
-## gRPC server
-
-eRPC can run a parallel gRPC listener for streaming responses (`eth_getLogs` and `trace_filter` chunked over server-streaming RPCs).
-
-<ConfigTabs
-	path="server"
-	focus="4-10"
-	yaml={`server:
-  listenV4: true
-  httpPortV4: 4000
-  grpcEnabled: true
-  grpcHostV4: "0.0.0.0"
-  grpcPortV4: 4100
-  grpcMaxRecvMsgSize: 33554432       # 32 MiB inbound message cap
-  grpcMaxSendMsgSize: 67108864       # 64 MiB outbound message cap
-  # HTTP/gRPC can run on independent IPv6 stacks; mirror the V4 fields.`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
+    # setting caFile alone enables mTLS — no other field required
+    caFile: /etc/erpc/ca.crt
+  # NLB probe interval is typically 10s; 2× = full drain window
+  waitBeforeShutdown: 20s
+  waitAfterShutdown: 5s`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
   server: {
-    listenV4: true,
-    httpPortV4: 4000,
-    grpcEnabled: true,
-    grpcHostV4: "0.0.0.0",
-    grpcPortV4: 4100,
-    grpcMaxRecvMsgSize: 33554432,
-    grpcMaxSendMsgSize: 67108864,
+    httpPortV4: 4443,
+    tls: {
+      enabled: true,
+      certFile: "/etc/erpc/tls.crt",
+      keyFile: "/etc/erpc/tls.key",
+      // setting caFile alone enables mTLS — no other field required
+      caFile: "/etc/erpc/ca.crt",
+    },
+    // NLB probe interval is typically 10s; 2× = full drain window
+    waitBeforeShutdown: "20s",
+    waitAfterShutdown: "5s",
   },
 });`}
 />
 
-By default eRPC binds the gRPC listener on IPv4 only. To add an IPv6 gRPC socket, set `grpcHostV6` and `grpcPortV6` alongside the V4 fields. If your platform supports dual-stack (most Linux kernels do), you can run the IPv6 listener on the same port as IPv4 — set `grpcPortV6` to the same value as `grpcPortV4`. For strict single-stack hosts, use a separate port (e.g. `4002`) to avoid bind conflicts.
+**5. Domain-based aliasing for a multi-chain gateway.** Operators serving Ethereum mainnet and Arbitrum on separate subdomains can pre-route requests by `Host` header so callers use bare URLs like `https://eth.example.com`. Specific rules are placed before the wildcard catch-all — first match wins. Combining `serveProject` + `serveChain` without `serveArchitecture` is an error; all three must be present for fully resolved routing:
 
-```yaml
-server:
-  grpcEnabled: true
-  grpcHostV4: "0.0.0.0"
-  grpcPortV4: 4100
-  grpcHostV6: "[::]"
-  grpcPortV6: 4100   # same port works on dual-stack; use 4102 on single-stack hosts
-```
-
-<AISection title="Copy for your AI assistant — full ServerConfig reference">
-
-### `ServerConfig` — every field
-
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `listenV4` | `*bool` | `true` | Enable the IPv4 HTTP listener. |
-| `httpHostV4` | `*string` | `"0.0.0.0"` | IPv4 bind host. |
-| `httpPortV4` | `*int` | `4000` | IPv4 HTTP port. |
-| `listenV6` | `*bool` | `false` | Enable the IPv6 HTTP listener. |
-| `httpHostV6` | `*string` | `"[::]"` | IPv6 bind host. |
-| `httpPortV6` | `*int` | `4000` | IPv6 HTTP port. |
-| `grpcEnabled` | `*bool` | `false` | Enable the parallel gRPC server. Used by streaming methods (`eth_getLogs`, `trace_filter`). |
-| `grpcHostV4` | `*string` | `"0.0.0.0"` | gRPC IPv4 bind host. |
-| `grpcPortV4` | `*int` | `4100` | gRPC IPv4 port. |
-| `grpcHostV6` | `*string` | `"[::]"` | gRPC IPv6 bind host. |
-| `grpcPortV6` | `*int` | `4100` | gRPC IPv6 port. |
-| `grpcMaxRecvMsgSize` | `*int` (bytes) | `4 MiB` (gRPC default) | Cap on the size of a single inbound gRPC message. Increase when a client batches a lot of large requests. |
-| `grpcMaxSendMsgSize` | `*int` (bytes) | `4 MiB` | Cap on outbound gRPC message size. Set generously when streaming large `eth_getLogs` responses. |
-| `maxTimeout` | duration | `30s` | The overall request envelope. Wraps every layer (network + retries + hedge + cache). Sized generously by default. |
-| `readTimeout` | duration | `0` (no timeout) | TCP-level read deadline; how long the server waits for the client to finish sending the request body. |
-| `writeTimeout` | duration | `0` (no timeout) | TCP-level write deadline; how long the server keeps the connection open for response transmission. |
-| `enableGzip` | `*bool` | `true` | Compress outbound responses with gzip when the client advertises `Accept-Encoding: gzip`. Inbound gzip is always accepted regardless. |
-| `tls` | `*TLSConfig` | none | TLS configuration. See [TLS configuration](#tls-configuration) below. |
-| `aliasing` | `*AliasingConfig` | none | Domain-based project aliasing rules. See "AliasingConfig" below. |
-| `waitBeforeShutdown` | duration | `0s` | Time to wait between SIGTERM and the start of the shutdown drain. Use this to let load balancers notice the failing healthcheck and drain traffic before the server actually stops accepting connections. |
-| `waitAfterShutdown` | duration | `0s` | Additional pause after the listener has stopped accepting connections, before the process exits. Useful for letting telemetry exporters flush. |
-| `includeErrorDetails` | `*bool` | `false` | When `true`, full error details (internal error type names, wrapped causes) are included in HTTP responses. When `false`, only the public error message is exposed; details stay in logs. Leave `false` for public-facing eRPCs; enable for internal debugging. |
-| `trustedIPForwarders` | `[]string` | none | List of IPs / CIDRs whose `X-Forwarded-For` (or other configured headers) eRPC is willing to honor. Walks the header left-to-right and picks the first IP NOT in this list. |
-| `trustedIPHeaders` | `[]string` | `["X-Forwarded-For"]` | Header names eRPC inspects to derive the client IP. Typical extras: `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP` (Cloudflare). |
-| `responseHeaders` | `map[string]string` | none | Static headers attached to every response. Values support `${VAR}` env expansion — useful for `X-Instance: ${HOSTNAME}` and similar instance-identification headers. |
-
-### TLS configuration
-
-The `TLSConfig` struct is shared by `server.tls`, `tracing.tls`, and the database connector `tls` blocks (`redis`, `postgresql`, `dynamodb`). All fields are the same regardless of where it appears.
-
-```yaml
-tls:
-  enabled: true
-  certFile: /etc/erpc/tls.crt          # PEM-encoded certificate (or chain)
-  keyFile: /etc/erpc/tls.key            # PEM-encoded private key
-  caFile: /etc/erpc/ca.crt              # optional; trusted root for client-cert verification
-  insecureSkipVerify: false              # disable cert validation entirely
-```
-
-| Field | Notes |
-|---|---|
-| `enabled` | Master switch. When `false`, the rest of `tls` is ignored. |
-| `certFile` | Path to PEM-encoded cert. Can be a chain (server cert + intermediates). |
-| `keyFile` | Path to PEM-encoded private key. Permissions should be 0600 (root-only readable). |
-| `caFile` | Path to PEM-encoded CA bundle. When set and the listener requests client certs, this is the trust root for verification. |
-| `insecureSkipVerify` | When `true`, the server accepts any client cert / disables verification. **Never** set in production. Use for local development against self-signed certs only. |
-
-### `AliasingConfig` — domain-based project routing
-
-`server.aliasing.rules[]` lets you serve different projects/architectures/chains based on the `Host` header. Useful when you want `eth.example.com` to mean `/main/evm/1` without callers writing out the path.
-
-```yaml
-server:
+<ConfigTabs
+  path="server.aliasing"
+  yaml={`server:
   aliasing:
     rules:
-      - matchDomain: eth.example.com
+      # specific rules must come before the wildcard — first match wins
+      - matchDomain: "eth.example.com"
         serveProject: main
         serveArchitecture: evm
-        serveChain: 1
-      - matchDomain: arbi.example.com
+        serveChain: "1"
+      - matchDomain: "arb.example.com"
         serveProject: main
         serveArchitecture: evm
-        serveChain: 42161
-```
+        serveChain: "42161"
+      # wildcard catch-all: project pre-selected, chain still from URL path
+      - matchDomain: "*.example.com"
+        serveProject: main`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
 
-| Field | Notes |
-|---|---|
-| `matchDomain` | Host header to match. Exact match (case-insensitive). |
-| `serveProject` | Project ID to route to. |
-| `serveArchitecture` | Architecture (`evm`). |
-| `serveChain` | Chain ID (numeric, as a string in JSON but parsed as an integer in YAML). |
+export default createConfig({
+  server: {
+    aliasing: {
+      rules: [
+        // specific rules must come before the wildcard — first match wins
+        { matchDomain: "eth.example.com", serveProject: "main", serveArchitecture: "evm", serveChain: "1" },
+        { matchDomain: "arb.example.com", serveProject: "main", serveArchitecture: "evm", serveChain: "42161" },
+        // wildcard catch-all: project pre-selected, chain still from URL path
+        { matchDomain: "*.example.com", serveProject: "main" },
+      ],
+    },
+  },
+});`}
+/>
 
-When a request's `Host` matches a rule, the URL path can be just the JSON-RPC body — the project/architecture/chain are filled in from the rule. See [URL & aliasing](/operation/url) for the request flow.
+### Request/response behavior
 
-### Shutdown semantics
+**HTTP status mapping** (`determineResponseStatusCode` and `handleErrorResponse`, both switch on the same error code set):
 
-Shutdown is a two-phase process designed to play well with load balancers:
+| Status | Conditions |
+|--------|------------|
+| 400 | `ErrInvalidUrlPath`, `ErrJsonRpcRequestUnmarshal`, `ErrInvalidRequest` |
+| 401 | `ErrAuthUnauthorized`, `ErrEndpointUnauthorized` |
+| 404 | `ErrProjectNotFound`, `ErrNetworkNotFound`, `ErrNetworkNotSupported` |
+| 429 | `ErrAuthRateLimitRuleExceeded`, `ErrProjectRateLimitRuleExceeded`, `ErrNetworkRateLimitRuleExceeded`, `ErrEndpointCapacityExceeded` |
+| 200 | everything else; JSON-RPC application errors always stay 200 |
 
-1. **Phase 1 (`waitBeforeShutdown`)** — eRPC has received SIGTERM. The `/healthcheck` endpoint starts returning 503. New connections are still accepted; in-flight requests continue. The LB / k8s ingress sees the failing healthcheck and stops sending new traffic.
-2. **Phase 2 — drain** — eRPC stops accepting new connections. Existing in-flight requests get to finish (bounded by `maxTimeout`).
-3. **Phase 3 (`waitAfterShutdown`)** — after the listener is closed, eRPC pauses to flush telemetry (Prometheus, OpenTelemetry exporters) before the process exits.
+Note: `writeFatalError` (panics, write failures) and the timeout/cancel paths force HTTP 200 for POST regardless of error type. Source: <SourceLink file="erpc/http_server.go" lines="1280-1317" />
 
-A typical production tuning: `waitBeforeShutdown: 20s` (matches your k8s readiness probe interval × 2) and `waitAfterShutdown: 5s` (lets the metrics scraper pick up the final values).
+**Error response shapes:**
+- Standard JSON-RPC single error: `{"jsonrpc":"<ver>","id":<id>,"error":{"code":<int>,"message":"<msg>"[,"data":<any>]}}` — `includeErrorDetails` adds `error.data` except on `eth_call`
+- Timeout body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"http request handling timeout"}}` at HTTP 200 (POST) / 504 (other) [<SourceLink file="erpc/http_timeout.go" lines="107-122" />]
+- Client-cancel body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"request cancelled by client"}}` at HTTP 200 (POST) / 503 (other)
+- Fatal-path body (panic/write failure): `{"jsonrpc":"2.0","error":{"code":-32603,"message":...}}` — **no `id` field**
+- Batch responses are always HTTP 200 and carry no `X-ERPC-*` diagnostic headers; each element is written as a streaming JSON array. Source: <SourceLink file="erpc/http_server.go" lines="703-720" />
 
-### Custom response headers
+**Diagnostic response headers** (single responses only; `setResponseHeaders`):
+- `X-ERPC-Version`, `X-ERPC-Commit` — emitted on every response (build-time ldflags vars, defaults `"dev"` and `"none"`). <SourceLink file="erpc/http_server.go" lines="260-261" />
+- `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts/-Retries/-Hedges`, `X-ERPC-Network-Attempts/-Retries/-Hedges` — counters, **zero-filled on early errors** (not omitted; only `mode: off` removes them). <SourceLink file="erpc/http_server.go" lines="1149-1166" />
+- `X-ERPC-Cache-Attempts/-Retries/-Hedges` — emitted only when the cache scope was exercised. <SourceLink file="erpc/http_server.go" lines="1170-1174" />
+- `X-ERPC-Consensus-Slots`, `X-ERPC-Consensus-Disputes`, `X-ERPC-Consensus-Low-Participants` — emitted only when consensus was exercised and the count is > 0. <SourceLink file="erpc/http_server.go" lines="1175-1183" />
+- `X-ERPC-Cache: HIT|MISS`, `X-ERPC-Upstream`, `X-ERPC-Duration` — response metadata
+- `X-ERPC-Upstreams` (mode `all` only): per-attempt participation log in the form `<id>=<reason>:<outcome>:<duration>ms[:won]`
+- `traceparent` (+ `tracestate`) — injected when tracing is enabled. <SourceLink file="common/tracing_util.go" lines="58-65" />
 
-```yaml
-server:
-  responseHeaders:
-    X-eRPC-Instance: \${HOSTNAME}
-    Strict-Transport-Security: "max-age=31536000; includeSubDomains"
-    X-Content-Type-Options: nosniff
-```
+**Request headers with server-level effects:**
+- `Host` — aliasing match (port stripped)
+- `Content-Encoding: gzip` — inbound body decompression (always, regardless of `enableGzip`)
+- `Accept-Encoding: gzip` — response compression eligibility
+- `Content-Type: application/grpc` over HTTP/2 — gRPC mux on shared port (bypasses `TimeoutHandler` and gzip)
+- `Origin` — CORS evaluation; absent Origin bypasses CORS entirely
+- `X-ERPC-Force-Trace: true|1|yes` or `?force-trace=true|1|yes` — force-sample the OTel trace for this request. <SourceLink file="common/tracing_util.go" lines="106-119" />
+- `traceparent` / `tracestate` — W3C trace-context extraction on ingress. <SourceLink file="common/tracing_util.go" lines="67-73" />
+- `?eval=` — healthcheck strategy override (bypasses `healthCheck.defaultEval`). <SourceLink file="erpc/healthcheck.go" lines="106-112" />
+- Auth headers: `?token=` (deprecated), `X-ERPC-Secret-Token`, `Authorization: Basic|Bearer`, `?secret=`, `?jwt=`, `?signature=&message=`, `X-Siwe-Message`/`X-Siwe-Signature`. <SourceLink file="auth/http.go" lines="13" />
 
-`${VAR}` env-var expansion happens at config load. Headers with empty values (after expansion) are skipped.
+### Best practices
 
-### Gzip semantics
+- Set `maxTimeout` as a Go duration string (`"30s"`), never a bare integer. `maxTimeout: 150` means 150 milliseconds, not 150 seconds — this is the most common misconfiguration footgun.
+- Size `maxTimeout` to be greater than your largest network-level `failsafe.timeout` plus total retry overhead, or retries will be cut short by the server ceiling before they complete. See [Timeout](/config/failsafe/timeout).
+- In production behind an LB, set `waitBeforeShutdown` to at least two readiness-probe intervals (often 20s). The default `10s` is too short for many Kubernetes setups.
+- **Never omit `trustedIPForwarders`** when running behind a proxy. Without it, every request appears to come from the LB IP, breaking per-IP rate limits, auth network strategies, and client identity logging.
+- Setting `tls.caFile` enables mTLS implicitly and immediately — all clients must then present a certificate. Verify this is intended before adding the field in production.
+- Keep `executionHeaders: "summary"` or `"off"` for production traffic if response size is sensitive — `"all"` mode emits a verbose `X-ERPC-Upstreams` header that grows linearly with the number of upstream attempts.
+- Use `responseHeaders` for static CORS or security headers, but pin the env vars at deploy time. Values that expand to empty are silently dropped with no error, so a missing env var makes the header vanish invisibly.
 
-| Direction | Toggle | Default |
-|---|---|---|
-| Client → eRPC inbound | Always accepted when client sends `Content-Encoding: gzip`. | always on |
-| eRPC → Client outbound | `server.enableGzip`. Compresses when client sent `Accept-Encoding: gzip`. | `true` |
+### Edge cases & gotchas
 
-Per-upstream outbound gzip (eRPC → upstream) is a separate toggle on `jsonRpc.enableGzip` (see [Upstreams](/config/projects/upstreams)).
+1. **`maxTimeout` bare integer is milliseconds.** `maxTimeout: 150` = 150 ms, not 150 s. Always use a duration string like `"150s"`. Source: <SourceLink file="common/duration.go" lines="20-31" />
+2. **`grpcEnabled: true` with default ports silently shares the HTTP v4 port.** gRPC traffic bypasses `maxTimeout` and gzip. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
+3. **mTLS is implicit.** Setting `tls.caFile` flips `ClientAuth = RequireAndVerifyClientCert` — all clients must present certs. No other field is needed. Source: <SourceLink file="erpc/http_server.go" lines="1621-1633" />
+4. **`tls.insecureSkipVerify` does nothing for inbound connections.** It is a client-dialing flag only; Go's TLS server ignores it. Inbound cert verification is controlled by `caFile` alone. Source: <SourceLink file="erpc/http_server.go" lines="1635" />
+5. **`responseHeaders` env vars that expand to empty are silently dropped.** No warning is emitted — only a Debug log. A missing env var in production silently removes the header from all responses. Source: <SourceLink file="erpc/http_server.go" lines="135-148" />
+6. **`listenV6` has no default.** IPv6 is OFF unless explicitly set to `true`; it is never auto-enabled. Source: <SourceLink file="common/defaults.go" lines="640-650" />
+7. **`httpPort` (deprecated) is silently migrated.** No warning is emitted. After `SetDefaults`, `httpPort` always equals `httpPortV4`. New configs must use `httpPortV4`. Source: <SourceLink file="common/defaults.go" lines="652-661" />
+8. **No request-body size limit.** There is no `http.MaxBytesReader`; a multi-GB body is fully read into memory. Only `readTimeout` and process memory provide back-pressure. Source: <SourceLink file="util/reader.go" lines="12-32" />
+9. **POST requests can still get non-200 status codes.** HTTP 400/401/404/429 mappings apply to POST; only the fatal-writer and timeout/cancel paths force 200-for-POST. Source: <SourceLink file="erpc/http_server.go" lines="1470-1491" />
+10. **Whole responses are buffered before hitting the socket.** Large responses consume RAM; pooled buffers above 256 KiB are discarded to GC. `writeTimeout` only matters at the final socket copy. Source: <SourceLink file="erpc/http_timeout.go" lines="43-48" />
+11. **Disallowed CORS origins are not blocked for non-OPTIONS requests.** The request proceeds without `Access-Control-*` headers; the browser enforces the block. Source: <SourceLink file="erpc/http_server.go" lines="1036-1051" />
+12. **Zero-project configs self-alias.** A default `main` project and `matchDomain: "*"` rule are injected so `/evm/1` works without a project segment. Source: <SourceLink file="common/defaults.go" lines="100-111" />
+13. **`serveProject` + `serveChain` without `serveArchitecture` is always an error.** Source: <SourceLink file="erpc/http_server.go" lines="985-990" />
+14. **Full request bodies are logged at Info level by default.** Sensitive params (private keys, tokens in JSON-RPC args) appear in logs. Source: <SourceLink file="erpc/http_server.go" lines="398-402" />
+15. **`X-ERPC-Attempts` excludes NetworkAttempts** to avoid double-counting rotations. Source: <SourceLink file="erpc/http_server.go" lines="1151-1157" />
+16. **Batch detection is byte-exact.** Leading whitespace before `[` makes the body parse as a single (invalid) request. Source: <SourceLink file="erpc/http_server.go" lines="405" />
+17. **Any non-POST/non-OPTIONS request becomes a healthcheck**, including `GET /myproject/evm/1`. Source: <SourceLink file="erpc/http_server.go" lines="1001-1003" />
+18. **RFC 7239 `Forwarded` is dead code** — only headers named in `trustedIPHeaders` are consulted, parsed XFF-style. Source: <SourceLink file="erpc/http_server.go" lines="1856-1881" />
+19. **CORS metric label mismatch.** The label named `project` is populated with the URL path, not the project ID. Source: <SourceLink file="erpc/http_server.go" lines="1020" />
+20. **`serveArchitecture`-only aliasing requires a project in the URL path.** Combining `serveArchitecture` + `serveChain` without `serveProject` is always `ErrInvalidUrlPath`. Source: <SourceLink file="erpc/http_server.go" lines="963-990" />
+21. **OPTIONS to a project without CORS config falls through to normal request handling.** The OPTIONS early-return lives inside the `CORS != nil` branch; a project with no `cors:` block sends an empty body OPTIONS through the full JSON-RPC path, returning a JSON-RPC error (not a 204). Source: <SourceLink file="erpc/http_server.go" lines="343-347" />
+22. **Gzip decision is first-write-only.** A response whose first chunk is smaller than 1024 bytes is never compressed, even if subsequent writes are large. Source: <SourceLink file="erpc/http_server.go" lines="1708-1717" />
+23. **Done/canceled race silently drops the response.** If the inner handler finishes but the request context has already errored (e.g. a race between handler return and deadline), nothing is written to the socket. The timeout layer has already responded. Source: <SourceLink file="erpc/http_timeout.go" lines="72-80" />
+24. **Counter headers are zero-filled on early errors, not omitted.** Even URL-parse or project-lookup failures emit `X-ERPC-Attempts: 0`, `X-ERPC-Upstream-Attempts: 0`, etc., because `writeCounterHeaders` runs against a nil-safe snapshot. Only `executionHeaders: "off"` suppresses them entirely. Source: <SourceLink file="erpc/http_server.go" lines="1149-1166" />
+25. **`ErrUnknown` fallback body is not JSON-RPC shaped.** When `processErrorBody` receives an error that survives all unwrapping as neither a `*common.BaseError` nor `common.StandardError`, it produces `{"code":"ErrUnknown","message":"unexpected server error","cause":{...}}` — a struct dump, not `{"jsonrpc":"2.0","error":{...}}`. Clients parsing `response.error.code` as an integer will fail; detection must branch on whether the outer object has a `code` string key vs an `error` object key. Source: <SourceLink file="erpc/http_server.go" lines="1450-1454" />
+26. **`ErrorStatusCode()` on error types is dead code.** Every error type in `common/errors.go` implements `ErrorStatusCode() int`, but there are no call sites. The wire HTTP status is determined exclusively by the two switch blocks in `determineResponseStatusCode` and `handleErrorResponse` using `common.HasErrorCode`. Reading an error type's `ErrorStatusCode()` to infer the wire status gives wrong answers for many types (e.g. `ErrNetworkInitializing` → 503, `ErrUpstreamRateLimitRuleExceeded` → 429 per the method, but neither appears in the switch). Source: <SourceLink file="erpc/http_server.go" lines="1280-1317" />
+27. **Sonic encoder writes a trailing newline and disables HTML escaping globally.** The early-error path uses `encoder.Encode` (trailing `\n`) and sonic's HTML escaping is off (`common/sonic.go`). JSON field values such as URLs are not HTML-escaped in error bodies. Source: <SourceLink file="erpc/http_server.go" lines="229-230" />
 
-### Trusted-proxy IP — full walk-through
+### Observability
 
-Suppose the request hits eRPC after passing through:
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_unexpected_panic_total` | counter | `scope`, `extra`, `error` | Scopes: `request-handler`, `final-error-writer`, `top-level-handler`, `timeout-handler`, `validate-pattern` |
+| `erpc_cors_requests_total` | counter | `project` (= URL path), `origin` | Every request carrying an `Origin` header |
+| `erpc_cors_preflight_requests_total` | counter | `project`, `origin` | Allowed-origin OPTIONS preflight requests |
+| `erpc_cors_disallowed_origin_total` | counter | `project`, `origin` | Origin matched no allowlist entry |
 
-```
-client (203.0.113.5)
-   → CDN edge (cloudflare, 198.51.100.1)
-   → cluster ingress (10.0.1.5, in 10.0.0.0/8)
-   → eRPC pod
-```
+**Trace spans:** `Http.ReceivedRequest` (SpanKind=server; attrs `http.method`, `http.url`, `http.scheme`, `http.user_agent`); `Request.Handle` per sub-request; detail spans `Http.ReadBody`, `Http.ParseRequests`, `HttpServer.WriteResponse`; `w3c traceparent`/`tracestate` extraction on ingress, injection on egress.
 
-The ingress sets:
+**Note:** there is no generic `http_requests_total`-style server metric; request accounting happens at the network/upstream layers.
 
-```
-X-Forwarded-For: 203.0.113.5, 198.51.100.1
-```
+**Notable log lines:**
+- `"received http request"` at **Info** — includes the full raw JSON body; sensitive params appear at default log level
+- `"entering draining mode → healthcheck will fail"` on SIGTERM
+- `"starting IPv4/IPv6 HTTP server on <addr>"` at listen
+- `"TLS enabled for IPv4/IPv6 HTTP server"` when TLS is active
+- `"http server forced to shutdown"` / `"http server stopped"` on graceful drain completion
+- `"custom response header configured"` / `"custom response header skipped (empty value after env expansion)"` for `responseHeaders`
+- `"invalid CIDR/IP in trusted forwarders; ignoring"` for malformed forwarder entries
+- `"CORS request from disallowed origin..."` at Debug when an origin is rejected
 
-(Most CDNs append to X-Forwarded-For; some also set `CF-Connecting-IP: 203.0.113.5`.)
+### Source code entry points
 
-Configured:
+- [`erpc/http_server.go:L1-L230`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1-L230) — `NewHttpServer`: handler chain assembly, gzip/timeout wrapping, gRPC mux, IPv4/IPv6 server construction, `responseHeaders` env expansion, trusted forwarder parsing
+- [`common/defaults.go:L640-L733`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L640-L733) — `ServerConfig.SetDefaults`: all defaults including port derivation, deprecated `httpPort` migration, zero-project aliasing injection
+- [`erpc/http_timeout.go:L20-L143`](https://github.com/erpc/erpc/blob/main/erpc/http_timeout.go#L20-L143) — custom `TimeoutHandler`: buffered response, timeout/cancel body shapes, panic propagation
+- [`erpc/http_server.go:L1537-L1637`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1537-L1637) — TLS config construction, `ListenAndServeTLS`, mTLS `ClientAuth` assignment
+- [`erpc/http_server.go:L1782-L1905`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1782-L1905) — `resolveRealClientIP`: trusted forwarder check, XFF right-trim, fallback to peer IP
+- [`erpc/http_server.go:L810-L1006`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L810-L1006) — `parseUrlPath`: full aliasing × path-segment case matrix
+- [`common/validation.go:L70-L109`](https://github.com/erpc/erpc/blob/main/common/validation.go#L70-L109) — `ServerConfig.Validate`: listen host/port pairing, `maxTimeout` required, forwarder IP/CIDR syntax
+- [`erpc/http_server_test.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server_test.go) — path parsing matrix, CORS, timeouts, aliasing fixtures
 
-```yaml
-server:
-  trustedIPForwarders:
-    - 10.0.0.0/8                       # cluster ingress
-    - 198.51.100.0/24                  # cloudflare range (illustrative)
-  trustedIPHeaders:
-    - X-Forwarded-For
-    - CF-Connecting-IP
-```
+### Related pages
 
-eRPC walks `X-Forwarded-For` left-to-right looking for the first non-trusted IP:
-
-- `203.0.113.5` — not in trustedIPForwarders → **use this as the client IP**
-
-If you forgot to include `198.51.100.0/24` in trustedIPForwarders, eRPC would stop at `198.51.100.1` and falsely treat the CDN as the client.
-
-### Common pitfalls
-
-- **`maxTimeout` shorter than your slowest network failsafe timeout** — clients will see timeouts even when a retry would have succeeded. Size `maxTimeout` to be the umbrella; per-network timeouts handle internal bounds.
-- **`grpcEnabled` without an LB that supports h2c / HTTP/2** — most TCP load balancers work; some HTTP-aware proxies (older Nginx) need explicit HTTP/2 support. Verify before deploying behind one.
-- **`waitBeforeShutdown: 0s` with k8s** — kubelet sends SIGTERM the moment a pod is marked for deletion. With `waitBeforeShutdown: 0`, eRPC stops accepting connections instantly; in-flight requests to LB-balanced replicas may be racy. Set ≥ 2× your readiness probe interval.
-- **`includeErrorDetails: true` on a public endpoint** — leaks internal error type names that may reveal implementation details. Keep `false` and rely on logs.
-- **`responseHeaders` colliding with eRPC's own headers** — eRPC sets `Content-Type`, `Content-Encoding`, `X-eRPC-Request-Id`, etc. Don't override those.
-- **`trustedIPHeaders` without `trustedIPForwarders`** — eRPC reads the header from any source. Always pair them.
+- [Timeout](/config/failsafe/timeout) — per-network timeout that must stay below `server.maxTimeout` or the server ceiling fires first.
+- [Rate limiters](/config/rate-limiters) — per-IP rate limits depend on accurate client IP, which requires correct `trustedIPForwarders` + `trustedIPHeaders`.
+- [Auth](/config/auth) — authentication strategies consume the resolved client IP from this layer.
+- [URL structure & aliasing](/operation/url) — full path-parsing logic and all valid segment combinations for domain aliasing.
+- [Deployment overview](/deployment/self-hosted) — where `server:` fits in a production Kubernetes or Docker deployment.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

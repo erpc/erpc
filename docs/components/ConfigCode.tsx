@@ -32,7 +32,7 @@ export interface ConfigCodeProps {
 	/**
 	 * Lines (1-indexed) to keep at full opacity. Everything else is dimmed.
 	 * Accepts a comma-separated list with optional ranges, e.g. "6-8,12,15-17".
-	 * Omit to render at full opacity throughout.
+	 * Omit to render all lines plainly (no highlight, no dimming).
 	 */
 	focus?: string;
 	/** Show line numbers in the gutter. Default false (keep snippets minimal). */
@@ -106,8 +106,8 @@ export function ConfigCode({
 	code: codeProp,
 	children,
 }: ConfigCodeProps) {
-	const focusSet = parseFocus(focus);
 	const code = (codeProp ?? childrenToString(children)).replace(/^\n+|\n+$/g, "");
+	const focusSet = parseFocus(focus);
 
 	return (
 		<div
@@ -140,13 +140,20 @@ export function ConfigCode({
 							<code>
 								{tokens.map((line, i) => {
 									const lineNum = i + 1;
-									const focused = focusSet ? focusSet.has(lineNum) : true;
+									// Tri-state: no focus info → plain lines (no accent,
+									// no dimming). With focus info → highlight matches,
+									// dim the rest.
+									const focusClass = focusSet
+										? focusSet.has(lineNum)
+											? "cv-cc-focus"
+											: "cv-cc-dim"
+										: "";
 									const lineProps = getLineProps({ line });
 									return (
 										<span
 											{...lineProps}
 											key={`line-${lineNum}`}
-											className={`cv-cc-line ${focused ? "cv-cc-focus" : "cv-cc-dim"} ${lineProps.className ?? ""}`}
+											className={`cv-cc-line ${focusClass} ${lineProps.className ?? ""}`}
 											data-line={lineNum}
 										>
 											{showLineNumbers && (

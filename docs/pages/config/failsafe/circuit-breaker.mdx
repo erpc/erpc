@@ -1,73 +1,598 @@
 ---
 title: Circuit breaker
-description: How eRPC trips a failing upstream out of rotation — via the Selection Policy's excludeIf chain.
+description: When an upstream starts failing, eRPC stops sending it traffic automatically — and quietly brings it back once it recovers.
 ---
 
-import { Callout } from "nextra/components";
+import {
+	AISection,
+	ConfigTabs,
+	SourceLink,
+	LLMsTxtLink,
+	PromptExample,
+} from "../../../components";
+
+<LLMsTxtLink />
 
 # Circuit breaker
 
-In eRPC, *"trip a bad upstream out of rotation"* is the [Selection Policy](/config/projects/selection-policies)'s job — not a separate failsafe policy. One unified mechanism covers every kind of "bad": failing, slow, throttled, lagging. Exclusion lives at the network level; the per-upstream-state-machine model has no separate home.
+A misbehaving upstream can drag every request down with it. The circuit breaker
+watches each upstream's recent outcomes and, the moment failures cross your threshold,
+cuts it out of rotation instantly — no wasted dials, no cascading timeouts. Traffic
+flows to healthy upstreams while the broken one sits on a cooldown, then eRPC
+probes it automatically and restores it once it proves it's back.
 
-## How it works
+**What you get**
 
-The selection policy runs on a tick (default every `1s`) and returns the ordered list of upstreams eligible to serve requests on that network. **Order is law; missing means excluded.** Each tick the policy can drop an upstream based on any signal in its rolling-window health metrics:
+- Instant removal of failing upstreams — no transport dials while the breaker is open
+- Self-healing: automatic probe after a cooldown, automatic re-admission on success
+- Per-method granularity — `eth_getLogs` can trip without affecting `eth_call`
+- Zero user impact when other upstreams are healthy
 
-```js
-upstreams
-  .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))                     // failing
-  .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))                  // throttled
-  .excludeIf(any(all(samplesAbove(20), latencyDeviationAbove(3)),            // slow
-                 latencyAbove(30_000)))
-  .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))         // lagging
-  ...
-  .probeExcluded({ sampleRate: 0.1, minSamples: 10 })                        // shadow-mirror real traffic at excluded upstreams
+## Quick taste
+
+Illustrative, not a tuned production config — trips after 20 failures in an 80-request
+window, probes after 5 minutes:
+
+<ConfigTabs
+	path="projects[].upstreams[].failsafe[].circuitBreaker"
+	focusYaml="8-15"
+  focusTs="8-15"
+	yaml={`projects:
+  - id: main
+    upstreams:
+      - id: my-upstream
+        endpoint: https://rpc.example.com
+        failsafe:
+          - matchMethod: "*"
+            circuitBreaker:
+              # trips after 20 failures in an 80-request window
+              failureThresholdCount: 20
+              failureThresholdCapacity: 80
+              # probes after 5 minutes of cooldown
+              halfOpenAfter: 5m
+              successThresholdCount: 8
+              successThresholdCapacity: 200`}
+	ts={`projects: [{
+  id: "main",
+  upstreams: [{
+    id: "my-upstream",
+    endpoint: "https://rpc.example.com",
+    failsafe: [{
+      matchMethod: "*",
+      circuitBreaker: {
+        // trips after 20 failures in an 80-request window
+        failureThresholdCount: 20,
+        failureThresholdCapacity: 80,
+        // probes after 5 minutes of cooldown
+        halfOpenAfter: "5m",
+        successThresholdCount: 8,
+        successThresholdCapacity: 200,
+      },
+    }],
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="add circuit breakers to protect against a flaky upstream"
+	defaultOpen
+	prompt={`One of my upstreams is intermittently returning 5xx errors and timing out, causing all my
+requests to slow down while eRPC waits for it. Add a circuit breaker to each upstream in my
+my eRPC config so the failing upstream is cut out of rotation automatically after a burst of errors
+and only re-admitted after a cooldown probe. Explain the failure-threshold and half-open settings
+you chose. Read the full reference first:
+https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="tune existing circuit breaker thresholds"
+	prompt={`Audit the circuitBreaker settings on all upstreams in my eRPC config. For each one, tell me
+whether the failureThresholdCapacity window is large enough to avoid false trips on transient
+blips, whether halfOpenAfter is longer than a typical upstream restart, and whether the
+successThresholdCapacity default of 200 (not 10 — there is a known dead-code bug) is appropriate
+for my traffic volume. Suggest concrete numbers with reasoning. Reference:
+https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="add method-specific breaker for heavy archive queries"
+	prompt={`I have an upstream that handles both lightweight eth_call requests and expensive eth_getLogs
+archive queries. When it gets overloaded by getLogs it returns errors, but I don't want that to
+trip the breaker for all methods. Configure separate circuit breaker entries in my eRPC config: a
+tighter one for eth_getLogs and a more conservative catch-all for everything else. Reference:
+https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug why an upstream keeps flapping open/closed"
+	prompt={`My eRPC logs show repeated circuit breaker transitions: closed_to_open followed immediately
+by half_open_to_open on the same upstream, cycling every minute or two. Explain what causes this
+flapping pattern and what I should change in the circuitBreaker config in my eRPC config to stop it
+without making the breaker too slow to trip. Reference:
+https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="fan out one circuit breaker config across all upstream failsafe entries"
+	prompt={`My upstreams have multiple method-specific failsafe blocks (different timeouts per method).
+I want to apply the same circuit breaker config to every one of those blocks so CB protection is
+uniform regardless of which method trips a failure. Show me how to do this cleanly in TypeScript
+config format for my eRPC config. Reference:
+https://docs.erpc.cloud/config/failsafe/circuit-breaker.llms.txt`}
+/>
+
+<AISection title="Circuit breaker — full agent reference">
+
+### How it works
+
+**State machine.** The breaker is a per-upstream in-process state machine with three states:
+
+```
+Closed  --[ failures >= failureThresholdCount, after window fills ]-->  Open
+Open    --[ time.Since(openedAt) >= halfOpenAfter, on TryAcquirePermit ]-->  HalfOpen
+HalfOpen --[ halfOpenSuccess >= successThresholdCount, after trial fills ]--> Closed
+HalfOpen --[ any failure OR trial fills but successCount < threshold ]--> Open (openedAt reset)
 ```
 
-An excluded upstream stays out until its tracker metrics improve below the same `excludeIf` thresholds — there is **no separate readmit timer**. The `probeExcluded` step subscribes the network's probe subsystem to the request feed; the prober shadow-mirrors a sampled stream of real requests against any currently-excluded upstream, feeding the same tracker counters as real traffic. Once those counters cross back below the threshold, the upstream falls out of the excluded set on the next tick and re-enters rotation.
+**Closed state — ring-buffer window.** The breaker maintains a circular ring buffer of
+the last `failureThresholdCapacity` outcomes (success or failure). The buffer is pre-allocated
+at construction with capacity `max(failureThresholdCapacity, failureThresholdCount, 1)`.
+<SourceLink file="failsafe/breaker.go" lines="107-125" /> The open condition is evaluated
+only once the buffer is full: if `failures >= failureThresholdCount`, the breaker trips to
+Open and records `openedAt = time.Now()`. <SourceLink file="failsafe/breaker.go" lines="280-300" />
 
-This is the **default policy** — you get it by omitting `selectionPolicy` entirely. The thresholds (70 % error rate / 40 % throttle rate, each gated on ≥ 10 samples; p70 > 30 s OR 3× the fastest peer gated on ≥ 20 samples; head lag > 16 blocks OR 30 s) are tuned for production from day one. The `samplesAbove(N)` guards on the error / throttle / relative-latency predicates exist so a single failing call on a fresh-pod tracker (errorRate = 1/1 = 1.0) cannot cascade-evict every upstream before the rolling window has meaningful denominator.
+**Open state.** While Open, every call to `TryAcquirePermit()` returns false immediately —
+no transport dial occurs, no timeout ticks. The upstream returns
+`ErrFailsafeCircuitBreakerOpen` instantly. After `halfOpenAfter` has elapsed, the next
+incoming request transitions the breaker to HalfOpen and is allowed through as a probe.
+<SourceLink file="failsafe/breaker.go" lines="158-176" />
 
-## State, mapped to selection-policy concepts
+**HalfOpen state.** Up to `max(successThresholdCapacity, successThresholdCount, 1)` concurrent
+trial permits are issued (tracked via `halfOpenInflight`). When
+`halfOpenSuccess + halfOpenFailure >= successThresholdCapacity` (trial window full),
+the breaker closes if `successThresholdCount` successes were recorded; otherwise it re-opens
+and `openedAt` resets. A single failure in HalfOpen re-opens immediately without waiting
+for the window to fill. <SourceLink file="failsafe/breaker.go" lines="232-237" />
 
-| Concept | Surfaced as |
-|---|---|
-| **Closed** (upstream healthy) | Present in the eval's returned ordered list. `erpc_selection_position{upstream}` is `0` (primary) or `1+` (runner-up). |
-| **Open** (upstream excluded) | Missing from the returned list. `erpc_selection_position{upstream}` is `-1`. The reason ("errorRate>0.7", "p70>30000ms", "p70>3xFastest", ...) appears on the per-tick `Decision.Output.Excluded[]` entry (as `Reason` for display + `LeafReasons[]` slugs that drive `selection_exclusion_total{reason}`) and in DEBUG logs. |
-| **Half-open** (probing recovery) | `probeExcluded` shadow-mirrors sampled real traffic to currently-excluded upstreams in the background. The mirrored calls feed the same tracker counters as real traffic; once they cross back below the `excludeIf` thresholds, the upstream falls out of the excluded set on the next tick. No real user traffic is served by an excluded upstream during this — the probing is entirely behind the scenes. Per-upstream opt-out via `routing.probe: 'off'`. |
+**`TryAcquirePermit()` per-state logic.** <SourceLink file="failsafe/breaker.go" lines="139-176" />
 
-## Tuning the thresholds
+- **StateClosed**: always returns `true` immediately (atomic load, no lock needed).
+- **StateHalfOpen**: acquires `mu`, re-checks state (race guard), computes
+  `cap = max(successThresholdCapacity, successThresholdCount, 1)`, returns
+  `halfOpenInflight < cap`; if permitted, increments `halfOpenInflight`.
+- **StateOpen**: acquires `mu`, re-checks state (race guard with one level of recursive
+  re-evaluation if another goroutine races to HalfOpen first), checks
+  `time.Since(openedAt) >= halfOpenAfter`; if elapsed → transitions to HalfOpen, sets
+  `halfOpenInflight = 1`, returns `true`; otherwise returns `false`.
 
-Loosen, tighten, or add signals by overriding `selectionPolicy.evalFunc` on the network. Example — strict latency rule (p95 > 10 s on any sample count) for a workload that ALWAYS needs sub-10s responses:
+**`Record(outcome)` per-state logic.** <SourceLink file="failsafe/breaker.go" lines="187-247" />
 
-```js
-(upstreams, ctx) =>
-  upstreams
-    .removeCordoned()
-    .excludeIf(all(samplesAbove(10), errorRateAbove(0.5)))   // stricter error ceiling
-    .excludeIf(all(samplesAbove(10), throttleRateAbove(0.3)))
-    .excludeIf(latencyAbove(10_000, 95))                     // hard p95 floor, no guard
-    .whenEmpty(() => upstreams)
-    .sortByScore(PREFER_FASTEST)
-    .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
-    .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
+- **OutcomeIgnore**: no-op — returns immediately without touching counters.
+- **StateClosed**: calls `pushLocked(isFailure)`, increments lifetime counters, calls
+  `checkOpenLocked()` which opens if `b.count >= failCap && b.failures >= failCount`.
+- **StateHalfOpen**: decrements `halfOpenInflight`, increments trial success/failure counter.
+  Two paths: (a) if `halfOpenSuccess + halfOpenFailure >= successCap` (trial window full),
+  sufficient successes → `resetWindowLocked(); transitionLocked(Closed)`, insufficient →
+  re-opens; (b) if `OutcomeFailure` and `halfOpenFailure > 0` → immediately re-opens even
+  if the window is not yet full.
+- **StateOpen**: only increments lifetime counters (should not normally be reached because
+  the caller should not have bypassed `TryAcquirePermit`).
+
+**What counts as a failure.** The `upstreamBreakerOutcome` function classifies each
+(response, error) pair: <SourceLink file="upstream/upstream_executor.go" lines="391-421" />
+
+- **OutcomeFailure**: `ErrCodeEndpointServerSideException` (5xx), `ErrCodeEndpointTransportFailure`,
+  `ErrCodeEndpointUnauthorized`, `ErrCodeEndpointBillingIssue`, and a syncing upstream that
+  returns an empty/null response (`EvmSyncingStateSyncing && resp.IsResultEmptyish()`).
+- **OutcomeIgnore**: request-canceled, request-skipped, rate-limit errors, timeout errors,
+  client-side errors, hedge cancellations — these do not affect the window.
+- **OutcomeSuccess**: all non-error, non-syncing-empty responses.
+
+**What bypasses the breaker entirely.** Hedge attempts (`isHedge == true`), internal
+state-poller probes (`req.IsInternal()`), and composite batch fan-out sub-requests
+(`req.IsCompositeRequest()`) all skip `TryAcquirePermit` and `Record`.
+<SourceLink file="upstream/upstream_executor.go" lines="368-385" />
+
+**Interaction with routing.** When the breaker refuses a permit, it returns
+`ErrFailsafeCircuitBreakerOpen`. This error is not retryable towards the same upstream
+(`IsRetryableTowardsUpstream = false`) but is retryable at the network level — the routing
+loop tries the next upstream transparently. <SourceLink file="common/errors.go" lines="2458-2459" />
+
+**Relationship with selection policy.** The circuit breaker and the
+[selection policy](/config/projects/selection-policies) are complementary, not redundant.
+The selection policy excludes upstreams based on rolling health metrics computed across all
+requests. The circuit breaker acts at the individual-request level: it blocks transport dials
+when it already knows the upstream is failing, based on its own ring buffer. An upstream can
+be simultaneously excluded by the selection policy AND have an open circuit breaker; both
+independently prevent traffic.
+
+Cordoning is a third orthogonal mechanism: an operator-driven sticky flag that keeps an
+upstream out of rotation regardless of metrics or breaker state.
+
+**Cache connector breaker.** Cache connectors have their own circuit breaker via
+`FailsafeConnector`. The outcome classifier is different: only transport errors count as
+`OutcomeFailure`; cache misses (`RecordNotFound`) and context cancellations are `OutcomeIgnore`.
+The error produced uses scope `"connector"` rather than `"upstream"`.
+<SourceLink file="data/cache_executor.go" lines="220-234" />
+
+The `isTransportError` helper (used by the cache breaker outcome classifier) matches:
+`ErrCodeEndpointTransportFailure`; `net.Error` with `Timeout()`; `io.EOF`,
+`io.ErrUnexpectedEOF`, `syscall.ECONNREFUSED`, `syscall.ECONNRESET`, `syscall.EPIPE`,
+`syscall.ETIMEDOUT`; gRPC codes `Unavailable`, `DeadlineExceeded`, `Aborted`; and string
+substrings: `"connection refused"`, `"connection reset"`, `"broken pipe"`, `"no such host"`,
+`"network is unreachable"`, `"tls handshake"`, `"i/o timeout"`, `"operation timed out"`,
+`"use of closed network connection"`, `"client is closed"`, `"unexpectedly closed"`,
+`"goaway"`, `"clusterdown"`, `"masterdown"`, `"tryagain"`, `"redis is loading"`.
+<SourceLink file="data/failsafe.go" lines="21-92" />
+
+**Window reset.** Both Closed→Open tripping and HalfOpen→Closed recovery call
+`resetWindowLocked()` — every cycle starts with a fresh ring buffer. <SourceLink file="failsafe/breaker.go" lines="302-310" />
+
+**Scope restriction.** Setting `circuitBreaker` inside a **network-level** `failsafe` block
+causes `NewNetworkExecutor` to return `ErrFailsafeConfiguration` and eRPC will not start.
+The circuit breaker is an upstream-only construct. <SourceLink file="erpc/network_executor.go" lines="68-73" />
+
+### Config schema
+
+All fields live under `upstreams[*].failsafe[*].circuitBreaker`. Config struct:
+<SourceLink file="common/config.go" lines="1381-1387" />. Defaults:
+<SourceLink file="common/defaults.go" lines="2342-2387" />.
+
+| Field | Type | Default | Footguns |
+|---|---|---|---|
+| `failureThresholdCount` | `uint` | `20` ([`common/defaults.go:L2343-L2348`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2343-L2348)) | Must be `<= failureThresholdCapacity`; validated at [`common/validation.go:L1044-L1048`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1044-L1048). The window must fill to `failureThresholdCapacity` before this count is checked. |
+| `failureThresholdCapacity` | `uint` | `80` ([`common/defaults.go:L2350-L2355`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2350-L2355)) | Ring buffer size. The breaker does not evaluate the open condition until exactly this many outcomes are recorded since last reset. |
+| `halfOpenAfter` | `Duration` | `5m` ([`common/defaults.go:L2364-L2369`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2364-L2369)) | Required at validation (`common/validation.go:L1038-L1040`). Time the breaker stays Open before permitting a probe. Resets to `time.Now()` on every HalfOpen failure. |
+| `successThresholdCount` | `uint` | `8` ([`common/defaults.go:L2371-L2376`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2371-L2376)) | Must be `<= successThresholdCapacity`. Successes required in the HalfOpen trial window to re-close. |
+| `successThresholdCapacity` | `uint` | **`200`** ([`common/defaults.go:L2357-L2363`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2357-L2363)) — **known dead-code bug**: a second identical `if c.SuccessThresholdCapacity == 0` guard at L2378-L2384 would set `10` but is unreachable because the first guard already assigned `200`. Effective default is `200`, not `10`. | HalfOpen trial window size; also caps concurrent permits in HalfOpen. |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Fast-trip breaker for a chain with hot-baseline upstreams (production pattern).** On
+chains where upstreams sit at high baseline load and even 50% error rate for 30 requests
+signals something is genuinely broken, trip fast and probe quickly. This is the pattern
+deployed for Cronos upstreams after a 5.77M upstream call spiral caused by a single user
+burst — cut broken upstreams out of rotation in under a second of traffic, probe after 30s:
+
+<ConfigTabs
+	path="projects[].upstreams[].failsafe[]"
+	yaml={`failsafe:
+  - matchMethod: "*"
+    circuitBreaker:
+      # trip at 50% error rate: 15 failures in a 30-request window
+      # window is small so a stuck upstream pegs within ~1s of traffic
+      failureThresholdCount: 15
+      failureThresholdCapacity: 30
+      # 30s: long enough to avoid thrashing, short enough to restore
+      # the upstream quickly during a transient vendor outage
+      halfOpenAfter: 30s
+      # require 60% success in half-open before re-closing (3 of 5)
+      successThresholdCount: 3
+      # keep trial window small so re-admission decision is fast
+      successThresholdCapacity: 5`}
+	ts={`failsafe: [{
+  matchMethod: "*",
+  circuitBreaker: {
+    // trip at 50% error rate: 15 failures in a 30-request window
+    // window is small so a stuck upstream pegs within ~1s of traffic
+    failureThresholdCount: 15,
+    failureThresholdCapacity: 30,
+    // 30s: long enough to avoid thrashing, short enough to restore
+    // the upstream quickly during a transient vendor outage
+    halfOpenAfter: "30s",
+    // require 60% success in half-open before re-closing (3 of 5)
+    successThresholdCount: 3,
+    // keep trial window small so re-admission decision is fast
+    successThresholdCapacity: 5,
+  },
+}]`}
+/>
+
+**2. Fan out one circuit breaker config across all method-specific upstream failsafe blocks
+(TypeScript pattern).** When an upstream has per-method failsafe entries (different timeouts
+per method), each entry needs the circuit breaker attached independently — the upstream-level
+`SetDefaults` rule only preserves blocks explicitly listed. Spreading a shared breaker object
+across all entries is the clean way to ensure coverage without repeating the block manually:
+
+<ConfigTabs
+	path="projects[].upstreams[].failsafe[]"
+	yaml={`# YAML: repeat the circuitBreaker block on every method-specific entry
+failsafe:
+  - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+    timeout: { duration: 15s }
+    circuitBreaker:
+      failureThresholdCount: 15
+      failureThresholdCapacity: 30
+      halfOpenAfter: 30s
+      successThresholdCount: 3
+      successThresholdCapacity: 5
+  - matchMethod: "*"
+    circuitBreaker:
+      failureThresholdCount: 15
+      failureThresholdCapacity: 30
+      halfOpenAfter: 30s
+      successThresholdCount: 3
+      successThresholdCapacity: 5`}
+	ts={`// TypeScript: define the breaker once, spread it across all entries
+const sharedBreaker = {
+  failureThresholdCount: 15,
+  failureThresholdCapacity: 30,
+  halfOpenAfter: "30s",
+  successThresholdCount: 3,
+  successThresholdCapacity: 5,
+};
+
+// sharedUpstreamFailsafe is your array of method-specific timeout blocks
+const upstreamFailsafe = sharedUpstreamFailsafe.map((fs) => ({
+  ...fs,
+  circuitBreaker: sharedBreaker,
+}));`}
+/>
+
+**3. Conservative production config — tolerates transient blips.** For stable chains where
+upstreams have rare failures, a larger window prevents false trips while still protecting
+against hard outages. Use this as the starting point for any chain that does not show the
+hot-baseline pattern:
+
+<ConfigTabs
+	path="projects[].upstreams[].failsafe[]"
+	yaml={`failsafe:
+  - matchMethod: "*"
+    circuitBreaker:
+      # window must fill to 80 before the trip condition is evaluated at all
+      failureThresholdCount: 20
+      failureThresholdCapacity: 80
+      # 5 min: upstream needs time to restart cleanly
+      halfOpenAfter: 5m
+      # 8 successes out of 200 trial slots — loose, but default of 200 is
+      # intentional (the successThresholdCapacity=10 block in SetDefaults is
+      # unreachable dead code; effective default is 200)
+      successThresholdCount: 8
+      successThresholdCapacity: 200`}
+	ts={`failsafe: [{
+  matchMethod: "*",
+  circuitBreaker: {
+    // window must fill to 80 before the trip condition is evaluated at all
+    failureThresholdCount: 20,
+    failureThresholdCapacity: 80,
+    // 5 min: upstream needs time to restart cleanly
+    halfOpenAfter: "5m",
+    // 8 successes out of 200 trial slots — loose, but default of 200 is
+    // intentional (successThresholdCapacity=10 block in SetDefaults is dead code)
+    successThresholdCount: 8,
+    successThresholdCapacity: 200,
+  },
+}]`}
+/>
+
+**4. Method-specific breaker for heavy archive queries.** `eth_getLogs` and
+`eth_getBlockReceipts` fail sooner on overloaded nodes than lightweight calls. A tighter
+breaker on these methods cuts them off quickly without affecting `eth_call` or block getters,
+which may still be healthy on the same node:
+
+<ConfigTabs
+	path="projects[].upstreams[].failsafe[]"
+	yaml={`failsafe:
+  - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+    circuitBreaker:
+      # small window: heavy queries fail fast when the node is overloaded
+      failureThresholdCount: 5
+      failureThresholdCapacity: 20
+      halfOpenAfter: 2m
+      successThresholdCount: 3
+      successThresholdCapacity: 10
+  # catch-all: conservative for lightweight methods that are usually healthy
+  - matchMethod: "*"
+    circuitBreaker:
+      failureThresholdCount: 20
+      failureThresholdCapacity: 80
+      halfOpenAfter: 5m
+      successThresholdCount: 8
+      successThresholdCapacity: 200`}
+	ts={`failsafe: [
+  {
+    matchMethod: "eth_getLogs|eth_getBlockReceipts",
+    circuitBreaker: {
+      // small window: heavy queries fail fast when the node is overloaded
+      failureThresholdCount: 5,
+      failureThresholdCapacity: 20,
+      halfOpenAfter: "2m",
+      successThresholdCount: 3,
+      successThresholdCapacity: 10,
+    },
+  },
+  {
+    matchMethod: "*",
+    circuitBreaker: {
+      failureThresholdCount: 20,
+      failureThresholdCapacity: 80,
+      halfOpenAfter: "5m",
+      successThresholdCount: 8,
+      successThresholdCapacity: 200,
+    },
+  },
+]`}
+/>
+
+**5. Tight HalfOpen trial — recover quickly or re-open fast.** When you have many upstream
+options and want to minimize time spent probing a still-sick upstream, shrink the trial
+window and require a high success ratio. This pairs well with the fast-trip breaker above:
+
+<ConfigTabs
+	path="projects[].upstreams[].failsafe[]"
+	yaml={`failsafe:
+  - matchMethod: "*"
+    circuitBreaker:
+      failureThresholdCount: 10
+      failureThresholdCapacity: 40
+      halfOpenAfter: 1m
+      # 5 of 6 = 83% success required: re-open immediately if not healthy
+      successThresholdCount: 5
+      successThresholdCapacity: 6`}
+	ts={`failsafe: [{
+  matchMethod: "*",
+  circuitBreaker: {
+    failureThresholdCount: 10,
+    failureThresholdCapacity: 40,
+    halfOpenAfter: "1m",
+    // 5 of 6 = 83% success required: re-open immediately if not healthy
+    successThresholdCount: 5,
+    successThresholdCapacity: 6,
+  },
+}]`}
+/>
+
+### Request/response behavior
+
+- While Open, `TryAcquirePermit()` returns false immediately — the upstream returns
+  `ErrFailsafeCircuitBreakerOpen` with scope `"upstream"` without dialing the transport.
+  <SourceLink file="common/errors.go" lines="1665-1692" />
+- The error code `ErrCodeFailsafeCircuitBreakerOpen` is non-retryable towards the same
+  upstream (`IsRetryableTowardsUpstream = false`) but IS retryable at the network level
+  (`IsRetryableTowardNetwork = true` — the default, since the error does not set the
+  `retryableTowardNetwork=false` detail field). The network routing loop therefore tries the
+  next upstream; if all upstreams are open the aggregated error includes the count `"N upstream
+  circuit breaker open"`. <SourceLink file="common/errors.go" lines="1054-1055" />
+- `erpc_upstream_attempt_outcome_total` records `outcome="breaker_open"` for each refused
+  permit. The client sees the upstream failure only if ALL upstreams are exhausted.
+- The `CircuitBreakerState()` accessor on `Upstream` surfaces only the catch-all
+  (`matchMethod: "*"`, no finality filter) breaker for the admin UI and simulator panel.
+  <SourceLink file="upstream/upstream.go" lines="320-333" />
+
+### Best practices
+
+- **Let the window fill before worrying.** The breaker cannot trip until `failureThresholdCapacity`
+  outcomes are recorded. With the default capacity of 80, a freshly restarted upstream takes
+  at least 80 requests before any trip can occur. Reduce capacity if you need faster detection.
+- **Set `halfOpenAfter` longer than the upstream's actual restart time.** If the cooldown
+  is shorter than the upstream's recovery, the HalfOpen probe will fail immediately, re-open
+  the breaker, and start another 5-minute wait — flapping. Monitor `erpc_upstream_breaker_state_change_total{transition="half_open_to_open"}` to detect this.
+- **Use method-specific breakers for heavy queries.** Archive calls like `eth_getLogs` fail
+  sooner on overloaded nodes than lightweight calls. Separate breakers prevent a log-heavy
+  spike from taking your whole upstream out of rotation for everything else.
+- **The circuit breaker does not replace the selection policy.** The selection policy
+  removes upstreams from the ordered list proactively (before they fail); the circuit breaker
+  blocks in-progress requests reactively. Use both: selection policy removes degraded upstreams
+  before they accumulate failures; circuit breaker handles sudden hard failures.
+- **Do not put `circuitBreaker` at network scope.** It will cause a startup error. The breaker
+  is upstream-scoped by design — tripping it at the network level would block all upstreams
+  simultaneously.
+- **Hedge attempts are invisible to the breaker.** A hedge that gets a 5xx does not increment
+  the failure window. Only primary (non-hedge) attempts count. This is intentional to avoid
+  penalizing upstreams for aggressive hedging behavior.
+- **Watch the `successThresholdCapacity` default (200, not 10).** Due to a known dead-code
+  bug in `SetDefaults`, the effective default is 200 — the HalfOpen trial window accepts up to
+  200 concurrent probes before evaluating. If you need faster re-close decisions, set it explicitly.
+
+### Edge cases & gotchas
+
+1. **Window must be full before tripping.** `failureThresholdCapacity: 80, failureThresholdCount: 1`
+   will NOT trip until 80 outcomes are in the buffer — even if the first 79 were failures.
+   `checkOpenLocked` short-circuits with `if b.count < failCap { return }`.
+   <SourceLink file="failsafe/breaker.go" lines="292-294" />
+2. **`successThresholdCapacity` effective default is `200`, not `10` — the second defaults
+   block is unreachable dead code.** `SetDefaults` at
+   [`common/defaults.go:L2357-L2384`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2357-L2384)
+   contains two `if c.SuccessThresholdCapacity == 0` guards. The first (L2357-L2363) sets `200`;
+   the second (L2378-L2384, which would set `10`) is never reached. Effective default is `200`.
+3. **Single HalfOpen failure re-opens immediately.** Even before the trial window is full,
+   any `OutcomeFailure` in HalfOpen re-opens and resets `openedAt`. Ensure `halfOpenAfter` is
+   long enough for the upstream to actually recover or flapping will occur.
+   <SourceLink file="failsafe/breaker.go" lines="232-237" />
+4. **Hedge attempts are invisible to the breaker.** A hedge attempt that gets a 500 from the
+   upstream does not count as a failure. Only the primary (non-hedge) attempt counts. This is
+   intentional to avoid penalizing upstreams for aggressive hedging.
+5. **Internal probe calls bypass the breaker in both directions.** State-poller probes
+   (`req.IsInternal()`) neither block on an open breaker nor record outcomes. An Open upstream
+   will receive internal probes but no user traffic.
+6. **`circuitBreaker` at network scope causes startup failure.** Even `circuitBreaker: {}` in
+   a network `failsafe` block causes `NewNetworkExecutor` to return an error and eRPC will not
+   start. <SourceLink file="erpc/network_executor.go" lines="68-73" />
+7. **Per-method breakers are independent.** `CircuitBreakerState()` on `Upstream` only exposes
+   the `matchMethod: "*"` catch-all breaker. An `eth_getLogs` breaker tripping does not affect
+   the `*` catch-all breaker.
+8. **EVM syncing state triggers a failure.** A syncing upstream that returns an empty/null
+   response is classified as `OutcomeFailure` — a syncing node can trip the breaker even without
+   an error code. <SourceLink file="upstream/upstream_executor.go" lines="412-419" />
+9. **Window reset on every open/close.** Both tripping Closed→Open and closing HalfOpen→Closed
+   call `resetWindowLocked()` — a flapping upstream starts each cycle with a clean slate.
+10. **Cordon and circuit breaker are orthogonal.** A cordoned upstream also has its circuit
+    breaker checked (if configured). An uncordon does not reset the breaker.
+11. **`OnTransition` fires in a goroutine.** The metric increment is async. Under extremely
+    high test parallelism this can appear as a missing metric increment immediately after a
+    transition. <SourceLink file="failsafe/breaker.go" lines="312-334" />
+12. **Cache connector breakers do not emit the state-change metric.** The `OnTransition` hook
+    is not wired for cache executors — `erpc_upstream_breaker_state_change_total` only fires
+    for upstream breakers.
+13. **Race safety in Open→HalfOpen.** When two goroutines race to call `TryAcquirePermit`
+    while the breaker is Open and `halfOpenAfter` has just elapsed, the second goroutine
+    re-checks state after acquiring `mu` and, seeing HalfOpen, recursively re-evaluates —
+    bounded to one extra call. No double-transition is possible.
+    <SourceLink file="failsafe/breaker.go" lines="160-166" />
+14. **`halfOpenAfter` is required at validation, but `SetDefaults` fills it.** `Validate()`
+    errors with `"failsafe.circuitBreaker.halfOpenAfter is required"` if the field is zero.
+    In practice eRPC's config loading calls `SetDefaults` (which fills `5m`) before
+    `Validate`, so omitting the field from YAML is safe. If you call `Validate` before
+    `SetDefaults` in custom tooling, the zero value will be rejected.
+    [`common/validation.go:L1038-L1040`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1038-L1040)
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_breaker_state_change_total` | Counter | `project`, `upstream`, `transition` | Every upstream breaker state transition. `transition` values: `closed_to_open`, `open_to_half_open`, `half_open_to_closed`, `half_open_to_open`. Not emitted for cache connector breakers. Defined at [`telemetry/metrics.go:L485-L489`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L485-L489); wired at [`upstream/upstream.go:L91-L99`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L91-L99). |
+| `erpc_upstream_attempt_outcome_total` | Counter | `project`, `network`, `upstream`, `category`, `outcome`, `is_hedge`, `is_retry`, `finality` | Every attempt terminal. `outcome="breaker_open"` when the breaker refused a permit. Defined at [`telemetry/metrics.go:L457-L462`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L457-L462); incremented at [`upstream/upstream.go:L551-L560`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L551-L560). |
+
+**Programmatic access.** The breaker exposes a `Metrics()` method that returns
+`(failures, successes, executions uint64)` as lifetime atomic counters.
+<SourceLink file="failsafe/breaker.go" lines="345-350" /> These are not surfaced as
+Prometheus gauges — use the counters above for dashboards.
+
+**Log messages.** On every state transition, `transitionLocked` emits a `WARN`-level log:
+
+```
+{"level":"warn","from":"closed","to":"open","reason":"failure_threshold","executions":N,"successes":N,"failures":N,"message":"circuit breaker state changed"}
 ```
 
-See [Selection policies](/config/projects/selection-policies) for the full chainable vocabulary + every predicate factory.
+Reason strings: `"failure_threshold"` (Closed→Open), `"half_open_delay_elapsed"` (Open→HalfOpen),
+`"half_open_success_threshold"` (HalfOpen→Closed), `"half_open_failure"` (HalfOpen→Open).
 
-## Manual exclusion
+### Source code entry points
 
-For operator-driven exclusion that doesn't depend on metrics — *"this vendor's status page just went red, take it out now"*, planned maintenance windows, forced failover testing — use the [admin cordon RPC](/operation/cordoning). Cordon is independent of the metric-driven `excludeIf` chain: it sets a sticky flag the policy's `.removeCordoned()` step honors, and it stays until you uncordon.
+- [`failsafe/breaker.go`](https://github.com/erpc/erpc/blob/main/failsafe/breaker.go#L107) — self-contained circuit breaker state machine: ring buffer, `TryAcquirePermit`, `Record`, `transitionLocked`, `OnTransition` hook, `State`/`Metrics` accessors
+- [`upstream/upstream_executor.go:L368-L421`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L368-L421) — `upstreamBreakerEligible` and `upstreamBreakerOutcome` classifiers; `callBreakerWithTimeout` wrapper
+- [`upstream/upstream.go:L87-L99`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L87-L99) — `makeBreakerTransitionHook` wires `OnTransition` to the Prometheus counter; `classifyUpstreamOutcome` maps `ErrCodeFailsafeCircuitBreakerOpen` to `UpstreamOutcomeBreakerOpen`
+- [`data/cache_executor.go:L220-L234`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L220-L234) — `cacheBreakerOutcome` classifier for cache connector breakers
+- [`data/failsafe.go:L21-L133`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L21-L133) — `FailsafeConnector` wrapper for cache connectors; `isTransportError` helper
+- [`common/config.go:L1381-L1396`](https://github.com/erpc/erpc/blob/main/common/config.go#L1381-L1396) — `CircuitBreakerPolicyConfig` struct and `Copy()`
+- [`common/defaults.go:L2342-L2387`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2342-L2387) — `CircuitBreakerPolicyConfig.SetDefaults()` including the double-assignment dead-code bug at L2357-L2384
+- [`common/validation.go:L1037-L1059`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1037-L1059) — `CircuitBreakerPolicyConfig.Validate()` with all field constraints
+- [`common/errors.go:L1665-L1703`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1665-L1703) — `ErrFailsafeCircuitBreakerOpen` type, constructor, and `DeepestMessage`
+- [`common/errors.go:L2455-L2459`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2455-L2459) — `IsRetryableTowardsUpstream`: `ErrCodeFailsafeCircuitBreakerOpen` → not upstream-retryable
+- [`telemetry/metrics.go:L482-L489`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L482-L489) — `MetricUpstreamBreakerStateChange` counter definition
+- [`erpc/network_executor.go:L68-L73`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L68-L73) — enforces network-scope restriction
+- [`erpc/networks_skip_test.go:L174-L262`](https://github.com/erpc/erpc/blob/main/erpc/networks_skip_test.go#L174-L262) — integration test confirming breaker-open causes rotation to next upstream without dialing the failing one
+- [`erpc/networks_test.go:L6088-L6521`](https://github.com/erpc/erpc/blob/main/erpc/networks_test.go#L6088-L6521) — integration tests for threshold tripping, half-open recovery, and full open/close cycle
 
-## Observability
+### Related pages
 
-| Where | Signal |
-|---|---|
-| Prometheus | `erpc_selection_position{project,network,method,upstream}` — `0` = primary, `1+` = runner-up, `-1` = excluded. `erpc_selection_rejection_total{...,step}` — per-step rejection counter. `erpc_selection_primary_switch_total{...,from,to}` — primary changes. |
-| OTLP | Per-tick eval span on the network with selected upstream + tick id. |
-| Logs (DEBUG) | One line per `excludeIf` rejection with the upstream id and the predicate's `policyReason` (e.g. `errorRate>0.5`, `p70>30000ms`, `p70>3xFastest`, `blockHeadLag>16`). |
-| Simulator | The policy-history pane shows the per-step trail (every chainable method's input → output → dropped/added/reordered) with timestamps. |
+- [Retry](/config/failsafe/retry) — retry attempts are not blocked by an open breaker; the routing loop tries the next upstream instead.
+- [Timeout](/config/failsafe/timeout) — bounds individual request attempts from outside the breaker.
+- [Hedge](/config/failsafe/hedge) — hedge attempts bypass the breaker and do not record outcomes.
+- [Selection policies](/config/projects/selection-policies) — proactively removes degraded upstreams before they accumulate breaker failures.
+- [Survive provider outages](/use-cases/survive-provider-outages) — the end-to-end outcome this feature serves.
 
-<Callout type="info">
-  The cordon admin endpoint (`erpc_cordonUpstream`) is the ONLY way to manually exclude an upstream. Everything else — health-based exclusion, recovery probing, primary changes — lives in the selection policy and is driven by live metrics. See [Selection policies](/config/projects/selection-policies) for the full picture and [Cordoning](/operation/cordoning) for the operator runbook.
-</Callout>
+</AISection>

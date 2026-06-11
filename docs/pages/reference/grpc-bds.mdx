@@ -1,0 +1,335 @@
+---
+title: gRPC & BDS streaming
+description: Use typed protobuf APIs for block, transaction, and log lookups — eRPC routes, caches, and protects every gRPC call exactly like HTTP, with built-in deadlock defenses that keep stuck H2 streams from stalling your traffic.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# gRPC & BDS streaming
+
+eRPC speaks gRPC in both directions. Clients can call it over the Blockchain Data Standards (BDS) protobuf API — getting typed, streaming-capable responses — while eRPC routes those requests through the same caching, auth, and failsafe pipeline as HTTP. On the upstream side, eRPC pools and protects gRPC connections to BDS-speaking nodes, with a watchdog that surgically replaces stuck connections without touching healthy ones.
+
+**What you get:**
+- Typed BDS protobuf API — unary lookups and server-streaming bulk queries
+- Same routing, caching, and auth as the HTTP path — zero duplication in config
+- H2 deadlock defense — callers unblock immediately when a stream wedges
+- Per-connection watchdog — stuck connections replaced; healthy ones untouched
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="add a BDS upstream and expose the gRPC server"
+	defaultOpen
+	prompt={`I want to add a BDS-speaking upstream to my eRPC deployment and expose the gRPC
+server so clients can query it with typed protobuf calls. Read the full reference,
+then update my eRPC config to enable grpcEnabled, configure the BDS upstream endpoint
+with TLS and an auth header, and share the shared-port vs separate-port trade-offs.
+Reference:
+https://docs.erpc.cloud/reference/grpc-bds.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="debug wedged BDS streams and watchdog alerts"
+	prompt={`My eRPC logs show BDS bounded-wait timeout warnings and erpc_grpc_bds_hard_timeout_total
+is non-zero. Explain what causes wedged H2 streams, how the watchdog detects and
+replaces them, which metrics to alert on, and whether my failsafe timeout in
+my eRPC config is set above the 20s hard cap so the watchdog fires first. Reference:
+https://docs.erpc.cloud/reference/grpc-bds.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="route gRPC auth through the same pipeline as HTTP"
+	prompt={`I need gRPC callers to authenticate using the same auth strategies (JWT, secret
+token, SIWE) as my HTTP clients, and I have a proxy in front that sets x-forwarded-for.
+Update my eRPC config to configure trustedIPForwarders and trustedIPHeaders for gRPC,
+and explain the metadata key priority order. Reference:
+https://docs.erpc.cloud/reference/grpc-bds.llms.txt`}
+/>
+
+<AISection title="gRPC & BDS streaming — full agent reference">
+
+### How it works
+
+**Dual role.** eRPC is simultaneously a gRPC server and a gRPC client. As a server it exposes `evm.RPCQueryService` (unary) and `evm.QueryService` (server-streaming); both are registered on the same `*grpc.Server` instance. As a client it constructs a `GenericGrpcBdsClient` for any upstream whose endpoint starts with `grpc://` or `grpc+bds://`.
+
+**Server — port sharing.** By default `server.grpcHostV4`/`grpcPortV4` are copied from the HTTP equivalents, so both protocols share a single TCP port. `grpcSharesHttpV4` detects this (<SourceLink file="erpc/grpc_server.go" lines="42-53" />) and wraps the IPv4 handler in an h2c mux: frames with `content-type: application/grpc` route to the in-process `*grpc.Server`; everything else falls through to the HTTP chain. The gRPC path therefore bypasses the HTTP `TimeoutHandler` and `gzipHandler` entirely. When the ports differ, `erpc/init.go:L125-L136` starts a standalone TCP listener.
+
+**Server — graceful shutdown.** A goroutine watches `appCtx.Done()` and calls `gs.server.GracefulStop()`, which drains in-flight RPCs before closing the listener. (<SourceLink file="erpc/grpc_server.go" lines="126-130" />)
+
+**Server — request lifecycle.** Every handler calls `extractRequestInput` first (<SourceLink file="erpc/grpc_server.go" lines="133-158" />), which requires `x-erpc-project` and `x-erpc-chain-id` metadata (returns `codes.InvalidArgument` if absent), resolves auth from metadata, and resolves client IP via the same trusted-forwarder logic as HTTP.
+
+Unary methods (`ChainId`, `GetBlockByNumber`, `GetBlockByHash`, `GetLogs`, `GetTransactionByHash`, `GetTransactionReceipt`, `GetBlockReceipts`) go through `ProcessUnary`: a synthetic JSON-RPC request is built, pushed through `project.Forward`, and the result is deserialized into protobuf. A `null` result (block/tx not found) returns an empty proto response rather than an error.
+
+Streaming methods (`QueryBlocks`, `QueryTransactions`, `QueryLogs`, `QueryTraces`, `QueryTransfers`) go through `ProcessQueryStream`: auth and rate-limiting run, then an `EvmQueryExecutor` streams pages back via the `onPage` callback. These methods do NOT call `project.Forward`.
+
+**Server — error mapping (`mapToGRPCStatus`).** eRPC error codes map to gRPC status codes: `ErrCodeEndpointUnsupported` → `Unimplemented`; `ErrCodeEndpointUnauthorized` → `Unauthenticated`; `ErrCodeEndpointRequestTimeout` → `DeadlineExceeded`; `ErrCodeEndpointCapacityExceeded`/`ErrCodeEndpointRequestTooLarge` → `ResourceExhausted`; `ErrCodeEndpointMissingData` → `NotFound`; `ErrCodeEndpointClientSideException` → `InvalidArgument`; everything else → `Internal`. Both interceptors catch panics and return `codes.Internal`. (<SourceLink file="erpc/grpc_server.go" lines="451-473" />)
+
+**Client — connection pool.** `newBdsPool` dials exactly `bdsPoolSize` (= 3) independent `grpc.ClientConn` instances at startup. Each connection uses `waitForReady: true`, OTel tracing, 100 MiB max recv/send, a gRPC-native retry policy (max 2 attempts on `UNAVAILABLE`, 1s→5s backoff), keepalive pings every 30s (5s timeout, `PermitWithoutStream=true`), connect params of 3s minimum connect timeout with 100ms base backoff and 1.5× multiplier, and `dns:///` prefix for round-robin across DNS A-records. The embedded service config selects `round_robin` load-balancing and retries only on `UNAVAILABLE` (max 2 attempts, initialBackoff `1s`, maxBackoff `5s`, multiplier `2`). `Pick()` dispatches calls round-robin via an atomic cursor. (<SourceLink file="clients/grpc_bds_resilience.go" lines="88-162" />)
+
+**Client — TLS selection.** Port 443 → TLS (system CA). Scheme starting with `grpcs` or containing `tls` → TLS. Otherwise → plaintext. Default port when absent from URL: 50051. (<SourceLink file="clients/grpc_bds_resilience.go" lines="272-285" />)
+
+**Client — bounded-wait defense.** Every gRPC call is wrapped in `callBoundedT` (backed by `util.BoundedCallT`): if `ctx.Err() != nil` on entry, the call is rejected immediately without spawning a goroutine. Otherwise, a goroutine executes the call while the caller selects on both the result channel and `ctx.Done()`. If the context fires first, the caller is unblocked immediately and `context.Cause(ctx)` is returned (not generic `DeadlineExceeded`); the executing goroutine is left to clean up on its own schedule (grpc-go honors context cancellation eventually). Panics inside the goroutine are caught by a deferred `recover` and forwarded as errors on the done channel. Additionally, `SendRequest` imposes a hard cap of 20 seconds (`bdsHardCallTimeout`) via `context.WithTimeoutCause` using `ErrDynamicTimeoutExceeded` as the cause sentinel. `ErrDynamicTimeoutExceeded` is defined at `common/errors.go:L1981-L1984` as `var ErrDynamicTimeoutExceeded = errors.New("dynamic timeout exceeded")`; using `errors.Is` against this specific sentinel (rather than `context.DeadlineExceeded`) is what lets `SendRequest` distinguish eRPC's own hard cap from a caller-imposed deadline.
+
+**Client — watchdog.** After each call, `SendRequest` checks `context.Cause(ctx)`. If it equals `ErrDynamicTimeoutExceeded` (our hard cap fired), the event is fed to `pool.OnBoundedTimeout`, which calls `recordStuck`. When `bdsStuckCallThreshold` (= 3) firings accumulate within `bdsStuckCallWindow` (= 60s) on the same connection, `replaceConn` dials a fresh connection and atomically swaps the pool slot. A 5-second dedup window (`bdsReplacementDedupWindow`) prevents concurrent callers from triggering double-replacement. If the dial fails, the old connection stays in place for grpc-go to continue reconnecting through. **Importantly, a caller-side timeout (where the caller's deadline fires before eRPC's 20s cap) does NOT trigger the watchdog.** Only timeouts identified via `errors.Is(err, ErrDynamicTimeoutExceeded)` feed the stuck counter; a parent context expiring from a 500ms caller deadline on an otherwise responsive upstream is not treated as a wedged connection. (<SourceLink file="clients/grpc_bds_resilience.go" lines="169-242" />)
+
+**Client — error normalization.** `normalizeGrpcError` walks the Unwrap chain to find a gRPC status, then calls `ExtractGrpcErrorFromGrpcStatus`. BDS-layer error codes are checked first; the raw gRPC code is used only if no BDS detail is present. Every returned error carries `grpcCode`, `grpcMessage`, and `upstreamId`; BDS errors also carry `bdsErrorCode` and optional `cause`. (<SourceLink file="common/grpc_errors.go" lines="12-225" />)
+
+**Client — query streaming aggregation.** The five `eth_query*` methods open a server-streaming `QueryService` call and drain all pages. Items are appended; `FromBlock`/`ToBlock` use first-wins semantics; `CursorBlock` uses last-wins. The entire stream open and receive loop is wrapped in `callBoundedT`. The aggregate is converted to JSON-RPC shape via BDS manifesto library helpers. (<SourceLink file="clients/grpc_bds_client.go" lines="1100-1125" />)
+
+### Config schema
+
+#### Server-side fields (under `server.`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `server.grpcEnabled` | `*bool` | `false` (<SourceLink file="common/defaults.go" lines="669-671" />) | Master enable. Must be `true` to activate the gRPC server. |
+| `server.grpcHostV4` | `*string` | copy of `httpHostV4` (<SourceLink file="common/defaults.go" lines="672-675" />) | gRPC IPv4 bind host. Equal default → port sharing via h2c mux. |
+| `server.grpcPortV4` | `*int` | copy of `httpPortV4` (<SourceLink file="common/defaults.go" lines="676-679" />) | gRPC IPv4 bind port. Equal to HTTP by default → h2c mux port sharing. |
+| `server.grpcHostV6` | `*string` | copy of `httpHostV6` (<SourceLink file="common/defaults.go" lines="680-683" />) | gRPC IPv6 bind host (no v6 sharing logic). |
+| `server.grpcPortV6` | `*int` | copy of `httpPortV6` (<SourceLink file="common/defaults.go" lines="684-687" />) | gRPC IPv6 bind port. |
+| `server.grpcMaxRecvMsgSize` | `*int` | `104857600` (100 MiB) (<SourceLink file="common/defaults.go" lines="688-690" />) | Server-side max incoming protobuf message bytes. |
+| `server.grpcMaxSendMsgSize` | `*int` | `104857600` (100 MiB) (<SourceLink file="common/defaults.go" lines="691-693" />) | Server-side max outgoing protobuf message bytes. |
+| `server.tls.enabled` | `bool` | `false` | Loads `certFile`/`keyFile` for the standalone gRPC listener. **Footgun:** has no effect on the shared-port (h2c mux) path; TLS on the shared port is controlled by the HTTP TLS config. Source: <SourceLink file="erpc/grpc_server.go" lines="105-111" /> |
+| `server.trustedIPForwarders` | `[]string` | `[]` | CIDRs/IPs whose forwarded-IP metadata is trusted for client IP resolution. Invalid entries produce a WARN and are skipped. Source: <SourceLink file="erpc/grpc_server.go" lines="69-96" /> |
+| `server.trustedIPHeaders` | `[]string` | `[]` | Metadata key names to inspect for real client IP when peer is a trusted forwarder. All values are lowercased at server init. Source: <SourceLink file="erpc/grpc_server.go" lines="89-95" /> |
+
+#### Upstream-side fields (under `upstreams[].grpc.`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `upstreams[].endpoint` | `string` | — (required) | Must start with `grpc://`, `grpc+bds://`, or `grpcs://` to activate the BDS client. Port 443 or `grpcs`/`tls` scheme → TLS; otherwise plaintext. Default port when absent: 50051. Source: <SourceLink file="clients/registry.go" lines="102-111" /> |
+| `upstreams[].grpc.headers` | `map[string]string` | `{}` (no headers sent) (<SourceLink file="common/config.go" lines="1100-1102" />) | Key/value pairs injected as outgoing gRPC metadata on every call via `metadata.NewOutgoingContext` — **replaces** any existing outgoing metadata (does not merge). Use for `authorization: Bearer <token>` or vendor routing keys. Keys must be lowercase per gRPC spec. Source: <SourceLink file="clients/grpc_bds_client.go" lines="231-234" /> |
+
+#### Resilience tunables (constants in `clients/grpc_bds_resilience.go:L29-L51`)
+
+| Variable | Value | Meaning |
+|---|---|---|
+| `bdsHardCallTimeout` | `20s` | Absolute per-call ceiling; fires as `ErrDynamicTimeoutExceeded` |
+| `bdsPoolSize` | `3` | Number of independent connections per upstream |
+| `bdsStuckCallThreshold` | `3` | Hard-cap firings within window before watchdog replaces the connection |
+| `bdsStuckCallWindow` | `60s` | Rolling window for stuck-call counting |
+| `bdsReplacementDedupWindow` | `5s` | Minimum gap between replacements of the same pool slot |
+
+### Worked examples
+
+**1. BDS upstream behind an authenticated provider.** The most common setup: a private BDS node requiring a bearer token, running on a non-443 port and therefore needing the `grpcs://` scheme for TLS:
+
+<ConfigTabs
+  path="upstreams[]"
+  yaml={`upstreams:
+  - id: my-bds-node
+    endpoint: grpcs://bds.example.com:9443
+    grpc:
+      headers:
+        authorization: "Bearer <api_key>"`}
+  ts={`upstreams: [{
+  id: "my-bds-node",
+  endpoint: "grpcs://bds.example.com:9443",
+  grpc: {
+    headers: {
+      authorization: "Bearer <api_key>",
+    },
+  },
+}]`}
+/>
+
+**2. Enabling the gRPC server on a separate port.** When you need the gRPC API isolated from HTTP traffic (e.g. different load-balancer rules or TLS termination), set `grpcPortV4` to a distinct value. eRPC starts a standalone TCP listener and exit code 1002 is fatal if it fails:
+
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  grpcEnabled: true
+  grpcPortV4: 50051`}
+  ts={`server: {
+  grpcEnabled: true,
+  grpcPortV4: 50051,
+}`}
+/>
+
+**3. Shared port (default) with gRPC metadata auth.** When the gRPC and HTTP ports match (the default), both protocols co-exist on one port. gRPC callers send `x-erpc-project`, `x-erpc-chain-id`, and an `authorization` metadata header; HTTP callers use `X-ERPC-Project` and `Authorization` — eRPC routes both through the same auth and routing pipeline:
+
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  grpcEnabled: true
+  # grpcPortV4 omitted → shares httpPortV4 (default :4000)`}
+  ts={`server: {
+  grpcEnabled: true,
+  // grpcPortV4 omitted → shares httpPortV4
+}`}
+/>
+
+**4. Trusted-forwarder setup for gRPC behind a proxy.** Real client IPs arrive in metadata; configure the same fields used by the HTTP path:
+
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  grpcEnabled: true
+  trustedIPForwarders:
+    - 10.0.0.0/8
+  trustedIPHeaders:
+    - x-forwarded-for`}
+  ts={`server: {
+  grpcEnabled: true,
+  trustedIPForwarders: ["10.0.0.0/8"],
+  trustedIPHeaders: ["x-forwarded-for"],
+}`}
+/>
+
+### Request/response behavior
+
+**Required metadata (inbound gRPC calls):**
+- `x-erpc-project` — project ID (string, mandatory; `codes.InvalidArgument` if absent)
+- `x-erpc-chain-id` — chain ID (mandatory; `codes.InvalidArgument` if absent)
+- `x-erpc-architecture` — defaults to `"evm"` if absent
+- `user-agent` — optional; if present, populates the `agent_name` label on downstream Prometheus metrics
+
+**Auth metadata priority** (via `auth/grpc.go:L12-L54`):
+1. `x-erpc-secret-token` → `AuthTypeSecret`
+2. `authorization: Basic <base64>` → `AuthTypeSecret` (password field used as secret)
+3. `authorization: Bearer <token>` → `AuthTypeJwt`
+4. `x-siwe-message` + `x-siwe-signature` → `AuthTypeSiwe`
+5. None of the above → `AuthTypeNetwork` (IP-based)
+
+**Unary method dispatch:**
+
+| gRPC method | JSON-RPC method | Special handling |
+|---|---|---|
+| `ChainId` | `eth_chainId` | Hex→uint64 conversion on result |
+| `GetBlockByNumber` | `eth_getBlockByNumber` | EIP-1898 `blockHash` param → silently routes to `GetBlockByHash` |
+| `GetBlockByHash` | `eth_getBlockByHash` | `null` result → empty proto response |
+| `GetLogs` | `eth_getLogs` | Numeric hex `fromBlock`/`toBlock` only; block tags return an error |
+| `GetTransactionByHash` | `eth_getTransactionByHash` | `null` → empty proto |
+| `GetTransactionReceipt` | `eth_getTransactionReceipt` | `null` → empty proto |
+| `GetBlockReceipts` | `eth_getBlockReceipts` | `codes.InvalidArgument` if neither `blockHash` nor `blockNumber` present |
+
+**Streaming method dispatch:**
+
+| gRPC method | JSON-RPC method |
+|---|---|
+| `QueryBlocks` | `eth_queryBlocks` |
+| `QueryTransactions` | `eth_queryTransactions` |
+| `QueryLogs` | `eth_queryLogs` |
+| `QueryTraces` | `eth_queryTraces` |
+| `QueryTransfers` | `eth_queryTransfers` |
+
+**BDS error-code mapping to eRPC errors** (BDS codes take priority over raw gRPC codes):
+
+| BDS `ErrorCode` | eRPC error | Retryable toward network? |
+|---|---|---|
+| `UNSUPPORTED_BLOCK_TAG`, `UNSUPPORTED_METHOD` | `ErrEndpointUnsupported` | default |
+| `RANGE_OUTSIDE_AVAILABLE` | `ErrEndpointMissingData` | default |
+| `INVALID_PARAMETER`, `INVALID_REQUEST` | `ErrEndpointClientSideException` | **false** |
+| `RATE_LIMITED` | `ErrEndpointCapacityExceeded` | default |
+| `TIMEOUT_ERROR` | `ErrEndpointRequestTimeout` | default |
+| `RANGE_TOO_LARGE` | `ErrEndpointRequestTooLarge` | default |
+| `INTERNAL_ERROR` | `ErrEndpointServerSideException` | default |
+
+**gRPC code fallback** (when no BDS detail present):
+
+| gRPC code | eRPC error |
+|---|---|
+| `Canceled` | `ErrEndpointRequestCanceled` |
+| `Unimplemented` | `ErrEndpointUnsupported` |
+| `InvalidArgument` | `ErrEndpointClientSideException` (non-retryable) |
+| `ResourceExhausted` | `ErrEndpointCapacityExceeded` |
+| `DeadlineExceeded` | `ErrEndpointRequestTimeout` |
+| `Unauthenticated`, `PermissionDenied` | `ErrEndpointUnauthorized` |
+| `NotFound`, `OutOfRange` | `ErrEndpointMissingData` |
+| `Internal`, `Unknown`, `Unavailable`, others | `ErrEndpointServerSideException` |
+
+### Best practices
+
+- Set `grpcEnabled: true` and omit `grpcPortV4` to share the HTTP port — one port means simpler firewall rules and load-balancer config. Use a separate port only when you need different TLS termination or routing rules.
+- Use `grpcs://` scheme (not port 443) to explicitly enable TLS on non-443 BDS upstreams. Port-based TLS detection only fires at exactly port 443; port 8443 with `grpc://` stays plaintext.
+- Keep failsafe policy timeouts **above 20 seconds** if you want the BDS hard cap (`bdsHardCallTimeout`) to be the outer bound. Policy timeouts shorter than 20s also feed the watchdog via the shared `ErrDynamicTimeoutExceeded` sentinel.
+- Alert on `erpc_grpc_bds_hard_timeout_total` going non-zero — it means your BDS upstream is producing wedged H2 streams. If `erpc_grpc_bds_conn_replacements_total` is also rising, the watchdog is actively cycling connections; investigate the upstream.
+- Never rely on `X-ERPC-*` per-call directives over gRPC — they are silently ignored. Use [network-level `directiveDefaults`](/config/projects) for cache bypass or upstream pinning on the gRPC path.
+- Use lowercase keys in `upstreams[].grpc.headers`. gRPC metadata keys are always lowercase on the wire; mixed-case keys may be rejected or silently dropped by intermediaries.
+- For `eth_getLogs` over gRPC, always resolve `latest`/`earliest`/`pending` to numeric block numbers before calling — the BDS client does not support block tags and returns an error immediately.
+
+### Edge cases & gotchas
+
+1. **`eth_getLogs` does not accept block tags.** `"latest"`, `"earliest"`, and `"pending"` in `fromBlock`/`toBlock` return an error. Only numeric hex strings work. <SourceLink file="clients/grpc_bds_client.go" lines="587-589" />
+2. **Topic null-position collapsing silently returns wrong results.** A `null` wildcard in a topic filter (`[selector, null, toAddr]`) MUST preserve its position. Dropping the null shifts subsequent topic filters left, silently returning wrong matches. `buildTopicFilters` emits an empty `TopicFilter{Values: nil}` for null entries to preserve positions. <SourceLink file="clients/grpc_bds_client.go" lines="587-589" />
+3. **Watchdog does NOT fire on caller-side timeouts.** Only eRPC's own `bdsHardCallTimeout` — identified via `errors.Is(context.Cause(ctx), ErrDynamicTimeoutExceeded)` — increments the stuck counter. A caller's 500ms deadline expiring on an otherwise healthy upstream does NOT trigger watchdog logic, preventing legitimate slow-path timeouts from churning the pool. <SourceLink file="clients/grpc_bds_client.go" lines="291-304" />
+4. **Goroutine leak is intentional for wedged streams.** `callBoundedT` abandons in-flight gRPC goroutines when the context fires — the caller is unblocked immediately and grpc-go cleans up the goroutine eventually. <SourceLink file="util/bounded_call.go" lines="56-59" />
+5. **`waitForReady: true` can mask permanently unreachable upstreams.** RPCs queue indefinitely during reconnects instead of failing fast. The `bdsHardCallTimeout` (20s) caps the exposure window. <SourceLink file="clients/grpc_bds_resilience.go" lines="118-151" />
+6. **`grpc+bds://` is an alias for `grpc://`.** Both schemes produce identical `GenericGrpcBdsClient` construction with no behavioral difference. <SourceLink file="clients/registry.go" lines="102" />
+7. **TLS on port 443 only — not on arbitrary ports by port number.** Port 8443 with `grpc://` stays plaintext. Use `grpcs://` scheme to force TLS on non-443 ports. <SourceLink file="clients/grpc_bds_resilience.go" lines="279-281" />
+8. **Port sharing bypasses HTTP timeout and gzip layers.** gRPC frames on the shared port are handled by the `*grpc.Server` directly; the HTTP `TimeoutHandler` and `gzipHandler` never run for gRPC traffic. <SourceLink file="erpc/http_server.go" lines="161-177" />
+9. **Dual-replacement dedup prevents pool thrashing.** When many concurrent callers hit `bdsStuckCallThreshold` simultaneously, the 5s dedup guard ensures only the first watchdog replacement executes. <SourceLink file="clients/grpc_bds_resilience.go" lines="213-216" />
+10. **Dial-fail leaves old connection in place.** If the watchdog cannot dial a replacement (DNS failure, etc.), the broken slot is kept so grpc-go can continue its own reconnect backoff. <SourceLink file="clients/grpc_bds_resilience.go" lines="218-227" />
+11. **Standalone gRPC server failure exits with code 1002.** Port conflict, permission denied, or TLS cert failure all call `util.OsExit(ExitCodeHttpServerFailed)` = 1002. Same exit code as HTTP server failure — process supervisors should treat it as fatal. <SourceLink file="erpc/init.go" lines="125-136" />
+12. **Failsafe policy timeout shorter than 20s also feeds the watchdog.** Both the BDS hard cap and failsafe timeout policy use the same `ErrDynamicTimeoutExceeded` sentinel. If the outer policy fires first, its cause matches the sentinel and the watchdog fires too. Set policy timeouts &gt; 20s to keep the BDS hard cap as the outer bound. <SourceLink file="common/errors.go" lines="1981-1984" />
+13. **Do not revive `evm.ExtractGrpcError`.** A legacy dead copy at `architecture/evm/error_normalizer.go:L660-L876` has divergent semantics: BDS `TIMEOUT_ERROR` maps to `ErrEndpointServerSideException` (wrong), gRPC `DeadlineExceeded` maps to `ErrEndpointServerSideException` (wrong), and there is no `Canceled` branch. Use only `common.ExtractGrpcErrorFromGrpcStatus`.
+14. **`trustedIPHeaders` values are lowercased at server init.** A YAML entry `X-Forwarded-For` is normalized to `x-forwarded-for`. gRPC metadata keys are always lowercase on the wire, so lookups via `firstMD` use the pre-lowercased value. <SourceLink file="erpc/grpc_server.go" lines="89-95" />
+15. **Query stream aggregation: `FromBlock`/`ToBlock` are first-wins; `CursorBlock` is last-wins.** Multi-page stream responses accumulate via `applyQueryRangeBounds`. If page ordering matters, consume pages in order and do not rely on derived range fields. <SourceLink file="clients/grpc_bds_client.go" lines="1100-1125" />
+16. **`X-ERPC-*` HTTP request directives are silently ignored on the gRPC path.** `ProcessUnary` only calls `ApplyDirectiveDefaults`; `EnrichFromHttp` is never called. Metadata keys like `x-erpc-skip-cache-read`, `x-erpc-use-upstream`, or `x-erpc-retry-hint` have zero effect. No error or warning is emitted. Only network-level `directiveDefaults` config applies. <SourceLink file="erpc/request_processor.go" lines="64" />
+17. **EIP-1898 `blockHash` param silently re-routes to `GetBlockByHash`.** If `eth_getBlockByNumber` receives an object with a `blockHash` field, `handleGetBlockByNumber` extracts the hash bytes and routes to `GetBlockByHash` instead. This is transparent to the caller. <SourceLink file="clients/grpc_bds_client.go" lines="341-407" />
+18. **Unsupported methods return `ErrEndpointUnsupported` before consuming a connection.** Any method not in the BDS dispatch switch returns this error immediately, permanently disqualifying the upstream for that method type via upstream scoring. <SourceLink file="clients/grpc_bds_client.go" lines="270-275" />
+19. **Nil upstream is nil-safe at BDS client construction.** `NewGrpcBdsClient` accepts a nil `upstream` (used in tests and early bootstrap). Header loading and error classification are nil-safe; `upstream.Id()` returns `"n/a"` in error and metric labels. <SourceLink file="clients/grpc_bds_client.go" lines="62-87" />
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_grpc_bds_hard_timeout_total` | counter | `project`, `upstream`, `method` | Each time `SendRequest` detects `bdsHardCallTimeout` fired (`context.Cause == ErrDynamicTimeoutExceeded`). Non-zero rate means wedged H2 streams are occurring. Source: <SourceLink file="telemetry/metrics.go" lines="393-397" /> |
+| `erpc_grpc_bds_conn_replacements_total` | counter | `project`, `upstream` | Each successful watchdog-driven connection replacement (dial succeeded, slot swapped). Source: <SourceLink file="telemetry/metrics.go" lines="401-405" /> |
+
+OTel gRPC instrumentation (`otelgrpc.NewServerHandler()` / `otelgrpc.NewClientHandler()`) emits standard gRPC spans on both server and client sides. When `common.IsTracingDetailed` is true, `grpcResponseMetadataInterceptor` adds `grpc.response.metadata.*` attributes to client spans.
+
+**Key trace spans:**
+- `GrpcBdsClient.SendRequest` — root client span; attributes `network.id`, `upstream.id`, `request.method`, `request.id` (detail-only)
+- `GrpcBdsClient.GetBlockByNumber` / `GetBlockByHash` — detail span; attributes `block_number`, `is_block_tag`, `original_param`, `response_has_block`, `response_block_number`, `response_block_hash`
+- `GrpcBdsClient.GetLogs` — detail span; attributes `from_block`, `to_block`
+- `GrpcBdsClient.QueryBlocks` / `QueryTransactions` / `QueryLogs` / `QueryTraces` / `QueryTransfers` — detail spans (no extra attributes currently)
+- `QueryStream.Handle` — server-side root span; attributes `query.method`, `project.id`, `network.id`
+
+**Key log messages:**
+- `"starting gRPC server"` — INFO at startup, carries `addr` (<SourceLink file="erpc/grpc_server.go" lines="125-125" />)
+- `"gRPC unary panic"` / `"gRPC stream panic"` — ERROR with `panic` and `stack` fields (<SourceLink file="erpc/grpc_server.go" lines="455-467" />)
+- `"created gRPC BDS client"` — DEBUG; carries `target`, `pool_size`, `hard_call_timeout` (<SourceLink file="clients/grpc_bds_client.go" lines="138-143" />)
+- `"BDS bounded-wait timeout fired"` — WARN; carries `err`, `network.id`, `upstream.id`, `method`, `request.id`, `our_hardcap` (<SourceLink file="clients/grpc_bds_client.go" lines="293-304" />)
+- `"BDS watchdog: replacing wedged connection"` — WARN; carries `target`, `upstream.id`, `slot` (<SourceLink file="clients/grpc_bds_resilience.go" lines="231-235" />)
+- `"BDS watchdog: failed to dial replacement; old conn left in place for grpc-go to reconnect"` — ERROR (<SourceLink file="clients/grpc_bds_resilience.go" lines="225-225" />)
+- `"processing query stream request"` — INFO per streaming call; carries `component`, `projectId`, `networkId`, `method`, `clientIP` (<SourceLink file="erpc/request_processor.go" lines="102-102" />)
+- `"query stream completed with error"` / `"query stream completed successfully"` — INFO; carries `durationMs` (<SourceLink file="erpc/request_processor.go" lines="140-144" />)
+- `"invalid CIDR in trusted forwarders; ignoring"` / `"invalid IP in trusted forwarders; ignoring"` — WARN at server construction when a `trustedIPForwarders` entry cannot be parsed (<SourceLink file="erpc/grpc_server.go" lines="79-85" />)
+
+### Source code entry points
+
+- [`erpc/grpc_server.go:L42-L53`](https://github.com/erpc/erpc/blob/main/erpc/grpc_server.go#L42-L53) — `grpcSharesHttpV4`: h2c port-sharing detection and mux wiring
+- [`erpc/grpc_server.go:L114-L158`](https://github.com/erpc/erpc/blob/main/erpc/grpc_server.go#L114-L158) — service registration, `extractRequestInput`, required-metadata validation
+- [`erpc/grpc_server.go:L451-L473`](https://github.com/erpc/erpc/blob/main/erpc/grpc_server.go#L451-L473) — panic recovery interceptors for unary and streaming
+- [`erpc/request_processor.go:L56-L136`](https://github.com/erpc/erpc/blob/main/erpc/request_processor.go#L56-L136) — `ProcessUnary` and `ProcessQueryStream`
+- [`erpc/grpc_json_rpc_bridge.go:L13-L21`](https://github.com/erpc/erpc/blob/main/erpc/grpc_json_rpc_bridge.go#L13-L21) — `buildJSONRPCRequest`: synthetic JSON-RPC request factory
+- [`clients/grpc_bds_client.go:L62-L275`](https://github.com/erpc/erpc/blob/main/clients/grpc_bds_client.go#L62-L275) — `GenericGrpcBdsClient` construction, `SendRequest` bounded-wait + method dispatch
+- [`clients/grpc_bds_resilience.go:L29-L285`](https://github.com/erpc/erpc/blob/main/clients/grpc_bds_resilience.go#L29-L285) — `bdsPool`, resilience tunables, `Pick`, `OnBoundedTimeout`, `recordStuck`, `replaceConn`, `pickTargetForBDS`
+- [`util/bounded_call.go:L27-L60`](https://github.com/erpc/erpc/blob/main/util/bounded_call.go#L27-L60) — `BoundedCallT`: context-race goroutine wrapper, foundation of wedged-stream defense
+- [`common/grpc_errors.go:L12-L225`](https://github.com/erpc/erpc/blob/main/common/grpc_errors.go#L12-L225) — `ExtractGrpcErrorFromGrpcStatus`: BDS error-code priority path + gRPC code fallback
+- [`auth/grpc.go:L12-L54`](https://github.com/erpc/erpc/blob/main/auth/grpc.go#L12-L54) — `NewPayloadFromGrpc`: metadata → `AuthPayload` mapping
+- [`common/defaults.go:L669-L693`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L669-L693) — gRPC server config defaults
+- [`common/errors.go:L1981-L1984`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1981-L1984) — `ErrDynamicTimeoutExceeded` sentinel definition
+- [`common/config.go:L1096-L1118`](https://github.com/erpc/erpc/blob/main/common/config.go#L1096-L1118) — `GrpcUpstreamConfig` struct definition
+- [`util/exit.go:L8-L9`](https://github.com/erpc/erpc/blob/main/util/exit.go#L8-L9) — `ExitCodeERPCStartFailed` (1001) and `ExitCodeHttpServerFailed` (1002) constants
+- [`architecture/evm/error_normalizer.go:L660-L876`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L660-L876) — dead legacy `evm.ExtractGrpcError`; do not revive (diverges from live path)
+
+### Related pages
+
+- [Auth](/config/auth) — same `AuthPayload` and trusted-forwarder logic applies to gRPC calls.
+- [Rate limiters](/config/rate-limiters) — streaming methods acquire a permit before executing; configure limits here.
+- [Failsafe — Timeout](/config/failsafe/timeout) — set &gt; 20s to keep the BDS hard cap as the outer bound.
+- [Failsafe — Retry](/config/failsafe/retry) — retry policies wrap BDS calls the same way as HTTP upstream calls.
+- [Metrics reference](/reference/metrics) — all `erpc_grpc_bds_*` metrics documented with full label sets.
+- [Survive provider outages](/use-cases/survive-provider-outages) — BDS upstreams participate in the same failover routing as HTTP upstreams.
+
+</AISection>

@@ -1,253 +1,426 @@
 ---
-title: "sharedState"
-description: Share critical blockchain state across multiple eRPC instances — eliminates redundant upstream polling and improves integrity checks in horizontal-scaling deployments.
+title: Shared state
+description: Give every pod in your fleet the same real-time view of each upstream's block height — routing stays consistent as you scale out, with zero added latency on the request path.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../../components";
-
-# `sharedState`
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../../components";
 
 <LLMsTxtLink />
 
-When running multiple eRPC instances, each instance would independently poll upstreams for the latest and finalized block numbers, wasting requests. `sharedState` lets the cluster share that information through a common backing store — so one instance's discovery is immediately visible to all others.
+# Shared state
 
-**You can configure:**
+Scale eRPC horizontally and every pod independently tracks upstream block heights. Without coordination, one pod may route a request to a lagging upstream while another pod wouldn't. Shared state fixes this: a background pipeline publishes every new block observation to a common store and fans updates out to every peer, so all pods route from the same global picture. The request path never waits — reads stay in-process and the network round-trip is always off the critical path.
 
-- **Cluster isolation** — `clusterKey` scopes shared state to a named group; different clusters don't bleed into each other
-- **Backing store** — memory (single-instance default), Redis (recommended for production), or PostgreSQL
-- **Fallback timeout** — how long to wait for the backing store before falling back to local state
-- **Distributed locking** — `lockTtl`, `lockMaxWait`, `updateMaxWait` control coordination latency budget
+## Quick taste
 
-## Minimum useful config
-
-A single Redis connector — the recommended production setup. Memory is the default when no connector is specified and works for single-instance deployments only.
+Illustrative, not a tuned production config — connect all pods to one Redis instance:
 
 <ConfigTabs
-	path="database > sharedState"
-	focus="3-8"
-	yaml={`database:
+  path="database.sharedState"
+  focusYaml="2-9"
+  focusTs="2-8"
+  yaml={`database:
   sharedState:
-    clusterKey: "my-cluster-1"   # isolates state from other clusters
+    # unique key per deployment — prevents cross-pod contamination if two clusters share one Redis
+    clusterKey: "prod-main"
+    connector:
+      # redis gives sub-millisecond cross-pod propagation via pub/sub
+      driver: redis
+      redis:
+        uri: "redis://:secret@redis.internal:6379/?pool_size=10"`}
+  ts={`database: {
+  sharedState: {
+    // unique key per deployment — prevents cross-pod contamination if two clusters share one Redis
+    clusterKey: "prod-main",
+    connector: {
+      // redis gives sub-millisecond cross-pod propagation via pub/sub
+      driver: "redis",
+      redis: { uri: "redis://:secret@redis.internal:6379/?pool_size=10" },
+    },
+  },
+}`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="add shared state to a multi-pod deployment"
+	defaultOpen
+	prompt={`I'm running eRPC on multiple pods and they each independently track upstream block
+heights, causing inconsistent routing. Set up database.sharedState in my eRPC config
+using Redis so all pods share the same block-number view. Set a unique clusterKey for
+my deployment and leave the foreground latency defaults unless there's a strong reason
+to change them. Read the full reference first:
+https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="tune foreground latency for co-located Redis"
+	prompt={`My eRPC pods use shared state with Redis on the same host (sub-millisecond RTT).
+Audit my eRPC config sharedState settings — specifically updateMaxWait, lockMaxWait,
+fallbackTimeout, and lockTtl — and tighten the foreground latency budget without
+breaking the lockTtl > fallbackTimeout constraint. Reference:
+https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug inconsistent block routing across pods"
+	prompt={`Some of my eRPC pods are routing requests to lagging upstreams even though other pods
+see a higher block. I have sharedState configured in my eRPC config. Walk me through what
+Prometheus metrics and log messages to check to confirm cross-pod propagation is working,
+and whether my clusterKey is set correctly so pods aren't cross-contaminating each other.
+Reference: https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="migrate from DynamoDB to Redis for shared state"
+	prompt={`Our eRPC shared state currently uses DynamoDB and we're seeing ~5s cross-pod convergence
+lag. Migrate the database.sharedState connector in my eRPC config to Redis for sub-millisecond
+pubsub propagation. Keep the clusterKey unchanged so existing counter state is preserved
+at the new connector. Reference:
+https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="run two independent clusters on one Redis"
+	prompt={`I have a staging and a production eRPC deployment both pointing at the same Redis
+instance. Ensure their shared-state counters don't interfere with each other by setting
+distinct clusterKey values in each my eRPC config, and explain what happens if I accidentally
+leave both at the default. Reference:
+https://docs.erpc.cloud/config/database/shared-state.llms.txt`}
+/>
+
+<AISection title="Shared state — full agent reference">
+
+### How it works
+
+**Registry and key space.** `NewSharedStateRegistry` wraps one `Connector` and a `clusterKey` prefix. Every counter is stored under `<clusterKey>/<counter-family>/<upstreamUniqueKey>` — for example `prod-main/latestBlock/projectX/evm/1/alchemy`. The registry holds a `sync.Map` of live `counterInt64` instances; calling `GetCounterInt64` with the same key always returns the same object (idempotent `LoadOrStore`). On first call, two async bootstrap tasks start: one seeds the local counter with a single remote `Get`, and one calls `WatchCounterInt64` to open a long-lived change stream from the connector.
+
+**Write path.** `TryUpdate` is synchronous and local-only — it atomically advances the in-memory counter via a CAS loop and then schedules a background push without touching the network. `scheduleBackgroundPushCurrent` coalesces concurrent pushes: a single goroutine per counter (1) publishes the current state via `connector.PublishCounterInt64` for fast peer notification, (2) acquires the distributed lock within `lockMaxWait`, (3) reads remote state and adopts it if the remote value is newer, then writes local state if local is newer. If the lock cannot be acquired within `lockMaxWait`, the goroutine falls back to publish-only propagation and reschedules if another update arrived while it was running.
+
+**Foreground latency budget.** `TryUpdateIfStale` is used by the EVM state poller to debounce expensive RPC calls. It launches the upstream RPC in a background goroutine and waits at most `updateMaxWait` for the result. If the RPC finishes within that window the fresh value is returned synchronously; otherwise the stale local value is returned immediately and the RPC completes asynchronously. The foreground path never acquires the distributed lock.
+
+**Rollback handling.** All counter updates enforce a rollback policy. `latestBlock`, `finalizedBlock`, and `servedLatestBlock`/`servedFinalizedBlock` use `ignoreRollbackOf = 1024` — decreases up to 1024 blocks are silently discarded as noise from lagging upstreams; larger gaps (genuine reorgs or provider resets) are accepted and trigger the `OnLargeRollback` callback. `earliestBlock` uses `ignoreRollbackOf = 0` — all decreases are accepted because node pruning genuinely shifts the historical anchor.
+
+**Timestamp vector clock and conflict resolution.** Each counter state is serialised as `{"v":<int64>,"t":<unix_ms>,"b":"<instance_id>"}`. The `t` field doubles as both a vector clock for conflict resolution and a staleness indicator. `allocateUpdatedAtMs` ensures local timestamps are strictly monotonic even under concurrent goroutines (a CAS spin-loop). Remote state is only adopted when `st.UpdatedAt > currentTs`, providing idempotency and protection against out-of-order network delivery. When a remote update has a newer timestamp but a value that would imply a small rollback (within `ignoreRollbackOf`), `advanceTimestampPast` is called to advance the local timestamp past the remote's so the local (higher) value wins the next reconciliation cycle.
+
+**Transport differences by connector.** All five connectors implement the same `GetCounterInt64` / `PublishCounterInt64` / `WatchCounterInt64` interface; propagation latency differs significantly:
+
+- **Redis** — push via `PUBLISH counter:<fullKey>` (e.g. `counter:prod-main/latestBlock/...`) and subscribe via a single shared `PSubscribe("counter:*")` connection that matches all counters regardless of cluster; subscribers filter by exact key inside `runMessageLoop`. Reconnects automatically with exponential backoff (1 s → 30 s with jitter) and a 5-minute periodic poll fallback; `pollAllKeys()` is triggered after each reconnect to close the gap during the reconnection window. Subscriber channels are buffered (size 1, drop-on-full) so slow consumers never block the message loop. Source: <SourceLink file="data/redis_pubsub_manager.go" lines="155-460" />, <SourceLink file="data/redis.go" lines="591" />
+- **PostgreSQL** — push via `pg_notify` using a channel name derived by `sanitizeChannelName(fmt.Sprintf("counter_%s", key))` to strip characters illegal in PostgreSQL NOTIFY channel names; LISTEN-based subscription with a 30 s polling fallback. Source: <SourceLink file="data/postgresql.go" lines="620-718" />
+- **DynamoDB** — no push primitive. `PublishCounterInt64` is a documented no-op; propagation relies on polling at `statePollInterval` (default 5 s). Cross-pod convergence latency is bounded by the poll interval, not a push event. Source: <SourceLink file="data/dynamodb.go" lines="723-829" />
+- **Memory** — both `WatchCounterInt64` and `PublishCounterInt64` are no-ops; in-process only, no cross-pod coordination. Source: <SourceLink file="data/memory.go" lines="195-207" />
+- **gRPC** — both `WatchCounterInt64` and `PublishCounterInt64` return an error; the gRPC connector cannot participate in shared state.
+
+**Deadlock-prevention invariant.** The foreground paths (`TryUpdate` and `TryUpdateIfStale`) never acquire the distributed lock. Only the background `scheduleBackgroundPushCurrent` goroutine acquires it, and only after any local update is complete. This strict lock-ordering rule was introduced to fix a deadlock where the old design could have `scheduleBackgroundPushCurrent` hold the distributed lock and wait for `updateMu`, while `TryUpdateIfStale` held `updateMu` and waited for the distributed lock. The test `TestLockOrderSimulation_OldBuggyBehavior` documents the old behavior.
+
+**Counter families.** Four families of counters are materialised during normal operation, all stored under `<clusterKey>/<family>/<...>` in the backing store:
+
+1. `latestBlock/<projectId>/<arch>/<networkId>/<upstreamId>` — latest block per upstream (`ignoreRollbackOf=1024`).
+2. `finalizedBlock/<projectId>/<arch>/<networkId>/<upstreamId>` — finalized block per upstream (`ignoreRollbackOf=1024`).
+3. `earliestBlock/<projectId>/<arch>/<networkId>/<upstreamId>/<probeType>` — earliest available block per upstream per probe type (`ignoreRollbackOf=0`; all decreases accepted because node pruning genuinely shifts the historical anchor).
+4. `servedLatestBlock/<networkId>/<grp:<hash>>` and `servedFinalizedBlock/<networkId>/<grp:<hash>>` — cross-pod monotonic served-tip per tag-group.
+
+The per-upstream key component is derived via `common.UniqueUpstreamKey(up)` which hashes the upstream's project/network/upstream triple to prevent collisions between upstreams with the same ID in different networks or projects. Source: <SourceLink file="common/upstream.go" lines="62-65" />
+
+**Instance ID.** Each counter state carries an `UpdatedBy` field (`"b"` in JSON) identifying which pod wrote it. It is resolved from the first non-empty value of: env `INSTANCE_ID` → env `POD_NAME` → env `HOSTNAME` → `os.Hostname()` → `"unknown"`. This is diagnostic-only and does not affect routing. Source: <SourceLink file="data/shared_state_registry.go" lines="82-98" />
+
+**SuggestLatestBlock fast path.** When the eRPC proxy observes a block number in an upstream response, it immediately calls `SuggestLatestBlock(blockNumber)` which calls `TryUpdate` if the new value is greater than the current local value. This avoids a full polling round-trip and immediately triggers background propagation, advancing the shared counter without waiting for the next polling tick. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="459-481" />
+
+**IsStale semantics.** `IsStale(d)` returns `true` if `updatedAtUnixMs <= 0` (counter never written) or if `time.Since(time.UnixMilli(updatedAtUnixMs)) > d`. It is the gate inside `TryUpdateIfStale` before attempting a refresh. Source: <SourceLink file="data/shared_state_variable.go" lines="37-43" />
+
+**OnValue / OnLargeRollback callbacks.** Registered at counter construction time; called synchronously from `triggerValueCallback` within both `processNewValue` (local write path) and `processNewState` (remote sync path) after a successful CAS. The EVM state poller registers `OnValue` to push the new block number into the health tracker for metrics and `OnLargeRollback` to record large rollback events. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="126-139" />
+
+**Poll timeout in EVM state poller.** The state poller computes its per-tick context timeout as `lockTtl + 15s` (minimum 30 s) to allow time for acquiring the distributed lock plus network operations. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="174-187" />
+
+**Bootstrap task retry.** If `WatchCounterInt64` fails at startup (connector not ready, network error), `initCounterSync` marks the watch task as failed and the `Initializer` retries it in the background. During this window the counter operates in local-only mode. Source: <SourceLink file="data/shared_state_registry.go" lines="168-222" />
+
+**Served-tip partitions.** Beyond per-upstream counters, eRPC also maintains network-wide `servedLatestBlock` and `servedFinalizedBlock` counters, plus per-tag-group partitions for tag-aware routing. The partition key is `"grp:" + hex(sha256(sorted_upstream_ids)[:8])` so equivalent selectors map to the same key. A cap of 16 partitions per network prevents cardinality explosion from pathological configs. Once the cap is reached, new tag-group selectors fall back to the stateless subnet-minimum.
+
+**Fallback when absent.** `erpc/erpc.go:L49-L66` synthesises an in-memory registry if `sharedState == nil`; the same `GetCounterInt64` API works identically but no cross-pod propagation occurs. Init failures are non-fatal: `erpc/init.go` logs a warning and continues with a synthesised in-memory registry. A broken Redis config therefore produces degraded per-pod behavior, not a hard startup failure.
+
+### Config schema
+
+All fields are under `database.sharedState` in `erpc.yaml`. The block is optional; its absence causes a silent fallback to a process-local in-memory registry. Struct at <SourceLink file="common/config.go" lines="269-286" />, defaults at <SourceLink file="common/defaults.go" lines="789-828" />, validation at <SourceLink file="common/validation.go" lines="263-309" />.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `database.sharedState` | `*SharedStateConfig` | `nil` | Root pointer. `nil` by default; when absent, `erpc/erpc.go:L49-L66` synthesises an identical in-memory config at runtime. The same `GetCounterInt64` API works in both cases; the only difference is no cross-pod propagation. Source: <SourceLink file="common/config.go" lines="266" />, <SourceLink file="erpc/erpc.go" lines="49-66" /> |
+| `database.sharedState.clusterKey` | `string` | Inherits top-level `clusterKey` (default `"erpc-default"`) | Prefix prepended to every counter key as `<clusterKey>/<key>`. Multiple logical clusters can share the same Redis/PG instance without collision. **Footgun:** all instances default to `"erpc-default"` — distinct independent deployments pointing at the same store must set distinct keys or they cross-contaminate block-number state. Source: <SourceLink file="common/config.go" lines="271" />, <SourceLink file="common/defaults.go" lines="803-804" /> |
+| `database.sharedState.connector` | `*ConnectorConfig` | Auto-defaulted to in-memory (`driver="memory"`) when block is present but connector is omitted | Backing store for counter persistence and pub/sub. Drivers: `memory`, `redis`, `postgresql`, `dynamodb`. **GOTCHA — id auto-assignment:** if `connector.id` is empty, shared-state scope sets it to `string(connector.driver)` (e.g. `"redis"`) at `common/defaults.go:L799-L801`, NOT `"shared-state-redis"` (the `scope+"-"+driver` pattern used by cache/auth connectors). Copying a connector block from `database.evmJsonRpcCache` into `database.sharedState` and relying on auto-assigned ids produces different ids. Always set `connector.id` explicitly. Source: <SourceLink file="common/defaults.go" lines="799-801" /> |
+| `database.sharedState.fallbackTimeout` | `Duration` | `3s` | Deadline for background remote I/O (Get, Set, Publish) and the hard cap on the async-refresh helper goroutine (`fallbackTimeout + 1s`). **Does NOT bound request-path latency** — that is `updateMaxWait`. Setting this very low degrades background propagation without improving client latency. Source: <SourceLink file="common/defaults.go" lines="809-812" />, <SourceLink file="data/shared_state_variable.go" lines="426" />, <SourceLink file="data/shared_state_variable.go" lines="511" /> |
+| `database.sharedState.lockTtl` | `Duration` | `4s` | Expiry of the distributed lock key in the backing store. Must exceed `fallbackTimeout` (enforced by validation) to allow one full Get+Set cycle under the lock. If the lock expires while the goroutine is still working, `Unlock` logs "lock was already expired" at DEBUG level — this is expected. Source: <SourceLink file="common/defaults.go" lines="814-817" />, <SourceLink file="common/validation.go" lines="292-295" /> |
+| `database.sharedState.lockMaxWait` | `Duration` | `100ms` | Maximum time the background push goroutine waits to acquire the distributed lock before giving up and relying on publish-only propagation. Never blocks the request path. Must be `> 0` and `< fallbackTimeout`. Source: <SourceLink file="common/defaults.go" lines="820-823" />, <SourceLink file="common/validation.go" lines="298-301" /> |
+| `database.sharedState.updateMaxWait` | `Duration` | `50ms` | **Primary foreground latency knob.** `TryUpdateIfStale` waits at most this long for the upstream RPC before returning the stale value and continuing async. Fast Redis responses (&lt;5 ms typical) complete synchronously; slow responses are cut off. Must be `> 0` and `< fallbackTimeout`. Source: <SourceLink file="common/defaults.go" lines="824-827" />, <SourceLink file="data/shared_state_variable.go" lines="447" /> |
+
+**Top-level `clusterKey`** (`common/config.go:L40`): defaults to `"erpc-default"`. Propagated to `database.sharedState.clusterKey` if that field is empty.
+
+**DynamoDB-specific `statePollInterval`** (`common/config.go:L441`): default `5s`. Controls the polling rate inside `WatchCounterInt64` since DynamoDB has no pub/sub primitive.
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Minimal Redis config with an explicit cluster key (recommended baseline).** Every production
+deployment sets a unique `clusterKey` so that staging and production instances sharing one Redis
+instance don't contaminate each other's block-number state. The explicit `connector.id` avoids the
+auto-assignment gotcha where shared-state connectors get `"redis"` instead of `"shared-state-redis"`:
+
+<ConfigTabs
+  path="database.sharedState"
+  yaml={`database:
+  sharedState:
+    # unique per deployment — prevents cross-pod block-height contamination
+    # if two clusters share the same Redis instance (e.g. prod + staging)
+    clusterKey: "prod-us-east-1"
+    connector:
+      # always set id explicitly: auto-assigned id here is "redis", not "shared-state-redis"
+      id: "shared-state-redis"
+      driver: redis
+      redis:
+        uri: "\${SHARED_STATE_REDIS_URL}"`}
+  ts={`database: {
+  sharedState: {
+    // unique per deployment — prevents cross-pod block-height contamination
+    // if two clusters share the same Redis instance (e.g. prod + staging)
+    clusterKey: "prod-us-east-1",
+    connector: {
+      // always set id explicitly: auto-assigned id here is "redis", not "shared-state-redis"
+      id: "shared-state-redis",
+      driver: "redis",
+      redis: { uri: "\${SHARED_STATE_REDIS_URL}" },
+    },
+  },
+}`}
+/>
+
+**2. Multi-region fleet with relaxed lock and wide foreground wait.** When pods span
+multiple regions, the Redis round-trip from any one pod may vary. This production multi-region config
+raises `lockTtl` to 30 s to accommodate the longer distributed-lock cycle, sets `lockMaxWait`
+to 200 ms to fail fast and fall back to publish-only propagation rather than blocking,
+and raises `updateMaxWait` to 2 s to give the foreground refresh more time before falling
+through to a stale value:
+
+<ConfigTabs
+  path="database.sharedState"
+  yaml={`database:
+  sharedState:
+    clusterKey: "fly-prod-aggregator-shard0"
+    # long TTL covers one full Get+Set cycle at cross-region Redis latency;
+    # must stay > fallbackTimeout (default 3s), so 30s is generous
+    lockTtl: "30s"
+    # fail fast on lock contention — proceed with publish-only; never block requests
+    lockMaxWait: "200ms"
+    # cross-region Redis RTT can be 50–200ms; give the refresh goroutine time to finish
+    # synchronously before falling through to the stale value
+    updateMaxWait: "2s"
     connector:
       driver: redis
       redis:
-        uri: "redis://username:password@host:6379/0?pool_size=10"
-    fallbackTimeout: 3s`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  database: {
-    sharedState: {
-      clusterKey: "my-cluster-1",
-      connector: {
-        driver: "redis",
-        redis: {
-          uri: "redis://username:password@host:6379/0?pool_size=10",
-        },
-      },
-      fallbackTimeout: "3s",
+        uri: "redis://erpc-redis.internal:6379"`}
+  ts={`database: {
+  sharedState: {
+    clusterKey: "fly-prod-aggregator-shard0",
+    // long TTL covers one full Get+Set cycle at cross-region Redis latency;
+    // must stay > fallbackTimeout (default 3s), so 30s is generous
+    lockTtl: "30s",
+    // fail fast on lock contention — proceed with publish-only; never block requests
+    lockMaxWait: "200ms",
+    // cross-region Redis RTT can be 50–200ms; give the refresh goroutine time to finish
+    // synchronously before falling through to the stale value
+    updateMaxWait: "2s",
+    connector: {
+      driver: "redis",
+      redis: { uri: "redis://erpc-redis.internal:6379" },
     },
   },
-});`}
+}`}
 />
 
-<Callout type="warning">
-	Always set a unique `clusterKey` when running multiple independent eRPC deployments (e.g. separate Kubernetes clusters). Without it, all instances default to `"erpc-default"` and would share state across unrelated clusters.
-</Callout>
-
-## Full config with locking tuned
+**3. Same Redis, two logical clusters (staging + prod).** When you can't provision separate Redis
+instances, use distinct `clusterKey` values. Counter keys are prefixed with the cluster key so
+`staging/latestBlock/...` and `prod/latestBlock/...` never collide, even though
+both clusters publish to the same Redis PUBLISH channel namespace. The `fallbackTimeout` and
+`lockTtl` defaults are left in place since in-cluster Redis latency is well under 3 s:
 
 <ConfigTabs
-	path="database > sharedState"
-	focus="3-12"
-	yaml={`database:
-  sharedState:
-    clusterKey: "my-cluster-1"
-    connector:
-      driver: redis
-      redis:
-        uri: "redis://:some-secret@redis.svc.cluster.local:6379/?pool_size=10&dial_timeout=5s&read_timeout=1s&write_timeout=2s"
-    fallbackTimeout: 3s
-    lockTtl: 2s        # TTL for distributed locks; keep short
-    lockMaxWait: 100ms # max time to try acquiring lock before proceeding locally
-    updateMaxWait: 50ms`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  database: {
-    sharedState: {
-      clusterKey: "my-cluster-1",
-      connector: {
-        driver: "redis",
-        redis: {
-          uri: "redis://:some-secret@redis.svc.cluster.local:6379/?pool_size=10&dial_timeout=5s&read_timeout=1s&write_timeout=2s",
-        },
-      },
-      fallbackTimeout: "3s",
-      lockTtl: "2s",
-      lockMaxWait: "100ms",
-      updateMaxWait: "50ms",
-    },
-  },
-});`}
-/>
-
-<Callout type="info">
-	Storage footprint is tiny — typically less than 1 MB per upstream regardless of chain traffic volume.
-</Callout>
-
-<AISection title="Copy for your AI assistant — full sharedState reference">
-
-### Full config skeleton
-
-```yaml
+  path="database.sharedState"
+  yaml={`# staging erpc.yaml
 database:
   sharedState:
-    # Unique key scoping this cluster's shared state.
-    # Default: "erpc-default". Set explicitly when running multiple clusters.
-    clusterKey: string
-
-    # Storage backend. Exactly one connector (not an array).
+    # distinct from the production clusterKey — same Redis, no cross-contamination
+    clusterKey: "staging"
     connector:
-      driver: memory | redis | postgresql
-      # Driver-specific block — only the one matching driver is used:
-      memory: {}                         # no config; single-instance only
+      driver: redis
       redis:
-        uri: string                      # redis://[user:pass@]host:port/db[?options]
-      postgresql:
-        connectionUri: string            # postgres://user:pass@host:5432/dbname
-        table: string                    # optional, default "erpc_shared_state"
-
-    # Max time to wait for the backing store before falling back to local state.
-    # Applies to get/set/publish operations.
-    # Recommended: 3s
-    fallbackTimeout: duration
-
-    # TTL for distributed locks stored in the backing store.
-    # Keep short — this is a best-effort coordination path, not a hard guarantee.
-    # Default: 4s
-    lockTtl: duration
-
-    # Max time to try acquiring a distributed lock before proceeding locally.
-    # Default: 100ms
-    lockMaxWait: duration
-
-    # Max time to run a shared-state refresh function before returning the
-    # locally cached value.
-    # Default: 50ms
-    updateMaxWait: duration
-```
-
-### Field reference
-
-| Field | Default | Notes |
-|---|---|---|
-| `clusterKey` | `"erpc-default"` | Namespace for this cluster's state keys in the backing store. Use a unique value per independent eRPC deployment. Collisions between clusters cause incorrect shared block numbers. |
-| `connector.driver` | `memory` | `memory` for single-instance; `redis` recommended for multi-instance; `postgresql` available but higher latency than Redis. |
-| `fallbackTimeout` | none | Duration before the backing-store call is abandoned and the local value is used. Protects the request path from a slow or unavailable store. |
-| `lockTtl` | `4s` | How long a distributed lock key lives in the store. A crashed instance holding a lock releases it when TTL expires. Setting it too long causes unnecessary serialization under failover; too short risks the lock expiring before the holder finishes writing. |
-| `lockMaxWait` | `100ms` | How long an instance will spin-wait trying to acquire a lock before giving up and proceeding with its own local value. Keeps the foreground path bounded. |
-| `updateMaxWait` | `50ms` | Deadline for the shared-state refresh callback (the function that updates block numbers, finality info, etc.). On expiry, the in-process cached value is returned unchanged. |
-
-### Connector options
-
-**memory** — no config block needed. All state is in-process; invisible to other instances. Use only for single-instance deployments or local development.
-
-**redis** — recommended for production. The `uri` field uses standard Redis URI syntax:
-
-```
-redis://[user:password@]host:port[/db][?option=value&...]
-```
-
-Useful query-string options:
-- `pool_size` — connection pool size (default 10 is usually fine)
-- `dial_timeout` — TCP connect timeout (e.g. `5s`)
-- `read_timeout` — per-read timeout (e.g. `1s`)
-- `write_timeout` — per-write timeout (e.g. `2s`)
-
-Redis Sentinel / Cluster URIs are also supported via the `redis-sentinel://` and `redis-cluster://` schemes (where available).
-
-The Redis connector's `lockRetryInterval` field (default `500ms`) controls the backoff between lock-acquisition attempts for sharedState. See the [full Redis driver reference](/config/database/drivers#redis-driver) for all timing knobs.
-
-**postgresql** — use when Redis is unavailable or a single SQL store is preferred. Higher per-operation latency than Redis; set `fallbackTimeout` generously (e.g. `5s`).
-
-### When to enable sharedState
-
-Enable it any time you run **more than one eRPC instance** serving the same networks:
-
-- Kubernetes Deployment with `replicas > 1`
-- Multiple Fly.io machines in the same app
-- Active-active multi-region deployments
-
-With `memory` (the default), each instance independently tracks the latest/finalized block — every instance polls upstreams separately and may make routing decisions based on slightly stale or inconsistent data. With a shared Redis, one instance's observation is immediately visible to all others, cutting upstream polling by roughly `1/N` where N is the replica count.
-
-For **single-instance** deployments, sharedState with `memory` has no downside but also no benefit. You can omit the section entirely.
-
-### Deployment patterns
-
-**Single cluster, Redis:**
-
-```yaml
+        uri: "\${SHARED_STATE_REDIS_URL}"
+---
+# production erpc.yaml
 database:
   sharedState:
     clusterKey: "prod"
     connector:
       driver: redis
       redis:
-        uri: "redis://:secret@redis.internal:6379/?pool_size=20"
-    fallbackTimeout: 3s
-    lockTtl: 2s
-    lockMaxWait: 100ms
-    updateMaxWait: 50ms
-```
+        uri: "\${SHARED_STATE_REDIS_URL}"`}
+  ts={`// staging config
+database: {
+  sharedState: {
+    // distinct from the production clusterKey — same Redis, no cross-contamination
+    clusterKey: "staging",
+    connector: { driver: "redis", redis: { uri: "\${SHARED_STATE_REDIS_URL}" } },
+  },
+},
+// production config
+database: {
+  sharedState: {
+    clusterKey: "prod",
+    connector: { driver: "redis", redis: { uri: "\${SHARED_STATE_REDIS_URL}" } },
+  },
+},`}
+/>
 
-**Two independent clusters sharing one Redis instance** — use distinct `clusterKey` values so keys don't collide:
+**4. DynamoDB for AWS-only deployments.** When Redis or PostgreSQL aren't available, DynamoDB
+is a valid fallback, but `PublishCounterInt64` is a no-op — propagation relies entirely on
+polling. Cross-pod convergence latency is bounded by `statePollInterval` (default 5 s) rather
+than a push event. Acceptable for batch indexing workloads that tolerate slightly stale
+block-height views, but not recommended for latency-sensitive RPC fleets:
+
+<ConfigTabs
+  path="database.sharedState"
+  yaml={`database:
+  sharedState:
+    clusterKey: "prod-main"
+    connector:
+      driver: dynamodb
+      dynamodb:
+        region: "us-east-1"
+        table: "erpc-shared-state"
+        # DynamoDB has no pub/sub — all propagation is via polling;
+        # lower values cost more DynamoDB read capacity; default 5s is the floor
+        statePollInterval: 5s`}
+  ts={`database: {
+  sharedState: {
+    clusterKey: "prod-main",
+    connector: {
+      driver: "dynamodb",
+      dynamodb: {
+        region: "us-east-1",
+        table: "erpc-shared-state",
+        // DynamoDB has no pub/sub — all propagation is via polling;
+        // lower values cost more DynamoDB read capacity; default 5s is the floor
+        statePollInterval: "5s",
+      },
+    },
+  },
+}`}
+/>
+
+**5. No shared state (single-pod or dev).** Omitting the block entirely gives you a silent
+per-process in-memory registry — no config needed, same API, no cross-pod propagation:
 
 ```yaml
-# cluster A
-database:
-  sharedState:
-    clusterKey: "erpc-mainnet"
-    connector:
-      driver: redis
-      redis: { uri: "redis://redis.internal:6379/0" }
-
-# cluster B  (separate erpc.yaml)
-database:
-  sharedState:
-    clusterKey: "erpc-testnet"
-    connector:
-      driver: redis
-      redis: { uri: "redis://redis.internal:6379/0" }
+# No database.sharedState block — eRPC synthesises an in-memory registry automatically
+database: {}
 ```
 
-### Common pitfalls
+### Request/response behavior
 
-- **`clusterKey` collisions** — two unrelated eRPC clusters pointing at the same Redis without distinct `clusterKey` values will cross-contaminate block-number state, causing incorrect routing decisions (e.g. treating mainnet finalized block as testnet finalized block).
-- **`lockTtl` too long** — if an instance crashes while holding a lock, other instances wait `lockTtl` before the lock is released. A value like `30s` means a 30-second stall for one shared-state refresh after any crash. Keep it at 2–5s.
-- **`lockTtl` too short** — if the backing-store round-trip is slower than `lockTtl`, the lock expires before the holder finishes writing, allowing concurrent writers and defeating the coordination guarantee. Use `lockTtl >= 2 * fallbackTimeout` as a rule of thumb.
-- **`fallbackTimeout` too tight** — a very short timeout (e.g. `50ms`) on a cross-region Redis will cause near-constant fallback to local state, defeating the purpose of shared state. Set it to at least 2–3× the expected P99 round-trip to the store.
-- **Using `memory` connector in a multi-instance deployment** — the default `memory` connector is completely in-process; no state is shared. If you're running replicas and wondering why shared state seems not to work, check that you've configured Redis or PostgreSQL.
-- **PostgreSQL table not created** — the PostgreSQL driver creates the table automatically on first run, but requires `CREATE TABLE` permission on the target schema. Grant it or pre-create the table.
+The shared-state layer has no effect on JSON-RPC request or response shapes visible to clients. Its impact is routing-internal:
 
-### Fallback semantics
+- **Block-number reads** (`latestBlock`, `finalizedBlock`) used by the upstream selector and tag-aware routing come from the in-process atomic copy — zero latency on the request path.
+- **Block-number refreshes** are debounced via `TryUpdateIfStale`; the foreground caller waits at most `updateMaxWait` (default 50 ms). If the refresh completes within that window the fresh value influences the current request; otherwise the stale value is used and the refresh completes asynchronously for the next request.
+- **Served-tip counters** (`servedLatestBlock`, `servedFinalizedBlock`) are updated after a response is selected and do not add latency. They gate the "never serve older than seen" invariant that prevents block-number regressions across requests in a scaled fleet.
+- A broken or unreachable shared-state connector degrades to per-pod local state — no error is returned to the client; routing quality degrades silently.
 
-All operations against the backing store are **best-effort**. If the store is down or slow:
+### Best practices
 
-1. The call respects `fallbackTimeout` and returns the locally cached value.
-2. eRPC continues serving requests using its own in-process state.
-3. When the store recovers, state sync resumes automatically — no restart needed.
+- Always set a **unique `clusterKey`** per logical deployment (e.g. `"prod-v2"`, `"staging"`). The default `"erpc-default"` is shared by every unconfigured instance pointing at the same store — cross-contamination breaks block-height monotonicity.
+- Always set **`connector.id` explicitly** (`id: "shared-state-redis"`). The auto-assigned id for shared-state connectors is `string(driver)` (e.g. `"redis"`), not the `"shared-state-redis"` pattern used by cache connectors — copying connector blocks between scopes silently changes the id.
+- Prefer **Redis or PostgreSQL** over DynamoDB for shared state. DynamoDB has no pub/sub; convergence latency is 5 s by default vs. milliseconds for Redis pubsub.
+- Do not set **`fallbackTimeout` low** to try to speed up request latency — `fallbackTimeout` governs background I/O only. The foreground latency knob is `updateMaxWait`.
+- Keep **`lockTtl > fallbackTimeout`** (the default 4 s > 3 s relationship). Validation enforces this, but understand it: `lockTtl` must be long enough for one full Get+Set cycle under the lock.
+- In AWS deployments with Redis, set **`pool_size`** in the Redis URI (`?pool_size=10`) to avoid connection exhaustion under bursty background push traffic.
+- Monitor `erpc_upstream_block_head_large_rollback` in production. A sustained non-zero value means an upstream is experiencing genuine reorgs or provider resets — something worth routing around.
 
-This means a Redis outage degrades multi-instance coordination but does **not** take eRPC down. The worst case is that instances temporarily diverge on their view of the latest block, which may cause a small amount of redundant upstream polling until the store recovers.
+### Edge cases & gotchas
+
+1. **`Value=0` is valid, `UpdatedAt=0` is not.** Genesis block (`earliestBlock=0`) is a legitimate counter value. Uninitialised state is signalled by `UpdatedAt <= 0`, never by `Value == 0`. Source: <SourceLink file="data/connector.go" lines="32-34" />
+2. **Stale lock expiry is silent.** If a remote operation takes longer than `lockTtl`, the lock key expires. `Unlock` returns "lock was already expired" logged at DEBUG — expected and benign. Setting `lockTtl < fallbackTimeout` is rejected by validation to prevent this in every call. Source: <SourceLink file="common/validation.go" lines="292-295" />
+3. **Remote-ahead adoption happens in background.** A fresh pod can have its local counter bumped forward by a peer before the pod's first RPC poll completes. Source: <SourceLink file="data/shared_state_variable.go" lines="686-691" />
+4. **Small-rollback rejection advances local timestamp.** When a remote update has a newer `UpdatedAt` but a value within the rollback threshold, `advanceTimestampPast` is called to ensure the local (higher) value wins the next reconciliation. Source: <SourceLink file="data/shared_state_variable.go" lines="211-218" />
+5. **`TryUpdate` must not acquire `updateMu`.** Holding `updateMu` during `TryUpdate` would block a concurrent `TryUpdateIfStale` caller already holding the mutex that could in turn wait for background operations — a classic deadlock. The old design had this bug; test `TestLockOrderSimulation_OldBuggyBehavior` documents it. Source: <SourceLink file="data/shared_state_variable_deadlock_test.go" lines="95-212" />
+6. **`continueAsyncRefresh` goroutine leak protection.** If the downstream RPC ignores its context and never returns, a bounded timer of `fallbackTimeout + 1s` kills the helper. Source: <SourceLink file="data/shared_state_variable.go" lines="511" />
+7. **Double-checked staleness.** `TryUpdateIfStale` checks `IsStale` before and after acquiring `updateMu` to prevent a thundering herd where N goroutines all see stale and all fire a refresh after the first one already updated the value. Source: <SourceLink file="data/shared_state_variable.go" lines="399-413" />
+8. **Redis pubsub channel buffered=1, drop-on-full.** If the registry consumer falls behind, messages are silently dropped. The 5-minute periodic `pollingLoop` is the recovery path. Source: <SourceLink file="data/redis_pubsub_manager.go" lines="450-457" />
+9. **DynamoDB `PublishCounterInt64` is a no-op.** Cross-pod latency is bounded by `statePollInterval` (default 5 s). Using DynamoDB means significantly higher convergence latency than Redis or PostgreSQL. Source: <SourceLink file="data/dynamodb.go" lines="825-829" />
+10. **`WatchCounterInt64` channel closed on shutdown.** `RedisPubSubManager.stop()` closes all subscriber channels on app shutdown; the registry goroutine observing the channel receives `ok=false` and marks the watch task as failed. This is benign since the app context is also cancelled at that point. Source: <SourceLink file="data/shared_state_registry.go" lines="200-207" />
+11. **`clusterKey` propagation order.** Explicit `database.sharedState.clusterKey` wins over the inherited top-level `clusterKey`. Source: <SourceLink file="common/defaults.go" lines="803-805" />
+12. **Served-tip partition cap at 16 per network.** Once reached, new tag-group selectors fall back to stateless subnet-minimum rather than getting a monotonic counter. Source: <SourceLink file="erpc/networks.go" lines="80-84" />
+13. **init.go treats shared-state failure as a warning, not fatal.** A broken Redis config produces degraded per-pod behavior, not a hard startup failure. Source: <SourceLink file="erpc/init.go" lines="93-97" />
+14. **`database.sharedState` nil means `SetDefaults` is never called on it.** The synthesised config at `erpc/erpc.go:L49-L66` exists only in local scope and does not write back to `cfg.Database.SharedState`. Source: <SourceLink file="common/defaults.go" lines="837-840" />
+15. **Connector `id` auto-assignment differs between shared-state and other scopes.** Shared-state connector id defaults to `string(driver)` (e.g. `"redis"`), not `"shared-state-redis"`. Source: <SourceLink file="common/defaults.go" lines="799-801" />
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_latest_block_number` | Gauge | `project`, `vendor`, `network`, `upstream` | On every `OnValue` callback from `latestBlockShared` counter via `tracker.SetLatestBlockNumber` |
+| `erpc_upstream_finalized_block_number` | Gauge | `project`, `vendor`, `network`, `upstream` | On every `OnValue` callback from `finalizedBlockShared` counter via `tracker.SetFinalizedBlockNumber` |
+| `erpc_upstream_latest_block_polled_total` | Counter | `project`, `vendor`, `network`, `upstream` | Each time `PollLatestBlockNumber` issues an actual RPC call (not debounced by `TryUpdateIfStale`) |
+| `erpc_upstream_finalized_block_polled_total` | Counter | `project`, `vendor`, `network`, `upstream` | Each time `PollFinalizedBlockNumber` issues an actual RPC call |
+| `erpc_upstream_block_head_large_rollback` | Gauge | `project`, `vendor`, `network`, `upstream` | On `OnLargeRollback` callback; value is the rollback size in blocks |
+| `erpc_unexpected_panic_total` | Counter | `component`, `context`, `fingerprint` | On panic recovery inside `initCounterSync` (`component="shared-state-counter-sync"`), `messageLoop` (`component="redis-pubsub-message-loop"`), or `pollingLoop` (`component="redis-pubsub-polling-loop"`) |
+
+**OTel trace spans:**
+- `CounterInt64.TryUpdate` — every foreground local-update call; attributes: `key`, `new_value` (when detailed tracing enabled).
+- `CounterInt64.TryUpdateIfStale` — attributes: `key`, `staleness_ms`, `skipped_not_stale`, `skipped_not_stale_after_mutex`, `role`, `result_path` (`got_result` vs `timeout`), `async_refresh`, `foreground_remote_io_disabled`.
+- `CounterInt64.TryUpdateIfStale.AcquireMutex` — measures mutex wait time inside `TryUpdateIfStale`.
+- `CounterInt64.TryUpdateIfStale.ExecuteRefresh` — spans the actual RPC call inside the refresh goroutine; attribute `timeout_ms`.
+- `RedisConnector.PublishCounterInt64` — spans each publish call; attributes `key`, `value`, `updated_at`, `updated_by` (when detailed tracing enabled).
+- `PostgreSQLConnector.PublishCounterInt64` — same pattern as Redis span above.
+
+**Key log messages** (component `sharedState`):
+- `"no remote initial value found for counter"` (DEBUG) — normal first-run; counter seeds from zero.
+- `"fetched initial value for counter"` (DEBUG) — successful seed from remote on first bootstrap.
+- `"received new value from shared state sync"` (DEBUG) — pubsub/watch update received and processed.
+- `"failed to setup counter sync"` (ERROR) — watch setup failed; will retry via initializer.
+- `"lock held by another instance, proceeding with local lock"` (DEBUG) — normal under load; background push proceeds without distributed lock.
+- `"lock acquisition timed out waiting for other instance"` (WARN) — lock contention above `lockMaxWait`; falling back to publish-only propagation.
+- `"lock expired during operations (expected behavior)"` (DEBUG) — expected when operations take near `lockTtl`.
+- `"published counter value to remote"` (DEBUG) — successful remote publish.
+- `"pubsub reconnected successfully"` (INFO) — Redis pubsub recovery.
+- `"counter value increased (remote)"` (TRACE) — value advanced by remote pubsub event.
+- `"small rollback ignored (remote)"` (TRACE) — rollback inside threshold, discarded.
+- `"large rollback applied (remote)"` (TRACE) — real reorg or provider reset accepted.
+
+### Source code entry points
+
+- [`data/shared_state_registry.go:L38-L80`](https://github.com/erpc/erpc/blob/main/data/shared_state_registry.go#L38-L80) — `NewSharedStateRegistry`: registry construction, `clusterKey` prefix, `sync.Map` of live counters
+- [`data/shared_state_variable.go:L364-L707`](https://github.com/erpc/erpc/blob/main/data/shared_state_variable.go#L364-L707) — `TryUpdate`, `TryUpdateIfStale`, `scheduleBackgroundPushCurrent`, lock ordering, rollback handling, timestamp CAS helpers
+- [`data/shared_state_registry.go:L102-L222`](https://github.com/erpc/erpc/blob/main/data/shared_state_registry.go#L102-L222) — `GetCounterInt64`: idempotent counter creation, bootstrap tasks, `WatchCounterInt64` goroutine
+- [`data/redis_pubsub_manager.go:L155-L460`](https://github.com/erpc/erpc/blob/main/data/redis_pubsub_manager.go#L155-L460) — `RedisPubSubManager`: single `PSubscribe("counter:*")`, reconnect backoff, periodic poll fallback, copy-on-write subscriber slice
+- [`erpc/networks.go:L55-L96`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L55-L96) — served-tip partition key derivation and 16-partition cap
+- [`erpc/erpc.go:L49-L66`](https://github.com/erpc/erpc/blob/main/erpc/erpc.go#L49-L66) — in-memory fallback synthesis when `sharedState == nil`
+- [`common/defaults.go:L789-L828`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L789-L828) — `SharedStateConfig.SetDefaults`; all default values including connector id override
+- [`data/shared_state_sources.go`](https://github.com/erpc/erpc/blob/main/data/shared_state_sources.go) — named constants for the `source` field in logs and traces (`UpdateSourceRemoteSync`, `UpdateSourceTryUpdate`, etc.)
+- [`data/shared_state_variable_deadlock_test.go:L95-L212`](https://github.com/erpc/erpc/blob/main/data/shared_state_variable_deadlock_test.go#L95-L212) — lock-ordering correctness tests
+
+### Related pages
+
+- [Connectors](/config/database) — the backing store options (Redis, PostgreSQL, DynamoDB, memory) that power shared state.
+- [Tag-aware routing](/config/projects/selection-policies) — uses `servedLatestBlock`/`servedFinalizedBlock` partition counters that shared state keeps monotonic across pods.
+- [EVM state poller](/reference/evm) — the consumer that calls `TryUpdateIfStale` per upstream; registers `OnValue`/`OnLargeRollback` callbacks.
+- [Survive provider outages](/use-cases/survive-provider-outages) — routing quality under failover depends on consistent block-height awareness across pods.
+- [Deployment](/deployment) — horizontal scaling guidance where shared state becomes necessary.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

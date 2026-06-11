@@ -1,446 +1,680 @@
 ---
-description: One JavaScript function per network decides which upstreams serve which methods, in what order. Order is law — missing means excluded.
+title: "Selection & scoring"
+description: eRPC ranks your upstreams every 15 seconds using live health data — bad actors drop out automatically, the fastest healthy provider goes first, and re-admission is metric-driven, not timer-driven.
 ---
 
-import { Callout, Tabs, Tab } from 'nextra/components'
+import {
+	LLMsTxtLink,
+	AISection,
+	ConfigTabs,
+	SourceLink,
+	PromptExample,
+} from "../../../components";
 
-# Selection policy
+<LLMsTxtLink />
 
-A single JavaScript function (`evalFunc`) per network returns the
-**ordered** list of upstreams that should serve requests. The order IS
-the routing decision: position 0 is the primary, position N is the Nth
-retry / hedge candidate, anything missing is excluded for that tick.
+# Selection & scoring
 
+Every 15 seconds eRPC scores all your upstreams using real error rates, latency
+quantiles, throttle rates, and block-head lag. The worst performers drop out
+automatically; a shadow prober keeps sampling them in the background so they
+rejoin the moment their numbers recover — no timer, no manual intervention.
+Your requests always flow to the fastest healthy provider available.
 
-## How it works
+**What you get**
 
-```
-                              every `evalInterval`
-                                       ▼
-upstreams + ctx (cross-tick state) ──► evalFunc() ──► ordered upstream[]
-                                                            │
-                                                            ▼
-                            Network.Forward consumes the list on every
-                            request (wait-free atomic load, O(1))
-```
+- Slow or flapping providers silently demoted without any config change
+- Fallback tier activates only when healthy upstreams run out
+- Sticky-primary routing prevents flapping between nearly-equal upstreams
+- Dry-run `shadowExcludeIf` lets you test new exclusion rules before they bite
+- Near-zero routing overhead: the request path does a single atomic load
 
-- The eval runs on a per-(network, method) timer.
-- Output is cached atomically; the request path reads it lock-free.
-- Every tick produces a **decision record** joined to requests via
-  `decision_id` for incident triage (Prometheus + OTLP traces).
+## Quick taste
 
-## Configuration
+This is the **exact default policy that ships in eRPC** ([`internal/policy/default_policy.js`](https://github.com/erpc/erpc/blob/main/internal/policy/default_policy.js)) —
+you get this behavior with zero config. It's shown wired explicitly so you can use it as
+the starting point for your own tweaks:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-<Tab>
-```yaml filename="erpc.yaml"
-projects:
+<ConfigTabs
+  path="projects[].networks[].selectionPolicy"
+  focusYaml="7,10,15-16,46,48,51,54,56,59,64"
+  focusTs="7,9,14-15,20,22,24,26,28,30,32"
+  yaml={`projects:
   - id: main
-    # Health-tracker rolling window for per-upstream metrics
-    # (errorRate, latency quantiles, throttledRate, lag). 10 sub-buckets
-    # slide forward every windowSize/10. Default 1m.
-    scoreMetricsWindowSize: 1m
-    upstreamDefaults:
-      evm:
-        # State-poller cadence. Each upstream gets eth_blockNumber +
-        # eth_syncing on this interval (bypasses the selection policy
-        # — even excluded upstreams stay sampled so the tracker never
-        # blanks on idle nodes). Keep this <= scoreMetricsWindowSize.
-        statePollerInterval: 2s
-    upstreams:
-      - endpoint: alchemy://...
-      - endpoint: drpc-eth://...
-        tags: [tier:fallback]      # ← convention: 2nd tier
     networks:
       - architecture: evm
         evm: { chainId: 1 }
-        # The block below is the DEFAULT — omit `selectionPolicy`
-        # entirely if you're happy with these settings.
         selectionPolicy:
-          evalInterval: 15s
-          evalTimeout: 100ms
-          evalScope: network        # 'network' | 'network-method' | 'network-finality' | 'network-method-finality'
           evalFunc: |
             (upstreams, ctx) =>
               upstreams
                 .removeCordoned()
+                // Errors / throttle: drop upstreams that are clearly broken, gated
+                // on samplesAbove(10) so a single failed call can't evict a fresh-
+                // pod upstream. Thresholds are loose — failsafe (retry/hedge/
+                // consensus) already absorbs occasional failures.
                 .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
                 .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
+                // Latency: only exclude when the upstream is BOTH absolutely slow
+                // AND consistently slower than peers across most of what it
+                // serves. Two-stage check:
+                //
+                //   1. \`latencyAbove(3000)\` — absolute-latency floor. Drops the
+                //      deviation predicate entirely for upstreams below 3s p70.
+                //      Sub-3s upstreams stay in rotation regardless of how they
+                //      compare to a faster peer; \`sortByScore(PREFER_FASTEST)\` puts
+                //      them later in the ordered list and hedge catches the slack
+                //      on the request path. The 3s threshold is the "user-visible
+                //      pain" boundary — anything below is recoverable via hedge,
+                //      anything above starts hitting tail-latency SLOs.
+                //
+                //   2. \`latencyDeviationAbove(3, majority)\` — only AFTER passing
+                //      the absolute floor, also check the upstream is consistently
+                //      slower than peers. \`mode: 'majority'\` (more than half of the
+                //      per-method comparisons exceed 3×) keeps the predicate robust
+                //      against per-tick spikes on a single rare method that
+                //      would otherwise push a geomean over the threshold. The
+                //      lower multiplier (3 vs the older 10) is intentional — once
+                //      we've established the upstream is absolutely slow, a 3×
+                //      ratio is a strong "consistently behind peers" signal.
+                //
+                // Outer \`latencyAbove(10_000)\` is the catastrophic safety net
+                // (>10s absolute, unconditional exclusion regardless of peers or
+                // sample count).
+                //
+                // Outer \`samplesAbove(20)\` gates on aggregate counts so the
+                // predicate doesn't even run on cold-start pods.
                 .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
+                // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
                 .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+                // Outage safety net: if everyone failed the health excludes, fall
+                // back to the raw set rather than failing closed.
                 .whenEmpty(() => upstreams)
+                // Tier split: prefer non-fallback; fall back to tier:fallback if no
+                // primary survives.
                 .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
+                // Rank survivors by p70 latency.
                 .sortByScore(PREFER_FASTEST)
+                // Hold the primary stable across ticks unless a meaningfully better
+                // option exists for ≥30s.
                 .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-                .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })
-```
-</Tab>
-<Tab>
-```typescript filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [{
-    id: "main",
-    scoreMetricsWindowSize: "1m",
-    upstreamDefaults: {
-      evm: { statePollerInterval: "2s" },
+                // Shadow-mirror sampled real traffic to currently-excluded
+                // upstreams in the background so they accumulate fresh tracker
+                // samples without touching real user traffic. Per-upstream
+                // opt-out via \`routing.probe: off\`.
+                .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    selectionPolicy: {
+      evalFunc: (upstreams, ctx) =>
+        upstreams
+          .removeCordoned()
+          // Errors / throttle: drop upstreams that are clearly broken, gated
+          // on samplesAbove(10) so a single failed call can't evict a fresh-
+          // pod upstream. Thresholds are loose — failsafe (retry/hedge/
+          // consensus) already absorbs occasional failures.
+          .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+          .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
+          // Latency: two-stage check — absolute floor (3s p70) AND consistently
+          // slower than peers (3× majority), with a catastrophic >10s safety net.
+          // samplesAbove(20) gates cold-start pods. (Full rationale: see the
+          // shipped default_policy.js.)
+          .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: "majority" })), latencyAbove(10_000)))
+          // Block-head lag: drop if behind tip by ≥16 blocks or ≥30s.
+          .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+          // Outage safety net: fall back to the raw set rather than failing closed.
+          .whenEmpty(() => upstreams)
+          // Tier split: prefer non-fallback; use tier:fallback when no primary survives.
+          .preferTag("!tier:fallback", { minHealthy: 1, fallback: "tier:fallback" })
+          // Rank survivors by p70 latency.
+          .sortByScore(PREFER_FASTEST)
+          // Hold the primary stable unless a meaningfully better option exists ≥30s.
+          .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: "30s" })
+          // Background-probe excluded upstreams with sampled real traffic.
+          .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: "60s", maxConcurrent: 4, timeout: "10s" }),
     },
-    upstreams: [
-      { endpoint: "alchemy://..." },
-      { endpoint: "drpc-eth://...", tags: ["tier:fallback"] },
-    ],
-    networks: [{
-      architecture: "evm",
-      evm: { chainId: 1 },
-      selectionPolicy: {
-        evalInterval: "15s",
-        evalTimeout: "100ms",
-        evalScope: "network",   // or NETWORK_METHOD / NETWORK_FINALITY / NETWORK_METHOD_FINALITY consts
-        // Real arrow function — fully type-checked. The chainable
-        // methods (.removeCordoned, .excludeIf, .sortByScore, …) are
-        // typed on PolicyEvalUpstreamArray; predicate factories
-        // (errorRateAbove, any, blockSecondsLagAbove, …) and score
-        // presets (PREFER_FASTEST, …) are declared as ambient globals so
-        // they're in scope inside the body without an import.
-        evalFunc: (upstreams, ctx) =>
-          upstreams
-            .removeCordoned()
-            .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
-            .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-            .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
-            .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
-            .whenEmpty(() => upstreams)
-            .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
-            .sortByScore(PREFER_FASTEST)
-            .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-            .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' }),
-      },
-    }],
   }],
-});
-```
-</Tab>
-</Tabs>
+}]`}
+/>
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `evalInterval` | Duration | `15s` | How often the policy re-evaluates and the slot's cached ranking refreshes. The default plays well with the default `scoreMetricsWindowSize: 1m` (4 samples per metric window). Drop to `1-5s` for faster reactivity at the cost of CPU (the JS interpreter runs at this rate per slot); raise above `30s` only if you've also widened your metric/probe windows. `0` disables the ticker (test only). |
-| `evalTimeout` | Duration | `100ms` | Must be `< evalInterval`. Prior cache retained on timeout. |
-| `evalScope` | `'network'` \| `'network-method'` \| `'network-finality'` \| `'network-method-finality'` | `'network'` | Picks the grain at which the policy evaluates AND the matching health-tracker grain. `network` = one ranking per network (cheapest, default); `network-method` = per-(network, method) — same `getLogs` ranking can differ from the `blockNumber` ranking; `network-finality` = per-(network, finality bucket); `network-method-finality` = full granularity. Slots are lazy-created on first request — cold buckets cost nothing. The TypeScript SDK exports `NETWORK` / `NETWORK_METHOD` / `NETWORK_FINALITY` / `NETWORK_METHOD_FINALITY` consts with these same string values. |
-| `evalFunc` | string \| function | (built-in default) | JS function returning `Upstream[]`. Signature `(upstreams, ctx) => Upstream[]`. In `.ts` configs pass a real arrow function — it gets stringified at load time via `Function.prototype.toString()`. Omit to apply the [default policy](#the-default-policy). |
-| `scoreMetricsWindowSize` | Duration | `1m` | Project-level. How long per-upstream rolling counters live. See [health-tracker window](#health-tracker-rolling-window) and [Advanced tuning](#advanced-tuning-coupling-between-evalinterval-scoremetricswindowsize--probe-window). |
+## Agent reference
 
-> **Investigations.** Per-tick reasoning is exposed via OTLP tracing
-> spans and the `erpc_selection_*` Prometheus metric family (selection
-> counters, primary-switch counters, rejection counters, eval-duration
-> histogram). DEBUG-level eRPC logs print one line per stdlib step + one
-> per excluded upstream with its `policyReason`. The erpc-simulator
-> renders the full per-step trail interactively.
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-## The default policy
+<PromptExample
+	n={1}
+	title="configure selection policy from scratch"
+	defaultOpen
+	prompt={`I need to set up a smart upstream selection policy for my eRPC config so that slow or
+erroring providers are demoted automatically and my fastest healthy upstreams always
+serve traffic. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/projects/selection-policies.llms.txt`}
+/>
 
-Omitting `evalFunc` applies a production-hardened, chain-agnostic policy.
-Each step addresses a distinct failure class — the *absence* of any
-one of them lets a degraded upstream keep receiving traffic:
+<PromptExample
+	n={2}
+	title="tune my exclusion thresholds without outages"
+	prompt={`Audit the selectionPolicy in my eRPC config and tell me if my
+errorRateAbove / throttleRateAbove / latencyAbove thresholds are too aggressive (would
+exclude upstreams spuriously) or too loose (would keep broken upstreams in rotation too
+long). Also show me how to use shadowExcludeIf to validate a tighter rule safely before
+promoting it. Reference:
+https://docs.erpc.cloud/config/projects/selection-policies.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug why an upstream is stuck excluded"
+	prompt={`One of my upstreams is stuck excluded and never re-admits even after the outage clears.
+Help me diagnose using erpc_selection_position, erpc_selection_exclusion_total, and
+erpc_selection_probe_requests_total, and fix the policy or routing.probe setting so
+re-admission is metric-driven. Config in my eRPC config. Reference:
+https://docs.erpc.cloud/config/projects/selection-policies.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="add a cost-tier fallback upstream"
+	prompt={`I want to add an expensive archival node to my eRPC setup that only receives traffic
+when all my free-tier upstreams are unhealthy. Wire it up with scoreMultipliers overall
+demotion and a preferTag tier:fallback split so it stays on standby. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/projects/selection-policies.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="switch to per-method ranking for eth_getLogs"
+	prompt={`My eRPC setup uses the default evalScope: network which means all methods share one
+upstream ranking. I want eth_getLogs to rank upstreams by freshness (PREFER_FRESHEST)
+while reads use speed (PREFER_FASTEST). Walk me through switching evalScope and any
+scoreMultipliers.method gotchas I need to know. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/projects/selection-policies.llms.txt`}
+/>
+
+<AISection title="Selection & scoring — full agent reference">
+
+### How it works
+
+The entry point is `policy.Engine`, which owns a map of `*Slot` values keyed by `(network, method, finality)`. Each slot has its own ticker goroutine; the request path reads `slot.cache` via `atomic.Pointer.Load()` — completely wait-free. On every tick the engine takes a metric snapshot from the health tracker, builds an `EvalContext`, acquires a pooled Sobek JS runtime, calls the compiled eval function, materializes the ordered result, and atomically swaps the cache. The whole cycle completes in under a millisecond for typical policy chains.
+
+When `Engine.RegisterNetwork` is called at network bootstrap it:
+1. Upgrades the placeholder `evalFunc` to `default_policy.js` (embedded at compile time).
+2. Creates the wildcard `("*","*")` slot and runs a **synchronous** initial tick — the first request always sees a populated cache.
+3. Starts the slot's ticker goroutine.
+
+The default `evalScope: "network"` creates one slot per network. Setting `evalScope: "network-method"` lazy-creates additional slots on first request for each distinct method, enabling per-method primary divergence. `evalScope: "network-finality"` splits on finality bucket; `"network-method-finality"` is the most granular. Narrow slots fall back to the wildcard slot cache during cold-start until their first tick completes.
+
+**Score inputs (health tracker).** Every metric available to `evalFunc` comes from the health tracker's rolling window. The tracker maintains 10 atomic sub-buckets per `(upstream, method, finality)` tuple; one bucket rotates out every `windowSize / 10`, so data drips out with no cliff. A DDSketch per bucket (1% relative accuracy) produces p50/p70/p90/p95/p99 latency quantiles.
+
+`errorRate` counts only genuine upstream-quality failures: connection refused, 5xx, genuine timeouts. EVM reverts, rate-limit 429s, client disconnects, and hedge cancellations are deliberately excluded so a misbehaving caller or aggressive hedger cannot inflate a healthy upstream's error rate.
+
+`throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles are populated only from _successful_ responses — a fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
+
+`blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's EMA-estimated block time (alpha 0.1, minimum 3 samples before publishing). Until the EMA is warm, both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
+
+**The default policy chain.** Omitting `evalFunc` applies the production-hardened default embedded at compile time:
 
 ```js
 (upstreams, ctx) =>
   upstreams
-    // Honour operator [cordon](/operation/cordoning) — intent-driven, sticky, ignores metrics until uncordoned.
     .removeCordoned()
-    // Drop if >70 % errors over the rolling window. Gated on samplesAbove(10) so a single
-    // failed call on a fresh-pod tracker (errorRate = 1/1 = 1.0) cannot cascade-evict
-    // every upstream before the window has meaningful denominator.
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
-    // Drop if >40 % throttled — vendor is rate-limiting us; reroute before quota burns.
-    // Same samplesAbove(10) guard as the error rule, same reason.
     .excludeIf(all(samplesAbove(10), throttleRateAbove(0.4)))
-    // Drop latency outliers — TWO-STAGE gate:
-    //   1. `latencyAbove(3000)` — absolute floor. Sub-3s upstreams stay in rotation
-    //      regardless of how they compare to a faster peer; scoring puts them later
-    //      and hedge catches the latency on the request path.
-    //   2. `latencyDeviationAbove(3, majority)` — relative check, only after passing
-    //      the floor. Excludes only when >50% of per-method comparisons are >3× the
-    //      fastest peer, which is robust to per-tick spikes on a single rare method.
-    // OR `latencyAbove(10_000)` — catastrophic safety net regardless of peers or
-    // sample count. p70 matches the rank axis below so exclusion and ranking agree
-    // on "fast".
-    .excludeIf(any(all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })), latencyAbove(10_000)))
-    // Drop laggers: >16 blocks behind tip (chain-agnostic) OR >30 wall-clock seconds
-    // (adapts to chain block-time via the tracker's EMA, no-op until ≥3 samples).
+    .excludeIf(any(
+        all(samplesAbove(20), latencyAbove(3000), latencyDeviationAbove(3, { mode: 'majority' })),
+        latencyAbove(10_000)
+    ))
     .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
-    // Safety net: if all health excludes wiped the pool (project-wide outage), serve
-    // from the raw set rather than fail closed. Only step ABOVE here can drop to
-    // empty; everything BELOW only reorders or adds.
     .whenEmpty(() => upstreams)
-    // Tier split: primary = NOT tier:fallback. Falls through to tier:fallback when no
-    // primary survives.
     .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
-    // Rank survivors by PREFER_FASTEST (weights: errorRate 4, respLatency 15,
-    // throttledRate 4, blockHeadLag 1, finalizationLag 0, misbehaviors 2). Latency
-    // dominates because excludes already dropped the bad apples; among survivors,
-    // "how fast does this answer?" is the operator's strongest signal. Per-upstream
-    // routing.scoreMultipliers flow through here automatically.
     .sortByScore(PREFER_FASTEST)
-    // Anti-flap: challenger needs score > incumbent × 1.30 AND ≥30 s since last
-    // switch. Cuts flap on close calls; the cost of churn (connection setup, cache
-    // locality) outweighs marginal ranking gains.
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-    // Shadow-mirror probing: sampled real traffic gets fanned out to any
-    // currently-excluded upstream in the background. Their tracker counters
-    // get fed indistinguishably from real traffic. Once they pass the
-    // excludeIf predicates above, they fall out of the excluded set on the
-    // next tick — no time-based readmit timer needed. Per-upstream opt-out
-    // via routing.probe: 'off'.
     .probeExcluded({ sampleRate: 0.1, minSamples: 10, minSamplesWindow: '60s', maxConcurrent: 4, timeout: '10s' })
 ```
 
-**Why error / throttle are tolerant (0.7 / 0.4) and the latency check is two-stage.** Failure costs are asymmetric:
+Each `excludeIf` step records per-leaf attribution into `erpc_selection_exclusion_total{reason}`. The `whenEmpty` safety net prevents fail-closed behavior during a widespread outage. `stickyPrimary` prevents flapping: the challenger must score more than 30% above the incumbent AND the last switch must be at least 30 seconds ago. `probeExcluded` shadow-mirrors 10% of real traffic to excluded upstreams so re-admission happens the moment their metrics recover.
 
-- Error / throttle blips are already absorbed by retry / hedge / consensus (the failsafe layer). A 70 % / 40 % rolling rate is the threshold for "this isn't a blip, this is broken".
-- Latency exclusion would over-trigger on a single-multiplier check: a moderately slow vendor (e.g. 500 ms p70 vs a fast peer's 20 ms — a 25× ratio) is not user-visibly broken — hedge catches it within ~200 ms. The two-stage gate (`latencyAbove(3000)` AND `latencyDeviationAbove(3, majority)`) lets scoring + hedge handle sub-3s upstreams while still catching upstreams that are BOTH absolutely slow AND consistently slower than their peers. The `latencyAbove(10_000)` catastrophic outer is the unconditional safety net (>10 s is broken regardless of peers).
+**Scoring formula and presets.** `sortByScore` ranks surviving upstreams by:
 
-Production tuning data: prod metrics on 2026-05-27 showed the previous `latencyDeviationAbove(10, majority)` excluding 100-500 ms vendors against 20 ms peers — exactly the case where scoring + hedge would have handled it correctly. The two-stage gate restores the operator-stated intent of "only exclude crazy outliers".
+```
+score(u) = overall / (1 + errorRate×w₁ + respLatency×w₂ + throttledRate×w₃ + blockHeadLag×w₄ + finalizationLag×w₅ + misbehaviors×w₆)
+```
 
-Source served at `GET /admin/selection/default-policy`.
+A clean upstream with no penalties scores `1.0`; every unit of penalty divides the score. Three built-in weight presets:
 
-### Loosening the default for low-traffic / dev setups
+| Preset | errorRate | respLatency | throttledRate | blockHeadLag | finalizationLag | misbehaviors |
+|---|---|---|---|---|---|---|
+| `PREFER_FASTEST` | 4 | 15 | 4 | 1 | 0 | 2 |
+| `PREFER_FRESHEST` | 4 | 2 | 2 | 15 | 8 | 3 |
+| `PREFER_LEAST_ERRORS` | 15 | 2 | 6 | 2 | 1 | 12 |
 
-If the defaults are too strict — e.g. you have only one upstream per
-network and would rather a degraded upstream serve traffic than fail
-closed — write an explicit `evalFunc`:
+Per-upstream `routing.scoreMultipliers` on the upstream config merge with the chosen preset. The default merge mode (`"merge"`) lets individual multiplier keys override the base weight; `overall` multiplies the final score and is the simplest way to strongly prefer or demote a specific upstream without touching weight shapes.
+
+**Circuit-breaker interplay.** The selection policy and the [circuit breaker](/config/failsafe/circuit-breaker) are complementary layers that act at different points and timescales. The policy runs per eval tick and excludes upstreams from the ranked list via `excludeIf` predicates over rolling-window metrics. The circuit breaker is a per-upstream state machine *inside the upstream executor*: it is checked only after the sweep has already dispatched to that upstream (selection runs first). When the breaker is open, `TryAcquirePermit()` fails the attempt immediately with `ErrFailsafeCircuitBreakerOpen` — no transport call is made — and the sweep advances to the next upstream in the policy's ordered list. So an upstream can sit at position 0 in the policy list with an open breaker: each request burns one cheap fast-fail attempt there before moving on, until the policy's own metrics demote it on a later tick. Neither mechanism reads the other's state (breaker-open does not cordon or exclude); they only interact through outcomes. If the split bothers you, align breaker thresholds with the policy's `errorRateAbove` so both layers agree on what "broken" means. Source: [`upstream/upstream_executor.go:L345-L366`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L345-L366).
+
+**`shadowExcludeIf` — dry-run exclusion rules.** `shadowExcludeIf(predicate)` is the non-destructive counterpart of `excludeIf`. The predicate runs every tick; would-have-been-excluded upstreams stay in the ordered list but each trip increments `erpc_selection_shadow_exclusion_total{upstream, reason}` with the same leaf-slug attribution. Use it to measure a new rule's blast radius before promoting it to `excludeIf`.
+
+**`includeIf` — conditional re-admission (pool-level quantifiers).** `includeIf(target, condition)` is the dual of `excludeIf`: it ADDS upstreams from the full universe back into the chain when an aggregate condition over the *surviving pool* holds — it never removes anyone. `target` comes first ("include *these* if *condition*"): a tag pattern (`'tier:reserve'`, `!` negation supported) or a selector object `{id, tag, vendor, type, position}` whose facets AND together; an object with no concrete facet (`{}`, `{position:'head'}`) is a deliberate no-op so it can never accidentally admit the entire universe. Admitted upstreams land at the tail by default (`position: 'head'` available in object form), are never duplicated by id, and are ranked by the subsequent `sortByScore` like everyone else. `condition` is a boolean or `(pool, ctx) => boolean` receiving the current chain — which is what enables pool-level ("network-level") questions via native array methods over the per-upstream predicate factories: `p.every(blockSecondsLagAbove(30))`, `p.length < 2`. Mind that native `every` is `true` on an empty array — guard with `p.length > 0 &&` when the empty pool should be handled by a separate explicit `p.length < 1` line. Malformed arguments and throwing conditions degrade to a no-op rather than sinking the eval. Source: [`internal/policy/stdlib/stdlib.js:L1023-L1116`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L1023-L1116); tests: [`internal/policy/stdlib/include_if_test.go`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/include_if_test.go).
+
+**Additional stdlib chain methods.** Beyond `excludeIf` / `includeIf`, the JS stdlib installs the following chainable `Array.prototype` methods (source: [`internal/policy/stdlib/stdlib.js`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js)):
+
+- **Identity/label filters**: `byId(id)`, `excludeId(id)`, `byTag(pat)`, `excludeTag(pat)`, `byVendor(name)`, `excludeVendor(name)`, `byType(t)`, `where(fn)`, `whereNot(fn)`.
+- **Health filters** (higher-level wrappers): `removeCordoned()`, `removeByErrorRate(threshold)`, `removeByThrottling(threshold)`, `removeByMisbehavior(threshold)`, `removeByLag(blocks)`, `removeByLatency(ms)`, `keepHealthy()`, `removeByMinRequests(n)`.
+- **Tier selection**: `preferTag(pat, opts?)`, `preferVendor(name, opts?)`.
+- **Diversity**: `spreadAcrossTags(prefix)` — interleaves the sorted list so adjacent positions come from different tag-partitions (e.g. `"region:"`).
+- **Safety net**: `whenEmpty(fn)` — falls back to `fn()` if the array is empty.
+- **Conditional/finality branching**: `when(mask, fn)`, `byFinality(handlers)`, `if(cond, fn)`, `unless(cond, fn)`, `fallbackTo(fn)`, `ensureMin(n, fn)`.
+
+**`hasMatchingTag` semantics** (used by `byTag`, `excludeTag`, `preferTag`, `includeIf` string targets — [`internal/policy/stdlib/stdlib.js:L267-293`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L267-L293)):
+- Positive pattern (`"tier:main"`, `"region:us-*"`): matches if ANY tag on the upstream matches.
+- Negated pattern (`"!tier:fallback"`): matches if NO tag matches the un-negated pattern.
+- Array of patterns: positives are OR'd; negations are AND'd. Upstream matches iff (no positives OR at least one positive matches) AND (all negations hold).
+
+**`preferTag` step semantics** ([`internal/policy/stdlib/stdlib.js:L854-865`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L854-L865)):
+1. Filter to upstreams matching the primary pattern.
+2. If ≥ `minHealthy` match → return that subset.
+3. Else if `fallback` pattern is set → filter to the fallback pattern.
+4. Else → return the input unchanged.
+
+**Upstream JS object shape** (built by `buildJSUpstreams` at [`internal/policy/eval.go:L312`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L312)):
+
+| Field | Type | Source |
+|---|---|---|
+| `id` | `string` | `u.Id()` |
+| `vendor` | `string` | `u.VendorName()` |
+| `type` | `string` | `cfg.Type` |
+| `tags` | `string[]` | `cfg.Tags` |
+| `hasTag(tag)` / `is(tag)` | `(tag: string) => boolean` | Shared VM singleton |
+| `metrics` | `UpstreamMetrics` | Slot-local metrics snapshot |
+| `metricsAcrossMethods` | `UpstreamMetrics` | Wildcard aggregate `("*", All)` |
+| `metricsByMethod` | `{[method]: {requestsTotal, p50ms, p70ms, p90ms, p95ms, p99ms}}` | Per-method, all-finalities |
+| `scoreMultipliers` | `{[key]: float64}` or absent | From `resolveScoreMultipliers` |
+| `score` | `float64` (set by `sortByScore`) | `overall / (1 + penalty)`; higher = better |
+
+**`UpstreamMetrics` object shape** (`u.metrics` and `u.metricsAcrossMethods` — [`internal/policy/eval.go:L283`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L283)):
+
+| Field | Type | Notes |
+|---|---|---|
+| `errorRate` | `float64` | EMA rolling error rate |
+| `errorsTotal` | `int64` | Cumulative error count |
+| `requestsTotal` | `int64` | Cumulative request count (window-bounded) |
+| `throttledRate` | `float64` | EMA rolling throttle (429) rate |
+| `misbehaviorRate` | `float64` | EMA rolling misbehavior rate |
+| `blockHeadLag` | `int64` | Blocks behind network tip |
+| `finalizationLag` | `int64` | Finalization blocks behind tip |
+| `blockHeadLagSeconds` | `float64` | `blockHeadLag × networkBlockTime`; `0` until EMA warms |
+| `finalizationLagSeconds` | `float64` | `finalizationLag × networkBlockTime`; `0` until EMA warms |
+| `p50ResponseSeconds` | `float64` | p50 latency in seconds |
+| `p70ResponseSeconds` | `float64` | p70 latency in seconds |
+| `p90ResponseSeconds` | `float64` | p90 latency in seconds |
+| `p95ResponseSeconds` | `float64` | p95 latency in seconds |
+| `p99ResponseSeconds` | `float64` | p99 latency in seconds |
+| `cordonedReason` | `string` or absent | Set when upstream is cordoned |
+| `latencyP(q)` | `(q: number) => ms` | Snaps to nearest pre-computed bucket; input 0–1 or 0–100 |
+
+The block-time EMA used to compute `blockHeadLagSeconds`/`finalizationLagSeconds` has sanity bounds: values outside `[10ms, 120s]` are rejected and the internal EMA is reset to the last published value to prevent post-halt spikes.
+
+**`EvalContext` (`ctx`) shape** ([`internal/policy/eval.go:L17`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L17)):
+
+| Field | Notes |
+|---|---|
+| `network` | Network ID string |
+| `method` | Slot method (`"*"` for wildcard slots) |
+| `finality` | Slot finality (`"unknown"` default for wildcard; real value for per-finality slots) |
+| `now` | Unix milliseconds |
+| `previousOrder` | `string[]` upstream IDs from the last tick |
+| `lastSwitchAt` | `int64` unix-ms or `null` |
+| `tickCount` | `uint64` monotonic tick counter |
+
+Global JS helpers available inside every `evalFunc`:
+- `methodMatches(pat)` — tests `ctx.method` against a pattern
+- `isFinalityRequest()` — `ctx.finality === 'finalized'`
+- Preset globals: `PREFER_FASTEST`, `PREFER_FRESHEST`, `PREFER_LEAST_ERRORS`
+- Finality bit-flag constants: `REALTIME` (1), `UNFINALIZED` (2), `FINALIZED` (4), `UNKNOWN` (8) — used with `.when(mask, fn)` inside eval; NOT for `scoreMultipliers.finality` config fields
+
+**Exclusion attribution leaf slugs.** `excludeIf` records which leaf predicate actually tripped per upstream. Bounded-cardinality slugs emitted by `erpc_selection_exclusion_total{reason}`:
+
+`error_rate_above`, `error_rate_below`, `throttle_rate_above`, `throttle_rate_below`, `misbehavior_rate_above`, `latency_p<Q>_above`, `latency_p<Q>_deviation_above`, `block_head_lag_above`, `finalization_lag_above`, `block_head_lag_seconds_above`, `finalization_lag_seconds_above`, `samples_below`, `samples_above` (guard — not a failure slug), `not_<child_slug>`, `custom`.
+
+Note: `samplesAbove`/`samplesBelow` predicates are marked `isGuard=true` so they do not appear as primary exclusion reasons when they do NOT trip; they only appear when they are the leaf that fires.
+
+**Log messages emitted by the selection engine:**
+- `WARN "selection policy eval failed; retaining previous cache"` — tick error; fields: `network`, `method`, `tick_id`, `error`.
+- `DEBUG "policy step"` — one line per stdlib step when step-logging is enabled; fields: `network`, `method`, `tick_id`, `idx`, `step`, `in`, `out`, `dropped`, `added`, `reordered`, `args`. Disabled by default in production (zero overhead: no allocation when disabled).
+- `DEBUG "policy excluded upstream"` — one per excluded upstream when step-logging is enabled; fields: `network`, `method`, `tick_id`, `upstream`, `step`, `reason`, `leaf_reasons`.
+
+**Legacy upstream tag keys.** Upstream-level `group: <value>` and `cohort: <value>` YAML keys are rewritten as `tier:<value>` and `cohort:<value>` tags at config-load time by `mergeLegacyLabelKeysIntoTags`. They are not valid in new configs.
+
+### Config schema
+
+#### `selectionPolicy` (`networks[].selectionPolicy`)
+
+Full YAML path: `projects[].networks[].selectionPolicy`
+Config struct: `SelectionPolicyConfig` at <SourceLink file="common/config.go" lines="2352-2430" />
+Defaults: <SourceLink file="common/defaults.go" lines="2512-2609" />
+
+| Field | Type | Default | Footguns |
+|---|---|---|---|
+| `evalInterval` | `Duration` | `15s` ([`common/defaults.go:L2532`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2532)) | `0` disables the ticker (frozen cache); tests only. Should be ≥ 3× `scoreMetricsWindowSize / 10` for stable quantile reads. |
+| `evalTimeout` | `Duration` | `100ms` ([`common/defaults.go:L2534-2535`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2534-2535)) | Exceeded → tick error logged, previous cache retained unchanged. Must be `< evalInterval`. |
+| `evalScope` | `EvalScope` enum | `"network"` ([`common/defaults.go:L2556-2583`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2556-2583)) | `"network"` \| `"network-method"` \| `"network-finality"` \| `"network-method-finality"`. Narrower scopes multiply goroutines and JS evals. `scoreMultipliers.method`-specific entries **never match** in `"network"` scope because `ctx.method == "*"`. |
+| `evalPerMethod` | `*bool` | `nil` — **deprecated** | Pointer-bool alias for the method axis. `SetDefaults` nils it unconditionally and derives `evalScope` instead. Excluded from TS surface (`tstype:"-"`). |
+| `evalPerFinality` | `*bool` | `nil` — **deprecated** | Same mechanics as `evalPerMethod` for the finality axis. Niled by `SetDefaults`. |
+| `evalFunc` | `string` (JS source) | `DefaultSelectionPolicySource` placeholder → upgraded to `default_policy.js` at engine register | Full JS function `(upstreams, ctx) => Upstream[]`. In TS configs, a real arrow function is stringified via `Function.prototype.toString()` at load time. |
+
+**EvalScope slot cardinality:**
+
+| `evalScope` | Slots per network | Goroutines | Notes |
+|---|---|---|---|
+| `"network"` (default) | 1 | 1 | `ctx.method` always `"*"`; method-specific `scoreMultipliers` never match. |
+| `"network-method"` | 1 per observed method, lazy-created | N methods | Slots evicted after 1h idle. `scoreMultipliers.method` works correctly here. |
+| `"network-finality"` | Up to 4 (one per finality bucket) | Up to 4 | `ctx.method` still `"*"`; method-specific multipliers still never match. |
+| `"network-method-finality"` | Up to `methods × 4` | N × 4 | Highest granularity. Both `scoreMultipliers.method` and `.finality` match. |
+
+**Legacy fields (accepted, never survive to runtime):**
+
+| YAML key | Behavior |
+|---|---|
+| `evalFunction` | Old `(upstreams, method) => Upstream[]` shape. Wrapped into the new signature if no canonical `evalFunc` is also set. Emits `WarnLegacySelectionPolicy()`. |
+| `resampleExcluded` | When `true` AND `resampleInterval > 0`, appends `.probeExcluded({ sampleRate: 1.0, maxConcurrent: 1, timeout: '10s' })` to the synthesized eval. |
+| `resampleInterval` | Legacy polling cadence. The actual duration value is **ignored**; only its presence gates `probeExcluded` synthesis. |
+| `resampleCount` | No behavioral mapping. Checked in `hasSemanticLegacy` but never used in synthesized output. |
+
+#### `upstream.routing` (`upstreams[].routing`)
+
+| Field | YAML key | Type | Default | Notes |
+|---|---|---|---|---|
+| `ScoreMultipliers` | `scoreMultipliers` | `[]*ScoreMultiplierConfig` | `nil` | First matching entry wins. |
+| `ScoreLatencyQuantile` | `scoreLatencyQuantile` | `float64` | `0` (inherits policy default p70) | Declared; not yet wired into the scoring engine. |
+| `Probe` | `probe` | `ProbeMode` | `"on"` ([`common/config.go:L773`](https://github.com/erpc/erpc/blob/main/common/config.go#L773)) | `"off"` = never mirror probe traffic; upstream stays excluded until metrics naturally recover or operator uncordons. |
+
+#### `ScoreMultiplierConfig` fields
+
+| Field | YAML key | Type | Notes |
+|---|---|---|---|
+| `Network` | `network` | `string` | Glob; empty = any. |
+| `Method` | `method` | `string` | Glob; empty = any. **Specific methods never match in `evalScope: "network"` wildcard slots.** |
+| `Finality` | `finality` | `[]DataFinalityState` | Integer enum: `"finalized"` (0), `"unfinalized"` (1), `"realtime"` (2), `"unknown"` (3). **Not the same as JS bit-flag constants** `FINALIZED=4`, `REALTIME=1`, `UNFINALIZED=2` used in `evalFunc` bodies. |
+| `Overall` | `overall` | `*float64` | Multiplies final score. `>1` = prefer, `<1` = demote. `nil` = unset (inherit base). |
+| `ErrorRate` | `errorRate` | `*float64` | Weight override for error-rate term. `0.0` = removes contribution. |
+| `RespLatency` | `respLatency` | `*float64` | Weight override for latency term. |
+| `ThrottledRate` | `throttledRate` | `*float64` | Weight override for throttle-rate term. |
+| `BlockHeadLag` | `blockHeadLag` | `*float64` | Weight override for block-head-lag term. |
+| `FinalizationLag` | `finalizationLag` | `*float64` | Weight override for finalization-lag term. |
+| `Misbehaviors` | `misbehaviors` | `*float64` | Weight override for misbehavior-rate term. |
+| `TotalRequests` | `totalRequests` | `*float64` | **Accepted silently; has zero runtime effect.** Never read by any scoring code. Kept for backward YAML compatibility. |
+
+Merge modes (set via `sortByScore({ multipliers: 'merge' | 'override' | 'off' })`):
+- `"merge"` (default): per-upstream keys override matching base-weight keys; `overall` lifts final score multiplicatively.
+- `"override"`: configured upstreams rank by their weights only; unconfigured fall back to base.
+- `"off"`: ignore `u.scoreMultipliers` entirely.
+
+#### `probeExcluded` options (JS)
+
+Defaults from [`internal/policy/eval.go:L793-799`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L793-L799) and [`internal/policy/stdlib/stdlib.js:L999-1009`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L999-L1009).
+
+| Option | Default | Notes |
+|---|---|---|
+| `sampleRate` | `0.1` | 0.0–1.0 probability per `(request, excluded-upstream)`. Bypassed when `count < minSamples`. |
+| `minSamples` | `10` | Per-upstream floor within `minSamplesWindow`. Below this, every request is a probe candidate. Should be ≥ `samplesAbove(N)` in the chain. |
+| `minSamplesWindow` | `"60s"` | Rolling window for `minSamples`. |
+| `maxConcurrent` | `4` | In-flight probe cap per excluded upstream. |
+| `timeout` | `"10s"` | Per-probe deadline. Overrun records a failure in the tracker. |
+
+#### `stickyPrimary` options (JS)
+
+Defaults from [`internal/policy/stdlib/stdlib.js:L725-727`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L725-L727).
+
+| Option | Default | Notes |
+|---|---|---|
+| `hysteresis` | `0.10` (default policy uses `0.30`) | Challenger must exceed incumbent score by this fraction to trigger switch. |
+| `minSwitchInterval` | `"30s"` | Cooldown after a switch. No switching during cooldown regardless of score gap. |
+| `scope` | `"network"` | `"network"` \| `"network-method"` \| `"network-finality"` \| `"network-method-finality"`. Coarser scopes share the sticky register across slots. |
+
+#### `latencyDeviationAbove` options (JS)
+
+Defaults from [`internal/policy/stdlib/stdlib.js:L1343-1358`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L1343-L1358).
+
+| Option | Default | Notes |
+|---|---|---|
+| `quantile` | `70` | p50/p70/p90/p95/p99. |
+| `mode` | `"geomean"` | `"geomean"` \| `"majority"` \| `"veto"`. |
+| `minMethodSamples` | `50` | Per-method sample floor; methods below this are skipped. |
+| `dampingMs` | `30` | Exponential damping scale. Ratio is multiplied by `1 - exp(-myLatency / dampingMs)`. Set to `0` to disable. |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Production default: the full default policy chain with scoreMetricsWindowSize.** In production every project sets `scoreMetricsWindowSize` explicitly — this controls how fast exclusion decisions react to upstream changes. Shorter windows react faster but are noisier; `4m` is the production-proven sweet spot. The default `evalFunc` is omitted here (eRPC loads `default_policy.js` automatically), so only the project-level window and `upstreamDefaults.routing` matter:
+
+<ConfigTabs
+  path="projects[]"
+  yaml={`projects:
+  - id: main
+    # 4-minute rolling window for health tracker metrics — fast enough to react
+    # to a flapping upstream without being too jittery on cold-start pods.
+    scoreMetricsWindowSize: 4m
+    scoreMetricsMode: compact
+    networkDefaults:
+      # selectionPolicy omitted → eRPC loads the embedded default_policy.js
+      failsafe:
+        - matchMethod: "*"
+          hedge:
+            quantile: 0.95
+            maxCount: 1
+            minDelay: 500ms
+            maxDelay: 10s
+    upstreamDefaults:
+      routing:
+        scoreMultipliers:
+          # Realtime/unfinalized: heavily weight latency AND block-head lag —
+          # a lagging upstream on tip-of-chain traffic is worse than a slow one.
+          - finality: [realtime, unfinalized]
+            respLatency: 10
+            errorRate: 2
+            misbehaviors: 5
+            blockHeadLag: 15
+            finalizationLag: 2
+          # Finalized/unknown: latency matters more than lag for archive queries.
+          - finality: [unknown, finalized]
+            respLatency: 15
+            errorRate: 2
+            misbehaviors: 10
+            blockHeadLag: 10
+            finalizationLag: 2`}
+  ts={`projects: [{
+  id: "main",
+  // 4-minute rolling window for health tracker metrics.
+  scoreMetricsWindowSize: "4m",
+  scoreMetricsMode: "compact",
+  upstreamDefaults: {
+    routing: {
+      scoreMultipliers: [
+        {
+          // Realtime/unfinalized: heavily weight latency AND block-head lag.
+          finality: [DataFinalityStateRealtime, DataFinalityStateUnfinalized],
+          respLatency: 10,
+          errorRate: 2,
+          misbehaviors: 5,
+          blockHeadLag: 15,
+          finalizationLag: 2,
+        },
+        {
+          // Finalized/unknown: latency matters most for archive queries.
+          finality: [DataFinalityStateUnknown, DataFinalityStateFinalized],
+          respLatency: 15,
+          errorRate: 2,
+          misbehaviors: 10,
+          blockHeadLag: 10,
+          finalizationLag: 2,
+        },
+      ],
+    },
+  },
+}]`}
+/>
+
+**2. Vendor demotion with `overall` multiplier (real provider pattern).** Some vendors are less reliable or more expensive — instead of hard-excluding them, apply a fractional `overall` multiplier so they serve as implicit fallbacks. Production uses `0.2` for Alchemy and `0.3` for QuickNode across all networks:
+
+<ConfigTabs
+  path="upstreams[]"
+  yaml={`upstreams:
+  - id: my-alchemy-node
+    endpoint: https://eth-mainnet.g.alchemy.com/v2/\${ALCHEMY_API_KEY}
+    evm: { chainId: 1 }
+    routing:
+      scoreMultipliers:
+        # overall: 0.2 pushes this upstream to position 3–4 behind free-tier
+        # nodes. It still serves traffic when primaries are excluded; a hard
+        # exclude would waste the paid capacity entirely.
+        - overall: 0.2
+  - id: my-quicknode-node
+    endpoint: https://example.quiknode.pro/\${QUICKNODE_API_KEY}/
+    evm: { chainId: 1 }
+    routing:
+      scoreMultipliers:
+        # 0.3 keeps QuickNode as a mid-tier — ahead of Alchemy (0.2) but
+        # behind free-tier primaries (no multiplier = score 1.0 baseline).
+        - overall: 0.3`}
+  ts={`upstreams: [
+  {
+    id: "my-alchemy-node",
+    endpoint: "https://eth-mainnet.g.alchemy.com/v2/\${ALCHEMY_API_KEY}",
+    evm: { chainId: 1 },
+    routing: {
+      scoreMultipliers: [
+        // 0.2 puts Alchemy at the back of the pack, preserving capacity
+        // without removing it from rotation when primaries are down.
+        { overall: 0.2 },
+      ],
+    },
+  },
+  {
+    id: "my-quicknode-node",
+    endpoint: "https://example.quiknode.pro/\${QUICKNODE_API_KEY}/",
+    evm: { chainId: 1 },
+    routing: {
+      scoreMultipliers: [{ overall: 0.3 }],
+    },
+  },
+]`}
+/>
+
+**3. Latency-sensitive API with preferred upstream and tier:fallback.** A latency-sensitive use case (MEV, trading) uses one high-quality primary with a `overall: 1.5` multiplier to keep it at position 0, and a paid archival node tagged `tier:fallback` that only activates when no primary survives:
+
+<ConfigTabs
+  path="projects[].networks[].selectionPolicy"
+  yaml={`selectionPolicy:
+  evalScope: network
+  evalFunc: |
+    (upstreams, ctx) =>
+      upstreams
+        .removeCordoned()
+        .excludeIf(all(samplesAbove(10), errorRateAbove(0.5)))
+        // Drop upstreams >8 blocks behind tip — stale state is dangerous for
+        // trading. Pair with blockNumberLagAbove for cold-start coverage since
+        // blockSecondsLagAbove is 0 until the block-time EMA warms (>=3 pairs).
+        .excludeIf(any(blockNumberLagAbove(8), blockSecondsLagAbove(15)))
+        .whenEmpty(() => upstreams)
+        .preferTag('!tier:fallback', { minHealthy: 1, fallback: 'tier:fallback' })
+        .sortByScore(PREFER_FASTEST)
+        // Lower hysteresis (0.20) than default: switch primaries faster when
+        // the challenger is 20%+ better — acceptable for low-latency routing.
+        .stickyPrimary({ hysteresis: 0.20, minSwitchInterval: '15s' })
+        .probeExcluded({ sampleRate: 0.1, minSamples: 10, timeout: '5s' })`}
+  ts={`selectionPolicy: {
+  evalScope: "network",
+  evalFunc: (upstreams, ctx) =>
+    upstreams
+      .removeCordoned()
+      .excludeIf(all(samplesAbove(10), errorRateAbove(0.5)))
+      .excludeIf(any(blockNumberLagAbove(8), blockSecondsLagAbove(15)))
+      .whenEmpty(() => upstreams)
+      .preferTag("!tier:fallback", { minHealthy: 1, fallback: "tier:fallback" })
+      .sortByScore(PREFER_FASTEST)
+      .stickyPrimary({ hysteresis: 0.20, minSwitchInterval: "15s" })
+      .probeExcluded({ sampleRate: 0.1, minSamples: 10, timeout: "5s" }),
+}`}
+/>
+
+**4. Freshness-critical workload (indexer / subgraph node).** A subgraph node or NFT indexer queries finalized blocks and needs the freshest data. `PREFER_FRESHEST` ranks by block-head lag and finalization lag instead of raw latency. Tighter lag guards (`blockNumberLagAbove(3)`) drop a node the moment it falls behind, and `probeExcluded` ensures re-admission is immediate when it catches up:
+
+<ConfigTabs
+  path="projects[].networks[].selectionPolicy"
+  yaml={`selectionPolicy:
+  evalScope: network
+  evalFunc: |
+    (upstreams, ctx) =>
+      upstreams
+        .removeCordoned()
+        .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+        // Finalization lag guard: drop upstreams that haven't finalized recent
+        // blocks — crucial for indexers reading finalized state only.
+        .excludeIf(any(blockNumberLagAbove(3), finalizationLagAbove(2)))
+        .whenEmpty(() => upstreams)
+        // PREFER_FRESHEST: weights blockHeadLag×15 and finalizationLag×8 vs
+        // PREFER_FASTEST's respLatency×15. Use this when stale data is worse
+        // than slow data.
+        .sortByScore(PREFER_FRESHEST)
+        .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
+        .probeExcluded({ sampleRate: 0.1, minSamples: 10, timeout: '10s' })`}
+  ts={`selectionPolicy: {
+  evalScope: "network",
+  evalFunc: (upstreams, ctx) =>
+    upstreams
+      .removeCordoned()
+      .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+      .excludeIf(any(blockNumberLagAbove(3), finalizationLagAbove(2)))
+      .whenEmpty(() => upstreams)
+      // PREFER_FRESHEST weights blockHeadLag and finalizationLag over latency.
+      .sortByScore(PREFER_FRESHEST)
+      .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: "30s" })
+      .probeExcluded({ sampleRate: 0.1, minSamples: 10, timeout: "10s" }),
+}`}
+/>
+
+**5. Auditing a new exclusion rule without risk (`shadowExcludeIf`).** Before tightening a throttle-rate guard on production, run it in shadow mode: the predicate fires and increments a metric, but no upstream is actually dropped. Watch `erpc_selection_shadow_exclusion_total{reason="throttle_rate_above"}` for a few hours, then promote to `excludeIf` when the fire rate looks acceptable:
 
 ```js
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
-    .excludeIf(errorRateAbove(0.8))         // looser error threshold
+    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+    // Shadow dry-run: fires the metric without excluding — safe to deploy first.
+    // Check erpc_selection_shadow_exclusion_total{reason="throttle_rate_above"}.
+    .shadowExcludeIf(all(samplesAbove(10), throttleRateAbove(0.2)))
     .whenEmpty(() => upstreams)
     .sortByScore(PREFER_FASTEST)
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-    .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
+    .probeExcluded({ sampleRate: 0.1, minSamples: 10, timeout: '10s' })
 ```
 
-## Eval inputs
-
-Inside the function body, two variables are in scope: `upstreams` and `ctx`.
-
-```ts
-type Upstream = {
-  readonly id: string
-  readonly vendor: string                  // "alchemy", "infura", "drpc", ...
-  readonly type: 'evm' | string
-  readonly tags: string[]                  // "tier:main", "region:us-east", ...
-
-  readonly metrics: UpstreamMetrics        // tick-start snapshot (see below)
-
-  // Diagnostic methods:
-  readonly hasTag: (tag: string) => boolean
-  readonly is: (tag: string) => boolean    // alias of hasTag
-
-  // Attached by std-lib steps:
-  readonly score?: number                  // sortByScore (higher = better)
-
-  // Per-upstream weight overrides resolved from routing.scoreMultipliers
-  // for this tick's (network, method, finality). sortByScore reads it.
-  readonly scoreMultipliers?: {
-    overall?: number
-    errorRate?: number; respLatency?: number; throttledRate?: number
-    blockHeadLag?: number; finalizationLag?: number; misbehaviors?: number
-  }
-}
-
-type UpstreamMetrics = {
-  errorRate: number                        // 0..1
-  errorsTotal: number
-  requestsTotal: number
-  throttledRate: number                    // 0..1
-  misbehaviorRate: number
-  p50ResponseSeconds: number
-  p70ResponseSeconds: number
-  p90ResponseSeconds: number
-  p95ResponseSeconds: number
-  p99ResponseSeconds: number
-  blockHeadLag: number                     // BLOCK-number delta behind tip
-  finalizationLag: number                  // block-number delta behind finalized
-  blockHeadLagSeconds: number              // blockHeadLag × tracker's EMA block-time
-  finalizationLagSeconds: number
-  cordonedReason: string | null            // set by admin via erpc_cordonUpstream RPC
-  latencyP: (quantile: number) => number   // quantile in 0..100 or 0..1, returns ms
-}
-
-type EvalContext = {
-  network: string                          // "evm:1"
-  method: string                           // "*" unless evalScope includes "method"
-  finality: 'realtime' | 'unfinalized' | 'finalized' | 'unknown'
-  now: number                              // unix ms
-
-  // Cross-tick state — the ONLY carrier of state between ticks.
-  previousOrder: string[]
-  lastSwitchAt: number | null
-  tickCount: number
-}
-```
-
-The `metrics` object is captured ONCE at tick start, so chained std-lib
-steps see a consistent view.
-
-Globals: `PREFER_FASTEST`, `PREFER_FRESHEST`, `PREFER_LEAST_ERRORS`;
-`REALTIME` / `UNFINALIZED` / `FINALIZED` / `UNKNOWN`;
-`REASON_*` reason codes; `process.env`; `console.log/info/warn/error`;
-standard ECMAScript.
-
-## Health-tracker rolling window
-
-Every observed per-upstream metric (errorRate, latency quantiles,
-throttledRate, misbehaviorRate, request counts) lives in a **10-bucket
-sliding window** of duration `scoreMetricsWindowSize` (default `1m`).
-Every `windowSize / 10` (= 6 s at 1 m), one bucket rotates out and a
-fresh one opens. Data drips out continuously — no tumble cliff.
-
-The DDSketch quantile estimator lives per sub-bucket and merges on
-read, so a longer window means more samples per sketch — tighter p70 /
-p95 / p99 estimates — but also more stale data anchoring the ranking.
-
-| `scoreMetricsWindowSize` | Reaction time | Best fit |
-|---|---|---|
-| `30s` | ≤ 30 s before stale samples age out | Hot canaries; reaction beats a few % CPU on bucket rotation. |
-| `1m` (default) | ≤ 1 m | Sweet spot for the typical multi-upstream / multi-network deployment. Aligns with the default `evalInterval: 15s` (4 samples per window) and the default `probeExcluded.minSamplesWindow: 60s` (probe and ranking windows symmetric). |
-| `2-3m` | ≤ 2-3 m | Mixed-RPS workloads where rare per-method buckets need more samples to stabilize. Bump `probeExcluded.minSamplesWindow` to match. |
-| `5m+` | ≤ 5 m+ | Low-RPS / dev / staging or huge upstream fleets where stability beats reactivity. Bump `probeExcluded.minSamplesWindow` to match. |
-
-**Pair with `statePollerInterval`.** The state poller (default 30 s,
-override per project via `upstreamDefaults.evm.statePollerInterval`)
-fires `eth_blockNumber` + `eth_syncing` per upstream regardless of
-client traffic AND regardless of selection-policy exclusion. Those calls
-feed the tracker, so an idle or excluded upstream still has fresh
-samples in the rolling window. Keep `statePollerInterval ≤ scoreMetricsWindowSize`
-so the window is never empty for a low-traffic upstream.
-
-### Advanced tuning: coupling between `evalInterval`, `scoreMetricsWindowSize` + probe window
-
-Three knobs interact and should be tuned together, not individually:
-
-| Knob | Default | What it does |
-|---|---|---|
-| `selectionPolicy.evalInterval` | `15s` | How often the policy JS re-evaluates and refreshes the slot's cached ranking. |
-| `scoreMetricsWindowSize` (project-level) | `1m` | Rolling window over which the tracker accumulates per-upstream metrics (error rate, latencies, throttle rate, counts) read by the eval. |
-| `probeExcluded.minSamplesWindow` | `60s` | Window over which the prober counts probe-traffic samples sent to excluded upstreams. The eval uses this to decide whether an excluded upstream has accumulated enough recovery signal to be re-admitted. |
-
-**The symmetry that makes the defaults work** —
-- `scoreMetricsWindowSize ≈ probeExcluded.minSamplesWindow` keeps re-admission decisions aligned with ranking decisions (the prober sees "enough samples to re-admit" at roughly the same time the ranking sees "enough recovery to actually re-admit").
-- `scoreMetricsWindowSize` should be ≥ ~3× `evalInterval` so each eval tick sees ≥3 fresh sub-buckets of samples (otherwise quantile estimates flicker between ticks).
-- `scoreMetricsWindowSize` should be ≤ `idleEvictionAfter` (default 30m), to ensure the tracker doesn't evict entries that are still contributing to the window.
-
-**Workload-aware recommendations:**
-
-| Workload | `evalInterval` | `scoreMetricsWindowSize` | `probeExcluded.minSamplesWindow` |
-|---|---|---|---|
-| **High-RPS aggregator** (sustained > 5k RPS per network, mostly stable upstreams) | `15s` (default) | `1m` (default) | `60s` (default) |
-| **Mixed-RPS with `evalScope: network-method`** (some methods rare, e.g. `debug_traceTransaction`) | `15s` | `2-3m` | match `scoreMetricsWindowSize` |
-| **Low-RPS / dev / staging / edge regions** | `15s` or `30s` | `5m+` | match `scoreMetricsWindowSize` |
-| **Aggressive reactivity** (hot canary, blast-radius investigations) | `1-5s` | `30s` | `30s` |
-
-**Pitfalls to avoid:**
-
-- **Long `scoreMetricsWindowSize` + short `probeExcluded.minSamplesWindow`** → the prober sees enough recovery samples to want to re-admit, but the ranking still has stale bad samples in its long window. Re-admission feels stuck.
-- **Short `scoreMetricsWindowSize` + per-method scope on rare methods** → small sample counts (1-10 samples per window for a rare method) → noisy quantile estimates → flickering exclusion. Use a wider window OR keep `evalScope: network` so all methods pool into one aggregate.
-- **`evalInterval` ≥ `scoreMetricsWindowSize`** → only one or two sample points per eval. Quantile reads jump between two halves of the window. Don't do this.
-- **Bumping `evalInterval` above `30s`** without also widening the metric window. The eval ends up reading nearly the same window each tick, but you've also delayed the slot-cache refresh — net effect is just slower reaction with no stability gain.
-
-**Pin `samplesAbove(N)` to your traffic shape.** The default policy uses `samplesAbove(10)` (per-upstream-per-window guard against "1 bad request out of 3 → 33% error rate → excluded" flakiness). For per-method workloads with `evalScope: network-method`, set this threshold to at least `5%` of typical method traffic in your `scoreMetricsWindowSize`:
-
-```js
-// Example for a network seeing ~200 req/s of eth_call with
-// scoreMetricsWindowSize=1m. 200 × 60 × 0.05 = 600 samples
-// before exclusion considers this upstream.
-upstreams.excludeIf(all(samplesAbove(600), errorRateAbove(0.7)))
-```
-
-For rare methods (e.g. `debug_*`), use a smaller absolute threshold like `samplesAbove(20)` — you'd never accumulate hundreds of samples in a window, so the guard becomes "10× typical method volume".
-
-## Per-method routing
-
-Set `evalScope: 'network-method'` to run the policy separately per `(network,
-method)` instead of one ranking for the whole network. Each method's
-slot snapshots metrics for THAT specific method, so:
-
-- A slow-`eth_getLogs` upstream can still serve `eth_blockNumber` from a different primary.
-- `u.metrics` references the method-specific bucket (not the aggregate).
-- Slots are created lazily on first request for a method; the wildcard
-  `"*"` slot answers until the method-specific slot's first tick lands.
-
-Default is `evalScope: 'network'` — most workloads benefit from one aggregate ranking and the per-method overhead (one eval per method per tick) isn't free. Predicates that need apples-to-apples per-method comparison (`latencyDeviationAbove`) handle that internally via `u.metricsByMethod` regardless of evalScope.
-
-## Per-finality routing
-
-Set `evalScope: 'network-finality'` (or `'network-method-finality'` to combine with per-method) to run the policy separately per finality bucket
-(`realtime` / `unfinalized` / `finalized` / `unknown`). The eval sees
-`ctx.finality` set to its bucket value, so different finality classes
-can use different presets/thresholds without the eval branching on
-`ctx.finality` itself.
-
-A typical pattern:
+**6. Reserve tier — break-glass inclusion (`includeIf`).** Keep a pricier or rate-limited
+provider (tagged `tags: ["tier:reserve"]`) out of normal rotation, and bring it in only
+when the serving pool is *collectively* unfit — every survivor lagging or slow, or none
+left. Because `includeIf` adds rather than evicts, a single degraded primary never pulls
+the reserve in by itself; once admitted, `sortByScore` ranks reserve and survivors
+together. Keep both halves of the pattern: `excludeTag` declares the tier is out of normal
+rotation, `includeIf` declares the only conditions under which it returns — reading the
+pair top-to-bottom documents why the reserve exists. Pair with `routing.probe: off` on the
+reserve upstreams to also keep shadow-probe traffic off them while benched:
 
 ```js
 (upstreams, ctx) =>
   upstreams
     .removeCordoned()
     .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
-    .sortByScore(
-      ctx.finality === 'realtime' ? PREFER_FRESHEST :
-      ctx.finality === 'finalized' ? PREFER_FASTEST :
-      PREFER_FASTEST
-    )
-    .stickyPrimary({ hysteresis: 0.3, minSwitchInterval: '30s' })
-```
-
-With finality-scoped evaluation each bucket has its OWN sticky-primary
-state, score cache, and metric labels (`erpc_selection_score{...,
-finality}` etc.). The realtime bucket can hold one primary while the
-finalized bucket holds a different one — no cross-contamination. The
-underlying health tracker also splits its rolling-window counters by
-finality once the policy needs them, so per-finality predicates
-(`errorRateAbove`, `latencyDeviationAbove`, etc.) operate on the
-correct bucket without you having to opt in separately.
-
-Slots are lazy-created on first request for a bucket. A network that
-never receives `finalized` queries pays zero overhead for that bucket.
-Use `evalScope: 'network-method-finality'` to get one slot per `(method, finality)`
-— useful for indexers that classify their workload precisely.
-
-## Common patterns
-
-### Cost-tier routing
-
-```js
-// Cheap pool first; fall through to fast pool when cheap is exhausted.
-// Upstreams declare their tier via `tags: [tier:cheap]` or `tags: [tier:fast]`.
-(upstreams, ctx) =>
-  upstreams
-    .removeCordoned()
-    .excludeIf(errorRateAbove(0.5))
-    .preferTag('tier:cheap', { minHealthy: 2, fallback: 'tier:fast' })
-    .sortByScore(PREFER_FASTEST)
-    .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
-```
-
-### Reserve tier (break-glass inclusion)
-
-```js
-// A reserve pool (e.g. a pricier or rate-limited provider, tagged
-// `tags: [tier:reserve]`) is kept OUT of normal rotation with excludeTag,
-// then ranked in only when the serving pool is collectively unfit — every
-// survivor lagging or slow, or none left. `includeIf` adds; it never evicts
-// a survivor, so a single slow primary alone does not pull the reserve in.
-// The `length > 0 && ...` guard keeps the lag/latency rules from firing on
-// an empty pool; the `length < 1` line is the explicit empty-pool fallback.
-(upstreams, ctx) =>
-  upstreams
-    .removeCordoned()
-    .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+    // Reserve stays out of normal rotation...
     .excludeTag('tier:reserve')
+    // ...and returns ONLY when survivors are collectively lagging or slow.
+    // The `length > 0 &&` guard matters: native `every` is true on an empty
+    // pool, so the empty case is handled by its own explicit line below.
     .includeIf('tier:reserve', (p) => p.length > 0 && p.every(blockSecondsLagAbove(30)))
     .includeIf('tier:reserve', (p) => p.length > 0 && p.every(latencyAbove(2000, 99)))
     .includeIf('tier:reserve', (p) => p.length < 1)
@@ -448,912 +682,121 @@ Use `evalScope: 'network-method-finality'` to get one slot per `(method, finalit
     .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '30s' })
 ```
 
-The reserve is brought in while primaries are still serving but
-**collectively degraded** (lagging / slow) — not only when they're
-entirely gone — letting `sortByScore` pick between them. Pair with
-`routing.probe: 'off'` on the reserve upstreams if you also want to keep
-shadow-probe traffic off them while they're out.
-
-Keep the explicit `excludeTag('tier:reserve')` step even though `includeIf`
-targets the same tag: the two are not redundant, they cover the two
-directions of intent. `excludeTag` states "this tier is NOT in normal
-rotation" — without it the reserve is simply in the pool like any other
-upstream. `includeIf` states "this is the only condition under which it
-comes back". Reading the pair top-to-bottom is the policy's own
-documentation of why the reserve exists and when it's allowed to serve;
-dropping either half leaves that reasoning implicit.
-
-### Per-method override
-
-```js
-// Upstreams declare their capability via `tags: [tier:archive]`.
-(upstreams, ctx) => {
-  if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
-    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTEST)
-  return upstreams.sortByScore(PREFER_FASTEST).stickyPrimary()
-}
-```
-
-### Per-upstream weights via a function
-
-```js
-// Illustrative — adjust to your actual vendor characteristics.
-const w = {
-  alchemy: { errorRate: 4, respLatency: 12 },   // weight latency MORE here
-  drpc:    { errorRate: 6, respLatency: 4 },    // weight errors MORE here
-}
-(upstreams, ctx) =>
-  upstreams.sortByScore((u) => w[u.vendor] || PREFER_FASTEST)
-```
-
-For the declarative-config alternative, see [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) on the upstream config — covered next.
-
-### Per-upstream score multipliers (config-driven)
-
-Instead of branching inside the eval, declare per-upstream weight overrides
-on the upstream config under [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers).
-The engine resolves the matching entry for each `(network, method, finality)`
-and exposes it as `u.scoreMultipliers`; `sortByScore` folds it in. Most
-policies (including the default) need **no eval change at all** — multipliers
-flow through `sortByScore`'s default `'merge'` mode:
-
-```yaml
-# Nudge priority without touching the weight shape — both keep the preset's
-# latency-dominant weights, but `overall` biases the final score.
-upstreams:
-  - id: premium
-    routing: { scoreMultipliers: [{ overall: 2 }] }     # strongly preferred
-  - id: backup
-    routing: { scoreMultipliers: [{ overall: 0.5 }] }   # only when premium degrades
-```
-
-```js
-// The eval is just the usual chain — nothing multiplier-specific needed.
-(upstreams, ctx) =>
-  upstreams.removeCordoned().sortByScore(PREFER_FASTEST).stickyPrimary()
-```
-
-Switch how the config combines with the base via `opts.multipliers`:
-
-```js
-// 'override': upstreams that set scoreMultipliers rank by THEIR weights
-// only; everyone else falls back to the preset.
-(upstreams, ctx) =>
-  upstreams.removeCordoned().sortByScore(PREFER_FASTEST, { multipliers: 'override' })
-
-// 'off': ignore per-upstream config entirely (e.g. on a canary policy).
-(upstreams, ctx) => upstreams.sortByScore(PREFER_FRESHEST, { multipliers: 'off' })
-```
-
-### Custom inline predicate with a human-readable label
-
-```js
-(upstreams, ctx) =>
-  upstreams
-    .excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor phase-out')
-    .sortByScore(PREFER_FASTEST)
-```
-
-### Auditioning a new rule with `shadowExcludeIf`
+### Request/response behavior
 
-`shadowExcludeIf` is the dry-run counterpart of `excludeIf`. The predicate runs every tick, but no upstream is actually dropped — every would-have-been-excluded trip is surfaced as `erpc_selection_shadow_exclusion_total{upstream, reason=<leaf-slug>}` (same per-leaf attribution as the real counter). Use it to safely roll out a new exclusion rule (or audit the impact of removing an existing one) before flipping the call to `excludeIf` for real.
+- The ordered upstream list is set on `req` via `req.SetUpstreams(upsList)`; the failsafe layer (hedge/retry) walks through it sequentially, never selecting the same upstream twice per execution. `req.ConsumedUpstreams` and `req.ErrorsByUpstream` sync.Maps track what has been tried. [`erpc/networks.go:L1023-L1074`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1023-L1074)
+- If `policyEngine == nil` or `GetOrdered` returns an empty list (engine not yet ticked), the network falls back to raw upstream registry order. [`erpc/networks.go:L1032-1038`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1032-L1038)
+- `RegisterNetwork` fires a **synchronous initial tick** before returning, so in practice the first request always sees a populated cache. [`internal/policy/engine.go:RegisterNetwork:L305`](https://github.com/erpc/erpc/blob/main/internal/policy/engine.go#L305)
+- On any tick error (`timeout`, `throw`, `invalid_return`), the **previous cache is retained unchanged** — routing continues on the last-good order. [`internal/policy/slot.go:L250-L263`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L250-L263)
+- An OpenTelemetry span `"PolicyEngine.GetOrdered"` wraps the `GetOrdered` call in the request path. Attributes: `upstreams.count`, `upstreams.sorted` (detailed tracing only).
 
-```js
-(upstreams, ctx) =>
-  upstreams
-    .removeCordoned()
-    .excludeIf(errorRateAbove(0.5))                     // real
-    .shadowExcludeIf(errorRateAbove(0.3))               // shadow: would a tighter bar be safe?
-    .shadowExcludeIf(any(blockSecondsLagAbove(15), latencyAbove(15_000, 95)))
-    .sortByScore(PREFER_FASTEST)
-    .stickyPrimary()
-    .probeExcluded()
-```
+### Best practices
 
-Operator workflow:
+- **Pair `samplesAbove(N)` with every rate predicate.** `errorRateAbove(0.7)` on an upstream with 2 samples (1 failure → 50% rate) will exclude it spuriously. `all(samplesAbove(10), errorRateAbove(0.7))` waits for a statistically meaningful window. The default policy uses `samplesAbove(10)` for error/throttle and `samplesAbove(20)` before the latency-deviation check.
+- **Use `blockNumberLagAbove(N)` as the primary lag guard, not `blockSecondsLagAbove`.** The seconds variant is `0` until the block-time EMA warms (requires ≥3 block pairs). On cold start, `blockNumberLagAbove(16)` fires correctly; `blockSecondsLagAbove(30)` silently no-ops.
+- **Keep `evalScope: "network"` unless you genuinely need per-method ranking.** Each additional scope dimension multiplies ticker goroutines and JS eval cycles. If you need method-specific `scoreMultipliers`, set `evalScope: "network-method"` — without it, method-specific entries silently no-op.
+- **Don't set `routing.probe: "off"` on upstreams you care about recovering.** With probing off, an excluded upstream accumulates no shadow samples and only recovers when structural signals (lag clearing, etc.) naturally drive re-admission. Probing is what makes re-admission fast.
+- **Let `whenEmpty(() => upstreams)` stay in every policy.** Without it, a simultaneous spike in error rates across all upstreams returns `ErrUpstreamsExhausted` rather than degraded-but-working traffic. Fail-open is almost always better than fail-closed for RPC routing.
+- **Use `overall` multipliers rather than custom weight shapes for simple up/down-ranking.** A `scoreMultipliers: [{overall: 0.1}]` on a backup upstream cleanly demotes it without changing the scoring formula for everyone else.
+- **`stickyPrimary` hysteresis of `0.30` is conservative; lower it for faster recovery.** At `0.30`, a challenger must score 30% better than the incumbent. For setups with very similar upstreams, `0.15` may be more responsive without causing flapping.
 
-1. Deploy with the new rule as `shadowExcludeIf`. Watch `erpc_selection_shadow_exclusion_total{reason=<your-rule-slug>}` for N days; compare to the current real-exclusion counter on the same upstreams.
-2. Once the shadow rate matches your expectation (no false positives, no over-firing), flip the call to `excludeIf` and redeploy.
-3. To audit removal of an existing rule: shadow what's currently real, deploy, confirm the shadow rate drops to zero on healthy upstreams before deleting it.
+### Edge cases & gotchas
 
-Shadow trips never touch `stickyPrimary` / `probeExcluded` — the upstream stays in rotation in its original position, so a shadow rule cannot accidentally affect routing.
+1. **`scoreMultipliers.method` silently no-ops in `evalScope: "network"`.** `WildcardMatch("eth_getLogs", "*")` returns `false`. Entries with a specific `Method` field are only applied in per-method or per-method-finality slots. [`internal/policy/eval.go:resolveScoreMultipliers:L442`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L442)
 
-## Observability
+2. **`blockHeadLagSeconds` / `finalizationLagSeconds` are `0` until block-time EMA warms.** The EMA requires ≥3 `(blockNumber, blockTimestamp)` pairs with differing timestamps. Predicates like `blockSecondsLagAbove(30)` silently no-op until then. Use `blockNumberLagAbove(16)` as the primary guard. [`internal/policy/eval.go:L89-96`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L89-L96)
 
-The selection policy emits one tick's worth of decision data into Prometheus on every eval. Bounded cardinality — labels stay within `(project, network, method, upstream)` plus a small `reason` enum on the exclusion counter. See [Monitoring → selection-policy decision metrics](/operation/monitoring#selection-policy-decision-metrics) for the full table plus PromQL queries.
+3. **`whenEmpty(() => upstreams)` prevents fail-closed.** If every `excludeIf` rule fires simultaneously (project-wide outage), the safety net restores the full unfiltered set. The network sends traffic to degraded upstreams rather than returning `ErrUpstreamsExhausted`. [`internal/policy/default_policy.js:L46`](https://github.com/erpc/erpc/blob/main/internal/policy/default_policy.js#L46)
 
-### Admin RPCs
+4. **No time-based re-admission.** An excluded upstream stays excluded until its tracker metrics actually improve. `probeExcluded` accelerates re-admission by feeding fresh samples; arbitrary time passage does not. [`erpc/networks_selection_policy_test.go:TestNetworkPolicy_NoTimeBasedReadmit_OnlyMetricsHeal`](https://github.com/erpc/erpc/blob/main/erpc/networks_selection_policy_test.go)
 
-| RPC | What it gives you |
-|---|---|
-| `erpc_cordonUpstream({projectId, upstream, method?, reason?})` | Manually take an upstream out — see [Cordoning](/operation/cordoning) |
-| `erpc_uncordonUpstream({projectId, upstream, method?, reason?})` | Put it back |
-| `erpc_listCordoned({projectId})` | List currently-cordoned upstreams |
+5. **`routing.probe: "off"` permanently excludes from probing.** The upstream accumulates no shadow samples and stays excluded until structural signals (e.g. lag clearing) naturally drive re-admission, or an operator manually uncordons. [`common/config.go:L784-788`](https://github.com/erpc/erpc/blob/main/common/config.go#L784-L788)
 
-### Per-upstream metrics
+6. **`stickyPrimary` with method-disagreement escape hatch.** If the previous primary is excluded in THIS method's slot but not others, the slot returns the current sort order WITHOUT updating the shared sticky register. Other slots that still have the upstream in their survivor set keep it as primary. [`internal/policy/stdlib/stdlib.js:L795-802`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L795-L802)
 
-| Metric | Answers |
-|---|---|
-| `erpc_selection_position{upstream}` | `0` = primary, `1+` = runner-up, `-1` = excluded |
-| `erpc_selection_score{upstream}` | Score from `sortByScore`. **Higher = better.** |
-| `erpc_selection_excluded_seconds{upstream}` | How long stuck excluded (gauge). Alert on `> 600` for "stuck > 10 min". |
-| `erpc_selection_sticky_hold_total{upstream}` | Ticks where sticky actively held this upstream as primary against a challenger. |
-| `erpc_selection_readmit_total{upstream}` | Times this upstream transitioned excluded → in-rotation. |
+7. **`scoreMultipliers.finality` YAML integer vs JS bit-flag confusion.** The config field uses the Go `DataFinalityState` enum (`"finalized"=0`, `"unfinalized"=1`, `"realtime"=2`, `"unknown"=3`). The JS globals `FINALIZED=4`, `REALTIME=1`, `UNFINALIZED=2`, `UNKNOWN=8` are bitmasks for `.when(mask, fn)` inside `evalFunc` bodies — they are not valid in the YAML config field. Setting `finality: [4]` in YAML fails to match any request. [`common/data.go:L10-L27`](https://github.com/erpc/erpc/blob/main/common/data.go#L10-L27), [`internal/policy/stdlib/install.go:L74-77`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/install.go#L74-L77)
 
-### Per-leaf exclusion attribution
+8. **`latencyDeviationAbove` is constructed fresh per tick.** The closure captures `topByMethod` at factory time. Do NOT put `latencyDeviationAbove` in a variable and reuse across ticks — it would use stale peer data. The default policy is safe because the chain is a stateless expression evaluated fresh each tick. [`internal/policy/stdlib/stdlib.js:L1228-1324`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L1228-L1324)
 
-`erpc_selection_exclusion_total{upstream, reason}` emits **one increment per leaf predicate that tripped** — so an `any(errorRateAbove(0.5), latencyAbove(30_000))` excluding an upstream because the latency leaf was true increments `reason="latency_p70_above"` (p70 is the default-quantile slug), not the combinator. AND-semantics (`all(A,B)`) increments every leaf since each must be true to trip. `not(A)` increments `reason="not_<A.slug>"`.
+9. **Bug #907 regression.** With per-finality tracking enabled, block-head-lag writes must fan out to both the specific-finality bucket AND the `{*, All}` rollup. Pre-fix, `blockNumberLagAbove` read the starved rollup and silently no-oped. Fixed and covered by `TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded`. [`erpc/networks_selection_policy_realpoll_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_selection_policy_realpoll_test.go)
 
-Operators see exactly *which signal* caused each exclusion. The reason slug is threshold-free (`error_rate_above`, not `errorRate>0.5`) so cardinality stays bounded by the predicate-factory set, not by the powerset of thresholds.
+10. **Alphabetical tiebreak in `sortByScore`.** When two upstreams have identical scores (e.g. both clean on cold start), the lexicographically earlier ID wins. Test assertions are order-sensitive until metrics diverge. [`internal/policy/stdlib/stdlib.js:L656`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L656)
 
-### Network-level metrics
+11. **`upstreamDefaults.routing` is all-or-nothing.** If `upstream.routing` is non-nil (even empty), the default routing block is NOT applied. [`erpc/eval_multipliers_test.go:TestApplyDefaults_InheritsRouting`](https://github.com/erpc/erpc/blob/main/erpc/eval_multipliers_test.go)
 
-| Metric | Answers |
-|---|---|
-| `erpc_selection_primary_switch_total{from,to}` | Primary changes over time. |
-| `erpc_selection_eligible_upstreams` | Pool size after the chain. |
-| `erpc_selection_eval_duration_seconds` | Per-tick eval latency histogram. |
-| `erpc_selection_eval_errors_total{kind}` | `timeout` / `throw` / `invalid_return` / `fallback_default`. |
-| `erpc_selection_readmit_age_seconds` | Distribution of "how long out before readmit". Short tail = flap risk; long tail = recovery cooldown too generous. |
+12. **`p70 = 0` means unknown quality, not ultra-fast.** Fast-failing upstreams that reject connections in 1ms have empty quantile sketches. A predicate like `latencyAbove(500)` sees `0 < 500` = false and does NOT exclude such an upstream. Pair latency predicates with `samplesAbove(N)` or treat `p70 == 0` as a warning signal. [`internal/policy/eval.go:L89-96`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go#L89-L96)
 
-### Logs + simulator
+13. **`probeExcluded` is a no-op array transform.** It does NOT modify the upstream list. Its only effect is depositing `__probeConfig` for the Go-side Prober. Probe traffic never blocks the request path; channel overflow increments `erpc_selection_probe_dropped_total` and drops the probe silently. The probe feed channel size is 256 (`probeFeedBufferSize = 256` in [`internal/policy/prober.go:L102`](https://github.com/erpc/erpc/blob/main/internal/policy/prober.go#L102)). [`internal/policy/stdlib/stdlib.js:L999-1010`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js#L999-L1010)
 
-DEBUG-level eRPC logs print one line per stdlib step + one per excluded upstream with its `policyReason`. The [erpc-simulator](https://github.com/erpc/erpc/tree/main/cmd/erpc-simulator) renders the full per-step trail interactively.
+14. **Step-log is disabled by default in production.** Per-step chain trail logging (`DEBUG "policy step"`) is only active when `Engine.SetStepLogEnabled(true)` is called — by the simulator or when log level is DEBUG. In production there is zero overhead beyond one function-call indirection per stdlib step; no log entries and no per-step allocations are created. [`internal/policy/engine.go:L679-695`](https://github.com/erpc/erpc/blob/main/internal/policy/engine.go#L679-L695)
 
----
+15. **`ErrUpstreamExcludedByPolicy` error code exists but has no production call site.** Defined at [`common/errors.go:L1823-L1836`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1823-L1836); error code string: `"ErrUpstreamExcludedByPolicy"`. The health tracker silently ignores it (does NOT penalize the upstream's error rate). The policy engine achieves exclusion structurally — upstreams absent from the ordered list are never attempted by `NextUpstream` — rather than by returning this error. The error type is forward-compatible scaffolding.
 
-## Reference
+16. **Idle slot eviction sweep runs every 1 minute.** The engine's `sweepIdleSlots` fires every `engineSweepInterval = 1 minute`. A narrow slot with `idleEvictionAfter = 1 h` may persist for up to 1 h + 1 min after its last access. The health tracker's own idle eviction threshold is separate and shorter: `DefaultIdleEvictionAfter = 30 minutes` for per-`(upstream, method, finality)` metric entries. [`internal/policy/engine.go:engineSweepInterval:L208`](https://github.com/erpc/erpc/blob/main/internal/policy/engine.go#L208)
 
-The selection-policy stdlib is installed on `Array.prototype` within the
-sobek runtime. Every chainable method returns an `Upstream[]` so chains
-compose. Predicate factories return functions usable with `excludeIf` /
-combinators. Glob patterns (`*`, `?`, `!negation`) work everywhere a
-`string | string[]` is accepted.
+### Observability
 
-### Constants
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_selection_position` | Gauge | `project, network, method, upstream` | Every tick; `0`=primary, `1+`=runner-up, `-1`=excluded. |
+| `erpc_selection_score` | Gauge | `project, network, method, upstream` | Every tick; value is `u.score` from `sortByScore`. |
+| `erpc_selection_eligible_upstreams` | Gauge | `project, network, method` | Every successful tick; count of in-rotation upstreams. |
+| `erpc_selection_eval_duration_seconds` | Histogram | `project, network, method` | Every tick; JS eval wall-clock time. |
+| `erpc_selection_eval_errors_total` | Counter | `project, network, method, kind` | Tick failure; `kind` ∈ `{timeout, throw, invalid_return}`. |
+| `erpc_selection_rejection_total` | Counter | `project, network, method, upstream, step` | Per tick × excluded upstream; `step` = first stdlib primitive that dropped the upstream. |
+| `erpc_selection_exclusion_total` | Counter | `project, network, method, upstream, reason` | Per tick × excluded upstream × leaf predicate slug. |
+| `erpc_selection_shadow_exclusion_total` | Counter | `project, network, method, upstream, reason` | `shadowExcludeIf` would-have-excluded; upstream stays in rotation. |
+| `erpc_selection_excluded_seconds` | Gauge | `project, network, method, upstream` | Seconds continuously excluded; reset to `0` on readmit. |
+| `erpc_selection_readmit_total` | Counter | `project, network, method, upstream` | Excluded → in-rotation transition. |
+| `erpc_selection_readmit_age_seconds` | Histogram | `project, network, method` | Distribution of exclusion age at readmit. |
+| `erpc_selection_primary_switch_total` | Counter | `project, network, method, from, to` | Primary upstream ID changes. |
+| `erpc_selection_sticky_hold_total` | Counter | `project, network, method, upstream` | Ticks where `stickyPrimary` held the primary against a challenger. |
+| `erpc_selection_probe_requests_total` | Counter | `network, upstream, method` | Shadow-probe request fired to excluded upstream. |
+| `erpc_selection_probe_errors_total` | Counter | `network, upstream, method, reason` | Probe errored; `reason` ∈ `{timeout, throttled, auth, skipped, error}`. |
+| `erpc_selection_probe_skipped_total` | Counter | `network, reason` | Probe skipped; `reason` ∈ `{write_method, opt_out, sampled_out, max_concurrent, no_method}`. |
+| `erpc_selection_probe_dropped_total` | Counter | `network, reason` | Probe publish dropped (feed channel full); request path never blocks. |
 
-<details>
-<summary>**Score presets** — weight maps for `sortByScore`</summary>
+**`erpc_selection_position` value semantics** (assigned at [`internal/policy/slot.go:L477`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L477)):
+- `0` — primary upstream (first element of the JS result array); serves the next request when no failover occurs.
+- `1` — first runner-up; tried if the primary fails or is consumed by a concurrent hedge.
+- `2`, `3`, … — third, fourth choices in ranked order.
+- `-1` — excluded from rotation; all excluded upstreams share `-1` regardless of how many or which predicate dropped them.
 
-Three explicit profiles. Each emphasizes ONE primary axis (weight `15`) while keeping the others balanced enough that an obviously bad upstream on a secondary signal still loses. Need something else? Pass a custom `{ errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors }` object literal directly.
+An upstream can have `position=0` in the wildcard slot and `position=1` in a per-method slot simultaneously (positions are per-slot).
 
-| Preset | `errorRate, respLatency, throttledRate, blockHeadLag, finalizationLag, misbehaviors` | Use when |
-|---|---|---|
-| `PREFER_FASTEST` | `4, 15, 4, 1, 0, 2` | Default. Among upstreams that survived `excludeIf`, latency is the dominant user-visible signal. |
-| `PREFER_FRESHEST` | `4, 2, 2, 15, 8, 3` | Realtime reads that can't tolerate any stale-head upstream. |
-| `PREFER_LEAST_ERRORS` | `15, 2, 6, 2, 1, 12` | Write paths or anywhere a 5xx costs more than a slow response. |
+**`erpc_selection_eval_errors_total` `kind` values** (classified at [`internal/policy/slot.go:L460-L467`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L460-L467)):
+- `"timeout"` — JS eval exceeded `evalTimeout` (default 100 ms); previous cache retained.
+- `"throw"` — uncaught JS exception (runtime error, user-thrown error).
+- `"invalid_return"` — eval completed but returned a non-array, null/undefined, entries without `id`, or unknown upstream IDs.
 
-`score = overall(u) / (1 + Σ(metric × weight))`. **Higher score = higher rank.** A clean upstream (zero penalty) scores its `overall` (default `1`); accrued errors / latency / lag divide it back down. On tied scores, alphabetical-by-id tiebreak. Per-upstream [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) merge over the chosen preset (see the `sortByScore` reference below).
+Note: `"fallback_default"` appears in the metric Help string and in simulator types as a comment, but **no production code path currently emits this value**. Treat it as forward-compatible documentation only.
 
-</details>
+**`erpc_selection_shadow_exclusion_total` vs `erpc_selection_exclusion_total` semantics:**
+- `erpc_selection_exclusion_total` — upstream **was removed** from the ordered list; `erpc_selection_position` becomes `-1`.
+- `erpc_selection_shadow_exclusion_total` — upstream **was NOT removed** and remains in rotation; `shadowExcludeIf` predicate fired for monitoring only. Same leaf-slug attribution as `excludeIf`.
 
-<details>
-<summary>**Finality** — match values of `ctx.finality`</summary>
+Key dashboarding tip: `erpc_selection_position{upstream="X"} == -1` sustained over time means `X` is stuck excluded — check `erpc_selection_exclusion_total{upstream="X"}` for the leaf reason slug, then `erpc_selection_probe_requests_total{upstream="X"}` to confirm probing is running.
 
-`REALTIME` · `UNFINALIZED` · `FINALIZED` · `UNKNOWN`
+### Source code entry points
 
-</details>
-
-
-### Identity & label selection
-
-<details>
-<summary>**Tag model**</summary>
-
-Every upstream carries an open-ended `tags: string[]`. Convention is
-`<dimension>:<value>` so a single upstream can carry orthogonal labels
-(e.g. `[tier:main, region:us-east, sequencer:op-base]`).
-
-- **Positive pattern** (`tier:main`, `region:us-*`): matches if ANY tag matches.
-- **Negated pattern** (`!tier:fallback`): matches if NO tag matches the un-negated form.
-- **Array form** mixes both — positives are OR'd, negations are AND'd.
-
-</details>
-
-<details>
-<summary>**Selectors**</summary>
-
-```ts
-.where(filter: { id?, tag?, vendor?, type? })   // AND across fields
-.whereNot(filter)                                // inverse
-.byId(id: string | string[])
-.byTag(pat: string | string[])
-.byVendor(name: string | string[])
-.byType(type: string | string[])
-.excludeId / .excludeTag / .excludeVendor        // negation forms
-```
-
-</details>
-
-### Filters & exclusion
-
-<details>
-<summary>**`removeCordoned()`** — drop admin-cordoned upstreams</summary>
-
-Drops any upstream an operator has [manually cordoned](/operation/cordoning) via
-`erpc_cordonUpstream`. Cordon is intent-driven and sticky across
-rolling-window rotations — it stays out of rotation regardless of
-metrics until the operator uncordons.
-
-</details>
-
-<details>
-<summary>**`excludeIf(predicate, reason?)`** — the canonical exclusion primitive</summary>
-
-```ts
-.excludeIf(predicate: (u) => boolean, reason?: string)
-```
-
-Drops upstreams matching `predicate`. The reason is captured on the
-per-tick `Decision.Output.Excluded[i]` entry (as `Reason` for display
-+ `LeafReasons[]` for the stable metric slug) and surfaced in eRPC
-DEBUG logs + the simulator UI. Reason resolution:
-
-1. Explicit string passed as the 2nd argument (use for inline custom predicates).
-2. `predicate.policyReason` — factory-built predicates self-label (see [predicate factories](#predicate-factories)).
-3. Generic `"excludeIf"` fallback.
-
-```js
-.excludeIf(errorRateAbove(0.5))                                       // factory: auto-labels "errorRate>0.5"
-.excludeIf(any(latencyDeviationAbove(10), latencyAbove(30_000)))   // combinator: auto-labels "any(p70>10xFastest(geomean),p70>30000ms)"
-.excludeIf(u => u.id.startsWith('old-vendor-'), 'old vendor')         // inline: explicit reason
-```
-
-Re-admission is implicit: the same `excludeIf` predicates that drop
-an upstream are also what re-admit it. Once the upstream's tracker
-counters cross back below the threshold (because shadow-mirrored
-probe traffic OR state-poller calls have accumulated healthy
-samples), the upstream falls out of the excluded set on the next
-tick. Add `probeExcluded` to the chain to enable the shadow-mirror
-feed; omit it and excluded upstreams stay out until structural
-signals heal naturally.
-
-</details>
-
-<details>
-<summary>**Composite filters** — single-call shortcuts</summary>
-
-Threshold-based filters. Useful when you want one declarative call per
-signal; combine with `excludeIf` + predicate factories when you need
-compound rules (`all`/`any`/`not`).
-
-```ts
-.removeByErrorRate(max: number)              // drop if errorRate > max
-.removeByLatency({ p50Ms?, p70Ms?, p90Ms?, p95Ms?, p99Ms? })
-.removeByThrottling(max: number)
-.removeByMisbehavior(max: number)
-.removeByLag({ blockHead?: number, finalization?: number })
-.removeByMinRequests(min: number)            // require ≥ min samples
-
-.keepHealthy({                               // composite shortcut
-  maxErrorRate?: number     = 0.5,
-  maxBlockHeadLag?: number  = 10,
-  maxP95Ms?: number         = 5000,
-  maxThrottledRate?: number = 0.3,
-})
-```
-
-</details>
-
-### Tiering
-
-<details>
-<summary>**`preferTag` / `preferVendor`**</summary>
-
-```ts
-.preferTag(pat: string, opts?: { minHealthy?: number = 1, fallback?: string })
-.preferVendor(name: string, opts?: same)
-```
-
-Returns upstreams whose tags (resp. vendor) match `pat` if at least
-`minHealthy` match; else falls through to the `fallback` pattern; else
-returns the input unchanged. Default policy uses
-`preferTag('!tier:fallback', { fallback: 'tier:fallback' })`.
-
-`preferVendor` matches the derived `u.vendor` attribute (from the
-upstream's endpoint scheme — alchemy, drpc, …) — not a user tag.
-
-</details>
-
-<details>
-<summary>**`spreadAcrossTags(prefix)`** — interleave for blast-radius diversity</summary>
-
-```ts
-.spreadAcrossTags(prefix: string)
-```
-
-Re-interleaves an already-sorted list so adjacent positions don't share
-the same tag matching `prefix`. Use AFTER `sortByScore` to keep the
-score-based primary choice but avoid stacking the top-N retries in one
-failure domain.
-
-```js
-// Top 3 by score might all share cohort:op-base-sequencer. Without
-// spread, a sequencer outage kills primary + first 2 fallbacks. With
-// spread: position 0 = best in cohort A, position 1 = best in cohort B,
-// position 2 = second-best in cohort A, etc.
-upstreams.sortByScore(PREFER_FASTEST).spreadAcrossTags('cohort:')
-```
-
-For vendor diversity, add `vendor:<name>` tags and call `spreadAcrossTags('vendor:')`.
-
-</details>
-
-### Sorting
-
-<details>
-<summary>**`sortByScore`** — primary ranking primitive</summary>
-
-```ts
-.sortByScore(
-  base?: ScoreWeights | preset | ((u) => ScoreWeights),   // default PREFER_FASTEST
-  opts?: {
-    multipliers?: 'merge' | 'override' | 'off'             // default 'merge'
-    latencyQuantile?: 'p50' | 'p70' | 'p90' | 'p95' | 'p99' // default 'p70'
-    overall?: (u) => number                                 // extra dial (advanced)
-  }
-)
-```
-
-`score = overall(u) / (1 + Σ(metric × weight))`. **Higher score = higher
-rank.** On tied scores, alphabetical-by-id tiebreak.
-
-`base` is the baseline weight map every upstream starts from:
-- A **preset** constant (`PREFER_FASTEST`, `PREFER_FRESHEST`, `PREFER_LEAST_ERRORS`).
-- A flat **weight map** (`{ errorRate: 10, respLatency: 3 }`).
-- A **per-upstream function** (`(u) => weights`) — for branching on tags/vendor/method.
-- **Omitted** → defaults to `PREFER_FASTEST`.
-
-Per-upstream [`routing.scoreMultipliers`](/config/projects/upstreams#per-upstream-score-tuning-routingscoremultipliers) arrive as `u.scoreMultipliers` and combine with `base` per `opts.multipliers`:
-- **`'merge'`** (default) — per-upstream keys override the matching base keys; unset keys inherit base. `overall` lifts the final score.
-- **`'override'`** — configured upstreams rank by THEIR weights only (base ignored); upstreams without config use base.
-- **`'off'`** — ignore `u.scoreMultipliers` entirely; rank by base alone.
-
-</details>
-
-<details>
-<summary>**Other sorts**</summary>
-
-```ts
-.sortBy(fn, opts?: { desc?: boolean }) · .sortByDesc(fn)
-.sortByLatency(quantile?) · .sortByErrorRate() · .sortByThrottling()
-.sortByMisbehavior() · .sortByHeadLag() · .sortByFinalizationLag()
-```
-
-</details>
-
-### Stability across ticks
-
-<details>
-<summary>**`stickyPrimary`**</summary>
-
-```ts
-.stickyPrimary({
-  hysteresis?: number = 0.30,             // challenger must be this fraction better
-  minSwitchInterval?: Duration = '30s'    // cooldown between switches
-})
-```
-
-Reads `ctx.previousOrder[0]` and `ctx.lastSwitchAt`. Keeps the previous
-primary unless **both** conditions hold:
-
-- Cooldown elapsed (`now - lastSwitchAt ≥ minSwitchInterval`).
-- Score gap meaningful (`cur.score < prev.score × (1 - hysteresis)`).
-
-If the prev primary is no longer in the chain (excluded), no override —
-the score-sorted head wins. Applies to all finalities by default; the
-flapping cost outweighs the marginal ranking gain regardless of whether
-the request is reorg-tolerant.
-
-</details>
-
-### Probing & forced inclusion
-
-<details>
-<summary>**`probeExcluded`**</summary>
-
-```ts
-.probeExcluded({
-  sampleRate?: number = 0.1,           // 0.0–1.0, per-(request, excluded-upstream) probability
-  minSamples?: number = 10,            // per-upstream floor on probes within minSamplesWindow
-  minSamplesWindow?: Duration = '60s', // rolling window for minSamples
-  maxConcurrent?: number = 4,          // in-flight probes per excluded upstream
-  timeout?: Duration = '10s',          // per-probe deadline
-})
-```
-
-Opt-in **shadow-mirror** primitive. When this step appears in the
-chain, the network's probe subsystem mirrors a sampled stream of real
-incoming requests against any upstream currently in the excluded set.
-The mirrored calls feed the **same** health-tracker counters as real
-traffic, so the upstream is re-admitted **implicitly** on the next
-tick once its metrics improve enough to clear the chain's `excludeIf`
-predicates. There is no time-based readmit timer — the criteria for
-re-admission is exactly the criteria for exclusion, in reverse.
-
-**Rate control: `sampleRate` + `minSamples`.** Two complementary
-gates that work together to balance probe-traffic cost against
-re-admission speed:
-
-- **`sampleRate`** is the throttle for high-RPS networks. At 10k RPS
-  with `sampleRate=0.1`, only ~1k requests/sec are probe candidates
-  (vs 10k at `sampleRate=1.0`) — saves CPU in the dispatcher AND
-  bounds quota burn on pay-per-call upstreams that are excluded.
-- **`minSamples`** is the floor for low-RPS networks. While an
-  excluded upstream has accumulated fewer than this many probes in
-  the last `minSamplesWindow`, the `sampleRate` gate is bypassed
-  entirely — every incoming request is considered. Once the floor
-  is satisfied, `sampleRate` resumes throttling. Result: low-traffic
-  networks always reach the `samplesAbove(N)` thresholds the chain
-  needs to re-evaluate.
-- **`maxConcurrent`** caps worst-case concurrent probes per upstream
-  regardless of how the request got past the upper gates — bounds
-  the absolute peak load on a single (potentially broken) upstream.
-
-Pair `minSamples` with your chain's `samplesAbove(N)` excludeIf
-guards: `minSamples` should be ≥ that `N` so the re-admission
-criterion is reachable.
-
-`probeExcluded` is a **no-op transform** on the upstream array
-itself. Its real work is in the Go-side prober, which subscribes to
-the network's request feed when this step is present. Omit it from
-the chain to disable shadow probing entirely; excluded upstreams stay
-excluded until structural signals (state-poller-driven head lag,
-finalization lag, etc.) bring their counters back across the
-threshold OR an operator intervenes manually (cordon/uncordon admin
-RPC).
-
-**Per-upstream opt-out** via `routing.probe: 'off'` on any upstream
-config. Use for cost-sensitive vendors (pay-per-call providers, etc.)
-where shadow traffic shouldn't eat quota. That upstream stays in the
-excluded set forever once predicates trip, until manually uncordoned.
-
-**Safety gates** built into the prober:
-
-- **Write-method gate** — `eth_sendRawTransaction`, `eth_sendTransaction`,
-  `eth_sign*`, `personal_sign*` are never mirrored (mutability risk).
-- **Connection isolation** — probe traffic uses the same upstream
-  client as real traffic (no separate pool yet), but the per-upstream
-  `maxConcurrent` cap bounds the worst case.
-- **Cancellation** — probes run on a context detached from the user's
-  request, bounded by `timeout`. The user's response is never delayed.
-
-</details>
-
-<details>
-<summary>**`forceInclude`**</summary>
-
-```ts
-.forceInclude(
-  idOrFn: string | string[] | ((u) => boolean),
-  position?: 'head' | 'tail' = 'tail',
-)
-```
-
-Always include matching upstreams, even if prior filters dropped them.
-
-</details>
-
-<details>
-<summary>**`includeIf`**</summary>
-
-```ts
-.includeIf(
-  target:                                  // WHAT to admit — comes first
-    | string | string[]                    //   tag pattern (common case)
-    | {                                     //   or a selector object:
-        id?: string | string[],            //     facets AND together,
-        tag?: string | string[],           //     at least one must resolve
-        vendor?: string | string[],
-        type?: string | string[],
-        position?: 'head' | 'tail' = 'tail',
-      },
-  condition: boolean | ((upstreams) => boolean),   // WHEN to admit
-)
-```
-
-The dual of `excludeIf`: where `excludeIf` **drops** a per-upstream
-offender, `includeIf` **admits** a selected set of upstreams from the
-full universe when an aggregate condition over the surviving pool
-holds. It never removes an upstream.
-
-`target` comes first so the policy reads "include _these_ if
-_condition_". The function form of `condition` receives the **current**
-chain array — the pool that survived earlier steps — so it can ask
-aggregate ("network-level") questions about what's left. The array is a
-normal JS array, so use native `every` / `some` / `length` / `filter`
-over the [predicate factories](#predicate-factories):
-
-```js
-upstreams
-  .excludeTag('tier:reserve')                                              // reserve out of normal rotation
-  .includeIf('tier:reserve', (p) => p.every(blockSecondsLagAbove(30)))     // admit if every survivor lags
-  .includeIf('tier:reserve', (p) => p.length < 2)                          // ...or if too few remain
-  .sortByScore(PREFER_FASTEST)
-```
-
-Use it for a **break-glass reserve tier**: kept out of rotation, but
-ranked in alongside the survivors only when the serving pool is
-collectively unfit (too few left, all lagging, all slow). Because it
-adds rather than excludes, a single degraded primary is never evicted
-— the reserve set is offered alongside it and a later `sortByScore`
-decides the order.
-
-> Native `every` returns `true` on an empty array, so
-> `(p) => p.every(...)` admits the reserve when the pool is empty
-> (usually what you want). Guard with `(p) => p.length > 0 && p.every(...)`
-> if an empty pool should **not** trigger inclusion.
-
-At least one selector facet must resolve to a concrete value; otherwise
-it is a no-op (it never admits the whole universe — including for an
-empty or facet-less object target). Added upstreams default to the tail
-so the survivors keep priority. Already-present upstreams aren't
-duplicated. A malformed or throwing `condition` degrades to a no-op
-rather than failing the eval.
-
-</details>
-
-### Slicing & limits
-
-<details>
-<summary>**Position-based selectors**</summary>
-
-```ts
-.pickTop(n) · .pickBottom(n) · .dropTop(n) · .dropBottom(n)
-.take(n) / .skip(n)     // aliases of pickTop / dropTop
-```
-
-</details>
-
-### Chain control
-
-<details>
-<summary>**Conditionals**</summary>
-
-```ts
-.if(cond, thenFn, elseFn?)             // cond is boolean | (arr) => boolean
-.unless(cond, fn)
-.whenEmpty(() => Upstream[])           // run only if currently empty
-.whenNotEmpty(fn)
-.fallbackTo(arrOrFn)                   // replace with alternative if empty
-.ensureMin(n, fn)                      // run fn to expand if length < n
-```
-
-`whenEmpty` is the canonical "safety net" — place it once, after the
-LAST primitive in the chain that can drop to empty (typically the last
-`excludeIf` or `removeCordoned`). Steps after that (preferTag,
-sortByScore, stickyPrimary, probeExcluded) only reorder or add, so a
-single safety net suffices.
-
-</details>
-
-<details>
-<summary>**`byFinality`** — dispatch by `ctx.finality`</summary>
-
-```ts
-.byFinality({
-  realtime?:    (u) => Upstream[],
-  unfinalized?: (u) => Upstream[],
-  finalized?:   (u) => Upstream[],
-  unknown?:     (u) => Upstream[],
-})
-```
-
-A missing handler passes through unchanged, so
-`byFinality({ finalized: f })` only branches on FINALIZED requests.
-
-```js
-upstreams.byFinality({
-  finalized: u => u.sortByScore(PREFER_FASTEST),
-  realtime:  u => u.removeByLag({ blockHead: 5 }).sortByScore(PREFER_FRESHEST),
-})
-.sortByScore(PREFER_FASTEST)                 // applies to unfinalized + unknown only
-```
-
-</details>
-
-### Predicate factories
-
-Predicates are functions `(u) => boolean` consumed by `excludeIf` and
-combinators. Every factory below stamps a `policyReason` string on the
-returned closure so `excludeIf` auto-labels the dropped upstream with
-both a stable leaf slug (drives `selection_exclusion_total{reason}`)
-and a human-readable display string (visible in DEBUG logs +
-`Decision.Output.Excluded[].Reason`).
-
-<details>
-<summary>**Rate-based** (errorRate, throttledRate, misbehaviorRate — fractions in `0..1`)</summary>
-
-```ts
-errorRateAbove(rate)        errorRateBelow(rate)
-throttleRateAbove(rate)     throttleRateBelow(rate)
-misbehaviorRateAbove(rate)
-```
-
-</details>
-
-<details>
-<summary>**Latency, absolute** (millisecond thresholds; quantile accepts `0..100` or `0..1`)</summary>
-
-```ts
-// value is the first arg; quantile is optional (defaults to p70).
-// quantile accepts a 0..1 fraction or 0..100 number.
-latencyAbove(ms, quantile?)
-```
-
-</details>
-
-<details>
-<summary>**Latency, relative deviation from peers** (per-method-aware, exponentially damped)</summary>
-
-Trip when this upstream is significantly slower than the fastest peer,
-**compared apples-to-apples per method** and **damped by absolute
-latency** so sub-perceptible micro-differences don't fire.
-
-```ts
-// Default — p70, geomean across methods, ratio > 10, damping at 30ms
-latencyDeviationAbove(10)
-
-// 2nd arg as a number is a quantile shorthand
-latencyDeviationAbove(10, 95)
-
-// Modes for resolving disagreement across methods
-latencyDeviationAbove(10, { mode: 'geomean' })   // default
-latencyDeviationAbove(10, { mode: 'majority' })
-latencyDeviationAbove(10, { mode: 'veto' })
-
-// Tune the damping scale (default 30ms — sub-30ms latencies have
-// their ratio damped so micro-differences below human perception
-// don't trip)
-latencyDeviationAbove(10, { dampingMs: 50 })
-
-// Combine
-latencyDeviationAbove(10, { quantile: 95, mode: 'majority', dampingMs: 100 })
-```
-
-**Why per-method**: an upstream's aggregate `p<q>` is a sample-count-
-weighted percentile of whatever methods landed in its bucket. A primary
-that serves 95% fast `eth_call` and a runner-up that only sees
-hedge-fired `eth_getLogs` look 20-40× apart at the aggregate level
-even when their per-method latencies are identical. The predicate
-eliminates this distribution bias by computing per-method ratios first,
-then collapsing them.
-
-**Why exponential damping**: a raw 3× ratio between 2ms and 6ms is
-human-invisible; the same 3× between 200ms and 600ms is real. The
-predicate damps the per-method ratio by the candidate's absolute
-latency:
-
-```
-effective_ratio = (my / peer) × (1 − exp(−my / dampingMs))
-```
-
-| my latency (dampingMs=30) | damping factor | effective ratio (raw=10) |
-|---|---|---|
-| 5ms | 0.15 | 1.55 — no trip |
-| 30ms | 0.63 | 6.32 — no trip |
-| 70ms | 0.90 | 9.03 — borderline |
-| 150ms | 0.99 | 9.93 — borderline |
-| 500ms+ | ≈ 1.00 | 10.0 — full weight |
-
-Smooth transition — a slightly mis-tuned `dampingMs` degrades
-gracefully rather than flipping the predicate. Set `dampingMs: 0` to
-disable damping (raw ratios at all latencies).
-
-**Working example** — the default policy with `latencyDeviationAbove(10)`
-+ `dampingMs=30` keeps two healthy vendor tiers in rotation while
-excluding a broken one:
-
-| Vendor tier | Latency range | Per-method ratio vs fastest | Effective ratio (geomean) | Trips? |
-|---|---|---|---|---|
-| Fast | 10-30ms | 1-3× | ~2 | No |
-| Decent | 70-150ms | 5-7× | ~7 | No |
-| Broken | 2-10s | 200-1000× | ~250 | **Yes** |
-
-**Modes** (when methods disagree):
-
-| Mode | Rule | When to use |
-|---|---|---|
-| `'geomean'` (default) | Trips when the geometric mean of per-method effective ratios is ≥ multiplier | The safe default. Self-protective against single-method outliers |
-| `'majority'` | Trips when ≥50% of compared methods show the upstream as ≥ multiplier× slower | Multiple bad methods needed, but not all |
-| `'veto'` | Trips when ANY single method shows the upstream as ≥ multiplier× slower | Most aggressive — one bad method casts a vote-out |
-
-**Per-method samples gate** (`minMethodSamples`, default 50): methods
-with fewer than this many samples on an upstream are skipped from
-BOTH the peer-baseline pool AND the per-upstream ratio loop. Below
-~50 samples the `p<q>` CI is too wide to be a reliable comparison
-signal; multiple unstable methods otherwise conspire on the geomean.
-
-**Peer baseline**: for each method, the "fastest peer" is the minimum
-`p<q>` among OTHER upstreams (self excluded). When this upstream IS the
-fastest, its peer is the runner-up — so a 2-pool with one fast (10ms)
-and one slow (12s) upstream still trips the slow one against the fast
-one's 10ms (subject to damping).
-
-Methods with no peer-data on either side are skipped. Upstreams alone
-in the pool (no peers with data on the same methods) never trip.
-
-</details>
-
-<details>
-<summary>**Lag, block-count** (chain-agnostic)</summary>
-
-```ts
-blockNumberLagAbove(blocks)      finalizationLagAbove(blocks)
-```
-
-</details>
-
-<details>
-<summary>**Lag, wall-clock seconds** (chain-adaptive via block-time EMA)</summary>
-
-```ts
-blockSecondsLagAbove(seconds)         finalizationSecondsLagAbove(seconds)
-```
-
-`blockHeadLagSeconds = blockHeadLag × tracker.GetNetworkBlockTime()`.
-The block-time EMA needs ≥ 3 samples to start emitting (typically a few
-seconds after first state-poller traffic). Until then these predicates
-are no-ops — pair with `blockNumberLagAbove` for cold-start coverage.
-
-</details>
-
-<details>
-<summary>**Sample-size guards**</summary>
-
-```ts
-samplesBelow(n)        samplesAbove(n)
-```
-
-Use as AND-terms to avoid tripping rules on sparse data
-(`all(errorRateAbove(0.3), not(samplesBelow(10)))` means "trip if
-errorRate>0.3 AND we actually have enough samples").
-
-</details>
-
-<details>
-<summary>**Logical combinators**</summary>
-
-```ts
-all(...preds)    // AND
-any(...preds)    // OR
-not(pred)        // NOT
-```
-
-Composed predicates carry a joined `policyReason` —
-`any(errorRateAbove(0.5), latencyAbove(30_000))` displays as
-`any(errorRate>0.5,p70>30000ms)` (p70 is the default-quantile slug).
-
-</details>
-
-### Generic functional
-
-<details>
-<summary>**Standard array ops on upstream identity**</summary>
-
-Set operations dedupe by `id`.
-
-```ts
-.filter(fn) · .reject(fn) · .partition(fn): [yes, no]
-.unique(keyFn?) · .union(other) · .intersect(other) · .difference(other)
-.slice(start, end?) · .reverse() · .isEmpty
-```
-
-</details>
-
-### Randomization & rotation
-
-<details>
-<summary>**`shuffle` / `rotateBy`**</summary>
-
-```ts
-.shuffle(seed?)
-.rotateBy(n)                  // left-rotate by n; pair with ctx.tickCount for round-robin
-```
-
-</details>
-
-### Debug helpers
-
-<details>
-<summary>**Inspection helpers**</summary>
-
-```ts
-.tap(fn)                               // side effect; returns arr unchanged
-.dump(level?: 'debug' | 'info' | 'warn' | 'error')
-```
-
-`tap` is useful for ad-hoc inspection during incident investigation
-(`console.log` into the eRPC log stream from inside the eval).
-
-`dump` emits the chain's intermediate state at the named log level —
-upstream IDs at this point in the chain, plus the eval's currently-
-attached `__probeConfig`, `__policyLeafReasons`, etc. See the
-[Debug a flaky decision](#worked-examples) recipe.
-
-</details>
-
-### Free helpers (globals)
-
-<details>
-<summary>**Available without chaining**</summary>
-
-```ts
-methodMatches(pattern: string | string[]): boolean    // glob ctx.method
-isFinalityRequest(): boolean                          // ctx.finality === FINALIZED
-durationMs(d: Duration | string): number              // parse '5m' → 300000
-```
-
-</details>
-
-### Worked examples
-
-<details>
-<summary>**Cost-tier with weekday schedule**</summary>
-
-```js
-// Upstreams declare their tier via `tags: [tier:cheap]` or `tags: [tier:fast]`.
-(upstreams, ctx) => {
-  const cheapHours = inWindow('09:00', '18:00') && (new Date().getDay() % 6) !== 0
-  return upstreams
-    .removeCordoned()
-    .excludeIf(errorRateAbove(0.5))
-    .preferTag(cheapHours ? 'tier:cheap' : 'tier:fast',
-               { minHealthy: 1, fallback: 'tier:cheap' })
-    .sortByScore(PREFER_FASTEST)
-    .stickyPrimary({ hysteresis: 0.30, minSwitchInterval: '2m' })
-}
-```
-
-</details>
-
-<details>
-<summary>**Per-method override**</summary>
-
-```js
-// Upstreams declare their capability via `tags: [tier:archive]`.
-(upstreams, ctx) => {
-  if (methodMatches(['eth_getLogs', 'eth_getBlockByNumber']))
-    return upstreams.byTag('tier:archive').sortByScore(PREFER_FASTEST)
-  if (methodMatches('eth_getBalance'))
-    return upstreams.sortByScore(PREFER_LEAST_ERRORS)
-  return upstreams.sortByScore(PREFER_FASTEST).stickyPrimary()
-}
-```
-
-</details>
-
-<details>
-<summary>**Canary with shadow probing**</summary>
-
-```js
-(upstreams, ctx) =>
-  upstreams
-    .removeCordoned()
-    .excludeIf(errorRateAbove(0.5))
-    .sortByScore(PREFER_FASTEST)
-    .probeExcluded({ sampleRate: 0.5, maxConcurrent: 2, timeout: '10s' })
-    .forceInclude('canary-rpc', 'tail')
-```
-
-</details>
-
-<details>
-<summary>**Debug a flaky decision**</summary>
-
-```js
-(upstreams, ctx) =>
-  upstreams
-    .excludeIf(blockNumberLagAbove(5)).label('lag-filter')
-    .sortByScore(PREFER_FASTEST).label('score')
-    .stickyPrimary().label('sticky')
-    .dump('debug')
-```
-
-</details>
-
-### Planned primitives (not yet shipped)
-
-| Planned | Solves |
-|---|---|
-| `.probeState({ method, target, slot, every, expectChange, excludeOn })` | Lying upstreams that claim a fresh block but serve `0x0` / stale state. Undetectable from request-side metrics today; needs a background prober. |
+- [`internal/policy/engine.go`](https://github.com/erpc/erpc/blob/main/internal/policy/engine.go) — `Engine` struct; `RegisterNetwork`, `GetOrdered`, `GetExcluded`, `PublishRequest`; idle slot eviction; probe config reconciliation.
+- [`internal/policy/slot.go`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go) — `tickOnce` full eval cycle; `snapshotMetrics`; `materializeOrder`; atomic cache swap at [L308-311](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L308-L311).
+- [`internal/policy/eval.go`](https://github.com/erpc/erpc/blob/main/internal/policy/eval.go) — `runEval`; `buildJSUpstreams`; `readUpstreamMetrics`; `resolveScoreMultipliers`; `extractOrderedResult`.
+- [`internal/policy/default_policy.js`](https://github.com/erpc/erpc/blob/main/internal/policy/default_policy.js) — embedded default policy chain; upgraded from placeholder at register time.
+- [`internal/policy/stdlib/stdlib.js`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js) — all chainable `Array.prototype` methods; predicate factories; `sortByScore`; `stickyPrimary`; `probeExcluded`; `latencyDeviationAbove` algorithm.
+- [`internal/policy/prober.go`](https://github.com/erpc/erpc/blob/main/internal/policy/prober.go) — `Prober`; shadow-mirror request dispatch; `windowCounter` for `minSamples` floor; per-upstream in-flight cap.
+- [`erpc/networks.go:L1023-L1074`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1023-L1074) — request path: `GetOrdered` call, raw-registry fallback, `PublishRequest` to probe bus.
+- [`common/defaults.go:L2512-2609`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2512-L2609) — `SelectionPolicyConfig.SetDefaults`; all field defaults.
+- [`telemetry/metrics.go:L174-291`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L174-L291) — all `MetricSelection*` Prometheus vars.
+- [`erpc/networks_selection_policy_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_selection_policy_test.go) — integration tests: slow/erroring/lagging/throttled exclusion, fallback tier, safety-net, sticky primary, no-time-based readmit.
+
+### Related pages
+
+- [Hedge](/config/failsafe/hedge) — uses the ordered upstream list; each hedge leg gets the next upstream in selection order.
+- [Retry](/config/failsafe/retry) — walks the same ordered list sequentially on each retry attempt.
+- [Circuit breaker](/config/failsafe/circuit-breaker) — complementary per-upstream state machine checked after selection dispatches to an upstream; open breakers fail fast and the sweep advances down the ranked list.
+- [Rate limiters](/config/rate-limiters) — caps traffic per upstream independent of selection scoring.
+- [Upstream config](/config/projects/upstreams) — where `routing.scoreMultipliers` and `routing.probe` are set.
+- [Survive provider outages](/use-cases/survive-provider-outages) — the outcome this feature primarily enables.
+
+</AISection>

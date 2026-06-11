@@ -1,265 +1,674 @@
 ---
 title: Timeout
-description: Bound how long a request may take — fixed or quantile-adaptive, with per-method and per-finality scoping.
+description: Give every request a hard latency budget — three nested layers keep stalled upstreams from tying up your connections indefinitely.
 ---
 
-import { Callout } from "nextra/components";
 import {
-	ConfigTabs,
-	ConfigCode,
 	AISection,
+	ConfigTabs,
 	LLMsTxtLink,
+	PromptExample,
+	SourceLink,
 } from "../../../components";
-
-# Timeout policy
 
 <LLMsTxtLink />
 
-The `timeout` policy puts a ceiling on how long eRPC waits for a result. It lives at two places: on the **network** (wraps the entire request lifecycle including all retries and failover across upstreams) and on each **upstream** (bounds a single attempt against a single endpoint). Too short a timeout produces false failures; too long a timeout means bad tail latency propagates to callers.
+# Timeout
 
-## Full configuration
+A single slow upstream can monopolize connections and ripple into your application's latency.
+eRPC solves this with three nested timeout layers — a hard HTTP ceiling, a lifecycle bound
+covering every retry and hedge, and a per-upstream limit that triggers failover instead of
+waiting forever. Set them once and never babysit stalled providers again.
 
-The two forms below show a network-level timeout and an upstream-level timeout side by side. Both use the object form of `duration` (an `AdaptiveDuration`) to enable quantile-adaptive behavior.
+**What you get**
+
+- Predictable latency budgets for callers regardless of upstream behavior
+- Automatic failover when a single upstream stalls — other providers still win
+- Adaptive timeouts that self-tune to per-method P50/P90/P99 as traffic flows
+- Protection against feedback loops: a built-in floor prevents fast quantiles from collapsing the budget
+
+## Quick taste
+
+Illustrative, not a tuned production config — adaptive network timeout keyed to per-method P99:
 
 <ConfigTabs
-	path="projects > networks[] / upstreams[] > failsafe[] > timeout"
-	focus="9-16,24-31"
+	path="projects[].networks[].failsafe[].timeout"
+	focusYaml="8-15"
+  focusTs="8-15"
 	yaml={`projects:
   - id: main
     networks:
       - architecture: evm
-        evm:
-          chainId: 1
+        evm: { chainId: 1 }
         failsafe:
-          - matchMethod: '*'
+          - matchMethod: "*"
             timeout:
               duration:
-                base: 5s          # static floor — always wait at least this long
-                quantile: 0.99    # add observed p99 latency on top of base
-                min: 500ms        # floor for the adaptive component (cold-start guard)
-                max: 30s          # ceiling — never wait longer than this total
-          - matchMethod: 'trace_*|debug_*'
-            timeout:
-              duration: 60s       # scalar shorthand: just a fixed base, no quantile
-    upstreams:
-      - id: my-node
-        endpoint: https://rpc.example.com
-        failsafe:
-          - matchMethod: '*'
-            timeout:
-              duration:
-                base: 0s          # no fixed floor; rely entirely on the quantile
-                quantile: 0.95    # timeout at p95 of this upstream's observed latency
-                min: 200ms        # never fire before 200ms (protects fast cache hits)
-                max: 10s          # ceiling per attempt
-          - matchMethod: 'eth_getLogs'
-            timeout:
-              duration: 25s       # getLogs can be slow — fixed ceiling, no adaptation`}
-	ts={`import { createConfig } from '@erpc-cloud/config';
-
-export default createConfig({
-  projects: [{
-    id: 'main',
-    networks: [{
-      architecture: 'evm',
-      evm: { chainId: 1 },
-      failsafe: [
-        {
-          matchMethod: '*',
-          timeout: {
-            duration: {
-              base: '5s',       // static floor — always wait at least this long
-              quantile: 0.99,   // add observed p99 latency on top of base
-              min: '500ms',     // floor for the adaptive component (cold-start guard)
-              max: '30s',       // ceiling — never wait longer than this total
-            },
-          },
+                # adaptive per-method P99: fast methods get tight budgets automatically
+                quantile: 0.99
+                base: 2s
+                # floor prevents budget from collapsing after a run of fast responses
+                min: 500ms
+                max: 30s`}
+	ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    failsafe: [{
+      matchMethod: "*",
+      timeout: {
+        duration: {
+          // adaptive per-method P99: fast methods get tight budgets automatically
+          quantile: 0.99,
+          base: "2s",
+          // floor prevents budget from collapsing after a run of fast responses
+          min: "500ms",
+          max: "30s",
         },
-        {
-          matchMethod: 'trace_*|debug_*',
-          timeout: { duration: '60s' }, // scalar: just a fixed base, no quantile
-        },
-      ],
-    }],
-    upstreams: [{
-      id: 'my-node',
-      endpoint: 'https://rpc.example.com',
-      failsafe: [
-        {
-          matchMethod: '*',
-          timeout: {
-            duration: {
-              base: '0s',       // no fixed floor; rely entirely on the quantile
-              quantile: 0.95,   // timeout at p95 of this upstream's observed latency
-              min: '200ms',     // never fire before 200ms (protects fast cache hits)
-              max: '10s',       // ceiling per attempt
-            },
-          },
-        },
-        {
-          matchMethod: 'eth_getLogs',
-          timeout: { duration: '25s' }, // getLogs can be slow — fixed, no adaptation
-        },
-      ],
+      },
     }],
   }],
-});`}
+}]`}
 />
 
-<Callout type="info">
-The scalar shorthand `duration: 30s` is equivalent to `duration: { base: '30s' }`. It sets only the `base` field and leaves all other `AdaptiveDuration` fields unset (no quantile adaptation).
-</Callout>
+## Agent reference
 
-## How it works
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-**Fixed mode.** When `duration` is a scalar or an object with only `base` set (no `quantile`), the timeout is a hard constant. On the network, that constant bounds the entire lifecycle — the request is cancelled and an error is returned to the caller if any combination of upstream attempts + retries + hedges hasn't resolved by then. On an upstream, it bounds one attempt; if that attempt times out, the upstream's retry or the network's failover can still try elsewhere.
+<PromptExample
+	n={1}
+	title="set up timeout budgets from scratch"
+	defaultOpen
+	prompt={`Add timeout failsafe policies to my eRPC config from scratch so every request
+has a hard latency budget. Use adaptive (quantile) mode at the network scope for
+per-method self-tuning, and a tighter upstream-scope timeout so a single stalled
+provider triggers failover rather than burning the whole budget. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/failsafe/timeout.llms.txt`}
+/>
 
-**Dynamic (quantile-adaptive) mode.** When `quantile` is set, the effective timeout is computed on every request as:
+<PromptExample
+	n={2}
+	title="audit existing timeouts for footguns"
+	prompt={`Audit the timeout settings in my eRPC config: check that network
+timeouts are larger than upstream timeout × retry maxAttempts, that quantile mode
+always has a base or max (cold-start fail-open risk), that min is not set to 0 in
+quantile mode (feedback-loop collapse risk), and that all failsafe timeouts are
+shorter than server.maxTimeout. Show any violations with suggested fixes. Reference:
+https://docs.erpc.cloud/config/failsafe/timeout.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug requests timing out unexpectedly"
+	prompt={`My eRPC instance is returning timeout errors on some requests. Help me figure out
+which timeout layer is firing (server.maxTimeout vs network-scope vs upstream-scope),
+what Prometheus metrics and response headers to check, and how to adjust the config
+in my eRPC config so the right layer fires at the right time. Reference:
+https://docs.erpc.cloud/config/failsafe/timeout.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="tune timeouts for archival / batch workloads"
+	prompt={`I run both latency-sensitive realtime queries and heavy archival eth_getLogs scans
+through the same eRPC instance. Add per-method timeout failsafe entries in
+my eRPC config so archive methods get a generous ceiling while realtime reads stay
+tight, without raising server.maxTimeout for everyone. Reference:
+https://docs.erpc.cloud/config/failsafe/timeout.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="pair upstream timeouts with retry for automatic failover"
+	prompt={`Configure eRPC so that when one upstream stalls it times out quickly and the
+network-level retry automatically routes to a different provider — without the
+caller ever seeing a failure unless ALL providers are down. Use a tight
+upstream-scope timeout and a generous network timeout in my eRPC config that covers
+the full retry budget. Reference:
+https://docs.erpc.cloud/config/failsafe/timeout.llms.txt`}
+/>
+
+<AISection title="Timeout — full agent reference">
+
+### How it works
+
+**Three-layer hierarchy.** From outermost to innermost:
+
+1. **HTTP server `maxTimeout`** (`server.maxTimeout`, default `150s`). Applied via `TimeoutHandler`
+   wrapping the entire HTTP handler using `context.WithTimeoutCause(r.Context(), dt, ErrHandlerTimeout)`.
+   This is an absolute ceiling — no request survives it regardless of what failsafe policies are set.
+   Source: <SourceLink file="erpc/http_server.go" lines="65-67" />, <SourceLink file="erpc/http_timeout.go" lines="20-143" />.
+
+2. **Network-scope failsafe timeout** (`networks[].failsafe[].timeout`). Applied as
+   `context.WithTimeoutCause` wrapping the entire `networkExecutor.Run` call — it bounds ALL
+   retries and hedges for that method match, not just a single attempt. Fires with
+   `ErrDynamicTimeoutExceeded`, later classified as `ErrFailsafeTimeoutExceeded{scope: "network"}`.
+   Source: <SourceLink file="erpc/network_executor.go" lines="164-171" />.
+
+3. **Upstream-scope failsafe timeout** (`upstreams[].failsafe[].timeout`). Applied inside the
+   upstream's own failsafe executor, bounding one upstream's entire retry budget. Classification
+   becomes `ErrFailsafeTimeoutExceeded{scope: "upstream"}`. When this fires, the network's retry
+   or selection policy can still route elsewhere.
+
+**No per-attempt timeout.** There is no isolated timeout wrapping only a single RPC call. Both
+scopes are lifecycle-scoped. A 500ms network timeout with `maxAttempts: 3` gives a 500ms total
+budget shared across all three attempts — not 500ms each. This is intentional and test-locked
+(`erpc/networks_timeout_test.go:L378`).
+
+**`NewTimeoutFunc` construction path.** `common.NewTimeoutFunc(logger, cfg)` builds a `TimeoutFunc`
+from `TimeoutPolicyConfig`. The returned function is called per-request and returns `*time.Duration`
+(nil disables the timeout). Construction steps:
+1. `cfg == nil || cfg.Duration.IsZero()` → return nil (no timeout for this scope)
+2. `quantile <= 0` → pre-compute `dur = spec.Resolve(nil)` once at construction, return a constant function
+3. `quantile > 0` and `min == 0` → apply the auto-floor to a local copy, then build a per-request closure
+4. Per-request closure calls `ntw.GetMethodMetrics(method).GetResponseQuantiles()` then `resolved.Resolve(qt)`, and emits `MetricNetworkTimeoutDurationSeconds` on each call
+Source: <SourceLink file="common/timeout_func.go" lines="23-83" />.
+
+**`ErrDynamicTimeoutExceeded` sentinel type.** Declared as `var ErrDynamicTimeoutExceeded = errors.New("dynamic timeout exceeded")` at <SourceLink file="common/errors.go" lines="1981-1984" />. It is a plain `*errors.errorString` — NOT a `StandardError` (has no `Code`, `Message`, or `Details` fields). This is intentional: it is a control-flow signal, not a client-facing domain error. Detection via `errors.Is(err, common.ErrDynamicTimeoutExceeded)` works through context propagation. After classification it is wrapped by `NewErrFailsafeTimeoutExceeded(scope, cause, &startTime)` into a `StandardError` with code `ErrCodeFailsafeTimeoutExceeded`. Source: <SourceLink file="common/errors.go" lines="1588-1603" />.
+
+**Per-method quantile tracking implementation.** The `QuantileTracker` maintained by the network's method-metrics registry uses a streaming quantile algorithm (not a fixed histogram). It accumulates actual wall-clock response durations per method and answers `GetQuantile(q)` queries. `eth_call` and `eth_getLogs` accumulate independent trackers. The `AdaptiveDuration.ResolveForRequest` utility bridges from a request context to the tracker. Source: <SourceLink file="common/network.go" lines="51-60" />, <SourceLink file="common/adaptive_duration.go" lines="270-290" />.
+
+**`TimeoutHandler` response buffering.** `TimeoutHandler` buffers the entire response in a pooled `bytes.Buffer` via `timeoutWriter`. On timeout it discards the buffer and writes the fixed JSON-RPC error body. On normal completion within the deadline it copies buffered headers and body to the wire. Source: <SourceLink file="erpc/http_timeout.go" lines="36-143" />.
+
+**Static mode.** Set `duration` to a scalar (`"30s"`) or an object with only `base`. The timeout
+is a fixed constant. `min` and `max` are ignored in static mode — `Resolve` returns `base` unchanged.
+Source: <SourceLink file="common/adaptive_duration.go" lines="88-89" />.
+
+**Quantile-adaptive mode.** When `quantile > 0`, the effective timeout is computed per request as:
 
 ```
-effective = clamp(base + quantile_value, min, max)
+effective = clamp(base + P(q) of method latency, min, max)
 ```
 
-where `quantile_value` is the rolling latency percentile for that specific (upstream, method) pair. The `base` offset lets you add a constant buffer on top of the percentile — for example `base: 500ms, quantile: 0.95` means "fire at p95 + 500 ms". When only `quantile` is set with no `base`, the timeout is purely driven by observed latency.
+Latency is tracked per *(network × method)* using a streaming `QuantileTracker`. `eth_call` and
+`eth_getLogs` accumulate independent histograms. The `base` offset adds a constant buffer on top
+of the quantile value.
 
-**Cold start.** Before any latency samples exist for a (upstream, method) pair, the quantile tracker returns zero. In that case the adaptive component falls back to `min` (if set) so the request isn't immediately killed with a near-zero timeout. The effective timeout on cold start is therefore `clamp(base + min, min, max)`.
+**Cold-start behavior.** When no latency data exists yet, `AdaptiveDuration.Resolve` returns `Min`
+as the adaptive component (NOT `base`). If that also resolves to zero, `coldStartFallback` in
+`NewTimeoutFunc` tries `base` first, then `max`, and returns nil (fail-open) if both are zero.
+**Cold-start priority order: `base > max > nil (fail-open)`.** Always set `base` or `max` when
+using quantile mode. Source: <SourceLink file="common/timeout_func.go" lines="85-93" />.
 
-**Per-method, per-upstream tracking.** Each (upstream, method) pair maintains its own latency histogram independently. A quantile timeout on `eth_call` won't be influenced by the latency profile of `eth_getLogs`. If you set a quantile timeout at the network level, note that the network has no single "upstream" — the latency tracked there is end-to-end wall time across whatever upstreams were used for that method.
+**Feedback-loop prevention floor.** When `quantile > 0` and `min` is not configured,
+`NewTimeoutFunc` auto-populates `min = base/2` (or `500ms` when `base == 0`) on a local copy of
+the spec. Without this floor, fast quantiles could shrink the timeout so aggressively that all
+requests start timing out, keeping the quantile low in a self-reinforcing loop. The auto-floor is
+applied to a local copy — the original config is never mutated.
+Source: <SourceLink file="common/timeout_func.go" lines="29-37" />.
 
-**Network vs upstream interaction.** The network timeout is the outer boundary; upstream timeouts are inner boundaries on individual attempts. If you configure both, the upstream timeout fires first (cancels the attempt), then the network's retry or hedge can try the next upstream. The network timeout fires if the whole sequence hasn't resolved in time. A common misconfiguration is setting the network timeout too short relative to the upstream timeout times the number of retry attempts — this silently kills the retry budget.
+**Retry interaction.** The network timeout is the outer boundary; retries run inside it. A common
+footgun is setting the network timeout shorter than `upstream.timeout × maxAttempts`. When retry
+exhausts and the last attempt timed out, `ErrFailsafeRetryExceeded` wins as the top-level error;
+`erpc_network_timeout_fired_total` does NOT increment in this case.
 
-**What happens on timeout.** An upstream timeout classifies the attempt as a retryable error (same as a transport failure). The network's retry policy and selection policy can then route to a different upstream. A network timeout cancels all in-flight attempts and returns an error to the caller; no further retries happen.
+**Hedge interaction.** All legs of a hedge race share the same deadline. If the network timeout
+fires before any leg wins, all legs are cancelled.
 
-## Defaults
+**Error sentinel distinction.** `ErrHandlerTimeout` (server) and `ErrDynamicTimeoutExceeded`
+(failsafe) are different sentinels. The network executor checks for `ErrDynamicTimeoutExceeded`
+specifically — it will never misclassify an HTTP-server timeout as `ErrFailsafeTimeoutExceeded`.
+Source: <SourceLink file="erpc/networks.go" lines="1427-1432" />.
 
-| Field | Default | Notes |
-|---|---|---|
-| `duration` (network) | `120s` (static) | Applied when no `timeout` is configured on the network's failsafe entry. |
-| `duration` (upstream) | `60s` (static) | Applied when no `timeout` is configured on the upstream's failsafe entry. |
-| `base` | unset | Zero offset when using the object form without a base. |
-| `quantile` | unset | Quantile adaptation is off unless you set this. |
-| `min` | unset | No floor unless specified. On cold start with `quantile` set and no `min`, falls back to zero — requests can timeout almost instantly. |
-| `max` | unset | No ceiling unless specified. |
+**Timeout attribution and counter guards.** `MetricNetworkTimeoutFiredTotal` is incremented by the
+scope that owns the policy. Four guards prevent double-counting at `erpc/networks.go:L1435-L1438`:
+1. `failsafeExecutor.HasTimeout()` — this scope has a configured timeout policy.
+2. `errors.Is(execErr, common.ErrDynamicTimeoutExceeded)` — the eRPC-specific sentinel is present; generic `context.DeadlineExceeded` from a parent context does not satisfy this.
+3. `!HasErrorCode(execErr, ErrCodeFailsafeRetryExceeded)` — retry-exhausted suppression: when retry exhausts and the last attempt timed out, `ErrFailsafeRetryExceeded` wins and the timeout counter does not fire.
+4. `!HasErrorCode(execErr, ErrCodeFailsafeTimeoutExceeded)` — cross-scope suppression: when an upstream-scope timeout already classified the error, the network-scope counter does NOT double-count it.
+Source: <SourceLink file="erpc/networks.go" lines="1424-1451" />, <SourceLink file="erpc/networks_timeout_test.go" lines="495-538" />.
 
-<Callout type="warning">
-When `quantile` is set and neither `min` nor `base` is set, the cold-start timeout is effectively zero until at least one latency sample exists. Always set `min` or `base` when using quantile mode.
-</Callout>
+### Config schema
 
-## Gotchas
+#### `server.maxTimeout`
 
-- **Network timeout shorter than `upstream.timeout × maxAttempts`.** If the upstream is configured with a 10 s timeout and `retry.maxAttempts: 3`, the worst-case upstream budget is 30 s. A network timeout of 15 s will cut that short, dropping the third attempt before it can complete. Set the network timeout to at least `upstream.timeout.max × retry.maxAttempts` — or accept the tradeoff explicitly.
-
-<Callout type="warning">
-Network timeout ≥ upstream.timeout × retry.maxAttempts. This is the most common timeout misconfiguration and the hardest to diagnose because it manifests as intermittent failures under load rather than consistent errors.
-</Callout>
-
-- **`quantile` alone without `base` or `min`.** A bare `{ quantile: 0.99 }` with no `base` and no `min` works correctly at steady state but will timeout almost immediately on the very first few requests of a cold process. Always pair with at least `min` or `base`.
-
-- **`base` alone (scalar or object) is not adaptive.** If you write `duration: { base: 30s }` there is no quantile adaptation — it's identical to the scalar `duration: 30s`. The quantile adaptation only engages when `quantile > 0`.
-
-- **`min` too low on fast upstreams.** If an upstream usually responds in 5 ms (e.g., it's cache-hitting at the RPC provider) and you set `min: 10ms`, the quantile will compress toward that minimum and any request that misses the cache (200 ms+) will timeout. Set `min` to a value that accommodates both the fast and slow paths for the upstream — or don't set `min` and let the quantile find its own floor.
-
-- **Heavy methods need their own entry.** `trace_*`, `debug_*`, `eth_getLogs` over large block ranges can take 10–60 s on a lightly loaded archive node. A catch-all `matchMethod: '*'` entry with a 5 s timeout will reject every one of those. Add a dedicated entry before the wildcard entry (first match wins):
-
-  ```yaml
-  failsafe:
-    - matchMethod: 'trace_*|debug_*'
-      timeout: { duration: 120s }
-    - matchMethod: 'eth_getLogs'
-      timeout: { duration: 30s }
-    - matchMethod: '*'
-      timeout: { duration: 5s }
-  ```
-
-- **Timeout doesn't disable retry.** A timeout fires on an attempt; if the network or upstream retry policy allows another attempt, it will happen. Set `retry.maxAttempts: 1` on the same failsafe entry to get "one shot, then give up" behavior.
-
-- **`duration: null` disables the timeout entirely.** This is valid if you want to inherit only the retry policy from a failsafe entry. Without any timeout the request will hang until the upstream closes the connection or the caller disconnects.
-
-## Metrics
-
-`erpc_network_timeout_duration_seconds` is a histogram of the dynamically computed effective timeout per request, labeled by method. This metric is only populated in quantile mode — fixed timeouts don't emit it because there's nothing dynamic to observe.
-
-```promql
-# P99 effective timeout per method (last 5 min)
-histogram_quantile(0.99,
-  sum by (method, le) (
-    rate(erpc_network_timeout_duration_seconds_bucket[5m])
-  )
-)
-
-# Alert when p50 effective timeout drops below 500ms (possible cold-start or config problem)
-histogram_quantile(0.50,
-  sum by (method, le) (
-    rate(erpc_network_timeout_duration_seconds_bucket[5m])
-  )
-) < 0.5
-```
-
-## See also
-
-- [Failsafe overview](/config/failsafe) — scoping rules, finality states, where each policy is valid
-- [Retry](/config/failsafe/retry) — composes with timeout; timeout fires per attempt, retry decides whether to try again
-- [Hedge](/config/failsafe/hedge) — speculative parallel copies when a single upstream is slow; pairs well with a tight network timeout
-
-<AISection title="Copy for your AI assistant — timeout reference">
-
-### `TimeoutPolicyConfig` — every field
-
-| Field | Type | Default | Notes |
+| Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `duration` | `Duration \| AdaptiveDuration` | none (system default applied) | The timeout spec. Accepts a scalar string (`"30s"`) or an object `{ base, quantile, min, max }`. The scalar sets `base` only; no quantile adaptation. |
+| `server.maxTimeout` | `*Duration` | `150s` (<SourceLink file="erpc/http_server.go" lines="65-67" />) | Absolute HTTP-handler ceiling. POST → HTTP 200 + JSON-RPC `-32603`; non-POST → HTTP 504. No failsafe policy can exceed this. Always set failsafe timeouts shorter. |
 
-### `AdaptiveDuration` — object form fields (when `duration` is an object)
+#### `TimeoutPolicyConfig` — network or upstream scope
 
-| Field | Type | Default | Notes |
+All fields live under `networks[].failsafe[].timeout` or `upstreams[].failsafe[].timeout`. Struct: <SourceLink file="common/config.go" lines="1406-1408" />.
+
+| Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `base` | `Duration` | `0` | Static base added to the adaptive component. Scalar shorthand (`duration: "30s"`) sets only this field. |
-| `quantile` | `float64` | unset | Latency percentile (`0 < q < 1`). When set, the observed `p` at that quantile of (upstream, method) latency is added to `base`. `0.99` is typical; `0.95` for tighter tails. Requires `base` or `max` to be set (validation error otherwise). |
-| `min` | `Duration` | unset | Floor for the `base + adaptive` result. Also used as the cold-start fallback adaptive value when `quantile > 0` and no samples exist yet. |
-| `max` | `Duration` | unset | Ceiling for the `base + adaptive` result. When `quantile` is set and `base`/`duration` is omitted, acts as the cold-start fallback. |
+| `timeout.duration` | `Duration \| AdaptiveDuration` | Network: `120s` (<SourceLink file="common/defaults.go" lines="134-136" />); Upstream: `60s` (<SourceLink file="common/defaults.go" lines="155-157" />) | The timeout budget. Scalar sets `base` only (static mode). Object `{base, quantile, min, max}` enables adaptive mode. Zero/nil disables the timeout for this scope (fail-open). |
+| `timeout.duration.base` | `Duration` | `0` | Static fallback and cold-start addend. When `quantile == 0`, this IS the effective timeout. When `quantile > 0`, added to the quantile value before clamping. `coldStartFallback` prefers `base` over `max`. |
+| `timeout.duration.quantile` | `float64` | `0` (static mode) | Percentile of per-method response times, range `[0, 1]`. When `> 0`, enables adaptive mode. Requires `base` or `max` to avoid cold-start fail-open. Source: <SourceLink file="common/adaptive_duration.go" lines="83-109" />. |
+| `timeout.duration.min` | `Duration` | **Auto-floor**: when `quantile > 0` and `min == 0`, auto-set to `base/2` (or `500ms` when `base == 0`) at build time. Source: <SourceLink file="common/timeout_func.go" lines="31-36" />. | Floor after quantile resolution. Prevents feedback-loop collapse. Cold-start: when quantile returns 0, `min` is used as the adaptive component inside `Resolve`. |
+| `timeout.duration.max` | `Duration` | `0` (uncapped) | Ceiling after quantile resolution. Cold-start fallback of last resort when `base == 0`: `coldStartFallback` returns `max`. If both `base` and `max` are zero, cold start is fail-open. Source: <SourceLink file="common/timeout_func.go" lines="89-91" />. |
 
-**Resolution formula (when `quantile > 0`):**
-```
-adaptive = quantile_value_from_histogram  (or min if no samples yet)
-effective = clamp(base + adaptive, min, max)
-```
+#### Legacy flat siblings (backward compatible)
 
-**When `quantile == 0`:** `effective = base` exactly (no clamping applied).
+| Field | Type | Folds into | Precedence |
+|---|---|---|---|
+| `timeout.quantile` | `float64` | `duration.quantile` | Object form wins; sibling fills only if `duration.quantile == 0`. Source: <SourceLink file="common/config.go" lines="1471-1473" />. |
+| `timeout.minDuration` | `Duration` (string or int-as-ms) | `duration.min` | Same precedence rule. Source: <SourceLink file="common/config.go" lines="1474-1476" />. |
+| `timeout.maxDuration` | `Duration` (string or int-as-ms) | `duration.max` | Same precedence rule. Source: <SourceLink file="common/config.go" lines="1477-1479" />. |
 
-### Flat form shorthand
-
-The flat form `{ duration, quantile, minDuration, maxDuration }` is accepted as shorthand and folded into the `AdaptiveDuration` object at parse time:
+Legacy form still accepted:
 
 ```yaml
-# Flat shorthand
+# Legacy flat form — still valid, folded into duration.* at parse time
 timeout:
   duration: 5s
   quantile: 0.99
   minDuration: 200ms
   maxDuration: 30s
-
-# Equivalent new form
-timeout:
-  duration:
-    base: 5s
-    quantile: 0.99
-    min: 200ms
-    max: 30s
 ```
 
-Prefer the new object form in new configs. The flat form emits a deprecation notice in debug logs.
+### Worked examples
 
-### Where `timeout` is valid
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
 
-| Level | Effect |
-|---|---|
-| `projects[].networks[].failsafe[]` | Bounds the entire request lifecycle: all upstream attempts, retries, and hedges. The outer hard limit. |
-| `projects[].upstreams[].failsafe[]` | Bounds a single attempt against one upstream. Does not stop the network from retrying or hedging on another upstream. |
+**1. Finality-split network timeouts (recommended general shape).** Production uses separate
+failsafe entries per finality state so realtime/unfinalized data — where block-availability
+races make latency spiky — gets a wider budget than finalized reads. P99 quantile mode means
+`eth_blockNumber` self-tunes to a tight budget while `eth_getLogs` breathes. The `min` floor
+prevents the adaptive budget from collapsing after a run of fast responses:
 
-### Interaction with other policies
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  # eth_call and eth_getLogs: realtime/unfinalized have block-availability races
+  - matchMethod: "eth_call|eth_getLogs"
+    matchFinality: [realtime, unfinalized]
+    timeout:
+      duration:
+        quantile: 0.99
+        # base doubles as cold-start fallback — always set it
+        base: 30s
+        # min floor prevents feedback-loop collapse after a run of fast responses
+        min: 20s
+        max: 30s
+  # finalized/unknown: same methods but no block-availability race → same ceiling is fine
+  - matchMethod: "eth_call|eth_getLogs"
+    matchFinality: [finalized, unknown]
+    timeout:
+      duration:
+        quantile: 0.99
+        base: 30s
+        min: 20s
+        max: 30s
+  # generic catch-all for realtime reads; wider because methods like trace_* are slow
+  - matchMethod: "*"
+    matchFinality: [realtime, unfinalized]
+    timeout:
+      duration:
+        quantile: 0.99
+        base: 60s
+        min: 40s
+        max: 60s
+  - matchMethod: "*"
+    matchFinality: [finalized, unknown]
+    timeout:
+      duration:
+        quantile: 0.99
+        base: 60s
+        min: 40s
+        max: 60s`}
+  ts={`failsafe: [
+  {
+    matchMethod: "eth_call|eth_getLogs",
+    matchFinality: ["realtime", "unfinalized"],
+    timeout: { duration: { quantile: 0.99, base: "30s", min: "20s", max: "30s" } },
+  },
+  {
+    matchMethod: "eth_call|eth_getLogs",
+    matchFinality: ["finalized", "unknown"],
+    timeout: { duration: { quantile: 0.99, base: "30s", min: "20s", max: "30s" } },
+  },
+  {
+    matchMethod: "*",
+    matchFinality: ["realtime", "unfinalized"],
+    timeout: { duration: { quantile: 0.99, base: "60s", min: "40s", max: "60s" } },
+  },
+  {
+    matchMethod: "*",
+    matchFinality: ["finalized", "unknown"],
+    timeout: { duration: { quantile: 0.99, base: "60s", min: "40s", max: "60s" } },
+  },
+]`}
+/>
 
-- **Retry**: timeout fires per attempt. If the attempt times out and `retry.maxAttempts > 1`, the retry policy can start another attempt (on a different upstream at the network level; same upstream at the upstream level). The network timeout is still the outer bound — once it fires, no more attempts happen.
-- **Hedge**: a hedge spawned after the hedge delay gets its own upstream-level timeout (if configured). The network timeout covers the whole hedge fan-out. If the network timeout fires before any hedge or primary resolves, all in-flight requests are cancelled.
-- **Circuit breaker**: a timed-out attempt increments the circuit breaker's failure counter for that upstream, same as any other failed attempt.
+**2. Per-method upstream timeouts with automatic failover.** Upstream-scope timeouts are the
+first line of defense: when one provider stalls, a tight per-method ceiling triggers failover
+to another provider without burning the full network budget. Critically, `hedge` and `retry`
+are both `null` at the upstream scope — the network layer owns those policies. Methods with
+variable latency (like `eth_getLogs`, `trace_*`) get wider ceilings so legitimate big queries
+don't time out prematurely:
+
+<ConfigTabs
+  path="projects[].upstreams[].failsafe[]"
+  yaml={`upstreams:
+  - id: primary
+    endpoint: https://rpc.example.com
+    failsafe:
+      # fee/nonce reads: extremely tight — these must be fast or skip the upstream
+      - matchMethod: "eth_getTransactionCount|eth_gasPrice|eth_maxPriorityFeePerGas"
+        timeout:
+          duration:
+            quantile: 0.8
+            base: 500ms
+            min: 100ms
+            max: 500ms
+        hedge: null   # upstream scope owns no hedge/retry — network layer does
+        retry: null
+      # heavy data: legitimate eth_getLogs on wide ranges routinely take seconds
+      - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+        timeout:
+          duration:
+            quantile: 0.9
+            # raised from default — subgraph backfills legitimately take 2-15s
+            base: 15s
+            min: 2s
+            max: 15s
+        hedge: null
+        retry: null
+      # light getters: small responses, tight cap encourages fast hedging on stuck upstreams
+      - matchMethod: "eth_get*"
+        timeout:
+          duration:
+            quantile: 0.9
+            base: 5s
+            min: 200ms
+            max: 5s
+        hedge: null
+        retry: null
+      # catch-all
+      - matchMethod: "*"
+        timeout:
+          duration:
+            quantile: 0.8
+            base: 60s
+            min: 500ms
+            max: 60s
+        hedge: null
+        retry: null`}
+  ts={`upstreams: [{
+  id: "primary",
+  endpoint: "https://rpc.example.com",
+  failsafe: [
+    {
+      matchMethod: "eth_getTransactionCount|eth_gasPrice|eth_maxPriorityFeePerGas",
+      timeout: { duration: { quantile: 0.8, base: "500ms", min: "100ms", max: "500ms" } },
+      hedge: null, retry: null,
+    },
+    {
+      matchMethod: "eth_getLogs|eth_getBlockReceipts",
+      timeout: { duration: { quantile: 0.9, base: "15s", min: "2s", max: "15s" } },
+      hedge: null, retry: null,
+    },
+    {
+      matchMethod: "eth_get*",
+      timeout: { duration: { quantile: 0.9, base: "5s", min: "200ms", max: "5s" } },
+      hedge: null, retry: null,
+    },
+    {
+      matchMethod: "*",
+      timeout: { duration: { quantile: 0.8, base: "60s", min: "500ms", max: "60s" } },
+      hedge: null, retry: null,
+    },
+  ],
+}]`}
+/>
+
+**3. Transaction hash lookups: tight network timeout, no hedge.** A null
+`eth_getTransactionReceipt` means the tx isn't indexed yet — hedging or heavy retries only
+multiply load. The network timeout ceiling matches the `upstream.timeout × maxAttempts`
+budget so the last retry isn't silently cut short:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getTransactionByHash|eth_getTransactionReceipt"
+    timeout:
+      duration:
+        quantile: 0.99
+        # 10s ceiling covers upstream timeout (8s) × 2 attempts without overflow
+        base: 10s
+        min: 6s
+        max: 10s
+    retry:
+      maxAttempts: 2
+      # ~one block of patience: tx is either propagated or not; more retries waste budget
+      delay: 500ms
+    # no hedge key — parallel fan-out on a missing tx multiplies load for no gain`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getTransactionByHash|eth_getTransactionReceipt",
+  timeout: { duration: { quantile: 0.99, base: "10s", min: "6s", max: "10s" } },
+  retry: { maxAttempts: 2, delay: "500ms" },
+  // no hedge — parallel fan-out on a missing tx multiplies load for no gain
+}]`}
+/>
+
+**4. Cache connector timeout (static, not adaptive).** Cache connectors use `failsafeForGets` /
+`failsafeForSets`; quantile mode is rejected at cache scope. A static timeout ensures a slow
+remote cache read is abandoned quickly so eRPC falls through to upstream — a cache read that
+takes longer than an upstream call is never worth it:
+
+<ConfigTabs
+  path="database.evmJsonRpcCache.connectors[].failsafeForGets[]"
+  yaml={`connectors:
+  - id: remote-cache
+    driver: grpc
+    failsafeForGets:
+      - matchMethod: "*"
+        # static: quantile is rejected at cache scope; connector latency is stable enough
+        timeout:
+          # 400ms hard ceiling: a slow cache read is worse than a direct upstream call
+          duration: 400ms
+        retry: { maxAttempts: 2, delay: "0" }
+        hedge: { delay: 100ms, maxCount: 1 }`}
+  ts={`connectors: [{
+  id: "remote-cache",
+  driver: "grpc",
+  failsafeForGets: [{
+    matchMethod: "*",
+    // static: quantile is rejected at cache scope; connector latency is stable enough
+    timeout: {
+      // 400ms hard ceiling: a slow cache read is worse than a direct upstream call
+      duration: "400ms",
+    },
+    retry: { maxAttempts: 2, delay: "0" },
+    hedge: { delay: "100ms", maxCount: 1 },
+  }],
+}]`}
+/>
+
+**5. Quantile-only cold-start safe pattern.** A pure `{quantile: 0.95}` with no `base`/`max`
+is fail-open on cold start. Adding `max` provides the cold-start ceiling without hard-coding
+a `base` offset; useful when you want the budget to be purely data-driven once the tracker
+warms up:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "*"
+    timeout:
+      duration:
+        quantile: 0.95
+        # max acts as cold-start ceiling; base would be added on top of the quantile value
+        max: 20s`}
+  ts={`failsafe: [{
+  matchMethod: "*",
+  timeout: {
+    duration: { quantile: 0.95, max: "20s" },
+  },
+}]`}
+/>
+
+### Request/response behavior
+
+- When `server.maxTimeout` fires on a POST request, `TimeoutHandler` writes HTTP 200 with body
+  `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"http request handling timeout"}}`.
+  Non-POST requests receive HTTP 504. Source: <SourceLink file="erpc/http_timeout.go" lines="107-116" />.
+- When a failsafe timeout fires, the error propagates as `ErrFailsafeTimeoutExceeded` with a
+  `scope` field (`"network"` or `"upstream"`), which maps to a JSON-RPC `-32603` body at the
+  HTTP layer.
+- Cancelled in-flight upstream requests receive context cancellation; they do not contribute to
+  response headers or metrics beyond what the timeout counter records.
+- The `ErrHandlerTimeout` (server) and `ErrDynamicTimeoutExceeded` (failsafe) sentinels are
+  distinct; the network executor never misclassifies them.
+  Source: <SourceLink file="erpc/networks.go" lines="1427-1432" />.
+
+### Best practices
+
+- Set the **network timeout larger than `upstream.timeout × maxAttempts`**. If upstream timeout
+  is 10s and retry maxAttempts is 3, a network timeout below 30s silently drops the last retry.
+- Use **quantile mode with `max`** rather than a static ceiling for production APIs — static
+  values go stale as provider latency shifts; quantile self-adjusts per method.
+- **Always set `base` or `max`** when using quantile mode. A spec with only `quantile` and no
+  `base`/`max` is fail-open on cold start — no timeout is applied until the tracker warms up.
+- **Never set `min: 0` explicitly** in quantile mode. The auto-floor (`min = base/2` or `500ms`)
+  is only applied when `min` is unset; manually setting `min: 0` bypasses the guard and allows
+  the budget to collapse toward zero on a run of fast responses.
+- Keep `server.maxTimeout` as the last-resort ceiling, but size it generously (150–300s) and
+  size failsafe timeouts tightly — callers get a controlled error from the failsafe layer rather
+  than a raw HTTP 504.
+- Combine upstream-scope timeouts with network-scope retry so a single stalled provider triggers
+  failover rather than consuming the entire network budget.
+- Use `erpc_network_timeout_duration_seconds` to observe what budget the adaptive policy is
+  computing; it emits on every quantile request, not only on fires.
+
+### Edge cases & gotchas
+
+1. **`server.maxTimeout` is a hard ceiling.** A failsafe `duration: "200s"` will never run for
+   200s — the HTTP handler times out at `server.maxTimeout` (default 150s) first. Always set
+   failsafe timeouts shorter than `server.maxTimeout`.
+   Source: <SourceLink file="erpc/http_server.go" lines="65-67" />.
+
+2. **Quantile cold-start fail-open when `base` and `max` are both zero.** `{quantile: 0.95}`
+   with no `base` or `max` → `coldStartFallback` returns nil → no timeout on cold start. Always
+   set `base` or `max` with quantile mode.
+   Source: <SourceLink file="common/timeout_func.go" lines="85-93" />.
+
+3. **Network timeout shorter than `upstream.timeout × maxAttempts`.** Upstream `timeout: 10s`
+   + `retry.maxAttempts: 3` = 30s worst-case budget. A network timeout of 15s silently drops
+   the third attempt. Set network timeout ≥ upstream timeout × retry attempts, or accept the
+   tradeoff explicitly.
+
+4. **Static `base` ignores `min`/`max`.** `duration: { base: "30s", min: "1s", max: "60s" }`
+   with no `quantile` applies exactly `30s` — the clamp is never reached.
+   Source: <SourceLink file="common/adaptive_duration.go" lines="88-89" />.
+
+5. **Quantile cold-start adaptive value is `min`, not `base`.** Inside `Resolve`, when
+   `qt.GetQuantile(q) == 0`, `adaptive = spec.Min` — NOT `base`. Then `v = base + min`. The
+   `base`-first fallback only happens at the `coldStartFallback` level in `NewTimeoutFunc` when
+   `Resolve` returns 0.
+   Source: <SourceLink file="common/adaptive_duration.go" lines="96-98" />.
+
+6. **Retry-exhausted error wins over timeout-on-last-attempt.** When retry exhausts and the
+   last attempt timed out, the top-level error is `ErrFailsafeRetryExceeded`. The timeout
+   counter does not fire; only the retry counter reflects the event.
+   Source: <SourceLink file="erpc/networks_timeout_test.go" lines="429-493" />.
+
+7. **Upstream-scope timeout bubbles correctly.** When an upstream timeout fires, the error is
+   wrapped as `ErrFailsafeTimeoutExceeded{scope: "upstream"}`. The network executor's
+   `!HasErrorCode(execErr, ErrCodeFailsafeTimeoutExceeded)` guard sees this code and skips
+   network-scope classification and counter increment. One event, one counter.
+   Source: <SourceLink file="erpc/networks_timeout_test.go" lines="495-538" />.
+
+8. **POST timeout response is always HTTP 200.** The JSON-RPC spec requires transport-layer 200
+   for method errors. Non-POST gets HTTP 504.
+   Source: <SourceLink file="erpc/http_timeout.go" lines="107-116" />.
+
+9. **Legacy `quantile`-only flat form is fail-open on cold start.** A config with only
+   `quantile: 0.7` and no `duration` has `base == 0` and `max == 0` → `coldStartFallback`
+   returns nil. Add `maxDuration` to avoid this.
+   Source: <SourceLink file="common/config.go" lines="1468-1473" />.
+
+10. **Legacy flat siblings silently drop on field conflict.** If `duration: {quantile: 0.95}` is
+    set and `quantile: 0.50` is also provided as a flat sibling, the result is `quantile = 0.95`.
+    No error or warning is emitted.
+    Source: <SourceLink file="common/adaptive_duration_compat_test.go" lines="75-88" />.
+
+11. **`erpc_network_timeout_duration_seconds` emits on every quantile request, not only
+    timeouts.** The histogram reflects what duration was computed, not whether the request
+    actually timed out.
+    Source: <SourceLink file="common/timeout_func.go" lines="73-80" />.
+
+12. **Auto-floor is applied at build time, not config-load time.** `NewTimeoutFunc` modifies a
+    LOCAL copy of the spec. The original `TimeoutPolicyConfig` is not mutated. Manually setting
+    `min: 0` bypasses the auto-floor because `== 0` check fails.
+    Source: <SourceLink file="common/timeout_func.go" lines="27-36" />.
+
+13. **Network-only timeout does not fire the upstream-scope counter.** When only the network scope
+    has a timeout policy and the upstream scope has none, the context cancellation propagates into
+    the upstream's attempt. Because `failsafeExecutor.timeout == nil` at the upstream level, the
+    upstream does NOT increment `erpc_network_timeout_fired_total` and does NOT wrap the error as
+    `ErrFailsafeTimeoutExceeded`. The network scope handles all classification.
+    Source: <SourceLink file="erpc/networks_timeout_test.go" lines="540-586" />.
+
+14. **`applyLegacySiblings` early-exit: all-zero flat siblings are free.** When `quantile == 0`
+    and `minDuration == 0` and `maxDuration == 0`, `applyLegacySiblings` returns immediately without
+    allocating a `Duration` object. Configs that use only `duration: 5s` (no flat siblings) pay no
+    allocation cost.
+    Source: <SourceLink file="common/config.go" lines="1465-1467" />.
+
+15. **Legacy `quantile`-only flat form (no `duration:` key at all) allocates `Duration` from nil.**
+    A block containing only `quantile: 0.7` with no `duration:` field is valid: `applyLegacySiblings`
+    allocates `c.Duration = &AdaptiveDuration{}` and sets only `Quantile = 0.7`, leaving `Base`,
+    `Min`, and `Max` at zero. At `NewTimeoutFunc` build time `quantile > 0` and `base == 0` — the
+    auto-floor sets `min = 500ms`, but on cold start `coldStartFallback` returns `max` (zero) → nil
+    (fail-open). Add `maxDuration` to avoid cold-start fail-open when using the legacy flat form.
+    Source: <SourceLink file="common/config.go" lines="1468-1473" />.
+
+16. **`context.WithTimeoutCause` cause discrimination.** `errors.Is(ctx.Err(), context.DeadlineExceeded)`
+    is true for both the HTTP-server timeout and a failsafe timeout, but `context.Cause(ctx)`
+    returns different sentinels: `ErrHandlerTimeout` for the server level and `ErrDynamicTimeoutExceeded`
+    for failsafe. The network executor uses this distinction to avoid misclassifying an HTTP-server
+    deadline as `ErrFailsafeTimeoutExceeded`.
+    Source: <SourceLink file="erpc/networks.go" lines="1427-1432" />.
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_timeout_fired_total` | counter | `project`, `network`, `category`, `finality`, `scope` | Timeout policy killed a request. `scope=network` or `scope=upstream`. Suppressed when `ErrFailsafeRetryExceeded` wins; suppressed when a lower scope already fired. Network-scope source: <SourceLink file="erpc/networks.go" lines="1440" />; upstream-scope source: `upstream/upstream.go:L845`; metric declaration: `telemetry/metrics.go:L437-L441`. |
+| `erpc_network_timeout_duration_seconds` | histogram | `project`, `network`, `category`, `finality` | Computed per request in quantile mode only — reflects the budget computed, not whether it fired. Buckets: `[0.05, 0.1, 0.3, 0.5, 1, 3, 5, 10, 30]`. Source: <SourceLink file="common/timeout_func.go" lines="73-80" />; metric declaration: `telemetry/metrics.go:L820-L824`. |
+
+```promql
+# Rate of timeout fires by scope
+rate(erpc_network_timeout_fired_total[5m])
+
+# P99 of dynamically computed timeout budget per method
+histogram_quantile(0.99,
+  sum by (le, category) (
+    rate(erpc_network_timeout_duration_seconds_bucket[5m])
+  )
+)
+```
+
+### Source code entry points
+
+- [`erpc/http_timeout.go`](https://github.com/erpc/erpc/blob/main/erpc/http_timeout.go) — `TimeoutHandler`, `timeoutWriter`; HTTP-server-level timeout and `ErrHandlerTimeout` sentinel
+- [`erpc/http_server.go:L65-L67`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L65-L67) — `maxTimeout` retrieval and `TimeoutHandler` instantiation
+- [`common/timeout_func.go:L23-L94`](https://github.com/erpc/erpc/blob/main/common/timeout_func.go#L23-L94) — `NewTimeoutFunc`; auto-floor; `coldStartFallback`; quantile resolution; metric observation
+- [`common/adaptive_duration.go:L83-L109`](https://github.com/erpc/erpc/blob/main/common/adaptive_duration.go#L83-L109) — `AdaptiveDuration.Resolve`; full resolution algorithm
+- [`erpc/network_executor.go:L164-L171`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L164-L171) — network-scope `context.WithTimeoutCause` applied to `networkExecutor.Run`
+- [`erpc/networks.go:L1424-L1451`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1424-L1451) — timeout error classification; `MetricNetworkTimeoutFiredTotal` with all four guards
+- [`common/defaults.go:L134-L157`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L134-L157) — system-level defaults (network `120s`, upstream `60s`)
+- [`common/config.go:L1398-L1480`](https://github.com/erpc/erpc/blob/main/common/config.go#L1398-L1480) — `TimeoutPolicyConfig` struct; YAML/JSON unmarshal; `applyLegacySiblings`
+- [`common/errors.go:L1588-L1603`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1588-L1603) — `NewErrFailsafeTimeoutExceeded`; `ErrCodeFailsafeTimeoutExceeded`
+- [`common/errors.go:L1981-L1984`](https://github.com/erpc/erpc/blob/main/common/errors.go#L1981-L1984) — `ErrDynamicTimeoutExceeded` sentinel declaration
+- [`erpc/networks_timeout_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_timeout_test.go) — behavior-locking tests: lifecycle scoping, cold-start, scope attribution, double-count regression
+- [`common/network.go:L51-L60`](https://github.com/erpc/erpc/blob/main/common/network.go#L51-L60) — `QuantileTracker` and `TrackedMetrics` interfaces
+- [`common/adaptive_duration_test.go`](https://github.com/erpc/erpc/blob/main/common/adaptive_duration_test.go) — unit tests locking resolution semantics: static mode, quantile mode, clamp, nil spec, cold-start
+- [`common/adaptive_duration_compat_test.go`](https://github.com/erpc/erpc/blob/main/common/adaptive_duration_compat_test.go) — backward-compat tests for legacy flat-sibling folding and precedence rules
+- [`erpc/network_executor.go:L86-L88`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L86-L88) — `NewNetworkExecutor` wires `NewTimeoutFunc`; `HasTimeout` method
+- [`telemetry/metrics.go:L437-L441`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L437-L441) — `MetricNetworkTimeoutFiredTotal` declaration
+- [`telemetry/metrics.go:L820-L824`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L820-L824) — `MetricNetworkTimeoutDurationSeconds` declaration
+
+### Related pages
+
+- [Retry](/config/failsafe/retry) — runs inside the network timeout; budget shared across all attempts.
+- [Hedge](/config/failsafe/hedge) — all hedge legs share the same network-scope deadline.
+- [Selection policies](/config/projects/selection-policies) — decides which upstream each failover attempt gets.
+- [Rate limiters](/config/rate-limiters) — pair with upstream timeouts to cap cost on expensive vendors.
+- [Survive provider outages](/use-cases/survive-provider-outages) — the outcome upstream-scope timeouts serve.
 
 </AISection>

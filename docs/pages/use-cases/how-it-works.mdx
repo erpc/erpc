@@ -1,0 +1,554 @@
+---
+title: How eRPC works
+description: Every JSON-RPC call travels a battle-tested pipeline — auth, smart caching, parallel hedging, multi-upstream consensus — and arrives with full diagnostic headers. Zero glue code required.
+---
+
+import { LLMsTxtLink, AISection, CapabilityGrid, ConfigTabs, SourceLink, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# How eRPC works
+
+Your JSON-RPC call enters eRPC and immediately gets smarter. It checks a shared cache, races
+multiple providers in parallel if one is slow, retries against a fresh upstream on errors, and
+reaches consensus across nodes when data fidelity matters — all before a response reaches
+your client. Every hop is traced: `X-ERPC-*` headers tell you exactly what happened, and
+Prometheus counters back it up.
+
+<CapabilityGrid
+  columns={3}
+  items={[
+    { title: "Survive provider outages", href: "/use-cases/survive-provider-outages", summary: "Automatic failover, retry, hedge, and circuit breaker across providers." },
+    { title: "Cut costs & latency", href: "/use-cases/cut-costs-and-latency", summary: "EVM-aware cache with block-finality TTLs and shared connectors." },
+    { title: "Scale chains & providers", href: "/use-cases/scale-chains-and-providers", summary: "Selection policies, scoring, shadow upstreams, and concurrency controls." },
+    { title: "Trust the data", href: "/use-cases/trust-the-data", summary: "Multi-upstream consensus, integrity checks, and getLogs splitting." },
+    { title: "Lock it down", href: "/use-cases/lock-it-down", summary: "Authentication strategies, rate limiters, and CORS configuration." },
+    { title: "See everything", href: "/use-cases/see-everything", summary: "Prometheus metrics, OpenTelemetry spans, and per-request diagnostic headers." },
+  ]}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="set up a production-ready eRPC config from scratch"
+	defaultOpen
+	prompt={`I want to set up eRPC in front of my EVM RPC providers so it handles failover,
+caching, and tail-latency automatically. Walk me through a production-ready
+my eRPC config that covers the full request lifecycle — auth, cache, retry, hedge,
+and circuit breaker. Read the reference first:
+https://docs.erpc.cloud/use-cases/how-it-works.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="understand and tune an existing eRPC config"
+	prompt={`Audit my existing my eRPC config and explain what happens to a JSON-RPC call at
+each stage of the eRPC pipeline — which policies match, what the failsafe chain
+looks like, and whether any obvious gaps exist (missing timeout, no hedge, etc.).
+Reference: https://docs.erpc.cloud/use-cases/how-it-works.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug unexpected X-ERPC-* header values"
+	prompt={`My eRPC responses have unexpected X-ERPC-Attempts and X-ERPC-Hedges values —
+some calls show 4+ attempts even for simple eth_call requests. Walk me through
+the pipeline order and explain which stage is likely causing the extra attempts,
+then adjust my eRPC config to reduce unnecessary retries. Reference:
+https://docs.erpc.cloud/use-cases/how-it-works.llms.txt`}
+/>
+
+<AISection title="eRPC request lifecycle — full agent reference">
+
+### How it works
+
+eRPC routes each JSON-RPC call through a deterministic, layered pipeline. Understanding the
+pipeline order matters for configuration — earlier stages short-circuit later ones.
+
+**1. HTTP ingress** (`erpc/http_server.go`)
+
+The handler parses the URL path for `{projectId}/{architecture}/{chainId}`, applies aliasing
+rules if configured, reads and decompresses the body (gzip supported), and dispatches single
+or batch JSON-RPC payloads. Batch items fan out as concurrent goroutines; results reassemble
+before the response is written. The real client IP is resolved from trusted forwarder headers
+before any auth or rate-limit checks.
+
+**2. RequestProcessor** (`erpc/request_processor.go:35–67`)
+
+`ProcessUnary` is the entry point for both HTTP and gRPC. It resolves the project, wraps raw
+JSON bytes in `NormalizedRequest`, calls `Validate()` (missing `method` → immediate error),
+authenticates the consumer via `project.AuthenticateConsumer`, resolves
+`networkID = "{architecture}:{chainId}"`, applies directive defaults from
+`network.Config().DirectiveDefaults`, then delegates to `project.Forward`.
+
+**3. Project layer** (`erpc/projects.go`)
+
+`PreparedProject.Forward` acquires a project-level rate-limit permit (no-op when
+`rateLimitBudget` is unset), fires `HandleProjectPreForward` — the first EVM hook, which
+handles `eth_blockNumber` (early cache return), `eth_call` (static call optimisation),
+`eth_chainId` (served from config), and proactive `eth_getLogs` / `trace_filter` range
+splitting. If the hook handles the request, `HandleNetworkPostForward` is called on the
+result before returning. Otherwise the call proceeds to `network.Forward`.
+
+**4. Network layer** (`erpc/networks.go:931–1603`)
+
+`Network.Forward` is the core dispatch function, in execution order:
+
+1. **Static responses** — matched against `network.cfg.StaticResponses` before any upstream
+   is contacted.
+2. **Multiplexing** — identical in-flight requests share one leader goroutine; followers wait
+   and receive a copied response with their original request ID patched in.
+3. **Cache read** — `cacheDal.Get` fans out across all matching policies; first hit
+   short-circuits the rest of the pipeline.
+4. **Upstream ordering** — `policyEngine.GetOrdered` returns upstreams ranked by selection
+   policy scores; falls back to registry order on cold start.
+5. **EVM network pre-forward hook** (`HandleNetworkPreForward`) — upstream-aware
+   short-circuits for `eth_getLogs` range enforcement, `eth_chainId`, `trace_filter`.
+6. **Future-block short-circuit** — requests for a concrete block beyond every eligible
+   upstream head return `null` immediately without touching any upstream.
+7. **Method guard** — `eth_accounts` and `eth_sign` are hardcoded unsupported; stateful
+   methods require exactly one targeted upstream.
+8. **Network rate limiting** — network-level budget checked.
+9. **Request preparation** — `evm.NormalizeHttpJsonRpc` normalizes params (block tag →
+   concrete hex interpolation, EVM-specific transformations), caches block number for
+   downstream availability checks.
+10. **Failsafe executor selection** — `getFailsafeExecutors` iterates `failsafe[]` in config
+    order, returning the first whose `matchMethod` (wildcard) and `matchFinality` match.
+
+**5. Failsafe executor chain** (`erpc/network_executor.go:69–200`)
+
+The executor nests policies in a fixed order:
+
+```
+timeout (wraps entire invocation)
+  ↳ if consensus enabled && !SkipConsensus:
+      consensus(
+        retry(
+          hedge(tryOneUpstream)   ← one upstream per consensus slot
+        )
+      )
+    else:
+      retry(
+        hedge(runUpstreamSweep)   ← all upstreams per sweep
+      )
+```
+
+- **Timeout** wraps the context with `context.WithTimeoutCause`; the cause is
+  `ErrDynamicTimeoutExceeded`. Can be a static duration or an adaptive quantile function
+  over observed per-method latency.
+- **Consensus** is delegated to the `consensusRunner` interface. The executor does not import
+  the consensus package directly.
+- **Retry** (`runRetry`) iterates up to `maxAttempts`. For data-unavailable retries
+  (`block_unavailable`, `empty_result`, `missing_data`) it uses an EMA block-time-relative
+  delay (falling back to `emptyResultDelay`). For genuine errors it uses exponential backoff
+  via `failsafe.ComputeBackoff`. `firstInformativeErr` is tracked so a bare
+  `ErrNoUpstreamsLeftToSelect` on a later attempt does not mask the root cause.
+- **Hedge** (`runHedge`) fires up to `maxCount` parallel copies after an adaptive delay.
+  Write methods are never hedged. A hedge leg returning an emptyish result does not win the
+  race — siblings continue until a non-null response arrives.
+
+**6. Upstream sweep loop** (`erpc/networks.go:1226–1407`)
+
+For each iteration inside `sweepFn`:
+
+1. Calls `req.NextUpstream()` — atomic round-robin with skip logic for consumed and
+   permanently errored upstreams; safe for concurrent hedge goroutines.
+2. **Block availability gating** — compares the request's block number against the
+   upstream's `EvmEffectiveLatestBlock`. Retryable if within `maxRetryableBlockDistance`
+   (default 128) of the upstream head; fail-open on poller errors.
+3. Calls `HandleUpstreamPreForward` then `u.Forward`.
+4. `HandleUpstreamPostForward` validates the response (integrity checks, mark-empty-as-error
+   methods, `eth_sendRawTransaction` idempotency).
+5. `normalizeResponse` rewrites the JSON-RPC `id` to match the client's original byte-for-byte
+   (preserving large 64-bit integers via `IDRawBytes()`).
+6. `MarkUpstreamCompleted` releases retryable-errored upstreams back into rotation for the
+   next failsafe retry round. Deterministic client errors return immediately.
+
+**7. Response write and async cache**
+
+Back in `http_server.go`, `setResponseHeaders` emits the full `X-ERPC-*` diagnostic surface
+(attempts, retries, hedges, cache status, winning upstream, duration). The JSON-RPC response
+body is streamed. An async goroutine fires `cacheDal.Set` with a 10-second deadline under
+`appCtx` — a client disconnect never aborts the cache write. Panics in the write goroutine
+are recovered and reported via `erpc_unexpected_panic_total{scope="cache-set"}`.
+
+**gRPC query-stream path**
+
+`ProcessQueryStream` handles `eth_queryBlocks`, `eth_queryTransactions`, `eth_queryLogs`,
+`eth_queryTraces`, and `eth_queryTransfers`. Auth and rate limiting are identical to the
+unary path. `EvmQueryExecutor.Execute` attempts native pipe-through to an upstream gRPC BDS
+client; if no upstream supports structured queries, it shims via sequential JSON-RPC
+subrequests (`eth_getBlockByNumber`, `eth_getLogs`, `trace_block`, etc.) with block-boundary-
+aware pagination. Composite subrequests set `IsCompositeRequest=true` to skip network-scope
+retry and hedge, preventing exponential amplification.
+
+### Config schema
+
+Config fields governing the lifecycle. Network-level failsafe and directive defaults are the
+primary control surface.
+
+| YAML path | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `networks[].failsafe[].matchMethod` | string | `"*"` | Wildcard pattern; first matching executor wins. <SourceLink file="erpc/network_executor.go" lines="83-84" /> |
+| `networks[].failsafe[].matchFinality` | `[]DataFinalityState` | `[]` (any) | Empty = match all finalities. <SourceLink file="erpc/network_executor.go" lines="79" /> |
+| `networks[].failsafe[].timeout` | `*Duration` | nil (no timeout) | Wraps full executor invocation; cause is `ErrDynamicTimeoutExceeded`. <SourceLink file="erpc/network_executor.go" lines="86-89" /> |
+| `networks[].failsafe[].retry.maxAttempts` | int | 1 (no retry) | Upper bound on retry iterations. <SourceLink file="erpc/network_executor.go" lines="210-213" /> |
+| `networks[].failsafe[].retry.emptyResultMaxAttempts` | int | 0 (disabled) | Cap for data-unavailable retries independently of `maxAttempts`. |
+| `networks[].failsafe[].retry.emptyResultDelay` | `*Duration` | nil | Fixed wait before data-unavailable retry, used before EMA block-time warms up. |
+| `networks[].failsafe[].retry.emptyResultAccept` | `[]string` | `DefaultEmptyResultAccept()` | Methods for which an empty/null result is NOT retried (e.g. `eth_call`, `eth_getLogs`). |
+| `networks[].failsafe[].retry.backoffFactor` | float | per `failsafe.ComputeBackoff` | Exponential backoff multiplier for genuine-error retries. |
+| `networks[].failsafe[].retry.backoffMaxDelay` | `*Duration` | per `failsafe.ComputeBackoff` | Maximum inter-retry delay. |
+| `networks[].failsafe[].hedge.maxCount` | int | 0 (disabled) | Maximum concurrent hedge attempts beyond the primary. |
+| `networks[].failsafe[].hedge.delay` | `AdaptiveDuration` | — | Scalar or `quantile`+tracker for adaptive timing. |
+| `networks[].failsafe[].consensus` | `*ConsensusConfig` | nil | Enables consensus; delegates to `consensus.Run`. |
+| `networks[].directiveDefaults.retryEmpty` | `*bool` | false | Retry on emptyish upstream responses. <SourceLink file="common/request.go" lines="575-578" /> |
+| `networks[].directiveDefaults.retryPending` | `*bool` | true (implicit) | Retry tx-lookup methods until confirmed. <SourceLink file="common/request.go" lines="579-583" /> |
+| `networks[].directiveDefaults.skipCacheRead` | `*string` | `""` (off) | `"true"` = skip all; connector-id pattern = skip matching. |
+| `networks[].directiveDefaults.useUpstream` | `*string` | `""` | Upstream id or glob; applied inside `NextUpstream` loop. |
+| `networks[].directiveDefaults.skipInterpolation` | `*bool` | false | Prevent block tag → hex replacement in outbound params. |
+| `networks[].directiveDefaults.skipConsensus` | `*bool` | false | Bypass consensus; retry+hedge still apply. <SourceLink file="erpc/network_executor.go" lines="178-191" /> |
+| `networks[].evm.maxRetryableBlockDistance` | `*int64` | 128 | Blocks ahead of upstream head that are retryable. <SourceLink file="erpc/networks.go" lines="1975-1979" /> |
+| `projects[].rateLimitBudget` | string | `""` | Project-level budget ID; empty = no project rate limiting. |
+| `networks[].rateLimitBudget` | string | `""` | Network-level budget ID. |
+| `networks[].multiplexing.enabled` | bool | false | Deduplicate identical in-flight requests. <SourceLink file="erpc/networks.go" lines="1990" /> |
+| `networks[].staticResponses` | `[]StaticResponseConfig` | `[]` | Matched before cache and upstream; zero upstream contact. |
+| `server.executionHeaders` | `*ExecutionHeadersMode` | `"all"` | `"all"` = full per-attempt trace; `"summary"` = counters only; `"off"` = none. |
+
+**EVM network config** — all under `networks[].evm.` in YAML; defaults set by `EvmNetworkConfig.SetDefaults()` (`common/defaults.go`):
+
+| YAML path | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `evm.chainId` | int64 | required (0 = unset) | Used for `eth_chainId` responses and network ID formation (`evm:<chainId>`). |
+| `evm.fallbackFinalityDepth` | int64 | `1024` | Depth used when the network cannot determine finality dynamically. A block is considered finalized if `latestBlock - blockNumber >= fallbackFinalityDepth`. |
+| `evm.fallbackStatePollerDebounce` | Duration | `5s` | Fallback poll interval for state poller when dynamic block time is unknown. |
+| `evm.getLogsMaxAllowedRange` | int64 | `30_000` | Max block range for `eth_getLogs` before forced splitting. <SourceLink file="common/defaults.go" lines="2092-2094" /> |
+| `evm.getLogsMaxAllowedAddresses` | int64 | `0` (unlimited) | Max address count in `eth_getLogs` filter. |
+| `evm.getLogsMaxAllowedTopics` | int64 | `0` (unlimited) | Max topic count in `eth_getLogs` filter. |
+| `evm.getLogsSplitOnError` | `*bool` | `true` | Split and retry `eth_getLogs` when upstream returns range-too-large error. <SourceLink file="common/defaults.go" lines="2095-2097" /> |
+| `evm.getLogsSplitConcurrency` | int | `10` | Max concurrent sub-requests when splitting `eth_getLogs`. <SourceLink file="common/defaults.go" lines="2098-2100" /> |
+| `evm.traceFilterSplitOnError` | `*bool` | nil (disabled) | Split and retry `trace_filter`/`arbtrace_filter` on range-too-large. Opt-in required. |
+| `evm.traceFilterSplitConcurrency` | int | `10` | Max concurrent sub-requests when splitting `trace_filter`. <SourceLink file="common/defaults.go" lines="2105-2107" /> |
+| `evm.enforceBlockAvailability` | `*bool` | nil (true in logic) | Whether to gate requests based on upstream known block bounds. |
+| `evm.markEmptyAsErrorMethods` | `[]string` | 11 methods (see below) | Methods for which an empty/null upstream result is converted to `ErrEndpointMissingData` and retried. Default set: `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionByHash`, `eth_getTransactionByBlockHashAndIndex`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getUncleByBlockHashAndIndex`, `eth_getUncleByBlockNumberAndIndex`, `debug_traceTransaction`, `trace_transaction`, `trace_block`, `trace_get`. `eth_getBlockByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts` are intentionally excluded. <SourceLink file="common/defaults.go" lines="2044-2058" /> |
+| `evm.dynamicBlockTimeDebounceMultiplier` | `*float64` | `0.7` | Scales EMA block time to derive the state-poller debounce interval. |
+| `evm.blockUnavailableDelayMultiplier` | `*float64` | `1.0` | Multiplies EMA-estimated block time to derive the dynamic retry delay for `ErrUpstreamBlockUnavailable`/`ErrEndpointMissingData`. Returns `0` before EMA warms up — falls back to `failsafe[*].retry.emptyResultDelay`. |
+| `evm.idempotentTransactionBroadcast` | `*bool` | nil (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" to success and verifies "nonce too low" via `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
+| `evm.emptyResultConfidence` | `AvailbilityConfidence` | `blockHead` | Confidence level for empty-result retries: `blockHead` = retry empties for blocks ≤ latest head; `finalizedBlock` = stricter, only retry for blocks ≤ finalized head. <SourceLink file="common/defaults.go" lines="2075-2079" /> |
+| `evm.servedTip.enabledFor` | `[]string` | `[]` | Tags using cluster-min mode; valid values: `"latest"`, `"finalized"`, `"safe"`. |
+| `evm.servedTip.clusterDelta` | int64 | `0` (auto-derived, clamped [2,10]) | Max block gap to group upstreams into one cluster for served-tip computation. |
+| `evm.servedTip.guaranteedMethods` | `[]string` | `[]` | Glob patterns for methods whose supporting-upstreams subset is used for cluster computation. |
+| `evm.integrity.enforceHighestBlock` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceHighestBlock`. |
+| `evm.integrity.enforceGetLogsBlockRange` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceGetLogsBlockRange`. |
+| `evm.integrity.enforceNonNullTaggedBlocks` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceNonNullTaggedBlocks`. |
+
+### Worked examples
+
+**1. Baseline resilient config — timeout + retry + hedge for any method.** Good starting
+point for a production network with multiple upstreams. The timeout bounds the whole race;
+retry recovers transient upstream errors; hedge cuts tail latency on slow providers:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "*"
+    timeout:
+      duration: 10s
+    retry:
+      maxAttempts: 3
+      backoffMaxDelay: 1s
+    hedge:
+      delay:
+        quantile: 0.7
+        min: 100ms
+        max: 2s
+      maxCount: 1`}
+  ts={`failsafe: [{
+  matchMethod: "*",
+  timeout: { duration: "10s" },
+  retry: { maxAttempts: 3, backoffMaxDelay: "1s" },
+  hedge: {
+    delay: { quantile: 0.7, min: "100ms", max: "2s" },
+    maxCount: 1,
+  },
+}]`}
+/>
+
+**2. Slow-data retry for pending transactions.** `eth_getTransactionReceipt` and
+`eth_getTransactionByHash` return null until the transaction is mined. Combine
+`emptyResultMaxAttempts` with the directive default `retryPending: true` to poll until
+confirmed, using block-time-relative delays:
+
+<ConfigTabs
+  path="projects[].networks[]"
+  yaml={`directiveDefaults:
+  retryPending: true
+failsafe:
+  - matchMethod: "eth_getTransactionReceipt|eth_getTransactionByHash"
+    retry:
+      maxAttempts: 10
+      emptyResultMaxAttempts: 10
+      emptyResultDelay: 500ms`}
+  ts={`directiveDefaults: { retryPending: true },
+failsafe: [{
+  matchMethod: "eth_getTransactionReceipt|eth_getTransactionByHash",
+  retry: {
+    maxAttempts: 10,
+    emptyResultMaxAttempts: 10,
+    emptyResultDelay: "500ms",
+  },
+}]`}
+/>
+
+**3. Consensus for critical state reads.** Use consensus when multiple upstreams must agree
+on a result before it is returned. `skipConsensus` directive lets callers opt out per-request:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getBalance|eth_call"
+    consensus:
+      minParticipants: 2
+      method: "majority"`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getBalance|eth_call",
+  consensus: { minParticipants: 2, method: "majority" },
+}]`}
+/>
+
+**4. Multiplexing for high-traffic hot paths.** When many clients request the same block
+simultaneously, multiplexing deduplicates the upstream request — one upstream call serves
+all waiting followers with a response ID patch per follower:
+
+<ConfigTabs
+  path="projects[].networks[]"
+  yaml={`multiplexing:
+  enabled: true`}
+  ts={`multiplexing: { enabled: true }`}
+/>
+
+### Request/response behavior
+
+- **Directive precedence:** HTTP headers → query params (query params override headers for
+  `use-upstream`, `retry-empty`, `retry-pending`, `skip-cache-read`, `skip-interpolation`,
+  `skip-consensus`). Config `directiveDefaults` are applied only when directives are not
+  already set — HTTP-set directives are never overwritten.
+  <SourceLink file="common/request.go" lines="563-565" />
+- **Response headers** emitted by `setResponseHeaders` (`erpc/http_server.go:1105`) under `server.executionHeaders`:
+
+  | Header | When present | Value |
+  |---|---|---|
+  | `X-ERPC-Version` | always | eRPC version string |
+  | `X-ERPC-Commit` | always | git commit SHA |
+  | `X-ERPC-Attempts` | always | total physical ops (upstream + cache) |
+  | `X-ERPC-Upstream-Attempts` | always | upstream-scope attempt count |
+  | `X-ERPC-Upstream-Retries` | always | upstream-scope retry count |
+  | `X-ERPC-Upstream-Hedges` | always | upstream-scope hedge count |
+  | `X-ERPC-Network-Attempts` | always | network-scope rotation count |
+  | `X-ERPC-Network-Retries` | always | network-scope retry count |
+  | `X-ERPC-Network-Hedges` | always | network-scope hedge count |
+  | `X-ERPC-Cache-Attempts` | only if cache exercised | cache-scope attempt count |
+  | `X-ERPC-Consensus-Slots` | only if consensus used | number of consensus slots |
+  | `X-ERPC-Consensus-Disputes` | only if disputes | number of disputes |
+  | `X-ERPC-Cache` | if response available | `HIT` or `MISS` |
+  | `X-ERPC-Upstream` | if upstream response | upstream ID that served it |
+  | `X-ERPC-Duration` | if response | total request duration in milliseconds |
+  | `X-ERPC-Upstreams` | `executionHeaders=all` | per-attempt trace: `id=role:outcome:durationMs:won\|lost` |
+- **Request directives** — settable via HTTP header or query param (query overrides header for the non-validation directives). Header-only validation directives (`X-ERPC-Validate-*`, `X-ERPC-Enforce-*`) are not settable via query params. <SourceLink file="common/request.go" lines="38-114" />
+
+  | Header | Query param | Behavior |
+  |---|---|---|
+  | `X-ERPC-Retry-Empty` | `retry-empty` | Retry emptyish upstream responses |
+  | `X-ERPC-Retry-Pending` | `retry-pending` | Retry pending tx lookups |
+  | `X-ERPC-Skip-Cache-Read` | `skip-cache-read` | `"true"` = skip all; connector-id pattern = skip matching |
+  | `X-ERPC-Use-Upstream` | `use-upstream` | Pin request to matching upstream(s) by id, glob, or tag |
+  | `X-ERPC-Skip-Interpolation` | `skip-interpolation` | Don't replace block tags with hex in outbound params |
+  | `X-ERPC-Skip-Consensus` | `skip-consensus` | Bypass consensus; retry+hedge still apply |
+  | `X-ERPC-Enforce-Highest-Block` | `enforce-highest-block` | Block integrity validation |
+  | `X-ERPC-Enforce-GetLogs-Range` | `enforce-getlogs-range` | Enforce `eth_getLogs` block range limit |
+  | `X-ERPC-Enforce-Non-Null-Tagged-Blocks` | `enforce-non-null-tagged-blocks` | Reject null on tagged block lookups |
+  | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` | Validate log index ordering |
+  | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | Bloom↔logs consistency check |
+  | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | Recalculate bloom from logs |
+  | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` | No duplicate tx hashes in block |
+  | `X-ERPC-Validate-Transaction-Index` | `validate-transaction-index` | Validate tx positions |
+  | `X-ERPC-Receipts-Count-Exact` | `receipts-count-exact` | Expected exact receipt count |
+  | `X-ERPC-Receipts-Count-At-Least` | `receipts-count-at-least` | Minimum receipt count |
+  | `X-ERPC-Validation-Expected-Block-Hash` | `validation-expected-block-hash` | Expected block hash ground truth |
+  | `X-ERPC-Validation-Expected-Block-Number` | `validation-expected-block-number` | Expected block number ground truth |
+  | `X-ERPC-Validate-Transactions-Root` | `validate-transactions-root` | Check `transactionsRoot` consistency |
+  | `X-ERPC-Validate-Header-Field-Lengths` | `validate-header-field-lengths` | Validate EVM header field byte lengths |
+  | `X-ERPC-Validate-Transaction-Fields` | `validate-transaction-fields` | Validate transaction fields |
+  | `X-ERPC-Validate-Transaction-Block-Info` | `validate-transaction-block-info` | Validate tx block info |
+  | `X-ERPC-Validate-Log-Fields` | `validate-log-fields` | Validate log fields |
+
+- **Retry reasons** — `shouldRetryWithReason` returns one of: `execution_exception_retryable` (EVM execution exception with `retryableTowardNetwork=true`), `block_unavailable` (`ErrCodeUpstreamBlockUnavailable`, subject to `emptyResultMaxAttempts` cap), `missing_data` (`ErrCodeEndpointMissingData` unless `RetryEmpty=false`), `retryable_error` (generic `IsRetryableTowardNetwork`), `empty_result` (emptyish response with `RetryEmpty=true`), `pending_tx` (tx-lookup methods with `RetryPending=true`). Composite requests are never retried at network scope. <SourceLink file="erpc/network_executor.go" lines="374-463" />
+
+- **Batch requests** fan out to per-item goroutines; each item is processed independently
+  through the full pipeline and reassembled before writing.
+- **Composite subrequests** (`IsCompositeRequest=true`) skip network-scope retry and hedge
+  to prevent exponential amplification of range-split sub-requests.
+  <SourceLink file="erpc/network_executor.go" lines="378-380" />
+- **Response ID fidelity:** `normalizeResponse` uses `IDRawBytes()` for byte-perfect
+  round-trip of the JSON-RPC `id` field, preserving large 64-bit integer IDs that cannot be
+  represented as `float64`. <SourceLink file="erpc/networks.go" lines="2234-2266" />
+
+### Best practices
+
+- **Set a timeout** for every failsafe block in production; without it, a hung upstream holds
+  the goroutine indefinitely and can exhaust the connection pool under load.
+- **Use adaptive hedge delay** (`quantile: 0.7`, `min: 100ms`, `max: 2s`) over static delays
+  — static delays go stale as provider latencies shift; quantile mode self-adjusts per method.
+- **Enable multiplexing** for networks that see bursts of identical calls (e.g. `eth_blockNumber`,
+  `eth_getBlockByNumber?latest`); it eliminates duplicate upstream cost at zero config complexity.
+- **Set `emptyResultDelay`** as a bootstrap fallback for data-unavailable retries — the EMA
+  block-time delay takes a few requests to warm up; without a fallback the first retries fire
+  immediately.
+- **Do not set `directiveDefaults.retryEmpty: true` globally** unless you also set
+  `emptyResultMaxAttempts`; without a cap, methods that legitimately return null (e.g. unindexed
+  blocks on archive nodes) will exhaust `maxAttempts` retries on every call.
+- **Prefer `staticResponses`** for methods your upstreams do not support and will never support
+  (e.g. a custom method returning a fixed value); this avoids wasting upstream budget on
+  guaranteed errors.
+- **Internal requests** (state pollers, chainId probes) set `IsInternal=true`, bypassing retry,
+  hedge, and circuit breaker — only per-attempt timeout applies. Never forward internal requests
+  to a public consumer-facing failsafe path.
+
+### Edge cases & gotchas
+
+1. **`ApplyDirectiveDefaults` is called twice** — once in `RequestProcessor` and again
+   defensively in `Network.Forward` for gRPC callers. The guard ensures only the first call
+   has effect. <SourceLink file="common/request.go" lines="563-565" />
+2. **Multiplexer follower race on close**: a follower arriving during leader cleanup retries
+   `LoadOrStore` and becomes the new leader or joins a new follower group.
+   <SourceLink file="erpc/networks.go" lines="2017-2025" />
+3. **`ErrNoUpstreamsLeftToSelect` degeneration on retries**: after the first retry round, all
+   upstreams may be marked consumed, hiding the original error. `firstInformativeErr` is tracked
+   and surfaced in the final `ErrFailsafeRetryExceeded` wrapping.
+   <SourceLink file="erpc/network_executor.go" lines="265-284" />
+4. **Hedge emptyish rejection**: a fast `null` from a lagging upstream does not win the hedge
+   race — in-flight siblings continue until a non-null result arrives. Methods in
+   `emptyResultAccept` (e.g. `eth_call`) are exempt.
+   <SourceLink file="erpc/network_executor.go" lines="607-624" />
+5. **`SkipConsensus` falls through to retry+hedge**: when `skipConsensus=true`, the executor
+   skips consensus entirely but all other failsafe policies still apply.
+   <SourceLink file="erpc/network_executor.go" lines="178-191" />
+6. **Cache write panic recovery**: panics in the async write goroutine are recovered and
+   reported via `erpc_unexpected_panic_total{scope="cache-set"}`.
+   <SourceLink file="erpc/networks.go" lines="1496-1508" />
+7. **Stateful method enforcement**: methods marked `Stateful` require exactly one targeted
+   upstream. Without a `UseUpstream` selector, multiple upstreams return `ErrNotImplemented`.
+   `eth_accounts` and `eth_sign` are always unsupported.
+   <SourceLink file="erpc/networks.go" lines="2112-2143" />
+8. **Block availability check is fail-open**: if `EvmAssertBlockAvailability` errors (poller
+   issues, partial state), the request proceeds to the upstream rather than being gated.
+   <SourceLink file="erpc/networks.go" lines="1949-1959" />
+9. **`eth_sendRawTransaction` is never wrapped in `ErrFailsafeRetryExceeded`**: execution-
+   reverted responses are surfaced directly — the revert IS the answer, not a retry condition.
+   <SourceLink file="erpc/network_executor.go" lines="278-283" />
+10. **Async cache write does not block the response**: the write goroutine uses `appCtx`, not
+    the request context, so a client disconnect never aborts the write. The 10-second deadline
+    is on the write itself, not on waiting for it.
+    <SourceLink file="erpc/networks.go" lines="1494-1518" />
+11. **Query shim retry safety**: a gRPC query stream error is only retried on the next upstream
+    if no page has been emitted (`StreamError.PageEmitted` gate). Partial-result retries are
+    forbidden. <SourceLink file="erpc/query_executor.go" lines="247-253" />
+12. **`TranslateToJsonRpcException` dominant-code selection**: when all upstreams return skipped
+    or unsupported errors, the wire JSON-RPC code depends on the first child's error type — either
+    `-32601` (method not found) or `-32603` (server error). Clients cannot reliably distinguish
+    "globally unsupported" from "internal error" by code alone; the `data` field carries the full
+    eRPC error chain for programmatic detection.
+13. **`trace_block` → `debug_traceBlockByNumber` fallback in shim**: `shimQueryTraces` first tries
+    `trace_block`; if the upstream returns `ErrCodeEndpointUnsupported`, it retries with
+    `debug_traceBlockByNumber?callTracer`. If that is also unsupported, returns gRPC `Unimplemented`.
+    <SourceLink file="erpc/query_shim.go" lines="388-420" />
+14. **`paginateLogsByBlock` never splits a block across pages**: when adding a block's logs would
+    exceed the page limit and the page already has items, the function stops before that block (producing
+    a cursor). If the first block alone exceeds the limit, all its logs are included — the limit is a
+    soft cap at block boundaries, not an absolute log count. <SourceLink file="erpc/query_shim.go" lines="617-649" />
+15. **Hash-based projection preserves block hash**: `ProjectBlockFields` never zeros the `Hash` field
+    even when `sel.Hash=false`, because the hash is required for cursor semantics in paginated query
+    responses. <SourceLink file="erpc/query_field_projection.go" lines="12-15" />
+16. **`MarkEmptyAsErrorMethods` only fires when `RetryEmpty` directive is true**: even if a method
+    is in the list, conversion to `ErrEndpointMissingData` is gated on
+    `req.Directives().RetryEmpty`. Operators must set `retryEmpty: true` (directive default or
+    per-request header) for this feature to activate. <SourceLink file="architecture/evm/common.go" lines="23-25" />
+17. **Custom `markEmptyAsErrorMethods` completely replaces the default 11-method set** — there is no
+    merge. Setting `markEmptyAsErrorMethods: ["custom_method"]` disables all default methods. An
+    explicitly empty `markEmptyAsErrorMethods: []` disables the feature entirely.
+    <SourceLink file="common/defaults.go" lines="2110-2112" />
+18. **200-OK EVM revert detection uses `dt[1:11]`**: in `ExtractJsonRpcError`, the revert-payload
+    check is `dt[1:11] == "0x08c379a0"` because `jr.GetResultString()` returns the JSON-encoded
+    value — `dt[0]` is the JSON double-quote character, so the actual hex string starts at index 1.
+    A check starting at index 0 always fails on valid JSON strings.
+    <SourceLink file="architecture/evm/error_normalizer.go" lines="609-624" />
+19. **`FullySyncedThreshold = 4`**: an upstream must return `eth_syncing: false` four consecutive
+    times before eRPC stops sending syncing-check probes. One `syncing=true` resets the counter.
+    <SourceLink file="architecture/evm/evm_state_poller.go" lines="21" />
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_requests_received_total` | counter | project, network, category, finality, user, agent_name | Request enters `project.Forward` |
+| `erpc_network_successful_request_total` | counter | project, network, vendor, upstream, category, attempt, finality, emptyish, user, agent_name | `project.Forward` returns non-error |
+| `erpc_network_failed_request_total` | counter | project, network, category, attempt, error, severity, finality, user, agent_name | `project.Forward` returns error |
+| `erpc_network_request_duration_seconds` | histogram | project, network, vendor, upstream, category, finality, user | Per-request total duration (success and error) |
+| `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | Each network-scope retry attempt |
+| `erpc_network_data_unavailable_wait_seconds` | histogram | project, network, category, reason, finality | Deliberate catch-up delay before data-unavailable retry |
+| `erpc_network_hedged_request_total` | counter | project, network, upstream, category, hedgeCount, finality, user, agent_name | Hedge attempt fired to a specific upstream |
+| `erpc_network_hedge_discards_total` | counter | project, network, upstream, category, attempt, hedge, finality, user, agent_name | Hedge request discarded (another leg won) |
+| `erpc_network_hedge_winner_total` | counter | project, network, upstream, category, finality | Upstream won a hedge race |
+| `erpc_network_timeout_fired_total` | counter | project, network, category, finality, scope | Network-scope timeout fired |
+| `erpc_network_multiplexed_requests_total` | counter | project, network, category | Follower piggybacked on in-flight leader |
+| `erpc_network_static_response_served_total` | counter | project, network, category | Static response matched |
+| `erpc_upstream_wrong_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned empty while another returned data |
+| `erpc_upstream_request_errors_total` | counter | (upstream error labels) | Upstream skip due to block availability check failure |
+| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served-tip block number computed for the network |
+| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Deliberate cushion below the freshest upstream tip |
+| `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream dropped from served-tip computation (velocity/outlier gate) |
+| `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | One increment per upstream attempt with its terminal outcome |
+
+Key OpenTelemetry spans:
+
+- `Network.Forward` — top-level; attributes: `cache.hit`, `multiplexed`, `failsafe.matched_method`
+- `PolicyEngine.GetOrdered` — upstream ordering time
+- `Network.forwardAttempt` — per-attempt; attributes: `execution.attempt`, `execution.retry`, `execution.hedge`
+- `Network.UpstreamLoop` — per-upstream iteration; attributes: `upstream.id`, `upstream.latest_block`, `skipped`, `skip_reason`
+- `Network.TryForward` — call to `doForward` per upstream
+- `Network.NormalizeResponse` — response ID rewrite
+- `Network.EnrichStatePoller` — state poller suggestion after block response
+- `Upstream.PreForwardHook` / `Upstream.PostForwardHook` — EVM method hooks per upstream
+- `Project.Forward` → `Project.PreForwardHook` → `Network.PostForwardHook`
+- `QueryStream.Handle` — gRPC query stream top-level span
+- `Query.Execute`, `Query.ResolveQueryBounds`, `Query.ShimBlocks/Logs/Transactions/Traces/Transfers`, `Query.ForwardSubrequest`
+- `Cache.Get` / `Cache.Set` — cache fan-out spans with `network.id` / `upstream.id` attributes
+- `Evm.ExtractBlockReferenceFromRequest` / `Evm.ExtractBlockReferenceFromResponse` — block-ref resolution detail spans
+
+### Source code entry points
+
+- [`erpc/request_processor.go`](https://github.com/erpc/erpc/blob/main/erpc/request_processor.go) — `RequestProcessor.ProcessUnary` / `ProcessQueryStream`: project resolution, auth, network selection, unified entry point for HTTP and gRPC.
+- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `Network.Forward`: multiplexing, cache read/write, upstream ordering, block-availability gating, all EVM hooks, `normalizeResponse`, `enrichStatePoller`.
+- [`erpc/network_executor.go`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go) — `networkExecutor.Run`: failsafe policy composition (timeout → consensus → retry → hedge); retry reason classification and backoff computation.
+- [`erpc/projects.go`](https://github.com/erpc/erpc/blob/main/erpc/projects.go) — `PreparedProject.Forward`: project-level rate limiting, metrics, shadow upstreams, EVM hook wrapper.
+- [`erpc/http_server.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go) — HTTP ingress, batch dispatch, directive enrichment, `setResponseHeaders`.
+- [`architecture/evm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go) — Four EVM lifecycle hooks: `HandleProjectPreForward`, `HandleNetworkPreForward`, `HandleNetworkPostForward`, `HandleUpstreamPostForward`.
+- [`common/request.go`](https://github.com/erpc/erpc/blob/main/common/request.go) — `NormalizedRequest`: directive system, `NextUpstream` round-robin, `MarkUpstreamCompleted`, composite type, finality caching, `ExecState`.
+- [`erpc/query_executor.go`](https://github.com/erpc/erpc/blob/main/erpc/query_executor.go) — `EvmQueryExecutor.Execute`: structured query dispatch; native pipe-through vs. shim routing.
+
+### Related pages
+
+- [Survive provider outages](/use-cases/survive-provider-outages) — retry, hedge, and circuit breaker in depth.
+- [Cut costs & latency](/use-cases/cut-costs-and-latency) — cache policies, TTLs, and storage drivers.
+- [Scale chains & providers](/use-cases/scale-chains-and-providers) — selection policies, scoring, and shadow upstreams.
+- [Trust the data](/use-cases/trust-the-data) — consensus, integrity checks, and getLogs splitting.
+- [Lock it down](/use-cases/lock-it-down) — auth strategies, rate limiters, CORS.
+- [See everything](/use-cases/see-everything) — Prometheus metrics, OTel spans, dashboards.
+- [Retry](/config/failsafe/retry) — retry policy config reference.
+- [Hedge](/config/failsafe/hedge) — hedge policy config reference.
+- [Rate limiters](/config/rate-limiters) — budget and rule configuration.
+
+</AISection>

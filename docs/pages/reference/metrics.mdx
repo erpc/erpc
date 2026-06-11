@@ -1,0 +1,487 @@
+---
+title: Metrics reference
+description: Every observable signal eRPC emits — 122 Prometheus metrics across upstreams, cache, rate limiting, consensus, hedging, and more — ready to wire into your dashboards and alerts.
+---
+
+import { LLMsTxtLink, AISection, SourceLink, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Metrics reference
+
+eRPC exposes a Prometheus `/metrics` endpoint on port 4001. Every subsystem emits counters, gauges, and histograms — upstream health, cache efficiency, rate limiting, consensus, hedging, selection scoring, and more. Drop any scraper on port 4001 and the full picture of your RPC fleet is immediately visible.
+
+- 122 metric definitions under the `erpc_` namespace
+- High-cardinality labels (`user`, `agent_name`) are droppable from histograms without losing counter detail
+- Stale series auto-evict every five minutes so cardinality stays bounded
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="wire up Grafana dashboards for my eRPC deployment"
+	defaultOpen
+	prompt={`I want to build Grafana dashboards for my eRPC deployment — upstream health, cache
+hit rate, request latency percentiles, and rate-limit events. Using the full metrics
+catalog, generate PromQL queries for each panel and point out any cardinality footguns
+I should avoid (like the block-range heatmap or CORS project label). Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/reference/metrics.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="reduce Prometheus cardinality without losing signal"
+	prompt={`My Prometheus is accumulating too many time series from eRPC histograms. Audit my
+my eRPC config metrics config and recommend which labels to add to histogramDropLabels,
+which histogramLabelOverrides to set so I keep per-user latency on key metrics, and
+how to tune histogramBuckets for my sub-100ms upstream fleet. Reference:
+https://docs.erpc.cloud/reference/metrics.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="alert on upstream health and cordon events"
+	prompt={`I need PagerDuty-ready alerts for upstream health in my eRPC setup: cordoned
+upstreams, circuit-breaker state changes, and BDS hard-timeout spikes. Write PromQL
+alert expressions referencing the correct metric names (watch out for stale names in
+the bundled alert.rules file). Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/reference/metrics.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="debug a missing or always-zero metric"
+	prompt={`One of my eRPC metrics is always 0 and I can't tell if it's a config issue or a
+dormant metric. Check the metrics reference for known dormant metrics and required
+opt-in flags (like memory.emitMetrics), and tell me whether my eRPC config is missing
+any config that would make the metric meaningful. Reference:
+https://docs.erpc.cloud/reference/metrics.llms.txt`}
+/>
+
+<AISection title="Metrics — full agent reference">
+
+### How it works
+
+**Initialization order.** All 79 counters and 23 gauges register eagerly at package-init via `promauto` (`telemetry/metrics.go:12-729`). The 17 `LabeledHistogram` globals are initialized as empty wrappers so early-startup or test code can observe without NPE. `erpc.Init` then calls `telemetry.SetHistogramLabelFilter` (installs drop/override config) immediately followed by `telemetry.SetHistogramBuckets` (rebuilds every LabeledHistogram under the active filter and registers them). `ResetHandleCache` runs inside `SetHistogramBuckets` to invalidate cached label-bound handles. [<SourceLink file="erpc/init.go" lines="47-57" />]
+
+**Label filtering (`LabeledHistogram`).** Each `LabeledHistogram` stores the full canonical label schema alongside the projected subset that survives the active `HistogramLabelFilter`. Call sites always pass the full schema in schema order; the wrapper silently projects before forwarding to the underlying `prometheus.HistogramVec`. A length mismatch panics immediately. `ActiveLabelValues` returns the projected subset so handle-caches key on the effective (post-filter) labels, preventing duplicate series. [<SourceLink file="telemetry/labeled_histogram.go" lines="121-137" />]
+
+**Handle caching.** `CounterHandle`, `GaugeHandle`, and `ObserverHandle` in `telemetry/handles.go` cache children in `sync.Map`s keyed by `{Vec pointer, '\x1f'-joined label values}`. This avoids per-observation map lookup and mutex contention inside the Prometheus library. [<SourceLink file="telemetry/handles.go" lines="59-105" />]
+
+**Idle-series eviction.** The health tracker's `rotateMetricsLoop` fires a sweep every 10 rotation ticks (default 30 s/tick = every 5 minutes). The sweep deletes `upsMetrics` and `ntwMetrics` entries not accessed in the last 30 minutes (`DefaultIdleEvictionAfter`), then calls `DeleteLabelValues` on `erpc_upstream_request_duration_seconds` and `erpc_rate_limits_total`. Cordoned entries and wildcard (`"*"`) rollups are never evicted. All other high-cardinality series are NOT covered — cardinality is bounded only by distinct label tuples seen over the process lifetime. [<SourceLink file="health/tracker.go" lines="557-667" />]
+
+**Metrics HTTP server.** `erpc.Init` starts a minimal `http.Server` bound to `:%d` (port only, all interfaces) serving `promhttp.Handler()` at the root path. This means every URL path on the metrics port returns identical Prometheus text output — `GET /`, `GET /metrics`, `GET /health` all work. No TLS, no auth, no gzip. Shutdown is graceful with a 5-second budget. [<SourceLink file="erpc/init.go" lines="145-158" />]
+
+**`ERPC_NOMETRICS=1` env var.** When set before process start, `initflags.go:init()` replaces `prometheus.DefaultRegisterer` and `DefaultGatherer` with a fresh empty registry. All subsequent `promauto` calls succeed but produce no-ops. The default `go_*`/`process_*` collectors are also dropped. [<SourceLink file="cmd/erpc/initflags.go" lines="22-28" />]
+
+**`errorLabelMode` global.** `common.ErrorSummary` produces the `error` label value on every error-labeled metric. The in-code default before `erpc.Init` runs is `verbose`; `erpc.Init` flips it to `compact` (the config default). In `compact` mode it emits short stable codes: a plain `StandardError` → its `Base().Code` string (e.g. `"ErrEndpointCapacityExceeded"`); for `ErrFailsafeRetryExceeded`, `ErrUpstreamRequest`, or `ErrUpstreamRequestSkipped` it appends the cause code (e.g. `"ErrUpstreamRequest/ErrEndpointTransportFailure"`); for an `ErrJsonRpcExceptionInternal` cause it further appends the numeric code (e.g. `"ErrUpstreamRequest/ErrJsonRpcExceptionInternal/-32000"`). In `verbose` mode it passes the full message chain through `cleanUpMessage` (strips newlines and long hex strings), potentially including block numbers or IP addresses — each unique value creates a new Prometheus series. [<SourceLink file="common/errors.go" lines="17-114" />]
+
+**`networkAlias` resolver.** At startup, `erpc.Init` installs a `NetworkAliasResolver` callback mapping raw EVM chain IDs to human-readable aliases so components using numeric chain IDs (e.g. gRPC cache connector) emit matching `network` label values. [<SourceLink file="erpc/init.go" lines="62-77" />]
+
+---
+
+### Config schema
+
+All fields are under `metrics.` in the root YAML config. Source: <SourceLink file="common/config.go" lines="2543-2564" /> (struct), <SourceLink file="common/defaults.go" lines="749-767" /> (defaults), <SourceLink file="common/validation.go" lines="131-161" /> (validation).
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `metrics.enabled` | `*bool` | `true` in production; `nil` (disabled) under `go test` | Whether to start the `/metrics` HTTP server. Metrics are still registered and counted when false — they just are not scraped. Source: <SourceLink file="common/defaults.go" lines="750-752" /> |
+| `metrics.port` | `*int` | `4001` | TCP port for the metrics server. Required when `enabled=true`; `erpc.Init` aborts if nil. Source: <SourceLink file="common/defaults.go" lines="759-761" /> |
+| `metrics.hostV4` | `*string` | `"0.0.0.0"` | Defined and defaulted but **not used** — the server binds `":%d"` (all interfaces). Setting this to `127.0.0.1` does NOT restrict to loopback. Use firewall rules instead. Source: <SourceLink file="erpc/init.go" lines="149" /> |
+| `metrics.hostV6` | `*string` | `"[::]"` | Same caveat as `hostV4` — defined but not used in the bind address. Source: <SourceLink file="common/defaults.go" lines="756-758" /> |
+| `metrics.listenV4` | `*bool` | `nil` | Defined in struct but never read in production code. Dead config field. |
+| `metrics.listenV6` | `*bool` | `nil` | Defined in struct but never read. Dead config field. |
+| `metrics.errorLabelMode` | `string` | `"compact"` | Controls the `error` label on all error-labeled metrics. `"compact"` → short stable codes (bounded cardinality, recommended). `"verbose"` → full human messages including block numbers and IP addresses (unbounded cardinality risk). Must be `""`, `"compact"`, or `"verbose"`. Source: <SourceLink file="common/defaults.go" lines="762-763" /> |
+| `metrics.histogramBuckets` | `string` | `""` → `[0.05, 0.5, 5, 30]` | Comma-separated float64 bucket boundaries for the 8 `LabeledHistogram` instances that use `DefaultHistogramBuckets`. Empty → use defaults. Parsed and sorted by `ParseHistogramBuckets`. Invalid float → warning + fallback to defaults. Source: <SourceLink file="telemetry/metrics.go" lines="731-736" /> |
+| `metrics.histogramDropLabels` | `[]string` | `nil` (no labels dropped) | Label names to drop from every `LabeledHistogram`. Counters and gauges are unaffected. Applied before registration — the drop is permanent for the process lifetime. Example: `["user", "agent_name"]`. Source: <SourceLink file="erpc/init.go" lines="53" /> |
+| `metrics.histogramLabelOverrides` | `map[string][]string` | `nil` | Per-metric overrides that re-add labels even if they appear in `histogramDropLabels`. Key = metric name without the `erpc_` prefix (e.g. `"network_request_duration_seconds"`). Value = label names to preserve for that metric. Source: <SourceLink file="erpc/init.go" lines="53" /> |
+
+**Hardcoded server constants (not configurable):**
+
+- Bind address: `":%d"` — all interfaces, port only (<SourceLink file="erpc/init.go" lines="149" />)
+- Handler: `promhttp.Handler()` registered as root `/` — every path returns full metrics output
+- Protocol: plain HTTP only (no TLS, no auth, no gzip)
+- `ReadHeaderTimeout`: 10 seconds
+- Graceful shutdown budget: 5 seconds
+
+**Histograms affected by `metrics.histogramBuckets`:** `erpc_upstream_request_duration_seconds`, `erpc_network_request_duration_seconds`, `erpc_consensus_duration_seconds`, `erpc_cache_set_success_duration_seconds`, `erpc_cache_set_error_duration_seconds`, `erpc_cache_get_success_hit_duration_seconds`, `erpc_cache_get_success_miss_duration_seconds`, `erpc_cache_get_error_duration_seconds`.
+
+**Histograms NOT affected (hard-coded bucket sets):** all remaining histograms use dedicated inline bucket arrays and cannot be changed without recompiling.
+
+---
+
+### Worked examples
+
+**1. Drop `user` globally but keep it on one histogram for user-level latency analysis.** Useful when you need per-user latency breakdowns on `network_request_duration_seconds` but want to limit cardinality everywhere else:
+
+```yaml
+metrics:
+  histogramDropLabels:
+    - user
+    - agent_name
+  histogramLabelOverrides:
+    network_request_duration_seconds:
+      - user
+```
+
+**2. Tighter histogram buckets for a low-latency deployment (sub-100ms upstreams).** The default `[0.05, 0.5, 5, 30]` buckets produce poor p95/p99 resolution when upstreams respond in under 50ms. Replacing them gives useful percentile data at real latencies:
+
+```yaml
+metrics:
+  histogramBuckets: "0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,3"
+```
+
+**3. Disabling metrics during integration tests.** `erpc.Init` defaults `metrics.enabled` to `nil` (disabled) under `go test`, but if you call `Init` with a partial config that doesn't go through `SetDefaults`, the server may try to start. Explicit override:
+
+```yaml
+metrics:
+  enabled: false
+```
+
+**4. Switching to verbose error labels for a debugging session.** When you need to trace a specific block-number error pattern in Grafana and short codes aren't enough — but remember to revert after, as each unique block number creates a new Prometheus series:
+
+```yaml
+metrics:
+  errorLabelMode: verbose
+```
+
+---
+
+### Behavioral invariants
+
+- All 79 counters and 23 gauges are registered via `promauto` at package init — they exist in `/metrics` from process start regardless of config. [<SourceLink file="telemetry/metrics.go" lines="12-729" />]
+- `LabeledHistogram` instances are registered in `erpc.Init` after `SetHistogramLabelFilter` → `SetHistogramBuckets`. Calling `SetHistogramBuckets` a second time with a different filter panics. [<SourceLink file="telemetry/metrics.go" lines="942-950" />]
+- `ERPC_NOMETRICS=1` swaps `prometheus.DefaultRegisterer`/`DefaultGatherer` for a fresh empty registry before any `promauto` init fires — all subsequent registrations succeed but produce no-ops; the stock `go_*`/`process_*` collectors are also dropped. [<SourceLink file="cmd/erpc/initflags.go" lines="22-28" />]
+- Idle sweep runs every 5 minutes (default); series not accessed in 30 minutes are evicted from `upstream_request_duration_seconds` and `rate_limits_total` via `DeleteLabelValues`. [<SourceLink file="health/tracker.go" lines="557-667" />]
+- The `error` label value is produced by `common.ErrorSummary`. Compact mode yields a bounded set of code-path identifiers; verbose mode can produce one series per unique block number or IP. [<SourceLink file="common/errors.go" lines="46-66" />]
+- `erpc_rate_limiter_budget_decision_total` is registered but has zero production call sites — always zero. [<SourceLink file="telemetry/metrics.go" lines="515-519" />]
+- `erpc_network_hedge_delay_seconds` is registered but never observed in production — always empty. [<SourceLink file="telemetry/metrics.go" lines="813" />]
+
+---
+
+### Best practices
+
+- Use `errorLabelMode: compact` (the default) in production. Verbose mode can create one Prometheus series per unique block number or IP address in error messages — this is an unbounded cardinality hazard.
+- Add `["user", "agent_name"]` to `histogramDropLabels` when serving untrusted callers or managing many API keys. These labels are the leading cardinality source across all `LabeledHistogram` instances. Counter dimensions are preserved.
+- Do not rely on `hostV4`/`hostV6` to restrict scrape access — the server binds all interfaces regardless of those fields. Use firewall rules or network policy to limit who can reach port 4001.
+- Alert on `erpc_network_failed_request_total{severity="critical"}` and page on `severity="warning"`. Severity is already classified by `common.ClassifySeverity` — no need to build your own error-code regexes.
+- Use `erpc_rate_limits_total` for rate-limit alerting. The bundled alert rule referencing `erpc_upstream_request_self_rate_limited_total` uses a stale metric name that no longer exists.
+- Monitor `erpc_upstream_cordoned` as an early-warning signal for upstream health. A non-zero value means eRPC has autonomously excluded that upstream; combine with `erpc_upstream_cordon_event_total` to track how often it happens.
+- For `erpc_network_evm_block_range_requested_total`, be aware the `bucket` label is unbounded. Consider a Prometheus `metric_relabel_configs` drop rule for the `bucket` label if long-running chains accumulate too many series.
+
+---
+
+### Edge cases & gotchas
+
+1. **`hostV4`/`hostV6` are defined but unused.** The bind address is always `":%d"` (all interfaces). Firewall rules are the only way to restrict access to the metrics port. (<SourceLink file="erpc/init.go" lines="149" />)
+2. **`metrics.enabled` is `nil` (disabled) under `go test`.** Integration tests that call `erpc.Init` will not spin up a metrics server unless `Enabled: true` is set explicitly. (<SourceLink file="common/defaults.go" lines="750-752" />)
+3. **Changing `errorLabelMode` does not retroactively relabel existing series.** Counter Vec children are created lazily on first `WithLabelValues`. Any series created before `erpc.Init` sets the mode carry verbose labels; subsequent series carry compact labels. Both sets coexist in Prometheus until the verbose series naturally expire.
+4. **`histogramDropLabels` changes after first `SetHistogramBuckets` panic.** Re-calling with a changed filter is not supported. The config-analyzer calls `SetHistogramBuckets` for validation; in practice it runs in a separate code path before `Init`. (<SourceLink file="telemetry/metrics.go" lines="942-950" />)
+5. **Idle sweep evicts only `upstream_request_duration_seconds` and `rate_limits_total`.** All other high-cardinality histograms and counters (`network_request_duration_seconds`, `upstream_request_total`, etc.) are never `DeleteLabelValues`'d — they grow monotonically. For method-flood scenarios add `user` and `agent_name` to `histogramDropLabels`.
+6. **`erpc_cors_requests_total` `project` label receives `r.URL.Path`, not the project ID.** Series will have values like `/myproject/evm/1`. Dashboard queries on CORS metrics must match the path-style value, not a bare project ID. (<SourceLink file="erpc/http_server.go" lines="1020" />)
+7. **`erpc_ristretto_cache_current_cost` requires `memory.emitMetrics: true`.** Without this flag the gauge is registered and appears in `/metrics` but always returns 0. It is the only metric in the system requiring an explicit opt-in to be meaningful. (<SourceLink file="data/memory.go" lines="71" />)
+8. **`erpc_upstream_cordoned` `category` label is the cordon scope (method string or `"*"`), not a request-category label.** Do not join this `category` with `category` from request-accounting metrics. (<SourceLink file="health/tracker.go" lines="458-465" />)
+9. **`erpc_upstream_cordoned` `vendor` label is `"n/a"` when no vendor is configured.** Dashboard JOINs between cordon metrics and upstream request metrics must handle the `"n/a"` value for unvendored upstreams. (<SourceLink file="upstream/upstream.go" lines="275-286" />)
+10. **`erpc_auth_failed_total` always has `strategy="database"`.** Only the database auth strategy emits this counter. For other strategies, monitor failures via `erpc_network_failed_request_total{error=~"ErrAuthUnauthorized.*"}`. (<SourceLink file="auth/strategy_database.go" lines="467-472" />)
+11. **`erpc_upstream_attempt_outcome_total` `is_hedge`/`is_retry` are literal `"true"`/`"false"` strings.** Use `{is_hedge="true"}` in PromQL, not `{is_hedge="1"}`. (<SourceLink file="upstream/upstream.go" lines="80-85" />)
+12. **`erpc_network_evm_block_range_requested_total` `bucket` label is unbounded.** When tip is known, `ComputeBlockHeatmapBucket` produces human-readable relative labels (`"TIP"`, `"L100k"`, `"100k-200k"`, etc.). This counter is not covered by the idle sweep — cardinality grows permanently. (<SourceLink file="erpc/block_heatmap.go" lines="87-175" />)
+13. **`erpc_selection_*` metrics carry a `method` label.** Untrusted callers injecting hundreds of distinct method names create unbounded selection-gauge series. Consider a Prometheus relabeling drop rule for the `method` label in untrusted deployments.
+14. **`erpc_upstream_block_head_large_rollback` is silent for rollbacks ≤ 1024 blocks.** `DefaultToleratedBlockHeadRollback = 1024` is the threshold. A gauge value of 0 is normal; non-zero warrants investigation. (<SourceLink file="architecture/evm/evm_state_poller.go" lines="27" />)
+15. **Cordoned upstreams are never swept.** A cordoned tracker entry persists in memory — and the `erpc_upstream_cordoned{...} = 1` gauge persists in `/metrics` — until the upstream is uncordoned and subsequently goes idle for `idleEvictionAfter`. (<SourceLink file="health/tracker.go" lines="603-608" />)
+16. **`erpc_network_dynamic_block_time_milliseconds` is bounded 10ms–120s.** Fast chains (block time below 10ms) or stuck chains (no blocks for over 2 minutes) report the floor or ceiling value, not the true EMA. (<SourceLink file="health/tracker.go" lines="1456" />)
+17. **Two bundled alert rules reference stale metric names.** `erpc_upstream_request_self_rate_limited_total` and `erpc_network_request_self_rate_limited_total` no longer exist — use `erpc_rate_limits_total` as the replacement. (<SourceLink file="monitoring/prometheus/alert.rules" lines="1" />)
+18. **`registerOrReuse` silently returns an existing `LabeledHistogram` on identical re-registration.** Calling `SetHistogramBuckets` twice with the same bucket string and filter is idempotent; the second call is a no-op against the Prometheus registry. (<SourceLink file="telemetry/metrics.go" lines="978-995" />)
+19. **The bundled Prometheus scrape target includes `REPLACE_SERVICE_ENDPOINT_HERE` and `REPLACE_SERVICE_PORT_HERE` placeholders.** These are Railway deployment stubs that cause a parse error in strict Prometheus configs. Remove or replace both before using `monitoring/prometheus/prometheus.yml` in production.
+20. **`ParseHistogramBuckets` silently sorts the input.** If `metrics.histogramBuckets` is provided out of order (e.g. `"5,0.5,0.05,30"`) the values are sorted automatically and no warning is emitted. The resulting bucket set is valid, but operators relying on a specific insertion order will not get what they typed. [<SourceLink file="telemetry/metrics.go" lines="997-1015" />]
+21. **`erpc_upstream_response_size_bytes` is intentionally tight-cardinality.** Its label set is `project, network, category, finality` — no `user` or `upstream` — because per-user response-size breakdown is not operationally actionable. If you need per-user latency analysis, retain `user` on `erpc_upstream_request_duration_seconds` via `histogramLabelOverrides` instead of dropping it globally. [<SourceLink file="telemetry/metrics.go" lines="924" />]
+22. **`erpc_upstream_request_duration_seconds` has two high-cardinality labels: `user` and `composite`.** The `composite` label carries the composite-request type (e.g. `"logs-split-on-error"`, `"query-logs-shim"`) and, combined with `user`, can produce many series in high-traffic deployments. Both are candidates for `histogramDropLabels`; the idle sweep (`DefaultIdleEvictionAfter = 30 min`) provides a safety valve. [<SourceLink file="health/tracker.go" lines="333-358" />]
+23. **`ErrEndpointServerSideException` HTTP status code is not exposed as a Prometheus label.** When an upstream returns an HTTP 5xx that does not match a known pattern, eRPC wraps it in `ErrEndpointServerSideException` and echoes the upstream's status code back to the caller via `ErrorStatusCode()`. The raw numeric code surfaces in `erpc_upstream_request_errors_total{error="ErrEndpointServerSideException"}` in compact mode (no code number) or in the full message in verbose mode, but no label carries it. For debugging, use OTel traces: `SetTraceSpanError` attaches `attribute.String("error.code", stdErr.CodeChain())` and the serialised `StandardError` JSON to the span — though `originalStatusCode` is a private field and is not in the JSON output. The only way to retrieve the exact upstream HTTP status is from structured logs (logged at DEBUG level before wrapping). [<SourceLink file="common/errors.go" lines="1951-1979" />]
+
+---
+
+### Full metrics catalog
+
+All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="telemetry/metrics.go" lines="12-932" />.
+
+#### Area 1: Upstream request accounting
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name | Each actual attempt sent to an upstream. `composite` ∈ `"none"`, `"logs-split-on-error"`, `"logs-split-proactive"`, `"trace-filter-split-on-error"`, `"trace-filter-split-proactive"`, `"query-blocks-shim"`, `"query-transactions-shim"`, `"query-logs-shim"`, `"query-traces-shim"`, `"query-transfers-shim"`. |
+| `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name | Upstream attempt returned an error. `severity` ∈ `"critical"`, `"warning"`, `"info"` via `common.ClassifySeverity`. Also incremented with severity=info for block-availability-gated skips. |
+| `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream pre-forward checks decided to skip. |
+| `erpc_upstream_request_missing_data_error_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned missing-data / not-synced error. |
+| `erpc_upstream_request_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned an emptyish response. |
+| `erpc_upstream_wrong_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned empty while consensus determined others had data. |
+| `erpc_upstream_selection_total` | counter | project, network, upstream, category, reason, finality | Upstream picked for an attempt. `reason` ∈ `"primary"`, `"retry"`, `"hedge"`, `"consensus_slot"`, `"sweep"`. `"sweep"` = the upstream was picked as part of `runUpstreamSweep` — the try-all-upstreams iteration used in the non-consensus path when the primary fails and retries loop through remaining upstreams in sequence. |
+| `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Terminal attempt outcome. `outcome` ∈ `"success"`, `"empty"`, `"transport_error"`, `"server_error"`, `"client_error"`, `"rate_limited"`, `"missing_data"`, `"exec_revert"`, `"block_unavailable"`, `"breaker_open"`, `"cancelled"`, `"timeout"`, `"skipped"`. `is_hedge`/`is_retry` are literal `"true"`/`"false"`. |
+| `erpc_upstream_request_duration_seconds` | LabeledHistogram | project, vendor, network, upstream, category, composite, finality, user | Duration of each upstream attempt. Idle series swept every ~30 min. `user` is a cardinality candidate for `histogramDropLabels`. |
+| `erpc_upstream_response_size_bytes` | LabeledHistogram | project, network, category, finality | Decoded post-gzip result-body byte count. Tight label set by design (no `user`). Buckets: 4096, 65536, 1048576, 16777216, 104857600. |
+
+#### Area 2: Network request accounting
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_request_received_total` | counter | project, network, category, finality, user, agent_name | Request received for a network. |
+| `erpc_network_failed_request_total` | counter | project, network, category, attempt, error, severity, finality, user, agent_name | Request failed at network/project level. `severity` ∈ `"critical"`, `"warning"`, `"info"`. Page on critical, ticket on warning, ignore info. |
+| `erpc_network_successful_request_total` | counter | project, network, vendor, upstream, category, attempt, finality, emptyish, user, agent_name | Request succeeded. `emptyish` ∈ `"true"`/`"false"` — true means the response was empty-ish (null, empty array). |
+| `erpc_network_multiplexed_request_total` | counter | project, network, category, finality, user, agent_name | Request de-duplicated into an identical in-flight request. |
+| `erpc_network_static_response_served_total` | counter | project, network, category | Served from a configured static response; no upstream touched. |
+| `erpc_network_timeout_fired_total` | counter | project, network, category, finality, scope | Timeout policy killed a request. `scope` ∈ `"network"`, `"upstream"`. Suppressed when retry-exhausted error wins. |
+| `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | Network-scope retry. `reason` ∈ `"empty_result"`, `"pending_tx"`, `"retryable_error"`, `"block_unavailable"`, `"missing_data"`. |
+| `erpc_network_request_duration_seconds` | LabeledHistogram | project, network, vendor, upstream, category, finality, user | End-to-end network request duration. `vendor`/`upstream` = `"<error>"` on failure. |
+| `erpc_network_data_unavailable_wait_seconds` | LabeledHistogram | project, network, category, reason, finality | Wall-clock catch-up delay before data-not-yet-available retry. Buckets: 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64 s. |
+| `erpc_network_timeout_duration_seconds` | LabeledHistogram | project, network, category, finality | Computed dynamic timeout per request. Buckets: 0.05, 0.1, 0.3, 0.5, 1, 3, 5, 10, 30 s. |
+
+#### Area 3: Block number and tip tracking
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_latest_block_number` | gauge | project, vendor, network, upstream | Upstream's latest block advanced. |
+| `erpc_upstream_finalized_block_number` | gauge | project, vendor, network, upstream | Upstream's finalized block advanced. |
+| `erpc_upstream_block_head_lag` | gauge | project, vendor, network, upstream | Blocks behind the freshest upstream. |
+| `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Finalized blocks behind the freshest upstream. |
+| `erpc_upstream_block_head_large_rollback` | gauge | project, vendor, network, upstream | Block head rolled back by more than `DefaultToleratedBlockHeadRollback` = 1024 blocks. Gauge value = absolute delta of the rollback. 0 is normal. |
+| `erpc_upstream_latest_block_polled_total` | counter | project, vendor, network, upstream | State poller proactively polled latest block. |
+| `erpc_upstream_finalized_block_polled_total` | counter | project, vendor, network, upstream | State poller proactively polled finalized block. |
+| `erpc_upstream_stale_latest_block_total` | counter | project, vendor, network, upstream, category | Upstream returned a stale latest block vs. others. |
+| `erpc_upstream_stale_finalized_block_total` | counter | project, vendor, network, upstream | Upstream returned a stale finalized block vs. others. |
+| `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: upstream latest block &lt; requested upper bound. `confidence` ∈ `"blockHead"`, `"finalizedBlock"`. |
+| `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Request skipped: requested lower bound below upstream's available range. Same `confidence` values. |
+| `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `now − latest block timestamp`. `origin` ∈ `"evm_state_poller"`, `"network_response"`. |
+| `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | EMA block-time estimate (α=0.1, min 3 samples). Returns 0 until 3 samples. Bounded 10ms–120s. |
+| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served-tip pick per axis (latest/finalized). `lane="all"` = network-wide; a named lane = the use-upstream group for that lane. |
+| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Lag of served tip behind freshest velocity-eligible upstream. Absent in default MAX mode. |
+| `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream excluded from served-tip pick. `reason` ∈ `"velocity"`, `"outlier"`. Absent in MAX mode. |
+
+#### Area 4: Cache connector freshness
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_cache_connector_earliest_block_number` | gauge | connector, network | gRPC cache connector availability poll — earliest available block. |
+| `erpc_cache_connector_latest_block_number` | gauge | connector, network | Same poll — latest block. |
+| `erpc_cache_connector_finalized_block_number` | gauge | connector, network | Same poll — finalized block. |
+| `erpc_cache_connector_earliest_block_timestamp_seconds` | gauge | connector, network | Same poll — earliest block unix timestamp. |
+| `erpc_cache_connector_latest_block_timestamp_seconds` | gauge | connector, network | Same poll — latest block unix timestamp. |
+| `erpc_cache_connector_finalized_block_timestamp_seconds` | gauge | connector, network | Same poll — finalized block unix timestamp. |
+
+#### Area 5: Cache operations (JSON-RPC cache)
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_cache_get_success_hit_total` | counter | project, network, category, connector, policy, ttl | Cache get hit. |
+| `erpc_cache_get_success_miss_total` | counter | project, network, category, connector, policy, ttl | Cache get miss. |
+| `erpc_cache_get_error_total` | counter | project, network, category, connector, policy, ttl, error | Cache get errored. |
+| `erpc_cache_get_skipped_total` | counter | project, network, category | Cache get skipped — no matching policy. |
+| `erpc_cache_get_age_guard_reject_total` | counter | project, network, method, connector, policy, ttl | Cached item rejected: block-timestamp age exceeded policy TTL. |
+| `erpc_cache_set_success_total` | counter | project, network, category, connector, policy, ttl | Cache set succeeded. |
+| `erpc_cache_set_error_total` | counter | project, network, category, connector, policy, ttl, error | Cache set errored. |
+| `erpc_cache_set_skipped_total` | counter | project, network, category, connector, policy, ttl | Cache set skipped by policy. |
+| `erpc_cache_set_original_bytes_total` | counter | project, network, category, connector, policy, ttl | Uncompressed bytes written on cache set. |
+| `erpc_cache_set_compressed_bytes_total` | counter | project, network, category, connector, policy, ttl | Compressed bytes written on cache set. |
+| `erpc_cache_get_success_hit_duration_seconds` | LabeledHistogram | project, network, category, connector, policy, ttl | Cache get hit duration. |
+| `erpc_cache_get_success_miss_duration_seconds` | LabeledHistogram | project, network, category, connector, policy, ttl | Cache get miss duration. |
+| `erpc_cache_get_error_duration_seconds` | LabeledHistogram | project, network, category, connector, policy, ttl, error | Cache get error duration. |
+| `erpc_cache_set_success_duration_seconds` | LabeledHistogram | project, network, category, connector, policy, ttl | Cache set success duration. |
+| `erpc_cache_set_error_duration_seconds` | LabeledHistogram | project, network, category, connector, policy, ttl, error | Cache set error duration. |
+| `erpc_ristretto_cache_current_cost` | gauge | connector | Ristretto (memory connector) current total cost. **Requires `memory.emitMetrics: true`** — always 0 otherwise. |
+| `erpc_ristretto_cache_sets_failed_total` | counter | connector | Ristretto set dropped / rejected. |
+
+#### Area 6: Rate limiting
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_rate_limits_total` | counter | project, network, vendor, upstream, category, finality, user, agent_name, budget, scope, auth, origin | Unified rate-limit event. `scope="remote", origin="upstream", budget="<remote>"` = upstream 429 passthrough. For local budget denials, `scope` = `ScopeString()` of the rule: a comma-joined set of enabled scope flags (e.g. `"user"`, `"network"`, `"ip"`, or combinations like `"user,network"`); `origin` = empty string. Idle series deleted by health-tracker sweep. |
+| `erpc_rate_limiter_budget_max_count` | gauge | budget, method, scope | Budget's allowed req/s, set on rule creation or auto-tuner update. `scope` = `ScopeString()` comma-joined flags (e.g. `"user,network"`). |
+| `erpc_rate_limiter_budget_decision_total` | counter | project, network, category, finality, user, agent_name, budget, method, scope, decision | **DEPRECATED / DORMANT** — registered but zero production call sites. Always 0. |
+| `erpc_rate_limiter_failopen_total` | counter | project, network, user, agent_name, budget, category, reason | Rate limiter failed open. `reason` ∈ `"admission_full"`, `"limit_timeout"`. |
+| `erpc_rate_limiter_remote_inflight` | gauge | budget | Concurrent in-flight remote (e.g. Redis) DoLimit calls per budget. |
+| `erpc_rate_limiter_remote_admission_shedded_total` | counter | budget | Remote check fail-opened because admission semaphore full (load shed). |
+| `erpc_rate_limiter_remote_duration_seconds` | LabeledHistogram | budget, result | Remote rate-limit check duration. `result` ∈ `"ok"`, `"over_limit"`, `"fail_open"`. Buckets: 0.001–5 s. |
+
+#### Area 7: Upstream health (cordon, circuit-breaker, probing)
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | 1 on cordon, 0 on uncordon. `category` = method string or `"*"` (wholesale). NOT the standard request-category label. `vendor` = `"n/a"` when unvendored. |
+| `erpc_upstream_cordon_event_total` | counter | project, network, upstream, action | Admin cordon/uncordon. `action` ∈ `"cordon"`, `"uncordon"`. |
+| `erpc_upstream_cordon_duration_seconds` | histogram | project, network, upstream | Seconds spent cordoned, observed on each uncordon. Buckets: 1–86400 s. |
+| `erpc_upstream_breaker_state_change_total` | counter | project, upstream, transition | Circuit-breaker state transition. `transition` ∈ `"closed_to_open"`, `"half_open_to_open"`, `"half_open_to_closed"`, `"open_to_half_open"`. |
+| `erpc_selection_probe_requests_total` | counter | network, upstream, method | Probe-mirror request fired at an excluded upstream. |
+| `erpc_selection_probe_errors_total` | counter | network, upstream, method, reason | Probe request errored. `reason` ∈ `"timeout"`, `"throttled"`, `"auth"`, `"skipped"`, `"error"`. `"skipped"` = upstream intentionally rejected; `"error"` = other failures. |
+| `erpc_selection_probe_skipped_total` | counter | network, reason | Probe candidate skipped pre-fire. `reason` ∈ `"write_method"`, `"opt_out"`, `"sampled_out"`, `"max_concurrent"`, `"no_method"`. |
+| `erpc_selection_probe_dropped_total` | counter | network, reason | Probe-bus publish dropped — per-network feed channel full. |
+
+#### Area 8: Selection policy
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_selection_position` | gauge | project, network, method, upstream | Tick output: 0=primary, 1+=runner-up, −1=excluded. |
+| `erpc_selection_score` | gauge | project, network, method, upstream | Per-upstream `sortByScore` score (lower=better). Absent for upstreams that bypassed scoring. |
+| `erpc_selection_eligible_upstreams` | gauge | project, network, method | Count of upstreams returned by most recent tick. |
+| `erpc_selection_rejection_total` | counter | project, network, method, upstream, step | Tick rejected upstream at a std-lib step. |
+| `erpc_selection_exclusion_total` | counter | project, network, method, upstream, reason | Exclusion event. `reason` = leaf-predicate slug. |
+| `erpc_selection_shadow_exclusion_total` | counter | project, network, method, upstream, reason | `shadowExcludeIf` would-have-excluded; upstream stays in rotation. |
+| `erpc_selection_excluded_seconds` | gauge | project, network, method, upstream | Wall-clock seconds continuously excluded. 0 when in rotation. |
+| `erpc_selection_readmit_total` | counter | project, network, method, upstream | Excluded → in-list transition. |
+| `erpc_selection_primary_switch_total` | counter | project, network, method, from, to | Primary upstream changed between ticks. |
+| `erpc_selection_sticky_hold_total` | counter | project, network, method, upstream | `stickyPrimary` held a primary that would otherwise flip. |
+| `erpc_selection_eval_duration_seconds` | histogram | project, network, method | Per-tick selection-policy eval latency. Buckets: 0.0005–1 s. |
+| `erpc_selection_eval_errors_total` | counter | project, network, method, kind | Eval failure. `kind` ∈ `"timeout"`, `"throw"`, `"invalid_return"`, `"fallback_default"`. |
+| `erpc_selection_readmit_age_seconds` | histogram | project, network, method | `now − excludedSince` at readmit. Buckets: 1–3600 s. |
+
+#### Area 9: Consensus
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_consensus_total` | counter | project, network, category, outcome, finality | Consensus round completed. `outcome` ∈ `"success"`, `"consensus_on_error"`, `"dispute"`, `"low_participants"`, `"generic_error"`, `"caller_abandoned"`. |
+| `erpc_consensus_misbehavior_detected_total` | counter | project, network, upstream, category, finality, response_type, larger_than_consensus | Upstream returned different data than consensus. `response_type` ∈ `"NonEmpty"`, `"Empty"`, `"ConsensusError"`, `"InfrastructureError"`. |
+| `erpc_consensus_upstream_punished_total` | counter | project, network, upstream | Upstream punished after misbehavior threshold. |
+| `erpc_consensus_short_circuit_total` | counter | project, network, category, reason, finality | Round short-circuited. `reason` ∈ `"sendrawtx_first_success"`, `"consensus_error_threshold"`, `"unassailable_lead"`. |
+| `erpc_consensus_wait_capped_total` | counter | project, network, category, trigger, finality | Round resolved early by `maxWaitOnResult`/`maxWaitOnEmpty`. `trigger` ∈ `"result"`, `"empty"`. |
+| `erpc_consensus_errors_total` | counter | project, network, category, error, finality | Consensus-level error by type. |
+| `erpc_consensus_upstream_errors_total` | counter | project, network, upstream, category, finality, response_type, error_code | Participant upstream errored during consensus. `response_type` same values as misbehavior_detected. |
+| `erpc_consensus_panics_total` | counter | project, network, category, finality | Panic recovered inside consensus. |
+| `erpc_consensus_cancellations_total` | counter | project, network, category, phase, finality | Context cancelled during consensus. `phase` ∈ `"before_execution"`, `"after_execution"`, `"caller_abandoned"`. |
+| `erpc_consensus_duration_seconds` | LabeledHistogram | project, network, category, outcome, finality | Consensus round duration. |
+| `erpc_consensus_responses_collected` | LabeledHistogram | project, network, category, vendors, short_circuited, finality | Responses collected before decision. `vendors` = comma-joined sorted vendor names. `short_circuited` ∈ `"true"`/`"false"`. Linear buckets 1–10. |
+| `erpc_consensus_agreement_count` | LabeledHistogram | project, network, category, finality | Upstreams agreeing on most common result. Linear buckets 1–10. |
+
+#### Area 10: Hedging
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_hedged_request_total` | counter | project, network, upstream, category, attempt, finality, user, agent_name | Hedged request fired. |
+| `erpc_network_hedge_discards_total` | counter | project, network, upstream, category, attempt, hedge, finality, user, agent_name | Hedged request discarded (wasted work; losing leg cancelled). |
+| `erpc_network_hedge_winner_total` | counter | project, network, upstream, category, finality | Hedge race won by the upstream whose response was kept. |
+| `erpc_network_hedge_delay_seconds` | LabeledHistogram | project, network, category, finality | **DORMANT** — registered but no production observe site. |
+
+#### Area 11: EVM method-specific
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_evm_get_logs_split_success_total` | counter | project, network, user, agent_name | A split `eth_getLogs` sub-request succeeded. |
+| `erpc_network_evm_get_logs_split_failure_total` | counter | project, network, user, agent_name | A split `eth_getLogs` sub-request failed. |
+| `erpc_network_evm_get_logs_forced_splits_total` | counter | project, network, dimension, user, agent_name | `eth_getLogs` forcibly split. `dimension` ∈ `"block_range"`, `"addresses"`, `"topics0"` (topics[0] OR-array only). |
+| `erpc_network_evm_trace_filter_split_success_total` | counter | project, network, method, user, agent_name | Split `trace_filter`/`arbtrace_filter` sub-request succeeded. |
+| `erpc_network_evm_trace_filter_split_failure_total` | counter | project, network, method, user, agent_name | Split `trace_filter`/`arbtrace_filter` sub-request failed. |
+| `erpc_network_evm_trace_filter_forced_splits_total` | counter | project, network, method, dimension, user, agent_name | `trace_filter` split. `dimension` ∈ `"block_range"`, `"from_address"`, `"to_address"`. |
+| `erpc_network_evm_block_range_requested_total` | counter | project, network, vendor, upstream, category, user, finality, bucket, size | Block-range heatmap. `bucket` uses tip-relative labels (`"TIP"`, `"L100k"`, `"100k-200k"`, etc.) when tip is known; falls back to static 100000-block aligned labels otherwise. **Not covered by idle sweep — cardinality is unbounded.** |
+| `erpc_network_evm_get_logs_range_requested` | LabeledHistogram | project, network, category, user, finality | `eth_getLogs` requested block-range size (observed value = `toBlock − fromBlock`). Buckets: 1, 10, 100, 500, 1000, 5000, 10000, 30000. |
+| `erpc_network_evm_trace_filter_range_requested` | LabeledHistogram | project, network, method, user, finality | `trace_filter`/`arbtrace_filter` requested block-range size. Same buckets. |
+
+#### Area 12: gRPC BDS resilience
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_grpc_bds_hard_timeout_total` | counter | project, upstream, method | BDS gRPC call hit the bounded-wait hard timeout (20 s, hard-coded). Non-zero rate indicates H2 stream wedging; the watchdog then force-replaces the connection. |
+| `erpc_grpc_bds_conn_replacements_total` | counter | project, upstream | BDS pool connection force-closed by stuck-call watchdog. |
+
+#### Area 13: CORS
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_cors_requests_total` | counter | project, origin | Request carrying an `Origin` header. **Note:** `project` label = `r.URL.Path` (e.g. `/myproject/evm/1`), not the project ID. |
+| `erpc_cors_preflight_requests_total` | counter | project, origin | Allowed-origin OPTIONS preflight. Same `project` mislabeling. |
+| `erpc_cors_disallowed_origin_total` | counter | project, origin | Request from disallowed origin. Same `project` mislabeling. |
+
+#### Area 14: Shadow testing
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_shadow_response_identical_total` | counter | project, vendor, network, upstream, category | Shadow upstream response identical to expected. |
+| `erpc_shadow_response_mismatch_total` | counter | project, vendor, network, upstream, category, finality, emptyish, larger | Shadow response differs. `emptyish` ∈ `"true"`/`"false"` (shadow was empty-ish). `larger` ∈ `"true"`/`"false"` (shadow body larger than primary). |
+| `erpc_shadow_response_error_total` | counter | project, vendor, network, upstream, category, error | Shadow upstream request errored. |
+
+#### Area 15: Auth
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Failed authentication attempt. `strategy` is always `"database"` — only the database auth strategy emits this counter. |
+
+#### Area 16: Panics
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_unexpected_panic_total` | counter | scope, extra, error | Recovered panic. `scope` ∈ `"request-handler"`, `"final-error-writer"`, `"top-level-handler"`, `"timeout-handler"`, `"validate-pattern"`, `"redis-pubsub"`, `"shared-state-registry"`, `"matcher"`. |
+
+---
+
+### Histogram bucket sets
+
+| Bucket set | Values | Applies to |
+|---|---|---|
+| `DefaultHistogramBuckets` (overridable via `metrics.histogramBuckets`) | 0.05, 0.5, 5, 30 s | `upstream_request_duration_seconds`, `network_request_duration_seconds`, `consensus_duration_seconds`, all 5 cache duration histograms (8 total) |
+| `EvmGetLogsRangeHistogramBuckets` | 1, 10, 100, 500, 1000, 5000, 10000, 30000 blocks | `network_evm_get_logs_range_requested`, `network_evm_trace_filter_range_requested` |
+| `CatchUpWaitHistogramBuckets` | 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64 s | `network_data_unavailable_wait_seconds` |
+| hedge delay (hard-coded) | 0.01, 0.03, 0.05, 0.2, 0.3, 0.5, 0.7, 1, 3 s | `network_hedge_delay_seconds` (dormant) |
+| timeout duration (hard-coded) | 0.05, 0.1, 0.3, 0.5, 1, 3, 5, 10, 30 s | `network_timeout_duration_seconds` |
+| selection eval (hard-coded) | 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1 s | `selection_eval_duration_seconds` |
+| readmit age (hard-coded) | 1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600 s | `selection_readmit_age_seconds` |
+| cordon duration (hard-coded) | 1, 10, 60, 300, 900, 1800, 3600, 7200, 21600, 86400 s | `upstream_cordon_duration_seconds` |
+| rate-limiter remote (hard-coded) | 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5 s | `rate_limiter_remote_duration_seconds` |
+| response size (hard-coded) | 4096, 65536, 1048576, 16777216, 104857600 bytes | `upstream_response_size_bytes` |
+| consensus counts (linear) | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 | `consensus_responses_collected`, `consensus_agreement_count` |
+
+Only `DefaultHistogramBuckets` are configurable at runtime. All other bucket sets require a recompile.
+
+---
+
+### Observability
+
+**The metrics endpoint:** `http://<host>:<metrics.port>/` (any path) — `promhttp.Handler()` is the root handler so every HTTP path on port 4001 returns the full Prometheus text exposition. Plain HTTP only, no auth, no path routing. Reference scrape config at [`monitoring/prometheus/prometheus.yml`](https://github.com/erpc/erpc/blob/main/monitoring/prometheus/prometheus.yml) (scrape interval 10 s, default target `host.docker.internal:4001`).
+
+**Stock collectors** (present unless `ERPC_NOMETRICS=1`): `go_*` — Go runtime stats; `process_*` — OS process stats; `promhttp_metric_handler_*` — handler self-scrape stats.
+
+**Bundled alerting rules** (`monitoring/prometheus/alert.rules`):
+
+| Alert | Expression | Threshold |
+|---|---|---|
+| HighErrorRate | `rate(erpc_upstream_request_errors_total[5m]) / rate(erpc_upstream_request_total[5m]) > 0.05` by upstream | 5% error rate for 5 min |
+| SlowRequests | `histogram_quantile(0.95, rate(erpc_upstream_request_duration_seconds_bucket[5m])) > 1` by upstream | p95 &gt; 1 s for 5 min |
+| HighRateLimiting | references stale metric `erpc_upstream_request_self_rate_limited_total` — use `erpc_rate_limits_total` instead | — |
+| NetworkRateLimiting | references stale metric `erpc_network_request_self_rate_limited_total` — use `erpc_rate_limits_total` instead | — |
+| HighRequestRate | `rate(erpc_upstream_request_total[5m]) by (upstream) > 1000` | &gt;1000 rps per upstream |
+| LowRequestRate | `rate(erpc_upstream_request_total[5m]) by (upstream) < 1` | &lt;1 rps per upstream for 15 min |
+
+**Metrics server log lines** (all emitted by `erpc/init.go`):
+
+| Level | Message |
+|---|---|
+| Info | `"starting metrics server on port: %d"` |
+| Error | `"error starting metrics server: %s"` |
+| Info | `"shutting down metrics server..."` |
+| Error | `"metrics server forced to shutdown: %s"` |
+| Info | `"metrics server stopped"` |
+| Warn | `"failed to set histogram buckets, using defaults"` (emitted when `metrics.histogramBuckets` contains an invalid float) |
+
+---
+
+### Source code entry points
+
+- [`telemetry/metrics.go:L12-L729`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L12-L729) — all 79 counters and 23 gauges; bucket constants; `DefaultHistogramBuckets`
+- [`telemetry/metrics.go:L755-L932`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L755-L932) — `buildFilterAwareHistograms`; all 17 `LabeledHistogram` definitions; `SetHistogramBuckets`; `ParseHistogramBuckets`; `registerOrReuse`
+- [`telemetry/labeled_histogram.go:L16-L187`](https://github.com/erpc/erpc/blob/main/telemetry/labeled_histogram.go#L16-L187) — `HistogramLabelFilter`; `SetHistogramLabelFilter`; `LabeledHistogram` with `WithLabelValues`, `DeleteLabelValues`, `ActiveLabelValues`
+- [`telemetry/handles.go:L59-L105`](https://github.com/erpc/erpc/blob/main/telemetry/handles.go#L59-L105) — `CounterHandle`/`GaugeHandle`/`ObserverHandle` caches; `ResetHandleCache`
+- [`erpc/init.go:L47-L170`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L47-L170) — initialization sequence: `SetHistogramLabelFilter` → `SetHistogramBuckets` → network alias resolver → metrics HTTP server lifecycle
+- [`common/config.go:L2543-L2564`](https://github.com/erpc/erpc/blob/main/common/config.go#L2543-L2564) — `MetricsConfig` struct
+- [`common/defaults.go:L749-L767`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L749-L767) — `MetricsConfig.SetDefaults`
+- [`common/errors.go:L17-L114`](https://github.com/erpc/erpc/blob/main/common/errors.go#L17-L114) — `errorLabelMode` global; `SetErrorLabelMode`; `ErrorSummary`
+- [`health/tracker.go:L481-L667`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L481-L667) — `DefaultIdleEvictionAfter`; `rotateMetricsLoop`; `sweepIdle`; `sweepIdleObservers`
+- [`cmd/erpc/initflags.go:L22-L28`](https://github.com/erpc/erpc/blob/main/cmd/erpc/initflags.go#L22-L28) — `ERPC_NOMETRICS=1` registry replacement
+- [`monitoring/catch-up-metrics.md`](https://github.com/erpc/erpc/blob/main/monitoring/catch-up-metrics.md) — operator guide for reading `erpc_network_retry_attempt_total` + `erpc_network_data_unavailable_wait_seconds` together; covers `CatchUpWaitHistogramBuckets` design rationale, finality-label split, Little's Law pressure interpretation, and tuning knobs
+
+### Related pages
+
+- [Rate limiters](/config/rate-limiters) — the `erpc_rate_limits_total` counter tracks every budget decision.
+- [Failsafe: Hedge](/config/failsafe/hedge) — `erpc_network_hedged_request_total` and `erpc_network_hedge_winner_total` are the hedge observability surface.
+- [Failsafe: Retry](/config/failsafe/retry) — `erpc_network_retry_attempt_total` with its `reason` label tracks retry behavior.
+- [Selection policies](/config/projects/selection-policies) — the `erpc_selection_*` family tracks tick-by-tick upstream ranking.
+- [Cache](/config/database) — `erpc_cache_get_*` and `erpc_cache_set_*` families cover all cache connector activity.
+- [Auth](/config/auth) — `erpc_auth_failed_total` for database-strategy failures.
+
+</AISection>

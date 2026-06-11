@@ -1,314 +1,629 @@
 ---
 title: Rate Limiters
-description: Define shared budgets with per-method rules and assign them to projects, networks, upstreams, or auth strategies. Backed by Redis (distributed) or memory (local).
+description: Stop a runaway caller or a misbehaving provider from affecting everyone else — eRPC applies independent request budgets at four layers and self-tunes outbound limits automatically.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# Rate Limiters
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-Rate limiters let you define named **budgets** — sets of rules that cap request counts per method, per period, and optionally per IP, user, or network. Assign budgets to projects, networks, upstreams, or auth strategies. eRPC evaluates each assigned layer independently; if any layer is over-limit the request is rejected with a layer-specific error.
+# Rate Limiters
 
-**You can configure:**
+Protect your infrastructure from runaway callers and prevent a misbehaving provider from
+eating your whole quota. eRPC applies named **budget** rules at four independent layers —
+auth, project, network, upstream — so you can cap inbound traffic per user, per IP, or
+globally, while a built-in **auto-tuner** silently backs off when upstreams send 429s and
+recovers when they clear up.
 
-- **Store** — `redis` (recommended for multi-replica) or `memory` (single-process)
-- **Budgets** — named sets of rules referenced by `rateLimitBudget` elsewhere
-- **Rules** — per-method `maxCount` + `period`, optionally scoped by `perIP`, `perUser`, `perNetwork`
-- **Auto-tuner** — per-upstream dynamic adjustment of `maxCount` based on 429 error rate
+## Quick taste
 
-## Minimum useful config
+Illustrative, not a tuned production config — 100 req/s per IP on all inbound methods:
 
 <ConfigTabs
-	path="rateLimiters > budgets[] > rules[]"
-	focus="1-14"
-	yaml={`rateLimiters:
-  store:
-    driver: memory          # 'redis' | 'memory'
+  path="rateLimiters"
+  focusYaml="2-9"
+  focusTs="2-9"
+  yaml={`rateLimiters:
   budgets:
-    - id: frontend
+    - id: inbound
       rules:
-        - method: '*'
-          maxCount: 20
+        - method: "*"
+          maxCount: 100
+          period: second
+          # give each client IP its own counter, not a shared global pool
+          perIP: true`}
+  ts={`rateLimiters: {
+  budgets: [{
+    id: "inbound",
+    rules: [{
+      method: "*",
+      maxCount: 100,
+      period: "second",
+      // give each client IP its own counter, not a shared global pool
+      perIP: true,
+    }],
+  }],
+}`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="add per-IP and per-user inbound caps"
+	defaultOpen
+	prompt={`I want to protect my eRPC deployment from runaway callers: cap each client IP at
+500 req/min globally, and give authenticated JWT users their own budget based on a
+claim in their token. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/rate-limiters.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="cap upstream spend with auto-tuning"
+	prompt={`I'm paying per-request to Alchemy and I'm worried about unexpected bill spikes.
+Add an upstream-level rate limit budget to each Alchemy upstream in my eRPC config so
+eRPC never sends more than my target RPS, and enable the auto-tuner to back off
+automatically when they return 429s. Make sure minBudget is at least 1. Reference:
+https://docs.erpc.cloud/config/rate-limiters.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="protect a chain from heavy-method abuse"
+	prompt={`During a traffic spike one user's eth_getBlockReceipts and trace_* calls filled all
+my proxy connections and took down the whole chain. Add a network-level rate limit
+budget in my eRPC config that hard-caps just those heavy methods fleet-wide, while
+leaving light methods like eth_blockNumber unrestricted. Reference:
+https://docs.erpc.cloud/config/rate-limiters.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="switch to Redis for multi-replica shared limits"
+	prompt={`I'm scaling my eRPC deployment to multiple replicas and the per-process memory
+store means each instance has its own independent counter — the effective cluster
+limit is much higher than intended. Migrate my eRPC config rate limiter store to
+Redis so all replicas share a single counter. Use a distinct cacheKeyPrefix so
+staging and prod don't collide. Reference:
+https://docs.erpc.cloud/config/rate-limiters.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="debug why my upstream budget isn't returning 429"
+	prompt={`My upstream-level rate limit budget is clearly being exceeded — I can see
+erpc_rate_limits_total incrementing — but my clients are getting HTTP 200 instead
+of 429. Explain why upstream-level blocks don't return HTTP 429 on the wire, and
+tell me which metric or log to watch to confirm the block is working correctly.
+Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/rate-limiters.llms.txt`}
+/>
+
+<AISection title="Rate Limiters — full agent reference">
+
+### How it works
+
+Every inbound request passes through up to four sequential rate-limit checks in this order:
+**auth → project → network → upstream**. Each check looks up the budget ID configured at
+that attachment point, calls `TryAcquirePermit`, and rejects with a layer-specific error if
+any matching rule is `OVER_LIMIT`. The layers are independent — a budget shared across
+layers will have its counter incremented once per layer per request, so avoid attaching the
+same budget ID at both project and network scope.
+
+Rule matching uses exact string equality first, then glob (`WildcardMatch`). If multiple
+rules match a single method, all are evaluated in parallel goroutines; the first
+`OVER_LIMIT` result short-circuits the rest.
+
+The backing store is either an in-process sharded memory cache (64 FNV-1a shards,
+lazy-expiry cleanup) or a Redis-backed Envoy ratelimit store. In memory mode, each eRPC
+process has independent counters — the effective cluster limit is `maxCount × instanceCount`.
+In Redis mode, counters are shared across all instances, but the Redis client **fail-opens**
+while the connection is being established, and again on timeout or admission pressure.
+
+**Redis fail-open paths.** Three distinct conditions cause the Redis rate limiter to allow
+a request instead of blocking:
+
+1. **Not yet connected** — `getCache()` returns nil; `TryAcquirePermit` returns `(true, nil)` before even reaching the Redis call. This window lasts from startup until Redis first connects.
+2. **Admission semaphore full** — each budget has a bounded channel (`max(256, connPoolSize × 32)` slots). When full, the request is allowed immediately without spawning a goroutine, and `erpc_rate_limiter_remote_admission_shedded_total` increments. This design was added after the 2026-05-07 incident where 25k+ goroutines accumulated during a Redis contention spike.
+3. **Per-call timeout** (`getTimeout`, default `1s`) — `doLimitWithTimeout` returns after the timer fires, allows the request, and increments `erpc_rate_limiter_failopen_total{reason="limit_timeout"}`. The spawned goroutine **continues running** and completes the Redis write — the counter is updated even though the caller was not blocked.
+
+**Auto-tuner.** When an upstream has `rateLimitBudget` set and `rateLimitAutoTune` is
+absent from config, eRPC automatically populates `rateLimitAutoTune` with defaults and sets
+`enabled: true`. This means **adding `rateLimitBudget` to an upstream implicitly enables
+the auto-tuner** unless you opt out with `rateLimitAutoTune.enabled: false`.
+
+The tuner samples `errorCount / totalCount` over each `adjustmentPeriod` (default 1 minute).
+If error rate exceeds `errorRateThreshold` (default 10%), `maxCount` is multiplied by
+`decreaseFactor` (default 0.95). If error rate is exactly 0, `maxCount` is multiplied by
+`increaseFactor` (default 1.05). Partial error rates in the range `(0, threshold]` produce
+no change. The tuner adjusts rules on the budget — which may be shared with other
+upstreams. If two upstreams share a budget and both have auto-tuners, the tuner that fires
+last wins; there is no coordination.
+
+**Envoy status codes.** The Envoy ratelimit library produces three response codes per descriptor. eRPC only inspects `OVER_LIMIT`:
+
+| Status | Counter range after increment | eRPC action | Internal stats |
+|---|---|---|---|
+| `OK` | `counter ≤ nearLimitThreshold` | Allow | `Stats.WithinLimit` |
+| `OK` (near limit) | `nearLimitThreshold < counter ≤ maxCount` | Allow | `Stats.WithinLimit` + `Stats.NearLimit` |
+| `OVER_LIMIT` | `counter > maxCount` | Block | `Stats.OverLimit` |
+
+Where `nearLimitThreshold = floor(maxCount × nearLimitRatio)`. Default ratio 0.8: for `maxCount=100`, requests 81–100 are allowed (near-limit stats only); request 101 is blocked. eRPC never surfaces `NEAR_LIMIT` to callers. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="306" />
+
+**`TryAcquirePermit` flow.** (1) If cache is nil → fail-open `(true, nil)`. (2) `GetRulesByMethod` returns empty → allow (no rules match). (3) If any matching rule uses `perIP`/`perUser`/`perNetwork` and `req == nil` → return error. (4) Single matching rule: evaluate directly without spawning a goroutine. (5) Multiple rules: fan-out goroutines, `atomic.Bool` short-circuits on first `OVER_LIMIT`. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="153-244" />
+
+**Cache key format.** `{cacheKeyPrefix}{domain}_{descriptor_entries_concatenated}_{time_window_bucket}`. The `erpc_rl_` prefix ensures isolation from other Envoy ratelimit users on the same Redis. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="76" />
+
+**Memory store eviction.** Each shard prunes lazily: on every `DoLimit` call, if the shard's last-prune timestamp differs from the current unix second, all buckets with `expiry ≤ now` are deleted. This is O(#buckets) per shard — not O(#keys). Source: <SourceLink file="upstream/ratelimiter_mem_cache.go" lines="91-100" />
+
+**Admission cap derivation.** `remoteAdmissionCap = max(256, connPoolSize × 32)`. The ×32 multiplier accounts for radix's implicit pipelining window (up to 32 commands per connection). Pool of 8 → cap 256 (floor). Pool of 64 → cap 2048. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="281-291" />
+
+**Auto-tuner minimum sample floor.** The tuner skips adjustment when `totalCount < 10` — insufficient signal. Counters are reset at the start of `maybeAdjust` regardless, so a sustained pattern of exactly 9 requests per period will perpetually reset the clock. Source: <SourceLink file="upstream/ratelimiter_autotuner.go" lines="83-142" />
+
+**Auto-tuner requires a budget.** An upstream without `rateLimitBudget` set never gets an auto-tuner instance, even if `rateLimitAutoTune` is explicitly configured. Source: <SourceLink file="upstream/upstream.go" lines="1322" />
+
+**Shared budgets.** A budget ID is a plain string. Any number of attachment points — across
+projects, networks, upstreams, and auth strategies — can reference the same ID, sharing the
+same counters. In Redis mode this sharing extends across eRPC instances.
+
+**`waitTime` deprecation.** The `rules[].waitTime` field is explicitly ignored: validation
+emits a warning log and discards the value. There is no queue or hold logic in the rate
+limiter. Remove `waitTime` from any existing config to suppress the warning.
+
+### Config schema
+
+#### `rateLimiters` (top-level)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `rateLimiters.store.driver` | string | `"memory"` | Backend store. Valid: `"memory"` or `"redis"`. Set by `RateLimitStoreConfig.SetDefaults`. **Footgun:** if `rateLimiters:` is present in YAML without an explicit `store.driver: redis`, the memory driver is silently used even if `store.redis.*` fields are configured. Source: <SourceLink file="common/defaults.go" lines="2782" /> |
+| `rateLimiters.store.redis.uri` | string | `""` | Redis URI; takes precedence over `addr`. Source: <SourceLink file="common/config.go" lines="390" /> |
+| `rateLimiters.store.redis.addr` | string | `""` | `host:port`; used when `uri` is empty. Source: <SourceLink file="common/config.go" lines="384" /> |
+| `rateLimiters.store.redis.username` | string | `""` | Redis ACL username. Source: <SourceLink file="common/config.go" lines="385" /> |
+| `rateLimiters.store.redis.password` | string | `""` | Redis password; redacted in marshalled output. Source: <SourceLink file="common/config.go" lines="386" /> |
+| `rateLimiters.store.redis.db` | int | `0` | Redis DB index. Source: <SourceLink file="common/config.go" lines="387" /> |
+| `rateLimiters.store.redis.tls.enabled` | bool | `false` | Enable TLS. Source: <SourceLink file="common/config.go" lines="376" /> |
+| `rateLimiters.store.redis.tls.certFile` | string | `""` | Client cert PEM for mTLS. Required with `keyFile` when server demands client auth. Source: <SourceLink file="common/config.go" lines="377" /> |
+| `rateLimiters.store.redis.tls.keyFile` | string | `""` | Client key PEM for mTLS. Must match `certFile`. Source: <SourceLink file="common/config.go" lines="378" /> |
+| `rateLimiters.store.redis.tls.caFile` | string | `""` | Custom CA bundle; system roots used when empty. Source: <SourceLink file="common/config.go" lines="379" /> |
+| `rateLimiters.store.redis.tls.insecureSkipVerify` | bool | `false` | Skip server cert verification. Never use in production. Source: <SourceLink file="common/config.go" lines="380" /> |
+| `rateLimiters.store.redis.connPoolSize` | int | `8` | Radix connection pool size. Derives admission cap: `max(256, connPoolSize × 32)`. Source: <SourceLink file="common/defaults.go" lines="955" /> |
+| `rateLimiters.store.redis.initTimeout` | Duration | `5s` | Connection establishment timeout. Source: <SourceLink file="common/defaults.go" lines="958" /> |
+| `rateLimiters.store.redis.getTimeout` | Duration | `1s` | Per-call DoLimit timeout. When exceeded, request **fail-opens** and `erpc_rate_limiter_failopen_total{reason="limit_timeout"}` increments. Source: <SourceLink file="common/defaults.go" lines="961" /> |
+| `rateLimiters.store.redis.setTimeout` | Duration | `3s` | **Unused by the rate limiter** — present for struct sharing with the data-connector Redis config. Source: <SourceLink file="common/defaults.go" lines="964" /> |
+| `rateLimiters.store.redis.lockRetryInterval` | Duration | `500ms` | **Unused by the rate limiter** — present for struct sharing with the data-connector Redis config. Source: <SourceLink file="common/defaults.go" lines="967" /> |
+| `rateLimiters.store.nearLimitRatio` | float32 | `0.8` | Envoy near-limit threshold fraction (`nearLimitThreshold = floor(maxCount × nearLimitRatio)`). **Has no effect on eRPC blocking decisions** — eRPC only checks `OVER_LIMIT`; `NEAR_LIMIT` is never returned to callers. Only alters internal Envoy stats counters, which are not exported to Prometheus. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="74" /> |
+| `rateLimiters.store.cacheKeyPrefix` | string | `"erpc_rl_"` | Prefix for all Redis/memory cache keys. **Footgun:** two eRPC deployments sharing the same Redis with the same prefix will merge their counters. Use distinct prefixes per deployment (`"erpc_prod_"`, `"erpc_staging_"`). Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="76" /> |
+
+#### `rateLimiters.budgets[]`
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `budgets[].id` | string | required | Unique identifier referenced by `rateLimitBudget` fields. Source: <SourceLink file="common/config.go" lines="1806" /> |
+| `budgets[].rules[]` | list | required (min 1) | At least one rule required; empty list fails validation. Source: <SourceLink file="common/validation.go" lines="199" /> |
+| `budgets[].rules[].method` | string | `"*"` | JSON-RPC method name or glob (`eth_*`, `*`). Default set by `SetDefaults`. Source: <SourceLink file="common/defaults.go" lines="2818" /> |
+| `budgets[].rules[].maxCount` | uint32 | required | Max requests per `period`. Mutable at runtime by auto-tuner. **Footgun: `maxCount: 0` means always-blocked**, not unlimited — the Envoy library sets `overLimitThreshold=0` so every request is immediately `OVER_LIMIT`. Omit `rateLimitBudget` entirely for unrestricted access. **uint32 overflow guard:** `AdjustBudgetByFactor` computes the new value as float64 and clamps to `math.MaxUint32` (4,294,967,295) before narrowing to uint32, preventing wrap-around from a large `increaseFactor`. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="109-119" /> |
+| `budgets[].rules[].period` | RateLimitPeriod | `second` | Window granularity. Accepted string aliases (case-insensitive): `second`/`1s`, `minute`/`1m`/`60s`, `hour`/`1h`/`3600s`, `day`/`1d`/`24h`/`86400s`, `week`/`7d`/`168h`/`604800s`, `month`/`30d`/`720h`/`2592000s`, `year`/`365d`/`8760h`/`31536000s`. Integer enum values `0`–`6` also accepted. **Footgun:** `"2h"` is rejected even though it parses — only values exactly equal to a canonical duration are accepted. Similarly, `"90s"` (= 1.5 minutes) is rejected. Source: <SourceLink file="common/config.go" lines="1882-1950" /> |
+| `budgets[].rules[].perIP` | bool | `false` | Partition counters by client IP. **Footgun:** when `clientIP` is empty or `"n/a"` (e.g. non-HTTP transport), the `ip` descriptor is silently omitted and the rule uses a shared global counter for all IP-less callers. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="256-264" /> |
+| `budgets[].rules[].perUser` | bool | `false` | Partition counters by authenticated user ID. Falls back to global counter when user label is empty or `"n/a"`. Source: <SourceLink file="common/config.go" lines="1816" /> |
+| `budgets[].rules[].perNetwork` | bool | `false` | Partition counters by network ID. Source: <SourceLink file="common/config.go" lines="1818" /> |
+| `budgets[].rules[].waitTime` | Duration | `0` | **Deprecated — ignored with warning log.** Remove from config. Source: <SourceLink file="common/validation.go" lines="214-216" /> |
+
+#### Attachment points
+
+| Config path | Scope | Evaluation order | Source |
+|---|---|---|---|
+| `projects[].auth.strategies[].rateLimitBudget` | Per auth strategy | 1st | <SourceLink file="auth/authorizer.go" lines="119" /> |
+| `projects[].auth.strategies[].secret.*.rateLimitBudget` | Per secret (overrides strategy) | 1st | <SourceLink file="auth/strategy_secret.go" lines="29" /> |
+| `projects[].auth.strategies[].jwt.rateLimitBudgetClaimName` | JWT claim (default `"rlm"`) | 1st | <SourceLink file="auth/strategy_jwt.go" lines="87" /> |
+| `projects[].rateLimitBudget` | Project-level | 2nd | <SourceLink file="erpc/projects.go" lines="113" /> |
+| `projects[].networkDefaults.rateLimitBudget` | Default for all networks | 3rd | <SourceLink file="common/defaults.go" lines="1783" /> |
+| `projects[].networks[].rateLimitBudget` | Network-level | 3rd | <SourceLink file="erpc/networks.go" lines="1112" /> |
+| `projects[].upstreamDefaults.rateLimitBudget` | Default for all upstreams | 4th | <SourceLink file="common/defaults.go" lines="1514" /> |
+| `projects[].upstreams[].rateLimitBudget` | Upstream-level | 4th | <SourceLink file="upstream/upstream.go" lines="460" /> |
+| `projects[].auth.strategies[].siwe.rateLimitBudget` | SIWE per-session | 1st | <SourceLink file="auth/strategy_siwe.go" lines="53" /> |
+| `projects[].auth.strategies[].network.rateLimitBudget` | IP-network strategy | 1st | <SourceLink file="auth/strategy_network.go" lines="65" /> |
+| `projects[].auth.strategies[].database.failOpen.rateLimitBudget` | DB fail-open | 1st | <SourceLink file="auth/strategy_database.go" lines="526" /> |
+
+User-level budget (set by auth strategy on the user object) overrides strategy-level `rateLimitBudget`. Source: <SourceLink file="auth/authorizer.go" lines="119-122" />
+
+#### `upstreams[].rateLimitAutoTune`
+
+Available only on `UpstreamConfig`. **Implicitly created with `enabled: true` when `rateLimitBudget != ""` and `rateLimitAutoTune` is absent.** Explicitly set `rateLimitAutoTune.enabled: false` to opt out.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `rateLimitAutoTune.enabled` | \*bool | `true` | Enable/disable. Source: <SourceLink file="common/defaults.go" lines="2491" /> |
+| `rateLimitAutoTune.adjustmentPeriod` | Duration | `1m` | Minimum elapsed time between adjustments per method. Clock resets even when no adjustment occurs (insufficient samples). Source: <SourceLink file="common/defaults.go" lines="2494" /> |
+| `rateLimitAutoTune.errorRateThreshold` | float64 | `0.1` | Decrease triggered when `errorRate > threshold`. Source: <SourceLink file="common/defaults.go" lines="2497" /> |
+| `rateLimitAutoTune.increaseFactor` | float64 | `1.05` | Multiplier when `errorRate == 0` exactly. **No increase when errorRate is in `(0, threshold]`.** Source: <SourceLink file="common/defaults.go" lines="2499" /> |
+| `rateLimitAutoTune.decreaseFactor` | float64 | `0.95` | Multiplier when `errorRate > threshold`. Source: <SourceLink file="common/defaults.go" lines="2503" /> |
+| `rateLimitAutoTune.minBudget` | int | `0` | Floor for `maxCount` after adjustment. **Footgun: `0` means no floor** — auto-tuner can drive `maxCount` to 0 (always-blocked). Set to at least 1. Source: <SourceLink file="common/config.go" lines="1057" /> |
+| `rateLimitAutoTune.maxBudget` | int | `100000` | Ceiling for `maxCount` after adjustment. Source: <SourceLink file="common/defaults.go" lines="2506" /> |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Redis store with tuned pool for a multi-replica fleet.** In production, each eRPC
+machine handles 50k+ rate-limit checks per minute; the default `connPoolSize: 8` queues
+requests and accumulates goroutines under load. A larger pool with a generous-but-bounded
+`getTimeout` keeps the 99th-percentile check under 1ms without leaking goroutines during
+Redis slowdowns:
+
+<ConfigTabs
+  path="rateLimiters"
+  yaml={`rateLimiters:
+  store:
+    driver: redis
+    redis:
+      uri: "\${REDIS_URL}"
+      # 200ms gives the radix pipeline window (5ms) plus RTT comfortable
+      # headroom while still fast-failing during real outages.
+      # Never set below ~50ms on pipelined clients: the pipeline window
+      # itself takes ~5ms and a too-tight cap triggers constant fail-opens.
+      getTimeout: 200ms
+      # Default is 8 — not enough for 12+ machine fleets.
+      # With radix implicit pipelining (window=5ms, limit=32),
+      # effective in-flight = poolSize × 32: poolSize=64 supports
+      # ~2k concurrent checks/machine without queueing.
+      connPoolSize: 64
+    # Use distinct prefixes per environment — two deployments sharing the
+    # same Redis and same prefix will silently merge their counters.
+    cacheKeyPrefix: "erpc_prod_"
+  budgets:
+    - id: per-client
+      rules:
+        - method: "*"
+          maxCount: 200
           period: second
           perIP: true`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  rateLimiters: {
-    store: { driver: "memory" },
-    budgets: [{
-      id: "frontend",
-      rules: [{
-        method: "*",
-        maxCount: 20,
-        period: "second",
-        perIP: true,
-      }],
-    }],
+  ts={`rateLimiters: {
+  store: {
+    driver: "redis",
+    redis: {
+      uri: "\${REDIS_URL}",
+      // 200ms: generous enough for pipeline RTT, tight enough to fail fast
+      getTimeout: "200ms",
+      // 64 × 32 = ~2k concurrent checks/machine without queueing
+      connPoolSize: 64,
+    },
+    // Distinct prefix per environment prevents counter merging
+    cacheKeyPrefix: "erpc_prod_",
   },
-});`}
+  budgets: [{
+    id: "per-client",
+    rules: [{ method: "*", maxCount: 200, period: "second", perIP: true }],
+  }],
+}`}
 />
 
-## Multi-budget setup with Redis and per-method rules
-
-Shared upstream budgets with a daily cap, plus a per-IP frontend budget.
+**2. Tiered per-user budgets via JWT claim.** Production edge deployments serve customers
+across multiple subscription tiers. The JWT claim `"rlm"` names the budget to use per
+token; the auth strategy resolves it per request without any project/network attachment.
+Both `perUser: true` and `perIP: true` can be combined for combinatorial (user, IP) keys:
 
 <ConfigTabs
-	path="rateLimiters > budgets[]"
-	focus="4-27"
-	yaml={`rateLimiters:
-  store:
-    driver: redis
-    redis:
-      uri: redis://localhost:6379
+  path="projects[].auth"
+  yaml={`rateLimiters:
   budgets:
-    - id: frontend
+    # Free tier: 6 000 req/min total per user
+    - id: edge-tier-6krpm-total-unlimited-per-ip
       rules:
-        - method: 'eth_trace*'  # narrowest rule first
-          maxCount: 5
-          period: second
+        - method: "*"
+          maxCount: 6000
+          period: minute
+          perUser: true
+    # Paid tier: 60 000 req/min total + 500 req/min per IP ceiling
+    - id: edge-tier-60krpm-total-500rpm-per-ip
+      rules:
+        - method: "*"
+          maxCount: 60000
+          period: minute
+          perUser: true
+        - method: "*"
+          maxCount: 500
+          period: minute
+          perUser: true
           perIP: true
-        - method: '*'
-          maxCount: 20
-          period: second
-          perIP: true
-    - id: global-blast
-      rules:
-        - method: '*'
-          maxCount: 1000
-          period: second
-        - method: '*'
-          maxCount: 5000000
-          period: day
-    - id: global-quicknode
-      rules:
-        - method: '*'
-          maxCount: 300
-          period: second
-        - method: '*'
-          maxCount: 1000000
-          period: day`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  rateLimiters: {
-    store: {
-      driver: "redis",
-      redis: { uri: "redis://localhost:6379" },
+projects:
+  - id: main
+    auth:
+      strategies:
+        - type: jwt
+          jwt:
+            # Token payload contains "rlm": "edge-tier-60krpm-total-500rpm-per-ip"
+            rateLimitBudgetClaimName: rlm`}
+  ts={`rateLimiters: {
+  budgets: [
+    {
+      id: "edge-tier-6krpm-total-unlimited-per-ip",
+      rules: [{ method: "*", maxCount: 6000, period: "minute", perUser: true }],
     },
-    budgets: [
-      {
-        id: "frontend",
-        rules: [
-          { method: "eth_trace*", maxCount: 5, period: "second", perIP: true },
-          { method: "*", maxCount: 20, period: "second", perIP: true },
-        ],
-      },
-      {
-        id: "global-blast",
-        rules: [
-          { method: "*", maxCount: 1000, period: "second" },
-          { method: "*", maxCount: 5_000_000, period: "day" },
-        ],
-      },
-      {
-        id: "global-quicknode",
-        rules: [
-          { method: "*", maxCount: 300, period: "second" },
-          { method: "*", maxCount: 1_000_000, period: "day" },
-        ],
-      },
-    ],
-  },
-});`}
+    {
+      id: "edge-tier-60krpm-total-500rpm-per-ip",
+      rules: [
+        { method: "*", maxCount: 60000, period: "minute", perUser: true },
+        // Per-IP ceiling prevents one IP from consuming the entire budget
+        { method: "*", maxCount: 500, period: "minute", perUser: true, perIP: true },
+      ],
+    },
+  ],
+},
+projects: [{
+  id: "main",
+  auth: { strategies: [{ type: "jwt", jwt: { rateLimitBudgetClaimName: "rlm" } }] },
+}]`}
 />
 
-<AISection title="Copy for your AI assistant — full rate-limiters reference">
+**3. Upstream outbound budget with aggressive auto-tuner.** Production uses fast
+`adjustmentPeriod: 30s` (not the 1-minute default) and an asymmetric
+`decreaseFactor: 0.7` so the tuner cuts hard during 429 storms but restores slowly with
+`increaseFactor: 1.1`. Always set `minBudget: 1` — the default is `0` which lets the
+auto-tuner drive `maxCount` to zero (always-blocked):
 
-### `RateLimiterConfig` — top-level fields
-
-| Field | Type | Notes |
-|---|---|---|
-| `store` | `RateLimitStoreConfig` | **Required.** Selects the backing store for counters. |
-| `budgets[]` | `RateLimitBudgetConfig[]` | Named budgets. Must define at least one rule each. Referenced by `rateLimitBudget` on projects, networks, upstreams, and auth strategies. |
-
-### `RateLimitStoreConfig`
-
-| Field | Type | Notes |
-|---|---|---|
-| `driver` | `"redis"\|"memory"` | **Required.** `redis` for distributed multi-replica setups; `memory` for single-process only. |
-| `redis` | `RedisConnectorConfig` | Required when `driver: redis`. See fields below. |
-| `cacheKeyPrefix` | string | Prefix for all rate-limit keys in Redis. Default `erpc_rl_`. |
-| `nearLimitRatio` | float 0..1 | Fraction of `maxCount` at which the store reports "near limit" internally. Default `0.8`. |
-
-**`redis` sub-fields:**
-
-| Field | Notes |
-|---|---|
-| `uri` | Redis connection URI. e.g. `redis://localhost:6379` or `rediss://user:pass@host:6380`. |
-| `username` | Optional Redis username (ACL). |
-| `tls` | TLS config object (`enabled`, `certFile`, `keyFile`, `caFile`, `insecureSkipVerify`). |
-| `getTimeout` | Maximum time to wait for a Redis rate-limit check. Default `5s`. If exceeded, the request is **allowed** (fail-open). Set to `0` to disable the timeout. |
-
-### `RateLimitBudgetConfig`
-
-| Field | Type | Notes |
-|---|---|---|
-| `id` | string | **Required.** Unique budget identifier. Referenced by `rateLimitBudget` fields elsewhere. |
-| `rules[]` | `RateLimitRuleConfig[]` | **Required.** At least one rule must be present. All matching rules are evaluated; any over-limit rejects the request. |
-
-### `RateLimitRuleConfig`
-
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `method` | string | `*` | Method matcher. Exact string or wildcard (`*`, `eth_*`, `eth_trace*`). `*` matches all methods. |
-| `maxCount` | int | — | **Required.** Maximum allowed requests per `period`. The auto-tuner may adjust this at runtime. |
-| `period` | `Period` | — | **Required.** Time window. See Period enum below. |
-| `waitTime` | duration | `0` | If set, requests over-limit are held for up to this duration waiting for a slot, instead of being rejected immediately. |
-| `perIP` | bool | `false` | Partition counters by client IP. Requires correct proxy header setup on the server. |
-| `perUser` | bool | `false` | Partition counters by authenticated user ID. Requires an auth strategy that sets `user.id`. |
-| `perNetwork` | bool | `false` | Partition counters by the network ID being accessed. |
-
-**Period enum** — valid values for `period`:
-
-`second` | `minute` | `hour` | `day` | `week` | `month` | `year`
-
-Short forms like `1s`, `1m` are accepted as aliases for `second` / `minute`.
-
-### `rateLimitAutoTune` — per-upstream dynamic adjustment
-
-The auto-tuner is enabled by default when an upstream has a `rateLimitBudget` set. It monitors the 429 error rate from that upstream and adjusts `maxCount` up or down.
-
-```yaml
-upstreams:
-  - id: my-upstream
-    endpoint: https://rpc.example.com
-    rateLimitBudget: example-budget
-    rateLimitAutoTune:
-      enabled: true                  # default: true
-      adjustmentPeriod: 1m           # how often to re-evaluate; default: 1m
-      errorRateThreshold: 0.1        # 429 error rate above this triggers decrease; default: 0.1
-      increaseFactor: 1.05           # multiply maxCount by this when under threshold; default: 1.05
-      decreaseFactor: 0.9            # multiply maxCount by this when over threshold; default: 0.9
-      minBudget: 1                   # floor; set >= 1 so traffic never stops; default: 0
-      maxBudget: 10000               # ceiling; default: 10000
-```
-
-| Field | Default | Notes |
-|---|---|---|
-| `enabled` | `true` | Set to `false` to freeze `maxCount` at the configured value. |
-| `adjustmentPeriod` | `1m` | Evaluation tick. Shorter = more responsive; longer = more stable. |
-| `errorRateThreshold` | `0.1` | 10% 429 error rate triggers a decrease. |
-| `increaseFactor` | `1.05` | Gradual increase (5% per tick) when healthy. |
-| `decreaseFactor` | `0.9` | Fast decrease (10% per tick) when over threshold. |
-| `minBudget` | `0` | **Set this to at least `1`** — otherwise the auto-tuner can drive `maxCount` to zero and traffic stops entirely. |
-| `maxBudget` | `10000` | Hard ceiling. Auto-tuner never raises `maxCount` above this. |
-
-**Metric**: `erpc_rate_limiter_budget_max_count{budget,method}` — watch this to verify the auto-tuner is moving.
-
-### Where budgets can be applied
-
-Budgets are composed across four layers. eRPC evaluates each independently; the first over-limit layer stops the request.
-
-| Layer | Config field | Evaluation order |
-|---|---|---|
-| Auth | `auth.strategies[].rateLimitBudget` (secret/network/siwe) or JWT claim (`rateLimitBudgetClaimName`, default `rlm`) | 1st |
-| Project | `projects[].rateLimitBudget` | 2nd |
-| Network | `networks[].rateLimitBudget` or `networkDefaults.rateLimitBudget` | 3rd |
-| Upstream | `upstreams[].rateLimitBudget` | 4th |
-
-### Rule matching and evaluation
-
-- `method` supports wildcards (`*`). Rules are checked in order; **all matching rules** are evaluated (not just the first). Any over-limit result rejects the request.
-- Put narrower rules (e.g. `eth_trace*`) before broader ones (`*`) within a budget so they take effect independently.
-- Scope descriptors (`perIP`, `perUser`, `perNetwork`) partition counters within a rule but do **not** change `maxCount`. Combining scopes multiplies cardinality.
-- If a scoped value is missing at evaluation time (e.g. `perUser: true` but the request is unauthenticated), the rule errors for that request.
-
-### Errors returned per layer
-
-| Layer | Error code |
-|---|---|
-| Auth | `ErrAuthRateLimitRuleExceeded` |
-| Project | `ErrProjectRateLimitRuleExceeded` |
-| Network | `ErrNetworkRateLimitRuleExceeded` |
-| Upstream | `ErrUpstreamRateLimitRuleExceeded` |
-
-Each error includes the `budget` ID and the matched `rule` (e.g. `method:eth_getLogs`) for debugging.
-
-### Full example — per-user free-trial budget
-
-```yaml
-rateLimiters:
-  store:
-    driver: redis
-    redis:
-      uri: redis://localhost:6379
-      getTimeout: 5s
-    cacheKeyPrefix: erpc_rl_
-    nearLimitRatio: 0.8
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`rateLimiters:
   budgets:
-    - id: free-trial
+    - id: alchemy-global
       rules:
-        - method: '*'
-          maxCount: 10
+        - method: "*"
+          maxCount: 300
           period: second
-          perUser: true        # 10 rps per authenticated user
-        - method: '*'
-          maxCount: 20000
-          period: day
-          perUser: true
-          perNetwork: true     # plus a daily cap per user per chain
-```
+projects:
+  - upstreams:
+      - endpoint: "https://eth-mainnet.g.alchemy.com/v2/\${ALCHEMY_KEY}"
+        rateLimitBudget: alchemy-global
+        rateLimitAutoTune:
+          enabled: true
+          # Faster reaction than the 1-minute default — providers can
+          # 429-storm and recover inside a single minute
+          adjustmentPeriod: 30s
+          errorRateThreshold: 0.1
+          # Restore gently: 1.1× per period rather than default 1.05×
+          increaseFactor: 1.1
+          # Cut aggressively: 0.7× per period (not the conservative 0.95×)
+          # to shed load fast during a 429 storm
+          decreaseFactor: 0.7
+          # CRITICAL: 0 means no floor — auto-tuner can drive to always-blocked
+          minBudget: 1
+          maxBudget: 100000`}
+  ts={`rateLimiters: {
+  budgets: [{ id: "alchemy-global", rules: [{ method: "*", maxCount: 300, period: "second" }] }],
+},
+projects: [{
+  upstreams: [{
+    endpoint: "https://eth-mainnet.g.alchemy.com/v2/\${ALCHEMY_KEY}",
+    rateLimitBudget: "alchemy-global",
+    rateLimitAutoTune: {
+      enabled: true,
+      // 30s: faster reaction than the 1-minute default
+      adjustmentPeriod: "30s",
+      errorRateThreshold: 0.1,
+      // Restore gently, cut hard
+      increaseFactor: 1.1,
+      decreaseFactor: 0.7,
+      // Never let auto-tuner drive to 0 (= always-blocked)
+      minBudget: 1,
+      maxBudget: 100000,
+    },
+  }],
+}]`}
+/>
 
-### Redis store with TLS
+**4. Network-level admission cap on heavy methods to protect proxy capacity.** After an
+incident where a single user's burst of `eth_getBlockReceipts` calls filled all Fly proxy
+connections for minutes, production now hard-caps just the methods empirically observed
+stacking up connections. Light methods like `eth_blockNumber` are intentionally not
+restricted — the cap is surgical, not global:
 
-```yaml
-rateLimiters:
-  store:
-    driver: redis
-    redis:
-      uri: rediss://redis.internal:6380
-      username: erpc
-      tls:
-        enabled: true
-        caFile: /etc/ssl/redis-ca.crt
-        certFile: /etc/ssl/redis-client.crt
-        keyFile: /etc/ssl/redis-client.key
-      getTimeout: 3s
-```
+<ConfigTabs
+  path="rateLimiters + projects[].networks[]"
+  yaml={`rateLimiters:
+  budgets:
+    - id: cronos-mainnet
+      rules:
+        # Healthy peak for receipt methods is ~5 RPS fleet-wide;
+        # 100 RPS gives 20× headroom while still protecting proxy capacity.
+        - method: "eth_getBlockReceipts|eth_getTransactionReceipt"
+          maxCount: 100
+          period: second
+        # Trace/debug requests are large and slow — 30 RPS matches
+        # their typical low volume and prevents runaway archive crawls.
+        - method: "debug_*|trace_*|arbtrace_*"
+          maxCount: 30
+          period: second
+projects:
+  - id: main
+    networks:
+      - evm:
+          chainId: 25
+        alias: cronos-mainnet
+        # Network-level: the (N+1)th excess request gets 429-ed in <1ms
+        # instead of holding a proxy slot for up to 16s on a slow upstream.
+        rateLimitBudget: cronos-mainnet`}
+  ts={`rateLimiters: {
+  budgets: [{
+    id: "cronos-mainnet",
+    rules: [
+      // 100 RPS = 20× headroom over observed healthy peak
+      { method: "eth_getBlockReceipts|eth_getTransactionReceipt", maxCount: 100, period: "second" },
+      // Trace/debug: low expected volume, high slot cost if stuck
+      { method: "debug_*|trace_*|arbtrace_*", maxCount: 30, period: "second" },
+    ],
+  }],
+},
+projects: [{
+  id: "main",
+  networks: [{
+    evm: { chainId: 25 },
+    alias: "cronos-mainnet",
+    rateLimitBudget: "cronos-mainnet",
+  }],
+}]`}
+/>
 
-### Metrics reference
+**5. Isolated budget per vendor to prevent cross-chain auto-tune interference.** When
+multiple chains share a single vendor budget (e.g. `alchemy-global`) and the auto-tuner
+reacts to errors on one chain, it adjusts the budget for all chains. Isolating a
+high-traffic chain onto its own budget prevents a polygon 429 storm from cutting Ethereum's
+limit:
 
-| Metric | Labels | Notes |
+<ConfigTabs
+  path="rateLimiters.budgets[] + upstreams[].rateLimitBudget"
+  yaml={`rateLimiters:
+  budgets:
+    # Shared default for most chains
+    - id: alchemy-global
+      rules:
+        - method: "*"
+          maxCount: 300
+          period: second
+    # Isolated: polygon errors won't affect ethereum's tuned limit
+    - id: alchemy-polygon
+      rules:
+        - method: "*"
+          maxCount: 300
+          period: second
+projects:
+  - upstreams:
+      - id: eth-mainnet-alchemy
+        endpoint: "https://eth-mainnet.g.alchemy.com/v2/\${ALCHEMY_KEY}"
+        rateLimitBudget: alchemy-global
+      - id: polygon-alchemy
+        endpoint: "https://polygon-mainnet.g.alchemy.com/v2/\${ALCHEMY_KEY}"
+        # Isolated budget: auto-tuner reacting to polygon errors
+        # will not lower the limit for eth-mainnet-alchemy
+        rateLimitBudget: alchemy-polygon`}
+  ts={`rateLimiters: {
+  budgets: [
+    { id: "alchemy-global", rules: [{ method: "*", maxCount: 300, period: "second" }] },
+    // Isolated so polygon auto-tuner adjustments don't affect other chains
+    { id: "alchemy-polygon", rules: [{ method: "*", maxCount: 300, period: "second" }] },
+  ],
+},
+projects: [{
+  upstreams: [
+    { id: "eth-mainnet-alchemy", endpoint: "https://eth-mainnet.g.alchemy.com/v2/\${ALCHEMY_KEY}", rateLimitBudget: "alchemy-global" },
+    { id: "polygon-alchemy", endpoint: "https://polygon-mainnet.g.alchemy.com/v2/\${ALCHEMY_KEY}", rateLimitBudget: "alchemy-polygon" },
+  ],
+}]`}
+/>
+
+### Request/response behavior
+
+Full error code reference:
+
+| Error | HTTP status on wire | When produced |
 |---|---|---|
-| `erpc_rate_limiter_budget_max_count` | `budget`, `method` | Current configured/auto-tuned `maxCount` per rule. |
-| `erpc_rate_limit_requests_total` | `budget`, `category`, `user`, `network` | Total local checks performed. |
-| `erpc_rate_limit_within_limit_total` | `budget`, `category`, `user`, `network` | Requests allowed by the local limiter. |
-| `erpc_rate_limit_over_limit_total` | `budget`, `category`, `user`, `network` | Requests blocked. |
-| `erpc_auth_request_self_rate_limited_total` | `project`, `strategy`, `category` | Auth-layer over-limits. |
-| `erpc_project_request_self_rate_limited_total` | `project`, `category` | Project-layer over-limits. |
+| `ErrAuthRateLimitRuleExceeded` | 429 | Auth-level budget rule fires. Source: <SourceLink file="common/errors.go" lines="545" /> |
+| `ErrProjectRateLimitRuleExceeded` | 429 | Project-level budget rule fires. Source: <SourceLink file="common/errors.go" lines="1738" /> |
+| `ErrNetworkRateLimitRuleExceeded` | 429 | Network-level budget rule fires. |
+| `ErrUpstreamRateLimitRuleExceeded` | **200** (despite `ErrorStatusCode()=429`) | Upstream-level budget rule fires; wrapped into `ErrNoUpstreamsAvailable`. The `ErrorStatusCode()=429` only affects the gRPC adapter path. Source: <SourceLink file="common/errors.go" lines="1801-1821" /> |
+| `ErrRateLimitBudgetNotFound` | 200 (wrapped) | Budget ID typo — runtime error, not caught at startup. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="224" /> |
+| `ErrRateLimitRuleNotFound` | 200 (wrapped) | **No production call sites** — reserved for future use. Source: <SourceLink file="common/errors.go" lines="1723" /> |
 
-### Common pitfalls
+- **`rateLimiters` absent from config = full passthrough.** When `rateLimiters` is omitted entirely, `bootstrap()` logs `"no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used"` at debug level and returns immediately — no budgets are registered and every request is allowed. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="48-51" />
+- No response carries a `Retry-After` header from eRPC.
 
-- **`store` not set** — eRPC fails to start. `rateLimiters.store` is required even when using `memory`.
-- **`minBudget: 0` with auto-tuner enabled** — the tuner can drive `maxCount` to zero; set `minBudget: 1` or higher.
-- **`perUser: true` without auth** — unauthenticated requests error at the rule. Only use `perUser` on budgets assigned to auth-gated projects or strategies.
-- **`perIP: true` behind a load balancer without `trustedProxies`** — all requests appear as the LB IP; rate limits collapse to one counter. Set `server.trustedIPForwarders` and `server.trustedIPHeaders`.
-- **`memory` store in a multi-replica deployment** — each replica counts independently. You get N times the effective limit. Use `redis` for shared counting across replicas.
-- **Budget referenced but not defined** — the request is unmetered. Add the budget under `rateLimiters.budgets[]`.
-- **Rule order matters** — all matching rules are checked, not just the first. Put narrow rules (`eth_trace*`) before broad ones (`*`) if you want separate caps per method group.
-- **`getTimeout: 0` on Redis** — disables the fail-open timeout; a slow or unreachable Redis blocks all requests until it responds.
+### Best practices
+
+- **Set `minBudget` on auto-tuner to at least `1`.** Default `minBudget: 0` lets the
+  auto-tuner drive `maxCount` to zero (always-blocked). A floor of 10–20 preserves minimal
+  throughput during sustained provider pressure.
+- **Use `driver: redis` with distinct `cacheKeyPrefix` per environment.** Memory mode makes
+  each replica's limit independent (`effectiveLimit = maxCount × replicaCount`). Two Redis
+  deployments sharing a prefix merge counters across environments.
+- **Don't attach the same budget at both project and network scope.** Each layer increments
+  the counter independently — one request consumes two quota units.
+- **Prefer `method: "eth_getLogs"` rules over wildcard for expensive methods.** Wildcard
+  rules matched by the auto-tuner affect every method's `maxCount`, not just the one that
+  triggered the 429.
+- **Opt out of implicit auto-tune when you manage limits manually.** Adding `rateLimitBudget`
+  to an upstream silently enables the auto-tuner. Add `rateLimitAutoTune.enabled: false`
+  to any upstream where you want stable, manually-tuned limits.
+- **Never use `period: "2h"` or other compound durations.** Only the seven canonical
+  period names are accepted; `"2h"` parses successfully but is rejected at unmarshal time.
+- **Watch `erpc_rate_limiter_failopen_total`.** Sustained `reason="limit_timeout"` spikes
+  mean Redis is too slow; consider raising `getTimeout` or switching to memory mode for
+  low-latency deployments.
+
+### Edge cases & gotchas
+
+1. **`waitTime` is silently ignored with a warning.** The field exists for backward compatibility. Validation logs `"rateLimiter.*.budget.rules.*.waitTime is deprecated and will be ignored"` and discards the value. No queue or hold behaviour exists. Source: <SourceLink file="common/validation.go" lines="214-216" />
+2. **Auto-tuner is implicitly enabled when `rateLimitBudget` is set.** `SetDefaults` creates `RateLimitAutoTuneConfig{enabled: true}` when `rateLimitBudget != ""` and `rateLimitAutoTune == nil`. Explicitly set `rateLimitAutoTune.enabled: false` to prevent auto-adjustment. Source: <SourceLink file="common/defaults.go" lines="1674" />
+3. **Shared budget + two auto-tuners = last-writer wins.** If two upstreams share the same budget id, each has its own auto-tuner. Both independently call `AdjustBudgetByFactor` on the same rule objects; no locking between tuners. Source: [`upstream/upstream.go:L1321-L1339`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L1321-L1339)
+4. **Same budget at project + network layers double-counts.** Each check increments the counter independently. One request consumes two quota units when the same budget id is attached at both layers. Source: [`erpc/projects.go:L270`](https://github.com/erpc/erpc/blob/main/erpc/projects.go#L270), [`erpc/networks.go:L1112`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1112)
+5. **`ErrUpstreamRateLimitRuleExceeded` does NOT return HTTP 429 on the wire.** The HTTP status switch at `erpc/http_server.go:1484-1490` lists auth/project/network errors but omits the upstream error code. An upstream-level block wraps into `ErrNoUpstreamsAvailable` and returns HTTP 200 with a JSON-RPC error body. Source: [`erpc/http_server.go:L1484-L1490`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1484-L1490)
+6. **`ErrRateLimitBudgetNotFound` is a runtime error, not a startup error.** A typo in `rateLimitBudget` is not caught at config validation; the error fires on the first request to hit that code path. Source: [`upstream/ratelimiter_registry.go:L224`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_registry.go#L224)
+7. **`maxCount: 0` blocks everything.** Envoy sets `overLimitThreshold=0`; any increment produces `OVER_LIMIT` immediately. To disable a budget, remove the `rateLimitBudget` reference rather than setting `maxCount: 0`. Source: [`upstream/ratelimiter_budget.go:L109-L119`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go#L109-L119)
+8. **`perIP` / `perUser` / `perNetwork` fall back to a global counter when the value is empty or `"n/a"`.** IP-less callers (e.g. non-HTTP transports) all share one counter, potentially allowing far more traffic than intended for that scope. Source: [`upstream/ratelimiter_budget.go:L256-L264`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go#L256-L264)
+9. **Memory store is per-process.** In a multi-replica deployment, each instance has independent counters; effective cluster limit = `maxCount × instanceCount`. Use `driver: redis` for shared counting. Source: [`upstream/ratelimiter_mem_cache.go:L1-L30`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_mem_cache.go#L1-L30)
+10. **Redis `cacheKeyPrefix` collision.** Two eRPC deployments sharing a Redis instance with the same prefix will merge counters across deployments. Use distinct prefixes per environment. Source: [`upstream/ratelimiter_registry.go:L75-L76`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_registry.go#L75-L76)
+11. **`store` block is auto-created with `driver="memory"` when absent.** Declaring `rateLimiters:` without `store.driver: redis` silently uses memory even if Redis fields are present. No warning is emitted. Source: <SourceLink file="common/defaults.go" lines="2763-2769" />
+12. **Wildcard rules affect auto-tuner scope broadly.** A rule `method: "eth_*"` matched by `eth_call` will have its `maxCount` adjusted whenever any `eth_*` method hits the error threshold — not only the method that triggered the change. Source: [`upstream/ratelimiter_autotuner.go:L113`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_autotuner.go#L113)
+13. **Period `"2h"` is rejected.** `time.ParseDuration("2h")` succeeds but `2*time.Hour` does not equal any canonical period. Only exact matches to `second`, `minute`, `hour`, `day`, `week`, `month`, `year` (and their aliases) are accepted. Source: <SourceLink file="common/config.go" lines="1924-1944" />
+14. **Redis DoLimit goroutines outlive their callers.** After `getTimeout` fires, the goroutine continues running and completes the Redis write. The counter is updated even though the caller was allowed through. This prevents counter drift but means Redis receives more writes than the caller observes. Source: [`upstream/ratelimiter_budget.go:L349`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go#L349)
+15. **Auto-tuner `adjustmentPeriod` clock resets on insufficient samples.** `lastAdjustments[method]` is updated at the start of `maybeAdjust` regardless of whether an actual adjustment occurs. A sustained pattern of exactly 9 requests per period (below the 10-sample floor) will perpetually reset the clock and prevent any evaluation. Source: [`upstream/ratelimiter_autotuner.go:L94`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_autotuner.go#L94)
+16. **Auto-tuner only increases when `errorRate == 0.0` exactly.** Partial improvement in `(0, threshold]` produces no adjustment — budget will not grow back until error rate reaches exactly zero. Source: [`upstream/ratelimiter_autotuner.go:L107-L112`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_autotuner.go#L107-L112)
+17. **`minBudget: 0` is no floor.** Default `minBudget=0` means no clamping floor — the auto-tuner can drive `maxCount` to 0, making the budget always-blocked. Set to at least 1. Source: <SourceLink file="common/config.go" lines="1057" />
+18. **`nearLimitRatio` has no effect on blocking decisions.** eRPC only inspects `OVER_LIMIT`; `NEAR_LIMIT` is never surfaced. The field only affects internal Envoy stats counters, which are not exported to Prometheus. Source: [`upstream/ratelimiter_budget.go:L306`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go#L306)
+19. **No enforcement on nil request when all rules are non-scoped.** If `req == nil` is passed and all matching rules have `perIP=false`, `perUser=false`, `perNetwork=false`, validation does not reject the nil request — it proceeds with the method-only descriptor. Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="188-191" />
+20. **`ErrRateLimitRuleNotFound` has no production call sites.** The error type is defined in `common/errors.go` but no production code calls `NewErrRateLimitRuleNotFound` — it appears reserved for future use. Source: <SourceLink file="common/errors.go" lines="1723" />
+21. **Admission cap floor of 256 applies regardless of pool size.** Even with `connPoolSize: 1`, the admission cap is 256. Small pools on low-traffic instances still allow 256 concurrent Redis calls per budget before shedding. Source: <SourceLink file="upstream/ratelimiter_registry.go" lines="281-291" />
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_rate_limits_total` | counter | `project, network, vendor, upstream, category, finality, user, agent_name, budget, scope, auth, origin` | A budget rule denies a request. `origin` ∈ `{auth, project, network, upstream}` |
+| `erpc_rate_limiter_budget_max_count` | gauge | `budget, method, scope` | Set at budget initialization and on every auto-tuner adjustment |
+| `erpc_rate_limiter_failopen_total` | counter | `project, network, user, agent_name, budget, category, reason` | Rate limiter allowed a request due to error; `reason` ∈ `{admission_full, limit_timeout}` |
+| `erpc_rate_limiter_remote_inflight` | gauge | `budget` | Incremented when a Redis DoLimit goroutine starts; decremented on completion or panic |
+| `erpc_rate_limiter_remote_admission_shedded_total` | counter | `budget` | Admission semaphore was full; request fail-opened without spawning a goroutine |
+| `erpc_rate_limiter_remote_duration_seconds` | histogram | `budget, result` | Duration of each Redis DoLimit call; `result` ∈ `{ok, over_limit, fail_open}` |
+| `erpc_rate_limiter_budget_decision_total` | counter | `project, network, category, finality, user, agent_name, budget, method, scope, decision` | **DEPRECATED** — replaced by `erpc_rate_limits_total`. Zero call sites in production code. Source: <SourceLink file="telemetry/metrics.go" lines="515" /> |
+| `erpc_unexpected_panic_total` | counter | `origin, store, fingerprint` | Redis DoLimit goroutine panicked and was recovered; `origin="ratelimiter-redis-dolimit"` |
+
+Trace spans: `RateLimiter.TryAcquirePermit` (attrs: `budget`, `method`) and `RateLimiter.DoLimit` (attrs: `budget`, `method`, `scope`, `result`, one per rule evaluated). Source: <SourceLink file="upstream/ratelimiter_budget.go" lines="161" />, <SourceLink file="upstream/ratelimiter_budget.go" lines="279" />
+
+**Log messages.**
+
+| Level | Message | When |
+|---|---|---|
+| `Debug` | `"no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used"` | `cfg == nil` at bootstrap. |
+| `Debug` | `"initializing rate limiter budget"` | Each budget initialized. |
+| `Debug` | `"preparing rate limiter rule: ..."` | Each rule added to budget. |
+| `Warn` | `"failed to initialize Redis rate limiter on first attempt (rate limiting will fail-open until connected, retrying in background)"` | Redis first-connect fails. |
+| `Info` | `"successfully connected to Redis for rate limiting"` | Redis connected. |
+| `Debug` | `"rate limiter timeout exceeded, failing open"` | `doLimitWithTimeout` timer fires. Logged at debug level only to avoid spam under sustained Redis pressure. |
+| `Warn` | `"adjusting rate limiter budget from: X to: Y"` | Auto-tuner changes `maxCount`. |
+| `Info` | `"auto-tuner: adjusting rate limit budget"` | Auto-tuner fires (method, prev, next, errorRate, samples, direction). |
+| `Warn` | `"rateLimiter.*.budget.rules.*.waitTime is deprecated and will be ignored"` | `waitTime != 0` at validation. |
+
+### Source code entry points
+
+- [`upstream/ratelimiter_registry.go:L1-L300`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_registry.go#L1-L300) — Registry creation, Redis connect (background retry), budget initialization, `GetBudget`, admission cap: `remoteAdmissionCap`
+- [`upstream/ratelimiter_budget.go:L1-L460`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go#L1-L460) — `RateLimiterBudget`: `TryAcquirePermit`, parallel rule evaluation, `evaluateRule`, `doLimitWithTimeout`, `AdjustBudgetByFactor`
+- [`upstream/ratelimiter_autotuner.go:L1-L145`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_autotuner.go#L1-L145) — `RateLimitAutoTuner`: `RecordSuccess`, `RecordError`, `maybeAdjust` with error-rate logic
+- [`upstream/ratelimiter_mem_cache.go:L1-L130`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_mem_cache.go#L1-L130) — In-process sharded bucketed counter cache; 64 FNV-1a shards, lazy O(#buckets) cleanup
+- [`common/config.go:L1806-L1950`](https://github.com/erpc/erpc/blob/main/common/config.go#L1806-L1950) — `RateLimiterConfig`, `RateLimitBudgetConfig`, `RateLimitRuleConfig`, `RateLimitPeriod` enum + marshal/unmarshal
+- [`common/defaults.go:L2763-L2820`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2763-L2820) — `SetDefaults` for all rate limit types; auto-tune defaults; implicit auto-tune population
+- [`common/validation.go:L199-L216`](https://github.com/erpc/erpc/blob/main/common/validation.go#L199-L216) — Budget/rule validation; `waitTime` deprecation warning
+- [`upstream/ratelimiter_leak_test.go`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_leak_test.go) — Goroutine leak tests reproducing the 2026-05-07 Redis contention incident and admission panic safety
+
+### Related pages
+
+- [Auth](/config/auth) — authentication strategies that set per-user `rateLimitBudget` via JWT claims or per-secret overrides.
+- [Projects](/config/projects) — project-level `rateLimitBudget` attachment.
+- [Hedge](/config/failsafe/hedge) — hedge bursts add request volume; combine with upstream rate limiters to cap the cost on expensive vendors.
+- [Retry](/config/failsafe/retry) — retries also add upstream request volume; upstream budgets apply per-attempt.
+- [Survive provider outages](/use-cases/survive-provider-outages) — how rate limiting and failsafe cooperate under provider pressure.
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>

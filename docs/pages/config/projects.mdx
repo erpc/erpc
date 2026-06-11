@@ -1,270 +1,278 @@
 ---
 title: Projects
-description: A project bundles a set of networks, upstreams, providers, auth, and rate-limit budgets — one eRPC instance can serve many projects (e.g. backend, indexer, frontend) with different cost/reliability profiles.
+description: One eRPC, many tenants — each project gets its own networks, upstreams, auth, and budgets.
 ---
 
-import { Callout } from "nextra/components";
-import {
-	ConfigTabs,
-	ConfigCode,
-	AISection,
-	LLMsTxtLink,
-} from "../../components";
-
-# Projects
+import { LLMsTxtLink, AISection, CapabilityGrid, PromptExample } from "../../components";
 
 <LLMsTxtLink />
 
-A single eRPC instance can host many **projects** side-by-side. Each project bundles its own networks, upstreams, providers, auth strategies, rate-limit budgets, CORS, header-forwarding rules, and method allow/deny lists. Typical split: separate `backend`, `indexer`, and `frontend` projects with very different cost/reliability profiles.
+# Projects
 
-A request's URL picks the project: `/<projectId>/<architecture>/<chainId>` or `/<projectId>/<alias>` (when a network alias is defined).
+A project is a tenant inside one eRPC deployment: your frontend, your indexer, and your test
+environment can each get their own endpoint, providers, auth rules, and rate-limit budget —
+served from a single process. Everything under this section configures what lives inside a
+project.
 
-**You can configure (per project):**
-
-- **Identity** — `id` (required; appears in logs, metrics, URLs)
-- **Networks & upstreams** — `networks[]`, `upstreams[]`, plus defaults (`networkDefaults`, `upstreamDefaults`)
-- **Vendor providers** — `providers[]` (lazy-load chains by API key — see [Providers](/config/projects/providers))
-- **Auth & CORS** — `auth.strategies[]`, `cors`
-- **Rate limits** — `rateLimitBudget` (project-wide budget)
-- **Method allow/deny** — project-level `allowMethods` / `ignoreMethods`
-- **Header policy** — `forwardHeaders` (whitelist client headers to pass to upstreams)
-- **User-agent tracking** — `userAgentMode: simplified | raw`
-- **Upstream scoring & routing** — `routingStrategy`, `scoreGranularity`, `scoreRefreshInterval`, `scoreMetricsWindowSize`, `scorePenaltyDecayRate`, `scoreSwitchHysteresis`, `scoreMinSwitchInterval`, `scoreMetricsMode`
-
-## Minimum useful config
-
-```yaml
-projects:
-  - id: main
-    upstreams:
-      - endpoint: alchemy://YOUR_API_KEY
-```
-
-That's it — chains are auto-discovered from the upstream, defaults apply for everything else.
-
-## Three projects with different profiles
-
-A typical setup: a public-facing frontend, an internal indexer, and a backend service. Each gets its own rate limits, auth, and method allowlist.
-
-<ConfigTabs
-	path="projects[]"
-	focus="3-8,15-22,29-35"
-	yaml={`projects:
-  # Public frontend — JWT auth, read-only methods, tight rate limit
-  - id: frontend
-    auth:
-      strategies:
-        - type: jwt
-          jwt:
-            verificationKeys: { "kid-1": "\${JWT_PUB_KEY}" }
-            allowedIssuers: ["https://my-app.example"]
-    rateLimitBudget: frontend-tier
-    allowMethods: ["eth_call", "eth_blockNumber", "eth_chainId", "eth_getLogs", "eth_getBalance"]
-    upstreams:
-      - endpoint: alchemy://\${ALCHEMY_KEY}
-
-  # Internal indexer — no auth, full method surface, large budget
-  - id: indexer
-    rateLimitBudget: indexer-tier
-    forwardHeaders: ["X-Indexer-Job", "X-Request-Trace"]
-    networks:
-      - architecture: evm
-        evm: { chainId: 1 }
-        directiveDefaults:
-          retryEmpty: true
-    upstreams:
-      - endpoint: \${INDEXER_RPC_URL}
-
-  # Backend services — secret auth, debug methods allowed
-  - id: backend
-    auth:
-      strategies:
-        - type: secret
-          secret: { value: \${BACKEND_SECRET} }
-    allowMethods: ["*", "debug_*", "trace_*"]
-    rateLimitBudget: backend-tier
-    upstreams:
-      - endpoint: \${ARCHIVE_NODE_URL}`}
-	ts={`import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "frontend",
-      auth: { strategies: [{ type: "jwt", jwt: { verificationKeys: { "kid-1": process.env.JWT_PUB_KEY }, allowedIssuers: ["https://my-app.example"] } }] },
-      rateLimitBudget: "frontend-tier",
-      allowMethods: ["eth_call", "eth_blockNumber", "eth_chainId", "eth_getLogs", "eth_getBalance"],
-      upstreams: [{ endpoint: \`alchemy://\${process.env.ALCHEMY_KEY}\` }],
-    },
-    {
-      id: "indexer",
-      rateLimitBudget: "indexer-tier",
-      forwardHeaders: ["X-Indexer-Job", "X-Request-Trace"],
-      networks: [{ architecture: "evm", evm: { chainId: 1 }, directiveDefaults: { retryEmpty: true } }],
-      upstreams: [{ endpoint: process.env.INDEXER_RPC_URL }],
-    },
-    {
-      id: "backend",
-      auth: { strategies: [{ type: "secret", secret: { value: process.env.BACKEND_SECRET } }] },
-      allowMethods: ["*", "debug_*", "trace_*"],
-      rateLimitBudget: "backend-tier",
-      upstreams: [{ endpoint: process.env.ARCHIVE_NODE_URL }],
-    },
-  ],
-});`}
+<CapabilityGrid
+  columns={3}
+  items={[
+    { title: "Networks", href: "/config/projects/networks", summary: "Each chain your project serves, with aliases and per-chain tweaks." },
+    { title: "Upstreams", href: "/config/projects/upstreams", summary: "The RPC endpoints behind your project and how they behave." },
+    { title: "Providers", href: "/config/projects/providers", summary: "One API key that unlocks every chain a vendor supports." },
+    { title: "Selection & scoring", href: "/config/projects/selection-policies", summary: "How eRPC decides which upstream deserves the next request." },
+    { title: "CORS", href: "/config/projects/cors", summary: "Serve browsers directly, on your own origin rules." },
+    { title: "Static responses", href: "/config/projects/static-responses", summary: "Answer chosen methods instantly without touching any upstream." },
+    { title: "Shadow upstreams", href: "/config/projects/shadow-upstreams", summary: "Audition a new provider on live traffic, risk-free." },
+  ]}
 />
 
-## Sub-pages
+## Agent reference
 
-- [Networks](/config/projects/networks) — per-chain failsafe, selection, integrity, static responses
-- [Upstreams](/config/projects/upstreams) — RPC endpoints, vendor shorthands, block-availability, scoring
-- [Providers](/config/projects/providers) — one-line vendor onboarding
-- [Selection policies](/config/projects/selection-policies) — JS DSL for choosing which upstreams handle a request
-- [CORS](/config/projects/cors) — origin / method / header rules for browser callers
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-<AISection title="Copy for your AI assistant — full ProjectConfig reference">
+<PromptExample
+	n={1}
+	title="add a second project for my indexer"
+	defaultOpen
+	prompt={`I want to create a second eRPC project in my eRPC config for my indexer traffic — separate
+upstreams, longer timeouts, and a different rate-limit budget from my frontend project.
+Walk me through setting up projects[].id, upstreams, networks, and auth. Also point me
+at the child pages I should read for each section. Reference:
+https://docs.erpc.cloud/config/projects.llms.txt`}
+/>
 
-### `ProjectConfig` — every field
+<PromptExample
+	n={2}
+	title="understand project URL routing"
+	prompt={`Explain how eRPC routes requests to the right project based on the URL structure, and
+how projects[].id maps to the endpoint path. I want to know the exact URL pattern and
+any multi-tenant gotchas before I deploy. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/projects.llms.txt`}
+/>
 
-| Field | Type | Notes |
+<AISection title="Projects — agent starting points">
+
+This page is an orientation hub. Implementation detail lives in the child pages — fetch their
+machine-readable companions:
+
+- [Networks](/config/projects/networks) · [Upstreams](/config/projects/upstreams) · [Providers](/config/projects/providers)
+- [Selection & scoring](/config/projects/selection-policies) · [CORS](/config/projects/cors)
+- [Static responses](/config/projects/static-responses) · [Shadow upstreams](/config/projects/shadow-upstreams)
+
+Project-level config keys: `projects[].id`, `projects[].auth`, `projects[].cors`,
+`projects[].networkDefaults`, `projects[].upstreamDefaults`, `projects[].rateLimitBudget`,
+`projects[].healthCheck`, `projects[].providers`, `projects[].upstreams`, `projects[].networks`.
+Each is documented exhaustively in the child page whose topic it belongs to; multi-tenant
+behavior (URL shape `/{projectId}/{architecture}/{chainId}`) is covered in
+[URL structure](/operation/url).
+
+## How it works
+
+**Isolation boundaries.** `ProjectsRegistry` is built once at startup and eagerly registers every `projects[]` entry. Per project: a health tracker (rolling-window scorer), a providers registry, an upstreams registry, an optional auth registry (only when `auth` is configured), a selection-policy JS runtime, and a networks registry. Shared across projects: the rate-limiters registry, shared-state registry, the EVM JSON-RPC cache (project-scoped at network-prepare time via `evmJsonRpcCache.WithProjectId(projectId)`), the vendors registry, and the proxy-pool registry. Duplicate project ids fail startup with `ErrProjectAlreadyExists`.
+
+**Request routing (HTTP).** `handleRequest` first applies **domain aliasing**: each `server.aliasing.rules[]` entry is matched against the request `Host` (port stripped) with a wildcard; the first match pre-selects `projectId`/`architecture`/`chainId`. Then `parseUrlPath` fills remaining values from path segments. A trailing `/healthcheck` segment, or any non-POST/non-OPTIONS method (e.g. `GET`), flags a healthcheck rather than an RPC call. Project resolution via `erpc.GetProject` — unknown id returns `ErrProjectNotFound` → HTTP 404.
+
+**gRPC routing.** The project comes from `x-erpc-project` metadata (required, else `InvalidArgument`); chain from `x-erpc-chain-id`; architecture from `x-erpc-architecture`, defaulting to `"evm"`. The shared `RequestProcessor` then performs auth + forward identically to HTTP. For query streams, `AcquireRateLimitPermit` is called explicitly before the query executor because streams bypass `Forward`.
+
+**Per-request pipeline inside a project.** Each entry of a (possibly batched) request body is processed in its own goroutine: payload validation → `forwardHeaders` capture (wildcard match against incoming header names; matched values forwarded to upstream HTTP requests) → `ignoreMethods`/`allowMethods` gate (allow overrides ignore; rejected methods return JSON-RPC error `-32601` without touching auth or upstreams) → auth payload extraction from query/headers → `project.AuthenticateConsumer` (no-op returning nil user when project has no auth config) → network id resolution (from path or `"networkId"` field in body; lazy network bootstrap on first use) → directive defaults + HTTP enrichment → `project.Forward`.
+
+**`PreparedProject.Forward`.** Resolves the network (lazy-loads on first request; lazily created network configs are exposed back into `project.Config.Networks` via `ExposeNetworkConfig`), sets it on the request **before** rate limiting so metrics have the network label, then `AcquireRateLimitPermit` enforces the project-level budget. After that the "requests received" counter fires (so project-rate-limited requests are **not** counted as received). For EVM a pre-forward hook may short-circuit entirely (e.g. `eth_chainId` served statically, cache-affecting normalizations for `eth_blockNumber`/`eth_call`/`eth_getLogs`/`trace_filter`), otherwise `network.Forward` plus a network post-forward hook runs. If the network has shadow upstreams the response is cloned and mirrored asynchronously.
+
+**Rate-limit layering.** Project-level: `projects[].rateLimitBudget` names a budget in global `rateLimiters.budgets[]`; `AcquireRateLimitPermit` evaluates rules matching the method and calls `TryAcquirePermit(... origin="project")`; over-limit → `ErrProjectRateLimitRuleExceeded` → HTTP 429. Auth-level: each auth strategy may carry its own `rateLimitBudget`, overridable per-user (JWT claim / database record); checked inside `Authenticate` after a strategy succeeds, over-limit → `ErrAuthRateLimitRuleExceeded` → 429. Network- and upstream-level budgets are separate layers. **All layers fail open**: no store configured, Redis not yet connected, Redis timeout, or admission-semaphore saturation all allow the request.
+
+**CORS.** Two CORS surfaces: admin (`admin.cors`, checked before admin request handling) and per-project (`projects[].cors`, checked right after project resolution). `handleCORS`: if the request carries **no `Origin` header it is always allowed** (no point enforcing CORS for non-browser clients — eRPC treats CORS as a soft deterrent, not a security boundary). With an Origin present, each `allowedOrigins` pattern is evaluated with a wildcard/boolean match. Allowed origin → echo the origin in `Access-Control-Allow-Origin` plus methods/headers/expose/credentials/max-age headers; OPTIONS preflight then terminates with 204. Disallowed origin → **no CORS headers but the request still proceeds** (browser blocks it; curl etc. succeed), except OPTIONS which gets a bare 204. CORS for a project only runs when `cors` is configured (nil → OPTIONS falls through to the JSON-RPC body parser).
+
+**Auth payload extraction precedence (HTTP).** `?token=` (deprecated, highest priority) → `?secret=` → header `X-ERPC-Secret-Token` → `Authorization: Basic …` (password half = secret; username ignored) → `Authorization: Bearer …` (JWT) → `?jwt=` → `?signature=&message=` (SIWE; message may be base64) → headers `X-Siwe-Message` + `X-Siwe-Signature` → fallback type `network` (client-IP based).
+
+**Consumer authentication.** `AuthRegistry.Authenticate`: nil payload → 401; zero strategies → allow (nil user). Iterate strategies in order; skip non-applicable (method filter / unsupported payload type); first success attaches a `User` to the request and enforces the strategy's rate-limit budget. If every applicable strategy errors, errors are joined into one `ErrAuthUnauthorized`. Auth rate-limit denial still returns the authenticated user alongside the 429 error, so `user` labels remain populated on rate-limit metrics.
+
+**Admin RPCs.** `erpc_project(params: [projectId])` → `{config, health}`; `erpc_taxonomy` → all projects/networks/upstreams with aliases; API-key CRUD resolves the project's database-auth connector; cordon RPCs resolve upstreams through the project registry. Admin auth itself is global (`admin.auth`), not per-project; requests to an instance without `admin` config return `ErrAuthUnauthorized` "admin is not enabled for this project".
+
+**Healthcheck and projects.** No project in path → all projects evaluated; a project with zero initialized upstreams lazily prepares upstreams for its static networks before evaluating; providers-only projects with no initialized upstreams report healthy with an explanatory message.
+
+**HTTP status code mapping.** 400 invalid path/unmarshal/invalid request; 401 `ErrAuthUnauthorized`; 404 `ErrProjectNotFound`/`ErrNetworkNotFound`; 429 `ErrAuthRateLimitRuleExceeded`/`ErrProjectRateLimitRuleExceeded`/`ErrNetworkRateLimitRuleExceeded`/capacity; everything else 200 (JSON-RPC app errors). The top-level fatal-error writer forces 200 for POST per JSON-RPC convention.
+
+**Wildcard/boolean pattern grammar.** Used by CORS origins, aliasing domains, `forwardHeaders`, `ignoreMethods`/`allowMethods`, and rate-limit rule methods. Tokens: `|` (OR), `&` (AND), `!` (NOT), parentheses. Leaf patterns are glob matches where `*` = any sequence, `?` = exactly one char, **`.` = any single character** (not a literal dot). Operator precedence: NOT \> AND \> OR. For values starting with `0x`, prefixes `>=`, `<=`, `>`, `<`, `=` enable hex/decimal numeric comparison. No escape syntax exists.
+
+## Config schema
+
+### `projects[]` — ProjectConfig
+
+| Dotted path | Type | Default | Behavior / interactions |
+|---|---|---|---|
+| `projects` | `[]*ProjectConfig` | If empty/nil: a default project `id: "main"` is injected with `server.aliasing.rules: [{matchDomain: "*", serveProject: "main"}]` so `/evm/123` works without a project segment. The injected project carries opinionated `networkDefaults` (`getLogsMaxAllowedRange: 30000`, `getLogsSplitOnError: true`, retry 5 attempts, timeout 120 s, hedge quantile 0.7 max 2) and `upstreamDefaults` (`getLogsAutoSplittingRangeThreshold: 5000`, retry 1 attempt delay 500 ms, timeout 60 s). Validation requires `projects` to be non-nil after defaulting. | Config root |
+| `projects[].id` | string | — (required) | Used as the `project` label on nearly every metric, in URL path routing, gRPC `x-erpc-project`, admin RPC params. Uniqueness enforced at registration: duplicate → `ErrProjectAlreadyExists`. |
+| `projects[].auth` | `*AuthConfig` | `nil` (no auth → all requests allowed; `AuthenticateConsumer` returns `(nil, nil)`) | When set, an auth registry is built at registration. Requires ≥1 strategy. |
+| `projects[].cors` | `*CORSConfig` | `nil` (no CORS handling at all; OPTIONS not short-circuited) | Checked after project resolution. |
+| `projects[].providers` | `[]*ProviderConfig` | If both `providers` and `upstreams` are empty: two default providers are injected: `{id: "public", vendor: "repository"}` and `{id: "envio", vendor: "envio"}`. | Unique ids required. Per-project providers registry. |
+| `projects[].upstreamDefaults` | `*UpstreamConfig` | `nil` | Applied to every upstream via `ApplyDefaults` before that upstream's own `SetDefaults`; also passed to the providers registry. |
+| `projects[].upstreams` | `[]*UpstreamConfig` | `nil` | Shorthand non-http(s)/grpc endpoints (e.g. `alchemy://KEY`) are converted into providers and removed from the list at `SetDefaults` time. Requires ≥1 of `upstreams`/`providers`. Unique ids required. |
+| `projects[].networkDefaults` | `*NetworkDefaults` | `nil` | Applied to statically defined networks at `SetDefaults` and to lazy-loaded networks at first request. Its own `rateLimitBudget` is network-level, distinct from project-level. |
+| `projects[].networks` | `[]*NetworkConfig` | `nil` | Networks not listed are lazily created on first request and the resulting config is appended back into `Config.Networks` (visible via admin `erpc_project`). Unique network ids and unique aliases required. |
+| `projects[].rateLimitBudget` | string | `""` (no project-level limiting) | Names a budget id under global `rateLimiters.budgets[]`. Enforced per request in `AcquireRateLimitPermit`. Must exist in `rateLimiters` — unknown budget fails startup. |
+| `projects[].userAgentMode` | `"simplified"` \| `"raw"` | `""` → treated as `simplified` at request time | `simplified` buckets the User-Agent into ~20 low-cardinality names (curl, viem, ethers, chrome, …); `raw` stores it verbatim (high metric cardinality). Used for the `agent_name` metric label. Query param `?user-agent=` takes precedence over the header. |
+| `projects[].forwardHeaders` | `[]string` (wildcard patterns) | `nil` (forward nothing) | Each pattern is wildcard-matched against every incoming header name; matches are forwarded to the upstream HTTP request. **FOOTGUN**: values are stored under the **pattern** key, so a wildcard pattern like `X-Custom-*` forwards the value under the literal header name `X-Custom-*`, not the original header name. Exact names work as expected. |
+| `projects[].ignoreMethods` | `[]string` (wildcard) | `nil` (nothing ignored) | If any pattern matches the JSON-RPC method, the method is rejected — unless re-allowed by `allowMethods`. Rejection is JSON-RPC error `code: -32601` ("method not supported: X") returned without auth/upstream work. |
+| `projects[].allowMethods` | `[]string` (wildcard) | `nil` | Overrides `ignoreMethods` (e.g. `ignoreMethods: ["*"]` + `allowMethods: ["eth_getLogs"]` = only eth_getLogs). **NOTE**: `allowMethods` alone does NOT create an allowlist — a method matching neither list is still served (initial `shouldHandleMethod = true`). |
+| `projects[].scoreMetricsWindowSize` | Duration | `0` → falls back to **1 minute** at runtime | Rolling window of the per-upstream health tracker (10 sliding buckets). **FOOTGUN**: source-code comments in two places say "10m" but the actual code value is `var ScoreMetricsWindowSize = 1 * time.Minute`. To get a 10-minute window you must set `scoreMetricsWindowSize: 10m` explicitly. See [source](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go#L50). |
+
+### `projects[].cors.*` / `admin.cors.*` — CORSConfig
+
+| Dotted path | Type | Default (after `SetDefaults`) | Behavior |
+|---|---|---|---|
+| `cors.allowedOrigins` | `[]string` | `["*"]` programmatically — but `Validate()` errors if the field is missing/empty for explicit `cors:` blocks: `*.cors.allowedOrigins is required`. | Each entry is a full wildcard/boolean pattern matched against the `Origin` header value. Match errors are logged and that pattern skipped. |
+| `cors.allowedMethods` | `[]string` | `["GET","POST","OPTIONS"]` | Joined with `", "` into `Access-Control-Allow-Methods`. Informational for the browser; no server-side enforcement. |
+| `cors.allowedHeaders` | `[]string` | `["content-type","authorization","x-erpc-secret-token"]` | Joined into `Access-Control-Allow-Headers`. |
+| `cors.exposedHeaders` | `[]string` | `nil` (no default) | Joined into `Access-Control-Expose-Headers`. **When nil** (the common default), `strings.Join(nil, ", ")` returns `""`, so the server sends `Access-Control-Expose-Headers: ""`. Browsers interpret this as zero extra headers exposed — any frontend JS call to `response.headers.get('X-ERPC-Cache')` returns `null`. eRPC emits rich diagnostic response headers (`X-ERPC-Cache`, `X-ERPC-Upstream`, `X-ERPC-Duration`, `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts`, `X-ERPC-Upstream-Retries`, `X-ERPC-Upstream-Hedges`, `X-ERPC-Network-Attempts`, `X-ERPC-Network-Retries`, `X-ERPC-Network-Hedges`, `X-ERPC-Consensus-Slots`, `X-ERPC-Consensus-Disputes`, `X-ERPC-Consensus-Low-Participants`, `X-ERPC-Cache-Attempts`, `X-ERPC-Cache-Retries`, `X-ERPC-Cache-Hedges`) — browser clients cannot read any of these without an explicit `exposedHeaders` list. Set e.g. `exposedHeaders: ["X-ERPC-Cache", "X-ERPC-Upstream", "X-ERPC-Duration", "X-ERPC-Attempts"]`. There is no wildcard shorthand accepted by current browsers. |
+| `cors.allowCredentials` | `*bool` | `false` | Only when explicitly `true` is `Access-Control-Allow-Credentials: true` emitted. |
+| `cors.maxAge` | int (seconds) | `3600` if `0` | Emitted as `Access-Control-Max-Age` only when `> 0`. |
+| `admin.cors` | `*CORSConfig` | If admin section exists and `cors` is nil: `{allowedOrigins: ["*"], allowCredentials: false}` then `SetDefaults` (safe because admin requires secret-token auth). | Applied to `/admin` before any admin handling. |
+
+### `projects[].auth.*` — AuthConfig
+
+| Dotted path | Type | Default | Behavior |
+|---|---|---|---|
+| `auth.strategies` | `[]*AuthStrategyConfig` | — (required, ≥1) | Evaluated in declaration order; first strategy that applies to the method, supports the extracted payload type, and authenticates successfully wins. |
+| `auth.strategies[].type` | `"secret"` \| `"jwt"` \| `"siwe"` \| `"network"` \| `"database"` | — (required; unknown type → startup `ErrInvalidConfig`) | Selects the strategy object; the matching sub-config must be present or startup fails. |
+| `auth.strategies[].ignoreMethods` | `[]string` (wildcard) | `nil` | Strategy skipped for matching methods. |
+| `auth.strategies[].allowMethods` | `[]string` (wildcard) | `nil` | Re-applies the strategy even when ignored (allow \> ignore). |
+| `auth.strategies[].rateLimitBudget` | string | `""` (no auth-level limiting) | Applied AFTER successful authentication. Per-user override `User.RateLimitBudget` (from `secret.rateLimitBudget`, `siwe.rateLimitBudget`, `network.rateLimitBudget`, JWT claim named by `jwt.rateLimitBudgetClaimName` (default `"rlm"`), or database record) takes precedence. Over-limit → `ErrAuthRateLimitRuleExceeded` (429). `TryAcquirePermit` is called with `origin = "auth"`. |
+| `auth.strategies[].database.connector.id` | string | — | Must be unique across database strategies in one project; referenced by admin API-key RPCs (`erpc_addApiKey` etc.). |
+
+### `server.aliasing.*` — AliasingConfig
+
+| Dotted path | Type | Default | Behavior |
+|---|---|---|---|
+| `server.aliasing.rules` | `[]*AliasingRuleConfig` | `nil` | First rule whose `matchDomain` wildcard-matches the request Host (port stripped) wins; later rules ignored. Match errors are logged and the rule skipped. |
+| `server.aliasing.rules[].matchDomain` | string (wildcard) | — | e.g. `"*"`, `"eth.mycompany.com"`. |
+| `server.aliasing.rules[].serveProject` | string | `""` | Pre-selects projectId; path may still override with an explicit 3-segment path. |
+| `server.aliasing.rules[].serveArchitecture` | string | `""` | Pre-selects architecture (only `"evm"` is valid). |
+| `server.aliasing.rules[].serveChain` | string | `""` | Pre-selects chainId. Combination project+chain WITHOUT architecture is rejected: "it is not possible to alias for project and chain WITHOUT architecture". |
+
+### `rateLimiters.budgets[].*` — global rate-limit budget config
+
+| Dotted path | Type | Default | Behavior |
+|---|---|---|---|
+| `rateLimiters.budgets[].id` | string | — | Referenced by `projects[].rateLimitBudget`, `auth.strategies[].rateLimitBudget`, network/upstream budgets. |
+| `rateLimiters.budgets[].rules[].method` | string (wildcard) | `"*"` if empty | A rule applies when the method matches (wildcard). |
+| `rateLimiters.budgets[].rules[].maxCount` | uint32 | — | Fixed-window limit per period. |
+| `rateLimiters.budgets[].rules[].period` | `second` \| `minute` \| `hour` \| `day` \| `week` \| `month` \| `year` | `second` if invalid; YAML accepts names, ints 0–6, or duration aliases (`"1s"`, `"24h"`, `"7d"`, …) | Fixed window unit. |
+| `rateLimiters.budgets[].rules[].perIP` / `perUser` / `perNetwork` | bool | `false` | Adds ip/user/network descriptor entries so counters are scoped per client IP / authenticated user id / network id. |
+| `rateLimiters.budgets[].rules[].waitTime` | Duration | `0` | Present in config; not consumed in the project-level path. |
+
+### Legacy project fields (YAML-only)
+
+These fields are read at load time, converted or warned, then erased. They are never visible after `LoadConfig`.
+
+| Field | Type | Behavior |
 |---|---|---|
-| `id` | string | **Required.** Unique within the eRPC instance. Used in URL routing (`/<id>/...`), logs, metrics labels, and admin API. Stable IDs are important — they're embedded in dashboards and alerts. |
-| `auth` | `AuthConfig` | Per-project auth strategies. See [Authentication](/config/auth). |
-| `cors` | `CORSConfig` | Per-project CORS policy. See [CORS](/config/projects/cors). |
-| `providers` | `ProviderConfig[]` | Vendor providers (auto-fan-out across all chains a vendor supports). See [Providers](/config/projects/providers). |
-| `upstreamDefaults` | `UpstreamConfig` | Default settings deep-merged into every entry in `upstreams[]`. Useful for shared `jsonRpc`, `failsafe`, or `proxyPool` defaults. |
-| `upstreams` | `UpstreamConfig[]` | RPC endpoints. See [Upstreams](/config/projects/upstreams). |
-| `networkDefaults` | `NetworkDefaults` | Default settings deep-merged into every entry in `networks[]` (including lazy-loaded ones). |
-| `networks` | `NetworkConfig[]` | Per-network overrides. See [Networks](/config/projects/networks). |
-| `rateLimitBudget` | string | ID of a budget under top-level `rateLimiters.budgets[]`. Project-wide limit, applied before any per-network or per-upstream limits. |
-| `userAgentMode` | `"simplified"\|"raw"` | How the client's `User-Agent` header is bucketed for metric labels. `simplified` (default) groups by family (Chrome, Firefox, Go-http-client, etc.) — keeps cardinality low. `raw` uses the unmodified string — high cardinality, useful for debugging. |
-| `forwardHeaders` | `string[]` | List of HTTP header names to forward from the client request to the outbound upstream call. The standard hop-by-hop headers (`Host`, `Connection`, etc.) are stripped regardless. Use for tracing headers (`X-Request-ID`, `traceparent`) or app-defined context. |
-| `ignoreMethods` | `string[]` | Project-level method **denylist** (matcher syntax). Blocks methods across every upstream in this project. Combine with `allowMethods` for fine-grained control. |
-| `allowMethods` | `string[]` | Project-level method **allowlist** (matcher syntax). When set, blocks every method NOT in the list. Implicitly sets `ignoreMethods: ["*"]` when `ignoreMethods` is not set. |
-| `scoreMetricsWindowSize` | duration | Rolling window the health tracker uses for its per-upstream counters (errorRate, p50/p70/p95 latency, throttledRate, misbehaviorRate). 10 sliding buckets spanning this duration. Default `1m`. Paired with the default `evalInterval: 15s` (4 metric samples per window) and `probeExcluded.minSamplesWindow: 60s` for symmetric ranking + re-admission behaviour. See [Health-tracker window](/config/projects/selection-policies#health-tracker-rolling-window) and [Advanced tuning](/config/projects/selection-policies#advanced-tuning-coupling-between-evalinterval-scoremetricswindowsize--probe-window) for the coupling between these three knobs. |
+| `routingStrategy` | string | **Semantic** — triggers eval synthesis. `"round-robin"` → synthesizes `rotateBy(ctx.tickCount)` per network. Any other non-empty value → synthesizes `sortByScore + stickyPrimary`. Deprecation warning emitted. |
+| `scoreSwitchHysteresis` | float64 | **Semantic** — triggers eval synthesis even without `routingStrategy`. Non-zero → synthesizes `sortByScore + stickyPrimary` eval with `stickyPrimary({ hysteresis: <value> })`. Zero but another semantic field present → defaults to `0.10`. |
+| `scoreMinSwitchInterval` | Duration | **Semantic** — triggers eval synthesis. Non-zero → synthesizes with `stickyPrimary({ ..., minSwitchInterval: '<duration>' })`. Zero but another semantic field present → defaults to `'30s'`. |
+| `scoreGranularity` | string | **Inert** — warning only, no behavior change. Previously controlled per-upstream vs per-method scoring. Replaced by `selectionPolicy.evalPerMethod`. |
+| `scorePenaltyDecayRate` | float64 | **Inert** — warning only, no behavior change. Previously modulated penalty recovery. No equivalent exists. |
+| `scoreMetricsMode` | string | **Inert** — warning only, no behavior change. Previously configured metrics aggregation. Replaced by `erpc_selection_*` metrics with fixed cardinality. |
+| `scoreRefreshInterval` | Duration | **Inert** — warning only, no behavior change. Previously set score-recalculation polling interval. Replaced by `selectionPolicy.evalInterval`. |
 
-Routing behaviour (which upstream is primary, when to flip, when to exclude, hysteresis, cooldowns, …) lives in **[`networks[].selectionPolicy`](/config/projects/selection-policies)**. The default policy gives you production-grade routing out of the box.
+**Legacy translation mechanics.** `ProjectConfig.UnmarshalYAML` captures all seven legacy fields. `LoadConfig` calls `legacy.TranslateFromConfig` **before** `SetDefaults` and `Validate`. Semantic fields present → per-network `selectionPolicy.evalFunc` synthesized UNLESS the network already has an explicit `selectionPolicy.eval` (modern fields always win). Inert fields only → warnings emitted, canonical default policy installs. After translation, `LegacyProject` is nil on every `ProjectConfig` — any code path that accesses it after `LoadConfig` always sees nil. **Migration**: remove all seven legacy fields and write an explicit `selectionPolicy.eval` using the chainable stdlib.
 
-### `clusterKey` — top-level (shares behavior across the project tree)
+## URL path → (project, architecture, chain) resolution
 
-The top-level `clusterKey` is **not** under `projects[]`; it sits at the root of the config. It identifies a logical group of eRPC replicas — useful when multiple instances coordinate via shared state.
+`parseUrlPath` cleans and splits the path; preselected values come from aliasing. Decision matrix (P=project, A=architecture, C=chain preselected):
 
-```yaml
-clusterKey: erpc-prod-eu                  # all replicas in EU prod share this key
+- **None preselected**: 1 seg → P; 2 segs → P + (network-alias resolve of seg2, else A); 3 segs → P/A/C; 0 segs → valid for healthcheck only; \>3 → error `must only provide /<project>/<architecture>/<chainId>`.
+- **P preselected**: 1 seg → alias resolve else A; 2 segs → A/C; 3 segs → full explicit override.
+- **P+A preselected**: 1 seg → alias resolve (must yield both) else C; 3 segs → full override.
+- **P+A+C preselected**: only `/` (or healthcheck) allowed; \>1 seg → error.
+- **A+C preselected**: 1 seg → P; 3 segs → full override.
+- **A only preselected**: 1 seg → P; 2 segs → P/C; 3 segs → full override; 0 segs allowed for global healthcheck.
+- **P+C without A** → error ("it is not possible to alias for project and chain WITHOUT architecture").
 
-server: # ...
-projects: # ...
-database:
-  sharedState:
-    connector:
-      driver: redis
-      redis: { uri: redis://... }
-    # When set, this overrides the top-level clusterKey for shared-state specifically.
-    # clusterKey: erpc-prod-eu-sharedstate
-```
+Post-checks: project required unless healthcheck; if A or C present, A must be `"evm"`; **any non-POST/non-OPTIONS method becomes a healthcheck**. `/admin` only with exactly one segment + POST/OPTIONS.
 
-If `database.sharedState.clusterKey` is set, it overrides the top-level value for shared-state operations only. For consistent behavior, leave only the top-level one set.
+**Network alias resolution.** Aliases are registered eagerly for static networks and lazily when a network is first prepared. `ResolveAlias(alias)` returns `(architecture, chainId)` or `("","")`. Duplicate alias with a different target keeps the first and logs a warning. Network ids must look like `evm:<int>`; alias misses in path-position fall through to being treated as an architecture, producing `architecture is not valid` for bogus aliases. If both path and body lack a network, the body's `"networkId"` field (e.g. `"evm:42161"`) is consulted; otherwise: `architecture and chain must be provided in URL ... or in request body ... or configured via domain aliasing`.
 
-### Defaults & merge semantics
+## Observability
 
-`networkDefaults` and `upstreamDefaults` are **deep-merged** into each entry:
+All metrics use the `erpc_` namespace.
 
-- Scalar fields (`rateLimitBudget`, `userAgentMode`, etc.) — the entry-level value wins if set.
-- Object fields (`evm`, `directiveDefaults`, `jsonRpc`) — deep merge per sub-field.
-- **Array fields are NOT merged** — if `networkDefaults.failsafe` is set and `networks[i].failsafe` is also set, the entry's array completely replaces the defaults. Same for `selectionPolicy`.
+| Metric | Labels | Notes |
+|---|---|---|
+| `erpc_cors_requests_total` | `project`, `origin` | Every request that carries an Origin header, before allow/deny. **NOTE**: the `project` label value is actually `r.URL.Path`, not the project id — cardinality grows with distinct request paths. |
+| `erpc_cors_preflight_requests_total` | `project`, `origin` | Allowed-origin OPTIONS preflights only. Same path-as-project label caveat. |
+| `erpc_cors_disallowed_origin_total` | `project`, `origin` | Origin present but no pattern matched. Same path-as-project label caveat. |
+| `erpc_network_request_received_total` | `project`, `network`, `category`, `finality`, `user`, `agent_name` | Fired in `Project.Forward` **after** project rate limiting — project-rate-limited requests are not counted here. |
+| `erpc_network_successful_request_total` | `project`, `network`, `vendor`, `upstream`, `category`, `attempt`, `finality`, `emptyish`, `user`, `agent_name` | Vendor/upstream = `"<cache>"` for cache hits, `"n/a"` when upstream missing. |
+| `erpc_network_failed_request_total` | `project`, `network`, `category`, `attempt`, `error`, `severity`, `finality`, `user`, `agent_name` | `error` = `common.ErrorFingerprint(err)`. |
+| `erpc_network_request_duration_seconds` | `project`, `network`, `vendor`, `upstream`, `category`, `finality`, `user` | Histogram. vendor/upstream = `"<error>"` on failure. |
+| `erpc_rate_limits_total` | `project`, `network`, `vendor`, `upstream`, `category`, `finality`, `user`, `agent_name`, `budget`, `scope`, `auth`, `origin` | Unified deny counter. Project layer: `origin="project"`, `auth=""`. Auth layer: `origin="auth"`, `auth="<type>:<index>"`. |
+| `erpc_rate_limiter_budget_max_count` | `budget`, `method`, `scope` | Gauge. |
+| `erpc_rate_limiter_failopen_total` | `project`, `network`, `user`, `agent_name`, `budget`, `category`, `reason` | Reasons: `admission_full` / `limit_timeout`. Monitor this to detect hard-enforcement gaps. |
+| `erpc_auth_failed_total` | `project`, `network`, `strategy`, `reason`, `agent_name` | Incremented inside auth strategies. |
+| `erpc_shadow_response_identical_total` | — | Shadow traffic comparison outcomes. |
+| `erpc_shadow_response_mismatch_total` | — | Mismatches log at error level with both hashes. |
+| `erpc_shadow_response_error_total` | — | Shadow request error outcomes. |
+| `erpc_network_evm_block_range_requested_total` | — | Block-range heatmap; emitted when a block number is extractable from the response. |
 
-### `userAgentMode` — concrete behavior
+Trace spans: `Project.Forward` (detail span), `Project.PreForwardHook`, `RateLimiter.TryAcquirePermit` (detail) and `RateLimiter.DoLimit` (client span with `budget`, `method`, `scope`, `result` attrs), `Project.executeShadowRequest`, and a request-level span via `common.StartRequestSpan`.
 
-The `User-Agent` header has very high natural cardinality (thousands of distinct strings even on a small site). The two modes:
+Notable logs: `registered project <id>` info at registration; `successfully forwarded request for network` (info); `CORS request from disallowed origin, continuing without CORS headers` (debug); `skipping duplicate alias registration with different target` (warn); `no projects found in config; will add a default 'main' project` (warn); `no providers or upstreams found in project; will use default 'public' endpoints repository` (warn).
 
-| Mode | Example header → metric label |
-|---|---|
-| `simplified` (default) | `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36...` → `Chrome` |
-| `raw` | `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36...` → `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36...` |
+## Edge cases & gotchas
 
-`simplified` buckets known agents — Chrome, Firefox, Safari, Edge, Brave, Curl, Go-http-client, Python-requests, Node-fetch, etc. Unknown agents fall through as `unknown`.
+1. **Requests without an `Origin` header bypass CORS entirely** — by design; eRPC treats CORS as a soft deterrent, not a security boundary.
+2. **Disallowed origins are NOT rejected**: non-OPTIONS requests proceed and get a normal JSON-RPC response, just without `Access-Control-*` headers; only the browser enforces blocking. OPTIONS gets a bare 204.
+3. **`.` matches any single character in glob patterns** (go-wildcard v2): `allowedOrigins: ["https://erpc.cloud"]` also matches `https://erpcXcloud`. Same applies to aliasing `matchDomain` and all wildcard fields. There is no escape syntax.
+4. **`forwardHeaders` stores values under the configured pattern, not the matched header name** — a wildcard pattern forwards upstream a literal header named like the pattern (e.g. `X-Custom-*`). Only exact-name patterns round-trip faithfully.
+5. **Project rate-limited requests never increment `erpc_network_request_received_total`** because `AcquireRateLimitPermit` runs before the counter; use `errc_rate_limits_total{origin="project"}` for those.
+6. **`scoreMetricsWindowSize` stale source-code comments**: two comments in the codebase say "10 minutes" (`common/config.go:530`, `erpc/projects_registry.go:131-132`), but the **actual** package-level variable is `var ScoreMetricsWindowSize = 1 * time.Minute` ([source](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go#L50)). If you omit `scoreMetricsWindowSize` expecting a stable 10 m default, you silently get 1 m: the rolling window rotates every 6 seconds, upstream scoring reacts 10× faster than expected. Set `scoreMetricsWindowSize: 10m` explicitly to get 10 minutes.
+7. **All rate limiting fails open**: no store configured, Redis still connecting, Redis call timeout (`limit_timeout`), or admission semaphore full (`admission_full`). Deployments needing hard guarantees must monitor `erpc_rate_limiter_failopen_total`.
+8. **`allowMethods` is not an allowlist by itself** — `shouldHandleMethod` starts `true`; without `ignoreMethods` everything is served regardless of `allowMethods`. To build an allowlist: `ignoreMethods: ["*"]` + `allowMethods: [...]`.
+9. **Unsupported-method responses normally carry `id: null`** due to an inverted error check before reading the request id in the error path.
+10. **`GET /myproject/evm/123` (or any non-POST/non-OPTIONS method) is a healthcheck**, not an RPC error.
+11. **OPTIONS to a project without `cors` configured is not short-circuited** — the early-return lives inside the `project.Config.CORS != nil` branch, so the OPTIONS request falls into JSON-RPC body parsing and errors.
+12. **CORS for a project can only run after project resolution succeeds**: unknown project → 404 with no CORS headers, which browsers may surface as a CORS failure rather than 404.
+13. **Lazy-loaded networks inherit `networkDefaults` and are appended into `project.Config.Networks`** at runtime (visible via admin `erpc_project`).
+14. **First aliasing rule wins; rule-match errors are logged and skipped.** An explicit full 3-segment path can always override aliased preselection.
+15. **Network aliases are per-project**; a duplicate alias targeting a different chain is ignored with a warning, keeping the first registration. Aliases must be unique within a project's static config.
+16. **Zero-project configs still validate** because `SetDefaults` injects the `main` project before `Validate` runs.
+17. **Project rate-limit test is fixed-window, not sliding** — rate-limit rules apply to a fixed time window; requests over the limit in the current window are denied regardless of past windows.
+18. **`projects[].rateLimitBudget` referencing an unknown budget fails startup** — but auth-strategy budgets and per-user (database/JWT-claim) budgets are resolved at request time and surface as runtime `ErrRateLimitBudgetNotFound`.
+19. **CORS metrics label `project` actually contains the URL path**, so cardinality grows with distinct request paths and you cannot group by real project id from these counters alone.
+20. **Secret auth via `Authorization: Basic`** uses only the password half; the username is ignored. The deprecated `?token=` query param still works and takes top precedence.
+21. **Auth rate-limit denial still returns the authenticated user** alongside the 429 error, so `user` labels remain populated on rate-limit metrics.
+22. **`exposedHeaders: nil` silently blocks browser access to all `X-ERPC-*` headers.** `strings.Join(nil, ", ")` returns `""`, so the server sends `Access-Control-Expose-Headers: ""`. Enumerate desired headers explicitly — no glob wildcard shorthand is accepted by current browsers.
+23. **Legacy scoring fields are consumed and erased before `SetDefaults`** — after `TranslateFromConfig` runs, `LegacyProject` is nil on every `ProjectConfig`. Admin RPCs and health endpoints always see nil for this field.
+24. **Inert legacy fields (`scoreGranularity`, `scorePenaltyDecayRate`, `scoreMetricsMode`, `scoreRefreshInterval`) do NOT synthesize an eval.** A config with only these four fields gets deprecation warnings but retains the full canonical default selection policy (`removeCordoned + keepHealthy + preferTag + sortByScore + stickyPrimary + probeExcluded`).
+25. **`routingStrategy: "score-based"` (or any non-`"round-robin"` non-empty string) synthesizes a `sortByScore + stickyPrimary` eval.** A per-network `selectionPolicy.eval` (new field) always wins over the synthesized legacy eval.
+26. **`scoreSwitchHysteresis` and `scoreMinSwitchInterval` are semantic fields that trigger eval synthesis even without `routingStrategy`.** If either is non-zero, a `sortByScore + stickyPrimary` eval is synthesized across all networks.
 
-Use `raw` only when actively debugging a particular client's behavior.
+## Source code entry points
 
-### `forwardHeaders` — what passes through
-
-By default, eRPC does not forward client headers to upstreams (other than the body and content-type machinery it creates itself). `forwardHeaders` is an explicit allowlist:
-
-```yaml
-projects:
-  - id: indexer
-    forwardHeaders:
-      - X-Request-ID
-      - traceparent           # W3C trace context
-      - X-Indexer-Job
-```
-
-Hop-by-hop headers (`Host`, `Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`) are stripped regardless of this list — that's a fundamental HTTP/1.1 invariant.
-
-Use for distributed tracing (forward `traceparent`/`tracestate`) and customer-supplied request context.
-
-### `ignoreMethods` / `allowMethods` — project-level vs upstream-level
-
-Both fields exist at:
-
-1. **Project level** — blocks across the whole project.
-2. **Upstream level** — blocks per upstream.
-
-The interaction:
-
-- A request is rejected by project-level `ignoreMethods` BEFORE any upstream is considered.
-- A request is rejected by upstream-level `ignoreMethods` only when that specific upstream would otherwise serve it.
-- `allowMethods` precedence is the same — project allow first, then upstream allow.
-- When `allowMethods` is set at either level and `ignoreMethods` is NOT, an implicit `ignoreMethods: ["*"]` applies.
-
-Use project-level for product-shape decisions ("this project never serves debug methods"). Use upstream-level for capability differences ("this archive node serves trace methods; this RPC vendor does not").
-
-### Routing & scoring tuning recipes
-
-**Stable production setup** (default — change nothing):
-
-```yaml
-routingStrategy: score-based
-scoreGranularity: upstream
-scoreRefreshInterval: 30s
-scorePenaltyDecayRate: 0.95
-scoreSwitchHysteresis: 0.10
-scoreMinSwitchInterval: 2m
-```
-
-**Fast failover** — when reliability matters more than upstream cost stability:
-
-```yaml
-scoreSwitchHysteresis: -1        # always pick the highest-scoring
-scoreMinSwitchInterval: -1       # no cooldown
-```
-
-**Reactive scoring** — for upstreams that degrade quickly:
-
-```yaml
-scorePenaltyDecayRate: 0.80      # recent metrics dominate
-scoreRefreshInterval: 10s        # faster ticks
-```
-
-**Per-method scoring** — when method profiles differ a lot:
-
-```yaml
-scoreGranularity: method
-```
-
-This triples the metric series count (one score per (network, method, upstream)) — pair with `scoreMetricsMode: compact` to manage cardinality.
-
-### Common pitfalls
-
-- **Two projects with the same `id`** — eRPC fails to start. IDs are checked at config load.
-- **`forwardHeaders` includes `Authorization`** — your upstream gets the client's auth header. Usually fine for vendor URLs (they ignore unknown auth schemes) but can confuse private upstreams. Be explicit about what's in the list.
-- **`allowMethods` set at project level but you also want admin/debug methods** — project-level `allowMethods` doesn't combine with upstream-level. Use one or the other, not both.
-- **`scoreGranularity: method` × hundreds of methods × many upstreams** — massive metric cardinality. Stick to `upstream` granularity unless you have a specific reason.
-- **`scoreSwitchHysteresis: 0`** — primary switches on every refresh tick. Use `0.10` (default) or higher for stability.
-- **`userAgentMode: raw` in production with a Grafana Cloud / hosted Prometheus** — can blow past cardinality limits in days. Stick to `simplified`.
+- [`erpc/projects.go`](https://github.com/erpc/erpc/blob/main/erpc/projects.go) — `PreparedProject`: per-tenant facade; `Forward` (metrics, shadow fan-out), `AcquireRateLimitPermit` (project budget), `AuthenticateConsumer`, lazy network-config exposure, health info.
+- [`erpc/projects_registry.go`](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go) — `ProjectsRegistry`: builds/boots all projects; per-project tracker/policy-engine/auth/upstreams/networks wiring; `ScoreMetricsWindowSize` fallback var.
+- [`erpc/erpc.go`](https://github.com/erpc/erpc/blob/main/erpc/erpc.go) — `ERPC` root object: constructs shared registries and the projects registry; admin auth registry.
+- [`erpc/http_server.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go) — HTTP entry: aliasing, `parseUrlPath`, `handleCORS`, per-request pipeline (forwardHeaders, method gates, auth, forward), status-code mapping.
+- [`erpc/request_processor.go`](https://github.com/erpc/erpc/blob/main/erpc/request_processor.go) — shared gRPC/query-stream pipeline.
+- [`erpc/grpc_server.go`](https://github.com/erpc/erpc/blob/main/erpc/grpc_server.go) — gRPC project selection via `x-erpc-project`/`x-erpc-chain-id` metadata.
+- [`erpc/networks_registry.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go) — per-project network lifecycle + alias registry; project-scoped cache binding.
+- [`erpc/admin.go`](https://github.com/erpc/erpc/blob/main/erpc/admin.go) — `erpc_project`, `erpc_taxonomy`, API-key CRUD, cordon RPCs.
+- [`erpc/healthcheck.go`](https://github.com/erpc/erpc/blob/main/erpc/healthcheck.go) — per-project/per-network health evaluation.
+- [`erpc/shadow.go`](https://github.com/erpc/erpc/blob/main/erpc/shadow.go) — project-layer shadow request execution/comparison.
+- [`erpc/block_heatmap.go`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go) — per-project block-range heatmap metric emission.
+- [`common/config.go`](https://github.com/erpc/erpc/blob/main/common/config.go) — `ProjectConfig`, `CORSConfig`, `AuthConfig`/strategy configs, `AliasingConfig`, rate-limiter config types, `UserAgentTrackingMode`, legacy project fields.
+- [`common/defaults.go`](https://github.com/erpc/erpc/blob/main/common/defaults.go) — default `main` project injection, `ProjectConfig.SetDefaults`, `CORSConfig.SetDefaults`.
+- [`common/validation.go`](https://github.com/erpc/erpc/blob/main/common/validation.go) — `Config.Validate`/`ProjectConfig.Validate`.
+- [`common/matcher.go`](https://github.com/erpc/erpc/blob/main/common/matcher.go) — `WildcardMatch` boolean/glob grammar.
+- [`common/errors.go`](https://github.com/erpc/erpc/blob/main/common/errors.go) — `ErrProjectNotFound` (404), `ErrProjectAlreadyExists`, `ErrProjectRateLimitRuleExceeded` (429), `ErrAuthUnauthorized` (401), `ErrAuthRateLimitRuleExceeded` (429).
+- [`auth/registry.go`](https://github.com/erpc/erpc/blob/main/auth/registry.go), [`auth/authorizer.go`](https://github.com/erpc/erpc/blob/main/auth/authorizer.go), [`auth/http.go`](https://github.com/erpc/erpc/blob/main/auth/http.go) — per-project auth strategy iteration, method filters, auth-level budgets, HTTP payload extraction.
+- [`upstream/ratelimiter_registry.go`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_registry.go), [`upstream/ratelimiter_budget.go`](https://github.com/erpc/erpc/blob/main/upstream/ratelimiter_budget.go) — global budget store, Envoy-based fixed-window evaluation, fail-open machinery.
+- [`telemetry/metrics.go`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go) — CORS counters, network request counters/histograms, unified rate-limit counter, auth/shadow metrics.
+- [`common/legacy/translate.go`](https://github.com/erpc/erpc/blob/main/common/legacy/translate.go) — `TranslateFromConfig` hook: walks all projects, classifies legacy fields, synthesizes `selectionPolicy.evalFunc`, clears stashes.
+- [`common/legacy/eval_synthesis.go`](https://github.com/erpc/erpc/blob/main/common/legacy/eval_synthesis.go) — JS source generators for score-based and round-robin legacy policies.
+- [`common/legacy/warnings.go`](https://github.com/erpc/erpc/blob/main/common/legacy/warnings.go) — per-field deprecation warning strings.
+- Tests: [`erpc/projects_test.go`](https://github.com/erpc/erpc/blob/main/erpc/projects_test.go) (project rate limit, lazy networks, aliases), [`erpc/http_server_test.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server_test.go) (CORS, URL-path matrix).
 
 </AISection>
-
-<Callout type="tip">
-	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
-</Callout>
