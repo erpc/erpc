@@ -535,3 +535,41 @@ func TestServedTip_SelectorScoped(t *testing.T) {
 			"match-all / single-node / no-match / boolean selectors must not create state (DDoS-safe)")
 	})
 }
+
+// A pod that never wins the advance race must still keep a fresh gate anchor:
+// the anchor tracks OBSERVED counter-value changes (whoever advanced it), not
+// only this pod's own successful TryUpdates. Otherwise multi-pod deployments
+// degrade — the losing pods' gates disarm via stale_anchor on every pick and
+// their advance-age gauge false-alarms while the counter is in fact moving.
+func TestServedTip_AnchorTracksExternallyAdvancedCounter(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "u1", chainID: 123, latestBlock: 100},
+		{id: "u2", chainID: 123, latestBlock: 100},
+		{id: "u3", chainID: 123, latestBlock: 99},
+	})
+
+	// Pick 1 seeds the shared counter from live heads (cluster min = 99). The
+	// boot transition (unseeded 0 -> first value) deliberately does not stamp
+	// the anchor: there is nothing to compare against yet.
+	require.Equal(t, int64(99), network.EvmHighestLatestBlockNumber(ctx))
+	require.Negative(t, network.servedLatestAnchor.age(),
+		"boot seeding alone must not stamp the anchor")
+
+	// Another pod advances the shared counter; this pod's own picks would
+	// propose <= 99 and never win an advance themselves.
+	network.servedLatestBlockShared.TryUpdate(ctx, 120)
+
+	// Pick 2 observes the value change and stamps the anchor.
+	_ = network.EvmHighestLatestBlockNumber(ctx)
+	age := network.servedLatestAnchor.age()
+	require.GreaterOrEqual(t, age, time.Duration(0),
+		"anchor must be stamped after observing an external advance")
+	require.Less(t, age, 5*time.Second, "anchor must be fresh, not inherited")
+}

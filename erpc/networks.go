@@ -55,13 +55,14 @@ type Network struct {
 	// will never return a value < N for the lifetime of this Network. Backed
 	// by the same CounterInt64SharedVariable primitive each per-upstream
 	// poller uses, so the guarantee also holds across pods sharing a backing
-	// store. The atomic update timestamps feed the velocity-gate's elapsed
-	// input in evm.ComputeServedTipCandidate and are updated inline when
-	// TryUpdate advances the counter — no callback subscription needed.
+	// store. The anchors track when this process last OBSERVED the counter's
+	// value change (whichever pod advanced it) and feed the velocity-gate's
+	// elapsed input in evm.ComputeServedTipCandidate — no callback
+	// subscription needed.
 	servedLatestBlockShared    data.CounterInt64SharedVariable
 	servedFinalizedBlockShared data.CounterInt64SharedVariable
-	servedLatestUpdatedAtMs    atomic.Int64
-	servedFinalizedUpdatedAtMs atomic.Int64
+	servedLatestAnchor         servedTipAnchor
+	servedFinalizedAnchor      servedTipAnchor
 
 	// servedTipPartitions holds lazily-materialized, cross-pod strict-monotonic
 	// served-tip counters for GROUP-scoped requests (use-upstream selectors that
@@ -84,15 +85,59 @@ type Network struct {
 const maxServedTipPartitions = 16
 
 // servedTipPartition holds one node group's monotonic served-tip counters
-// (latest + finalized) and their velocity-gate timestamps. `lane` is the
+// (latest + finalized) and their velocity-gate anchors. `lane` is the
 // human-readable group name (common.LaneName of the matched upstream set), used
 // as the `lane` label on the served-tip metric.
 type servedTipPartition struct {
-	lane                 string
-	latestShared         data.CounterInt64SharedVariable
-	finalizedShared      data.CounterInt64SharedVariable
-	latestUpdatedAtMs    atomic.Int64
-	finalizedUpdatedAtMs atomic.Int64
+	lane            string
+	latestShared    data.CounterInt64SharedVariable
+	finalizedShared data.CounterInt64SharedVariable
+	latestAnchor    servedTipAnchor
+	finalizedAnchor servedTipAnchor
+}
+
+// servedTipAnchor tracks, per process, when the shared served-tip counter's
+// VALUE was last seen to change — regardless of WHICH pod advanced it. This is
+// the velocity gate's elapsed anchor and the advance-age watchdog's clock.
+//
+// Observing value changes (rather than only this pod's own successful
+// TryUpdates) matters on multi-pod deployments: a pod that never happens to
+// win the advance race would otherwise hold an ever-aging anchor, needlessly
+// disarming its gate (stale_anchor bypass) and false-alarming the advance-age
+// gauge while the counter is in fact moving.
+//
+// The first observed value does NOT count as a change (there is nothing to
+// compare against): the anchor stays unset — and the velocity gate stays
+// disarmed — until the process witnesses the counter actually move. Boot is
+// deliberately permissive; clustering and the gate's fail-open handle that
+// window.
+type servedTipAnchor struct {
+	seenValue   atomic.Int64
+	changedAtMs atomic.Int64
+}
+
+// observe records v as the latest counter value and returns the anchor age
+// for the velocity gate: time since the value was last seen to change, or 0
+// when no change has ever been observed (the picker treats elapsed 0 as "no
+// usable anchor" and keeps the gate disarmed).
+func (a *servedTipAnchor) observe(v int64) time.Duration {
+	if old := a.seenValue.Swap(v); old != v && old != 0 {
+		a.changedAtMs.Store(time.Now().UnixMilli())
+		return time.Nanosecond // changed just now; any positive age arms the gate
+	}
+	if age := a.age(); age > 0 {
+		return age
+	}
+	return 0
+}
+
+// age returns time since the last observed value change, or -1 when no change
+// has been observed yet (the advance-age gauge is skipped on -1).
+func (a *servedTipAnchor) age() time.Duration {
+	if ms := a.changedAtMs.Load(); ms > 0 {
+		return time.Since(time.UnixMilli(ms))
+	}
+	return -1
 }
 
 // servedTipLaneAll is the lane label for the network-wide served tip.
@@ -531,12 +576,12 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 		// servedTipPartitionFor); otherwise fall back to a stateless cluster-min
 		// over the subset so arbitrary selectors create no state.
 		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			return n.clusteredServedTip(ctx, span, false, "latest", "*", p.latestShared, &p.latestUpdatedAtMs, p.lane)
+			return n.clusteredServedTip(ctx, span, false, "latest", "*", p.latestShared, &p.latestAnchor, p.lane)
 		}
 		return n.clusteredServedTip(ctx, span, false, "latest", "*", nil, nil, servedTipLaneNone)
 	}
 	return n.clusteredServedTip(ctx, span, false, "latest", "*",
-		n.servedLatestBlockShared, &n.servedLatestUpdatedAtMs, "")
+		n.servedLatestBlockShared, &n.servedLatestAnchor, "")
 }
 
 // servedTipEnabledFor reports whether the cluster-min served tip is enabled for
@@ -621,7 +666,7 @@ func (n *Network) clusteredServedTip(
 	axis string,
 	method string,
 	shared data.CounterInt64SharedVariable,
-	updatedAtMs *atomic.Int64,
+	anchor *servedTipAnchor,
 	lane string,
 ) int64 {
 	tips := n.gatherEvmTipInputsForMethod(ctx, useFinalized, method)
@@ -631,8 +676,11 @@ func (n *Network) clusteredServedTip(
 	var elapsed time.Duration
 	if shared != nil {
 		lastServed = shared.GetValue()
-		if ms := updatedAtMs.Load(); ms > 0 {
-			elapsed = time.Since(time.UnixMilli(ms))
+		if anchor != nil {
+			// Anchor freshness = "when did this process last SEE the counter
+			// value change" — covers advances won by any pod, so a pod that
+			// never wins the race doesn't age out its gate.
+			elapsed = anchor.observe(lastServed)
 		}
 	}
 
@@ -652,12 +700,12 @@ func (n *Network) clusteredServedTip(
 
 	// Apply the monotonic clamp via TryUpdate. A 0 candidate (no valid inputs)
 	// means no new information — fall through to GetValue, keeping the last
-	// served tip. When TryUpdate advances the counter, refresh the updatedAt
-	// timestamp so the next velocity-gate calculation has a recent anchor.
+	// served tip. When the counter value moved (our advance or anyone's),
+	// refresh the anchor so the next velocity-gate calculation is current.
 	if res.Candidate > 0 && shared != nil {
 		shared.TryUpdate(ctx, res.Candidate)
-		if cur := shared.GetValue(); cur > lastServed {
-			updatedAtMs.Store(time.Now().UnixMilli())
+		if cur := shared.GetValue(); cur != lastServed && anchor != nil {
+			anchor.observe(cur)
 		}
 	}
 	// served is what clients actually get: the monotonic-clamped shared counter
@@ -671,13 +719,11 @@ func (n *Network) clusteredServedTip(
 		served, counterAhead = evm.ClampServedValue(
 			shared.GetValue(), res.Candidate, res.MaxEligible, cfg.BlockTimeSeconds)
 	}
-	// Age of the last in-process observed advance: the universal stuck-tip
-	// signal (negative = no advance observed yet, gauge skipped).
+	// Age of the last observed counter-value change: the universal stuck-tip
+	// signal (negative = no change observed yet, gauge skipped).
 	advanceAge := time.Duration(-1)
-	if updatedAtMs != nil {
-		if ms := updatedAtMs.Load(); ms > 0 {
-			advanceAge = time.Since(time.UnixMilli(ms))
-		}
+	if anchor != nil {
+		advanceAge = anchor.age()
 	}
 	// Export the gauges with the post-clamp served value (not the pre-clamp
 	// picker proposal) so the exported lag never over-reports during dips.
@@ -702,12 +748,12 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 		// per-group monotonic counter; any other selector falls back to a
 		// stateless cluster-min over the subset.
 		if p := n.servedTipPartitionFor(ctx, sel); p != nil {
-			return n.clusteredServedTip(ctx, span, true, "finalized", "*", p.finalizedShared, &p.finalizedUpdatedAtMs, p.lane)
+			return n.clusteredServedTip(ctx, span, true, "finalized", "*", p.finalizedShared, &p.finalizedAnchor, p.lane)
 		}
 		return n.clusteredServedTip(ctx, span, true, "finalized", "*", nil, nil, servedTipLaneNone)
 	}
 	return n.clusteredServedTip(ctx, span, true, "finalized", "*",
-		n.servedFinalizedBlockShared, &n.servedFinalizedUpdatedAtMs, "")
+		n.servedFinalizedBlockShared, &n.servedFinalizedAnchor, "")
 }
 
 // guaranteedMethodFloor returns the lowest cluster-min served tip across the
