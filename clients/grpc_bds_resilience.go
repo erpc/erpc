@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -49,6 +50,18 @@ var (
 	// from double-closing the same slot in quick succession.
 	bdsReplacementDedupWindow = 5 * time.Second
 )
+
+// errBdsHardCapExceeded is the context cause set by SendRequest's
+// bdsHardCallTimeout. It MUST be distinct from
+// common.ErrDynamicTimeoutExceeded: the upstream/network failsafe executors
+// set that shared sentinel as the cause on CALLER contexts
+// (context.WithTimeoutCause in upstream_executor.go / network_executor.go),
+// and util.BoundedCall surfaces context.Cause on expiry — so matching the
+// shared sentinel made every routine failsafe-timeout expiry (e.g. a
+// quantile policy with a 200ms floor) look like our hard cap. That fed the
+// watchdog, replaced healthy conns, and the fresh-dial latency then blew
+// the next calls' budgets too — a self-sustaining churn/warn storm.
+var errBdsHardCapExceeded = errors.New("bds hard call timeout exceeded")
 
 // bdsConn wraps a single grpc.ClientConn with per-connection stuck-call
 // tracking. The pool has N of these; when one wedges only its slot is

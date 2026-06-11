@@ -187,8 +187,11 @@ func (c *GenericGrpcBdsClient) GetType() ClientType {
 func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	// Hard per-call ceiling. FIRST line of defense — bounds the worst case
 	// for wedged H2 streams independent of caller-supplied deadlines.
+	// The cause is OUR private sentinel (not the shared failsafe one) so
+	// the watchdog classification below can tell this cap apart from a
+	// caller-side dynamic-timeout expiry.
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeoutCause(ctx, bdsHardCallTimeout, common.ErrDynamicTimeoutExceeded)
+	ctx, cancel = context.WithTimeoutCause(ctx, bdsHardCallTimeout, errBdsHardCapExceeded)
 	defer cancel()
 
 	ctx, span := common.StartSpan(ctx, "GrpcBdsClient.SendRequest",
@@ -275,24 +278,36 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 	}
 
 	// Classify any timeout-class error and decide whether to trigger
-	// the watchdog. We distinguish two cases via context.Cause():
+	// the watchdog. We distinguish three cases via context.Cause():
 	//
 	//   - OUR bdsHardCallTimeout fired:
-	//       cause is common.ErrDynamicTimeoutExceeded (the cause we set
-	//       on the inner WithTimeoutCause). This is the wedged-stream
-	//       signal — feed it to the pool watchdog so a consistently
-	//       wedged conn is force-closed and replaced.
+	//       cause is errBdsHardCapExceeded (the cause we set on the
+	//       inner WithTimeoutCause). This is the wedged-stream signal —
+	//       feed it to the pool watchdog so a consistently wedged conn
+	//       is force-closed and replaced. Logged at Warn: it should be
+	//       rare and always deserves attention.
 	//
-	//   - The caller's parent ctx fired before our cap:
-	//       cause is the parent's cause (or generic DeadlineExceeded).
-	//       This is a normal caller-side timeout, NOT a wedge. Do NOT
-	//       trigger the watchdog — that would inflate metrics and
-	//       cause spurious conn churn during legitimate slow paths.
+	//   - A failsafe timeout policy fired on the caller's ctx:
+	//       cause is common.ErrDynamicTimeoutExceeded (set by the
+	//       upstream/network executors). Under quantile-driven policies
+	//       this fires routinely — it is a normal caller-side budget
+	//       expiry, NOT a wedge. No watchdog, and only Debug logging:
+	//       the failsafe layer already surfaces these via error returns
+	//       and the timeout-fired metric.
+	//
+	//   - The caller's ctx fired with a generic DeadlineExceeded:
+	//       same as above — caller-side timeout, not a wedge.
 	if err != nil {
-		ourHardCap := errors.Is(err, common.ErrDynamicTimeoutExceeded)
-		anyTimeout := ourHardCap || errors.Is(err, context.DeadlineExceeded)
+		ourHardCap := errors.Is(err, errBdsHardCapExceeded)
+		anyTimeout := ourHardCap ||
+			errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, common.ErrDynamicTimeoutExceeded)
 		if anyTimeout {
-			c.logger.Warn().
+			evt := c.logger.Debug()
+			if ourHardCap {
+				evt = c.logger.Warn()
+			}
+			evt.
 				Err(err).
 				Str("network.id", req.NetworkId()).
 				Str("upstream.id", c.upstreamId).
