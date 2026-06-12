@@ -185,7 +185,7 @@ func bniConfig(withCache bool, integrity *common.EvmIntegrityConfig) *common.Con
 						Method:    "eth_blockNumber",
 						Finality:  common.DataFinalityStateRealtime,
 						Connector: "memory-cache",
-						TTL:       common.Duration(10 * time.Second),
+						TTL:       common.FixedDuration(10 * time.Second),
 					},
 				},
 			},
