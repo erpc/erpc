@@ -189,6 +189,15 @@ func (n *Network) MetricsTracker() *health.Tracker {
 	return n.metricsTracker
 }
 
+// EvmBlockTime returns the network's estimated (EMA) block time, or 0 if not
+// yet known. Used by the cache layer to derive realtime TTLs from block cadence.
+func (n *Network) EvmBlockTime() time.Duration {
+	if n.metricsTracker == nil {
+		return 0
+	}
+	return n.metricsTracker.GetNetworkBlockTime(n.networkId)
+}
+
 // AllUpstreams returns every upstream configured on the network, in
 // no particular order. Diagnostic tooling uses this to walk upstreams
 // for tracker lookups without needing to know the routing order.

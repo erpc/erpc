@@ -12,7 +12,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/klauspost/compress/zstd"
 	"github.com/rs/zerolog"
@@ -941,15 +940,10 @@ func networkBlockTime(req *common.NormalizedRequest) time.Duration {
 	if ntw == nil {
 		return 0
 	}
-	tp, ok := ntw.(interface{ MetricsTracker() *health.Tracker })
-	if !ok {
-		return 0
+	if p, ok := ntw.(interface{ EvmBlockTime() time.Duration }); ok {
+		return p.EvmBlockTime()
 	}
-	t := tp.MetricsTracker()
-	if t == nil {
-		return 0
-	}
-	return t.GetNetworkBlockTime(req.NetworkId())
+	return 0
 }
 
 func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
