@@ -259,3 +259,11 @@ func (p *CachePolicy) String() string {
 func (p *CachePolicy) GetTTL() *time.Duration {
 	return p.config.TTL.DurationPtr()
 }
+
+// GetTTLBlockTimeMultiplier returns the configured multiplier (0 when unset).
+func (p *CachePolicy) GetTTLBlockTimeMultiplier() float64 {
+	if p.config.TTLBlockTimeMultiplier == nil {
+		return 0
+	}
+	return *p.config.TTLBlockTimeMultiplier
+}

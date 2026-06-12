@@ -326,6 +326,12 @@ type CachePolicyConfig struct {
 	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
 	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
 	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+
+	// TTLBlockTimeMultiplier, when > 0, derives the realtime-finality age limit
+	// from the network's estimated block time (blockTime * multiplier) instead of
+	// the static TTL, so head freshness tracks each chain's cadence. Falls back to
+	// TTL when the block time isn't known yet.
+	TTLBlockTimeMultiplier *float64 `yaml:"ttlBlockTimeMultiplier,omitempty" json:"ttlBlockTimeMultiplier,omitempty" tstype:"number"`
 }
 
 type ConnectorDriverType string

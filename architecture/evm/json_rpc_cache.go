@@ -12,6 +12,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/klauspost/compress/zstd"
 	"github.com/rs/zerolog"
@@ -853,9 +854,19 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		return true
 	}
 
-	// If no TTL is set, accept the result
-	ttl := policy.GetTTL()
-	if ttl == nil || *ttl <= 0 {
+	// Resolve the age limit: static TTL, or derived from the network's estimated
+	// block time when ttlBlockTimeMultiplier is set (falls back to TTL when the
+	// block time isn't known yet). No usable limit -> accept.
+	var effectiveTTL time.Duration
+	if ttl := policy.GetTTL(); ttl != nil && *ttl > 0 {
+		effectiveTTL = *ttl
+	}
+	if mult := policy.GetTTLBlockTimeMultiplier(); mult > 0 {
+		if bt := networkBlockTime(req); bt > 0 {
+			effectiveTTL = time.Duration(float64(bt) * mult)
+		}
+	}
+	if effectiveTTL <= 0 {
 		return true
 	}
 
@@ -894,11 +905,11 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	age := time.Duration(now-blockTimestamp) * time.Second
 
 	// Check if the age exceeds the TTL
-	if age > *ttl {
+	if age > effectiveTTL {
 		if c.logger.GetLevel() <= zerolog.DebugLevel {
 			c.logger.Debug().
 				Dur("age", age).
-				Dur("ttl", *ttl).
+				Dur("ttl", effectiveTTL).
 				Int64("blockTimestamp", blockTimestamp).
 				Int64("now", now).
 				Str("policy", policy.String()).
@@ -913,7 +924,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 			method,
 			policy.GetConnector().Id(),
 			policy.String(),
-			ttl.String(),
+			effectiveTTL.String(),
 		).Inc()
 
 		return false
@@ -921,6 +932,24 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 	// Accept the result as it's within the acceptable age
 	return true
+}
+
+// networkBlockTime returns the request network's estimated block time, or 0 if
+// it's not available (network unset, not head-tracked, or not yet warmed up).
+func networkBlockTime(req *common.NormalizedRequest) time.Duration {
+	ntw := req.Network()
+	if ntw == nil {
+		return 0
+	}
+	tp, ok := ntw.(interface{ MetricsTracker() *health.Tracker })
+	if !ok {
+		return 0
+	}
+	t := tp.MetricsTracker()
+	if t == nil {
+		return 0
+	}
+	return t.GetNetworkBlockTime(req.NetworkId())
 }
 
 func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {

@@ -342,6 +342,7 @@ export interface CachePolicyConfig {
   minItemSize?: ByteSize;
   maxItemSize?: ByteSize;
   ttl?: Duration;
+  ttlBlockTimeMultiplier?: number /* float64 */;
 }
 export type ConnectorDriverType = string;
 export const DriverMemory: ConnectorDriverType = "memory";
