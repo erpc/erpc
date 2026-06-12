@@ -424,7 +424,14 @@ func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) 
 func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstream {
 	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
 	if slot != nil {
-		if excluded := slot.excludedCache.Load(); excluded != nil && len(*excluded) > 0 {
+		// Honor the narrow slot whenever it has TICKED (non-nil pointer),
+		// even when its probe-candidate set is empty: with probe-blocking
+		// verdicts an empty set is a deliberate outcome ("everything
+		// excluded here is static"), not a cold start. Falling back to the
+		// wildcard on len==0 would resurrect probes the narrow eval
+		// suppressed. Pointer-nil (never ticked) is the only cold-start
+		// signal that defers to the wildcard slot.
+		if excluded := slot.excludedCache.Load(); excluded != nil {
 			return *excluded
 		}
 	}

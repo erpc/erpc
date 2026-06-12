@@ -7,11 +7,15 @@ package stdlib_test
 // they heal; (5) the rich default policy must keep sane probe behavior.
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/internal/policy/stdlib"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -135,4 +139,66 @@ func TestProbeVerdictsEdge_PerMethodScope(t *testing.T) {
 		probeable[u.Id()] = true
 	}
 	require.False(t, probeable["tagged"], "tag verdict blocks probing in per-method slots too")
+}
+
+// Regression (found in review): a narrow per-method slot whose exclusions
+// are ALL probe-blocked stores an empty probe-candidate set — GetExcluded
+// must honor that as a deliberate outcome, NOT fall back to the wildcard
+// slot's candidates. Here the wildcard slot has a probe-eligible excluded
+// upstream (plain1, erroring at method "*"), while the eth_call slot — with
+// no method-scoped samples — excludes only the static tag. The eth_call
+// probe set must be empty, not the wildcard's [plain1].
+func TestProbeVerdictsEdge_EmptyNarrowSlotDoesNotFallBackToWildcard(t *testing.T) {
+	// The wildcard slot health-excludes plain1 (probe-eligible); the
+	// narrow slot excludes ONLY the static tag (probe-blocked) — made
+	// explicit via ctx.method so the two slots provably diverge.
+	eval := `(upstreams, ctx) => {
+		let out = upstreams.excludeTag('tier:static');
+		if (ctx.method === '*') {
+			out = out.excludeIf((u) => u.id === 'plain1');
+		}
+		return out;
+	}`
+	// Per-method scope so the eth_call slot is a REAL separate slot —
+	// under the default network scope there is only one slot and wildcard
+	// resolution is correct by definition.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := zerolog.Nop()
+	tracker := health.NewTracker(&logger, "p1", time.Minute)
+	engine := policy.NewEngine(ctx, &logger, "p1", tracker, stdlib.Install, nil)
+	defer engine.Stop()
+	ups := mkUpsWithTags([]struct {
+		id     string
+		vendor string
+		tags   []string
+	}{
+		{id: "plain1", vendor: "v1", tags: nil},
+		{id: "plain2", vendor: "v2", tags: nil},
+		{id: "tagged", vendor: "v3", tags: []string{"tier:static"}},
+	})
+	cfg := &common.SelectionPolicyConfig{
+		EvalInterval: 0,
+		EvalTimeout:  common.Duration(100 * time.Millisecond),
+		EvalScope:    common.EvalScopeNetworkMethod,
+		EvalFunc:     eval,
+	}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// Wildcard slot: plain1 excluded and probe-eligible.
+	policy.TickForTest(engine, "evm:1", "*")
+	wild := map[string]bool{}
+	for _, u := range engine.GetExcluded("evm:1", "*", "*") {
+		wild[u.Id()] = true
+	}
+	require.True(t, wild["plain1"], "wildcard slot probes the erroring upstream")
+
+	// Narrow slot: only the tag exclusion trips, which is probe-blocked
+	// -> empty candidate set, honored as such.
+	engine.GetOrdered("evm:1", "eth_call", "*")
+	policy.TickForTest(engine, "evm:1", "eth_call")
+	narrow := engine.GetExcluded("evm:1", "eth_call", "*")
+	require.Empty(t, narrow,
+		"ticked narrow slot with only blocked exclusions must NOT fall back to wildcard probe candidates")
 }
