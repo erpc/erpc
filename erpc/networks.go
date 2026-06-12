@@ -964,6 +964,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			upsList = append(upsList, u)
 		}
 	}
+	// Enforce method eligibility at selection time: an upstream whose
+	// ignoreMethods/allowMethods config (including entries added by
+	// autoIgnoreUnsupportedMethods) excludes this method would only be
+	// skipped at forward time anyway — but letting it into the request's
+	// upstream list makes it consume retry/hedge/consensus attempts and
+	// emit instant "method ignored" skips; under consensus fan-out those
+	// skips become phantom participants. When EVERY upstream ignores the
+	// method, keep the full list so the request fails with the descriptive
+	// per-upstream "method ignored" error instead of a generic
+	// "no upstreams found".
+	if eligible, dropped := filterMethodEligible(upsList, method); dropped > 0 && len(eligible) > 0 {
+		upstreamSpan.SetAttributes(attribute.Int("upstreams.method_ineligible", dropped))
+		upsList = eligible
+	}
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
 		ids := make([]string, len(upsList))
@@ -2068,6 +2082,34 @@ func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method strin
 	}
 
 	return nil
+}
+
+// filterMethodEligible returns the upstreams expected to serve `method` per
+// their ignoreMethods/allowMethods config (Upstream.ShouldHandleMethod, which
+// is memoized per method), plus the number dropped. The input slice is never
+// mutated — selection-policy slots hand out their cached backing array as
+// read-only — and is returned as-is when nothing is dropped. Matcher errors
+// fail open (the upstream stays in) so a malformed pattern degrades to the
+// forward-time skip rather than silently shrinking the pool.
+func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstream, int) {
+	eligible := ups
+	dropped := 0
+	for i, u := range ups {
+		ok, err := u.ShouldHandleMethod(method)
+		if err == nil && !ok {
+			if dropped == 0 {
+				// First drop: materialize a fresh slice with the survivors so far.
+				eligible = make([]common.Upstream, i, len(ups))
+				copy(eligible, ups[:i])
+			}
+			dropped++
+			continue
+		}
+		if dropped > 0 {
+			eligible = append(eligible, u)
+		}
+	}
+	return eligible, dropped
 }
 
 func (n *Network) enrichStatePoller(ctx context.Context, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
