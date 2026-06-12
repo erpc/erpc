@@ -1350,11 +1350,13 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
 			Observe(float64(best.Count))
 	}
-	// Record categorized error counters for failure modes. Deterministic
-	// client/execution errors (severity info) are the caller's failure that
-	// upstreams merely agreed on (e.g. nonce-too-low on eth_sendRawTransaction
-	// broadcast), not a consensus failure — keep them out of the error counter.
-	if result.Error != nil && common.ClassifySeverity(result.Error) != common.SeverityInfo {
+	// Record categorized error counters for failure modes, but only for
+	// alert-worthy severities (warning/critical). Deterministic client/execution
+	// errors (severity info) are the caller's failure that upstreams merely
+	// agreed on (e.g. nonce-too-low on eth_sendRawTransaction broadcast), not a
+	// consensus failure — keep them out of the error counter.
+	severity := common.ClassifySeverity(result.Error)
+	if result.Error != nil && (severity == common.SeverityWarning || severity == common.SeverityCritical) {
 		errLabel := "generic_error"
 		if hasConsensus {
 			errLabel = "consensus_on_error"
