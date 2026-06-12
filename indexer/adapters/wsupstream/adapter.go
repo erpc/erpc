@@ -33,7 +33,8 @@ const (
 )
 
 // Resubscribe retry backoff bounds. Vars (not consts) so tests can compress
-// time; production code must not mutate them.
+// time. Copied into per-adapter fields in New(), so adapter goroutines
+// never read them after construction.
 var (
 	resubRetryMin = 1 * time.Second
 	resubRetryMax = 30 * time.Second
@@ -61,11 +62,18 @@ type Adapter struct {
 	// apply); overridable in tests.
 	forward func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error)
 
-	// resubMu guards resubCancel: at most one resubscribe retry loop runs
-	// per connection epoch (initial connect or reconnect); a disconnect or
-	// Stop cancels it.
+	// resubMu guards resubCancel/stopped: at most one resubscribe retry
+	// loop runs per connection epoch (initial connect or reconnect); a
+	// disconnect or Stop cancels it. stopped prevents a reconnect callback
+	// racing Stop from starting a fresh epoch on a stopped adapter.
 	resubMu     sync.Mutex
 	resubCancel context.CancelFunc
+	stopped     bool
+
+	// Retry backoff bounds, snapshotted from resubRetryMin/resubRetryMax
+	// at construction.
+	retryMin time.Duration
+	retryMax time.Duration
 
 	// stripSubscribeFromBlockZero controls whether fromBlock: "0x0" is
 	// removed from eth_subscribe logs filters before forwarding upstream.
@@ -124,6 +132,8 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts *
 		logger:     &lg,
 		filters:    make(map[string]*filterSub),
 		forward:    up.Forward,
+		retryMin:   resubRetryMin,
+		retryMax:   resubRetryMax,
 	}
 	if opts != nil {
 		a.stripSubscribeFromBlockZero = opts.StripSubscribeFromBlockZero
@@ -152,7 +162,7 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 	})
 	a.wsClient.SetOnDisconnect(cbID, func() {
 		a.logger.Info().Msg("WS disconnected — active subs will re-subscribe on reconnect")
-		a.stopResubscribe()
+		a.stopResubscribe(false)
 		// The upstream-assigned subscription IDs died with the connection;
 		// forget the newHeads sub so Healthy() reports honestly until the
 		// reconnect-epoch resubscribe succeeds.
@@ -174,9 +184,7 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 
 // Healthy reports whether this ingress currently has a live upstream WS
 // connection AND an active newHeads subscription — i.e. it can actually
-// deliver heads right now. Consulted by the client-facing layer before
-// handing out newHeads subscription IDs, so clients are refused (and can
-// fail over) instead of receiving a subscription that will never fire.
+// deliver heads right now.
 func (a *Adapter) Healthy() bool {
 	if !a.wsClient.IsConnected() {
 		return false
@@ -190,6 +198,10 @@ func (a *Adapter) Healthy() bool {
 // epoch, cancelling any loop left over from a previous epoch.
 func (a *Adapter) startResubscribe() {
 	a.resubMu.Lock()
+	if a.stopped {
+		a.resubMu.Unlock()
+		return
+	}
 	if a.resubCancel != nil {
 		a.resubCancel()
 	}
@@ -201,9 +213,13 @@ func (a *Adapter) startResubscribe() {
 
 // stopResubscribe cancels the in-flight retry loop, if any. Called on
 // disconnect (the loop's subscribes can't succeed anyway; the next
-// reconnect starts a fresh epoch) and on Stop.
-func (a *Adapter) stopResubscribe() {
+// reconnect starts a fresh epoch) and on Stop. forever additionally marks
+// the adapter stopped so no future epoch can start.
+func (a *Adapter) stopResubscribe(forever bool) {
 	a.resubMu.Lock()
+	if forever {
+		a.stopped = true
+	}
 	if a.resubCancel != nil {
 		a.resubCancel()
 		a.resubCancel = nil
@@ -260,7 +276,7 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	cbID := a.Name()
 	a.wsClient.RemoveOnReconnect(cbID)
 	a.wsClient.RemoveOnDisconnect(cbID)
-	a.stopResubscribe()
+	a.stopResubscribe(true)
 
 	a.subsMu.Lock()
 	subs := a.filters
@@ -308,7 +324,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 	}
 	a.subsMu.Unlock()
 
-	backoff := resubRetryMin
+	backoff := a.retryMin
 	for {
 		if ctx.Err() != nil {
 			return
@@ -352,8 +368,8 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		case <-time.After(backoff):
 		}
 		backoff *= 2
-		if backoff > resubRetryMax {
-			backoff = resubRetryMax
+		if backoff > a.retryMax {
+			backoff = a.retryMax
 		}
 	}
 }
@@ -364,6 +380,13 @@ func (a *Adapter) subscribeNewHeads(ctx context.Context) error {
 		return err
 	}
 	a.subsMu.Lock()
+	if ctx.Err() != nil {
+		// Epoch was cancelled while the subscribe was in flight — a newer
+		// epoch owns the subscription state now; committing this (dead
+		// connection's) sub ID would unregister the live handler.
+		a.subsMu.Unlock()
+		return ctx.Err()
+	}
 	if a.newHeadsSubID != "" {
 		a.wsClient.UnregisterSubscriptionHandler(a.newHeadsSubID)
 	}
@@ -393,6 +416,11 @@ func (a *Adapter) subscribeFilter(ctx context.Context, sub *filterSub) error {
 		return fmt.Errorf("filter subscribe: %w", err)
 	}
 	a.subsMu.Lock()
+	if ctx.Err() != nil {
+		// Cancelled mid-flight; see subscribeNewHeads.
+		a.subsMu.Unlock()
+		return ctx.Err()
+	}
 	// Replace any previous upstreamSub for this (subType, paramsHash).
 	if sub.upstreamSub != "" {
 		a.wsClient.UnregisterSubscriptionHandler(sub.upstreamSub)

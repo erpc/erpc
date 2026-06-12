@@ -100,12 +100,6 @@ var (
 		Help:      "Whether the upstream WebSocket connection is currently established (1) or down/wedged (0).",
 	}, []string{"project", "vendor", "network", "upstream"})
 
-	MetricNetworkSubscriptionLastHeadTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "network_subscription_last_head_timestamp_seconds",
-		Help:      "Unix timestamp of the last newHeads event delivered by the subscription indexer for a network. Alert on time() - this > N to catch silent head stalls.",
-	}, []string{"network"})
-
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

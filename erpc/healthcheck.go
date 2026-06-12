@@ -48,11 +48,6 @@ type NetworkHealthData struct {
 	Status      string                         `json:"status"`
 	Message     string                         `json:"message,omitempty"`
 	Upstreams   map[string]*UpstreamHealthData `json:"upstreams"`
-
-	// Subscriptions reports WS head-delivery liveness for this network.
-	// Present only when at least one client has subscribed on the network
-	// since the process started.
-	Subscriptions *NetworkSubscriptionHealth `json:"subscriptions,omitempty"`
 }
 
 type UpstreamHealthData struct {
@@ -249,13 +244,6 @@ func (s *HttpServer) handleHealthCheck(
 				if bt := metricsTracker.GetNetworkBlockTime(networkId); bt > 0 {
 					ms := float64(bt.Milliseconds())
 					networkHealth.BlockTimeMs = &ms
-				}
-				// Subscription head-liveness: nil unless a client has
-				// subscribed on this network at least once. Lets load
-				// balancers and operators see "this pod delivers no heads
-				// for network X" without an active client subscription.
-				if s.subscriptionManager != nil {
-					networkHealth.Subscriptions = s.subscriptionManager.SubscriptionHealth(networkId)
 				}
 				projectHealth.Networks[networkId] = networkHealth
 			}
