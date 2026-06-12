@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -75,6 +76,13 @@ type networkState struct {
 	// boundary).
 	lastHead     atomic.Pointer[headMarker]
 	headFallback *DedupWindow
+
+	// lastHeadAt is the UnixNano timestamp of the most recent delivered
+	// (post-dedup) newHeads event. Zero until the first head arrives.
+	// Drives the per-network head-liveness metric and health endpoint so
+	// a silent head stall is observable instead of only visible to
+	// subscribed clients.
+	lastHeadAt atomic.Int64
 
 	// Per-filter dedup windows: filterHash -> *DedupWindow.
 	filterMu     sync.RWMutex
@@ -369,6 +377,16 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 		return
 	}
 
+	// Head-liveness bookkeeping: record when this network last delivered a
+	// head so operators can alert on "no heads for network X in Y seconds"
+	// (time() - gauge) instead of relying on clients to notice silence.
+	if ev.Kind == KindNewHead && !ev.Block.Zero() {
+		now := i.opts.Now()
+		ns.lastHeadAt.Store(now.UnixNano())
+		telemetry.GaugeHandle(telemetry.MetricNetworkSubscriptionLastHeadTimestamp, ev.NetworkId).
+			Set(float64(now.Unix()))
+	}
+
 	// Detect and emit reorg invalidations BEFORE delivering the new
 	// head. Consumers see: (removed logs) → reorg summary → new head.
 	if ev.Kind == KindNewHead && !ev.Block.Zero() {
@@ -526,6 +544,59 @@ func (i *Indexer) classify(ns *networkState, ev StreamEvent) Lifecycle {
 		return LifeFinalized
 	}
 	return LifeSoft
+}
+
+// HealthReporter is an optional interface an EventIngress can implement to
+// report whether it can currently deliver events (e.g. a WS upstream
+// adapter with a live connection and an active newHeads subscription).
+// Ingresses that don't implement it are assumed live — the indexer can't
+// assess transports it doesn't understand.
+type HealthReporter interface {
+	Healthy() bool
+}
+
+// IngressHealth returns how many of the network's registered ingresses
+// currently report themselves able to deliver events, alongside the total
+// registered count. (0, 0) means the network is unknown or has no
+// ingresses yet.
+func (i *Indexer) IngressHealth(networkId string) (live, total int) {
+	nsRaw, ok := i.networks.Load(networkId)
+	if !ok {
+		return 0, 0
+	}
+	ns := nsRaw.(*networkState)
+	ns.ingressMu.RLock()
+	defer ns.ingressMu.RUnlock()
+	for _, ing := range ns.ingresses {
+		total++
+		if hr, ok := ing.(HealthReporter); ok {
+			if hr.Healthy() {
+				live++
+			}
+		} else {
+			live++
+		}
+	}
+	return live, total
+}
+
+// LastHead returns the most recent delivered head for the network and when
+// it was delivered. ok is false when the network is unknown or no head has
+// been delivered yet.
+func (i *Indexer) LastHead(networkId string) (block BlockRef, at time.Time, ok bool) {
+	nsRaw, found := i.networks.Load(networkId)
+	if !found {
+		return BlockRef{}, time.Time{}, false
+	}
+	ns := nsRaw.(*networkState)
+	nanos := ns.lastHeadAt.Load()
+	if nanos == 0 {
+		return BlockRef{}, time.Time{}, false
+	}
+	if head := ns.lastHead.Load(); head != nil {
+		block = BlockRef{Number: head.num, Hash: head.hash}
+	}
+	return block, time.Unix(0, nanos), true
 }
 
 // fanOut dispatches to every registered egress whose InterestedIn matches.

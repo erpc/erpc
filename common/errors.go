@@ -2846,6 +2846,32 @@ func (e *ErrNoWsUpstreamAvailable) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
+type ErrNoLiveSubscriptionSource struct{ BaseError }
+
+const ErrCodeNoLiveSubscriptionSource ErrorCode = "ErrNoLiveSubscriptionSource"
+
+// NewErrNoLiveSubscriptionSource is returned when WS upstreams are
+// configured for the network but none currently has a live connection with
+// an active newHeads subscription. Refusing the subscription (HTTP 503 /
+// retryable) lets clients fail over to another node instead of holding a
+// subscription ID that will never deliver.
+var NewErrNoLiveSubscriptionSource = func(networkId string, totalIngresses int) error {
+	return &ErrNoLiveSubscriptionSource{
+		BaseError{
+			Code:    ErrCodeNoLiveSubscriptionSource,
+			Message: fmt.Sprintf("no upstream is currently able to deliver subscription events for network %s; refusing subscription so the client can fail over", networkId),
+			Details: map[string]interface{}{
+				"networkId":      networkId,
+				"totalIngresses": totalIngresses,
+			},
+		},
+	}
+}
+
+func (e *ErrNoLiveSubscriptionSource) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
+}
+
 type ErrSubscriptionLimitExceeded struct{ BaseError }
 
 const ErrCodeSubscriptionLimitExceeded ErrorCode = "ErrSubscriptionLimitExceeded"

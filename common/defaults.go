@@ -2353,13 +2353,6 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 			c.FailureThresholdCapacity = 80
 		}
 	}
-	if c.SuccessThresholdCapacity == 0 {
-		if defaults != nil && defaults.SuccessThresholdCapacity != 0 {
-			c.SuccessThresholdCapacity = defaults.SuccessThresholdCapacity
-		} else {
-			c.SuccessThresholdCapacity = 200
-		}
-	}
 	if c.HalfOpenAfter == 0 {
 		if defaults != nil && defaults.HalfOpenAfter != 0 {
 			c.HalfOpenAfter = defaults.HalfOpenAfter
@@ -2378,6 +2371,11 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 		if defaults != nil && defaults.SuccessThresholdCapacity != 0 {
 			c.SuccessThresholdCapacity = defaults.SuccessThresholdCapacity
 		} else {
+			// 8-of-10 successes to close from half-open. A duplicated default
+			// block used to force this to 200 before this one could run,
+			// letting a half-open breaker absorb up to 192 probe failures
+			// before re-opening — meaningless thresholds for low-traffic
+			// (e.g. WS-only) upstreams.
 			c.SuccessThresholdCapacity = 10
 		}
 	}

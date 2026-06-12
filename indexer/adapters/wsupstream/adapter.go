@@ -26,6 +26,17 @@ import (
 const (
 	methodEthSubscribe   = "eth_subscribe"
 	methodEthUnsubscribe = "eth_unsubscribe"
+
+	// resubAttemptTimeout bounds each individual subscribe RPC inside the
+	// resubscribe retry loop.
+	resubAttemptTimeout = 15 * time.Second
+)
+
+// Resubscribe retry backoff bounds. Vars (not consts) so tests can compress
+// time; production code must not mutate them.
+var (
+	resubRetryMin = 1 * time.Second
+	resubRetryMax = 30 * time.Second
 )
 
 // internalReqIDOffset keeps our JSON-RPC IDs out of the range clients
@@ -44,6 +55,17 @@ type Adapter struct {
 	upstream   *upstream.Upstream
 	wsClient   *clients.WsJsonRpcClient
 	logger     *zerolog.Logger
+
+	// forward routes subscribe/unsubscribe RPCs. Defaults to the upstream's
+	// failsafe-wrapped Forward (so retry/timeout/circuit-breaker policies
+	// apply); overridable in tests.
+	forward func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error)
+
+	// resubMu guards resubCancel: at most one resubscribe retry loop runs
+	// per connection epoch (initial connect or reconnect); a disconnect or
+	// Stop cancels it.
+	resubMu     sync.Mutex
+	resubCancel context.CancelFunc
 
 	// stripSubscribeFromBlockZero controls whether fromBlock: "0x0" is
 	// removed from eth_subscribe logs filters before forwarding upstream.
@@ -101,6 +123,7 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts *
 		wsClient:   wsClient,
 		logger:     &lg,
 		filters:    make(map[string]*filterSub),
+		forward:    up.Forward,
 	}
 	if opts != nil {
 		a.stripSubscribeFromBlockZero = opts.StripSubscribeFromBlockZero
@@ -125,29 +148,67 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 	cbID := a.Name()
 	a.wsClient.SetOnReconnect(cbID, func() {
 		a.logger.Info().Msg("WS reconnected — re-subscribing to all active subs")
-		a.resubscribeAll(context.Background())
+		a.startResubscribe()
 	})
 	a.wsClient.SetOnDisconnect(cbID, func() {
 		a.logger.Info().Msg("WS disconnected — active subs will re-subscribe on reconnect")
+		a.stopResubscribe()
+		// The upstream-assigned subscription IDs died with the connection;
+		// forget the newHeads sub so Healthy() reports honestly until the
+		// reconnect-epoch resubscribe succeeds.
+		a.subsMu.Lock()
+		if a.newHeadsSubID != "" {
+			a.wsClient.UnregisterSubscriptionHandler(a.newHeadsSubID)
+			a.newHeadsSubID = ""
+		}
+		a.subsMu.Unlock()
 	})
 
-	go a.initialSubscribe()
+	if a.wsClient.IsConnected() {
+		a.startResubscribe()
+	} else {
+		a.logger.Debug().Msg("WS not yet connected at Start; newHeads will subscribe on first connect")
+	}
 	return nil
 }
 
-// initialSubscribe attempts the first newHeads subscribe. Retries on its
-// own are unnecessary — if the subscribe fails, the reconnect callback
-// picks it up the next time the WS client reconnects. If the WS is down
-// at Start time, we wait briefly; no-op after that since the reconnect
-// hook will fire Start's equivalent.
-func (a *Adapter) initialSubscribe() {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+// Healthy reports whether this ingress currently has a live upstream WS
+// connection AND an active newHeads subscription — i.e. it can actually
+// deliver heads right now. Consulted by the client-facing layer before
+// handing out newHeads subscription IDs, so clients are refused (and can
+// fail over) instead of receiving a subscription that will never fire.
+func (a *Adapter) Healthy() bool {
 	if !a.wsClient.IsConnected() {
-		a.logger.Debug().Msg("WS not yet connected at Start; newHeads will subscribe on first connect")
-		return
+		return false
 	}
-	a.subscribeNewHeads(ctx)
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	return a.newHeadsSubID != ""
+}
+
+// startResubscribe launches the retry loop for the current connection
+// epoch, cancelling any loop left over from a previous epoch.
+func (a *Adapter) startResubscribe() {
+	a.resubMu.Lock()
+	if a.resubCancel != nil {
+		a.resubCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.resubCancel = cancel
+	a.resubMu.Unlock()
+	go a.resubscribeWithRetry(ctx)
+}
+
+// stopResubscribe cancels the in-flight retry loop, if any. Called on
+// disconnect (the loop's subscribes can't succeed anyway; the next
+// reconnect starts a fresh epoch) and on Stop.
+func (a *Adapter) stopResubscribe() {
+	a.resubMu.Lock()
+	if a.resubCancel != nil {
+		a.resubCancel()
+		a.resubCancel = nil
+	}
+	a.resubMu.Unlock()
 }
 
 // EnsureFilter (re)subscribes a filter on this upstream. Safe to call more
@@ -199,6 +260,7 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	cbID := a.Name()
 	a.wsClient.RemoveOnReconnect(cbID)
 	a.wsClient.RemoveOnDisconnect(cbID)
+	a.stopResubscribe()
 
 	a.subsMu.Lock()
 	subs := a.filters
@@ -227,31 +289,79 @@ func filterKey(subType, paramsHash string) string {
 	return subType + ":" + paramsHash
 }
 
-// resubscribeAll re-subscribes newHeads + every tracked filter after a
-// WS reconnect. Runs in a dedicated goroutine (reconnect callback) so it
-// must be self-sufficient w.r.t. context.
-func (a *Adapter) resubscribeAll(ctx context.Context) {
-	a.subscribeNewHeads(ctx)
+// resubscribeWithRetry (re)establishes the newHeads subscription plus every
+// tracked filter, retrying with backoff until everything is subscribed or
+// the epoch is cancelled (disconnect / Stop).
+//
+// Retrying matters: subscribe RPCs ride upstream.Forward, so failsafe
+// policies — including the circuit breaker — apply. Right after an upstream
+// outage the breaker is typically still open at the moment the WS layer
+// reconnects; a previous single-shot resubscribe failed once with a warning
+// and never tried again, leaving the pod permanently head-less while still
+// accepting client subscriptions (zkSync chain-324 incident, 2026-06-12).
+func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
+	needHeads := true
+	pending := make(map[string]struct{})
 	a.subsMu.Lock()
-	subs := make([]*filterSub, 0, len(a.filters))
-	for _, s := range a.filters {
-		subs = append(subs, s)
+	for k := range a.filters {
+		pending[k] = struct{}{}
 	}
 	a.subsMu.Unlock()
 
-	for _, sub := range subs {
-		if err := a.subscribeFilter(ctx, sub); err != nil {
-			a.logger.Warn().Err(err).Str("subType", sub.subType).Str("paramsHash", sub.paramsHash).
-				Msg("failed to re-subscribe filter after reconnect")
+	backoff := resubRetryMin
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if needHeads {
+			attemptCtx, cancel := context.WithTimeout(ctx, resubAttemptTimeout)
+			err := a.subscribeNewHeads(attemptCtx)
+			cancel()
+			if err != nil {
+				a.logger.Warn().Err(err).Msg("failed to subscribe newHeads, will retry")
+			} else {
+				needHeads = false
+			}
+		}
+		for key := range pending {
+			a.subsMu.Lock()
+			sub, ok := a.filters[key]
+			a.subsMu.Unlock()
+			if !ok {
+				// Filter was removed while we were retrying.
+				delete(pending, key)
+				continue
+			}
+			attemptCtx, cancel := context.WithTimeout(ctx, resubAttemptTimeout)
+			err := a.subscribeFilter(attemptCtx, sub)
+			cancel()
+			if err != nil {
+				a.logger.Warn().Err(err).Str("subType", sub.subType).Str("paramsHash", sub.paramsHash).
+					Msg("failed to re-subscribe filter, will retry")
+			} else {
+				delete(pending, key)
+			}
+		}
+		if !needHeads && len(pending) == 0 {
+			a.logger.Info().Msg("all upstream subscriptions (re)established")
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > resubRetryMax {
+			backoff = resubRetryMax
 		}
 	}
 }
 
-func (a *Adapter) subscribeNewHeads(ctx context.Context) {
+func (a *Adapter) subscribeNewHeads(ctx context.Context) error {
 	subID, err := a.sendSubscribe(ctx, []interface{}{indexer.SubTypeNewHeads})
 	if err != nil {
-		a.logger.Warn().Err(err).Msg("failed to subscribe newHeads")
-		return
+		return err
 	}
 	a.subsMu.Lock()
 	if a.newHeadsSubID != "" {
@@ -264,6 +374,7 @@ func (a *Adapter) subscribeNewHeads(ctx context.Context) {
 		a.handleNewHeads(params)
 	})
 	a.logger.Info().Str("upstreamSubId", subID).Msg("subscribed to newHeads")
+	return nil
 }
 
 func (a *Adapter) subscribeFilter(ctx context.Context, sub *filterSub) error {
@@ -378,7 +489,7 @@ func (a *Adapter) sendSubscribe(ctx context.Context, params []interface{}) (stri
 		return "", err
 	}
 	nq := common.NewNormalizedRequest(body)
-	resp, err := a.upstream.Forward(ctx, nq, false)
+	resp, err := a.forward(ctx, nq, false)
 	if err != nil {
 		return "", err
 	}
@@ -404,7 +515,7 @@ func (a *Adapter) sendUnsubscribe(ctx context.Context, subID string) {
 		return
 	}
 	nq := common.NewNormalizedRequest(body)
-	_, _ = a.upstream.Forward(ctx, nq, false)
+	_, _ = a.forward(ctx, nq, false)
 }
 
 // buildJSONRPCBody marshals a JSON-RPC request with a unique internal
