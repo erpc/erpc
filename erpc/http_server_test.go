@@ -1289,7 +1289,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		// 					{
 		// 						Network: "*",
 		// 						Method:  "*",
-		// 						TTL:     common.Duration(5 * time.Minute),
+		// 						TTL:     common.FixedDuration(5 * time.Minute),
 		// 					},
 		// 				},
 		// 			},

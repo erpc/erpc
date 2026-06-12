@@ -57,7 +57,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 		ttl := 1 * time.Minute
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Connector: "mock-connector",
-			TTL:       common.Duration(ttl),
+			TTL:       common.FixedDuration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
 			Finality:  common.DataFinalityStateUnknown,
@@ -112,7 +112,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 		ttl := 1 * time.Minute
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Connector: "mock-connector",
-			TTL:       common.Duration(ttl),
+			TTL:       common.FixedDuration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
 			Finality:  common.DataFinalityStateUnknown,
@@ -162,7 +162,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 		ttl := 1 * time.Minute
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Connector: "mock-connector",
-			TTL:       common.Duration(ttl),
+			TTL:       common.FixedDuration(ttl),
 			Network:   "*",
 			Method:    "eth_chainId",
 			Finality:  common.DataFinalityStateUnknown,
@@ -289,7 +289,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 		ttl := 1 * time.Minute
 		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Connector: "mock-connector-1",
-			TTL:       common.Duration(ttl),
+			TTL:       common.FixedDuration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
 			Finality:  common.DataFinalityStateUnknown,
@@ -298,7 +298,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 
 		policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Connector: "mock-connector-2",
-			TTL:       common.Duration(ttl),
+			TTL:       common.FixedDuration(ttl),
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
 			Finality:  common.DataFinalityStateUnknown,

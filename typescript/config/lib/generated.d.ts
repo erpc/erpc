@@ -28,6 +28,10 @@ export interface AdaptiveDuration {
     min?: Duration;
     max?: Duration;
 }
+export interface BlockTimeAdaptiveDuration {
+    fallback?: Duration;
+    blockTimeMultiplier?: number;
+}
 export declare const UpstreamTypeEvm: UpstreamType;
 export type EvmUpstream = Upstream;
 export type AvailbilityConfidence = number;
@@ -314,7 +318,7 @@ export interface CachePolicyConfig {
     appliesTo?: 'get' | 'set' | 'both';
     minItemSize?: ByteSize;
     maxItemSize?: ByteSize;
-    ttl?: Duration;
+    ttl?: Duration | BlockTimeAdaptiveDuration;
 }
 export type ConnectorDriverType = string;
 export declare const DriverMemory: ConnectorDriverType;
