@@ -328,9 +328,13 @@ type CachePolicyConfig struct {
 	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
 
 	// TTLBlockTimeMultiplier, when > 0, derives the realtime-finality age limit
-	// from the network's estimated block time (blockTime * multiplier) instead of
-	// the static TTL, so head freshness tracks each chain's cadence. Falls back to
-	// TTL when the block time isn't known yet.
+	// from the network's estimated block time (blockTime * multiplier), so head
+	// freshness tracks each chain's cadence.
+	//
+	// It composes with TTL rather than conflicting: block time is used when
+	// known; otherwise (cold start, or a network with no estimate) it falls back
+	// to TTL, or to a small built-in default when TTL is unset. Setting both is
+	// the recommended setup — TTL acts as the cold-start floor.
 	TTLBlockTimeMultiplier *float64 `yaml:"ttlBlockTimeMultiplier,omitempty" json:"ttlBlockTimeMultiplier,omitempty" tstype:"number"`
 }
 
