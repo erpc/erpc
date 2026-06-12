@@ -692,7 +692,16 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		go func(policy *data.CachePolicy) {
 			defer wg.Done()
 			connector := policy.GetConnector()
+			// Fixed TTL component for telemetry labels (stable values only).
 			ttl := policy.GetTTL()
+			// Storage expiry must match the read-side window: for a block-time
+			// dynamic realtime TTL, the resolved value can exceed the fixed
+			// fallback, and writing with the fallback would evict entries long
+			// before the read-side age guard stops serving them.
+			storageTTL := ttl
+			if resolved := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL); resolved > 0 {
+				storageTTL = &resolved
+			}
 
 			shouldCache, err := shouldCacheResponse(ctx, lg, resp, rpcResp, policy, finState)
 			if !shouldCache {
@@ -767,7 +776,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, ttl)
+			err = connector.Set(ctx, pk, rk, valueToStore, storageTTL)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -831,6 +840,12 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
+// defaultRealtimeColdStartTTL bounds realtime staleness when a policy sets
+// ttlBlockTimeMultiplier but has no static ttl and the network's block time
+// isn't known yet (cold start / not head-tracked), so the guard never accepts
+// an unbounded-stale head.
+const defaultRealtimeColdStartTTL = 2 * time.Second
+
 // shouldAcceptCachedResult checks if a cached realtime result is still fresh enough to serve, by
 // comparing a block timestamp against the policy's TTL. The timestamp is taken from the response
 // when present; for responses that carry none (eth_blockNumber, eth_gasPrice, eth_getLogs) it falls
@@ -853,9 +868,13 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		return true
 	}
 
-	// If no TTL is set, accept the result
-	ttl := policy.GetTTL()
-	if ttl == nil || *ttl <= 0 {
+	// Resolve the realtime age limit from the policy TTL: a fixed value, or one
+	// derived from the network's estimated block time (object form). When
+	// block-time-dynamic but the block time isn't known yet (cold start, or a
+	// network without an estimate) it falls back to the configured value, or to
+	// a safe default — so the guard always bounds staleness. No limit -> accept.
+	effectiveTTL := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL)
+	if effectiveTTL <= 0 {
 		return true
 	}
 
@@ -894,18 +913,20 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	age := time.Duration(now-blockTimestamp) * time.Second
 
 	// Check if the age exceeds the TTL
-	if age > *ttl {
+	if age > effectiveTTL {
 		if c.logger.GetLevel() <= zerolog.DebugLevel {
 			c.logger.Debug().
 				Dur("age", age).
-				Dur("ttl", *ttl).
+				Dur("ttl", effectiveTTL).
 				Int64("blockTimestamp", blockTimestamp).
 				Int64("now", now).
 				Str("policy", policy.String()).
 				Msg("rejecting cached result because block age exceeds policy TTL")
 		}
 
-		// Record metric for age-guard rejection
+		// Record metric for age-guard rejection. Label with the policy's fixed
+		// TTL component, not the block-time-resolved value — the latter varies
+		// per sample (EMA-derived) and would explode label cardinality.
 		method, _ := req.Method()
 		telemetry.MetricCacheGetAgeGuardRejectTotal.WithLabelValues(
 			c.projectId,
@@ -913,7 +934,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 			method,
 			policy.GetConnector().Id(),
 			policy.String(),
-			ttl.String(),
+			policy.GetTTL().String(),
 		).Inc()
 
 		return false
@@ -921,6 +942,19 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 	// Accept the result as it's within the acceptable age
 	return true
+}
+
+// networkBlockTime returns the request network's estimated block time, or 0 if
+// it's not available (network unset, not head-tracked, or not yet warmed up).
+func networkBlockTime(req *common.NormalizedRequest) time.Duration {
+	ntw := req.Network()
+	if ntw == nil {
+		return 0
+	}
+	if p, ok := ntw.(interface{ EvmBlockTime() time.Duration }); ok {
+		return p.EvmBlockTime()
+	}
+	return 0
 }
 
 func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {

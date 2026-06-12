@@ -62,7 +62,7 @@ func tsPolicy(t *testing.T, conn data.Connector, ttl time.Duration) *data.CacheP
 		Finality:  common.DataFinalityStateRealtime,
 	}
 	if ttl > 0 {
-		cfg.TTL = common.Duration(ttl)
+		cfg.TTL = common.FixedDuration(ttl)
 	}
 	policy, err := data.NewCachePolicy(cfg, conn)
 	require.NoError(t, err)
@@ -239,7 +239,7 @@ func TestEvmJsonRpcCache_ConnectorFreshnessThroughGet(t *testing.T) {
 			Network:   "*",
 			Method:    "eth_getBlockByNumber",
 			Finality:  common.DataFinalityStateRealtime,
-			TTL:       common.Duration(ttl),
+			TTL:       common.FixedDuration(ttl),
 		}, mc)
 		require.NoError(t, err)
 

@@ -325,7 +325,13 @@ type CachePolicyConfig struct {
 	AppliesTo   CachePolicyAppliesTo `yaml:"appliesTo,omitempty" json:"appliesTo" tstype:"'get' | 'set' | 'both'"`
 	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
 	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
-	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+
+	// TTL is either a fixed duration ("2s") or, in object form, derived from the
+	// network's estimated block time ({ blockTimeMultiplier: 1, fallback: 2s }).
+	// For realtime finality the resolved value is the age limit; the fixed/
+	// fallback component is also used as the cache storage expiry. See
+	// BlockTimeAdaptiveDuration.
+	TTL *BlockTimeAdaptiveDuration `yaml:"ttl,omitempty" json:"ttl,omitempty" tstype:"Duration | BlockTimeAdaptiveDuration"`
 }
 
 type ConnectorDriverType string
