@@ -38,7 +38,18 @@ const (
 	// unsubscribeTimeout is the deadline for best-effort upstream
 	// unsubscribe calls during connection cleanup.
 	unsubscribeTimeout = 5 * time.Second
+
+	// liveHeadSourcePollEvery is how often waitForLiveHeadSource re-checks
+	// ingress health while waiting out the bootstrap race.
+	liveHeadSourcePollEvery = 100 * time.Millisecond
 )
+
+// liveHeadSourceWaitMax bounds how long a newHeads subscribe waits for at
+// least one ingress to come alive before refusing the subscription. Long
+// enough to cover the initial bootstrap (adapter connect + eth_subscribe
+// round-trip), short enough that a client talking to a head-less pod fails
+// over quickly. Var so tests can compress time.
+var liveHeadSourceWaitMax = 3 * time.Second
 
 // SubscriptionManager is the client-facing egress layer. It owns
 // per-connection *wsclient.Adapter instances, lazily registers networks +
@@ -165,6 +176,19 @@ func (sm *SubscriptionManager) Subscribe(
 	if err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, fmt.Errorf("failed to generate subscription ID: %w", err))
 		return nil, fmt.Errorf("failed to generate subscription ID: %w", err)
+	}
+
+	// newHeads is fan-out only — no per-filter EnsureFilter ever touches an
+	// upstream for it, so without this check a pod whose WS upstreams are
+	// all down (or resubscribing) would happily return a subscription ID
+	// that never delivers a single head. Refuse instead so the client can
+	// retry/fail over. Filter subs get equivalent protection from
+	// EnsureFilter, which errors when every ingress fails.
+	if subType == SubTypeNewHeads {
+		if err := sm.waitForLiveHeadSource(ctx, networkId); err != nil {
+			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+			return nil, err
+		}
 	}
 
 	kind, filterHash, err := sm.resolveSubscription(ctx, networkId, subType, jrReq.Params)
@@ -298,6 +322,57 @@ func (sm *SubscriptionManager) CleanupConnection(wsc *WsConnection, _ *PreparedP
 	conn.detach()
 
 	lg.Debug().Msg("cleaned up all subscriptions for connection")
+}
+
+// NetworkSubscriptionHealth summarizes a network's head-delivery liveness
+// for the health endpoint. Nil/absent when the network has never been
+// bootstrapped (no client ever subscribed on it).
+type NetworkSubscriptionHealth struct {
+	LiveIngresses  int    `json:"liveIngresses"`
+	TotalIngresses int    `json:"totalIngresses"`
+	LastHeadNumber int64  `json:"lastHeadNumber,omitempty"`
+	LastHeadAt     string `json:"lastHeadAt,omitempty"`
+	LastHeadAgeSec int64  `json:"lastHeadAgeSeconds,omitempty"`
+}
+
+// SubscriptionHealth reports the network's subscription liveness, or nil
+// when the network was never bootstrapped for subscriptions.
+func (sm *SubscriptionManager) SubscriptionHealth(networkId string) *NetworkSubscriptionHealth {
+	if _, ok := sm.networks.Load(networkId); !ok {
+		return nil
+	}
+	live, total := sm.idx.IngressHealth(networkId)
+	out := &NetworkSubscriptionHealth{LiveIngresses: live, TotalIngresses: total}
+	if block, at, ok := sm.idx.LastHead(networkId); ok {
+		out.LastHeadNumber = block.Number
+		out.LastHeadAt = at.UTC().Format(time.RFC3339)
+		out.LastHeadAgeSec = int64(time.Since(at).Seconds())
+	}
+	return out
+}
+
+// waitForLiveHeadSource returns nil as soon as at least one of the
+// network's ingresses reports it can deliver heads. The bounded wait
+// covers the bootstrap race where adapters' initial eth_subscribe calls
+// are still in flight; after that it refuses with a retryable error.
+func (sm *SubscriptionManager) waitForLiveHeadSource(ctx context.Context, networkId string) error {
+	deadline := time.Now().Add(liveHeadSourceWaitMax)
+	for {
+		live, total := sm.idx.IngressHealth(networkId)
+		if live > 0 {
+			return nil
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			sm.logger.Warn().Str("networkId", networkId).Int("totalIngresses", total).
+				Msg("refusing newHeads subscription: no live head source on this instance")
+			return common.NewErrNoLiveSubscriptionSource(networkId, total)
+		}
+		select {
+		case <-ctx.Done():
+			return common.NewErrNoLiveSubscriptionSource(networkId, total)
+		case <-time.After(liveHeadSourcePollEvery):
+		}
+	}
 }
 
 // --- internals --------------------------------------------------------

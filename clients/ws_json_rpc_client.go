@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"encoding/json"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -24,11 +26,26 @@ import (
 )
 
 const (
-	wsPingInterval    = 30 * time.Second
 	wsWriteWait       = 10 * time.Second
 	wsReconnectMin    = 1 * time.Second
 	wsReconnectMax    = 30 * time.Second
 	wsReconnectFactor = 2.0
+)
+
+// Liveness windows. The peer must produce SOME traffic (a pong reply or a
+// data frame) within wsPongWait, or the connection is declared dead, torn
+// down, and re-dialed. A half-open TCP connection (peer host vanished
+// without FIN/RST, or an intermediate proxy black-holing frames) otherwise
+// blocks ReadMessage forever while ping writes keep "succeeding" into the
+// kernel/proxy buffer — the client then believes it is connected and never
+// re-dials. wsPongWait must comfortably exceed wsPingInterval so at least
+// two pings fit in the window.
+//
+// Vars (not consts) so tests can compress time; production code must not
+// mutate them.
+var (
+	wsPingInterval = 30 * time.Second
+	wsPongWait     = 75 * time.Second
 )
 
 // WsJsonRpcClient implements ClientInterface for WebSocket-based JSON-RPC upstream connections.
@@ -349,11 +366,52 @@ func (c *WsJsonRpcClient) connect() error {
 		return err
 	}
 
+	// Arm the liveness deadline: if neither a pong nor a data frame arrives
+	// within wsPongWait, ReadMessage fails and readLoop re-dials. The pong
+	// handler runs inside ReadMessage's frame processing, so extending the
+	// deadline here covers the ping/pong path; readLoop extends it again on
+	// every data frame.
+	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
+
+	if c.conn != nil {
+		// Defensive: never leak a previous connection's FD/goroutine state.
+		_ = c.conn.Close()
+	}
 	c.conn = conn
 	c.connected.Store(true)
+	c.setConnectedMetric(1)
 
 	c.logger.Info().Str("url", c.Url.String()).Msg("websocket connection established")
 	return nil
+}
+
+// teardownConn marks the client disconnected and closes the given
+// connection, clearing c.conn only if it still points at that same
+// connection (a concurrent reconnect may already have replaced it).
+func (c *WsJsonRpcClient) teardownConn(old *websocket.Conn) {
+	c.connMu.Lock()
+	if c.conn == old {
+		c.conn = nil
+	}
+	c.connMu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+}
+
+// setConnectedMetric publishes the upstream WS connectivity gauge so
+// operators can alert on a wedged/disconnected upstream socket instead of
+// discovering it from silent client subscriptions.
+func (c *WsJsonRpcClient) setConnectedMetric(v float64) {
+	if c.upstream == nil {
+		return
+	}
+	telemetry.GaugeHandle(telemetry.MetricUpstreamWebsocketConnected,
+		c.projectId, c.upstream.VendorName(), c.upstream.NetworkLabel(), c.upstream.Id(),
+	).Set(v)
 }
 
 func (c *WsJsonRpcClient) readLoop() {
@@ -389,12 +447,18 @@ func (c *WsJsonRpcClient) readLoop() {
 			if c.appCtx.Err() != nil {
 				return
 			}
+			var netErr net.Error
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				c.logger.Info().Msg("websocket connection closed normally")
+			} else if errors.As(err, &netErr) && netErr.Timeout() {
+				c.logger.Warn().Err(err).Dur("pongWait", wsPongWait).
+					Msg("websocket peer silent beyond liveness deadline (no pong/data), tearing down connection and reconnecting")
 			} else {
 				c.logger.Warn().Err(err).Msg("websocket read error, will reconnect")
 			}
 			c.connected.Store(false)
+			c.setConnectedMetric(0)
+			c.teardownConn(conn)
 			c.drainPending(common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("websocket connection lost: %w", err)))
 			c.fireCallbacks(&c.onDisconnectMu, c.onDisconnectCbs)
 
@@ -402,13 +466,25 @@ func (c *WsJsonRpcClient) readLoop() {
 			continue
 		}
 
+		// Any inbound frame proves the peer is alive — push the liveness
+		// deadline forward.
+		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+
 		c.handleMessage(message)
 	}
 }
 
-// fireCallbacks snapshots the callback map under rlock and dispatches each
-// in its own goroutine. Snapshotting lets callbacks register/deregister
+// fireCallbacks snapshots the callback map under rlock and invokes each
+// callback synchronously. Snapshotting lets callbacks register/deregister
 // other callbacks without deadlocking on the map's RWMutex.
+//
+// Synchronous invocation is load-bearing: readLoop fires disconnect
+// callbacks, then reconnects, then fires reconnect callbacks. Dispatching
+// them in goroutines (as this used to) let a slow-scheduled disconnect
+// callback run AFTER the reconnect callback — for the wsupstream adapter
+// that cancels the fresh resubscribe epoch and clears the new subscription,
+// silently wedging head delivery. Callbacks must therefore be fast and
+// must not block on the WS client's own request path.
 func (c *WsJsonRpcClient) fireCallbacks(mu *sync.RWMutex, cbs map[string]func()) {
 	mu.RLock()
 	snapshot := make([]func(), 0, len(cbs))
@@ -417,7 +493,7 @@ func (c *WsJsonRpcClient) fireCallbacks(mu *sync.RWMutex, cbs map[string]func())
 	}
 	mu.RUnlock()
 	for _, cb := range snapshot {
-		go cb()
+		cb()
 	}
 }
 
@@ -568,7 +644,18 @@ func (c *WsJsonRpcClient) pingLoop() {
 				continue
 			}
 			if err := c.writeMessage(websocket.PingMessage, nil); err != nil {
-				c.logger.Debug().Err(err).Msg("websocket ping failed")
+				// A failed ping write means the connection is unusable.
+				// Close it so readLoop's blocked ReadMessage fails and the
+				// teardown+reconnect path (owned by readLoop) takes over —
+				// logging alone here previously left the client wedged on a
+				// connection that could never deliver another frame.
+				c.logger.Warn().Err(err).Msg("websocket ping write failed, closing connection to force reconnect")
+				c.connMu.Lock()
+				conn := c.conn
+				c.connMu.Unlock()
+				if conn != nil {
+					_ = conn.Close()
+				}
 			}
 		case <-c.appCtx.Done():
 			return
@@ -598,6 +685,7 @@ func normalizeIDKey(id interface{}) string {
 
 func (c *WsJsonRpcClient) shutdown() {
 	c.connected.Store(false)
+	c.setConnectedMetric(0)
 
 	c.connMu.Lock()
 	conn := c.conn
