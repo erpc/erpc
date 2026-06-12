@@ -450,8 +450,22 @@ func (e *executor) runAnalyzer(
 		if maxWaitOnEmpty <= 0 && maxWaitOnResult <= 0 {
 			return
 		}
+		// Results that never reached an upstream (config-static skips like
+		// ignored methods or shadow upstreams, and empty-cursor outcomes —
+		// see isNoAttemptResult) are produced locally in microseconds and
+		// carry no signal about how long the round's real participants
+		// need. Arming the caps off them would start the countdown before
+		// any live attempt exists: under fan-out configs where some
+		// upstreams statically skip the method, the round would resolve
+		// with only non-votable infrastructure errors while the real
+		// participants are still in flight. The collection loop still
+		// counts these results toward maxToSpawn, so rounds where every
+		// participant skips terminate immediately without any cap.
+		if isNoAttemptResult(resp) {
+			return
+		}
 		now := time.Now()
-		// First response of any kind arms maxWaitOnEmpty.
+		// First response from an actual upstream attempt arms maxWaitOnEmpty.
 		if maxWaitOnEmpty > 0 && waitDeadline.IsZero() {
 			armTimer(now.Add(maxWaitOnEmpty))
 		}
@@ -627,6 +641,83 @@ func (e *executor) releaseNonWinningResponses(
 			}
 		}
 	}
+}
+
+// isNoAttemptResult reports whether a participant's result was produced
+// without any network call to an upstream: config-static skips (method
+// ignored/not allowed, shadow upstreams, syncing nodes, use-upstream
+// directive mismatch) and empty-cursor outcomes (no upstreams left to
+// select, exhausted lists where every recorded error is itself a skip).
+// Such results are decided locally in microseconds, so they say nothing
+// about how long the round's real participants need — the wait caps must
+// not be armed off them. Genuine attempt failures (timeouts, 5xx,
+// connection resets) are NOT no-attempt: they prove the round is live and
+// should keep arming the caps.
+func isNoAttemptResult(r *execResult) bool {
+	if r == nil {
+		return true
+	}
+	if r.Err == nil {
+		return false
+	}
+	return isNoAttemptError(r.Err)
+}
+
+func isNoAttemptError(err error) bool {
+	se, ok := err.(common.StandardError)
+	if !ok {
+		return false
+	}
+	base := se.Base()
+	if base == nil {
+		return false
+	}
+	switch base.Code {
+	case common.ErrCodeUpstreamRequestSkipped,
+		common.ErrCodeUpstreamMethodIgnored,
+		common.ErrCodeUpstreamShadowing,
+		common.ErrCodeUpstreamSyncing,
+		common.ErrCodeUpstreamNotAllowed,
+		common.ErrCodeNoUpstreamsLeftToSelect:
+		return true
+	case common.ErrCodeUpstreamsExhausted:
+		// Wrapper: the verdict follows the recorded child errors. No
+		// children at all means no upstream was ever tried.
+		cause := se.GetCause()
+		if cause == nil {
+			return true
+		}
+		return isNoAttemptCause(cause)
+	case common.ErrCodeFailsafeRetryExceeded:
+		// Wrapper: retry-exceeded always carries the last attempt's error;
+		// the verdict follows it.
+		cause := se.GetCause()
+		if cause == nil {
+			return false
+		}
+		return isNoAttemptCause(cause)
+	}
+	return false
+}
+
+// isNoAttemptCause unwraps a wrapper's cause, which may be an errors.Join
+// multi-error (e.g. ErrUpstreamsExhausted joining ErrorsByUpstream): ALL
+// children must be no-attempt for the wrapper to count as no-attempt — a
+// single real attempt failure means the round is live.
+func isNoAttemptCause(cause error) bool {
+	if multi, ok := cause.(interface{ Unwrap() []error }); ok {
+		children := multi.Unwrap()
+		if len(children) == 0 {
+			return true
+		}
+		for _, child := range children {
+			if !isNoAttemptError(child) {
+				return false
+			}
+		}
+		return true
+	}
+	return isNoAttemptError(cause)
 }
 
 // executeParticipant runs a single upstream request within a goroutine.

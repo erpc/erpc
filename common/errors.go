@@ -1431,10 +1431,12 @@ var NewErrUpstreamShadowing = func(upstreamId string) error {
 
 type ErrUpstreamNotAllowed struct{ BaseError }
 
+const ErrCodeUpstreamNotAllowed ErrorCode = "ErrUpstreamNotAllowed"
+
 var NewErrUpstreamNotAllowed = func(required, upstreamId string) error {
 	return &ErrUpstreamNotAllowed{
 		BaseError{
-			Code:    "ErrUpstreamNotAllowed",
+			Code:    ErrCodeUpstreamNotAllowed,
 			Message: "upstream not allowed based on use-upstream directive",
 			Details: map[string]interface{}{
 				"required":   required,
