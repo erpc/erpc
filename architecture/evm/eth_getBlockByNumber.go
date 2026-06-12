@@ -150,9 +150,15 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
+	// Resolve tips with the request bound to the context so a use-upstream
+	// selector scopes the tip to the targeted subset (the selector-scoped
+	// served-tip semantics): a request pinned to a lagging group must not be
+	// re-forwarded towards a block that group cannot serve.
+	tipCtx := context.WithValue(ctx, common.RequestContextKey, nq)
+
 	switch bnp {
 	case "latest":
-		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		highestBlockNumber := network.EvmHighestLatestBlockNumber(tipCtx)
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
@@ -213,7 +219,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nr, re
 		}
 	case "finalized":
-		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx)
+		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(tipCtx)
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err

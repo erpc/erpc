@@ -694,7 +694,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			connector := policy.GetConnector()
 			ttl := policy.GetTTL()
 
-			shouldCache, err := shouldCacheResponse(ctx, lg, resp, rpcResp, policy)
+			shouldCache, err := shouldCacheResponse(ctx, lg, resp, rpcResp, policy, finState)
 			if !shouldCache {
 				if err != nil {
 					telemetry.MetricCacheSetErrorTotal.WithLabelValues(
@@ -1057,6 +1057,7 @@ func shouldCacheResponse(
 	resp *common.NormalizedResponse,
 	rpcResp *common.JsonRpcResponse,
 	policy *data.CachePolicy,
+	finality common.DataFinalityState,
 ) (bool, error) {
 	// Never cache responses with errors
 	if rpcResp != nil && rpcResp.Error != nil {
@@ -1069,6 +1070,32 @@ func shouldCacheResponse(
 	if !policy.MatchesSizeLimits(size) {
 		lg.Debug().Int("size", size).Msg("skip caching because response size does not match policy limits")
 		return false, nil
+	}
+
+	// Never persist a realtime response that is already behind the network
+	// tip while the request runs under enforceHighestBlock: enforcement will
+	// never serve such a value as-is, so caching it can only poison future
+	// reads (e.g. the eth_blockNumber sawtooth: a lagging upstream's value
+	// lands in the cache and is then served for a full TTL window). The tip
+	// is resolved network-wide on purpose — the cache entry is shared by all
+	// requests regardless of any use-upstream selector — and the guard fails
+	// open when pollers don't know a tip yet.
+	if finality == common.DataFinalityStateRealtime && resp != nil {
+		if req := resp.Request(); req != nil {
+			if dirs := req.Directives(); dirs != nil && dirs.EnforceHighestBlock {
+				if ntw := req.Network(); ntw != nil {
+					if _, respBlock, err := ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlock > 0 {
+						if tip := ntw.EvmHighestLatestBlockNumber(ctx); tip > respBlock {
+							lg.Debug().
+								Int64("responseBlockNumber", respBlock).
+								Int64("knownHighestBlock", tip).
+								Msg("skip caching realtime response older than the known highest block")
+							return false, nil
+						}
+					}
+				}
+			}
+		}
 	}
 	result := rpcResp.GetResultBytes()
 	// Check if we should cache empty results
