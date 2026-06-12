@@ -283,6 +283,9 @@ func (s *Slot) tickOnce() {
 	// surface for `RecentDecisions` / simulator UI — metrics never read it.
 	ordered, excluded := materializeOrder(ups, orderedIDs)
 	for i := range excluded {
+		// Resolve the probe-eligibility verdict matrix: missing entry
+		// (untracked exclusion) resolves to probe=true via the zero value.
+		excluded[i].ProbeEligible = evalRes.ProbeVerdicts[excluded[i].ID].ShouldProbe()
 		entries, ok := evalRes.LeafReasons[excluded[i].ID]
 		if !ok || len(entries) == 0 {
 			continue
@@ -770,6 +773,12 @@ func excludedIDs(ex []ExcludedUpstream) []string {
 // attribution) back to the concrete `common.Upstream` instances. Used
 // to populate the slot's `excludedCache` so the Prober can call
 // `Forward` against the excluded set without an extra ID→pointer hop.
+//
+// Only PROBE-ELIGIBLE exclusions are materialized: upstreams excluded by
+// probe-blocking steps (static tags, cordons — see the verdict matrix in
+// stdlib.js) are deliberately absent so the prober never shadow-mirrors
+// traffic whose results no gate consults. The full excluded set, with
+// per-upstream ProbeEligible, remains visible in DecisionOutput.Excluded.
 func materializeExcluded(ups []common.Upstream, excluded []ExcludedUpstream) []common.Upstream {
 	if len(excluded) == 0 {
 		return nil
@@ -780,6 +789,9 @@ func materializeExcluded(ups []common.Upstream, excluded []ExcludedUpstream) []c
 	}
 	out := make([]common.Upstream, 0, len(excluded))
 	for _, ex := range excluded {
+		if !ex.ProbeEligible {
+			continue
+		}
 		if u, ok := index[ex.ID]; ok {
 			out = append(out, u)
 		}
