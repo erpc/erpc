@@ -46,7 +46,7 @@ export interface AdaptiveDuration {
   min?: Duration;
   max?: Duration;
 }
-export interface DynamicDuration {
+export interface BlockTimeAdaptiveDuration {
   fallback?: Duration;
   blockTimeMultiplier?: number /* float64 */;
 }
@@ -345,7 +345,7 @@ export interface CachePolicyConfig {
   appliesTo?: 'get' | 'set' | 'both';
   minItemSize?: ByteSize;
   maxItemSize?: ByteSize;
-  ttl?: Duration | DynamicDuration;
+  ttl?: Duration | BlockTimeAdaptiveDuration;
 }
 export type ConnectorDriverType = string;
 export const DriverMemory: ConnectorDriverType = "memory";

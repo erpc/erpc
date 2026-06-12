@@ -1244,7 +1244,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		policy1, err1 := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBalance",
-			TTL:     &common.DynamicDuration{Fallback: ttl},
+			TTL:     &common.BlockTimeAdaptiveDuration{Fallback: ttl},
 		}, mockConnectors[1])
 		require.NoError(t, err1)
 

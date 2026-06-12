@@ -44,7 +44,7 @@ func btPolicy(t *testing.T, conn data.Connector, staticTTL time.Duration, mult f
 		Finality:  common.DataFinalityStateRealtime,
 	}
 	if staticTTL > 0 || mult > 0 {
-		cfg.TTL = &common.DynamicDuration{Fallback: common.Duration(staticTTL), BlockTimeMultiplier: mult}
+		cfg.TTL = &common.BlockTimeAdaptiveDuration{Fallback: common.Duration(staticTTL), BlockTimeMultiplier: mult}
 	}
 	policy, err := data.NewCachePolicy(cfg, conn)
 	require.NoError(t, err)
@@ -52,8 +52,9 @@ func btPolicy(t *testing.T, conn data.Connector, staticTTL time.Duration, mult f
 }
 
 // TestEvmJsonRpcCache_BlockTimeDerivedTTL exercises the realtime age guard when
-// the effective TTL is derived from the network's estimated block time
-// (ttlBlockTimeMultiplier) instead of a static ttl. Scenarios mirror real chains.
+// the effective TTL is derived from the network's estimated block time (the
+// ttl's object form, blockTimeMultiplier) instead of a fixed value. Scenarios
+// mirror real chains.
 func TestEvmJsonRpcCache_BlockTimeDerivedTTL(t *testing.T) {
 	ctx := context.Background()
 	cache := freshGuardCache()

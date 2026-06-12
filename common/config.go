@@ -330,8 +330,8 @@ type CachePolicyConfig struct {
 	// network's estimated block time ({ blockTimeMultiplier: 1, fallback: 2s }).
 	// For realtime finality the resolved value is the age limit; the fixed/
 	// fallback component is also used as the cache storage expiry. See
-	// DynamicDuration.
-	TTL *DynamicDuration `yaml:"ttl,omitempty" json:"ttl,omitempty" tstype:"Duration | DynamicDuration"`
+	// BlockTimeAdaptiveDuration.
+	TTL *BlockTimeAdaptiveDuration `yaml:"ttl,omitempty" json:"ttl,omitempty" tstype:"Duration | BlockTimeAdaptiveDuration"`
 }
 
 type ConnectorDriverType string
