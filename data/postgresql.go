@@ -183,6 +183,22 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	config.MaxConnLifetime = 5 * time.Hour
 	config.MaxConnIdleTime = 30 * time.Minute
 
+	if iam := cfg.IAMAuth; iam != nil && iam.Enabled {
+		sess, err := createAWSSession(iam.Auth, iam.Region)
+		if err != nil {
+			return common.NewTaskFatal(fmt.Errorf("rds iam: failed to create AWS session: %w", err))
+		}
+		// BeforeConnect is called on every new pgxpool connection, ensuring each
+		// connection uses a fresh IAM token (tokens are valid for 15 minutes but
+		// only checked at connection establishment time).
+		config.BeforeConnect = newRDSBeforeConnect(sess, iam)
+		p.logger.Info().
+			Str("endpoint", iam.Endpoint).
+			Str("region", iam.Region).
+			Str("dbUser", iam.DBUser).
+			Msg("PostgreSQL IAM auth enabled (RDS)")
+	}
+
 	connectCtx, cancel := context.WithTimeout(ctx, p.initTimeout)
 	defer cancel()
 

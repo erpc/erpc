@@ -387,17 +387,18 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr              string     `yaml:"addr,omitempty" json:"addr"`
-	Username          string     `yaml:"username,omitempty" json:"username"`
-	Password          string     `yaml:"password,omitempty" json:"-"`
-	DB                int        `yaml:"db,omitempty" json:"db"`
-	TLS               *TLSConfig `yaml:"tls,omitempty" json:"tls"`
-	ConnPoolSize      int        `yaml:"connPoolSize,omitempty" json:"connPoolSize"`
-	URI               string     `yaml:"uri" json:"uri"`
-	InitTimeout       Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
-	GetTimeout        Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
-	SetTimeout        Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
-	LockRetryInterval Duration   `yaml:"lockRetryInterval,omitempty" json:"lockRetryInterval" tstype:"Duration"`
+	Addr              string              `yaml:"addr,omitempty" json:"addr"`
+	Username          string              `yaml:"username,omitempty" json:"username"`
+	Password          string              `yaml:"password,omitempty" json:"-"`
+	DB                int                 `yaml:"db,omitempty" json:"db"`
+	TLS               *TLSConfig          `yaml:"tls,omitempty" json:"tls"`
+	ConnPoolSize      int                 `yaml:"connPoolSize,omitempty" json:"connPoolSize"`
+	URI               string              `yaml:"uri" json:"uri"`
+	InitTimeout       Duration            `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout        Duration            `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout        Duration            `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	LockRetryInterval Duration            `yaml:"lockRetryInterval,omitempty" json:"lockRetryInterval" tstype:"Duration"`
+	IAMAuth           *RedisIAMAuthConfig `yaml:"iamAuth,omitempty" json:"iamAuth,omitempty"`
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -412,6 +413,7 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 		"initTimeout":  r.InitTimeout.String(),
 		"getTimeout":   r.GetTimeout.String(),
 		"setTimeout":   r.SetTimeout.String(),
+		"iamAuth":      r.IAMAuth,
 	})
 }
 
@@ -428,6 +430,7 @@ func (r *RedisConnectorConfig) MarshalYAML() (interface{}, error) {
 		"getTimeout":        r.GetTimeout.String(),
 		"setTimeout":        r.SetTimeout.String(),
 		"lockRetryInterval": r.LockRetryInterval.String(),
+		"iamAuth":           r.IAMAuth,
 	}, nil
 }
 
@@ -449,17 +452,18 @@ type DynamoDBConnectorConfig struct {
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri string   `yaml:"connectionUri" json:"connectionUri"`
-	Table         string   `yaml:"table" json:"table"`
-	MinConns      int32    `yaml:"minConns,omitempty" json:"minConns"`
-	MaxConns      int32    `yaml:"maxConns,omitempty" json:"maxConns"`
-	InitTimeout   Duration `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
-	GetTimeout    Duration `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
-	SetTimeout    Duration `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	ConnectionUri string                   `yaml:"connectionUri" json:"connectionUri"`
+	Table         string                   `yaml:"table" json:"table"`
+	MinConns      int32                    `yaml:"minConns,omitempty" json:"minConns"`
+	MaxConns      int32                    `yaml:"maxConns,omitempty" json:"maxConns"`
+	InitTimeout   Duration                 `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout    Duration                 `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout    Duration                 `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	IAMAuth       *PostgreSQLIAMAuthConfig `yaml:"iamAuth,omitempty" json:"iamAuth,omitempty"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(map[string]string{
+	return sonic.Marshal(map[string]interface{}{
 		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
 		"table":         p.Table,
 		"minConns":      fmt.Sprintf("%d", p.MinConns),
@@ -467,6 +471,7 @@ func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 		"initTimeout":   p.InitTimeout.String(),
 		"getTimeout":    p.GetTimeout.String(),
 		"setTimeout":    p.SetTimeout.String(),
+		"iamAuth":       p.IAMAuth,
 	})
 }
 
@@ -479,6 +484,7 @@ func (p *PostgreSQLConnectorConfig) MarshalYAML() (interface{}, error) {
 		"initTimeout":   p.InitTimeout.String(),
 		"getTimeout":    p.GetTimeout.String(),
 		"setTimeout":    p.SetTimeout.String(),
+		"iamAuth":       p.IAMAuth,
 	}, nil
 }
 
@@ -508,6 +514,40 @@ func (a *AwsAuthConfig) MarshalYAML() (interface{}, error) {
 		"accessKeyID":     a.AccessKeyID,
 		"secretAccessKey": "REDACTED",
 	}, nil
+}
+
+// RedisIAMAuthConfig enables AWS IAM authentication for ElastiCache (Valkey ≥7.2
+// or Redis OSS ≥7.0). When enabled, eRPC mints SigV4-presigned auth tokens via
+// go-redis's CredentialsProviderContext on every new connection. TLS is required
+// (auto-enabled by SetDefaults). For IAM-enabled ElastiCache users, the user
+// name and user ID must be identical — supply that single value as UserID.
+type RedisIAMAuthConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// CacheName is the ElastiCache replication-group ID.
+	// Will be lowercased automatically (AWS lowercases cache names at creation time).
+	CacheName string `yaml:"cacheName" json:"cacheName"`
+	// Region is optional — derived from AWS_REGION / instance metadata when omitted.
+	Region string `yaml:"region,omitempty" json:"region,omitempty"`
+	UserID string `yaml:"userID" json:"userID"`
+	// Auth selects the AWS credential source (same shape as DynamoDB's auth).
+	// Omit to use the default credential chain (instance role, env vars, …).
+	Auth *AwsAuthConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
+}
+
+// PostgreSQLIAMAuthConfig enables AWS IAM authentication for RDS PostgreSQL.
+// eRPC mints SigV4-presigned tokens via pgxpool.BeforeConnect on each new pool
+// connection. SSL is required (auto-enforced via sslmode=require by SetDefaults).
+type PostgreSQLIAMAuthConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Endpoint is host:port of the RDS instance. If empty, derived from
+	// ConnectionUri at SetDefaults time.
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	// Region is optional — derived from AWS_REGION / instance metadata when omitted.
+	Region string `yaml:"region,omitempty" json:"region,omitempty"`
+	// DBUser is the database user mapped to the IAM role (must be granted rds_iam
+	// in PostgreSQL). If empty, derived from the user in ConnectionUri.
+	DBUser string         `yaml:"dbUser,omitempty" json:"dbUser,omitempty"`
+	Auth   *AwsAuthConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
 }
 
 type ProjectConfig struct {

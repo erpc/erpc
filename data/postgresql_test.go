@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestIsPostgresConnectionError pins down the exact predicate that drives
@@ -308,3 +309,117 @@ func TestHandleConnectionFailure_CoalescesConcurrentMarks(t *testing.T) {
 	ok = p.lastFailureMarkNanos.CompareAndSwap(updatedLast, expiredNow)
 	assert.True(t, ok, "post-cooldown CAS must succeed")
 }
+
+// TestPostgreSQLIAMAuthBeforeConnect verifies that when IAM auth is enabled, the
+// BeforeConnect hook is wired and injects a non-empty password. rdsutils.BuildAuthToken
+// is a pure local SigV4 sign, so no real AWS endpoint is contacted.
+func TestPostgreSQLIAMAuthBeforeConnect(t *testing.T) {
+	t.Parallel()
+
+	sess, err := createAWSSession(&common.AwsAuthConfig{
+		Mode:            "secret",
+		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	}, "us-east-1")
+	require.NoError(t, err, "createAWSSession must succeed with static creds")
+
+	iamCfg := &common.PostgreSQLIAMAuthConfig{
+		Enabled:  true,
+		Endpoint: "mydb.abc123.us-east-1.rds.amazonaws.com:5432",
+		Region:   "us-east-1",
+		DBUser:   "erpc-user",
+	}
+
+	hook := newRDSBeforeConnect(sess, iamCfg)
+	require.NotNil(t, hook, "BeforeConnect hook must not be nil")
+
+	// Invoke the hook with a blank ConnConfig and verify it sets a password.
+	cc := &pgx.ConnConfig{}
+	err = hook(context.Background(), cc)
+	require.NoError(t, err, "BeforeConnect must succeed with valid static credentials")
+	require.NotEmpty(t, cc.Password, "BeforeConnect must set a non-empty IAM token as password")
+
+	// The token is a SigV4-signed URL with scheme stripped; it should contain
+	// recognisable SigV4 query params.
+	assert.Contains(t, cc.Password, "X-Amz-Algorithm=AWS4-HMAC-SHA256")
+	assert.Contains(t, cc.Password, "Action=connect")
+}
+
+// TestPostgreSQLIAMAuthValidation verifies that misconfigured PostgreSQL IAM
+// auth is rejected at validation time.
+func TestPostgreSQLIAMAuthValidation(t *testing.T) {
+	t.Parallel()
+
+	base := func() *common.PostgreSQLConnectorConfig {
+		return &common.PostgreSQLConnectorConfig{
+			ConnectionUri: "postgres://erpc-user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc?sslmode=require",
+			Table:         "erpc_json_rpc_cache",
+			MinConns:      4,
+			MaxConns:      32,
+			InitTimeout:   common.Duration(5 * time.Second),
+			GetTimeout:    common.Duration(1 * time.Second),
+			SetTimeout:    common.Duration(2 * time.Second),
+			IAMAuth: &common.PostgreSQLIAMAuthConfig{
+				Enabled:  true,
+				Endpoint: "mydb.abc123.us-east-1.rds.amazonaws.com:5432",
+				Region:   "us-east-1",
+				DBUser:   "erpc-user",
+			},
+		}
+	}
+
+	t.Run("valid config passes", func(t *testing.T) {
+		require.NoError(t, base().Validate())
+	})
+
+
+
+	t.Run("missing endpoint", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.Endpoint = ""
+		require.ErrorContains(t, cfg.Validate(), "endpoint")
+	})
+
+	t.Run("endpoint without port rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.Endpoint = "mydb.abc123.us-east-1.rds.amazonaws.com" // no port
+		require.ErrorContains(t, cfg.Validate(), "port")
+	})
+
+	t.Run("missing dbUser", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.DBUser = ""
+		require.ErrorContains(t, cfg.Validate(), "dbUser")
+	})
+
+	t.Run("missing sslmode rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.ConnectionUri = "postgres://erpc-user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc"
+		require.ErrorContains(t, cfg.Validate(), "SSL")
+	})
+
+	t.Run("static password + IAM auth rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.ConnectionUri = "postgres://erpc-user:secret@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc?sslmode=require"
+		require.ErrorContains(t, cfg.Validate(), "static password")
+	})
+
+	t.Run("dbUser mismatch with URI user rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.DBUser = "different-user" // URI has "erpc-user"
+		require.ErrorContains(t, cfg.Validate(), "does not match")
+	})
+
+	t.Run("sslmode=disable rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.ConnectionUri = "postgres://erpc-user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc?sslmode=disable"
+		require.ErrorContains(t, cfg.Validate(), "SSL")
+	})
+
+	t.Run("invalid auth mode rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.Auth = &common.AwsAuthConfig{Mode: "typo"}
+		require.ErrorContains(t, cfg.Validate(), "auth.mode")
+	})
+}
+

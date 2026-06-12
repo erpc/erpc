@@ -96,6 +96,18 @@ correct timeout values (not from the URI), connection pool sizing, and a pg_cron
 cleanup setup. Explain what changes and what behavior to expect. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/config/database/drivers.llms.txt`}
 />
 
+<PromptExample
+	n={6}
+	title="use AWS IAM Auth with ElastiCache / RDS connectors"
+	prompt={`I run eRPC on EKS with an IRSA role and want to use IAM Auth instead of static passwords
+for my Redis (ElastiCache) and PostgreSQL (RDS) cache connectors.
+Configure connectors to use iamAuth, derive region/endpoint/dbUser where possible,
+omit the auth block so the instance role is used, and tell me the exact IAM policy
+actions and the rds_iam SQL grant I need. Explain the token-rotation behavior and the
+12-hour ElastiCache disconnect handling. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/database/drivers.llms.txt`}
+/>
+
 <AISection title="Storage drivers — full agent reference">
 
 ### How it works
@@ -119,6 +131,8 @@ Two index constants control lookup paths: `ConnectorMainIndex` (`"idx_main"`) fo
 **gRPC connector (read-only).** The gRPC connector is a read-through layer backed by BDS (Blockchain Data Standards) gRPC servers that hold historical EVM chain data. It supports no writes. Configure it alongside a write-capable connector in a multi-connector cache policy. Server discovery supports both a static `servers` list and a `bootstrap` HTTP URL. Only a specific allowlist of methods is forwarded to BDS: `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getLogs`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`, `eth_chainId`, and `eth_blockNumber`; unsupported methods return a fast miss (`(nil, nil)`) without an RPC call. Fast-miss rejection: if the request block number is below `earliestByNetwork[networkId]` (and that value is &gt; 0), `ErrRecordNotFound` is returned immediately without an RPC. A background goroutine polls chain head every 60 seconds, implementing the `CacheHeadReporter` interface used by the real-time cache freshness gate. `eth_blockNumber` has no native BDS method; the connector intercepts it, calls `eth_getBlockByNumber("latest", false)` internally, and returns only the `number` field as a canonical hex string with leading zeros normalized via uint64 round-trip (zero block → `"0x0"`). On failure it returns `ErrRecordNotFound` so the request falls through to live upstreams.
 
 **FailsafeConnector.** Any connector can be wrapped by setting `failsafeForGets` and/or `failsafeForSets`. Each entry specifies a `matchMethod` pattern and optional `matchFinality` list, plus one or more of retry, circuit-breaker, hedge, and timeout policies. Executor selection (`pickCacheExecutor`) reads the method and finality from `ctx.Value(common.RequestContextKey)`; if no request is attached (background prefetch, tests), `method = ""` and `finality = 0`. The most-specific match wins: (method + finality) &gt; (method only) &gt; (finality only) &gt; wildcard. A no-op executor is always appended so unmatched operations proceed unconditionally. `List`, `Lock`, `WatchCounterInt64`, and `PublishCounterInt64` bypass all failsafe policies. Retry fires only on transport errors — cache misses, expired records, and context cancellation are never retried. Transport errors recognized by `isTransportError` include net.Error timeouts, io.EOF/ErrUnexpectedEOF, syscall connection errors, gRPC status codes `Unavailable`/`DeadlineExceeded`/`Aborted`, Redis cluster transients (`CLUSTERDOWN`, `MASTERDOWN`, `TRYAGAIN`, `LOADING`), HTTP/2 GOAWAY, and `"use of closed network connection"`. Hedge supports only static delays at the connector layer; quantile-based delays are rejected at construction time.
+
+**AWS IAM authentication (Redis & PostgreSQL).** Both the Redis (ElastiCache) and PostgreSQL (RDS) connectors can authenticate with short-lived AWS IAM tokens instead of static passwords. A shared `createAWSSession` helper resolves credentials from `iamAuth.auth` (same modes as `dynamodb.auth`) or, when omitted, the AWS SDK default chain (instance role → IRSA → env → shared file). For **ElastiCache**, eRPC presigns a SigV4 token (via `aws/signer/v4`, scheme stripped) and feeds it through go-redis's `CredentialsProviderContext`, which fires on every new physical connection; `ConnMaxLifetime` is pinned to 11h (±30m jitter) so each connection refreshes its token well before AWS's 12-hour forced disconnect — no background goroutines. For **RDS**, eRPC calls `rdsutils.BuildAuthToken` inside pgxpool's `BeforeConnect` hook, minting a fresh token per new pool connection; tokens are valid 15 minutes but only checked at connect time, and RDS has no 12-hour cap so the 5h `MaxConnLifetime` is unchanged. IAM auth is **not** available for `rateLimiters.store.redis` (that path uses a library accepting only static credentials).
 
 ### Config schema
 
@@ -174,6 +188,13 @@ Each `FailsafeConfig` entry under `failsafeForGets` / `failsafeForSets`:
 | `redis.getTimeout` | Duration | `1s` | Per-Get deadline. Falls back to `ReadTimeout` from URI when zero. |
 | `redis.setTimeout` | Duration | `3s` | Per-Set/Delete deadline. Falls back to `WriteTimeout` from URI when zero. |
 | `redis.lockRetryInterval` | Duration | `500ms` | Sleep between redsync mutex acquisition retries. |
+| `redis.iamAuth.enabled` | bool | `false` | Enables AWS ElastiCache IAM auth. SetDefaults auto-enables TLS (promotes `addr` to `rediss://`); the connector sets `ConnMaxLifetime=11h` (±30m jitter) so connections rotate before AWS's 12h forced disconnect. Mutually exclusive with a static password — rejected at startup. — <SourceLink file="data/redis_iam_auth.go" lines="22-24" />, wiring <SourceLink file="data/redis.go" lines="187-201" /> |
+| `redis.iamAuth.cacheName` | string | — | ElastiCache replication-group ID. Required when enabled. Lowercased automatically (AWS lowercases cache names at creation). |
+| `redis.iamAuth.userID` | string | — | ElastiCache user. Required when enabled. The user **name and user ID must be identical** — supply that single value. |
+| `redis.iamAuth.region` | string | derived | AWS region; derived from `AWS_REGION` / instance metadata when omitted. |
+| `redis.iamAuth.auth.*` | `*AwsAuthConfig` | nil (default chain) | Optional AWS credential source for signing the token (same fields/casing as `dynamodb.auth`). Omit to use the instance-role / IRSA default chain (recommended). — <SourceLink file="common/config.go" lines="518-529" /> |
+
+ElastiCache Serverless is **not** supported (it lacks `PSUBSCRIBE`, required by eRPC's shared-state connector). Requires Valkey ≥ 7.2 or Redis OSS ≥ 7.0 with IAM auth and in-transit TLS enabled on the cache.
 
 #### PostgreSQL connector — <SourceLink file="common/config.go" lines="445-453" />, defaults <SourceLink file="common/defaults.go" lines="1021-1058" />
 
@@ -186,6 +207,11 @@ Each `FailsafeConfig` entry under `failsafeForGets` / `failsafeForSets`:
 | `postgresql.initTimeout` | Duration | `5s` | Context deadline for pool creation. **NOT read from URI** — always explicit. |
 | `postgresql.getTimeout` | Duration | `1s` | Per-Get/List query deadline. Never falls back to URI values. |
 | `postgresql.setTimeout` | Duration | `2s` | Per-Set/Delete query deadline. Never falls back to URI values. |
+| `postgresql.iamAuth.enabled` | bool | `false` | Enables AWS RDS IAM auth. Mints a fresh SigV4 token per new pool connection via pgx `BeforeConnect`; SetDefaults appends `sslmode=require` automatically. `connectionUri` must carry no password. RDS has no 12h cap, so `MaxConnLifetime` (5h) is unchanged. — <SourceLink file="data/postgresql_iam_auth.go" lines="21-38" />, wiring <SourceLink file="data/postgresql.go" lines="186-194" /> |
+| `postgresql.iamAuth.region` | string | derived | AWS region; derived from `AWS_REGION` / instance metadata when omitted. |
+| `postgresql.iamAuth.endpoint` | string | derived from `connectionUri` | `host:port` used to sign the token. Must include a port. — <SourceLink file="common/defaults.go" lines="1071-1090" /> |
+| `postgresql.iamAuth.dbUser` | string | derived from `connectionUri` | DB user the token authenticates as (must be granted `rds_iam`). When both are set it must match the `connectionUri` user, else startup fails with a mismatch error. |
+| `postgresql.iamAuth.auth.*` | `*AwsAuthConfig` | nil (default chain) | Optional AWS credential source for signing. Omit to use the default chain. — <SourceLink file="common/config.go" lines="534-545" /> |
 
 #### DynamoDB connector — <SourceLink file="common/config.go" lines="428-443" />, defaults <SourceLink file="common/defaults.go" lines="1061-1099" />
 
@@ -476,6 +502,106 @@ contention, which can exhaust provisioned throughput:
 }`}
 />
 
+**6. Passwordless AWS IAM auth (ElastiCache + RDS).** Run on EC2/EKS with an instance
+role (or IRSA) and drop static passwords entirely. Omit `iamAuth.auth` so the AWS SDK
+default chain provides credentials; eRPC mints and rotates SigV4 tokens automatically.
+Note there is **no password** in either connection string, and `region`/`endpoint`/`dbUser`
+are derived when omitted:
+
+<ConfigTabs
+  path="database.evmJsonRpcCache.connectors[]"
+  yaml={`database:
+  evmJsonRpcCache:
+    connectors:
+      - id: elasticache-iam
+        driver: redis
+        redis:
+          # no password — IAM token is injected as AUTH on every new connection
+          addr: my-cluster.abc123.ng.0001.use1.cache.amazonaws.com:6379
+          iamAuth:
+            enabled: true
+            cacheName: my-cluster        # replication-group ID (auto-lowercased)
+            userID: iam-user-01          # ElastiCache user name == user ID
+            # region derived from AWS_REGION / instance metadata; auth omitted = instance role
+          # TLS is auto-enabled (rediss://); add a tls block only for a custom CA
+      - id: rds-iam
+        driver: postgresql
+        postgresql:
+          # no password in the URI; sslmode=require is appended automatically
+          connectionUri: postgres://erpc-user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc
+          table: erpc_json_rpc_cache
+          iamAuth:
+            enabled: true
+            # region, endpoint and dbUser are derived from connectionUri / metadata`}
+  ts={`database: {
+  evmJsonRpcCache: {
+    connectors: [
+      {
+        id: "elasticache-iam",
+        driver: "redis",
+        redis: {
+          // no password — IAM token is injected as AUTH on every new connection
+          addr: "my-cluster.abc123.ng.0001.use1.cache.amazonaws.com:6379",
+          iamAuth: {
+            enabled: true,
+            cacheName: "my-cluster", // replication-group ID (auto-lowercased)
+            userID: "iam-user-01",   // ElastiCache user name == user ID
+            // region derived; auth omitted = instance role / IRSA
+          },
+          // TLS is auto-enabled (rediss://); add a tls block only for a custom CA
+        },
+      },
+      {
+        id: "rds-iam",
+        driver: "postgresql",
+        postgresql: {
+          // no password in the URI; sslmode=require is appended automatically
+          connectionUri: "postgres://erpc-user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc",
+          table: "erpc_json_rpc_cache",
+          iamAuth: {
+            enabled: true,
+            // region, endpoint and dbUser derived from connectionUri / metadata
+          },
+        },
+      },
+    ],
+  },
+}`}
+/>
+
+The RDS database user must exist and hold `rds_iam` before first connect:
+
+```sql
+CREATE USER "erpc-user" WITH LOGIN;
+GRANT rds_iam TO "erpc-user";
+
+-- eRPC creates the table and indexes on first connect; the user needs CREATE on
+-- the schema. PostgreSQL ≥15 no longer grants public-schema CREATE by default:
+GRANT ALL ON SCHEMA public TO "erpc-user";
+```
+
+Minimal IAM policy for the instance role:
+
+```json
+[
+  {
+    "Effect": "Allow",
+    "Action": "elasticache:Connect",
+    "Resource": [
+      "arn:aws:elasticache:us-east-1:123456789012:replicationgroup:my-cluster",
+      "arn:aws:elasticache:us-east-1:123456789012:user:iam-user-01"
+    ]
+  },
+  {
+    "Effect": "Allow",
+    "Action": "rds-db:connect",
+    "Resource": "arn:aws:rds-db:us-east-1:123456789012:dbuser:db-XXXXXXXXXXXXXXXX/erpc-user"
+  }
+]
+```
+
+The RDS `db-XXXXXXXXXXXXXXXX` resource ID is the instance's resource ID (RDS console → instance details), not its name.
+
 ### Request/response behavior
 
 - `NewConnector` dispatches on `cfg.Driver`. Unknown driver → `ErrInvalidConnectorDriver` at startup; never returned during live request processing. [<SourceLink file="data/connector.go" lines="63-103" />]
@@ -496,6 +622,7 @@ contention, which can exhaust provisioned throughput:
 - **Never use `dynamodb.auth.accessKeyId` (lowercase `d`).** The struct tag is `yaml:"accessKeyID"` — a lowercase `d` silently skips the field and falls through to the default credential chain.
 - **Plan for a 60-second warm-up when using the gRPC connector with the freshness gate.** The block-head poller first fires at T+60s. During this window `CacheLatestBlockTimestamp` returns `ok=false` and the freshness gate fails open — stale realtime responses may be served.
 - **Wrap the gRPC connector with a circuit-breaker** in `failsafeForGets` to avoid hammering a BDS server that is returning errors; without it, every cache request makes a gRPC call when the BDS layer is unhealthy.
+- **Prefer IAM auth over static passwords on AWS.** With `redis.iamAuth` / `postgresql.iamAuth` enabled and `iamAuth.auth` omitted, the instance role / IRSA chain provides credentials and eRPC rotates short-lived tokens automatically — no secrets in config, no rotation tooling. Keep host clocks NTP-synced; SigV4 tokens are time-bound (±5 minutes).
 
 ### Edge cases & gotchas
 
@@ -542,6 +669,16 @@ contention, which can exhaust provisioned throughput:
 21. **DynamoDB backward compatibility: `S` and `B` attribute types both accepted.** When reading items, both binary (`B`) and legacy string (`S`) value attributes are handled. Legacy string values are returned as `[]byte`. If neither attribute is present, the item is skipped. [`data/dynamodb.go:L512-L566`](https://github.com/erpc/erpc/blob/main/data/dynamodb.go#L512-L566)
 
 22. **PostgreSQL pool lock timing.** During reconnect, `connectTask` holds the write lock only for the field swap (nanoseconds). Schema setup and pool creation happen outside the lock. The old pool is closed after releasing the lock to prevent blocking hot-path reads/writes during pool drain. [`data/postgresql.go:L176-L250`](https://github.com/erpc/erpc/blob/main/data/postgresql.go#L176-L250)
+
+23. **IAM auth + static password is rejected at startup.** Redis rejects a password embedded in the URI when `iamAuth.enabled: true`; PostgreSQL rejects a password in `connectionUri`. Remove the password — the IAM token is injected at connect time. [`common/validation.go:L556-L630`](https://github.com/erpc/erpc/blob/main/common/validation.go#L556-L630)
+
+24. **ElastiCache `userID` must equal the user name.** For IAM-enabled ElastiCache users the user name and user ID are identical by AWS requirement; supply that single value as `userID`. A mismatch authenticates as the wrong user or fails. `cacheName` is lowercased automatically (AWS lowercases at creation), but the ElastiCache user must still match `userID` exactly. [`common/defaults.go:L971-L982`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L971-L982)
+
+25. **ElastiCache IAM connections are force-disconnected at 12h.** AWS drops IAM-authenticated connections after 12 hours. eRPC pins `ConnMaxLifetime=11h` (±30m jitter) so go-redis rotates connections — re-invoking `CredentialsProviderContext` for a fresh token — before the cliff. Do not override the pool lifetime when IAM auth is on. ElastiCache Serverless is unsupported (no `PSUBSCRIBE`). [`data/redis_iam_auth.go:L22-L24`](https://github.com/erpc/erpc/blob/main/data/redis_iam_auth.go#L22-L24)
+
+26. **RDS `iamAuth.dbUser` must match the `connectionUri` user.** When both are set and differ, startup fails — pgx would otherwise sign the token for `dbUser` while connecting as the URI user, a silent auth mismatch. The user must hold `rds_iam` and SSL is mandatory (`sslmode=require` is appended automatically; an explicit weaker `sslmode` is rejected). [`common/validation.go:L556-L590`](https://github.com/erpc/erpc/blob/main/common/validation.go#L556-L590)
+
+27. **SigV4 tokens are clock-sensitive.** ElastiCache presigned tokens and RDS auth tokens are time-bound (±5 minutes). Unsynced host clocks (no NTP) cause intermittent auth failures on new connections. [`data/redis_iam_auth.go:L1-L86`](https://github.com/erpc/erpc/blob/main/data/redis_iam_auth.go#L1-L86)
 
 ### Observability
 
@@ -619,7 +756,10 @@ contention, which can exhaust provisioned throughput:
 - [`data/failsafe.go:L25-L216`](https://github.com/erpc/erpc/blob/main/data/failsafe.go#L25-L216) — `FailsafeConnector`; `pickCacheExecutor` four-tier selection; `isTransportError`; `CacheHeadReporter` forwarding
 - [`data/cache_executor.go:L1-L160`](https://github.com/erpc/erpc/blob/main/data/cache_executor.go#L1-L160) — `cacheExecutor` retry/hedge/breaker/timeout pipeline; transport-error-only retry; consensus/hedge-quantile rejection
 - [`architecture/evm/json_rpc_cache.go:L834-L924`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L834-L924) — `shouldAcceptCachedResult`: freshness gate; response-timestamp path; `CacheHeadReporter` fallback; fail-open logic
-- [`common/defaults.go:L846-L1099`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L846-L1099) — `SetDefaults` for all connector configs; driver inference; default table names by scope
+- [`common/defaults.go:L846-L1099`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L846-L1099) — `SetDefaults` for all connector configs; driver inference; default table names by scope; IAM auto-TLS (Redis) and `sslmode=require` + endpoint/dbUser derivation (PostgreSQL)
+- [`data/aws_auth.go:L1-L42`](https://github.com/erpc/erpc/blob/main/data/aws_auth.go#L1-L42) — shared `createAWSSession` helper; resolves `iamAuth.auth` modes or the AWS SDK default credential chain
+- [`data/redis_iam_auth.go:L1-L86`](https://github.com/erpc/erpc/blob/main/data/redis_iam_auth.go#L1-L86) — ElastiCache SigV4 presign; scheme stripping; `CredentialsProviderContext`; 11h connection-lifetime constants
+- [`data/postgresql_iam_auth.go:L1-L39`](https://github.com/erpc/erpc/blob/main/data/postgresql_iam_auth.go#L1-L39) — RDS `rdsutils.BuildAuthToken` minted inside the pgxpool `BeforeConnect` hook
 
 ### Related pages
 
