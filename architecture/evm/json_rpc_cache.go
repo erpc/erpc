@@ -831,6 +831,12 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
+// defaultRealtimeColdStartTTL bounds realtime staleness when a policy sets
+// ttlBlockTimeMultiplier but has no static ttl and the network's block time
+// isn't known yet (cold start / not head-tracked), so the guard never accepts
+// an unbounded-stale head.
+const defaultRealtimeColdStartTTL = 2 * time.Second
+
 // shouldAcceptCachedResult checks if a cached realtime result is still fresh enough to serve, by
 // comparing a block timestamp against the policy's TTL. The timestamp is taken from the response
 // when present; for responses that carry none (eth_blockNumber, eth_gasPrice, eth_getLogs) it falls
@@ -854,8 +860,10 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	}
 
 	// Resolve the age limit: static TTL, or derived from the network's estimated
-	// block time when ttlBlockTimeMultiplier is set (falls back to TTL when the
-	// block time isn't known yet). No usable limit -> accept.
+	// block time when ttlBlockTimeMultiplier is set. When the multiplier is set
+	// but the block time isn't known yet (cold start, or a network without a
+	// block-time estimate), fall back to the static TTL, or to a safe default so
+	// the realtime guard always bounds staleness rather than accepting unbounded.
 	var effectiveTTL time.Duration
 	if ttl := policy.GetTTL(); ttl != nil && *ttl > 0 {
 		effectiveTTL = *ttl
@@ -863,6 +871,8 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	if mult := policy.GetTTLBlockTimeMultiplier(); mult > 0 {
 		if bt := networkBlockTime(req); bt > 0 {
 			effectiveTTL = time.Duration(float64(bt) * mult)
+		} else if effectiveTTL <= 0 {
+			effectiveTTL = defaultRealtimeColdStartTTL
 		}
 	}
 	if effectiveTTL <= 0 {

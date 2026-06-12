@@ -135,12 +135,13 @@ func TestEvmJsonRpcCache_BlockTimeDerivedTTL(t *testing.T) {
 		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-5), policy)) // 5s > 2s static
 	})
 
-	// --- cold EMA and no static TTL -> fail open (accept) ---
+	// --- cold EMA and no static TTL -> bounded by the built-in safe default (2s) ---
 
-	t.Run("UnknownBlockTimeNoStaticTTLAccepts", func(t *testing.T) {
+	t.Run("UnknownBlockTimeNoStaticTTLUsesSafeDefault", func(t *testing.T) {
 		policy := btPolicy(t, plainConnector("conn"), 0, 1.0)
 		req := realtimeReqBT("eth_getBlockByNumber", `["latest",false]`, 0)
-		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-100000), policy))
+		assert.True(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-1), policy))  // 1s < 2s default
+		assert.False(t, cache.shouldAcceptCachedResult(ctx, req, blockJrr(now-5), policy)) // 5s > 2s default
 	})
 
 	// --- network not block-time-aware -> static TTL still applies ---
