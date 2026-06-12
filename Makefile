@@ -69,13 +69,19 @@ test-fast:
 	@/tmp/erpc.test -test.v -test.timeout 5m -test.run "^TestConsensusPolicy_DSL" || true &
 	@# Named shards run in parallel (each process has isolated gock state)
 	@# Shard definitions are only for the known-slow test groups.
-	@# The catch-all shard automatically picks up any new/unassigned tests.
+	@# The catch-all shard picks up any new/unassigned tests: its skip list is
+	@# composed from the shard regexes themselves (plus the two standalone
+	@# phases) so the shards and the skip can never drift apart. A previous
+	@# hand-maintained prefix list skipped MORE than the shards ran — e.g. all
+	@# of TestNetwork_* was skipped while SHARD_NETWORK only ran an enumerated
+	@# subset — so any test under a skipped prefix but outside a shard ran
+	@# NOWHERE in CI (which is how a deterministically-failing test merged).
 	@bash -c '\
 	  SHARD_CONSENSUS="^(TestConsensusPolicy$$|TestConsensusGoroutine|TestConsensusSelectsLargest|TestInterpolation_)"; \
 	  SHARD_NETWORK="^(TestNetwork_Forward$$|TestNetwork_(SelectionScenarios|InFlightRequests|SkippingUpstreams|EvmGetLogs|ThunderingHerd|HighestFinalizedBlockNumber|HighestLatestBlockNumber|CacheEmptyBehavior|BatchRequests|SingleRequestErrors|CapacityExceededErrors|TraceExecutionTimeout|Multiplexer|SendRawTransaction))"; \
 	  SHARD_HTTPSERVER="^TestHttpServer_"; \
 	  SHARD_INTEGRITY="^(TestNetworkRetry_|TestNetworkForward_|TestNetworkIntegrity_|TestHedgeConsensus_|TestEmptyResultAcceptShortCircuit$$|TestNetworkFailsafe_|TestNetworksBootstrap_|TestNetworkAvailability_|TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping$$|TestNetwork_HedgePolicy)"; \
-	  SKIP_ALL="TestConsensusPolicy|TestConsensusGoroutine|TestConsensusSelectsLargest|TestInterpolation_|TestNetwork_|TestHttpServer_|TestHttp_|TestNetworkRetry_|TestNetworkForward_|TestNetworkIntegrity_|TestHedgeConsensus_|TestEmptyResultAcceptShortCircuit|TestNetworkFailsafe_|TestNetworksBootstrap_|TestNetworkAvailability_"; \
+	  SKIP_ALL="$$SHARD_CONSENSUS|$$SHARD_NETWORK|$$SHARD_HTTPSERVER|$$SHARD_INTEGRITY|^TestConsensusPolicy_DSL|^TestHttp_"; \
 	  pids=(); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CONSENSUS" -test.parallel 4 & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_NETWORK" & pids+=($$!); \

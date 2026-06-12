@@ -1204,21 +1204,28 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		}
 	})
 
-	// HedgeLoser_ElapsedRecordedAsLowerBoundLatency pins the fix for
-	// "slow upstream stays top-ranked because every hedge it loses is
-	// invisible to scoring". Before this, a canceled hedge fed
-	// `ObserveDuration(false)` and never reached `ResponseQuantiles` —
-	// so an upstream that consistently lost the race had only its rare
-	// wins in the quantile, and `sortByScore` saw a fast-looking p70
-	// even when the upstream was actually slow. Now the elapsed-by-
-	// cancel time IS recorded (as a lower-bound sample); slow primary
-	// gets penalized; sortByScore eventually rotates it off position 0.
+	// HedgeLoser_ElapsedExcludedFromQuantiles pins the deliberate design
+	// for hedge-loser latency accounting (see the ObserveDuration
+	// rationale in upstream/upstream.go): a canceled attempt must NOT
+	// feed its elapsed-by-cancel time into `ResponseQuantiles`.
+	// Elapsed-by-cancel is "however long the race winner took", not this
+	// upstream's latency — an upstream that mostly loses hedge races
+	// would otherwise accumulate a quantile full of artificial samples,
+	// and cross-upstream comparisons (`latencyDeviationAbove`) would trip
+	// even when per-method latencies are identical. Chronically-canceled
+	// upstreams are kept honest by `probeExcluded` shadow traffic
+	// instead, which records real successful samples.
+	//
+	// (An earlier iteration of the scoring rework recorded
+	// elapsed-by-cancel as a "lower bound" latency sample; that approach
+	// was replaced by `probeExcluded` before merge. This test pins the
+	// replacement design.)
 	//
 	// Setup: rpc1 is the slow primary (1s response). rpc2 is the fast
 	// hedge (40ms). The hedge fires at 80ms, wins; rpc1 is canceled
-	// somewhere around 80ms elapsed. After several requests we expect
-	// rpc1's quantile to contain ~80ms samples — not stay at zero.
-	t.Run("HedgeLoser_ElapsedRecordedAsLowerBoundLatency", func(t *testing.T) {
+	// somewhere around 80ms elapsed. No matter how many hedges rpc1
+	// loses, its quantile stays empty and its error counter stays clean.
+	t.Run("HedgeLoser_ElapsedExcludedFromQuantiles", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -1255,7 +1262,7 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 			MaxCount: 1,
 		})
 
-		// Multiple requests so the quantile estimator has enough samples.
+		// Multiple requests: repeated losses must still record nothing.
 		for i := 0; i < 5; i++ {
 			resp, err := network.Forward(ctx, common.NewNormalizedRequest(requestBytes))
 			require.NoError(t, err)
@@ -1272,20 +1279,14 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
 			"canceled primary attempts must NOT pollute ErrorsTotal")
 
-		// The crux: rpc1's quantile MUST have samples now. Without the
-		// fix this stays at 0.0 and sortByScore can't see that rpc1 is
-		// chronically slow.
+		// The crux: elapsed-by-cancel is not a latency sample. rpc1's
+		// quantile stays empty no matter how many hedge races it loses;
+		// real samples for excluded/slow upstreams come from probeExcluded
+		// shadow traffic, not from cancellations.
 		p70 := m1.GetResponseQuantiles().GetQuantile(0.70).Seconds()
-		assert.Greater(t, p70, 0.0,
-			"slow primary's canceled-elapsed time must populate ResponseQuantiles; "+
-				"otherwise scoring sees zero latency and rotation never happens")
-		// Sanity: the sample is at-or-above the hedge delay (80ms) since
-		// that's when cancellation fires. We allow a generous upper
-		// bound to absorb gock + scheduling jitter.
-		assert.Greater(t, p70, 0.05,
-			"recorded latency should reflect the elapsed-by-cancel time (~hedge delay)")
-		assert.Less(t, p70, 0.5,
-			"recorded latency should be a lower bound, not the upstream's full 1s response time")
+		assert.Equal(t, 0.0, p70,
+			"hedge-loser cancellations must NOT feed ResponseQuantiles — "+
+				"elapsed-by-cancel reflects the race winner's speed, not this upstream's latency")
 	})
 
 	// MaxCount > 1 spawns multiple hedge attempts. Every one of them must
