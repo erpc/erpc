@@ -43,11 +43,8 @@ func btPolicy(t *testing.T, conn data.Connector, staticTTL time.Duration, mult f
 		Method:    "*",
 		Finality:  common.DataFinalityStateRealtime,
 	}
-	if staticTTL > 0 {
-		cfg.TTL = common.Duration(staticTTL)
-	}
-	if mult > 0 {
-		cfg.TTLBlockTimeMultiplier = &mult
+	if staticTTL > 0 || mult > 0 {
+		cfg.TTL = &common.DynamicDuration{Fallback: common.Duration(staticTTL), BlockTimeMultiplier: mult}
 	}
 	policy, err := data.NewCachePolicy(cfg, conn)
 	require.NoError(t, err)

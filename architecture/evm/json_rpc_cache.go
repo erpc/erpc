@@ -859,22 +859,12 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		return true
 	}
 
-	// Resolve the age limit: static TTL, or derived from the network's estimated
-	// block time when ttlBlockTimeMultiplier is set. When the multiplier is set
-	// but the block time isn't known yet (cold start, or a network without a
-	// block-time estimate), fall back to the static TTL, or to a safe default so
-	// the realtime guard always bounds staleness rather than accepting unbounded.
-	var effectiveTTL time.Duration
-	if ttl := policy.GetTTL(); ttl != nil && *ttl > 0 {
-		effectiveTTL = *ttl
-	}
-	if mult := policy.GetTTLBlockTimeMultiplier(); mult > 0 {
-		if bt := networkBlockTime(req); bt > 0 {
-			effectiveTTL = time.Duration(float64(bt) * mult)
-		} else if effectiveTTL <= 0 {
-			effectiveTTL = defaultRealtimeColdStartTTL
-		}
-	}
+	// Resolve the realtime age limit from the policy TTL: a fixed value, or one
+	// derived from the network's estimated block time (object form). When
+	// block-time-dynamic but the block time isn't known yet (cold start, or a
+	// network without an estimate) it falls back to the configured value, or to
+	// a safe default — so the guard always bounds staleness. No limit -> accept.
+	effectiveTTL := policy.ResolveRealtimeTTL(networkBlockTime(req), defaultRealtimeColdStartTTL)
 	if effectiveTTL <= 0 {
 		return true
 	}

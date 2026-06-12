@@ -8082,7 +8082,7 @@ func TestNetwork_Forward(t *testing.T) {
 				{
 					Network:   "*",
 					Method:    "*",
-					TTL:       common.Duration(5 * time.Minute),
+					TTL:       common.FixedDuration(5 * time.Minute),
 					Connector: "mock",
 				},
 			},
@@ -10253,7 +10253,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				{
 					Network:   "*",
 					Method:    "*",
-					TTL:       common.Duration(5 * time.Minute),
+					TTL:       common.FixedDuration(5 * time.Minute),
 					Connector: "mock",
 					Finality:  common.DataFinalityStateUnfinalized,
 				},

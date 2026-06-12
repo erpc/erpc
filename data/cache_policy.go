@@ -256,14 +256,16 @@ func (p *CachePolicy) String() string {
 	return p.str
 }
 
+// GetTTL returns the fixed/fallback component of the policy TTL (always non-nil;
+// points to 0 when unset). Used for the cache storage expiry and telemetry.
 func (p *CachePolicy) GetTTL() *time.Duration {
-	return p.config.TTL.DurationPtr()
+	d := p.config.TTL.FixedDuration()
+	return &d
 }
 
-// GetTTLBlockTimeMultiplier returns the configured multiplier (0 when unset).
-func (p *CachePolicy) GetTTLBlockTimeMultiplier() float64 {
-	if p.config.TTLBlockTimeMultiplier == nil {
-		return 0
-	}
-	return *p.config.TTLBlockTimeMultiplier
+// ResolveRealtimeTTL returns the effective realtime age limit for the given
+// network block time, applying coldStartDefault when the policy is block-time
+// dynamic but the block time isn't known yet and no fallback is set.
+func (p *CachePolicy) ResolveRealtimeTTL(blockTime, coldStartDefault time.Duration) time.Duration {
+	return p.config.TTL.Resolve(blockTime, coldStartDefault)
 }

@@ -325,17 +325,13 @@ type CachePolicyConfig struct {
 	AppliesTo   CachePolicyAppliesTo `yaml:"appliesTo,omitempty" json:"appliesTo" tstype:"'get' | 'set' | 'both'"`
 	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
 	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
-	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
 
-	// TTLBlockTimeMultiplier, when > 0, derives the realtime-finality age limit
-	// from the network's estimated block time (blockTime * multiplier), so head
-	// freshness tracks each chain's cadence.
-	//
-	// It composes with TTL rather than conflicting: block time is used when
-	// known; otherwise (cold start, or a network with no estimate) it falls back
-	// to TTL, or to a small built-in default when TTL is unset. Setting both is
-	// the recommended setup — TTL acts as the cold-start floor.
-	TTLBlockTimeMultiplier *float64 `yaml:"ttlBlockTimeMultiplier,omitempty" json:"ttlBlockTimeMultiplier,omitempty" tstype:"number"`
+	// TTL is either a fixed duration ("2s") or, in object form, derived from the
+	// network's estimated block time ({ blockTimeMultiplier: 1, fallback: 2s }).
+	// For realtime finality the resolved value is the age limit; the fixed/
+	// fallback component is also used as the cache storage expiry. See
+	// DynamicDuration.
+	TTL *DynamicDuration `yaml:"ttl,omitempty" json:"ttl,omitempty" tstype:"Duration | DynamicDuration"`
 }
 
 type ConnectorDriverType string

@@ -46,6 +46,10 @@ export interface AdaptiveDuration {
   min?: Duration;
   max?: Duration;
 }
+export interface DynamicDuration {
+  fallback?: Duration;
+  blockTimeMultiplier?: number /* float64 */;
+}
 
 //////////
 // source: architecture_evm.go
@@ -341,8 +345,7 @@ export interface CachePolicyConfig {
   appliesTo?: 'get' | 'set' | 'both';
   minItemSize?: ByteSize;
   maxItemSize?: ByteSize;
-  ttl?: Duration;
-  ttlBlockTimeMultiplier?: number /* float64 */;
+  ttl?: Duration | DynamicDuration;
 }
 export type ConnectorDriverType = string;
 export const DriverMemory: ConnectorDriverType = "memory";
