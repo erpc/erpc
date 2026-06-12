@@ -1,0 +1,126 @@
+logLevel: info
+
+server:
+  httpHostV4: 0.0.0.0
+  httpHostV6: '[::]'
+  httpPort: 4000
+
+metrics:
+  enabled: true
+  hostV4: 0.0.0.0
+  port: 4001
+
+# SVM example: Solana mainnet-beta and testnet fronted by multiple upstreams.
+#
+# Network-ID format:
+#   - Solana (or chain unset): svm:<cluster>           — e.g. svm:mainnet-beta
+#   - Other SVM chains:        svm:<chain>:<cluster>   — e.g. svm:fogo:mainnet
+#
+# Known (chain, cluster) pairs — currently just Solana mainnet-beta / devnet /
+# testnet — have their genesis hash validated at bootstrap via a single
+# getGenesisHash RPC compared against a hardcoded table, catching upstreams
+# mis-pointed at the wrong cluster. For unknown/custom (chain, cluster) pairs
+# set checkGenesisHash:true so bootstrap fetches and cross-validates across
+# upstreams in the same network.
+#
+# To host multiple SVM chains side by side (e.g. Solana + Fogo + Eclipse),
+# add a separate `networks` entry per chain with distinct `svm.chain` values;
+# their network IDs and cache partitions won't collide.
+#
+# Multiple upstreams per cluster give you score-based routing, failover, and
+# consensus (if you enable a consensus policy) for free. Requests land on the
+# healthiest upstream; errors surface a retry against the next one.
+projects:
+  - id: main
+    networks:
+      - architecture: svm
+        svm:
+          cluster: mainnet-beta
+          # commitment applied when the request omits one; cache finality follows.
+          commitment: confirmed
+          # minimum time between state-poller ticks; ~one Solana slot is 400ms.
+          statePollerDebounce: 500ms
+          maxSlotsPerSignaturesQuery: 1000
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 3
+              delay: 500ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 500ms
+          # sendTransaction / sendRawTransaction are automatically marked
+          # non-retryable at the architecture layer — adding retry here would
+          # be ignored for those methods.
+
+      - architecture: svm
+        svm:
+          cluster: testnet
+          commitment: confirmed
+          statePollerDebounce: 500ms
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 30s
+            retry:
+              maxAttempts: 3
+              delay: 500ms
+              backoffMaxDelay: 10s
+              backoffFactor: 0.3
+              jitter: 500ms
+
+    upstreams:
+      # --- mainnet-beta upstreams ---
+      - id: solana-labs-mainnet
+        type: svm
+        endpoint: https://api.mainnet-beta.solana.com
+        svm:
+          cluster: mainnet-beta
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+      # publicnode mainnet uses Cloudflare in front of the RPC node and
+      # intermittently resets unauthenticated connections — it's listed here
+      # so score-based routing can use it when it's healthy and skip it
+      # otherwise. For latency-sensitive production, pair with an authenticated
+      # provider.
+      - id: publicnode-mainnet
+        type: svm
+        endpoint: https://solana-rpc.publicnode.com
+        svm:
+          cluster: mainnet-beta
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+      - id: helius-mainnet
+        type: svm
+        endpoint: https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_API_KEY
+        svm:
+          cluster: mainnet-beta
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+      # --- testnet upstreams ---
+      - id: publicnode-testnet
+        type: svm
+        endpoint: https://solana-testnet-rpc.publicnode.com
+        svm:
+          cluster: testnet
+        failsafe:
+          - matchMethod: "*"
+            timeout:
+              duration: 8s
+
+  # A mixed EVM + SVM project is supported — each network has its own architecture
+  # handler and upstream pool. Requests route by the path prefix:
+  #   POST /main/evm/1              → Ethereum mainnet
+  #   POST /main/svm/mainnet-beta   → Solana mainnet-beta
+  #   POST /main/svm/testnet        → Solana testnet
