@@ -77,6 +77,51 @@ func TestBlockTimeAdaptiveDuration_Unmarshal(t *testing.T) {
 	})
 }
 
+// TestBlockTimeAdaptiveDuration_PolicyValidation pins the context restriction:
+// a block-time multiplier only makes sense for head freshness, so policies for
+// immutable finality states must reject it at validation time.
+func TestBlockTimeAdaptiveDuration_PolicyValidation(t *testing.T) {
+	cacheCfg := &CacheConfig{
+		Connectors: []*ConnectorConfig{{Id: "c", Driver: DriverMemory, Memory: &MemoryConnectorConfig{MaxItems: 1}}},
+	}
+	base := CachePolicyConfig{
+		Connector: "c",
+		Network:   "*",
+		Method:    "*",
+		TTL:       &BlockTimeAdaptiveDuration{BlockTimeMultiplier: 1, Fallback: Duration(2 * time.Second)},
+	}
+
+	t.Run("MultiplierAllowedOnRealtime", func(t *testing.T) {
+		p := base
+		p.Finality = DataFinalityStateRealtime
+		require.NoError(t, p.Validate(cacheCfg))
+	})
+
+	t.Run("MultiplierRejectedOnNonRealtime", func(t *testing.T) {
+		for _, fin := range []DataFinalityState{DataFinalityStateFinalized, DataFinalityStateUnfinalized, DataFinalityStateUnknown} {
+			p := base
+			p.Finality = fin
+			err := p.Validate(cacheCfg)
+			require.Error(t, err, fin.String())
+			assert.Contains(t, err.Error(), "blockTimeMultiplier")
+		}
+	})
+
+	t.Run("FixedTTLAllowedOnAnyFinality", func(t *testing.T) {
+		p := base
+		p.TTL = &BlockTimeAdaptiveDuration{Fallback: Duration(time.Minute)}
+		p.Finality = DataFinalityStateFinalized
+		require.NoError(t, p.Validate(cacheCfg))
+	})
+
+	t.Run("NegativeMultiplierRejected", func(t *testing.T) {
+		p := base
+		p.Finality = DataFinalityStateRealtime
+		p.TTL = &BlockTimeAdaptiveDuration{BlockTimeMultiplier: -1}
+		require.Error(t, p.Validate(cacheCfg))
+	})
+}
+
 func TestBlockTimeAdaptiveDuration_Resolve(t *testing.T) {
 	const coldDefault = 2 * time.Second
 

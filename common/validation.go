@@ -408,6 +408,17 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 		return fmt.Errorf("cache.*.policies.*.appliesTo must be one of: get, set, both")
 	}
 
+	if p.TTL != nil {
+		if err := p.TTL.validate("cache.*.policies.*.ttl"); err != nil {
+			return err
+		}
+		// Block-time-derived TTLs describe head freshness; other finality
+		// states are immutable and must not silently pick up a dynamic TTL.
+		if p.TTL.BlockTimeMultiplier > 0 && p.Finality != DataFinalityStateRealtime {
+			return fmt.Errorf("cache.*.policies.*.ttl.blockTimeMultiplier is only supported when finality is 'realtime'")
+		}
+	}
+
 	return nil
 }
 

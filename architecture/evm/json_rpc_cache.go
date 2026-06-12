@@ -692,7 +692,16 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		go func(policy *data.CachePolicy) {
 			defer wg.Done()
 			connector := policy.GetConnector()
+			// Fixed TTL component for telemetry labels (stable values only).
 			ttl := policy.GetTTL()
+			// Storage expiry must match the read-side window: for a block-time
+			// dynamic realtime TTL, the resolved value can exceed the fixed
+			// fallback, and writing with the fallback would evict entries long
+			// before the read-side age guard stops serving them.
+			storageTTL := ttl
+			if resolved := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL); resolved > 0 {
+				storageTTL = &resolved
+			}
 
 			shouldCache, err := shouldCacheResponse(ctx, lg, resp, rpcResp, policy)
 			if !shouldCache {
@@ -767,7 +776,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, ttl)
+			err = connector.Set(ctx, pk, rk, valueToStore, storageTTL)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -864,7 +873,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	// block-time-dynamic but the block time isn't known yet (cold start, or a
 	// network without an estimate) it falls back to the configured value, or to
 	// a safe default — so the guard always bounds staleness. No limit -> accept.
-	effectiveTTL := policy.ResolveRealtimeTTL(networkBlockTime(req), defaultRealtimeColdStartTTL)
+	effectiveTTL := policy.ResolveTTL(networkBlockTime(req), defaultRealtimeColdStartTTL)
 	if effectiveTTL <= 0 {
 		return true
 	}
@@ -915,7 +924,9 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 				Msg("rejecting cached result because block age exceeds policy TTL")
 		}
 
-		// Record metric for age-guard rejection
+		// Record metric for age-guard rejection. Label with the policy's fixed
+		// TTL component, not the block-time-resolved value — the latter varies
+		// per sample (EMA-derived) and would explode label cardinality.
 		method, _ := req.Method()
 		telemetry.MetricCacheGetAgeGuardRejectTotal.WithLabelValues(
 			c.projectId,
@@ -923,7 +934,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 			method,
 			policy.GetConnector().Id(),
 			policy.String(),
-			effectiveTTL.String(),
+			policy.GetTTL().String(),
 		).Inc()
 
 		return false

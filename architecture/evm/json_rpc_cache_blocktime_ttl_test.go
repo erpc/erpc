@@ -9,6 +9,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +50,26 @@ func btPolicy(t *testing.T, conn data.Connector, staticTTL time.Duration, mult f
 	policy, err := data.NewCachePolicy(cfg, conn)
 	require.NoError(t, err)
 	return policy
+}
+
+// setCapturingConnector returns a mock connector whose Set records the TTL it
+// was called with, so tests can assert the storage expiry the cache chose.
+type ttlCapturingConnector struct {
+	*data.MockConnector
+	ttl *time.Duration
+}
+
+func setCapturingConnector(t *testing.T, id string) *ttlCapturingConnector {
+	t.Helper()
+	c := &ttlCapturingConnector{MockConnector: plainConnector(id)}
+	c.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			if ttl, ok := args.Get(4).(*time.Duration); ok {
+				c.ttl = ttl
+			}
+		}).
+		Return(nil)
+	return c
 }
 
 // TestEvmJsonRpcCache_BlockTimeDerivedTTL exercises the realtime age guard when
@@ -162,6 +183,35 @@ func TestEvmJsonRpcCache_BlockTimeDerivedTTL(t *testing.T) {
 		mainnetPolicy := btPolicy(t, newHeadReportingConnector("conn", now-5, true), 0, 1.0)
 		assert.True(t, cache.shouldAcceptCachedResult(ctx,
 			realtimeReqBT("eth_getLogs", `[{"fromBlock":"latest","toBlock":"latest"}]`, mainnetBT), logsJrr(), mainnetPolicy))
+	})
+
+	// --- write path: storage expiry must match the read-side window ---
+
+	t.Run("SetStoresWithBlockTimeDerivedTTL", func(t *testing.T) {
+		// Warm EMA on mainnet: the entry must be stored for blockTime*mult (12s),
+		// not the 2s fallback — otherwise the connector evicts it long before the
+		// read-side guard would stop serving it.
+		captured := setCapturingConnector(t, "conn")
+		policy := btPolicy(t, captured.MockConnector, 2*time.Second, 1.0)
+		cacheWithPolicy := &EvmJsonRpcCache{projectId: "test-project", logger: freshGuardCache().logger, policies: []*data.CachePolicy{policy}}
+
+		req := realtimeReqBT("eth_getBlockByNumber", `["latest",false]`, mainnetBT)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(blockJrr(now))
+		require.NoError(t, cacheWithPolicy.Set(ctx, req, resp))
+		require.NotNil(t, captured.ttl)
+		assert.Equal(t, 12*time.Second, *captured.ttl)
+	})
+
+	t.Run("SetFallsBackToFixedTTLWhenBlockTimeUnknown", func(t *testing.T) {
+		captured := setCapturingConnector(t, "conn")
+		policy := btPolicy(t, captured.MockConnector, 2*time.Second, 1.0)
+		cacheWithPolicy := &EvmJsonRpcCache{projectId: "test-project", logger: freshGuardCache().logger, policies: []*data.CachePolicy{policy}}
+
+		req := realtimeReqBT("eth_getBlockByNumber", `["latest",false]`, 0) // cold EMA
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(blockJrr(now))
+		require.NoError(t, cacheWithPolicy.Set(ctx, req, resp))
+		require.NotNil(t, captured.ttl)
+		assert.Equal(t, 2*time.Second, *captured.ttl)
 	})
 
 	// --- non-realtime finality ignores the block-time TTL entirely ---
