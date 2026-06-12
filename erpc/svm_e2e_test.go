@@ -82,6 +82,21 @@ func svmUpstreamConfig(id, host string) *common.UpstreamConfig {
 	}
 }
 
+// svmProjectForward reproduces the production project-layer path
+// (PreparedProject.doForward): it runs HandleProjectPreForward — which is where
+// commitment injection and the getGenesisHash short-circuit live — before
+// delegating to network.Forward. Tests must use this instead of calling
+// net.Forward directly; otherwise project-level pre-forward is skipped and the
+// upstream never sees the injected commitment the mocks expect.
+func svmProjectForward(ctx context.Context, net *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	if h := net.architectureHandler; h != nil {
+		if handled, resp, err := h.HandleProjectPreForward(ctx, net, req); handled {
+			return resp, err
+		}
+	}
+	return net.Forward(ctx, req)
+}
+
 // TestSvm_GetSlot_BasicProxy verifies that a getSlot request is forwarded to
 // the upstream and the result is returned to the caller. This is the smoke
 // test for the whole SVM pipeline (handler registration, client creation,
@@ -107,7 +122,7 @@ func TestSvm_GetSlot_BasicProxy(t *testing.T) {
 
 	net := setupTestSvmNetwork(t, ctx, []*common.UpstreamConfig{svmUpstreamConfig("rpc1", "svm-basic-rpc1.localhost")})
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`))
-	resp, err := net.Forward(ctx, req)
+	resp, err := svmProjectForward(ctx, net, req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -201,7 +216,7 @@ func TestSvm_Failover(t *testing.T) {
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}`))
-	resp, err := net.Forward(ctx, req)
+	resp, err := svmProjectForward(ctx, net, req)
 	require.NoError(t, err)
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)
@@ -254,7 +269,7 @@ func TestSvm_SendTransaction_NotRetriedAcrossUpstreams(t *testing.T) {
 	net.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["base64tx"]}`))
-	resp, err := net.Forward(ctx, req)
+	resp, err := svmProjectForward(ctx, net, req)
 	// The guard must surface the primary error OR the primary's error payload,
 	// never the secondary's successful response.
 	if err != nil {
@@ -402,7 +417,7 @@ func TestSvm_CacheHit_ServedFromCacheOnSecondRequest(t *testing.T) {
 
 	// First request — upstream handles it, result lands in cache.
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[42,{"commitment":"finalized"}]}`)
-	resp1, err := net.Forward(ctx, common.NewNormalizedRequest(body))
+	resp1, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(body))
 	require.NoError(t, err)
 	require.NotNil(t, resp1)
 	jrr1, err := resp1.JsonRpcResponse()
@@ -414,7 +429,7 @@ func TestSvm_CacheHit_ServedFromCacheOnSecondRequest(t *testing.T) {
 
 	// Second request with identical body — served from cache. The gock mock was
 	// Times(1), so if we re-hit the upstream we'd get a different outcome.
-	resp2, err := net.Forward(ctx, common.NewNormalizedRequest(body))
+	resp2, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(body))
 	require.NoError(t, err)
 	require.NotNil(t, resp2)
 	jrr2, err := resp2.JsonRpcResponse()
@@ -700,7 +715,7 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 	// Fire a finalized-commitment getBlock.
 	req := common.NewNormalizedRequest([]byte(
 		`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100,{"commitment":"finalized"}]}`))
-	resp, err := net.Forward(ctx, req)
+	resp, err := svmProjectForward(ctx, net, req)
 	require.NoError(t, err, "consensus forward must succeed when all upstreams are within slot-lag bound")
 	require.NotNil(t, resp)
 

@@ -622,7 +622,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						}
 						if networkIdFromBody, ok := req["networkId"].(string); ok {
 							networkId = networkIdFromBody
-							parts := strings.Split(networkId, ":")
+							// SplitN limit 2 so three-part SVM IDs (svm:<chain>:<cluster>)
+							// keep the chain:cluster tail intact as chainId; it is
+							// reassembled as architecture+":"+chainId below.
+							parts := strings.SplitN(networkId, ":", 2)
 							if len(parts) == 2 {
 								architecture = parts[0]
 								chainId = parts[1]

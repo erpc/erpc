@@ -10,47 +10,61 @@ import (
 	"github.com/erpc/erpc/util"
 )
 
-// commitmentInjectableMethods is the whitelist of read methods where appending
-// or setting {commitment: ...} on the params options object is semantically safe.
-// Write methods (sendTransaction, simulateTransaction, requestAirdrop) are
-// intentionally excluded — they either use a different option name
-// (preflightCommitment) or apply commitment locally, so rewriting would change
-// upstream semantics silently.
+// optionsAppend marks a method whose options object is always the trailing
+// param but whose positional arity varies (only getBlocks: [start] or
+// [start, end]), so the injector locates the slot dynamically.
+const optionsAppend = -1
+
+// commitmentOptionsIndex maps each commitment-injectable read method to the
+// param index where its options/config object lives, per the Solana JSON-RPC
+// reference (https://solana.com/docs/rpc/http). The injector sets `commitment`
+// on the object at that index (creating it when the slot is exactly the next
+// position) and SKIPS injection when the slot is occupied by a non-object —
+// e.g. the legacy getBlock(slot, "base64") / getTransaction(sig, "json")
+// encoding-string form — so a valid request shape is never corrupted.
 //
-// Methods that take no options at all (getGenesisHash, getVersion, getHealth,
-// getBlockTime, etc.) are also excluded so we don't append a spurious map.
-var commitmentInjectableMethods = map[string]bool{
-	"getAccountInfo":             true,
-	"getBalance":                 true,
-	"getBlock":                   true,
-	"getBlockHeight":             true,
-	"getBlockProduction":         true,
-	"getBlocks":                  true,
-	"getBlocksWithLimit":         true,
-	"getEpochInfo":               true,
-	"getInflationGovernor":       true,
-	"getInflationRate":           true,
-	"getLargestAccounts":         true,
-	"getLatestBlockhash":         true,
-	"getLeaderSchedule":          true,
-	"getMultipleAccounts":        true,
-	"getProgramAccounts":         true,
-	"getSignaturesForAddress":    true,
-	"getSignatureStatuses":       true,
-	"getSlot":                    true,
-	"getSlotLeader":              true,
-	"getStakeActivation":         true,
-	"getStakeMinimumDelegation":  true,
-	"getSupply":                  true,
-	"getTokenAccountBalance":     true,
-	"getTokenAccountsByDelegate": true,
-	"getTokenAccountsByOwner":    true,
-	"getTokenLargestAccounts":    true,
-	"getTokenSupply":             true,
-	"getTransaction":             true,
-	"getTransactionCount":        true,
-	"getVoteAccounts":            true,
-	"isBlockhashValid":           true,
+// Excluded on purpose:
+//   - Write/effectful methods (sendTransaction, simulateTransaction,
+//     requestAirdrop): use preflightCommitment or apply commitment locally.
+//   - No-parameter methods (getGenesisHash, getVersion, getHealth, getIdentity,
+//     getInflationRate, getBlockTime, ...): appending an options object yields
+//     an invalid shape (-32602 "No parameters were expected").
+//   - Methods whose config carries no commitment field (getSignatureStatuses,
+//     whose only option is searchTransactionHistory).
+var commitmentOptionsIndex = map[string]int{
+	// options object is the first/only param
+	"getBlockHeight":            0,
+	"getBlockProduction":        0,
+	"getEpochInfo":              0,
+	"getInflationGovernor":      0,
+	"getLargestAccounts":        0,
+	"getLatestBlockhash":        0,
+	"getSlot":                   0,
+	"getSlotLeader":             0,
+	"getStakeMinimumDelegation": 0,
+	"getSupply":                 0,
+	"getTransactionCount":       0,
+	"getVoteAccounts":           0,
+	// one positional arg precedes the options object
+	"getAccountInfo":          1,
+	"getBalance":              1,
+	"getBlock":                1,
+	"getLeaderSchedule":       1,
+	"getMultipleAccounts":     1,
+	"getProgramAccounts":      1,
+	"getSignaturesForAddress": 1,
+	"getStakeActivation":      1,
+	"getTokenAccountBalance":  1,
+	"getTokenLargestAccounts": 1,
+	"getTokenSupply":          1,
+	"getTransaction":          1,
+	"isBlockhashValid":        1,
+	// two positional args precede the options object
+	"getBlocksWithLimit":         2,
+	"getTokenAccountsByDelegate": 2,
+	"getTokenAccountsByOwner":    2,
+	// variable arity; options is the trailing object
+	"getBlocks": optionsAppend,
 }
 
 // projectPreForward_getGenesisHash short-circuits getGenesisHash using the
@@ -89,17 +103,18 @@ func projectPreForward_getGenesisHash(ctx context.Context, n common.Network, r *
 // return subtly different data for the same user request, poisoning the cache
 // and failsafe consensus.
 //
-// The hook returns (false, nil, nil) unconditionally — it never short-circuits
-// the request. It only mutates params so the upstream forward continues with
-// the rewritten body. Conservative by design:
+// Despite the name it is invoked from HandleProjectPreForward (before the
+// network-layer cache read) — see that method for why. It returns
+// (false, nil, nil) unconditionally; it never short-circuits, only mutates
+// params, then invalidates the memoized CacheHash so the cache keys on the
+// rewritten body. Shape rules (per commitmentOptionsIndex):
 //
-//   - Only methods in commitmentInjectableMethods are touched. The write/local
-//     methods retain their exact original body.
-//   - If the caller already specified a commitment anywhere in params, we do
-//     nothing — user intent beats network default.
-//   - If no options object is present at all, we append one at the end (the
-//     documented param position for Solana options across all whitelisted
-//     methods).
+//   - Method not in the table → untouched (write/no-param/no-commitment methods).
+//   - Options slot already an object with a commitment → honor the caller.
+//   - Options slot is the next free position → append a fresh {commitment} object.
+//   - Options slot occupied by a non-object (legacy encoding-string form) →
+//     skip, so we never produce an invalid param shape.
+//   - Required positional args missing → skip; let the upstream report it.
 func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	cfg := n.Config()
 	if cfg == nil || cfg.Svm == nil || cfg.Svm.Commitment == "" {
@@ -113,7 +128,11 @@ func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r
 	}
 
 	method, err := r.Method()
-	if err != nil || !commitmentInjectableMethods[method] {
+	if err != nil {
+		return false, nil, nil
+	}
+	idx, ok := commitmentOptionsIndex[method]
+	if !ok {
 		return false, nil, nil
 	}
 
@@ -124,27 +143,46 @@ func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r
 	rpcReq.Lock()
 	defer rpcReq.Unlock()
 
-	// If a commitment is already set in any map param, honor the caller's choice.
-	for _, p := range rpcReq.Params {
-		if m, ok := p.(map[string]interface{}); ok {
-			if _, has := m["commitment"]; has {
+	setOnMap := func(m map[string]interface{}) bool {
+		if _, has := m["commitment"]; has {
+			return false // honor caller-supplied commitment
+		}
+		m["commitment"] = defaultCommitment
+		rpcReq.InvalidateCacheHash()
+		return true
+	}
+
+	// getBlocks has variable positional arity ([start] or [start,end]); its
+	// options object, when present, is always the trailing param and every
+	// positional arg is a number — so locate it dynamically.
+	if idx == optionsAppend {
+		if len(rpcReq.Params) > 0 {
+			if m, ok := rpcReq.Params[len(rpcReq.Params)-1].(map[string]interface{}); ok {
+				setOnMap(m)
 				return false, nil, nil
 			}
 		}
+		rpcReq.Params = append(rpcReq.Params, map[string]interface{}{"commitment": defaultCommitment})
+		rpcReq.InvalidateCacheHash()
+		return false, nil, nil
 	}
 
-	// Prefer mutating the last map-valued param (the conventional options slot).
-	// If no map exists, append a new one. Either way, invalidate the memoized
-	// CacheHash so downstream cache lookups key on the post-mutation params.
-	for i := len(rpcReq.Params) - 1; i >= 0; i-- {
-		if m, ok := rpcReq.Params[i].(map[string]interface{}); ok {
-			m["commitment"] = defaultCommitment
-			rpcReq.InvalidateCacheHash()
-			return false, nil, nil
+	switch {
+	case idx < len(rpcReq.Params):
+		// Options slot already exists. Only mutate it if it's an object; a
+		// non-object there is a legacy encoding-string (or a positional arg),
+		// and rewriting it would corrupt the request — leave it untouched.
+		if m, ok := rpcReq.Params[idx].(map[string]interface{}); ok {
+			setOnMap(m)
 		}
+	case idx == len(rpcReq.Params):
+		// Options slot is exactly the next position — append a fresh object.
+		rpcReq.Params = append(rpcReq.Params, map[string]interface{}{"commitment": defaultCommitment})
+		rpcReq.InvalidateCacheHash()
+	default:
+		// idx > len(params): required positional args are missing. Don't
+		// fabricate them; let the upstream return a descriptive error.
 	}
-	rpcReq.Params = append(rpcReq.Params, map[string]interface{}{"commitment": defaultCommitment})
-	rpcReq.InvalidateCacheHash()
 	return false, nil, nil
 }
 

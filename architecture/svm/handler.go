@@ -23,25 +23,32 @@ func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, ne
 	}
 	switch method {
 	case "getGenesisHash":
-		return projectPreForward_getGenesisHash(ctx, network, req)
+		if handled, resp, gerr := projectPreForward_getGenesisHash(ctx, network, req); handled || gerr != nil {
+			return handled, resp, gerr
+		}
 	}
-	return false, nil, nil
+
+	// Commitment injection runs here — at the project layer, BEFORE the
+	// network-layer cache read — rather than in HandleNetworkPreForward. It
+	// mutates params and invalidates the memoized CacheHash, so running it after
+	// the cache GET would key the read on pre-injection params and the write on
+	// post-injection params: a permanent cache miss for commitment-defaulted
+	// requests. It is upstream-agnostic (needs only network config), so the
+	// project layer is the correct, earliest-safe place. Non-short-circuiting.
+	return networkPreForward_injectCommitment(ctx, network, req)
 }
 
 func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, network common.Network, upstreams []common.Upstream, req *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
-	// Per-method validation gates that can short-circuit the request.
+	// Per-method validation gates that can short-circuit the request. Commitment
+	// injection deliberately does NOT happen here — see HandleProjectPreForward.
 	method, err := req.Method()
 	if err != nil {
 		return false, nil, err
 	}
 	if method == "getSignaturesForAddress" {
-		if handled, resp, verr := networkPreForward_validateSignaturesForAddress(ctx, network, req); handled || verr != nil {
-			return handled, resp, verr
-		}
+		return networkPreForward_validateSignaturesForAddress(ctx, network, req)
 	}
-
-	// Non-short-circuiting mutation: stamp commitment onto the body.
-	return networkPreForward_injectCommitment(ctx, network, req)
+	return false, nil, nil
 }
 
 func (h *SvmArchitectureHandler) HandleNetworkPostForward(ctx context.Context, network common.Network, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {

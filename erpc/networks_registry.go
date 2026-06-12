@@ -72,7 +72,9 @@ func NewNetworksRegistry(
 		project.cfgMu.RLock()
 		for _, nwCfg := range project.Config.Networks {
 			if nwCfg != nil && nwCfg.Alias != "" {
-				parts := strings.Split(nwCfg.NetworkId(), ":")
+				// SplitN limit 2: three-part SVM IDs (svm:<chain>:<cluster>) keep
+				// the chain:cluster tail as the chainID half of the alias entry.
+				parts := strings.SplitN(nwCfg.NetworkId(), ":", 2)
 				if len(parts) == 2 {
 					r.registerAlias(nwCfg.Alias, parts[0], parts[1])
 				}
@@ -323,7 +325,9 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {
-		parts := strings.Split(nwCfg.NetworkId(), ":")
+		// SplitN limit 2: three-part SVM IDs (svm:<chain>:<cluster>) keep the
+		// chain:cluster tail as the chainID half of the alias entry.
+		parts := strings.SplitN(nwCfg.NetworkId(), ":", 2)
 		if len(parts) == 2 {
 			nr.registerAlias(nwCfg.Alias, parts[0], parts[1])
 		}
@@ -356,7 +360,9 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 	if nwCfg == nil {
 		// Create a new config if none was found
 		nwCfg = &common.NetworkConfig{}
-		s := strings.Split(networkId, ":")
+		// SplitN limit 2: the tail keeps any further colons so SVM
+		// svm:<chain>:<cluster> IDs are parsed below (s[1] = "<chain>:<cluster>").
+		s := strings.SplitN(networkId, ":", 2)
 		if len(s) != 2 {
 			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}
@@ -368,6 +374,18 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 				return nil, e
 			}
 			nwCfg.Evm = &common.EvmNetworkConfig{ChainId: int64(c)}
+		case common.ArchitectureSvm:
+			// s[1] is "<cluster>" (implicit solana) or "<chain>:<cluster>".
+			chain, cluster := "", s[1]
+			if i := strings.Index(s[1], ":"); i >= 0 {
+				chain, cluster = s[1][:i], s[1][i+1:]
+			}
+			if cluster == "" {
+				return nil, common.NewErrInvalidEvmChainId(networkId)
+			}
+			nwCfg.Svm = &common.SvmNetworkConfig{Chain: chain, Cluster: cluster}
+		default:
+			return nil, common.NewErrInvalidEvmChainId(networkId)
 		}
 		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
 			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)

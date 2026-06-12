@@ -41,22 +41,23 @@ var neverCacheMethods = map[string]bool{
 
 // alwaysFinalizedMethods return finalized data by their nature — regardless of
 // the request's commitment param, the response is safe to treat as final.
-// Per the Solana JSON-RPC reference (https://solana.com/docs/rpc/http) all of
-// these operate over confirmed/finalized ledger rollups only:
 //
-//   - getBlock, getBlocks, getBlockTime, getTransaction: the validator only
-//     surfaces these past the confirmed/finalized threshold — the "commitment"
-//     param is a floor, not a ceiling, and responses are always ≥ confirmed.
-//   - getInflationReward: only defined on finalized epochs.
-//   - getSignaturesForAddress: walks the block index, which is finalized by
-//     construction.
+// IMPORTANT: only methods finalized by *construction* belong here. getBlock,
+// getBlocks, getTransaction, and getSignaturesForAddress do NOT — per the
+// Solana JSON-RPC reference they each accept a commitment parameter and will
+// return *confirmed* (not yet rooted) data, which can still be dropped on a
+// minority-fork switch. Classifying a confirmed response as finalized would let
+// it be permanently cached and routed as final. Those methods are instead
+// classified by their effective commitment in GetFinality below (finalized only
+// when commitment == finalized).
+//
+// What remains is finalized irrespective of commitment:
+//   - getInflationReward: defined only over finalized epochs.
+//   - getBlockTime: the production timestamp of a slot; takes no commitment
+//     parameter and is stable once the slot exists.
 var alwaysFinalizedMethods = map[string]bool{
-	"getBlock":                true,
-	"getTransaction":          true,
-	"getInflationReward":      true,
-	"getBlocks":               true,
-	"getBlockTime":            true,
-	"getSignaturesForAddress": true,
+	"getInflationReward": true,
+	"getBlockTime":       true,
 }
 
 // GetFinality resolves the finality of an SVM request/response pair. It is

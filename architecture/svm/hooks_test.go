@@ -171,6 +171,74 @@ func TestNetworkPreForward_InjectCommitment_SkipsWriteMethods(t *testing.T) {
 	}
 }
 
+// TestNetworkPreForward_InjectCommitment_ShapeAware is the regression guard for
+// the method-aware param-shaping fix. The injector must respect each method's
+// documented options-object position and never produce an invalid RPC shape.
+func TestNetworkPreForward_InjectCommitment_ShapeAware(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}}
+	paramsOf := func(method, params string) []interface{} {
+		req := common.NewNormalizedRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params)))
+		if _, _, err := networkPreForward_injectCommitment(context.Background(), net, req); err != nil {
+			t.Fatalf("%s: unexpected error: %v", method, err)
+		}
+		jrq, _ := req.JsonRpcRequest(context.Background())
+		return jrq.Params
+	}
+
+	// getInflationRate takes NO params — must be left completely untouched
+	// (it is no longer in the injectable table).
+	if p := paramsOf("getInflationRate", "[]"); len(p) != 0 {
+		t.Errorf("getInflationRate: params must stay empty, got %+v", p)
+	}
+
+	// Legacy getBlock(slot, "encoding") / getTransaction(sig, "encoding"): the
+	// options slot is occupied by a string, so injection must be skipped rather
+	// than appending an invalid 3rd param.
+	if p := paramsOf("getBlock", `[123, "base64"]`); len(p) != 2 {
+		t.Errorf("getBlock legacy form: expected 2 params untouched, got %+v", p)
+	}
+	if p := paramsOf("getTransaction", `["sig", "json"]`); len(p) != 2 {
+		t.Errorf("getTransaction legacy form: expected 2 params untouched, got %+v", p)
+	}
+
+	// getBlock with a proper config object: commitment merged into it.
+	if p := paramsOf("getBlock", `[123, {"encoding":"json"}]`); len(p) != 2 {
+		t.Fatalf("getBlock object form: expected 2 params, got %+v", p)
+	} else if m, ok := p[1].(map[string]interface{}); !ok || m["commitment"] != "confirmed" || m["encoding"] != "json" {
+		t.Errorf("getBlock object form: expected commitment merged, got %+v", p[1])
+	}
+
+	// getTokenAccountsByOwner: options object is the 3rd param (index 2); the
+	// 2nd param is the required filter and must NOT receive commitment.
+	p := paramsOf("getTokenAccountsByOwner", `["owner", {"mint":"x"}]`)
+	if len(p) != 3 {
+		t.Fatalf("getTokenAccountsByOwner: expected options appended at index 2, got %+v", p)
+	}
+	if filter, ok := p[1].(map[string]interface{}); !ok || filter["commitment"] != nil {
+		t.Errorf("getTokenAccountsByOwner: filter object must not get commitment, got %+v", p[1])
+	}
+	if opts, ok := p[2].(map[string]interface{}); !ok || opts["commitment"] != "confirmed" {
+		t.Errorf("getTokenAccountsByOwner: commitment must go in options at index 2, got %+v", p[2])
+	}
+
+	// getSlot has no positional args — options object appended at index 0.
+	if p := paramsOf("getSlot", "[]"); len(p) != 1 {
+		t.Errorf("getSlot: expected options appended, got %+v", p)
+	} else if m, ok := p[0].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
+		t.Errorf("getSlot: expected {commitment} at index 0, got %+v", p[0])
+	}
+
+	// getBlocks variable arity: [start, end] (both numbers) → options appended.
+	if p := paramsOf("getBlocks", `[100, 110]`); len(p) != 3 {
+		t.Errorf("getBlocks [start,end]: expected options appended at index 2, got %+v", p)
+	}
+}
+
 // TestNetworkPreForward_InjectCommitment_InvalidatesCacheHash guards against
 // a subtle cache-key poisoning bug: CacheHash memoizes its result via
 // atomic.Value on first call. If the commitment hook mutates Params without

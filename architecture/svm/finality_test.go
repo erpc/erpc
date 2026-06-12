@@ -51,11 +51,43 @@ func TestFinality_NeverCacheMethods_ReturnRealtime(t *testing.T) {
 
 func TestFinality_AlwaysFinalizedMethods_ReturnFinalized(t *testing.T) {
 	t.Parallel()
-	methods := []string{"getBlock", "getTransaction", "getSignaturesForAddress"}
+	// Only methods finalized by construction (no commitment param) belong here.
+	methods := []string{"getInflationReward", "getBlockTime"}
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
 	for _, m := range methods {
 		if got := GetFinality(context.Background(), net, newReq(m, "[]"), nil); got != common.DataFinalityStateFinalized {
 			t.Errorf("%s: expected Finalized, got %v", m, got)
+		}
+	}
+}
+
+// Regression for the finality misclassification fix: getBlock / getTransaction /
+// getBlocks / getSignaturesForAddress honor the request's commitment and can
+// return confirmed (not-yet-rooted) data, so they must NOT be hardcoded as
+// finalized — a confirmed response must classify as Unfinalized (re-org aware),
+// and only an explicit/effective finalized commitment promotes them.
+func TestFinality_CommitmentSensitiveMethods_NotAlwaysFinalized(t *testing.T) {
+	t.Parallel()
+	methods := []string{"getBlock", "getTransaction", "getBlocks", "getSignaturesForAddress"}
+
+	confirmedNet := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}}
+	for _, m := range methods {
+		// Explicit confirmed → unfinalized.
+		req := newReq(m, `[{"commitment":"confirmed"}]`)
+		if got := GetFinality(context.Background(), confirmedNet, req, nil); got != common.DataFinalityStateUnfinalized {
+			t.Errorf("%s confirmed: expected Unfinalized, got %v", m, got)
+		}
+		// No explicit commitment + confirmed network default → unfinalized.
+		if got := GetFinality(context.Background(), confirmedNet, newReq(m, "[]"), nil); got != common.DataFinalityStateUnfinalized {
+			t.Errorf("%s default-confirmed: expected Unfinalized, got %v", m, got)
+		}
+		// Explicit finalized → finalized.
+		reqF := newReq(m, `[{"commitment":"finalized"}]`)
+		if got := GetFinality(context.Background(), confirmedNet, reqF, nil); got != common.DataFinalityStateFinalized {
+			t.Errorf("%s finalized: expected Finalized, got %v", m, got)
 		}
 	}
 }
