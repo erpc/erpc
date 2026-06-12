@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
@@ -25,6 +25,7 @@ type NetworksRegistry struct {
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	metricsTracker       *health.Tracker
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
+	svmJsonRpcCache      *svm.SvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	policyEngine         *policy.Engine
 	preparedNetworks     sync.Map // map[string]*Network
@@ -45,6 +46,7 @@ func NewNetworksRegistry(
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
+	svmJsonRpcCache *svm.SvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	policyEngine *policy.Engine,
 	logger *zerolog.Logger,
@@ -56,6 +58,7 @@ func NewNetworksRegistry(
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
 		evmJsonRpcCache:      evmJsonRpcCache,
+		svmJsonRpcCache:      svmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		policyEngine:         policyEngine,
 		preparedNetworks:     sync.Map{},
@@ -168,6 +171,13 @@ func NewNetwork(
 
 	if nwCfg.Architecture == "" {
 		nwCfg.Architecture = common.ArchitectureEvm
+	}
+
+	// Wire the architecture handler so per-network hooks dispatch correctly.
+	// prepareNetwork also sets this; keeping it here means tests that construct
+	// networks via NewNetwork directly get the same behavior as production.
+	if handler, err := common.GetArchitectureHandler(nwCfg.Architecture); err == nil {
+		network.architectureHandler = handler
 	}
 
 	return network, nil
@@ -292,13 +302,24 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		return nil, err
 	}
 
+	handler, err := common.GetArchitectureHandler(nwCfg.Architecture)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported network architecture %q: %w", nwCfg.Architecture, err)
+	}
+	network.architectureHandler = handler
+
+	// Architecture-specific cache wiring. Each architecture has its own cache
+	// implementation because key partitioning differs (EVM uses blockRef, SVM
+	// uses commitment+slotRef). A given network gets exactly one cache.
 	switch nwCfg.Architecture {
-	case "evm":
+	case common.ArchitectureEvm:
 		if nr.evmJsonRpcCache != nil {
 			network.cacheDal = nr.evmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
-	default:
-		return nil, errors.New("unknown network architecture")
+	case common.ArchitectureSvm:
+		if nr.svmJsonRpcCache != nil {
+			network.cacheDal = nr.svmJsonRpcCache.WithProjectId(nr.project.Config.Id)
+		}
 	}
 	// Register alias for lazy-created networks to support alias-based routing
 	if nwCfg.Alias != "" {

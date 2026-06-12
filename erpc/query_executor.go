@@ -318,14 +318,14 @@ func (qe *EvmQueryExecutor) resolveQueryBounds(ctx context.Context, from, to str
 func (qe *EvmQueryExecutor) resolveBlockTag(ctx context.Context, block string, upper bool) (uint64, error) {
 	switch block {
 	case "", "latest":
-		return uint64(qe.network.EvmHighestLatestBlockNumber(ctx)), nil
+		return uint64(common.EvmHighestLatestBlockNumber(qe.network, ctx)), nil
 	case "finalized":
-		return uint64(qe.network.EvmHighestFinalizedBlockNumber(ctx)), nil
+		return uint64(common.EvmHighestFinalizedBlockNumber(qe.network, ctx)), nil
 	case "safe":
-		if finalized := qe.network.EvmHighestFinalizedBlockNumber(ctx); finalized > 0 {
+		if finalized := common.EvmHighestFinalizedBlockNumber(qe.network, ctx); finalized > 0 {
 			return uint64(finalized), nil
 		}
-		return uint64(qe.network.EvmHighestLatestBlockNumber(ctx)), nil
+		return uint64(common.EvmHighestLatestBlockNumber(qe.network, ctx)), nil
 	case "earliest":
 		return 0, nil
 	case "pending":

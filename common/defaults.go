@@ -1908,11 +1908,16 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Architecture == "" {
 		if n.Evm != nil {
 			n.Architecture = "evm"
+		} else if n.Svm != nil {
+			n.Architecture = ArchitectureSvm
 		}
 	}
 
 	if n.Architecture == "evm" && n.Evm == nil {
 		n.Evm = &EvmNetworkConfig{}
+	}
+	if n.Architecture == ArchitectureSvm && n.Svm == nil {
+		n.Svm = &SvmNetworkConfig{}
 	}
 
 	// Apply methods defaults
@@ -1926,6 +1931,11 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Evm != nil {
 		if err := n.Evm.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for network evm config: %w", err)
+		}
+	}
+	if n.Svm != nil {
+		if err := n.Svm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for network svm config: %w", err)
 		}
 	}
 
@@ -2055,6 +2065,39 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 		"trace_block",
 		"trace_get",
 	}
+}
+
+// SetDefaults populates SVM-network config fields that were left empty.
+// Called from NetworkConfig.SetDefaults so every production-loaded config
+// ends up with the same values operators would get by opting in.
+//
+// Commitment is intentionally NOT defaulted here: the commitment-injection
+// hook is a no-op when SvmNetworkConfig.Commitment is empty (the caller's
+// commitment or the upstream's server-side default wins), which is the
+// correct behavior when an operator hasn't opted in.
+func (s *SvmNetworkConfig) SetDefaults() error {
+	if s == nil {
+		return nil
+	}
+	// A zero value here silently disables the getSignaturesForAddress slot-window
+	// guard. 1000 slots (~7 minutes) is the plan's documented default — large
+	// enough for most callers, small enough to stop obvious unbounded scans.
+	if s.MaxSlotsPerSignaturesQuery == 0 {
+		s.MaxSlotsPerSignaturesQuery = 1000
+	}
+	// 400ms matches one Solana slot. Polling more often buys no fresher data
+	// and burns upstream quota; polling less often means our state lags the
+	// cluster by more than a slot.
+	if s.StatePollerDebounce.Duration() == 0 {
+		s.StatePollerDebounce = Duration(400 * time.Millisecond)
+	}
+	// 100 slots (~40s) matches MaxShredInsertSlotLagThreshold so the consensus
+	// slot-lag filter and the per-upstream health check use the same staleness
+	// bar. Operators can widen or tighten per network.
+	if s.MaxFinalizedSlotLag == 0 {
+		s.MaxFinalizedSlotLag = MaxShredInsertSlotLagThreshold
+	}
+	return nil
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {

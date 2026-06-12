@@ -1392,7 +1392,11 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 	}
 
 	if ch := r.cacheHash.Load(); ch != nil {
-		return ch.(string), nil
+		// Empty string is the "invalidated" sentinel written by
+		// InvalidateCacheHash — fall through to recompute in that case.
+		if s := ch.(string); s != "" {
+			return s, nil
+		}
 	}
 
 	hasher := sha256.New()
@@ -1406,6 +1410,17 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 	ch := fmt.Sprintf("%s:%x", r.Method, b)
 	r.cacheHash.Store(ch)
 	return ch, nil
+}
+
+// InvalidateCacheHash discards any memoized CacheHash value so the next
+// CacheHash call recomputes against the current Params. Call this after any
+// in-place mutation of Params (e.g. pre-forward hooks that inject defaults).
+// Safe to call with no prior CacheHash invocation.
+func (r *JsonRpcRequest) InvalidateCacheHash() {
+	if r == nil {
+		return
+	}
+	r.cacheHash.Store("")
 }
 
 func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {

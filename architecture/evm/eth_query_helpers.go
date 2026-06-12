@@ -166,18 +166,18 @@ func resolveBlockTag(ctx context.Context, network common.Network, tag string) (u
 	tag = strings.TrimSpace(strings.ToLower(tag))
 	switch tag {
 	case "":
-		return uint64(network.EvmHighestLatestBlockNumber(ctx)), nil
+		return uint64(common.EvmHighestLatestBlockNumber(network, ctx)), nil
 	case "earliest":
 		return 0, nil
 	case "latest":
-		return uint64(network.EvmHighestLatestBlockNumber(ctx)), nil
+		return uint64(common.EvmHighestLatestBlockNumber(network, ctx)), nil
 	case "finalized":
-		return uint64(network.EvmHighestFinalizedBlockNumber(ctx)), nil
+		return uint64(common.EvmHighestFinalizedBlockNumber(network, ctx)), nil
 	case "safe":
-		if finalized := network.EvmHighestFinalizedBlockNumber(ctx); finalized > 0 {
+		if finalized := common.EvmHighestFinalizedBlockNumber(network, ctx); finalized > 0 {
 			return uint64(finalized), nil
 		}
-		return uint64(network.EvmHighestLatestBlockNumber(ctx)), nil
+		return uint64(common.EvmHighestLatestBlockNumber(network, ctx)), nil
 	case "pending":
 		return 0, common.NewErrInvalidRequest(fmt.Errorf("pending block tag is not supported for query shim"))
 	default:
