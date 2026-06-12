@@ -41,8 +41,9 @@ const (
 // re-dials. wsPongWait must comfortably exceed wsPingInterval so at least
 // two pings fit in the window.
 //
-// Vars (not consts) so tests can compress time; production code must not
-// mutate them.
+// Vars (not consts) so tests can compress time. They are copied into
+// per-client fields at construction, so client goroutines never read them
+// after NewWsJsonRpcClient returns.
 var (
 	wsPingInterval = 30 * time.Second
 	wsPongWait     = 75 * time.Second
@@ -57,6 +58,11 @@ type WsJsonRpcClient struct {
 	upstream  common.Upstream
 	appCtx    context.Context
 	logger    *zerolog.Logger
+
+	// Liveness windows, snapshotted from wsPingInterval/wsPongWait at
+	// construction (before any goroutine starts).
+	pingInterval time.Duration
+	pongWait     time.Duration
 
 	// Connection state
 	connMu sync.Mutex
@@ -156,6 +162,8 @@ func NewWsJsonRpcClient(
 	client := &WsJsonRpcClient{
 		Url:             parsedUrl,
 		headers:         headers,
+		pingInterval:    wsPingInterval,
+		pongWait:        wsPongWait,
 		projectId:       projectId,
 		upstream:        upstream,
 		appCtx:          appCtx,
@@ -367,13 +375,13 @@ func (c *WsJsonRpcClient) connect() error {
 	}
 
 	// Arm the liveness deadline: if neither a pong nor a data frame arrives
-	// within wsPongWait, ReadMessage fails and readLoop re-dials. The pong
+	// within pongWait, ReadMessage fails and readLoop re-dials. The pong
 	// handler runs inside ReadMessage's frame processing, so extending the
 	// deadline here covers the ping/pong path; readLoop extends it again on
 	// every data frame.
-	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	})
 
 	if c.conn != nil {
@@ -451,7 +459,7 @@ func (c *WsJsonRpcClient) readLoop() {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				c.logger.Info().Msg("websocket connection closed normally")
 			} else if errors.As(err, &netErr) && netErr.Timeout() {
-				c.logger.Warn().Err(err).Dur("pongWait", wsPongWait).
+				c.logger.Warn().Err(err).Dur("pongWait", c.pongWait).
 					Msg("websocket peer silent beyond liveness deadline (no pong/data), tearing down connection and reconnecting")
 			} else {
 				c.logger.Warn().Err(err).Msg("websocket read error, will reconnect")
@@ -468,7 +476,7 @@ func (c *WsJsonRpcClient) readLoop() {
 
 		// Any inbound frame proves the peer is alive — push the liveness
 		// deadline forward.
-		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 
 		c.handleMessage(message)
 	}
@@ -616,9 +624,6 @@ func (c *WsJsonRpcClient) drainPending(err error) {
 }
 
 func (c *WsJsonRpcClient) writeMessage(messageType int, data []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
 	c.connMu.Lock()
 	conn := c.conn
 	c.connMu.Unlock()
@@ -626,6 +631,15 @@ func (c *WsJsonRpcClient) writeMessage(messageType int, data []byte) error {
 	if conn == nil {
 		return fmt.Errorf("websocket connection not established")
 	}
+	return c.writeToConn(conn, messageType, data)
+}
+
+// writeToConn writes to an explicit connection so callers that need to act
+// on a write failure (e.g. pingLoop closing the broken conn) operate on the
+// exact connection they wrote to, not whatever c.conn points at by then.
+func (c *WsJsonRpcClient) writeToConn(conn *websocket.Conn, messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 
 	if err := conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
 		return err
@@ -634,7 +648,7 @@ func (c *WsJsonRpcClient) writeMessage(messageType int, data []byte) error {
 }
 
 func (c *WsJsonRpcClient) pingLoop() {
-	ticker := time.NewTicker(wsPingInterval)
+	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
 
 	for {
@@ -643,19 +657,23 @@ func (c *WsJsonRpcClient) pingLoop() {
 			if !c.connected.Load() {
 				continue
 			}
-			if err := c.writeMessage(websocket.PingMessage, nil); err != nil {
-				// A failed ping write means the connection is unusable.
+			c.connMu.Lock()
+			conn := c.conn
+			c.connMu.Unlock()
+			if conn == nil {
+				continue
+			}
+			if err := c.writeToConn(conn, websocket.PingMessage, nil); err != nil {
+				// A failed ping write means this connection is unusable.
 				// Close it so readLoop's blocked ReadMessage fails and the
 				// teardown+reconnect path (owned by readLoop) takes over —
 				// logging alone here previously left the client wedged on a
 				// connection that could never deliver another frame.
+				// teardownConn only clears c.conn if it still points at this
+				// same conn, so a concurrent reconnect's fresh connection is
+				// never the one closed here.
 				c.logger.Warn().Err(err).Msg("websocket ping write failed, closing connection to force reconnect")
-				c.connMu.Lock()
-				conn := c.conn
-				c.connMu.Unlock()
-				if conn != nil {
-					_ = conn.Close()
-				}
+				c.teardownConn(conn)
 			}
 		case <-c.appCtx.Done():
 			return
