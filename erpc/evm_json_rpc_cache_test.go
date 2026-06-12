@@ -1931,6 +1931,14 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
+	// createMockUpstream bootstraps a real upstream against rpc1.localhost
+	// (chainId detection + state poller); register the standard poller mocks
+	// so this test is self-contained instead of freeloading on persist mocks
+	// leaked by whichever test happens to run before it in the same process.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2308,6 +2316,13 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_Redis(t *testing.T) {
+	// Same hygiene as TestEvmJsonRpcCache_DynamoDB: createMockUpstream
+	// bootstraps against rpc1.localhost, so this test must register its own
+	// poller mocks rather than depend on leftovers from earlier tests.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
