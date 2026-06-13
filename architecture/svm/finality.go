@@ -2,7 +2,6 @@ package svm
 
 import (
 	"context"
-	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -67,8 +66,18 @@ var alwaysFinalizedMethods = map[string]bool{
 //
 //  1. neverCacheMethods       → realtime (no cache)
 //  2. alwaysFinalizedMethods  → finalized
-//  3. Explicit commitment param in request → maps directly
-//  4. Default (no commitment) → unfinalized (safe default; TTL kicks in)
+//  3. Effective commitment    → finalized / unfinalized
+//  4. Unknown (no effective commitment) → unfinalized (safe; TTL bounds staleness)
+//
+// Step 3 uses resolveCommitment — the SAME predicate the injection hook uses —
+// so finality reflects the commitment that actually reaches the upstream, not
+// merely whether a network default exists. When injection legitimately skips a
+// request (legacy encoding-string form, missing args, non-injectable method),
+// no default reaches the upstream and the response is classified Unfinalized
+// rather than wrongly trusting the network default. Because resolveCommitment
+// reads request shape + config (not mutation state), this is correct whether
+// GetFinality runs before or after injection (finality is memoized on the first
+// call, which happens pre-injection in erpc/projects.go).
 func GetFinality(ctx context.Context, network common.Network, req *common.NormalizedRequest, _ *common.NormalizedResponse) common.DataFinalityState {
 	if req == nil {
 		return common.DataFinalityStateUnknown
@@ -86,45 +95,13 @@ func GetFinality(ctx context.Context, network common.Network, req *common.Normal
 		return common.DataFinalityStateFinalized
 	}
 
-	switch extractCommitment(ctx, req) {
+	commitment, _, _ := resolveCommitment(ctx, network, req)
+	switch commitment {
 	case "finalized":
 		return common.DataFinalityStateFinalized
 	case "confirmed", "processed":
 		return common.DataFinalityStateUnfinalized
 	}
 
-	// Fall back to the network's default commitment if one is configured.
-	if cfg := network.Config(); cfg != nil && cfg.Svm != nil {
-		switch strings.ToLower(cfg.Svm.Commitment) {
-		case "finalized":
-			return common.DataFinalityStateFinalized
-		case "confirmed", "processed":
-			return common.DataFinalityStateUnfinalized
-		}
-	}
-
 	return common.DataFinalityStateUnfinalized
-}
-
-// extractCommitment pulls a commitment string out of the request params. Solana
-// methods typically accept an options object as the final param, shaped
-// {commitment: "confirmed", ...}. We scan any map-typed param, not just the last
-// one, because vendor forks occasionally place config objects earlier.
-func extractCommitment(ctx context.Context, req *common.NormalizedRequest) string {
-	jrq, err := req.JsonRpcRequest(ctx)
-	if err != nil || jrq == nil {
-		return ""
-	}
-	jrq.RLock()
-	defer jrq.RUnlock()
-	for _, p := range jrq.Params {
-		m, ok := p.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if v, ok := m["commitment"].(string); ok && v != "" {
-			return strings.ToLower(v)
-		}
-	}
-	return ""
 }

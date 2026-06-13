@@ -117,6 +117,37 @@ func TestFinality_NetworkDefaultCommitment_Applies(t *testing.T) {
 	}
 }
 
+// TestFinality_DefaultNotTrustedWhenInjectionSkips guards the rule that finality
+// reflects the commitment that ACTUALLY reaches the upstream, not merely whether
+// a network default exists. When commitment injection legitimately skips a
+// request, the network default must NOT promote it to Finalized.
+func TestFinality_DefaultNotTrustedWhenInjectionSkips(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
+	}}
+
+	// Legacy getBlock(slot,"base64"): options slot is a non-object string, so
+	// injection skips → the default never reaches the upstream → Unfinalized
+	// (NOT promoted to Finalized by the network default).
+	if got := GetFinality(context.Background(), net, newReq("getBlock", `[100, "base64"]`), nil); got != common.DataFinalityStateUnfinalized {
+		t.Errorf("legacy getBlock (injection skipped): expected Unfinalized, got %v", got)
+	}
+	// Object options form → default finalized is injected → Finalized.
+	if got := GetFinality(context.Background(), net, newReq("getBlock", `[100, {}]`), nil); got != common.DataFinalityStateFinalized {
+		t.Errorf("getBlock object form: expected Finalized, got %v", got)
+	}
+	// Bare [slot] → options appended with default finalized → Finalized.
+	if got := GetFinality(context.Background(), net, newReq("getBlock", `[100]`), nil); got != common.DataFinalityStateFinalized {
+		t.Errorf("getBlock bare slot: expected Finalized, got %v", got)
+	}
+	// Explicit confirmed beats the default.
+	if got := GetFinality(context.Background(), net, newReq("getBlock", `[100, {"commitment":"confirmed"}]`), nil); got != common.DataFinalityStateUnfinalized {
+		t.Errorf("explicit confirmed: expected Unfinalized, got %v", got)
+	}
+}
+
 func TestFinality_NoCommitmentNoDefault_FallsBackUnfinalized(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}

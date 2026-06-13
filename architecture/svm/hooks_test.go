@@ -237,6 +237,13 @@ func TestNetworkPreForward_InjectCommitment_ShapeAware(t *testing.T) {
 	if p := paramsOf("getBlocks", `[100, 110]`); len(p) != 3 {
 		t.Errorf("getBlocks [start,end]: expected options appended at index 2, got %+v", p)
 	}
+
+	// getBlocks with EMPTY params is missing its required start slot — injection
+	// must NOT append an options object (which would put {commitment} where the
+	// start slot belongs). Leave it for the upstream to reject.
+	if p := paramsOf("getBlocks", `[]`); len(p) != 0 {
+		t.Errorf("getBlocks []: expected params untouched (missing start slot), got %+v", p)
+	}
 }
 
 // TestNetworkPreForward_InjectCommitment_InvalidatesCacheHash guards against

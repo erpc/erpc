@@ -98,6 +98,15 @@ func (c *SvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
+	// Hard never-cache: effectful and freshness-critical methods are never read
+	// from cache, regardless of any configured `finality: realtime` policy.
+	// GetFinality maps them to Realtime (used for failsafe/metrics), but Realtime
+	// is still a *cacheable* finality at the policy layer, so the exclusion must
+	// be enforced here to honor the "never cached" guarantee.
+	if neverCacheMethods[rpcReq.Method] {
+		return nil, nil
+	}
+
 	finality := req.Finality(ctx)
 	policies, err := c.findGetPolicies(req.NetworkId(), rpcReq.Method, rpcReq.Params, finality)
 	if err != nil {
@@ -185,6 +194,14 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	if rpcResp == nil || rpcResp.Error != nil {
 		// Don't cache responses that carry a JSON-RPC error body; the caller may
 		// retry against another upstream and expect a fresh attempt.
+		return nil
+	}
+
+	// Hard never-cache (mirrors Get): effectful methods (sendTransaction,
+	// requestAirdrop, …) and sub-slot freshness-critical reads (getLatestBlockhash,
+	// …) must never be stored, even if an operator configured a matching
+	// `finality: realtime` policy. See neverCacheMethods in finality.go.
+	if neverCacheMethods[rpcReq.Method] {
 		return nil
 	}
 

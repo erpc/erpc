@@ -106,33 +106,13 @@ func projectPreForward_getGenesisHash(ctx context.Context, n common.Network, r *
 // Despite the name it is invoked from HandleProjectPreForward (before the
 // network-layer cache read) — see that method for why. It returns
 // (false, nil, nil) unconditionally; it never short-circuits, only mutates
-// params, then invalidates the memoized CacheHash so the cache keys on the
-// rewritten body. Shape rules (per commitmentOptionsIndex):
-//
-//   - Method not in the table → untouched (write/no-param/no-commitment methods).
-//   - Options slot already an object with a commitment → honor the caller.
-//   - Options slot is the next free position → append a fresh {commitment} object.
-//   - Options slot occupied by a non-object (legacy encoding-string form) →
-//     skip, so we never produce an invalid param shape.
-//   - Required positional args missing → skip; let the upstream report it.
+// params per the plan from resolveCommitment, then invalidates the memoized
+// CacheHash so the cache keys on the rewritten body.
 func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
-	cfg := n.Config()
-	if cfg == nil || cfg.Svm == nil || cfg.Svm.Commitment == "" {
-		return false, nil, nil
-	}
-	defaultCommitment := strings.ToLower(cfg.Svm.Commitment)
-	if defaultCommitment != "finalized" && defaultCommitment != "confirmed" && defaultCommitment != "processed" {
-		// Reject unknown commitment strings rather than forwarding a malformed options
-		// object the upstream won't understand.
-		return false, nil, nil
-	}
-
-	method, err := r.Method()
-	if err != nil {
-		return false, nil, nil
-	}
-	idx, ok := commitmentOptionsIndex[method]
-	if !ok {
+	commitment, action, idx := resolveCommitment(ctx, n, r)
+	if action != commitmentSet && action != commitmentAppend {
+		// explicit (already set), or skip (non-injectable / legacy non-object
+		// slot / missing args / no valid default) → leave the request untouched.
 		return false, nil, nil
 	}
 
@@ -143,47 +123,116 @@ func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r
 	rpcReq.Lock()
 	defer rpcReq.Unlock()
 
-	setOnMap := func(m map[string]interface{}) bool {
-		if _, has := m["commitment"]; has {
-			return false // honor caller-supplied commitment
-		}
-		m["commitment"] = defaultCommitment
-		rpcReq.InvalidateCacheHash()
-		return true
-	}
-
-	// getBlocks has variable positional arity ([start] or [start,end]); its
-	// options object, when present, is always the trailing param and every
-	// positional arg is a number — so locate it dynamically.
-	if idx == optionsAppend {
-		if len(rpcReq.Params) > 0 {
-			if m, ok := rpcReq.Params[len(rpcReq.Params)-1].(map[string]interface{}); ok {
-				setOnMap(m)
-				return false, nil, nil
+	switch action {
+	case commitmentSet:
+		if idx >= 0 && idx < len(rpcReq.Params) {
+			if m, ok := rpcReq.Params[idx].(map[string]interface{}); ok {
+				m["commitment"] = commitment
+				rpcReq.InvalidateCacheHash()
 			}
 		}
-		rpcReq.Params = append(rpcReq.Params, map[string]interface{}{"commitment": defaultCommitment})
+	case commitmentAppend:
+		rpcReq.Params = append(rpcReq.Params, map[string]interface{}{"commitment": commitment})
 		rpcReq.InvalidateCacheHash()
-		return false, nil, nil
-	}
-
-	switch {
-	case idx < len(rpcReq.Params):
-		// Options slot already exists. Only mutate it if it's an object; a
-		// non-object there is a legacy encoding-string (or a positional arg),
-		// and rewriting it would corrupt the request — leave it untouched.
-		if m, ok := rpcReq.Params[idx].(map[string]interface{}); ok {
-			setOnMap(m)
-		}
-	case idx == len(rpcReq.Params):
-		// Options slot is exactly the next position — append a fresh object.
-		rpcReq.Params = append(rpcReq.Params, map[string]interface{}{"commitment": defaultCommitment})
-		rpcReq.InvalidateCacheHash()
-	default:
-		// idx > len(params): required positional args are missing. Don't
-		// fabricate them; let the upstream return a descriptive error.
 	}
 	return false, nil, nil
+}
+
+// commitmentAction is the mutation resolveCommitment prescribes for the
+// injection hook.
+type commitmentAction int
+
+const (
+	commitmentSkip     commitmentAction = iota // do nothing; upstream's own default governs
+	commitmentExplicit                         // caller already supplied a commitment; honor it
+	commitmentSet                              // set commitment on the existing options object at idx
+	commitmentAppend                           // append a fresh {commitment} options object
+)
+
+// resolveCommitment is the single source of truth for "what commitment will
+// actually reach the upstream for this request" — shared by the injection hook
+// (which mutates) and GetFinality (which classifies). Keeping one predicate
+// guarantees the forwarded/cached commitment and the finality classification
+// can never diverge.
+//
+// Crucially it decides from the request SHAPE + network config, never from
+// whether injection has already mutated params, so it returns the same answer
+// whether called before injection (e.g. the memoized finality computation in
+// erpc/projects.go) or after. It does not mutate.
+//
+// Returns the effective commitment ("" when unknown — the upstream applies its
+// own server-side default), the action injection should take, and the options
+// index for commitmentSet.
+//
+// Shape rules (per commitmentOptionsIndex):
+//   - explicit commitment already present                  → (value, commitmentExplicit)
+//   - method not injectable / no valid network default     → ("", commitmentSkip)
+//   - options slot is an object                            → (default, commitmentSet, idx)
+//   - options slot is the next free position               → (default, commitmentAppend)
+//   - slot occupied by a non-object (legacy encoding form) → ("", commitmentSkip)
+//   - required positional args missing (incl. getBlocks
+//     with no start slot)                                  → ("", commitmentSkip)
+func resolveCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (string, commitmentAction, int) {
+	method, err := r.Method()
+	if err != nil {
+		return "", commitmentSkip, -1
+	}
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil {
+		return "", commitmentSkip, -1
+	}
+	rpcReq.RLock()
+	defer rpcReq.RUnlock()
+
+	// 1. A caller-supplied commitment anywhere in the params wins.
+	for _, p := range rpcReq.Params {
+		if m, ok := p.(map[string]interface{}); ok {
+			if v, ok := m["commitment"].(string); ok && v != "" {
+				return strings.ToLower(v), commitmentExplicit, -1
+			}
+		}
+	}
+
+	idx, injectable := commitmentOptionsIndex[method]
+	if !injectable {
+		return "", commitmentSkip, -1
+	}
+
+	// 2. Otherwise the network default applies — if it's valid.
+	cfg := n.Config()
+	if cfg == nil || cfg.Svm == nil || cfg.Svm.Commitment == "" {
+		return "", commitmentSkip, -1
+	}
+	def := strings.ToLower(cfg.Svm.Commitment)
+	if def != "finalized" && def != "confirmed" && def != "processed" {
+		return "", commitmentSkip, -1
+	}
+
+	// 3. Shape decision at the method's options index.
+	if idx == optionsAppend {
+		// getBlocks: variable arity ([start] or [start,end]); options is the
+		// trailing object. Requires at least the start slot.
+		if len(rpcReq.Params) == 0 {
+			return "", commitmentSkip, -1
+		}
+		if _, ok := rpcReq.Params[len(rpcReq.Params)-1].(map[string]interface{}); ok {
+			return def, commitmentSet, len(rpcReq.Params) - 1
+		}
+		return def, commitmentAppend, -1
+	}
+	switch {
+	case idx < len(rpcReq.Params):
+		if _, ok := rpcReq.Params[idx].(map[string]interface{}); ok {
+			return def, commitmentSet, idx
+		}
+		// Non-object in the options slot (legacy encoding-string form) — leave it.
+		return "", commitmentSkip, -1
+	case idx == len(rpcReq.Params):
+		return def, commitmentAppend, -1
+	default:
+		// Required positional args missing — don't fabricate them.
+		return "", commitmentSkip, -1
+	}
 }
 
 // networkPreForward_validateSignaturesForAddress rejects requests whose slot

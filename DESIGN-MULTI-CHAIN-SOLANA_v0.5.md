@@ -137,22 +137,36 @@ EVM evmStatePoller                          SVM svmStatePoller
 `architecture/svm/finality.go` resolves finality in priority order:
 
 ```
-1. neverCacheMethods         → Realtime (never cached)
+1. neverCacheMethods         → Realtime, AND hard-skipped by the cache layer
       sendTransaction, simulateTransaction, requestAirdrop,
       getLatestBlockhash, getFeeForMessage, getSignatureStatuses,
       getVoteAccounts, getLeaderSchedule, getEpochInfo, getSlotLeaders,
       getRecentPerformanceSamples, getRecentPrioritizationFees, …
 2. alwaysFinalizedMethods    → Finalized (final by construction)
       getInflationReward (finalized epochs only), getBlockTime
-3. explicit request commitment:
+3. effective commitment (resolveCommitment — the SAME predicate injection uses):
       finalized            → Finalized
       confirmed/processed   → Unfinalized
-4. network default commitment (same mapping)
-5. fallback                  → Unfinalized (re-org-aware; TTL bounds staleness)
+4. unknown (no effective commitment) → Unfinalized (re-org-aware; TTL bounds staleness)
 ```
 
-`getBlock`, `getTransaction`, `getBlocks`, `getSignaturesForAddress` now flow
-through steps 3–5 (they were wrongly in step 2 in v0). A `confirmed` response is
+**Never-cache is hard-enforced.** `Realtime` is still a *cacheable* finality at
+the policy layer (EVM caches realtime reads with a short TTL + age guard), so to
+honor the "never cached" guarantee the SVM cache `Get`/`Set` hard-skip any method
+in `neverCacheMethods` before policy matching — an operator's stray
+`finality: realtime` policy can no longer cache an effectful method.
+
+**Finality tracks the *effective* commitment, not just the network default.**
+Step 3 uses `resolveCommitment`, the single predicate that also drives injection.
+So when injection legitimately skips a request (legacy `getBlock(slot,"base64")`
+form, missing args, non-injectable method), no default reaches the upstream and
+the response is classified Unfinalized — the network default is never
+over-trusted. Because the predicate reads request shape + config (not mutation
+state), this holds whether finality is computed before or after injection (it is
+memoized on the first call, which happens pre-injection in `erpc/projects.go`).
+
+`getBlock`, `getTransaction`, `getBlocks`, `getSignaturesForAddress` flow through
+steps 3–4 (they were wrongly always-finalized in v0). A `confirmed` response is
 **Unfinalized**, so it is cached re-org-aware (short TTL) rather than as a
 permanent finalized record that a fork switch could falsify.
 

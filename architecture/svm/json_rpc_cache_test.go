@@ -91,6 +91,34 @@ func TestSvmCache_SetThenGet_RoundTripsFinalizedResult(t *testing.T) {
 	require.Contains(t, string(gotJrr.GetResultBytes()), "abc")
 }
 
+// TestSvmCache_NeverCacheMethods_AreNotStoredOrRead is the regression guard for
+// the hard never-cache rule. finalizedNetwork resolves finality to Finalized and
+// newTestCache has a Finalized catch-all policy, so WITHOUT the method-level
+// guard these effectful / freshness-critical methods would match and be cached.
+// They must not be.
+func TestSvmCache_NeverCacheMethods_AreNotStoredOrRead(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	ctx := context.Background()
+
+	for _, method := range []string{"sendTransaction", "getLatestBlockhash", "getSignatureStatuses"} {
+		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":["x"]}`)
+		req := common.NewNormalizedRequest(body)
+		req.SetNetwork(finalizedNetwork{})
+		jrr, _ := common.NewJsonRpcResponse(1, "should-not-be-cached", nil)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+		require.NoError(t, c.Set(ctx, req, resp), "%s Set", method)
+		time.Sleep(ristrettoSettleDelay)
+
+		req2 := common.NewNormalizedRequest(body)
+		req2.SetNetwork(finalizedNetwork{})
+		got, err := c.Get(ctx, req2)
+		require.NoError(t, err, "%s Get", method)
+		require.Nil(t, got, "%s must never be cached (neverCacheMethods)", method)
+	}
+}
+
 func TestSvmCache_Get_MissesForDifferentParams(t *testing.T) {
 	t.Parallel()
 	c := newTestCache(t)
