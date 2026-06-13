@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -7803,7 +7804,15 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		}
 	}
 
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	// Wire the EVM JSON-RPC cache from config like production init does, so
+	// caching-related tests exercise the real cache layer.
+	var evmJsonRpcCache *evm.EvmJsonRpcCache
+	if cfg != nil && cfg.Database != nil && cfg.Database.EvmJsonRpcCache != nil {
+		evmJsonRpcCache, err = evm.NewEvmJsonRpcCache(ctx, &logger, cfg.Database.EvmJsonRpcCache)
+		require.NoError(t, err)
+	}
+
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmJsonRpcCache, cfg)
 	require.NoError(t, err)
 
 	// Callback now set at construction; do not mutate in tests

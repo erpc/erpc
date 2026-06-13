@@ -96,12 +96,12 @@ https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 
 <PromptExample
 	n={4}
-	title="debug why eth_blockNumber enforcement won't turn off"
-	prompt={`I set directiveDefaults.enforceHighestBlock: false in my network config but
-eth_blockNumber responses are still being replaced with a synthetic highest-known
-block. Why doesn't the directive control that hook, and what do I actually need to
-set to disable it? Work with my existing eRPC config. Reference:
-https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
+	title="debug one upstream's raw view of the chain tip"
+	prompt={`I need to see what one specific upstream actually answers for eth_blockNumber,
+without eRPC upgrading the response to the network-wide highest block and without
+cache interference. Show me the per-request headers (use-upstream, enforce-highest-block,
+skip-cache-read) to send for a one-off debugging request, leaving the network config
+untouched. Reference: https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 />
 
 <PromptExample
@@ -124,7 +124,7 @@ https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 
 **Hook architecture.** Checks live in EVM-specific pre/post-forward hooks registered in an `EvmHookRegistry`. Network-level hooks run before or after the entire failsafe execution; upstream-level hooks run per attempt. Key hooks:
 
-- `projectPreForward_eth_blockNumber` — replaces a stale block number with a synthetic highest-known result (reads legacy `EvmIntegrityConfig`, not directive).
+- `networkPostForward_eth_blockNumber` — replaces a stale block number, including on cache hits, with a synthetic highest-known result (reads directive).
 - `networkPostForward_eth_getBlockByNumber` — enforces highest-block then non-null after the full failsafe round (reads directive).
 - `upstreamPreForward_eth_getLogs` / `upstreamPreForward_trace_filter` — checks block-range availability before each upstream attempt (read legacy `EvmIntegrityConfig`).
 - `upstreamPostForward_eth_getLogs` — normalizes empty arrays in `eth_getLogs` upstream responses. <SourceLink file="architecture/evm/eth_getLogs.go" lines="349-362" />
@@ -132,9 +132,11 @@ https://docs.erpc.cloud/config/failsafe/integrity.llms.txt`}
 - `upstreamPostForward_eth_getBlockByNumber` — validates block header and transaction fields.
 - `upstreamPostForward_eth_getBlockReceipts` — validates receipt/log structure including Bloom.
 
-**Highest-block enforcement — `eth_blockNumber`.** Reads `ncfg.Evm.Integrity.EnforceHighestBlock` directly (not the directive). If the response block is below the network-known highest, eRPC replaces the response with a synthetic JSON-RPC result containing the highest hex block number — no re-request is made. Cache responses bypass enforcement entirely. <SourceLink file="architecture/evm/eth_blockNumber.go" lines="15-121" />
+**Highest-block enforcement — `eth_blockNumber`.** Reads `dirs.EnforceHighestBlock`. If the response block is below the network-known highest, eRPC replaces the response with a synthetic JSON-RPC result containing the highest hex block number — no re-request is made. Applies to EVERY response source, including cache hits (the synthetic upgrade preserves cache attribution), so a stale value planted in a shared cache can never be served below the tip this instance knows. The tip is resolved request-aware: a `use-upstream` selector scopes it to the targeted subset so a pinned request is never promised a block its upstreams don't have. <SourceLink file="architecture/evm/eth_blockNumber.go" lines="31-123" />
 
-**Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads `dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest, eRPC constructs a new request for that block, sets `SkipCacheRead=true`, excludes the lagging upstream (`UseUpstream=!<id>`), and forwards again. If the re-request also returns a lower block, `pickHighestBlock` picks whichever response has the higher block number — protecting against a corrupted state pointer. Cache responses skip enforcement. <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-277" />
+**Highest-block enforcement — `eth_getBlockByNumber[latest/finalized]`.** Reads `dirs.EnforceHighestBlock`. If the returned block is behind the network-known highest (resolved request-aware, selector-scoped like above), eRPC constructs a new request for that block, sets `SkipCacheRead=true`, excludes the lagging upstream (`UseUpstream=!<id>`), and forwards again. If the re-request also returns a lower block, `pickHighestBlock` picks whichever response has the higher block number — protecting against a corrupted state pointer. Cache responses skip the re-fetch (the read-side realtime age guard rejects too-old cached blocks instead). <SourceLink file="architecture/evm/eth_getBlockByNumber.go" lines="111-283" />
+
+**Stale-tip cache write guard.** When a request runs under `enforceHighestBlock`, a realtime-finality response whose block number is already behind the network-wide tip is never written to the cache: enforcement would never serve that value as-is, so persisting it could only poison future reads (the classic symptom: `eth_blockNumber` sawtoothing backwards on `x-erpc-cache: HIT` while one upstream lags). Fails open when pollers don't know a tip yet. <SourceLink file="architecture/evm/json_rpc_cache.go" lines="1075-1098" />
 
 **Block-range availability.** Before forwarding `eth_getLogs`, `trace_filter`, or `arbtrace_filter` to a specific upstream, `CheckBlockRangeAvailability` is called: `toBlock` first with `forceFreshIfStale=true`, `fromBlock` second with `forceFreshIfStale=false`. If either block is outside the upstream's available range, `ErrUpstreamBlockUnavailable` (retryable) is returned so the network-level retry routes to a different upstream. Block tags are resolved to hex numbers via the state poller; unresolvable tags (`pending`, `safe`, `earliest`) skip the check entirely. <SourceLink file="architecture/evm/block_range.go" />
 
@@ -150,7 +152,7 @@ All boolean fields under this path set the default `RequestDirectives` value for
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `enforceHighestBlock` | `*bool` | `true` | Re-fetches `eth_getBlockByNumber[latest/finalized]` against a different upstream when the result is behind the known tip. **Does NOT disable `eth_blockNumber` enforcement** — that hook reads the deprecated `evm.integrity.enforceHighestBlock` field. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
+| `enforceHighestBlock` | `*bool` | `true` | Controls highest-block enforcement for both `eth_blockNumber` (synthetic in-memory upgrade, applied to cache hits too) and `eth_getBlockByNumber[latest/finalized]` (re-fetch against a different upstream). Also gates the stale-tip cache write guard. Header: `X-ERPC-Enforce-Highest-Block`. <SourceLink file="common/defaults.go" lines="1458-1460" /> |
 | `enforceGetLogsBlockRange` | `*bool` | `true` | Before forwarding `eth_getLogs`/`trace_filter`/`arbtrace_filter`, checks both `fromBlock` and `toBlock` are within the upstream's available range. **Does NOT control the actual hooks** — those read `evm.integrity.enforceGetLogsBlockRange` directly. Header: `X-ERPC-Enforce-GetLogs-Range`. <SourceLink file="common/defaults.go" lines="1461-1463" /> |
 | `enforceNonNullTaggedBlocks` | `*bool` | `true` | Converts null `eth_getBlockByNumber` responses for tag-based requests into `ErrEndpointMissingData`. Numeric block requests always error on null regardless. Disable for chains that return null for some tags (e.g. ZKSync Era). Header: `X-ERPC-Enforce-Non-Null-Tagged-Blocks`. <SourceLink file="common/defaults.go" lines="1464-1466" /> |
 | `validateTransactionsRoot` | `*bool` | `true` | Checks `transactionsRoot` is consistent with the transaction count. Has a phantom-transaction special case for Polygon PoS and BSC. Header: `X-ERPC-Validate-Transactions-Root`. <SourceLink file="common/defaults.go" lines="1467-1469" /> |
@@ -200,7 +202,7 @@ All directives can be overridden per-request without redeploying. Booleans accep
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enforceHighestBlock` | `*bool` | `nil` → `true` via `EvmIntegrityConfig.SetDefaults` | **@deprecated** — use `directiveDefaults.enforceHighestBlock`. Still read directly by `projectPreForward_eth_blockNumber` at runtime. Setting `directiveDefaults.enforceHighestBlock: false` without also setting this to `false` leaves `eth_blockNumber` enforcement active. <SourceLink file="common/config.go" lines="2310" /> <SourceLink file="common/defaults.go" lines="2117-2120" /> |
+| `enforceHighestBlock` | `*bool` | `nil` → `true` via `EvmIntegrityConfig.SetDefaults` | **@deprecated** — use `directiveDefaults.enforceHighestBlock`. Only acts as migration source; not read at runtime. <SourceLink file="common/config.go" lines="2310" /> <SourceLink file="common/defaults.go" lines="2117-2120" /> |
 | `enforceGetLogsBlockRange` | `*bool` | `nil` → `true` via `EvmIntegrityConfig.SetDefaults` | **@deprecated** — use `directiveDefaults.enforceGetLogsBlockRange`. Still read by `eth_getLogs` and `trace_filter` hooks at runtime. <SourceLink file="common/config.go" lines="2312" /> <SourceLink file="common/defaults.go" lines="2121-2123" /> |
 | `enforceNonNullTaggedBlocks` | `*bool` | `nil` → `true` via `EvmIntegrityConfig.SetDefaults` | **@deprecated** — use `directiveDefaults.enforceNonNullTaggedBlocks`. Only acts as migration source; not read at runtime. <SourceLink file="common/config.go" lines="2314" /> <SourceLink file="common/defaults.go" lines="2124-2126" /> |
 
@@ -225,31 +227,26 @@ Migration: `NetworkConfig.SetDefaults` performs the migration in this order: (1)
 All patterns below are distilled from real production fleets; comments explain the
 non-obvious choices.
 
-**1. Mainnet Ethereum — baseline defaults with `evm.integrity` for full coverage.** Production uses
-`evm.integrity` in networkDefaults so both the `eth_blockNumber` hook (which reads the deprecated
-field directly) and `eth_getBlockByNumber` enforcement (which reads the directive) are both active.
-Setting only `directiveDefaults` would leave `eth_blockNumber` enforcement silently active via the
-legacy path — explicitly setting both closes the gap:
+**1. Mainnet Ethereum — baseline defaults, stated explicitly.** Both enforcement defaults are
+already on; listing them in `directiveDefaults` keeps the intent reviewable. `enforceHighestBlock`
+covers `eth_blockNumber` and `eth_getBlockByNumber[latest/finalized]` through the same directive
+(the deprecated `evm.integrity` block is auto-migrated into these fields — no need to set both).
+Note one exception: the `eth_getLogs`/`trace_filter` range hooks still read
+`evm.integrity.enforceGetLogsBlockRange` directly, so to fully control that one set the legacy
+field too:
 
 <ConfigTabs
-  path="projects[].networks[].evm"
-  yaml={`evm:
-  chainId: 1
-  # enforceHighestBlock here feeds the eth_blockNumber pre-forward hook,
-  # which reads the deprecated EvmIntegrityConfig field directly at runtime.
-  # directiveDefaults.enforceHighestBlock controls eth_getBlockByNumber only.
-  integrity:
-    enforceHighestBlock: true
-    enforceGetLogsBlockRange: true`}
-  ts={`evm: {
-  chainId: 1,
-  // enforceHighestBlock here feeds the eth_blockNumber pre-forward hook,
-  // which reads the deprecated EvmIntegrityConfig field directly at runtime.
-  // directiveDefaults.enforceHighestBlock controls eth_getBlockByNumber only.
-  integrity: {
-    enforceHighestBlock: true,
-    enforceGetLogsBlockRange: true,
-  },
+  path="projects[].networks[].directiveDefaults"
+  yaml={`directiveDefaults:
+  # one directive covers eth_blockNumber (synthetic upgrade, incl. cache hits)
+  # and eth_getBlockByNumber[latest/finalized] (re-fetch on another upstream)
+  enforceHighestBlock: true
+  enforceGetLogsBlockRange: true`}
+  ts={`directiveDefaults: {
+  // one directive covers eth_blockNumber (synthetic upgrade, incl. cache hits)
+  // and eth_getBlockByNumber[latest/finalized] (re-fetch on another upstream)
+  enforceHighestBlock: true,
+  enforceGetLogsBlockRange: true,
 }`}
 />
 
@@ -263,23 +260,19 @@ defaults remain active:
   yaml={`networks:
   - evm:
       chainId: 324
-    # ZKSync Era returns null for 'finalized'/'safe' tags intermittently —
-    # enforcing non-null would cause infinite retries on a correct response.
-    evm:
-      integrity:
-        enforceNonNullTaggedBlocks: false
     directiveDefaults:
+      # ZKSync Era returns null for 'finalized'/'safe' tags intermittently —
+      # enforcing non-null would cause infinite retries on a correct response.
+      enforceNonNullTaggedBlocks: false
       # ZKSync Era uses a non-standard txRoot (ZK proof root, not trie root) —
       # the default validateTransactionsRoot check would reject every block.
       validateTransactionsRoot: false`}
   ts={`networks: [{
   evm: { chainId: 324 },
-  // ZKSync Era returns null for 'finalized'/'safe' tags intermittently —
-  // enforcing non-null would cause infinite retries on a correct response.
-  evm: {
-    integrity: { enforceNonNullTaggedBlocks: false },
-  },
   directiveDefaults: {
+    // ZKSync Era returns null for 'finalized'/'safe' tags intermittently —
+    // enforcing non-null would cause infinite retries on a correct response.
+    enforceNonNullTaggedBlocks: false,
     // ZKSync Era uses a non-standard txRoot (ZK proof root, not trie root) —
     // the default validateTransactionsRoot check would reject every block.
     validateTransactionsRoot: false,
@@ -360,14 +353,15 @@ checks without paying the CPU cost on every request.
 - Integrity violations produce `ErrEndpointContentValidation` — HTTP 200 with JSON-RPC error body `{"code": -32603, "message": "..."}`. `ErrorStatusCode()` returns 502 but is dead code with zero call sites. <SourceLink file="erpc/http_server.go" lines="1473-1491" />
 - `ErrEndpointContentValidation` is retryable at network scope (try another upstream) but NOT retryable at the same upstream. <SourceLink file="common/errors.go" lines="2719-2747" />
 - `ErrUpstreamBlockUnavailable` (block-range failure) is retryable — the network-level retry routes to a different upstream.
-- Cache responses bypass all highest-block enforcement — a cached `eth_getBlockByNumber[latest]` will not be re-fetched even if a newer block is known.
+- `eth_blockNumber` enforcement applies to cache hits too: a cached value behind the tip is upgraded in-memory (the response keeps its `x-erpc-cache: HIT` attribution). A cached `eth_getBlockByNumber[latest]` is not re-fetched — the read-side realtime age guard rejects too-old cached blocks instead.
 - The `eth_blockNumber` enforcement response is synthetic: eRPC returns the highest-known hex block number directly; no upstream re-request is made.
+- Realtime responses behind the network tip are not written to the cache while `enforceHighestBlock` is on — enforcement would never serve them as-is, so persisting them could only poison future reads.
 - Always-on checks for `eth_getBlockReceipts` (no directive required): duplicate `transactionHash` across receipts; all receipts sharing the same `blockHash` if present. <SourceLink file="architecture/evm/eth_getBlockReceipts.go" lines="55-460" />
 
 ### Best practices
 
-- **Do not try to disable `eth_blockNumber` enforcement via `directiveDefaults` alone.** That hook reads the deprecated `evm.integrity.enforceHighestBlock` field. To disable it you must also set `evm.integrity.enforceHighestBlock: false`.
-- **Same split for `eth_getLogs` and `trace_filter`.** Setting `directiveDefaults.enforceGetLogsBlockRange: false` has no effect on those hooks. Set `evm.integrity.enforceGetLogsBlockRange: false` to actually disable range checks.
+- **Disable highest-block enforcement via `directiveDefaults.enforceHighestBlock: false`** — it controls both the `eth_blockNumber` and `eth_getBlockByNumber` paths, and can also be turned off per-request with `X-ERPC-Enforce-Highest-Block: false` (e.g. when debugging one upstream's raw view together with `X-ERPC-Use-Upstream`).
+- **`eth_getLogs` and `trace_filter` still read the legacy field.** Setting `directiveDefaults.enforceGetLogsBlockRange: false` has no effect on those hooks. Set `evm.integrity.enforceGetLogsBlockRange: false` to actually disable range checks.
 - **Set `emptyResultConfidence: finalizedBlock` for archive workloads.** The default `blockHead` retries empty results for any block at/below the latest tip — this causes retry storms when archive nodes legitimately return empty for unfinalized blocks.
 - **Prefer per-request headers for expensive validators.** `validateLogsBloomMatch` (full Bloom recompute) and `validateHeaderFieldLengths` add CPU cost per response. Enable globally only on networks where upstream data quality warrants it; use `X-ERPC-Validate-Logs-Bloom-Match: true` headers for critical-path requests only.
 - **`validateTransactionsRoot` is on by default** but can be disabled per-request via `X-ERPC-Validate-Transactions-Root: false`. Useful for Polygon PoS / BSC if phantom-transaction detection isn't firing correctly.
@@ -376,11 +370,11 @@ checks without paying the CPU cost on every request.
 
 ### Edge cases & gotchas
 
-1. **`eth_blockNumber` dual-path.** `projectPreForward_eth_blockNumber` reads `ncfg.Evm.Integrity.EnforceHighestBlock` (deprecated field), while `eth_getBlockByNumber` reads `dirs.EnforceHighestBlock` (directive). Setting `directiveDefaults.enforceHighestBlock: false` disables the `eth_getBlockByNumber` path but leaves `eth_blockNumber` enforcement active. To disable both, also set `evm.integrity.enforceHighestBlock: false`. <SourceLink file="architecture/evm/eth_blockNumber.go" lines="23-29" />
+1. **`eth_blockNumber` cache hits ARE corrected; `eth_getBlockByNumber` cache hits are not.** The `eth_blockNumber` hook upgrades any response (fresh or cached) behind the tip in-memory. The `eth_getBlockByNumber` hook still skips `resp.FromCache()` responses because its correction is a real re-fetch — there the read-side realtime age guard plus the stale-tip write guard limit cache staleness instead. <SourceLink file="architecture/evm/eth_blockNumber.go" lines="31-123" />
 
 2. **`eth_getLogs` / `trace_filter` dual-path.** Both `upstreamPreForward_eth_getLogs` and `upstreamPreForward_trace_filter` read `ncfg.Evm.Integrity.EnforceGetLogsBlockRange` directly. Setting only `directiveDefaults.enforceGetLogsBlockRange: false` has no effect on those hooks. <SourceLink file="architecture/evm/eth_getLogs.go" lines="283-285" />
 
-3. **Cache responses bypass enforcement.** Both `eth_blockNumber` and `eth_getBlockByNumber` hooks skip when `resp.FromCache()` is true. A cached `eth_getBlockByNumber[latest]` will not be upgraded even if a newer block is known. Tune realtime cache TTLs to limit the staleness window.
+3. **Pinned requests use the pinned subset's tip.** Highest-block enforcement resolves the tip request-aware: with a `use-upstream` selector, "highest known" is computed among the matching upstreams only, so a request pinned to a lagging group is corrected against that group's tip rather than being promised a network-wide block those upstreams can't serve. Cache writes use the network-wide tip on purpose (the cache entry is shared by all requests), so a pinned-to-laggard response below the global tip is served but not persisted.
 
 4. **`emptyResultBeyondConfidence` fail-open.** If the network's head is unknown (≤ 0) or the request uses a block tag (`latest`, `finalized`, etc.) rather than a concrete number, the guard always treats the empty as missing data and retries — regardless of `emptyResultConfidence`.
 
@@ -416,7 +410,7 @@ checks without paying the CPU cost on every request.
 | `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | `reason=block_unavailable` on block-range retry; `reason=missing_data` on null-response retry. |
 
 **OTel trace spans:**
-- `Project.PreForwardHook.eth_blockNumber` — spans `eth_blockNumber` highest-block enforcement; attributes include `block.number_lag` in detailed tracing mode.
+- `Network.PostForward.eth_blockNumber` — spans `eth_blockNumber` highest-block enforcement; attributes include `block.number_lag` in detailed tracing mode.
 - `Network.PostForward.eth_getBlockByNumber` — spans block enforcement and null check.
 - `Upstream.PreForwardHook.eth_getLogs` / `Upstream.PreForwardHook.trace_filter` — spans block-range availability checks.
 - `Upstream.PostForwardHook.eth_getBlockByNumber` — spans upstream block structure validation.
@@ -424,14 +418,15 @@ checks without paying the CPU cost on every request.
 - `Evm.PickHighestBlock` — spans the `pickHighestBlock` comparison.
 
 **Notable log messages:**
-- `DEBUG "upstream returned older block than we known, falling back to highest known block"` — `eth_blockNumber` stale detection.
+- `DEBUG "upstream returned older block than we know, falling back to highest known block"` — `eth_blockNumber` stale detection (fresh response); the `"response contains older block…"` variant fires for cache hits.
 - `DEBUG "enforcing highest latest block"` / `"enforcing highest finalized block"` — `eth_getBlockByNumber` stale detection.
-- `TRACE "skipping enforcement of highest block number as response is from cache"` — cache bypass.
+- `TRACE "skipping enforcement of highest block number as response is from cache"` — `eth_getBlockByNumber` cache bypass.
+- `DEBUG "skip caching realtime response older than the known highest block"` — stale-tip cache write guard.
 - `WARN "passed upstream is not a common.EvmUpstream"` — emitted in `eth_getLogs` and `trace_filter` pre-forward hooks when the upstream type assertion fails; the range check is skipped.
 
 ### Source code entry points
 
-- [`architecture/evm/eth_blockNumber.go:L15-L121`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go#L15-L121) — `projectPreForward_eth_blockNumber`: reads legacy `EvmIntegrityConfig.EnforceHighestBlock`; replaces stale responses with synthetic highest-block result.
+- [`architecture/evm/eth_blockNumber.go:L31-L123`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go#L31-L123) — `networkPostForward_eth_blockNumber`: directive-gated; replaces stale responses (including cache hits) with synthetic highest-block result.
 - [`architecture/evm/eth_getBlockByNumber.go:L43-L109`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L43-L109) — `networkPostForward_eth_getBlockByNumber`: entry point for highest-block + non-null network-level enforcement.
 - [`architecture/evm/eth_getBlockByNumber.go:L489-L756`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getBlockByNumber.go#L489-L756) — `validateBlock`: upstream-level block structure validation (`validateHeaderFieldLengths`, `validateBlockTransactions`).
 - [`architecture/evm/eth_getLogs.go:L273-L347`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_getLogs.go#L273-L347) — `upstreamPreForward_eth_getLogs`: block-range availability guard; tag resolution.
