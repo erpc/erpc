@@ -2206,7 +2206,11 @@ type SvmNetworkConfig struct {
 	Cluster string `yaml:"cluster,omitempty" json:"cluster"`
 
 	// Commitment is the default commitment level injected into requests whose params
-	// omit one. One of "finalized", "confirmed", "processed". Default: "confirmed".
+	// omit one. One of "finalized", "confirmed", "processed". No default: when unset,
+	// no commitment is injected and each upstream's own server-side default governs
+	// (Solana's is "finalized"). Set this to pin one commitment across all upstreams
+	// so the cache and consensus key on identical data regardless of vendor defaults;
+	// note that doing so makes finality classification track the configured level.
 	Commitment string `yaml:"commitment,omitempty" json:"commitment"`
 
 	// StatePollerDebounce sets the minimum interval between polls of an upstream's
@@ -2238,9 +2242,13 @@ type SvmUpstreamConfig struct {
 	Cluster string `yaml:"cluster,omitempty" json:"cluster"`
 
 	// CheckGenesisHash opts unknown clusters in to runtime validation via getGenesisHash
-	// at bootstrap. Known clusters (mainnet-beta, devnet, testnet) are always validated:
-	// a single getGenesisHash RPC runs at bootstrap and is compared against the
-	// hardcoded genesis-hash table, catching upstreams mis-pointed at the wrong cluster.
+	// at bootstrap. Known clusters (mainnet-beta, devnet, testnet) are always validated
+	// regardless of this flag: a single getGenesisHash RPC runs at bootstrap and is
+	// compared against the hardcoded genesis-hash table — a mismatch OR a fetch failure
+	// fails the upstream, catching nodes mis-pointed at the wrong cluster (and refusing
+	// to register one we could not verify). For unknown clusters the same check (with
+	// no table comparison) runs only when this flag is set; otherwise it is skipped so
+	// private/local clusters with no published genesis hash still work.
 	CheckGenesisHash bool `yaml:"checkGenesisHash,omitempty" json:"checkGenesisHash"`
 }
 

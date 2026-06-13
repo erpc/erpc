@@ -35,7 +35,14 @@ func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, ne
 	// post-injection params: a permanent cache miss for commitment-defaulted
 	// requests. It is upstream-agnostic (needs only network config), so the
 	// project layer is the correct, earliest-safe place. Non-short-circuiting.
-	return networkPreForward_injectCommitment(ctx, network, req)
+	if handled, resp, ierr := networkPreForward_injectCommitment(ctx, network, req); handled || ierr != nil {
+		return handled, resp, ierr
+	}
+	// Write/effectful methods (sendTransaction, simulateTransaction,
+	// requestAirdrop) carry commitment via their own config field rather than the
+	// read-path "commitment" param, so normalize those too. The read and write
+	// method sets are disjoint, so only one of these mutates any given request.
+	return networkPreForward_injectWriteCommitment(ctx, network, req)
 }
 
 func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, network common.Network, upstreams []common.Upstream, req *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {

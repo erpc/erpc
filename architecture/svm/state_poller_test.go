@@ -58,16 +58,18 @@ func (*fakeUpstreamForPoller) NetworkLabel() string { return "" }
 func (*fakeUpstreamForPoller) Config() *common.UpstreamConfig {
 	return &common.UpstreamConfig{Id: "test-poller", Type: common.UpstreamTypeSvm, Endpoint: "http://x"}
 }
-func (*fakeUpstreamForPoller) Logger() *zerolog.Logger     { l := zerolog.Nop(); return &l }
-func (*fakeUpstreamForPoller) Vendor() common.Vendor       { return nil }
+func (*fakeUpstreamForPoller) Logger() *zerolog.Logger       { l := zerolog.Nop(); return &l }
+func (*fakeUpstreamForPoller) Vendor() common.Vendor         { return nil }
 func (*fakeUpstreamForPoller) Tracker() common.HealthTracker { return nil }
 func (*fakeUpstreamForPoller) Forward(context.Context, *common.NormalizedRequest, bool, bool) (*common.NormalizedResponse, error) {
-	return nil, nil
+	// Return an error (never a nil/nil pair): a stray background Poll tick must
+	// fail gracefully rather than nil-deref in fetchHealth/fetchSlot.
+	return nil, fmt.Errorf("fakeUpstreamForPoller: no transport")
 }
 func (*fakeUpstreamForPoller) ShouldHandleMethod(string) (bool, error) { return true, nil }
-func (*fakeUpstreamForPoller) Cordon(string, string)   {}
-func (*fakeUpstreamForPoller) Uncordon(string, string) {}
-func (*fakeUpstreamForPoller) IgnoreMethod(string)     {}
+func (*fakeUpstreamForPoller) Cordon(string, string)                   {}
+func (*fakeUpstreamForPoller) Uncordon(string, string)                 {}
+func (*fakeUpstreamForPoller) IgnoreMethod(string)                     {}
 
 // scriptedResponse holds either a result payload or a JSON-RPC error. Exactly
 // one of the two fields is populated per canned response.
@@ -268,7 +270,7 @@ func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
 	up.script("getMaxShredInsertSlot", []byte(`100`))
 
 	p := newPollerWithUpstream(t, up)
-	p.debounceInterval = 5 * time.Second // force a skip on the second call
+	p.SetDebounceInterval(5 * time.Second) // force a skip on the second call
 	require.NoError(t, p.Poll(context.Background()))
 	// Second call within the debounce window should be a no-op.
 	require.NoError(t, p.Poll(context.Background()))
@@ -278,6 +280,47 @@ func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
 	}
 }
 
+// TestSvmStatePoller_SetDebounceInterval_UpdatesCadence guards the fix for the
+// dead statePollerDebounce config: SetDebounceInterval must update the poll
+// cadence to ANY positive value (the prior bug ignored configured values), and
+// ignore non-positive input.
+func TestSvmStatePoller_SetDebounceInterval_UpdatesCadence(t *testing.T) {
+	t.Parallel()
+	p := newTestPoller(t)
+	p.SetDebounceInterval(2 * time.Second)
+	if got := time.Duration(p.debounceInterval.Load()); got != 2*time.Second {
+		t.Fatalf("debounceInterval = %v, want 2s", got)
+	}
+	// A sub-default value (< DefaultPollInterval) must also take effect.
+	p.SetDebounceInterval(150 * time.Millisecond)
+	if got := time.Duration(p.debounceInterval.Load()); got != 150*time.Millisecond {
+		t.Fatalf("debounceInterval = %v, want 150ms", got)
+	}
+	// Non-positive is ignored.
+	p.SetDebounceInterval(0)
+	if got := time.Duration(p.debounceInterval.Load()); got != 150*time.Millisecond {
+		t.Fatalf("zero must be ignored, got %v", got)
+	}
+}
+
+// TestSvmStatePoller_Bootstrap_HonorsPresetDebounce verifies Bootstrap preserves
+// a debounce gate set before it runs (config-before-Bootstrap ordering) instead
+// of clobbering it with the default. (The ticker always runs at the fixed
+// DefaultPollInterval; the gate is what the config controls.)
+func TestSvmStatePoller_Bootstrap_HonorsPresetDebounce(t *testing.T) {
+	t.Parallel()
+	p := newTestPoller(t)
+	p.SetDebounceInterval(30 * time.Second)
+	require.NoError(t, p.Bootstrap(context.Background()))
+	if got := time.Duration(p.debounceInterval.Load()); got != 30*time.Second {
+		t.Fatalf("Bootstrap overwrote preset debounce: got %v, want 30s", got)
+	}
+	// Updating the gate after Bootstrap is safe and takes effect.
+	p.SetDebounceInterval(25 * time.Second)
+	if got := time.Duration(p.debounceInterval.Load()); got != 25*time.Second {
+		t.Fatalf("post-Bootstrap update ignored: got %v, want 25s", got)
+	}
+}
 
 func TestSvmStatePoller_SuggestLatestSlot_Monotonic(t *testing.T) {
 	t.Parallel()

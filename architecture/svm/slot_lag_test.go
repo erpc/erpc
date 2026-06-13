@@ -3,6 +3,7 @@ package svm
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -15,15 +16,16 @@ type pollerAtSlot struct {
 	null bool
 }
 
-func (p *pollerAtSlot) Bootstrap(context.Context) error { return nil }
-func (p *pollerAtSlot) IsObjectNull() bool              { return p.null }
-func (p *pollerAtSlot) Poll(context.Context) error      { return nil }
-func (p *pollerAtSlot) LatestSlot() int64               { return p.slot }
-func (p *pollerAtSlot) FinalizedSlot() int64            { return p.slot }
-func (p *pollerAtSlot) MaxShredInsertSlotLag() int64    { return 0 }
-func (p *pollerAtSlot) IsHealthy() bool                 { return true }
-func (p *pollerAtSlot) SuggestLatestSlot(int64)         {}
-func (p *pollerAtSlot) SuggestFinalizedSlot(int64)      {}
+func (p *pollerAtSlot) Bootstrap(context.Context) error   { return nil }
+func (p *pollerAtSlot) IsObjectNull() bool                { return p.null }
+func (p *pollerAtSlot) Poll(context.Context) error        { return nil }
+func (p *pollerAtSlot) LatestSlot() int64                 { return p.slot }
+func (p *pollerAtSlot) FinalizedSlot() int64              { return p.slot }
+func (p *pollerAtSlot) MaxShredInsertSlotLag() int64      { return 0 }
+func (p *pollerAtSlot) IsHealthy() bool                   { return true }
+func (p *pollerAtSlot) SuggestLatestSlot(int64)           {}
+func (p *pollerAtSlot) SuggestFinalizedSlot(int64)        {}
+func (p *pollerAtSlot) SetDebounceInterval(time.Duration) {}
 
 // slotLagUpstream is a per-id SvmUpstream stub — svmUpstreamStub in
 // hooks_test.go has a fixed id so it can't be reused for multi-upstream
@@ -47,10 +49,10 @@ func (s *slotLagUpstream) Forward(context.Context, *common.NormalizedRequest, bo
 	return nil, nil
 }
 func (s *slotLagUpstream) ShouldHandleMethod(string) (bool, error) { return true, nil }
-func (s *slotLagUpstream) Cordon(string, string)                 {}
-func (s *slotLagUpstream) Uncordon(string, string)               {}
-func (s *slotLagUpstream) IgnoreMethod(string)                   {}
-func (s *slotLagUpstream) SvmStatePoller() common.SvmStatePoller { return s.poller }
+func (s *slotLagUpstream) Cordon(string, string)                   {}
+func (s *slotLagUpstream) Uncordon(string, string)                 {}
+func (s *slotLagUpstream) IgnoreMethod(string)                     {}
+func (s *slotLagUpstream) SvmStatePoller() common.SvmStatePoller   { return s.poller }
 
 func upstreamAt(id string, slot int64) common.Upstream {
 	return &slotLagUpstream{id: id, poller: &pollerAtSlot{slot: slot}}

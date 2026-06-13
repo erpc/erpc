@@ -21,6 +21,19 @@
 All four fixes were verified against **live Solana mainnet-beta** and **Fogo
 mainnet + testnet** (`https://mainnet.fogo.io`, `https://testnet.fogo.io`).
 
+**Round-3 hardening (post-review):**
+
+- **Write-path commitment normalization** — `sendTransaction` (→ `preflightCommitment`),
+  `simulateTransaction` / `requestAirdrop` (→ `commitment`) now receive the network
+  default at the correct method-specific field, mirroring the read path (§6).
+- **`statePollerDebounce` now functional** — the config field was parsed but never
+  wired to the poller; it now throttles the network fan-out (§5/poller). The ticker
+  stays at the fixed one-slot cadence and the debounce is a *gate*.
+- **Genesis validation is fail-closed for known clusters** — a `getGenesisHash`
+  fetch failure (not just a mismatch) now fails bootstrap (§7).
+- **Docs** — `svm.commitment` field comment corrected (no default; upstream's
+  server-side default governs when unset).
+
 ---
 
 ## 1. Solana vs EVM — mental model for reviewers
@@ -205,6 +218,24 @@ This fixes: `getInflationRate` (no params → `-32602`), the legacy
 `getBlock(slot,"enc")` / `getTransaction(sig,"enc")` form, and commitment
 landing on `getTokenAccountsByOwner`'s filter object instead of its config.
 
+### Write-path commitment (round 3)
+
+Write/effectful methods are excluded from the read table because they carry
+commitment via their **own** config field — and the field name differs per
+method, so a blanket `preflightCommitment` would be wrong:
+
+```
+sendTransaction     → options idx 1, field "preflightCommitment"
+simulateTransaction → options idx 1, field "commitment"
+requestAirdrop      → options idx 2, field "commitment"
+```
+
+A separate `networkPreForward_injectWriteCommitment` hook applies the network
+default to these (same gating: caller value wins, skip on no-default / legacy
+non-object slot / missing positional args). Verified live against Fogo: an
+optionless `sendTransaction` egresses as `[...,{"preflightCommitment":"confirmed"}]`
+while `simulateTransaction` gets `{"commitment":"confirmed"}`.
+
 ---
 
 ## 7. Multi-chain network identity (Fogo, Eclipse, forks)
@@ -228,17 +259,24 @@ all routing paths consistent with `IsValidNetworkId` by using
 ```mermaid
 flowchart TD
     A[upstream Bootstrap] --> B{known (chain,cluster)\nin genesis table?}
-    B -- yes --> C[fetch getGenesisHash once,\ncompare to table] --> D{match?}
-    D -- no --> E[fail bootstrap\n(mis-pointed endpoint)]
+    B -- yes --> C[fetch getGenesisHash once] --> D{fetch ok and\nmatches table?}
+    D -- no --> E[fail bootstrap\n(mis-pointed OR unverifiable)]
     D -- yes --> OK[upstream ready]
     B -- no (e.g. Fogo) --> F{CheckGenesisHash: true?}
-    F -- yes --> G[fetch + compare across\nthis network's own upstreams] --> OK
+    F -- yes --> G[fetch getGenesisHash] --> H{fetch ok?}
+    H -- no --> E
+    H -- yes --> OK
     F -- no --> OK2[skip validation\n(operator opt-out)]
 ```
 
-Known table currently: Solana `mainnet-beta` / `devnet` / `testnet`. Forks run
-via `checkGenesisHash: true` (verified live for Fogo) or by adding their genesis
-hash to the table.
+Validation is **fail-closed**: for a known cluster, both a hash mismatch and a
+*fetch failure* fail bootstrap (we never register an upstream we could not
+verify against the table). The only non-fatal path is an unknown cluster with
+`checkGenesisHash` unset (private/local clusters with no published hash). Known
+table currently: Solana `mainnet-beta` / `devnet` / `testnet`. Forks run via
+`checkGenesisHash: true` (verified live for Fogo — genesis
+`CDLtwKnaCoK157uaHQDj4fHu72AyD2519Cphmpiq6hvT`) or by adding their genesis hash
+to the table.
 
 ---
 
@@ -308,3 +346,19 @@ Honest accounting of what this design does **not** yet do well:
 - Live Fogo (mainnet + testnet) through the proxy: getSlot, getBlockHeight,
   getInflationRate, getVersion, getLatestBlockhash, getGenesisHash, body-routed
   `svm:fogo:mainnet` — all correct; load test 1000 req @ c=100, 0 failures.
+
+### Round-3 evidence
+
+- Unit: new `TestNetworkPreForward_InjectWriteCommitment`,
+  `TestSvmStatePoller_SetDebounceInterval_UpdatesCadence`,
+  `TestSvmStatePoller_Bootstrap_HonorsPresetDebounce`,
+  `TestSvmVerifyGenesisHash_*`; full `architecture/svm`, `common`, `upstream`,
+  `util`, and `erpc` SVM e2e suites pass.
+- Live Fogo mainnet: `getGenesisHash` fetched + validated against a live fork
+  (fail-closed path exercised). Outbound bodies confirmed via debug log:
+  `sendTransaction` → `{"preflightCommitment":"confirmed"}`,
+  `simulateTransaction` → `{"commitment":"confirmed"}`,
+  `getAccountInfo` → `{"commitment":"confirmed"}`.
+- Live Fogo mainnet: with `statePollerDebounce: 2s`, measured poll cadence
+  ≈ 2.4 s (2 s gate + ≤ one-slot ticker), confirming the config is now honored
+  (previously the field had no effect).

@@ -293,11 +293,12 @@ func TestSvm_SendTransaction_NotRetriedAcrossUpstreams(t *testing.T) {
 func TestSvm_GenesisHashMismatch_FailsBootstrap(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
-	util.SetupMocksForSvmStatePoller("svm-mismatch-rpc1.localhost", 1000, 990)
 
 	// getGenesisHash returns the devnet hash even though the config says mainnet-beta.
 	// KnownGenesisHash("mainnet-beta") returns the Solana mainnet genesis; we return
-	// devnet's to force a mismatch.
+	// devnet's to force a mismatch. Registered BEFORE SetupMocksForSvmStatePoller
+	// (which also mocks getGenesisHash, with the mainnet hash) so gock's
+	// registration-order match picks this devnet override.
 	devnetHash, _ := common.KnownGenesisHash("", "devnet")
 	gock.New("http://svm-mismatch-rpc1.localhost").
 		Post("").
@@ -308,6 +309,8 @@ func TestSvm_GenesisHashMismatch_FailsBootstrap(t *testing.T) {
 		}).
 		Reply(200).
 		BodyString(`{"jsonrpc":"2.0","id":1,"result":"` + devnetHash + `"}`)
+
+	util.SetupMocksForSvmStatePoller("svm-mismatch-rpc1.localhost", 1000, 990)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

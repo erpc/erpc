@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -168,6 +169,83 @@ func TestNetworkPreForward_InjectCommitment_SkipsWriteMethods(t *testing.T) {
 		if len(jrq.Params) != 1 {
 			t.Fatalf("%s: params must not be rewritten, got %d params: %+v", m, len(jrq.Params), jrq.Params)
 		}
+	}
+}
+
+// TestNetworkPreForward_InjectWriteCommitment covers the write-path normalizer:
+// write/effectful methods carry commitment via their OWN config field
+// (sendTransaction → preflightCommitment, simulate/airdrop → commitment) at a
+// method-specific param index. It must inject the network default there, honor a
+// caller-supplied value, and never corrupt a legacy shape or fabricate args.
+func TestNetworkPreForward_InjectWriteCommitment(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}}
+	paramsOf := func(method, params string) []interface{} {
+		req := common.NewNormalizedRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params)))
+		handled, _, err := networkPreForward_injectWriteCommitment(context.Background(), net, req)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", method, err)
+		}
+		if handled {
+			t.Fatalf("%s: write injection must never short-circuit", method)
+		}
+		jrq, _ := req.JsonRpcRequest(context.Background())
+		return jrq.Params
+	}
+
+	// sendTransaction: config object appended at index 1 with preflightCommitment
+	// (NOT "commitment").
+	p := paramsOf("sendTransaction", `["base64tx"]`)
+	if len(p) != 2 {
+		t.Fatalf("sendTransaction: expected config appended at idx 1, got %+v", p)
+	}
+	if m, ok := p[1].(map[string]interface{}); !ok || m["preflightCommitment"] != "confirmed" || m["commitment"] != nil {
+		t.Errorf("sendTransaction: expected preflightCommitment:confirmed (no commitment), got %+v", p[1])
+	}
+
+	// sendTransaction with an existing config object: field merged in.
+	p = paramsOf("sendTransaction", `["base64tx", {"skipPreflight":true}]`)
+	if m, ok := p[1].(map[string]interface{}); !ok || m["preflightCommitment"] != "confirmed" || m["skipPreflight"] != true {
+		t.Errorf("sendTransaction merge: expected preflightCommitment added beside skipPreflight, got %+v", p[1])
+	}
+
+	// Caller-supplied preflightCommitment must win.
+	p = paramsOf("sendTransaction", `["base64tx", {"preflightCommitment":"finalized"}]`)
+	if m := p[1].(map[string]interface{}); m["preflightCommitment"] != "finalized" {
+		t.Errorf("sendTransaction: caller's preflightCommitment must win, got %v", m["preflightCommitment"])
+	}
+
+	// simulateTransaction uses "commitment", appended at index 1.
+	p = paramsOf("simulateTransaction", `["base64tx"]`)
+	if m, ok := p[1].(map[string]interface{}); !ok || m["commitment"] != "confirmed" || m["preflightCommitment"] != nil {
+		t.Errorf("simulateTransaction: expected commitment:confirmed at idx 1, got %+v", p[1])
+	}
+
+	// requestAirdrop: config object lives at index 2 (after pubkey + lamports),
+	// field "commitment". Missing lamports → must NOT fabricate args.
+	p = paramsOf("requestAirdrop", `["pubkey", 1000000000]`)
+	if len(p) != 3 {
+		t.Fatalf("requestAirdrop: expected config appended at idx 2, got %+v", p)
+	}
+	if m, ok := p[2].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
+		t.Errorf("requestAirdrop: expected commitment:confirmed at idx 2, got %+v", p[2])
+	}
+	if p := paramsOf("requestAirdrop", `["pubkey"]`); len(p) != 1 {
+		t.Errorf("requestAirdrop missing lamports: params must stay untouched, got %+v", p)
+	}
+
+	// No network default configured → nothing injected.
+	bare := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["base64tx"]}`))
+	if _, _, err := networkPreForward_injectWriteCommitment(context.Background(), bare, req); err != nil {
+		t.Fatalf("no-default: unexpected error: %v", err)
+	}
+	if jrq, _ := req.JsonRpcRequest(context.Background()); len(jrq.Params) != 1 {
+		t.Errorf("no-default: params must stay untouched, got %+v", jrq.Params)
 	}
 }
 
@@ -396,10 +474,10 @@ type svmUpstreamStub struct {
 	poller common.SvmStatePoller
 }
 
-func (s *svmUpstreamStub) Id() string                                       { return "svm-stub" }
-func (s *svmUpstreamStub) VendorName() string                               { return "" }
-func (s *svmUpstreamStub) NetworkId() string                                { return "svm:mainnet-beta" }
-func (s *svmUpstreamStub) NetworkLabel() string                             { return "" }
+func (s *svmUpstreamStub) Id() string           { return "svm-stub" }
+func (s *svmUpstreamStub) VendorName() string   { return "" }
+func (s *svmUpstreamStub) NetworkId() string    { return "svm:mainnet-beta" }
+func (s *svmUpstreamStub) NetworkLabel() string { return "" }
 func (s *svmUpstreamStub) Config() *common.UpstreamConfig {
 	return &common.UpstreamConfig{Id: "svm-stub", Type: common.UpstreamTypeSvm}
 }
@@ -410,10 +488,10 @@ func (s *svmUpstreamStub) Forward(context.Context, *common.NormalizedRequest, bo
 	return nil, nil
 }
 func (s *svmUpstreamStub) ShouldHandleMethod(string) (bool, error) { return true, nil }
-func (s *svmUpstreamStub) Cordon(string, string)                  {}
-func (s *svmUpstreamStub) Uncordon(string, string)                {}
-func (s *svmUpstreamStub) IgnoreMethod(string)                    {}
-func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller  { return s.poller }
+func (s *svmUpstreamStub) Cordon(string, string)                   {}
+func (s *svmUpstreamStub) Uncordon(string, string)                 {}
+func (s *svmUpstreamStub) IgnoreMethod(string)                     {}
+func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller   { return s.poller }
 
 // recordingSvmPoller captures SuggestLatestSlot calls so the test can assert
 // on what the hook extracted.
@@ -421,15 +499,16 @@ type recordingSvmPoller struct {
 	lastSuggested int64
 }
 
-func (r *recordingSvmPoller) Bootstrap(context.Context) error      { return nil }
-func (r *recordingSvmPoller) IsObjectNull() bool                   { return false }
-func (r *recordingSvmPoller) Poll(context.Context) error           { return nil }
-func (r *recordingSvmPoller) LatestSlot() int64                    { return 0 }
-func (r *recordingSvmPoller) FinalizedSlot() int64                 { return 0 }
-func (r *recordingSvmPoller) MaxShredInsertSlotLag() int64         { return 0 }
-func (r *recordingSvmPoller) IsHealthy() bool                      { return true }
-func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)         { r.lastSuggested = slot }
-func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)      {}
+func (r *recordingSvmPoller) Bootstrap(context.Context) error   { return nil }
+func (r *recordingSvmPoller) IsObjectNull() bool                { return false }
+func (r *recordingSvmPoller) Poll(context.Context) error        { return nil }
+func (r *recordingSvmPoller) LatestSlot() int64                 { return 0 }
+func (r *recordingSvmPoller) FinalizedSlot() int64              { return 0 }
+func (r *recordingSvmPoller) MaxShredInsertSlotLag() int64      { return 0 }
+func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
+func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
+func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   {}
+func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
 
 func TestUpstreamPostForward_TrackContextSlot_SuggestsFromResponse(t *testing.T) {
 	t.Parallel()

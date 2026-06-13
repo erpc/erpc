@@ -366,6 +366,11 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 		// propagate alias to evm config so the poller can use it without a direct network reference
 		u.evmStatePoller.SetNetworkConfig(cfg)
 	}
+	if cfg.Svm != nil && u.svmStatePoller != nil {
+		// StatePollerDebounce is a network-level SVM setting; the per-upstream
+		// poller has no direct network reference, so push the cadence in here.
+		u.svmStatePoller.SetDebounceInterval(cfg.Svm.StatePollerDebounce.Duration())
+	}
 	// Always set networkId from the provided config
 	nid := cfg.NetworkId()
 	if nid != "" {

@@ -46,7 +46,15 @@ type SvmStatePoller struct {
 	maxShredInsertSlotLag atomic.Int64
 	healthy               atomic.Bool
 
-	debounceInterval time.Duration
+	// debounceInterval is the GATE: the minimum wall-clock interval between
+	// network polls (see SvmNetworkConfig.StatePollerDebounce). The ticker fires
+	// at the fixed, cheap DefaultPollInterval; this gate throttles the actual
+	// fan-out. Stored as nanoseconds so SetDebounceInterval can update it
+	// race-free while Poll reads it. NB: it must NOT also drive the ticker period
+	// — a ticker firing at exactly the gate value skips every other tick (the
+	// gate compares against lastPollAt recorded at poll completion, always a hair
+	// under the interval), halving the effective cadence.
+	debounceInterval atomic.Int64
 	lastPollAt       atomic.Int64
 	pollMu           sync.Mutex
 }
@@ -85,20 +93,31 @@ func (e *SvmStatePoller) IsObjectNull() bool {
 }
 
 func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
-	e.debounceInterval = DefaultPollInterval
+	// The debounce gate defaults to one slot when not configured. It may have
+	// already been set via SetDebounceInterval (config can arrive before
+	// Bootstrap), so only fill the default when still unset.
+	if e.debounceInterval.Load() <= 0 {
+		e.debounceInterval.Store(int64(DefaultPollInterval))
+	}
 	e.Enabled = true
-	e.logger.Debug().Dur("interval", DefaultPollInterval).
+	e.logger.Debug().
+		Dur("tickInterval", DefaultPollInterval).
+		Dur("debounce", time.Duration(e.debounceInterval.Load())).
 		Msg("bootstrapping svm state poller")
 
+	// The ticker stays at the fixed one-slot cadence (cheap, no I/O); the
+	// debounce gate in Poll throttles the actual network fan-out to the
+	// configured rate.
 	go e.loop(DefaultPollInterval)
 	return nil
 }
 
-// SetDebounceInterval lets the network wire up a caller-provided debounce once
-// SvmNetworkConfig has been loaded. Callable at any time after Bootstrap.
+// SetDebounceInterval wires the configured poll-throttle gate from
+// SvmNetworkConfig.StatePollerDebounce (see upstream.SetNetworkConfig). Callable
+// at any time; takes effect on the next ticker fire.
 func (e *SvmStatePoller) SetDebounceInterval(d time.Duration) {
 	if d > 0 {
-		e.debounceInterval = d
+		e.debounceInterval.Store(int64(d))
 	}
 }
 
@@ -130,9 +149,9 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	e.pollMu.Lock()
 	defer e.pollMu.Unlock()
 
-	if e.debounceInterval > 0 {
+	if d := time.Duration(e.debounceInterval.Load()); d > 0 {
 		last := e.lastPollAt.Load()
-		if last > 0 && time.Since(time.UnixMilli(last)) < e.debounceInterval {
+		if last > 0 && time.Since(time.UnixMilli(last)) < d {
 			return nil
 		}
 	}

@@ -235,6 +235,92 @@ func resolveCommitment(ctx context.Context, n common.Network, r *common.Normaliz
 	}
 }
 
+// writeCommitmentTarget locates the commitment field on a write method's config
+// object: which param index the object lives at, and the field name that
+// carries the commitment level.
+type writeCommitmentTarget struct {
+	idx   int
+	field string
+}
+
+// writeCommitmentField maps the write/effectful methods (excluded from the
+// read-path commitmentOptionsIndex) to where their commitment is expressed. Per
+// the Solana JSON-RPC reference (https://solana.com/docs/rpc/http) the field name
+// differs by method, so this is NOT a blanket "preflightCommitment" — that would
+// be wrong for simulateTransaction/requestAirdrop:
+//   - sendTransaction:     config at index 1, field "preflightCommitment"
+//     (governs the preflight simulation; ignored when skipPreflight is true).
+//   - simulateTransaction: config at index 1, field "commitment".
+//   - requestAirdrop:      config at index 2, field "commitment".
+//
+// sendRawTransaction is intentionally absent: it is a non-spec alias carrying a
+// raw transaction string with no config object to normalize.
+var writeCommitmentField = map[string]writeCommitmentTarget{
+	"sendTransaction":     {1, "preflightCommitment"},
+	"simulateTransaction": {1, "commitment"},
+	"requestAirdrop":      {2, "commitment"},
+}
+
+// networkPreForward_injectWriteCommitment stamps the network default commitment
+// onto write/effectful methods via their method-specific config field, mirroring
+// the read-path injection so every upstream preflights / simulates / airdrops at
+// the same commitment regardless of its own server-side default.
+//
+// These methods are never cached (see neverCacheMethods), so the driver here is
+// cross-upstream consistency, not cache-key stability. Like the read path it
+// honors a caller-supplied value, skips when no valid network default is set,
+// and never corrupts a legacy non-object slot or fabricates missing positional
+// args. Non-short-circuiting.
+func networkPreForward_injectWriteCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	method, err := r.Method()
+	if err != nil {
+		return false, nil, nil
+	}
+	target, ok := writeCommitmentField[method]
+	if !ok {
+		return false, nil, nil
+	}
+
+	cfg := n.Config()
+	if cfg == nil || cfg.Svm == nil || cfg.Svm.Commitment == "" {
+		return false, nil, nil
+	}
+	def := strings.ToLower(cfg.Svm.Commitment)
+	if def != "finalized" && def != "confirmed" && def != "processed" {
+		return false, nil, nil
+	}
+
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil {
+		return false, nil, nil
+	}
+	rpcReq.Lock()
+	defer rpcReq.Unlock()
+
+	switch {
+	case target.idx < len(rpcReq.Params):
+		m, ok := rpcReq.Params[target.idx].(map[string]interface{})
+		if !ok {
+			// Non-object in the config slot (legacy/unexpected shape) — leave it.
+			return false, nil, nil
+		}
+		if _, exists := m[target.field]; exists {
+			// Caller already specified the commitment for this method — honor it.
+			return false, nil, nil
+		}
+		m[target.field] = def
+		rpcReq.InvalidateCacheHash()
+	case target.idx == len(rpcReq.Params):
+		rpcReq.Params = append(rpcReq.Params, map[string]interface{}{target.field: def})
+		rpcReq.InvalidateCacheHash()
+	default:
+		// Required positional args missing (e.g. requestAirdrop without lamports)
+		// — don't fabricate them; let the upstream report the error.
+		return false, nil, nil
+	}
+	return false, nil, nil
+}
+
 // networkPreForward_validateSignaturesForAddress rejects requests whose slot
 // window exceeds the configured MaxSlotsPerSignaturesQuery. Solana's
 // getSignaturesForAddress has unbounded server cost when the (before, until)

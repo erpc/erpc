@@ -15,9 +15,11 @@ import (
 // Known clusters (mainnet-beta, devnet, testnet) issue one getGenesisHash RPC
 // at bootstrap and compare the result against the hardcoded genesis-hash
 // table — this catches mis-pointed upstreams that a purely local check would
-// miss. Unknown clusters are verified via the same RPC only when
-// CheckGenesisHash:true is set; otherwise we skip silently to support
-// private/local clusters where no genesis hash is known up front.
+// miss. For known clusters this is fail-closed: both a hash mismatch AND a
+// fetch failure reject the upstream, so we never register one we could not
+// verify against the table. Unknown clusters are verified via the same RPC
+// only when CheckGenesisHash:true is set; otherwise we skip silently to
+// support private/local clusters where no genesis hash is known up front.
 func (u *Upstream) svmVerifyGenesisHash(ctx context.Context) error {
 	cfg := u.config
 	if cfg == nil || cfg.Svm == nil {
@@ -39,16 +41,14 @@ func (u *Upstream) svmVerifyGenesisHash(ctx context.Context) error {
 
 	actual, err := u.svmFetchGenesisHash(ctx)
 	if err != nil {
-		// Treat fetch failures as non-fatal unless the operator explicitly opted in.
-		if cfg.Svm.CheckGenesisHash {
-			return common.NewErrUpstreamClientInitialization(
-				fmt.Errorf("svm getGenesisHash failed: %w", err),
-				u,
-			)
-		}
-		u.logger.Warn().Err(err).Str("cluster", cluster).
-			Msg("svm getGenesisHash failed; continuing (checkGenesisHash not set)")
-		return nil
+		// Fail closed. Control only reaches here when the cluster is known or
+		// CheckGenesisHash is set (unknown + no-check returned above), so in
+		// every remaining case we required validation — a fetch failure means
+		// we could not verify the upstream and must not register it.
+		return common.NewErrUpstreamClientInitialization(
+			fmt.Errorf("svm getGenesisHash failed: %w", err),
+			u,
+		)
 	}
 
 	if known && expected != "" && !strings.EqualFold(actual, expected) {
