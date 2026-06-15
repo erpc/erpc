@@ -220,6 +220,21 @@ projects:
             backoffMaxDelay: 10s
             backoffFactor: 0.3
             jitter: 500ms
+      - id: satelink-polygon
+        type: evm
+        endpoint: https://rpc.satelink.network/rpc/polygon
+        rateLimitBudget: default-budget
+        evm:
+          chainId: 137
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
 rateLimiters:
   budgets:
     - id: global-tenderly
