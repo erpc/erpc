@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -22,19 +21,16 @@ type chainData struct {
 	Endpoints []string `json:"endpoints"`
 }
 
+// RepositoryVendor uses RemoteDataCache for lock-free, async-refresh
+// access to the public-endpoint map. See remote_cache.go for the safety rule.
 type RepositoryVendor struct {
 	common.Vendor
-
-	// local cache of remote data
-	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64][]string
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[map[int64][]string]
 }
 
 func CreateRepositoryVendor() common.Vendor {
 	return &RepositoryVendor{
-		remoteData:              make(map[string]map[int64][]string),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[map[int64][]string]("repository"),
 	}
 }
 
@@ -62,18 +58,28 @@ func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultRecheckInterval
 	}
 
-	// ensure we fetch and parse remote repository data (cached for 1h)
-	err = v.ensureRemoteData(ctx, logger, recheckInterval, urlStr)
-	if err != nil {
-		return false, fmt.Errorf("unable to load remote data: %w", err)
+	chains, ok := v.resolveChains(logger, urlStr, recheckInterval)
+	if !ok {
+		return false, ErrRemoteCacheCold
 	}
+	endpoints, ok := chains[chainID]
+	return ok && len(endpoints) > 0, nil
+}
 
-	endpoints, ok := v.remoteData[urlStr][chainID]
-	if !ok || len(endpoints) == 0 {
-		return false, nil
+// resolveChains does a lock-free Lookup, kicks off an async refresh on
+// staleness, and returns (data, true) on hit or (nil, false) on cold start.
+// See remote_cache.go for the request-path safety rule.
+func (v *RepositoryVendor) resolveChains(logger *zerolog.Logger, urlStr string, recheckInterval time.Duration) (map[int64][]string, bool) {
+	chains, fresh := v.cache.Lookup(urlStr, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, urlStr, func(ctx context.Context) (map[int64][]string, error) {
+			return fetchRemoteData(ctx, urlStr)
+		})
 	}
-
-	return true, nil
+	if chains == nil {
+		return nil, false
+	}
+	return chains, true
 }
 
 func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -103,11 +109,11 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 	if !ok {
 		recheckInterval = DefaultRecheckInterval
 	}
-	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, urlStr); err != nil {
-		return nil, fmt.Errorf("unable to load remote data: %w", err)
+	chains, ok := v.resolveChains(logger, urlStr, recheckInterval)
+	if !ok {
+		return nil, ErrRemoteCacheCold
 	}
-
-	endpoints, ok := v.remoteData[urlStr][chainID]
+	endpoints, ok := chains[chainID]
 	if !ok || len(endpoints) == 0 {
 		return nil, fmt.Errorf("chain ID %d not found in remote data or has no endpoints", chainID)
 	}
@@ -139,16 +145,15 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			autoTuner = &common.RateLimitAutoTuneConfig{}
 			*autoTuner = *upstream.RateLimitAutoTune
 		}
-		var routing *common.RoutingConfig
-		if upstream.Routing != nil {
-			routing = &common.RoutingConfig{}
-			*routing = *upstream.Routing
+		var tags []string
+		if len(upstream.Tags) > 0 {
+			tags = append(tags, upstream.Tags...)
 		}
 		upsList = append(upsList, &common.UpstreamConfig{
 			Id:                           fmt.Sprintf("%s-%s", upstream.Id, util.RedactEndpoint(ep)),
 			Type:                         common.UpstreamTypeEvm,
 			Endpoint:                     ep,
-			Group:                        upstream.Group,
+			Tags:                         tags,
 			Evm:                          evm,
 			JsonRpc:                      jsonRpc,
 			IgnoreMethods:                upstream.IgnoreMethods,
@@ -157,7 +162,6 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			Failsafe:                     failsafe,
 			RateLimitBudget:              upstream.RateLimitBudget,
 			RateLimitAutoTune:            autoTuner,
-			Routing:                      routing,
 		})
 	}
 
@@ -171,37 +175,8 @@ func (v *RepositoryVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReq
 }
 
 func (v *RepositoryVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
 	// If the user put "repository://" or "evm+repository://"
-	if strings.HasPrefix(ups.Endpoint, "repository://") || strings.HasPrefix(ups.Endpoint, "evm+repository://") {
-		return true
-	}
-
-	return false
-}
-
-func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, remoteURL string) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	// If we've fetched within the last hour, do not refetch.
-	if ltm, ok := v.remoteDataLastFetchedAt[remoteURL]; ok && time.Since(ltm) < recheckInterval {
-		return nil
-	}
-
-	newData, err := fetchRemoteData(ctx, remoteURL)
-	if err != nil {
-		// if fetch fails, keep stale data
-		logger.Warn().Err(err).Msg("could not refresh remote repository data; will use stale data")
-		return nil
-	}
-
-	// successfully fetched new data, store it & update timestamp
-	v.remoteData[remoteURL] = newData
-	v.remoteDataLastFetchedAt[remoteURL] = time.Now()
-	return nil
+	return strings.HasPrefix(ups.Endpoint, "repository://") || strings.HasPrefix(ups.Endpoint, "evm+repository://")
 }
 
 func fetchRemoteData(ctx context.Context, urlStr string) (map[int64][]string, error) {

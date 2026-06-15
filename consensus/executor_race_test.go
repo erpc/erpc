@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/failsafe-go/failsafe-go"
-	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,7 +62,6 @@ func TestRace_SingleParticipant_CancelAfterExecution(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -73,7 +70,7 @@ func TestRace_SingleParticipant_CancelAfterExecution(t *testing.T) {
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			close(started)
 			<-completeInnerFn
 			return validResponse(), nil
@@ -123,10 +120,9 @@ func TestRace_SingleParticipant_CancelBeforeExecution(t *testing.T) {
 	cancel() // cancel before any execution
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	var called atomic.Int32
-	_, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		called.Add(1)
 		return validResponse(), nil
 	})
@@ -171,7 +167,6 @@ func TestRace_TwoParticipants_CancelBetweenCompletions(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -180,7 +175,7 @@ func TestRace_TwoParticipants_CancelBetweenCompletions(t *testing.T) {
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n := started.Add(1)
 			if n == 1 {
 				close(firstStarted)
@@ -244,7 +239,6 @@ func TestRace_TwoParticipants_BothCompleteBeforeCancel_ThresholdTwo(t *testing.T
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -253,7 +247,7 @@ func TestRace_TwoParticipants_BothCompleteBeforeCancel_ThresholdTwo(t *testing.T
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if started.Add(1) == 2 {
 				close(allStarted)
 			}
@@ -305,10 +299,9 @@ func TestRace_TwoParticipants_ShortCircuit_LateArrivalReleased(t *testing.T) {
 	slowRelease := make(chan struct{})
 
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	start := time.Now()
-	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		n := callCount.Add(1)
 		if n == 1 {
 			return validResponse(), nil
@@ -355,7 +348,6 @@ func TestRace_ThreeParticipants_OneCancelledBeforeExec_TwoValid(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -364,7 +356,7 @@ func TestRace_ThreeParticipants_OneCancelledBeforeExec_TwoValid(t *testing.T) {
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n := callCount.Add(1)
 			if n == 1 {
 				// First participant: signal readiness, then wait for cancel to
@@ -446,8 +438,7 @@ func TestRace_OutcomeAndCancelSimultaneous(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-			fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
-
+		
 			type result struct {
 				resp *common.NormalizedResponse
 				err  error
@@ -456,7 +447,7 @@ func TestRace_OutcomeAndCancelSimultaneous(t *testing.T) {
 
 			// Fire cancel and execution simultaneously.
 			go func() {
-				resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 					innerFnCalled.Store(true)
 					return validResponse(), nil
 				})
@@ -595,7 +586,7 @@ func TestRace_AnalyzerPanic_NilAnalysis_CallerSafe(t *testing.T) {
 	}
 
 	// Simulate the catastrophic path: analyzer panicked, so outcome has nil analysis.
-	panicResult := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+	panicResult := &slotResult{
 		Error: errPanicInConsensus,
 	}
 
@@ -647,7 +638,6 @@ func TestRace_ThreeParticipants_CancelAfterFirstComplete(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -656,7 +646,7 @@ func TestRace_ThreeParticipants_CancelAfterFirstComplete(t *testing.T) {
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n := started.Add(1)
 			if n == 1 {
 				close(firstDone)
@@ -758,8 +748,7 @@ func TestRace_StressN2Threshold2_NeverFalseLowParticipants(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-			fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
-
+		
 			type result struct {
 				resp *common.NormalizedResponse
 				err  error
@@ -767,7 +756,7 @@ func TestRace_StressN2Threshold2_NeverFalseLowParticipants(t *testing.T) {
 			resultCh := make(chan result, 1)
 
 			go func() {
-				resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 					if started.Add(1) == 2 {
 						close(allStarted)
 					}
@@ -834,8 +823,7 @@ func TestRace_ShortCircuitOutcomeRacesCancel(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-			fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
-
+		
 			type result struct {
 				resp *common.NormalizedResponse
 				err  error
@@ -843,7 +831,7 @@ func TestRace_ShortCircuitOutcomeRacesCancel(t *testing.T) {
 			resultCh := make(chan result, 1)
 
 			go func() {
-				resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 					n := callCount.Add(1)
 					if n <= 2 {
 						return validResponse(), nil
@@ -905,11 +893,10 @@ func TestRace_AnalyzerCompletesAfterCallerAbandons(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	callerReturned := make(chan struct{})
 	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if started.Add(1) == 2 {
 				close(allStarted)
 			}
@@ -942,4 +929,3 @@ func TestRace_AnalyzerCompletesAfterCallerAbandons(t *testing.T) {
 	}, time.Second, 10*time.Millisecond,
 		"all participants must complete even after caller abandons")
 }
-

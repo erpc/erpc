@@ -2953,9 +2953,20 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx, &log.Logger, "prjA", tc.upstreams,
-		ssr, nil, vr, pr, nil, mt, 1*time.Second, nil, nil,
+		ssr, nil, vr, pr, nil, mt, nil,
 	)
 
+	// These tests pre-date the adaptive wait-cap defaults and assert
+	// "wait for every participant" timing. Suppress the production
+	// defaults by injecting empty (disabled) caps when the test
+	// doesn't set them explicitly. Wait-cap behavior has its own
+	// dedicated tests in consensus/wait_cap_test.go.
+	if tc.consensusConfig.MaxWaitOnResult == nil {
+		tc.consensusConfig.MaxWaitOnResult = &common.AdaptiveDuration{}
+	}
+	if tc.consensusConfig.MaxWaitOnEmpty == nil {
+		tc.consensusConfig.MaxWaitOnEmpty = &common.AdaptiveDuration{}
+	}
 	if err := tc.consensusConfig.SetDefaults(); err != nil {
 		t.Fatalf("failed to set defaults on consensus config: %v", err)
 	}
@@ -2977,6 +2988,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 			},
 		},
 		nil, upsReg, mt,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -2984,8 +2996,8 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 	time.Sleep(100 * time.Millisecond)
 	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)
-	upstream.ReorderUpstreams(upsReg)
-
+	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upsReg)
+	upsReg.OverrideOrderForTest(util.EvmNetworkId(123))
 	return ntw, upsReg
 }
 

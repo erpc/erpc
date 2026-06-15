@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,59 +13,19 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
-// ScoringConfig bundles all project-level scoring/routing parameters.
-// Pass nil to NewUpstreamsRegistry to use defaults.
-type ScoringConfig struct {
-	RoutingStrategy   string
-	ScoreGranularity  string
-	PenaltyDecayRate  float64
-	SwitchHysteresis  float64
-	MinSwitchInterval time.Duration
-}
-
-func (c *ScoringConfig) withDefaults() *ScoringConfig {
-	out := &ScoringConfig{}
-	if c != nil {
-		*out = *c
-	}
-	if out.RoutingStrategy == "" {
-		out.RoutingStrategy = "score-based"
-	}
-	if out.ScoreGranularity == "" {
-		out.ScoreGranularity = "upstream"
-	}
-	// Negative → instant forgetting (no EMA memory). Zero → use default.
-	if out.PenaltyDecayRate == 0 {
-		out.PenaltyDecayRate = 0.95
-	} else if out.PenaltyDecayRate < 0 {
-		out.PenaltyDecayRate = 0
-	}
-	// Negative → disabled (no stickiness). Zero → use default.
-	if out.SwitchHysteresis == 0 {
-		out.SwitchHysteresis = 0.10
-	} else if out.SwitchHysteresis < 0 {
-		out.SwitchHysteresis = 0
-	}
-	if out.MinSwitchInterval == 0 {
-		out.MinSwitchInterval = 2 * time.Minute
-	} else if out.MinSwitchInterval < 0 {
-		out.MinSwitchInterval = 0
-	}
-	return out
-}
-
+// UpstreamsRegistry owns the per-network upstream lists plus the per-upstream
+// bootstrap pipeline. It is INPUT to the selection-policy engine; ordering
+// decisions and scoring are owned by `internal/policy/` and are not stored
+// here. Until the engine is wired in Phase 7, `GetSortedUpstreams` returns the
+// raw registration order.
 type UpstreamsRegistry struct {
 	appCtx               context.Context
 	prjId                string
-	scoreRefreshInterval time.Duration
-	scoringCfg           *ScoringConfig
-	refreshMu            sync.Mutex
 	logger               *zerolog.Logger
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
@@ -85,28 +43,14 @@ type UpstreamsRegistry struct {
 	networkUpstreams       map[string][]*Upstream
 	networkShadowUpstreams map[string][]*Upstream
 	networkUpstreamsAtomic sync.Map
-	// map of network -> method (or *) => upstreams
-	sortedUpstreams map[string]map[string][]*Upstream
-	// map of upstream -> network (or *) -> method (or *) => score (displayed as 1/(1+penalty))
-	upstreamScores map[string]map[string]map[string]float64
-
-	// penalty state: upstream -> network -> method -> decayed penalty
-	penaltyState map[string]map[string]map[string]float64
-	// last switch time per (network, method) for stickiness guard
-	lastSwitchTime map[string]map[string]time.Time
-	// round-robin rotation counter per (network, method)
-	rotationCounters map[string]map[string]uint64
 
 	providerOnce sync.Map // networkId -> *sync.Once
 
 	onUpstreamRegistered func(ups *Upstream) error
-	scoreMetricsMode     telemetry.ScoreMetricsMode
 }
 
 type UpstreamsHealth struct {
-	Upstreams       []*Upstream                              `json:"upstreams"`
-	SortedUpstreams map[string]map[string][]string           `json:"sortedUpstreams"`
-	UpstreamScores  map[string]map[string]map[string]float64 `json:"upstreamScores"`
+	Upstreams []*Upstream `json:"upstreams"`
 }
 
 func NewUpstreamsRegistry(
@@ -120,18 +64,14 @@ func NewUpstreamsRegistry(
 	pr *thirdparty.ProvidersRegistry,
 	ppr *clients.ProxyPoolRegistry,
 	mt *health.Tracker,
-	scoreRefreshInterval time.Duration,
-	scoringCfg *ScoringConfig,
 	onUpstreamRegistered func(*Upstream) error,
 ) *UpstreamsRegistry {
 	lg := logger.With().Str("component", "upstreams").Logger()
 	return &UpstreamsRegistry{
-		appCtx:               appCtx,
-		prjId:                prjId,
-		scoreRefreshInterval: scoreRefreshInterval,
-		scoringCfg:           scoringCfg.withDefaults(),
-		logger:               logger,
-		sharedStateRegistry:  ssr,
+		appCtx:              appCtx,
+		prjId:               prjId,
+		logger:              logger,
+		sharedStateRegistry: ssr,
 		clientRegistry: clients.NewClientRegistry(
 			logger,
 			prjId,
@@ -145,35 +85,14 @@ func NewUpstreamsRegistry(
 		upsCfg:                 upsCfg,
 		networkUpstreams:       make(map[string][]*Upstream),
 		networkShadowUpstreams: make(map[string][]*Upstream),
-		sortedUpstreams:        make(map[string]map[string][]*Upstream),
-		upstreamScores:         make(map[string]map[string]map[string]float64),
-		penaltyState:           make(map[string]map[string]map[string]float64),
-		lastSwitchTime:         make(map[string]map[string]time.Time),
-		rotationCounters:       make(map[string]map[string]uint64),
 		upstreamsMu:            &sync.RWMutex{},
 		networkMu:              &sync.Map{},
 		initializer:            util.NewInitializer(appCtx, &lg, nil),
 		onUpstreamRegistered:   onUpstreamRegistered,
-		scoreMetricsMode:       telemetry.ScoreModeCompact,
-	}
-}
-
-// SetScoreMetricsMode sets the emission mode for upstream score metrics.
-// Any value other than ScoreModeDetailed or ScoreModeNone is treated as ScoreModeCompact.
-func (u *UpstreamsRegistry) SetScoreMetricsMode(mode telemetry.ScoreMetricsMode) {
-	switch mode {
-	case telemetry.ScoreModeDetailed:
-		u.scoreMetricsMode = telemetry.ScoreModeDetailed
-	case telemetry.ScoreModeNone:
-		u.scoreMetricsMode = telemetry.ScoreModeNone
-	default:
-		u.scoreMetricsMode = telemetry.ScoreModeCompact
 	}
 }
 
 func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
-	u.scheduleScoreCalculationTimers(ctx)
-
 	// Fire-and-forget: register upstreams in background to avoid blocking service startup
 	go func() {
 		if err := u.registerUpstreams(u.appCtx, u.upsCfg...); err != nil {
@@ -222,6 +141,15 @@ func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
 
 func (u *UpstreamsRegistry) GetProvidersRegistry() *thirdparty.ProvidersRegistry {
 	return u.providersRegistry
+}
+
+// SharedStateRegistry exposes the registry's shared-state backing store so
+// that consumers (e.g., Network) can register their own counters/values for
+// strict-monotonic coordination across pods. The registry is owned here
+// because UpstreamsRegistry is constructed with it; surfacing it via an
+// accessor is cheaper than threading it through Network's constructor.
+func (u *UpstreamsRegistry) SharedStateRegistry() data.SharedStateRegistry {
+	return u.sharedStateRegistry
 }
 
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, networkId string) error {
@@ -370,6 +298,50 @@ func (u *UpstreamsRegistry) GetNetworkShadowUpstreams(networkId string) []*Upstr
 	return u.networkShadowUpstreams[networkId]
 }
 
+// OverrideOrderForTest pins the registration order of `networkUpstreams[networkId]`.
+// Test-only helper for fixtures that don't wire a policy.Engine; production
+// code uses `policy.OverrideAllForTest` against the engine. If `ids` is
+// empty, sorts the existing list by upstream id (matches legacy
+// ReorderUpstreams convenience).
+//
+// Lives here (not in test files) because in-package test helpers can't be
+// referenced from *_test.go in other packages.
+func (u *UpstreamsRegistry) OverrideOrderForTest(networkId string, ids ...string) {
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
+
+	src, ok := u.networkUpstreams[networkId]
+	if !ok || len(src) == 0 {
+		return
+	}
+	byID := make(map[string]*Upstream, len(src))
+	for _, up := range src {
+		byID[up.Id()] = up
+	}
+	if len(ids) == 0 {
+		ids = make([]string, 0, len(byID))
+		for id := range byID {
+			ids = append(ids, id)
+		}
+		// Deterministic ascending-id order.
+		for i := 1; i < len(ids); i++ {
+			for j := i; j > 0 && ids[j-1] > ids[j]; j-- {
+				ids[j-1], ids[j] = ids[j], ids[j-1]
+			}
+		}
+	}
+	reordered := make([]*Upstream, 0, len(ids))
+	for _, id := range ids {
+		if up, ok := byID[id]; ok {
+			reordered = append(reordered, up)
+		}
+	}
+	u.networkUpstreams[networkId] = reordered
+	cp := make([]*Upstream, len(reordered))
+	copy(cp, reordered)
+	u.networkUpstreamsAtomic.Store(networkId, cp)
+}
+
 func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId string) []*Upstream {
 	if ctx == nil {
 		ctx = u.appCtx
@@ -405,80 +377,20 @@ func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {
 	return u.allUpstreams
 }
 
+// GetSortedUpstreams returns the registered upstreams for `networkId`.
+//
+// Today this is a thin pass-through over `GetNetworkUpstreams` (raw
+// registration order). Phase 7 replaces it with a call into the policy
+// engine's per-(network, method) ordered list. The `method` argument is
+// currently ignored.
 func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, method string) ([]common.Upstream, error) {
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.GetSortedUpstreams")
 	defer span.End()
 
-	u.upstreamsMu.RLock()
-	upsList := u.sortedUpstreams[networkId][method]
-	u.upstreamsMu.RUnlock()
-
-	if upsList == nil {
-		networkMu := u.getNetworkMutex(networkId)
-		networkMu.Lock()
-		defer networkMu.Unlock()
-
-		u.upstreamsMu.RLock()
-		upsList = u.sortedUpstreams[networkId]["*"]
-		if upsList == nil {
-			upsList = u.networkUpstreams[networkId]
-			if upsList == nil {
-				u.upstreamsMu.RUnlock()
-				return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
-			}
-		}
-		u.upstreamsMu.RUnlock()
-
-		u.upstreamsMu.Lock()
-		// Create a copy of the default upstreams list for this method
-		methodUpsList := make([]*Upstream, len(upsList))
-		copy(methodUpsList, upsList)
-
-		if _, ok := u.sortedUpstreams[networkId]; !ok {
-			u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
-		}
-		u.sortedUpstreams[networkId][method] = methodUpsList
-
-		if u.sortedUpstreams[networkId]["*"] == nil {
-			cpUps := make([]*Upstream, len(methodUpsList))
-			copy(cpUps, methodUpsList)
-			u.sortedUpstreams[networkId]["*"] = cpUps
-		}
-
-		// Ensure wildcard map exists before writing into it
-		if _, ok := u.sortedUpstreams["*"]; !ok {
-			u.sortedUpstreams["*"] = make(map[string][]*Upstream)
-		}
-		if u.sortedUpstreams["*"][method] == nil {
-			cpUps := make([]*Upstream, len(methodUpsList))
-			copy(cpUps, methodUpsList)
-			u.sortedUpstreams["*"][method] = cpUps
-		}
-
-		// Initialize scores for this method on this network and "any" network
-		for _, ups := range methodUpsList {
-			upid := ups.Id()
-			if _, ok := u.upstreamScores[upid]; !ok {
-				u.upstreamScores[upid] = make(map[string]map[string]float64)
-			}
-			if _, ok := u.upstreamScores[upid][networkId]; !ok {
-				u.upstreamScores[upid][networkId] = make(map[string]float64)
-			}
-			if _, ok := u.upstreamScores[upid][networkId][method]; !ok {
-				u.upstreamScores[upid][networkId][method] = 0
-			}
-			if _, ok := u.upstreamScores[upid]["*"]; !ok {
-				u.upstreamScores[upid]["*"] = make(map[string]float64)
-			}
-			if _, ok := u.upstreamScores[upid]["*"][method]; !ok {
-				u.upstreamScores[upid]["*"][method] = 0
-			}
-		}
-		u.upstreamsMu.Unlock()
-
-		return castToCommonUpstreams(methodUpsList), nil
+	upsList := u.GetNetworkUpstreams(ctx, networkId)
+	if len(upsList) == 0 {
+		return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
 	}
-
 	return castToCommonUpstreams(upsList), nil
 }
 
@@ -490,506 +402,10 @@ func (u *UpstreamsRegistry) RUnlockUpstreams() {
 	u.upstreamsMu.RUnlock()
 }
 
+// RefreshUpstreamNetworkMethodScores is retained as a no-op until Phase 7
+// retires all callers. The selection-policy engine owns scoring now.
 func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
-	u.refreshMu.Lock()
-	defer u.refreshMu.Unlock()
-
-	_, span := common.StartDetailSpan(u.appCtx, "UpstreamsRegistry.RefreshUpstreamNetworkMethodScores")
-	defer span.End()
-
-	if u.scoringCfg.RoutingStrategy == "round-robin" {
-		return u.refreshRoundRobin()
-	}
-	return u.refreshScoreBased()
-}
-
-func (u *UpstreamsRegistry) refreshRoundRobin() error {
-	u.upstreamsMu.RLock()
-	if len(u.allUpstreams) == 0 {
-		u.upstreamsMu.RUnlock()
-		return nil
-	}
-	type key struct{ network, method string }
-	work := make(map[key][]*Upstream)
-	for networkId, methods := range u.sortedUpstreams {
-		for method := range methods {
-			var src []*Upstream
-			if networkId == "*" {
-				src = u.allUpstreams
-			} else {
-				src = u.networkUpstreams[networkId]
-			}
-			cp := make([]*Upstream, len(src))
-			copy(cp, src)
-			work[key{networkId, method}] = cp
-		}
-	}
-	u.upstreamsMu.RUnlock()
-
-	type pairResult struct {
-		network, method string
-		sorted          []*Upstream
-	}
-	var results []pairResult
-	for km, upsList := range work {
-		if len(upsList) == 0 {
-			continue
-		}
-		active := u.filterCordoned(upsList, km.method)
-		if len(active) == 0 {
-			continue
-		}
-		if _, ok := u.rotationCounters[km.network]; !ok {
-			u.rotationCounters[km.network] = make(map[string]uint64)
-		}
-		u.rotationCounters[km.network][km.method]++
-		offset := int(u.rotationCounters[km.network][km.method] % uint64(len(active)))
-		rotated := make([]*Upstream, len(active))
-		for i := range active {
-			rotated[i] = active[(i+offset)%len(active)]
-		}
-		results = append(results, pairResult{km.network, km.method, rotated})
-	}
-
-	u.upstreamsMu.Lock()
-	for _, res := range results {
-		if _, ok := u.sortedUpstreams[res.network]; !ok {
-			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
-		}
-		u.sortedUpstreams[res.network][res.method] = res.sorted
-		u.recordScores(res.sorted, res.network, res.method, nil)
-	}
-	u.emitRoutingPriority()
-	u.upstreamsMu.Unlock()
 	return nil
-}
-
-func (u *UpstreamsRegistry) refreshScoreBased() error {
-	u.upstreamsMu.RLock()
-	if len(u.allUpstreams) == 0 {
-		u.upstreamsMu.RUnlock()
-		u.logger.Trace().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
-		return nil
-	}
-	type key struct{ network, method string }
-	work := make(map[key][]*Upstream)
-	for networkId, methods := range u.sortedUpstreams {
-		for method := range methods {
-			var src []*Upstream
-			if networkId == "*" {
-				src = u.allUpstreams
-			} else {
-				src = u.networkUpstreams[networkId]
-			}
-			cp := make([]*Upstream, len(src))
-			copy(cp, src)
-			work[key{networkId, method}] = cp
-		}
-	}
-	// Snapshot previous sorted order for stickiness
-	prevPrimary := make(map[key]string)
-	for networkId, methods := range u.sortedUpstreams {
-		for method, ups := range methods {
-			if len(ups) > 0 {
-				prevPrimary[key{networkId, method}] = ups[0].Id()
-			}
-		}
-	}
-	u.upstreamsMu.RUnlock()
-
-	cfg := u.scoringCfg
-	type pairResult struct {
-		network, method string
-		penalties       map[string]float64
-		sorted          []*Upstream
-	}
-	var results []pairResult
-
-	if cfg.ScoreGranularity == "upstream" {
-		// Compute ONE penalty per upstream using method="*" metrics, then sort
-		// ONCE per network using the "*" method stickiness. Broadcast that single
-		// canonical order to all methods so the metric and request path always agree.
-		type networkResult struct {
-			penalties map[string]float64
-			sorted    []*Upstream
-		}
-		networkResults := make(map[string]*networkResult)
-		for km, upsList := range work {
-			if _, done := networkResults[km.network]; done {
-				continue
-			}
-			penalties := u.computePenalties(upsList, km.network, "*")
-			active := u.filterCordoned(upsList, "*")
-			prev := prevPrimary[key{km.network, "*"}]
-			sorted := u.stickySort(active, penalties, km.network, "*", prev)
-			networkResults[km.network] = &networkResult{penalties, sorted}
-		}
-		for km := range work {
-			nr := networkResults[km.network]
-			cp := make([]*Upstream, len(nr.sorted))
-			copy(cp, nr.sorted)
-			results = append(results, pairResult{km.network, km.method, nr.penalties, cp})
-		}
-	} else {
-		// Per-method: compute penalty per (upstream, method) pair
-		for km, upsList := range work {
-			penalties := u.computePenalties(upsList, km.network, km.method)
-			active := u.filterCordoned(upsList, km.method)
-			sorted := u.stickySort(active, penalties, km.network, km.method, prevPrimary[km])
-			results = append(results, pairResult{km.network, km.method, penalties, sorted})
-		}
-	}
-
-	// Commit under write lock
-	u.upstreamsMu.Lock()
-	for _, res := range results {
-		if _, ok := u.sortedUpstreams[res.network]; !ok {
-			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
-		}
-		u.sortedUpstreams[res.network][res.method] = res.sorted
-		u.recordScores(res.sorted, res.network, res.method, res.penalties)
-	}
-	u.emitRoutingPriority()
-	u.upstreamsMu.Unlock()
-	return nil
-}
-
-// computePenalties calculates the EMA-smoothed penalty for each upstream.
-// Uses absolute metric values (no peer-relative baseline) for stability.
-func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, metricsMethod string) map[string]float64 {
-	cfg := u.scoringCfg
-	n := len(upsList)
-	if n == 0 {
-		return nil
-	}
-
-	penalties := make(map[string]float64, n)
-	for _, ups := range upsList {
-		upsId := ups.Id()
-		mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
-		mul := ups.getScoreMultipliers(networkId, metricsMethod, nil)
-
-		qn := 0.70
-		upsCfg := ups.Config()
-		if upsCfg != nil && upsCfg.Routing != nil && upsCfg.Routing.ScoreLatencyQuantile != 0 {
-			qn = upsCfg.Routing.ScoreLatencyQuantile
-		}
-
-		var instant float64
-
-		if mul.ErrorRate != nil && *mul.ErrorRate > 0 {
-			instant += mt.ErrorRate() * *mul.ErrorRate
-		}
-
-		if mul.RespLatency != nil && *mul.RespLatency > 0 {
-			instant += mt.ResponseQuantiles.GetQuantile(qn).Seconds() * *mul.RespLatency
-		}
-
-		if mul.ThrottledRate != nil && *mul.ThrottledRate > 0 {
-			instant += mt.ThrottledRate() * *mul.ThrottledRate
-		}
-
-		if mul.BlockHeadLag != nil && *mul.BlockHeadLag > 0 {
-			instant += math.Max(0, float64(mt.BlockHeadLag.Load())) * *mul.BlockHeadLag
-		}
-
-		if mul.FinalizationLag != nil && *mul.FinalizationLag > 0 {
-			instant += math.Max(0, float64(mt.FinalizationLag.Load())) * *mul.FinalizationLag
-		}
-
-		if mul.Misbehaviors != nil && *mul.Misbehaviors > 0 {
-			instant += mt.MisbehaviorRate() * *mul.Misbehaviors
-		}
-
-		if math.IsNaN(instant) || math.IsInf(instant, 0) {
-			instant = 0
-		}
-
-		if mul.Overall != nil && *mul.Overall > 0 {
-			instant /= *mul.Overall
-		}
-
-		stored := u.getPenalty(upsId, networkId, metricsMethod)
-		if math.IsNaN(stored) || math.IsInf(stored, 0) {
-			stored = 0
-		}
-		decayed := stored*cfg.PenaltyDecayRate + instant*(1.0-cfg.PenaltyDecayRate)
-		u.setPenalty(upsId, networkId, metricsMethod, decayed)
-		penalties[upsId] = decayed
-	}
-	return penalties
-}
-
-func (u *UpstreamsRegistry) getPenalty(upsId, networkId, method string) float64 {
-	if nw, ok := u.penaltyState[upsId]; ok {
-		if meth, ok := nw[networkId]; ok {
-			return meth[method]
-		}
-	}
-	return 0
-}
-
-func (u *UpstreamsRegistry) setPenalty(upsId, networkId, method string, val float64) {
-	if _, ok := u.penaltyState[upsId]; !ok {
-		u.penaltyState[upsId] = make(map[string]map[string]float64)
-	}
-	if _, ok := u.penaltyState[upsId][networkId]; !ok {
-		u.penaltyState[upsId][networkId] = make(map[string]float64)
-	}
-	u.penaltyState[upsId][networkId][method] = val
-}
-
-// GetUpstreamScore returns the last-computed score (0..1, higher = better) for
-// an upstream on a given network+method pair. It reads from upstreamScores
-// which is only written under upstreamsMu.Lock, so RLock here is race-free.
-func (u *UpstreamsRegistry) GetUpstreamScore(upsId, networkId, method string) float64 {
-	u.upstreamsMu.RLock()
-	defer u.upstreamsMu.RUnlock()
-	if nets, ok := u.upstreamScores[upsId]; ok {
-		if meths, ok := nets[networkId]; ok {
-			return meths[method]
-		}
-	}
-	return 0
-}
-
-// ScoreBreakdown holds the components that contribute to an upstream's penalty and final score.
-type ScoreBreakdown struct {
-	Score           float64
-	Penalty         float64
-	ErrorRate       float64
-	Latency         float64
-	ThrottledRate   float64
-	BlockHeadLag    float64
-	FinalizationLag float64
-	MisbehaviorRate float64
-	Cordoned        bool
-}
-
-// GetUpstreamScoreBreakdown returns the score and its contributing penalty
-// components for a given upstream, so callers (e.g. traces) can diagnose
-// why an upstream was ranked higher or lower.
-func (u *UpstreamsRegistry) GetUpstreamScoreBreakdown(ups common.Upstream, networkId, method string) ScoreBreakdown {
-	u.upstreamsMu.RLock()
-	defer u.upstreamsMu.RUnlock()
-
-	upsId := ups.Id()
-	score := 0.0
-	if nets, ok := u.upstreamScores[upsId]; ok {
-		if meths, ok := nets[networkId]; ok {
-			score = meths[method]
-		}
-	}
-
-	metricsMethod := method
-	if u.scoringCfg.ScoreGranularity == "upstream" {
-		metricsMethod = "*"
-	}
-
-	bd := ScoreBreakdown{Score: score}
-
-	if u.metricsTracker == nil {
-		return bd
-	}
-
-	mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
-	if mt == nil {
-		return bd
-	}
-
-	qn := 0.70
-	if upsCfg := ups.Config(); upsCfg != nil && upsCfg.Routing != nil && upsCfg.Routing.ScoreLatencyQuantile != 0 {
-		qn = upsCfg.Routing.ScoreLatencyQuantile
-	}
-
-	bd.ErrorRate = mt.ErrorRate()
-	bd.ThrottledRate = mt.ThrottledRate()
-	bd.BlockHeadLag = math.Max(0, float64(mt.BlockHeadLag.Load()))
-	bd.FinalizationLag = math.Max(0, float64(mt.FinalizationLag.Load()))
-	bd.MisbehaviorRate = mt.MisbehaviorRate()
-	bd.Cordoned = mt.Cordoned.Load()
-	if mt.ResponseQuantiles != nil {
-		bd.Latency = mt.ResponseQuantiles.GetQuantile(qn).Seconds()
-	}
-
-	if pen, ok := u.penaltyState[upsId]; ok {
-		if meth, ok := pen[networkId]; ok {
-			bd.Penalty = meth[metricsMethod]
-		}
-	}
-
-	return bd
-}
-
-// stickySort sorts upstreams by penalty ascending, preserving the current
-// primary unless a challenger is significantly better (hysteresis) and the
-// minimum cooldown has elapsed.
-func (u *UpstreamsRegistry) stickySort(
-	active []*Upstream,
-	penalties map[string]float64,
-	networkId, method string,
-	prevPrimaryId string,
-) []*Upstream {
-	if len(active) == 0 {
-		return active
-	}
-	cfg := u.scoringCfg
-
-	sort.Slice(active, func(i, j int) bool {
-		pi := penalties[active[i].Id()]
-		pj := penalties[active[j].Id()]
-		if pi != pj {
-			return pi < pj
-		}
-		return active[i].Id() < active[j].Id()
-	})
-
-	if cfg.SwitchHysteresis <= 0 || prevPrimaryId == "" || active[0].Id() == prevPrimaryId {
-		if prevPrimaryId == "" || (len(active) > 0 && active[0].Id() != prevPrimaryId) {
-			u.setLastSwitchTime(networkId, method, time.Now())
-		}
-		return active
-	}
-
-	prevIdx := -1
-	for i, ups := range active {
-		if ups.Id() == prevPrimaryId {
-			prevIdx = i
-			break
-		}
-	}
-	if prevIdx < 0 {
-		u.setLastSwitchTime(networkId, method, time.Now())
-		return active
-	}
-
-	primaryP := penalties[prevPrimaryId]
-	challengerP := penalties[active[0].Id()]
-
-	shouldSwitch := primaryP > 0 && challengerP < primaryP*(1.0-cfg.SwitchHysteresis)
-	if shouldSwitch && cfg.MinSwitchInterval > 0 {
-		if time.Since(u.getLastSwitchTime(networkId, method)) < cfg.MinSwitchInterval {
-			shouldSwitch = false
-		}
-	}
-
-	if shouldSwitch {
-		u.setLastSwitchTime(networkId, method, time.Now())
-		return active
-	}
-
-	prev := active[prevIdx]
-	copy(active[prevIdx:], active[prevIdx+1:])
-	copy(active[1:], active[:len(active)-1])
-	active[0] = prev
-	return active
-}
-
-func (u *UpstreamsRegistry) getLastSwitchTime(networkId, method string) time.Time {
-	if nw, ok := u.lastSwitchTime[networkId]; ok {
-		return nw[method]
-	}
-	return time.Time{}
-}
-
-func (u *UpstreamsRegistry) setLastSwitchTime(networkId, method string, t time.Time) {
-	if _, ok := u.lastSwitchTime[networkId]; !ok {
-		u.lastSwitchTime[networkId] = make(map[string]time.Time)
-	}
-	u.lastSwitchTime[networkId][method] = t
-}
-
-func (u *UpstreamsRegistry) filterCordoned(upsList []*Upstream, method string) []*Upstream {
-	active := make([]*Upstream, 0, len(upsList))
-	for _, ups := range upsList {
-		if !u.metricsTracker.IsCordoned(ups, method) {
-			active = append(active, ups)
-		}
-	}
-	return active
-}
-
-// recordScores updates internal score maps and emits erpc_upstream_score_overall
-// according to scoreMetricsMode (matching main-branch behaviour):
-//
-//	compact  — upstream="n/a", category="n/a"
-//	detailed — upstream=<id>,  category=<method>
-//	none     — not emitted
-//
-// Wildcard network ("*") is skipped for metric emission.
-func (u *UpstreamsRegistry) recordScores(sorted []*Upstream, networkId, method string, penalties map[string]float64) {
-	mode := u.scoreMetricsMode
-	emitScore := networkId != "*" && mode != telemetry.ScoreModeNone
-
-	for _, ups := range sorted {
-		upsId := ups.Id()
-		penalty := 0.0
-		if penalties != nil {
-			penalty = penalties[upsId]
-		}
-		score := 1.0 / (1.0 + penalty)
-
-		if _, ok := u.upstreamScores[upsId]; !ok {
-			u.upstreamScores[upsId] = make(map[string]map[string]float64)
-		}
-		if _, ok := u.upstreamScores[upsId][networkId]; !ok {
-			u.upstreamScores[upsId][networkId] = make(map[string]float64)
-		}
-		u.upstreamScores[upsId][networkId][method] = score
-
-		if emitScore && !math.IsNaN(score) && !math.IsInf(score, 0) {
-			upLabel := "n/a"
-			catLabel := "n/a"
-			if mode == telemetry.ScoreModeDetailed {
-				upLabel = upsId
-				catLabel = method
-			}
-			telemetry.MetricUpstreamScoreOverall.WithLabelValues(
-				u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel,
-			).Set(score)
-		}
-	}
-}
-
-// emitRoutingPriority emits erpc_upstream_routing_priority.
-//
-// Two tiers of detail:
-//  1. Summary (category="*"): position from the "*" (wildcard) method sort,
-//     which is the canonical upstream-level order. Always emitted.
-//  2. Per-method (category=<method>): exact position for each method.
-//     Only emitted when scoreMetricsMode is "detailed".
-//
-// Wildcard network ("*") entries are skipped.
-func (u *UpstreamsRegistry) emitRoutingPriority() {
-	detailed := u.scoreMetricsMode == telemetry.ScoreModeDetailed
-
-	for networkId, methods := range u.sortedUpstreams {
-		if networkId == "*" {
-			continue
-		}
-		// Summary: use the "*" method sort as the canonical upstream-level order.
-		// This avoids averaging across per-method sorts that may have divergent
-		// stickiness, which can produce identical averages for different upstreams.
-		if wildcardSorted, ok := methods["*"]; ok {
-			for i, ups := range wildcardSorted {
-				telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
-					u.prjId, ups.VendorName(), ups.NetworkLabel(), ups.Id(), "*",
-				).Set(float64(i + 1))
-			}
-		}
-		if detailed {
-			for method, sorted := range methods {
-				if method == "*" {
-					continue
-				}
-				for i, ups := range sorted {
-					telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
-						u.prjId, ups.VendorName(), ups.NetworkLabel(), ups.Id(), method,
-					).Set(float64(i + 1))
-				}
-			}
-		}
-	}
 }
 
 func (u *UpstreamsRegistry) registerUpstreams(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
@@ -1103,6 +519,13 @@ type networkTaskSummary struct {
 
 // summarizeNetworkTasks computes provider completion/fatality and presence of any ongoing
 // per-network or unknown upstream tasks in a single pass.
+//
+// Called from `PrepareUpstreamsForNetwork`'s 200ms bootstrap-wait ticker.
+// Previously walked `Initializer.Status()` which materializes a
+// `[]TaskStatus` (growslice + per-task struct alloc) every call —
+// pprof showed this at ~10% CPU during the bootstrap-wait window.
+// Now uses the allocation-free `RangeTaskStates` streaming API since
+// we only need name + state.
 func (u *UpstreamsRegistry) summarizeNetworkTasks(networkId string) networkTaskSummary {
 	provPrefix := "network/" + networkId + "/provider/"
 	upsPrefix := "network/" + networkId + "/upstream/"
@@ -1111,11 +534,9 @@ func (u *UpstreamsRegistry) summarizeNetworkTasks(networkId string) networkTaskS
 	providersAllTerminal := true
 	hasOngoing := false
 
-	st := u.initializer.Status()
-	for _, ts := range st.Tasks {
-		name := ts.Name
+	u.initializer.RangeTaskStates(func(name string, state util.TaskState) bool {
 		if strings.HasPrefix(name, provPrefix) {
-			switch ts.State {
+			switch state {
 			case util.TaskSucceeded, util.TaskFatal:
 				// terminal
 			case util.TaskPending, util.TaskRunning, util.TaskFailed, util.TaskTimedOut:
@@ -1124,15 +545,16 @@ func (u *UpstreamsRegistry) summarizeNetworkTasks(networkId string) networkTaskS
 			default:
 				providersAllTerminal = false
 			}
-			continue
+			return true
 		}
 		if strings.HasPrefix(name, upsPrefix) || strings.HasPrefix(name, unknownUpsPrefix) {
-			switch ts.State {
+			switch state {
 			case util.TaskPending, util.TaskRunning, util.TaskFailed, util.TaskTimedOut:
 				hasOngoing = true
 			}
 		}
-	}
+		return true
+	})
 	return networkTaskSummary{
 		providersAllTerminal: providersAllTerminal,
 		hasOngoing:           hasOngoing,
@@ -1147,33 +569,6 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	defer u.upstreamsMu.Unlock()
 
 	u.allUpstreams = append(u.allUpstreams, ups)
-
-	// Initialize the upstream's score maps
-	if _, ok := u.upstreamScores[cfg.Id]; !ok {
-		u.upstreamScores[cfg.Id] = make(map[string]map[string]float64)
-	}
-
-	// Initialize wildcard network scores
-	if _, ok := u.upstreamScores[cfg.Id]["*"]; !ok {
-		u.upstreamScores[cfg.Id]["*"] = make(map[string]float64)
-	}
-	if _, ok := u.upstreamScores[cfg.Id]["*"]["*"]; !ok {
-		u.upstreamScores[cfg.Id]["*"]["*"] = 0
-	}
-
-	// Initialize specific network scores
-	if _, ok := u.upstreamScores[cfg.Id][networkId]; !ok {
-		u.upstreamScores[cfg.Id][networkId] = make(map[string]float64)
-	}
-	if _, ok := u.upstreamScores[cfg.Id][networkId]["*"]; !ok {
-		u.upstreamScores[cfg.Id][networkId]["*"] = 0
-	}
-
-	// Initialize wildcard sorted upstreams
-	// (removed: avoid mutating sortedUpstreams during registration; refresh owns ordering)
-
-	// Initialize network-specific sorted upstreams
-	// (removed: avoid mutating sortedUpstreams during registration; refresh owns ordering)
 
 	// Add to network upstreams map
 	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
@@ -1213,67 +608,10 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		Msg("upstream registered and initialized in registry")
 }
 
-func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) {
-	if u.scoreRefreshInterval == 0 {
-		return
-	}
-
-	go func() {
-		ticker := time.NewTicker(u.scoreRefreshInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				err := u.RefreshUpstreamNetworkMethodScores()
-				if err != nil {
-					u.logger.Warn().Err(err).Msgf("failed to refresh upstream network method scores")
-				}
-			}
-		}
-	}()
-}
-
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
 	u.upstreamsMu.RLock()
 	defer u.upstreamsMu.RUnlock()
-
-	sortedUpstreams := make(map[string]map[string][]string)
-	upstreamScores := make(map[string]map[string]map[string]float64)
-
-	for nw, methods := range u.sortedUpstreams {
-		for method, ups := range methods {
-			upstreamIds := make([]string, len(ups))
-			for i, ups := range ups {
-				upstreamIds[i] = ups.Id()
-			}
-			if _, ok := sortedUpstreams[nw]; !ok {
-				sortedUpstreams[nw] = make(map[string][]string)
-			}
-			sortedUpstreams[nw][method] = upstreamIds
-		}
-	}
-
-	for upsId, nwMethods := range u.upstreamScores {
-		for nw, methods := range nwMethods {
-			for method, score := range methods {
-				if _, ok := upstreamScores[upsId]; !ok {
-					upstreamScores[upsId] = make(map[string]map[string]float64)
-				}
-				if _, ok := upstreamScores[upsId][nw]; !ok {
-					upstreamScores[upsId][nw] = make(map[string]float64)
-				}
-				upstreamScores[upsId][nw][method] = score
-			}
-		}
-	}
-
-	return &UpstreamsHealth{
-		Upstreams:       u.allUpstreams,
-		SortedUpstreams: sortedUpstreams,
-		UpstreamScores:  upstreamScores,
-	}, nil
+	return &UpstreamsHealth{Upstreams: u.allUpstreams}, nil
 }
 
 func (u *UpstreamsRegistry) GetMetricsTracker() *health.Tracker {

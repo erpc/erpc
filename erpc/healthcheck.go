@@ -88,7 +88,7 @@ func (s *HttpServer) handleHealthCheck(
 
 		ap, err := auth.NewPayloadFromHttp("healthcheck", r.RemoteAddr, headers, queryArgs)
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 			return
 		}
 		if s.healthCheckAuthRegistry != nil {
@@ -98,7 +98,7 @@ func (s *HttpServer) handleHealthCheck(
 			nq.SetClientIP(clientIP)
 			_, err := s.healthCheckAuthRegistry.Authenticate(ctx, nq, "healthcheck", ap)
 			if err != nil {
-				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 				return
 			}
 		}
@@ -113,7 +113,7 @@ func (s *HttpServer) handleHealthCheck(
 	logger = logger.With().Str("evalStrategy", evalStrategy).Logger()
 
 	if s.erpc == nil {
-		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails)
+		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails, s.executionHeadersMode())
 		return
 	}
 
@@ -121,13 +121,13 @@ func (s *HttpServer) handleHealthCheck(
 	if projectId == "" {
 		projects = s.erpc.GetProjects()
 		if len(projects) == 0 {
-			handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("no projects found"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails)
+			handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("no projects found"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails, s.executionHeadersMode())
 			return
 		}
 	} else {
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 			return
 		}
 		projects = []*PreparedProject{project}
@@ -183,7 +183,7 @@ func (s *HttpServer) handleHealthCheck(
 		// Attempt to gather health info for all initialized upstreams
 		projHealthInfo, err := project.GatherHealthInfo()
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE, s.executionHeadersMode())
 			return
 		}
 
@@ -257,18 +257,10 @@ func (s *HttpServer) handleHealthCheck(
 
 			// Collect metrics for non-simple modes
 			if !s.isSimpleMode() {
-				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll)
 				upstreamHealth.Metrics = mts
 
-				// Add last evaluation time from selection policy evaluator
-				if network, err := project.GetNetwork(ctx, networkId); err == nil && network != nil {
-					if network.selectionPolicyEvaluator != nil {
-						lastEvalTime := network.selectionPolicyEvaluator.GetLastEvalTime(ups.Id(), "*")
-						if !lastEvalTime.IsZero() {
-							upstreamHealth.LastEvaluation = lastEvalTime.Format(time.RFC3339)
-						}
-					}
-				}
+				// LastEvaluation timestamp wiring deferred to Phase 7 (policy engine).
 
 				// Add EVM state poller diagnostics for EVM upstreams
 				if ups.Config() != nil && ups.Config().Type == common.UpstreamTypeEvm {
@@ -364,6 +356,7 @@ func (s *HttpServer) handleHealthCheck(
 				encoder,
 				writeFatalError,
 				&common.TRUE,
+				s.executionHeadersMode(),
 			)
 		}
 		return
@@ -458,7 +451,7 @@ func (s *HttpServer) evaluateNetworkHealth(
 		belowThresholdErrorRates := []float64{}
 
 		for _, ups := range networkUpstreams {
-			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll)
 			if mts != nil && mts.RequestsTotal.Load() > 0 {
 				errorRate := float64(mts.ErrorsTotal.Load()) / float64(mts.RequestsTotal.Load())
 				allErrorRates = append(allErrorRates, errorRate)
@@ -597,7 +590,7 @@ func (s *HttpServer) evaluateProjectHealth(
 		belowThresholdErrorRates := []float64{}
 
 		for _, ups := range filteredUpstreams {
-			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+			mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*", common.DataFinalityStateAll)
 			if mts != nil && mts.RequestsTotal.Load() > 0 {
 				errorRate := float64(mts.ErrorsTotal.Load()) / float64(mts.RequestsTotal.Load())
 				allErrorRates = append(allErrorRates, errorRate)

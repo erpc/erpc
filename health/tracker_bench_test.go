@@ -36,12 +36,13 @@ func (m *MockUpstream) Logger() *zerolog.Logger        { return &log.Logger }
 func (m *MockUpstream) Config() *common.UpstreamConfig { return nil }
 func (m *MockUpstream) Vendor() common.Vendor          { return nil }
 func (m *MockUpstream) Tracker() common.HealthTracker  { return nil }
-func (m *MockUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+func (m *MockUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (m *MockUpstream) Cordon(method string, reason string)   {}
-func (m *MockUpstream) Uncordon(method string, reason string) {}
-func (m *MockUpstream) IgnoreMethod(method string)            {}
+func (m *MockUpstream) Cordon(method string, reason string)            {}
+func (m *MockUpstream) Uncordon(method string, reason string)          {}
+func (m *MockUpstream) IgnoreMethod(method string)                     {}
+func (m *MockUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
 
 // BenchmarkTrackerRecordUpstreamRequest benchmarks the most frequently called method
 func BenchmarkTrackerRecordUpstreamRequest(b *testing.B) {
@@ -68,7 +69,7 @@ func BenchmarkTrackerRecordUpstreamRequest(b *testing.B) {
 		for pb.Next() {
 			upstream := upstreams[i%len(upstreams)]
 			method := methods[i%len(methods)]
-			tracker.RecordUpstreamRequest(upstream, method)
+			tracker.RecordUpstreamRequest(upstream, method, common.DataFinalityStateUnknown)
 			i++
 		}
 	})
@@ -137,7 +138,7 @@ func BenchmarkTrackerRecordUpstreamFailure(b *testing.B) {
 		for pb.Next() {
 			upstream := upstreams[i%len(upstreams)]
 			method := methods[i%len(methods)]
-			tracker.RecordUpstreamFailure(upstream, method, testErr)
+			tracker.RecordUpstreamFailure(upstream, method, common.DataFinalityStateUnknown, testErr)
 			i++
 		}
 	})
@@ -159,7 +160,7 @@ func BenchmarkTrackerSetLatestBlockNumber(b *testing.B) {
 			vendor:  "test-vendor",
 		}
 		// Initialize metrics for each upstream
-		tracker.RecordUpstreamRequest(upstreams[i], "eth_call")
+		tracker.RecordUpstreamRequest(upstreams[i], "eth_call", common.DataFinalityStateUnknown)
 	}
 
 	b.ResetTimer()
@@ -189,7 +190,7 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 			vendor:  "test-vendor",
 		}
 		// Initialize metrics
-		tracker.RecordUpstreamRequest(upstreams[i], "eth_call")
+		tracker.RecordUpstreamRequest(upstreams[i], "eth_call", common.DataFinalityStateUnknown)
 	}
 
 	methods := []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_sendRawTransaction"}
@@ -205,11 +206,11 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 			// Simulate a realistic mix of operations
 			switch i % 5 {
 			case 0, 1, 2: // 60% are regular requests
-				tracker.RecordUpstreamRequest(upstream, method)
+				tracker.RecordUpstreamRequest(upstream, method, common.DataFinalityStateUnknown)
 				tracker.RecordUpstreamDuration(upstream, method, 100*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "user-1")
 			case 3: // 20% are failures
-				tracker.RecordUpstreamRequest(upstream, method)
-				tracker.RecordUpstreamFailure(upstream, method, testErr)
+				tracker.RecordUpstreamRequest(upstream, method, common.DataFinalityStateUnknown)
+				tracker.RecordUpstreamFailure(upstream, method, common.DataFinalityStateUnknown, testErr)
 			case 4: // 20% are remote rate limited
 				tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 			}

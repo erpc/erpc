@@ -211,9 +211,23 @@ func (qe *EvmQueryExecutor) tryQueryUpstreams(
 	method string,
 	attempt func(common.Upstream) error,
 ) (handled bool, err error) {
-	upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), method)
-	if err != nil {
-		qe.logger.Debug().Err(err).Str("method", method).Msgf("failed to get sorted upstreams for query method")
+	var upstreams []common.Upstream
+	if qe.network.policyEngine != nil {
+		// Query-shim requests aren't bound to a single finality bucket
+		// (a range covers both finalized and unfinalized blocks), so
+		// route them through the wildcard slot. Networks configured
+		// with `EvalPerFinality: true` should set explicit per-method
+		// policies if they want finality-aware routing for queries.
+		upstreams = qe.network.policyEngine.GetOrdered(qe.network.Id(), method, "*")
+	}
+	if len(upstreams) == 0 {
+		// Cold-start fallback: engine hasn't published a cache yet.
+		for _, u := range qe.network.upstreamsRegistry.GetNetworkUpstreams(ctx, qe.network.Id()) {
+			upstreams = append(upstreams, u)
+		}
+	}
+	if len(upstreams) == 0 {
+		qe.logger.Debug().Str("method", method).Msgf("no upstreams available for query method")
 		return false, nil
 	}
 

@@ -1,174 +1,342 @@
 ---
-description: URL structure for eRPC clients...
+title: URL structure
+description: One URL pattern routes every chain — domain and network aliases let you publish clean, memorable endpoints without touching your app code.
 ---
 
-import { Callout } from "nextra/components";
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
-# URL
+<LLMsTxtLink />
 
-eRPC supports several URL patterns for making requests, with options for both single-chain and multi-chain endpoints.
+# URL structure
 
-## Single-chain requests
+Every request reaches eRPC at `/<project>/<architecture>/<chainId>`. Two aliasing layers let you shorten or domain-bind that path without touching your app:
+**domain aliasing** maps a wildcard `Host` header to any combination of project, network, and chain; **network aliasing** lets a name like `"arbitrum"` stand in for `evm/42161` anywhere in the path. Unknown projects or networks return clean JSON-RPC error envelopes, never silent failures.
 
-### Standard URL pattern
+## Quick taste
 
-When making requests only for a single chain, you can use this URL structure:
+Illustrative, not a tuned production config — map a dedicated domain to a single chain:
 
-<Callout type='info'>
-  https://&lt;your-erpc-hostname&gt;/&lt;project-id&gt;/&lt;network-architecture&gt;/&lt;chain-id&gt;
-</Callout>
-
-##### `<your-erpc-hostname>`
-Depends on your deployment setup, for example in local development (using `make run`) it will be `localhost:4000`.
-
-##### `<project-id>`
-Target project ID you configured in [erpc.yaml](/config/example), for example "main" or "frontend", "backend", etc.
-
-##### `<network-architecture>`
-Target network architecture you configured in [erpc.yaml](/config/example), for example `evm`.
-
-##### `<chain-id>`
-Target chain ID that one or more upstreams support, for example "1" or `42161`.
-
-```bash
-# A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
-
-curl --location 'http://localhost:4000/main/evm/1' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "eth_getBlockByNumber",
-    "params": [
-        "0x1203319",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
-```
-
-### Domain aliasing
-If configured with domain aliasing, you can have predefined project and network values:
-
-```yaml filename="erpc.yaml"
-server:
-  # ...
+<ConfigTabs
+  path="server.aliasing.rules"
+  focusYaml="4-8"
+  focusTs="4-8"
+  yaml={`server:
   aliasing:
     rules:
-      - matchDomain: "*" # (OPTIONAL) Pattern to match Host header, defaults to `*` (all domains)
-        serveProject: "main" # (OPTIONAL) Project ID to serve for matched domains
-        serveArchitecture: "evm" # (OPTIONAL) Network architecture (e.g., "evm")
-        serveChain: "1" # (OPTIONAL) Chain ID (e.g., "1" for Ethereum mainnet)
-```
-
-#### Configuration examples
-
-- **No aliasing** - full URL is required
-```yaml
-aliasing: ~
-```
-```
-https://api.myservice.com/main/evm/1
-```
-
-- **Project only**
-```yaml
-server:
-  aliasing:
-    rules:
-      - matchDomain: "api.myservice.com"
-        serveProject: "main"
-```
-```
-https://api.myservice.com/evm/1
-```
-
-- **Project and architecture**
-```yaml
-server:
-  aliasing:
-    rules:
-      - matchDomain: "evm.myservice.com"
+        # map a dedicated domain → single chain, no path segments needed
+      - matchDomain: "eth.myservice.com"
         serveProject: "main"
         serveArchitecture: "evm"
-```
-```
-https://evm.myservice.com/1
-```
+        serveChain: "1"`}
+  ts={`server: {
+  aliasing: {
+    rules: [{
+      // map a dedicated domain → single chain, no path segments needed
+      matchDomain: "eth.myservice.com",
+      serveProject: "main",
+      serveArchitecture: "evm",
+      serveChain: "1",
+    }],
+  },
+}`}
+/>
 
-- **Full aliasing**
-```yaml
-server:
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="set up clean per-chain domains"
+	defaultOpen
+	prompt={`I want each of my EVM chains to have its own dedicated subdomain (e.g. eth.myservice.com,
+arb.myservice.com) so clients never need to include chain IDs in the URL path. Configure
+eRPC domain aliasing rules in my eRPC config. Read the full reference first:
+https://docs.erpc.cloud/operation/url.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="add human-readable network aliases"
+	prompt={`Replace the raw evm/42161 and evm/8453 path segments in my eRPC setup with friendly
+aliases like "arbitrum" and "base" so my app can POST to /main/arbitrum instead of
+/main/evm/42161. Update my eRPC config and tell me how alias collisions are handled.
+Reference: https://docs.erpc.cloud/operation/url.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug a 400 on my healthcheck probe"
+	prompt={`My load-balancer health probe is hitting GET /main/evm/1/healthcheck and getting HTTP 400
+instead of 200. Explain why eRPC returns 400 for this URL shape and show me the correct
+probe path given my config in my eRPC config. Reference:
+https://docs.erpc.cloud/operation/url.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="route multi-chain SDK calls without URL changes"
+	prompt={`My SDK sends all requests to the same endpoint but includes the target chain in the
+JSON-RPC body as "networkId":"evm:42161". Confirm my eRPC config is set up to accept
+project-level POST /main requests where the network comes from the body, and flag any
+footguns in the current alias config. Reference:
+https://docs.erpc.cloud/operation/url.llms.txt`}
+/>
+
+<AISection title="URL structure — full agent reference">
+
+### How it works
+
+Routing happens in two phases. First, the server evaluates `server.aliasing.rules` against the stripped `Host` header (port removed). The first matching rule wins and pre-populates up to all three of `(projectId, architecture, chainId)`. Then `parseUrlPath` reads the remaining URL path segments and fills in any fields not yet set by domain aliasing.
+
+After path parsing, `common.IsValidArchitecture` validates the architecture string. Currently only `"evm"` is valid; any other value — including an empty string when chainId is present — returns HTTP 400. If `projectId` is still empty after all resolution, the request is also rejected with 400.
+
+For POST requests where `architecture` and `chainId` are still unknown after the path, the server inspects the JSON-RPC body for a top-level `"networkId"` field of the form `"evm:42161"`. This allows project-level requests (`POST /main`) to self-describe their network inline without a URL change.
+
+Any request whose HTTP method is neither POST nor OPTIONS has `isHealthCheck` forced to `true` after path parsing — meaning `GET /main/evm/1` silently becomes a network-scoped healthcheck rather than an error. Architecture validation still runs first; a GET to an invalid architecture path returns 400, not 200.
+
+**Domain alias wildcard matching.** `matchDomain` is evaluated with `common.WildcardMatch`, which uses Go `filepath.Match` semantics supporting `*` and `?`. The `Host` header has its port stripped before matching. Only the first matching rule applies; remaining rules are ignored. [Source: <SourceLink file="erpc/http_server.go" lines="234-256" />]
+
+**Network alias resolution.** Inside path parsing, whenever a single unresolved segment is being interpreted as architecture or chainId, the parser calls `project.networksRegistry.ResolveAlias(segment)`. If it matches, the stored `(architecture, chainId)` override the raw segment — enabling `POST /main/arbitrum` instead of `POST /main/evm/42161`. Aliases are registered eagerly at startup from all statically configured networks, and lazily when a network is first bootstrapped. [Source: <SourceLink file="erpc/http_server.go" lines="860-866" />]
+
+**Global `NetworkAlias` resolver.** A process-global atomic function pointer (`common.networkAliasResolver`) is installed at startup via `common.SetNetworkAliasResolver(f)`. `common.NetworkAlias(networkId)` calls the installed resolver and returns the alias if found, or the raw `networkId` unchanged. Components without project context (e.g., the gRPC cache connector) use this for consistent metric label emission. This is distinct from the per-project URL routing alias maps. [Source: <SourceLink file="common/network_alias.go" lines="10-34" />]
+
+**Full set of accepted proxy URL shapes after alias resolution:**
+
+| URL shape | Pre-populated by alias | Segments needed |
+|---|---|---|
+| `POST /<project>/<arch>/<chain>` | none | 3 — canonical form |
+| `POST /<arch>/<chain>` | project | 2 |
+| `POST /<chain>` | project + arch | 1 |
+| `POST /` | project + arch + chain | 0 — single-chain dedicated domain |
+| `POST /<project>/<network-alias>` | none | 2 — alias resolved to arch+chain |
+| `POST /<network-alias>` | project | 1 — alias resolved |
+| `POST /<project>` | none | 1 — arch+chain from body `networkId` |
+| `POST /<project>/<arch>` | none | 2 — chainId from body `networkId` |
+
+**Path parsing state machine.** `parseUrlPath` has six distinct cases keyed by which fields were pre-populated by domain aliasing. Before the case switch, the path is cleaned with `path.Clean` (collapsing double slashes, resolving `..` segments) and split on `/`. A trailing segment `"healthcheck"` or an empty root GET is always a healthcheck regardless of case.
+
+| Case | Pre-selected | Segment handling |
+|---|---|---|
+| 1 | none | 0→healthcheck; 1→projectId; 2→project+(alias or arch); 3→project+arch+chain; 4+→400 |
+| 2 | project | 0→healthcheck; 1→alias or arch; 2→arch+chain; 3→full override; 4+→400 |
+| 3 | project + arch | 0→healthcheck; 1→alias override or chainId; 2→400; 3→full override; 4+→400 |
+| 4 | all three | 0 or 1 (healthcheck suffix)→pass; anything else→400 |
+| 5 | arch + chain | 0→healthcheck; 1→projectId; 2→400; 3→full override; 4+→400 |
+| 6 | arch only | 0→healthcheck; 1→projectId; 2→project+chainId; 3→full override; 4+→400 |
+| default | project + chain, no arch | always 400 — impossible combination |
+
+Source: [<SourceLink file="erpc/http_server.go" lines="852-991" />]
+
+**Invalid and impossible path combinations** (after the case switch, post-switch checks at L993-L999 apply):
+
+| Condition | HTTP status | Error message |
+|---|---|---|
+| `projectId` still empty (not healthcheck) | 400 | `"project is required either in path or via domain aliasing"` |
+| Architecture fails `IsValidArchitecture` | 400 | `"architecture is not valid (must be 'evm')"` |
+| `projectId` + `chainId` pre-selected but no `architecture` (default case) | 400 | `"it is not possible to alias for project and chain WITHOUT architecture"` |
+| 4+ segments with no pre-selection | 400 | `"must only provide /<project>/<architecture>/<chainId>"` |
+
+**Healthcheck URL shapes.** The following GET (or any non-POST/non-OPTIONS) URL patterns reach healthcheck handlers — alias resolution and architecture validation still apply to the path segments:
+
+| URL shape | Scope |
+|---|---|
+| `GET /` | Global (all projects) |
+| `GET /healthcheck` | Global (all projects) |
+| `GET /<project>/healthcheck` | Per-project |
+| `GET /<project>/<arch>/<chain>/healthcheck` | Per-network (explicit) |
+| `GET /<project>/<network-alias>/healthcheck` | Per-network (alias resolved) |
+| Aliased domain `GET /healthcheck` | Scope matches what alias pre-selects |
+| Aliased domain `GET /` | Same as above |
+
+Note: `GET /main/foo/healthcheck` where `foo` is neither a valid alias nor `"evm"` returns HTTP 400, not 200, because architecture validation runs before healthcheck dispatch.
+
+### Config schema
+
+**Domain aliasing** — `server.aliasing.rules[]` (struct: <SourceLink file="common/config.go" lines="253-262" />):
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `matchDomain` | `string` | required | Wildcard pattern matched against `Host` header after port strip. Supports `*` and `?` (Go `filepath.Match`). First matching rule wins; no merging. **Footgun:** a `"*"` wildcard before specific rules captures everything. Source: <SourceLink file="common/config.go" lines="258" /> |
+| `serveProject` | `string` | `""` | Project ID pre-populated when rule matches. If empty, projectId must appear in path. Source: <SourceLink file="common/config.go" lines="259" /> |
+| `serveArchitecture` | `string` | `""` | Architecture pre-populated (e.g. `"evm"`). If empty, must appear in path or be resolved from a network alias. Source: <SourceLink file="common/config.go" lines="260" /> |
+| `serveChain` | `string` | `""` | Chain ID string pre-populated (e.g. `"1"`, `"42161"`). If empty, must appear in path. **Footgun:** setting `serveChain` without `serveArchitecture` is an impossible combination and always returns 400. Source: <SourceLink file="common/config.go" lines="261" /> |
+
+**Network (path) aliasing** — `projects[].networks[].alias` (struct: <SourceLink file="common/config.go" lines="1995-2006" />):
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `projects[].networks[].alias` | `string` | `""` (no alias) | Human-readable path alias for this network (e.g. `"arbitrum"`). Used in URL instead of raw `<arch>/<chainId>`. Per-project; two projects can have the same alias string without conflict. **Footgun:** alias collision within a project drops the second registration silently with a WARN log — first registration wins. Also propagated to the process-global `NetworkAlias` resolver for metric-label consistency. Source: <SourceLink file="common/config.go" lines="2002" />, <SourceLink file="erpc/networks_registry.go" lines="67-79" /> |
+
+Total config fields in scope: **5**
+
+### Worked examples
+
+**1. Single-chain dedicated domain.** A product endpoint where every call is Ethereum mainnet — clients POST to `https://eth.myservice.com/` with no path beyond the root:
+
+<ConfigTabs
+  path="server.aliasing.rules"
+  yaml={`server:
   aliasing:
     rules:
       - matchDomain: "eth.myservice.com"
         serveProject: "main"
         serveArchitecture: "evm"
-        serveChain: "1"
-```
-```
-https://eth.myservice.com
-```
+        serveChain: "1"`}
+  ts={`server: {
+  aliasing: {
+    rules: [{
+      matchDomain: "eth.myservice.com",
+      serveProject: "main",
+      serveArchitecture: "evm",
+      serveChain: "1",
+    }],
+  },
+}`}
+/>
 
-#### Multiple rules example
+**2. Multi-chain domain with architecture pre-selected.** Pre-select only `serveArchitecture: "evm"` so clients can hit `POST /main/42161` or `POST /main/1` without the `evm` segment. Useful when all traffic is EVM but chains vary per request:
 
-You can define multiple rules to handle different domains:
-
-```yaml
-server:
+<ConfigTabs
+  path="server.aliasing.rules"
+  yaml={`server:
   aliasing:
     rules:
-      # Ethereum Mainnet specific endpoint
-      - matchDomain: "eth.myservice.com"
+      - matchDomain: "rpc.myservice.com"
         serveProject: "main"
-        serveArchitecture: "evm"
-        serveChain: "1"
-      
-      # Arbitrum specific endpoint
-      - matchDomain: "arbitrum.myservice.com"
-        serveProject: "main"
-        serveArchitecture: "evm"
-        serveChain: "42161"
-      
-      # Generic EVM endpoint (requires chain ID in URL)
-      - matchDomain: "evm.myservice.com"
-        serveProject: "main"
-        serveArchitecture: "evm"
-      
-      # Project-specific endpoint (requires architecture and chain in URL)
-      - matchDomain: "api.myservice.com"
-        serveProject: "main"
+        serveArchitecture: "evm"`}
+  ts={`server: {
+  aliasing: {
+    rules: [{
+      matchDomain: "rpc.myservice.com",
+      serveProject: "main",
+      serveArchitecture: "evm",
+    }],
+  },
+}`}
+/>
+
+**3. Human-readable network alias in path.** Configure `alias: "arbitrum"` on the Arbitrum network so clients can POST to `/main/arbitrum` instead of `/main/evm/42161`. When two projects both define `alias: "mainnet"` they resolve independently — no cross-project conflict:
+
+<ConfigTabs
+  path="projects[].networks[].alias"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 42161
+        alias: arbitrum`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 42161 },
+    alias: "arbitrum",
+  }],
+}]`}
+/>
+
+**4. Body-level network routing (no network in URL).** For services that dynamically pick chains per call, send `POST /main` with `"networkId": "evm:42161"` in the JSON-RPC body. No URL change needed across chains — useful for SDK integrations where the network travels in the request payload:
+
+```json
+POST /main
+Content-Type: application/json
+
+{"jsonrpc":"2.0","method":"eth_blockNumber","networkId":"evm:42161","id":1}
 ```
 
-<Callout type="info">
-  Alias domains are matched with `Host` header using [matcher syntax](/config/matcher)
-</Callout>
+### Request/response behavior
 
-## Multi-chain requests
+- All proxy responses use a JSON-RPC envelope regardless of HTTP status code; 404s are never plain-text.
+- HTTP status codes are derived by `httpStatusCode(err)`:
 
-When making requests for multiple chains, you can use the project endpoint only and must include "networkId" within the request body:
+| HTTP status | Error codes | Condition |
+|---|---|---|
+| 400 | `ErrCodeInvalidUrlPath`, `ErrCodeJsonRpcRequestUnmarshal`, `ErrCodeInvalidRequest` | Invalid URL path, bad JSON, invalid architecture, impossible alias combination, corrupt gzip body |
+| 401 | `ErrCodeAuthUnauthorized`, `ErrCodeEndpointUnauthorized` | Auth failure at project or upstream level |
+| 404 | `ErrCodeProjectNotFound`, `ErrCodeNetworkNotFound`, `ErrCodeNetworkNotSupported` | Unknown `projectId`, unknown `networkId`, or unsupported network |
+| 429 | `ErrCodeAuthRateLimitRuleExceeded`, `ErrCodeProjectRateLimitRuleExceeded`, `ErrCodeNetworkRateLimitRuleExceeded`, `ErrCodeEndpointCapacityExceeded` | Rate limiter exceeded at any level |
+| 200 | (all other) | All other outcomes — including upstream errors, which return HTTP 200 with a JSON-RPC error body |
 
-<Callout type='info'>
-  https://&lt;your-erpc-hostname&gt;/&lt;project-id&gt;
-</Callout>
+[Source: <SourceLink file="erpc/http_server.go" lines="1285-1317" />]
 
+- Non-POST/non-OPTIONS methods: `isHealthCheck` is forced `true` after path parsing; the client receives a healthcheck response with no indication the substitution occurred. [<SourceLink file="erpc/http_server.go" lines="1001-1003" />]
+- Unknown project (`ErrProjectNotFound`): `s.erpc.GetProject(projectId)` returns HTTP 404 with a JSON-RPC envelope and message `"project <id> is not configured"`. [Source: <SourceLink file="erpc/projects_registry.go" lines="118" />]
+- Networks are lazily initialized: `ErrNetworkNotFound` (HTTP 404) is returned only when the networkId format is valid but resolution definitively fails. A network that has never been requested may succeed on first call for provider-based projects. [Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />]
+- Batch detection fires on `body[0] == '['` — no Content-Type gate, no pre-parse. A body like `[invalid json` is detected as batch then fails unmarshalling with a 400. [<SourceLink file="erpc/http_server.go" lines="405-409" />]
+- Request gzip decompression is unconditional: `Content-Encoding: gzip` always triggers decompression regardless of the `server.enableGzip` setting (which controls response compression only). Corrupt gzip → 400 `ErrInvalidRequest` immediately. [<SourceLink file="erpc/http_server.go" lines="349-370" />]
+- `MaxHeaderBytes` is `1 MiB` on both IPv4 and IPv6 servers; requests with oversized headers are rejected at the Go net/http layer with HTTP 431 before any eRPC handler runs. Body size has no configured cap. [<SourceLink file="erpc/http_server.go" lines="186" />]
+- gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="161-177" />]
+- The admin endpoint is exactly `POST /admin` or `OPTIONS /admin`; `GET /admin` is a healthcheck; `/admin/foo` fails with a URL parse error. [<SourceLink file="erpc/http_server.go" lines="836-838" />]
 
-```bash
-# A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
+### Best practices
 
-curl --location 'http://localhost:4000/main' \
---header 'Content-Type: application/json' \
---data '{
-    "networkId": "evm:1",
-    "method": "eth_getBlockByNumber",
-    "params": [
-        "0x1203319",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
-```
+- **Use `serveArchitecture: "evm"` without `serveChain`** on a project-scoped domain to drop `evm` from every URL (`POST /main/1` instead of `POST /main/evm/1`), saving clients a segment while preserving multi-chain flexibility.
+- **Order domain alias rules most-specific first.** The first matching rule wins and remaining rules are not evaluated. A catch-all `matchDomain: "*"` placed before specific rules silently captures every request — include it last only if intentional.
+- **Never set `serveChain` without `serveArchitecture`.** This combination is explicitly detected as impossible and returns 400. If you want to pre-select a chain, always pair it with `serveArchitecture: "evm"`.
+- **Assign unique aliases within a project.** Alias collision silently drops the second registration (only a WARN log is emitted). Verify at startup that each project's `alias` values are distinct.
+- **Apply body-size limits at the reverse proxy.** The 1 MiB limit is headers only; bodies are read into memory without a cap. Nginx/Envoy `client_max_body_size` prevents memory exhaustion from oversized requests.
+- **Test healthcheck paths with your alias setup.** `parseUrlPath` runs alias and architecture validation even on healthcheck requests — a `GET /main/foo/healthcheck` where `foo` is neither a valid alias nor `"evm"` returns 400, not 200, which can break load-balancer probes.
 
-## Batch requests
+### Edge cases & gotchas
 
-You can batch multiple calls across any number of networks, in a single request. Read more about it in [Batch requests](/operation/batch) page.
+1. **Domain aliasing matches the `Host` header after port stripping.** If an ingress forwards `Host: api.example.com:443`, the colon and port are stripped before matching. A rule `matchDomain: "api.example.com"` works regardless of the port in the `Host` header. Source: <SourceLink file="erpc/http_server.go" lines="234-237" />
+2. **`GET /main/evm/1` is a healthcheck, not a proxy request.** Any non-POST/non-OPTIONS method forces `isHealthCheck=true` after path parsing. The response gives no indication this substitution occurred. This is intentional for load-balancer probes. Source: <SourceLink file="erpc/http_server.go" lines="1001-1003" />
+3. **`serveProject` + `serveChain` without `serveArchitecture` always errors.** The combination is detected as an impossible alias and returns 400 immediately. Source: <SourceLink file="erpc/http_server.go" lines="985-988" />
+4. **First domain alias rule wins; no merging.** Order rules from most-specific to least-specific. A `matchDomain: "*"` before specific rules captures everything. Source: <SourceLink file="erpc/http_server.go" lines="244-256" />
+5. **Network aliases are per-project, not global.** The alias map is stored per `NetworksRegistry` per `PreparedProject`. Source: <SourceLink file="erpc/networks_registry.go" lines="31" />
+6. **Alias collision: first-registration wins, silently for callers.** If a provider dynamically creates a network whose alias matches a statically configured one, the static alias wins. The dynamic registration is dropped with a WARN log but no error is returned. Source: <SourceLink file="erpc/networks_registry.go" lines="340-344" />
+7. **Alias resolution only in specific path positions.** In a fully-explicit 3-segment path (`/project/evm/42161`), no alias resolution is attempted — an alias named `"evm"` would NOT intercept the architecture position. Source: <SourceLink file="erpc/http_server.go" lines="860-866" />
+8. **Body `networkId` requires valid JSON.** If the body is not valid JSON when `architecture` is still empty, a JSON-RPC parse error is returned. This only applies to proxy requests; healthcheck does not read the body. Source: <SourceLink file="erpc/http_server.go" lines="617-622" />
+9. **Healthcheck paths pass through architecture validation.** `GET /main/foo/healthcheck` where `foo` is not a known alias and not `"evm"` returns HTTP 400, not 200. Source: <SourceLink file="erpc/http_server.go" lines="997-999" />
+10. **`path.Clean` normalizes unusual paths.** `/main//evm/1` becomes `/main/evm/1`; `/main/../other/evm/1` resolves to `/other/evm/1`. Source: <SourceLink file="erpc/http_server.go" lines="821" />
+11. **Batch detection has no Content-Type gate.** A body starting with `[` is treated as batch even if `Content-Type: text/plain` or omitted entirely. A malformed batch like `[invalid json` is detected as batch and then fails unmarshal with a 400. Source: <SourceLink file="erpc/http_server.go" lines="405-414" />
+12. **`server.enableGzip` controls response compression only.** Request decompression is unconditional. Operators cannot disable inbound gzip decompression via config. Source: <SourceLink file="erpc/http_server.go" lines="349-370" />
+13. **Body size has no configured cap.** The 1 MiB limit is headers only. Arbitrarily large bodies are read into memory. Apply body-size limits at the reverse-proxy layer. Source: <SourceLink file="erpc/http_server.go" lines="186" />, <SourceLink file="erpc/http_server.go" lines="374" />
+14. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
+15. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
+16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="161-177" />
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_cors_requests_total` | counter | project, origin | Every request carrying an `Origin` header |
+| `erpc_cors_preflight_requests_total` | counter | project, origin | OPTIONS preflight from an allowed origin |
+| `erpc_cors_disallowed_origin_total` | counter | project, origin | Request from an origin not in the allowlist |
+
+**Tracing.** All requests share an `Http.ReceivedRequest` OTel span with `http.method`, `http.url`, `http.scheme`, `http.user_agent` attributes. After routing, `common.SetForceTraceNetwork(ctx, architecture+":"+chainId)` injects the network into the span context. [Source: <SourceLink file="erpc/http_server.go" lines="285-288" />]
+
+**Log messages.**
+- `"received http request"` — INFO with `body` JSON field for non-empty bodies
+- `"received http request with empty body"` — INFO for empty-body requests
+- `"failed to match aliasing rule"` — ERROR if `WildcardMatch` returns an error for a domain alias rule
+- `"registered network alias"` — DEBUG on alias registration
+- `"skipping duplicate alias registration with different target"` — WARN on alias collision
+
+### Source code entry points
+
+- [`erpc/http_server.go:L226-L292`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L226-L292) — domain alias evaluation in `handleRequest`; `Host` header stripping; routing dispatch
+- [`erpc/http_server.go:L810-L1006`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L810-L1006) — `parseUrlPath`: full path parsing state machine (all 6 cases), alias resolution, healthcheck/admin detection, validation
+- [`erpc/http_server.go:L615-L633`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L615-L633) — `networkId` fallback from request body
+- [`erpc/http_server.go:L1285-L1317`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1285-L1317) — `httpStatusCode(err)`: full HTTP status code mapping (400/401/404/429/200)
+- [`erpc/networks_registry.go:L22-L81`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L22-L81) — `NetworksRegistry` struct + `NewNetworksRegistry` (eager alias registration from static config)
+- [`erpc/networks_registry.go:L247-L255`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L247-L255) — `ResolveAlias`: alias lookup under read lock
+- [`erpc/networks_registry.go:L322-L348`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L322-L348) — `registerAlias`: lazy registration + collision guard
+- [`common/config.go:L253-L262`](https://github.com/erpc/erpc/blob/main/common/config.go#L253-L262) — `AliasingConfig`, `AliasingRuleConfig` fields
+- [`common/config.go:L1995-L2006`](https://github.com/erpc/erpc/blob/main/common/config.go#L1995-L2006) — `NetworkConfig.Alias` field
+- [`common/network_alias.go:L10-L34`](https://github.com/erpc/erpc/blob/main/common/network_alias.go#L10-L34) — process-global `NetworkAlias` resolver (cross-component metric-label consistency)
+- [`common/network.go:L35-L37`](https://github.com/erpc/erpc/blob/main/common/network.go#L35-L37) — `IsValidArchitecture` (currently only `"evm"`)
+- [`erpc/http_server_test.go:L3378-L3709`](https://github.com/erpc/erpc/blob/main/erpc/http_server_test.go#L3378-L3709) — `TestHttpServer_ParseUrlPath`: 30+ cases covering all alias combinations, network alias resolution, invalid architectures, healthcheck suffix placement
+- [`erpc/projects_registry.go:L118`](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go#L118) — `ErrProjectNotFound` returned by `GetProject` on unknown projectId
+
+### Related pages
+
+- [Auth](/config/auth) — auth failure produces the 401 this page's error table maps.
+- [Rate limiters](/config/rate-limiters) — rate limit exceeded produces the 429 this page's error table maps.
+- [Projects](/config/projects) — where `networks[].alias` is configured.
+- [Deployment](/deployment) — reverse-proxy body-size limits recommended in best practices.
+
+</AISection>

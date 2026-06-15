@@ -3,7 +3,6 @@ package erpc
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -13,11 +12,42 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/internal/policy/stdlib"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
 )
+
+// ScoreMetricsWindowSize is the FALLBACK rolling window the
+// score-metrics tracker uses for per-upstream counters (errorRate,
+// p95, throttle, lag, …) when a project's YAML doesn't set the
+// canonical `scoreMetricsWindowSize` field. The tracker keeps a
+// 10-bucket sliding window of this duration; one bucket rotates
+// every windowSize/10, so the window is also the upper bound on how
+// long a freshly-degraded upstream can keep its old healthy score
+// before `excludeIf` / `sortByScore` see the new reality.
+//
+// 1 minute is the default — a balance of reaction speed and signal
+// stability:
+//   - reaction: a fully-broken upstream crosses `errorRate > 0.5`
+//     within ~30s under steady traffic (50% of the window is enough
+//     to flip the ratio); the next 1s eval tick excludes it. Block-lag
+//     gates fire faster still (≤ statePollerInterval + 1s).
+//   - stability: low-traffic networks with a handful of samples per
+//     minute don't get whipsawed by a single bad request the way a
+//     10-second window would (1 failure out of 5 calls = 20% spike).
+//   - rotation cost: 10 buckets at 6s each = once-every-6s rotation
+//     across all (upstream, method) tuples — sustainable at the
+//     hundreds-of-upstreams × tens-of-methods scale typical of an
+//     edge aggregator.
+//
+// Tune lower (30s, 15s) for high-RPS edges where reaction-time is
+// paramount and per-window sample volume is high; tune higher (5m,
+// 10m) for archival aggregators where signal stability matters more
+// than detection speed.
+var ScoreMetricsWindowSize = 1 * time.Minute
 
 type ProjectsRegistry struct {
 	logger *zerolog.Logger
@@ -30,6 +60,13 @@ type ProjectsRegistry struct {
 	staticProjects       []*common.ProjectConfig
 	vendorsRegistry      *thirdparty.VendorsRegistry
 	proxyPoolRegistry    *clients.ProxyPoolRegistry
+	// userScript is the compiled program of the user's TS config file
+	// (when LoadConfig went through the .ts path). nil for YAML. Passed
+	// into every project's policy.Engine so its runtime pool can
+	// evaluate the user's whole module in each runtime — keeping
+	// closure variables + module-level helpers live in the same scope
+	// as the `evalFunc` arrow functions the user wrote.
+	userScript *sobek.Program
 }
 
 func NewProjectsRegistry(
@@ -41,6 +78,7 @@ func NewProjectsRegistry(
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *thirdparty.VendorsRegistry,
 	proxyPoolRegistry *clients.ProxyPoolRegistry,
+	userScript *sobek.Program,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
 		appCtx:               appCtx,
@@ -52,6 +90,7 @@ func NewProjectsRegistry(
 		evmJsonRpcCache:      evmJsonRpcCache,
 		vendorsRegistry:      vendorsRegistry,
 		proxyPoolRegistry:    proxyPoolRegistry,
+		userScript:           userScript,
 	}
 
 	for _, prjCfg := range staticProjects {
@@ -88,8 +127,22 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	lg := r.logger.With().Str("projectId", prjCfg.Id).Logger()
 
-	wsDuration := prjCfg.ScoreMetricsWindowSize.Duration()
-	metricsTracker := health.NewTracker(&lg, prjCfg.Id, wsDuration)
+	// Score-metrics window: prefer the project's explicit YAML value;
+	// fall back to the package-level default (10m in production, 30s
+	// for the erpc-simulator which sets it in init()).
+	metricsWindow := ScoreMetricsWindowSize
+	if d := prjCfg.ScoreMetricsWindowSize.Duration(); d > 0 {
+		metricsWindow = d
+	}
+	metricsTracker := health.NewTracker(&lg, prjCfg.Id, metricsWindow)
+	// Start the rotation goroutine that advances the rolling window
+	// every `metricsWindow / rollingBuckets`. Without this the
+	// per-upstream counters + quantile sketch accumulate forever,
+	// which silently turns the rolling window into a "since process
+	// start" window — degradations get diluted by lifetime traffic
+	// and the score chip barely budges no matter how the upstream
+	// behaves now.
+	metricsTracker.Bootstrap(r.appCtx)
 	providersRegistry, err := thirdparty.NewProvidersRegistry(
 		&lg,
 		r.vendorsRegistry,
@@ -105,10 +158,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		rateLimitersRegistry: r.rateLimitersRegistry,
 		cfgMu:                sync.RWMutex{},
 	}
-	scoreRefreshInterval := prjCfg.ScoreRefreshInterval.Duration()
-	if scoreRefreshInterval == 0 {
-		scoreRefreshInterval = 10 * time.Second
-	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		r.appCtx,
 		&lg,
@@ -120,14 +169,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		providersRegistry,
 		r.proxyPoolRegistry,
 		metricsTracker,
-		scoreRefreshInterval,
-		&upstream.ScoringConfig{
-			RoutingStrategy:   prjCfg.RoutingStrategy,
-			ScoreGranularity:  prjCfg.ScoreGranularity,
-			PenaltyDecayRate:  prjCfg.ScorePenaltyDecayRate,
-			SwitchHysteresis:  prjCfg.ScoreSwitchHysteresis,
-			MinSwitchInterval: prjCfg.ScoreMinSwitchInterval.Duration(),
-		},
 		func(ups *upstream.Upstream) error {
 			ntwId := ups.NetworkId()
 			if ntwId == "" {
@@ -141,16 +182,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			return nil
 		},
 	)
-	// Apply score metrics mode per project with minimal surface area
-	modeStr := strings.TrimSpace(prjCfg.ScoreMetricsMode)
-	switch strings.ToLower(modeStr) {
-	case string(telemetry.ScoreModeDetailed):
-		upstreamsRegistry.SetScoreMetricsMode(telemetry.ScoreModeDetailed)
-	case string(telemetry.ScoreModeNone):
-		upstreamsRegistry.SetScoreMetricsMode(telemetry.ScoreModeNone)
-	default:
-		upstreamsRegistry.SetScoreMetricsMode(telemetry.ScoreModeCompact)
-	}
 
 	if prjCfg.Auth != nil {
 		consumerAuthRegistry, err := auth.NewAuthRegistry(r.appCtx, &lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
@@ -161,6 +192,14 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	}
 
 	pp.upstreamsRegistry = upstreamsRegistry
+	pp.policyEngine = policy.NewEngine(
+		r.appCtx,
+		&lg,
+		prjCfg.Id,
+		metricsTracker,
+		stdlib.Install,
+		r.userScript,
+	)
 	pp.networksRegistry = NewNetworksRegistry(
 		pp,
 		r.appCtx,
@@ -168,6 +207,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		metricsTracker,
 		r.evmJsonRpcCache,
 		r.rateLimitersRegistry,
+		pp.policyEngine,
 		&lg,
 	)
 	r.preparedProjects[prjCfg.Id] = pp

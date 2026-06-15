@@ -22,5 +22,11 @@ module.exports = {
 	},
 	admin: {
 		title: "Admin",
+	},
+	cordoning: {
+		title: "Cordoning",
+	},
+	cli: {
+		title: "CLI & env vars",
 	}
 };

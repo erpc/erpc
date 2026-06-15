@@ -542,28 +542,6 @@ func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
 	return http.StatusUnauthorized
 }
 
-type ErrPaymentRequired struct {
-	BaseError
-	// PaymentRequirements holds the raw x402 PaymentRequirementsResponse to return to the client.
-	PaymentRequirements interface{} `json:"-"`
-}
-
-const ErrCodePaymentRequired ErrorCode = "ErrPaymentRequired"
-
-var NewErrPaymentRequired = func(paymentRequirements interface{}) error {
-	return &ErrPaymentRequired{
-		BaseError: BaseError{
-			Code:    ErrCodePaymentRequired,
-			Message: "payment required for this resource",
-		},
-		PaymentRequirements: paymentRequirements,
-	}
-}
-
-func (e *ErrPaymentRequired) ErrorStatusCode() int {
-	return http.StatusPaymentRequired
-}
-
 type ErrAuthRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeAuthRateLimitRuleExceeded ErrorCode = "ErrAuthRateLimitRuleExceeded"
@@ -750,10 +728,14 @@ type ErrUpstreamClientInitialization struct {
 	BaseError
 }
 
-// IsTaskFatal marks upstream client initialization failures as fatal so the
-// bootstrap initializer does not retry them. A bad genesis hash, invalid
-// endpoint, or missing credentials will never self-heal on retry.
-func (e *ErrUpstreamClientInitialization) IsTaskFatal() bool { return true }
+// Note: ErrUpstreamClientInitialization deliberately does not implement
+// IsTaskFatal — the same constructor is used for both permanent
+// (chainId-mismatch, parse-error, unsupported-type, genesis-hash-mismatch) and
+// transient (RPC/network failure during chainId/genesis detection) causes.
+// Call sites that know the cause is permanent wrap with common.NewTaskFatal()
+// so the Initializer stops retrying. Leaving this unimplemented keeps transient
+// failures retryable — a provider outage during startup should be recoverable
+// once the provider returns.
 
 var NewErrUpstreamClientInitialization = func(cause error, upstream Upstream) error {
 	return &ErrUpstreamClientInitialization{
@@ -1450,10 +1432,12 @@ var NewErrUpstreamShadowing = func(upstreamId string) error {
 
 type ErrUpstreamNotAllowed struct{ BaseError }
 
+const ErrCodeUpstreamNotAllowed ErrorCode = "ErrUpstreamNotAllowed"
+
 var NewErrUpstreamNotAllowed = func(required, upstreamId string) error {
 	return &ErrUpstreamNotAllowed{
 		BaseError{
-			Code:    "ErrUpstreamNotAllowed",
+			Code:    ErrCodeUpstreamNotAllowed,
 			Message: "upstream not allowed based on use-upstream directive",
 			Details: map[string]interface{}{
 				"required":   required,
@@ -1996,6 +1980,11 @@ func (e *ErrEndpointServerSideException) ErrorStatusCode() int {
 	}
 	return http.StatusInternalServerError
 }
+
+// ErrDynamicTimeoutExceeded is the sentinel set as context cause by the
+// timeout policy's context.WithTimeoutCause. It distinguishes policy-driven
+// timeouts from parent-context deadlines (e.g. HTTP server timeouts).
+var ErrDynamicTimeoutExceeded = errors.New("dynamic timeout exceeded")
 
 type ErrEndpointRequestTimeout struct{ BaseError }
 

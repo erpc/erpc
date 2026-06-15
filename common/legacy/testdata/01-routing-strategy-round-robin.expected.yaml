@@ -1,0 +1,32 @@
+# Translator output for scenario 01.
+#
+# The synthesized `eval` uses the new stdlib's `rotateBy(ctx.tickCount)`
+# helper, which produces deterministic round-robin rotation across ticks.
+# The legacy project-level `routingStrategy` field is gone.
+
+projects:
+  - id: main
+    upstreams:
+      - id: rpc1
+        endpoint: http://rpc1.localhost
+        type: evm
+        evm:
+          chainId: 123
+      - id: rpc2
+        endpoint: http://rpc2.localhost
+        type: evm
+        evm:
+          chainId: 123
+      - id: rpc3
+        endpoint: http://rpc3.localhost
+        type: evm
+        evm:
+          chainId: 123
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 123
+        selectionPolicy:
+          evalInterval: 1s
+          eval: |
+            (upstreams, ctx) => upstreams.rotateBy(ctx.tickCount)

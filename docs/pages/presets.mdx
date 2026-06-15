@@ -1,0 +1,26 @@
+---
+title: Examples
+description: Drop-in eRPC config presets for specific scenarios (DVN, indexer, frontend, etc.).
+---
+
+import { LLMsTxtLink, PromptExample } from "../components";
+
+# Examples
+
+<LLMsTxtLink />
+
+Drop-in eRPC config examples for specific scenarios. Each example is a minimal, self-hosted starting point you can adapt to your chains and providers.
+
+- [DVN (LayerZero)](/presets/dvn-ready) — multi-provider consensus profile for DVN operators and any verifier service that can't trust a single RPC stack.
+
+## Agent reference
+
+<PromptExample
+	n={1}
+	title="start from a preset and adapt it to my stack"
+	defaultOpen
+	prompt={`I want to start my eRPC setup from one of the official presets and adapt it to my
+chains and providers. List the available presets, pick the closest one for my use
+case, and walk me through customizing it into my eRPC config. Reference:
+https://docs.erpc.cloud/presets.llms.txt`}
+/>

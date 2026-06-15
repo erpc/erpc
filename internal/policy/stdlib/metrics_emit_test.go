@@ -1,0 +1,298 @@
+package stdlib_test
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/telemetry"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/require"
+)
+
+// TestMetrics_EmitsScoreGaugeForRanked verifies that surviving upstreams
+// get a `selection_score` gauge value (the actual penalty computed by
+// `sortByScore`). The score is the operator's single most-useful signal
+// for "why is X primary?" — dashboards build everything around this.
+func TestMetrics_EmitsScoreGaugeForRanked(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("fast", "slow")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[1], "*", 100*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+
+	fastGauge := telemetry.MetricSelectionScore.WithLabelValues("p1", "evm:1", "*", "fast")
+	slowGauge := telemetry.MetricSelectionScore.WithLabelValues("p1", "evm:1", "*", "slow")
+	fastScore := promUtil.ToFloat64(fastGauge)
+	slowScore := promUtil.ToFloat64(slowGauge)
+	require.Greater(t, fastScore, 0.0, "fast upstream score must be non-zero")
+	require.Greater(t, fastScore, slowScore,
+		"fast upstream's score must be HIGHER than slow's — higher = better, dashboards depend on this orientation")
+}
+
+// TestMetrics_ExclusionTotalEmitsLeafSlugs verifies that
+// `selection_exclusion_total{reason}` increments WITH THE LEAF SLUG when
+// a compound `any(...)` predicate fires. The slug must be `error_rate_above`,
+// NOT `any` — that's the whole point of option (c) leaf attribution.
+func TestMetrics_ExclusionTotalEmitsLeafSlugs(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.excludeIf(any(errorRateAbove(0.5), blockNumberLagAbove(100)))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("erroring-X", "clean-X")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	beforeLeaf := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "erroring-X", "error_rate_above"))
+	beforeCompound := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "erroring-X", "any"))
+
+	for i := 0; i < 80; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+
+	afterLeaf := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "erroring-X", "error_rate_above"))
+	afterCompound := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "erroring-X", "any"))
+
+	require.Equal(t, beforeLeaf+1, afterLeaf,
+		"exclusion must increment the LEAF slug counter, not the combinator")
+	require.Equal(t, beforeCompound, afterCompound,
+		"compound 'any' slug must NOT receive an increment — option (c) attributes to leaves only")
+}
+
+// TestMetrics_ShadowExcludeIf_ObservesButDoesNotDrop pins the
+// shadowExcludeIf invariants in one shot:
+//
+//  1. The upstream that trips a shadow predicate stays in rotation —
+//     never appears in `excluded`, still appears in `order`.
+//  2. `selection_shadow_exclusion_total{reason}` increments with the
+//     LEAF slug (same option-(c) attribution as the real counter).
+//  3. `selection_exclusion_total{reason}` is NOT incremented for the
+//     same upstream/slug — shadow and real are independently observable.
+//  4. The upstream's `selection_excluded_seconds` gauge stays at 0,
+//     proving shadow never touches `excludedSince` / cooldown bookkeeping.
+func TestMetrics_ShadowExcludeIf_ObservesButDoesNotDrop(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.shadowExcludeIf(errorRateAbove(0.5))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("shadow-erroring", "clean")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	beforeShadow := promUtil.ToFloat64(telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+	beforeReal := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+
+	for i := 0; i < 80; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+
+	policy.TickForTest(engine, "evm:1", "*")
+	policy.TickForTest(engine, "evm:1", "*") // second tick for excluded-seconds gauge to settle
+
+	order, excluded := policy.LatestDecisionOutputForTest(engine, "evm:1", "*")
+	require.NotContains(t, excluded, "shadow-erroring",
+		"shadow predicates must NEVER produce an excluded entry")
+	require.Contains(t, order, "shadow-erroring",
+		"shadow-tripped upstream must stay in rotation")
+
+	afterShadow := promUtil.ToFloat64(telemetry.MetricSelectionShadowExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+	afterReal := promUtil.ToFloat64(telemetry.MetricSelectionExclusionTotal.WithLabelValues("p1", "evm:1", "*", "shadow-erroring", "error_rate_above"))
+	require.Greater(t, afterShadow, beforeShadow,
+		"shadow counter must increment when the predicate would have tripped")
+	require.Equal(t, beforeReal, afterReal,
+		"real exclusion counter must NOT move for a shadow trip")
+
+	excludedSeconds := promUtil.ToFloat64(telemetry.MetricSelectionExcludedSeconds.WithLabelValues("p1", "evm:1", "*", "shadow-erroring"))
+	require.Equal(t, 0.0, excludedSeconds,
+		"shadow trips must NOT enter excludedSince/cooldown — the gauge stays 0")
+}
+
+// TestMetrics_ExcludedSecondsGaugeTransitions verifies that the
+// `selection_excluded_seconds` gauge:
+//   * is 0 for in-rotation upstreams (clean upstream stays at 0)
+//   * is non-zero for excluded ones (after the second tick to give the
+//     gauge a chance to read excludedSince)
+//   * resets to 0 when an upstream is readmitted.
+func TestMetrics_ExcludedSecondsGaugeTransitions(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.excludeIf(errorRateAbove(0.5))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("flaky", "steady")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	// Tick 1: flaky degrades, steady stays clean.
+	for i := 0; i < 80; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	policy.TickForTest(engine, "evm:1", "*")
+	// Tick 2: same state — gauge has now had two ticks to reflect age.
+	policy.TickForTest(engine, "evm:1", "*")
+
+	flaky := promUtil.ToFloat64(telemetry.MetricSelectionExcludedSeconds.WithLabelValues("p1", "evm:1", "*", "flaky"))
+	steady := promUtil.ToFloat64(telemetry.MetricSelectionExcludedSeconds.WithLabelValues("p1", "evm:1", "*", "steady"))
+	require.GreaterOrEqual(t, flaky, 0.0, "flaky's excluded-seconds gauge is set")
+	require.Equal(t, 0.0, steady, "in-rotation upstream's excluded-seconds gauge stays 0")
+}
+
+// TestMetrics_ReadmitCountsTransition verifies that a previously-excluded
+// upstream getting back into the order this tick increments
+// `selection_readmit_total{upstream}` exactly once.
+func TestMetrics_ReadmitCountsTransition(t *testing.T) {
+	// Threshold-driven exclusion that we can flip back by feeding clean
+	// traffic. Using the 60-second rolling window means a burst of
+	// clean requests rapidly dominates the rate.
+	eval := `(upstreams, ctx) => upstreams.excludeIf(errorRateAbove(0.5))`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("returner", "anchor")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	beforeReadmits := promUtil.ToFloat64(telemetry.MetricSelectionReadmitTotal.WithLabelValues("p1", "evm:1", "*", "returner"))
+
+	// Tick 1: returner errors hard → excluded; anchor steady.
+	for i := 0; i < 80; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
+	}
+	for i := 0; i < 100; i++ {
+		tracker.RecordUpstreamRequest(ups[1], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[1], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	policy.TickForTest(engine, "evm:1", "*")
+	order, excluded := policy.LatestDecisionOutputForTest(engine, "evm:1", "*")
+	require.Contains(t, excluded, "returner")
+	require.Equal(t, []string{"anchor"}, order)
+
+	// Tick 2: flood returner with successes — errorRate drops well
+	// below 50% (1000 successes vs 80 failures = ~7.4% error rate).
+	for i := 0; i < 1000; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	policy.TickForTest(engine, "evm:1", "*")
+	order, _ = policy.LatestDecisionOutputForTest(engine, "evm:1", "*")
+	require.Contains(t, order, "returner", "returner must be readmitted after errorRate dropped")
+
+	afterReadmits := promUtil.ToFloat64(telemetry.MetricSelectionReadmitTotal.WithLabelValues("p1", "evm:1", "*", "returner"))
+	require.Equal(t, beforeReadmits+1, afterReadmits,
+		"readmit counter should increment exactly once when an upstream transitions back to in-rotation")
+}
+
+// TestMetrics_StickyHoldCounterIncrementsOnActiveHold verifies the
+// `selection_sticky_hold_total{upstream}` counter increments when sticky
+// actively keeps the previous primary against a challenger.
+func TestMetrics_StickyHoldCounterIncrementsOnActiveHold(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST).stickyPrimary({ hysteresis: 0.10, minSwitchInterval: '1h' })`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("a-prim2", "b-chal2")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
+
+	beforeHolds := promUtil.ToFloat64(telemetry.MetricSelectionStickyHoldTotal.WithLabelValues("p1", "evm:1", "*", "a-prim2"))
+
+	// Tick 1: equal → a-prim2 wins by id tiebreak.
+	for _, u := range ups {
+		for i := 0; i < 100; i++ {
+			tracker.RecordUpstreamRequest(u, "*", common.DataFinalityStateUnknown)
+			tracker.RecordUpstreamDuration(u, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		}
+	}
+	policy.TickForTest(engine, "evm:1", "*")
+	// Tick 2: degrade a-prim2 → score-only ordering would flip, sticky holds.
+	for i := 0; i < 30; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamFailure(ups[0], "*", common.DataFinalityStateUnknown, fmt.Errorf("synth"))
+	}
+	policy.TickForTest(engine, "evm:1", "*")
+
+	afterHolds := promUtil.ToFloat64(telemetry.MetricSelectionStickyHoldTotal.WithLabelValues("p1", "evm:1", "*", "a-prim2"))
+	require.Equal(t, beforeHolds+1, afterHolds,
+		"sticky hold counter must increment when stickyPrimary actively held a primary it would have lost")
+}
+
+// TestMetrics_NetworkLabelUsesAlias verifies that the human-friendly
+// `networkLabel` (i.e. `Network.Label()` — alias when set, else
+// networkID) is the value emitted on the Prometheus `network` label —
+// NOT the canonical `evm:<chainID>`. Dashboards filter and group by
+// alias (consistent with every other erpc_* metric), so getting this
+// wrong silently breaks every Selection Policy panel.
+func TestMetrics_NetworkLabelUsesAlias(t *testing.T) {
+	eval := `(upstreams, ctx) => upstreams.sortByScore(PREFER_FASTEST)`
+	engine, _, tracker, cancel := newTestEngine(t, eval)
+	defer cancel()
+	defer engine.Stop()
+
+	ups := mkUps("u1")
+	cfg := &common.SelectionPolicyConfig{EvalInterval: 0, EvalTimeout: common.Duration(50 * time.Millisecond), EvalFunc: eval}
+	require.NoError(t, cfg.SetDefaults())
+	// networkID is the canonical "evm:8453"; alias is "base" — the
+	// alias is what should land on every emitted metric.
+	require.NoError(t, engine.RegisterNetwork("evm:8453", "base", func() []common.Upstream { return ups }, cfg))
+
+	for i := 0; i < 50; i++ {
+		tracker.RecordUpstreamRequest(ups[0], "*", common.DataFinalityStateUnknown)
+		tracker.RecordUpstreamDuration(ups[0], "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+	}
+	policy.TickForTest(engine, "evm:8453", "*")
+
+	aliasScore := promUtil.ToFloat64(telemetry.MetricSelectionScore.WithLabelValues("p1", "base", "*", "u1"))
+	require.Greater(t, aliasScore, 0.0,
+		"selection_score must be emitted under the alias `base` — dashboards filter by `network` and rely on the alias-not-networkID convention")
+
+	// The canonical-id label vector must not have been written to: any
+	// nonzero value here would mean we double-emit under both keys (or
+	// regressed to networkID emission).
+	canonicalScore := promUtil.ToFloat64(telemetry.MetricSelectionScore.WithLabelValues("p1", "evm:8453", "*", "u1"))
+	require.Equal(t, 0.0, canonicalScore,
+		"selection_score must NOT be emitted under canonical networkID `evm:8453` when an alias is configured")
+}

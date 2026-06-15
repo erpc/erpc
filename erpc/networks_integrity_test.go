@@ -55,13 +55,14 @@ func setupIntegrityTestNetwork(t *testing.T, ctx context.Context, upstreams []*c
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", upstreams, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", upstreams, ssr, rlr, vr, pr, nil, mt, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
+	network.PinUpstreamOrderForTest()
 
 	return network, upr
 }
@@ -102,7 +103,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testin
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -145,7 +146,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexGap_Error(t *testing.T) {
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -184,7 +185,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexContiguous_NoError(t *test
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -219,7 +220,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *tes
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -255,7 +256,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ResultNotArray_Error(t *testing.T)
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -290,7 +291,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexDecreasing_Error(t *testin
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -324,7 +325,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *te
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -363,7 +364,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -402,7 +403,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -441,7 +442,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_EmptyReceipts_NoError(t *testing.T
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -479,7 +480,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexCheckDisabled_NoError(t *t
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -555,7 +556,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InvalidLogIndexHex_Error(t *testin
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -664,7 +665,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithLogs_Error(t *tes
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -703,7 +704,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithZeroLogs_NoError(
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -743,7 +744,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Mismatch_Error(
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -784,7 +785,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Match_NoError(t
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -824,7 +825,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_BelowThreshol
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -865,7 +866,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_MeetsThreshol
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -907,7 +908,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMismatch_Error(t 
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -950,7 +951,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMatch_NoError(t *
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -993,7 +994,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationMissingAddress_Err
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -1037,7 +1038,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationWithAddress_NoErro
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
-	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false, false)
 	require.NoError(t, fwdErr)
 	require.NotNil(t, rawResp)
 	defer rawResp.Release()
@@ -1470,7 +1471,7 @@ func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *te
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 4,
-				Delay:    common.Duration(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Consensus: &common.ConsensusPolicyConfig{
 				MaxParticipants:    4,
@@ -1550,7 +1551,7 @@ func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 2,
-				Delay:    common.Duration(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
@@ -1763,7 +1764,7 @@ func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegri
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 4,
-				Delay:    common.Duration(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Consensus: &common.ConsensusPolicyConfig{
 				MaxParticipants:    8,
@@ -1775,7 +1776,7 @@ func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegri
 				Delay:       common.Duration(5 * time.Millisecond),
 			},
 			Timeout: &common.TimeoutPolicyConfig{
-				Duration: common.Duration(10 * time.Second),
+				Duration: common.NewStaticDuration(10 * time.Second),
 			},
 		}},
 		DirectiveDefaults: &common.DirectiveDefaultsConfig{
@@ -2120,7 +2121,7 @@ func TestNetworkIntegrity_HedgeConsensus_PreferLargerResponses_ValidationIntegri
 			MatchMethod: "eth_getBlockReceipts",
 			Hedge: &common.HedgePolicyConfig{
 				MaxCount: 4,
-				Delay:    common.Duration(10 * time.Millisecond),
+				Delay:    common.NewStaticDuration(10 * time.Millisecond),
 			},
 			Consensus: &common.ConsensusPolicyConfig{
 				MaxParticipants:         4,

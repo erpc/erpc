@@ -20,23 +20,96 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/failsafe"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
-	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// FailsafeExecutor wraps a failsafe executor with method and finality filters
-type FailsafeExecutor struct {
-	method     string
-	finalities []common.DataFinalityState
-	executor   failsafe.Executor[*common.NormalizedResponse]
-	timeout    *time.Duration
+// classifyUpstreamOutcome maps a (resp, err) pair from one upstream
+// call into the observability-friendly UpstreamAttemptOutcome enum.
+// Used at the boundary of tryForward to populate ExecState +
+// MetricUpstreamAttemptOutcomeTotal.
+func classifyUpstreamOutcome(resp *common.NormalizedResponse, err error) common.UpstreamAttemptOutcome {
+	if err != nil {
+		switch {
+		case common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled):
+			return common.UpstreamOutcomeCancelled
+		case errors.Is(err, context.Canceled):
+			return common.UpstreamOutcomeCancelled
+		case common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded):
+			return common.UpstreamOutcomeTimeout
+		case errors.Is(err, common.ErrDynamicTimeoutExceeded):
+			return common.UpstreamOutcomeTimeout
+		case common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen):
+			return common.UpstreamOutcomeBreakerOpen
+		case common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped),
+			common.HasErrorCode(err, common.ErrCodeUpstreamMethodIgnored):
+			return common.UpstreamOutcomeSkipped
+		case common.HasErrorCode(err,
+			common.ErrCodeEndpointCapacityExceeded,
+			common.ErrCodeUpstreamRateLimitRuleExceeded,
+			common.ErrCodeProjectRateLimitRuleExceeded,
+			common.ErrCodeNetworkRateLimitRuleExceeded,
+			common.ErrCodeAuthRateLimitRuleExceeded):
+			return common.UpstreamOutcomeRateLimited
+		case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
+			return common.UpstreamOutcomeMissingData
+		case common.HasErrorCode(err, common.ErrCodeEndpointExecutionException):
+			return common.UpstreamOutcomeExecRevert
+		case common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable):
+			return common.UpstreamOutcomeBlockUnavailable
+		case common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure):
+			return common.UpstreamOutcomeTransportError
+		case common.HasErrorCode(err, common.ErrCodeEndpointServerSideException):
+			return common.UpstreamOutcomeServerError
+		case common.HasErrorCode(err, common.ErrCodeEndpointClientSideException):
+			return common.UpstreamOutcomeClientError
+		}
+		return common.UpstreamOutcomeServerError
+	}
+	if resp != nil && resp.IsResultEmptyish() {
+		return common.UpstreamOutcomeEmpty
+	}
+	return common.UpstreamOutcomeSuccess
 }
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// makeBreakerTransitionHook returns a closure that emits the
+// `upstream_breaker_state_change_total` metric on every state
+// transition. Used at NewUpstream time to wire each per-method
+// breaker's OnTransition without polluting failsafe/.
+func makeBreakerTransitionHook(projectId, upstreamId string) func(failsafe.State, failsafe.State, string) {
+	return func(from, to failsafe.State, _ string) {
+		telemetry.MetricUpstreamBreakerStateChange.WithLabelValues(
+			projectId,
+			upstreamId,
+			from.String()+"_to_"+to.String(),
+		).Inc()
+	}
+}
+
+// AttemptErrorDetailMaxLen bounds the per-attempt error string that
+// `RecordUpstreamAttempt` stores on the request's `ExecState`. The
+// stored value powers diagnostics surfaces (admin endpoints, traces,
+// the simulator's lifecycle drawer) — it does NOT affect the error
+// the caller receives, which is always the full chain.
+//
+// 200 is the production default — it keeps the per-request execution
+// log compact under high RPS. Tooling that wants the full nested
+// `caused by` chain (e.g. cmd/erpc-simulator) can raise this via an
+// `init()`-time write or zero it out to disable truncation entirely.
+var AttemptErrorDetailMaxLen = 200
 
 type Upstream struct {
 	ProjectId string
@@ -53,7 +126,7 @@ type Upstream struct {
 	supportedMethods     sync.Map
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
-	failsafeExecutors    []*FailsafeExecutor
+	failsafeExecutors    []*upstreamExecutor
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
@@ -75,40 +148,27 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	// Create failsafe executors from configs
-	var failsafeExecutors []*FailsafeExecutor
+	// Build one upstreamExecutor per Failsafe config entry, plus a no-op
+	// catch-all so unmatched (method, finality) pairs always resolve.
+	var failsafeExecutors []*upstreamExecutor
 	if len(cfg.Failsafe) > 0 {
 		for _, fsCfg := range cfg.Failsafe {
-			policiesMap, err := CreateFailSafePolicies(appCtx, &lg, common.ScopeUpstream, cfg.Id, fsCfg, nil)
+			ex, err := NewUpstreamExecutor(fsCfg, &lg)
 			if err != nil {
 				return nil, err
 			}
-			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge", "timeout")
-
-			var timeoutDuration *time.Duration
-			if fsCfg.Timeout != nil {
-				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+			// Wire breaker-transition metric. Side-effect-only; failsafe/
+			// package stays telemetry-free.
+			if b := ex.Breaker(); b != nil {
+				b.OnTransition = makeBreakerTransitionHook(projectId, cfg.Id)
 			}
-
-			method := fsCfg.MatchMethod
-			if method == "" {
-				method = "*"
-			}
-			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-				method:     method,
-				finalities: fsCfg.MatchFinality,
-				executor:   failsafe.NewExecutor(policiesArray...),
-				timeout:    timeoutDuration,
-			})
+			failsafeExecutors = append(failsafeExecutors, ex)
 		}
 	}
 
-	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-		method:     "*", // "*" means match any method
-		finalities: nil, // nil means match any finality
-		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
-		timeout:    nil,
-	})
+	// Catch-all no-op executor.
+	noop, _ := NewUpstreamExecutor(nil, &lg)
+	failsafeExecutors = append(failsafeExecutors, noop)
 
 	vn := vr.LookupByUpstream(cfg)
 
@@ -265,6 +325,32 @@ func (u *Upstream) Tracker() common.HealthTracker {
 	return u.metricsTracker
 }
 
+// CircuitBreakerState returns the live state of the circuit breaker on
+// the catch-all (`matchMethod: "*"`) failsafe executor, or
+// `StateClosed` if no such executor / breaker is configured. Read
+// directly from the breaker's atomic state — no simulator-side cache.
+// Diagnostic tooling (admin endpoints, simulator panels) consumes this
+// for the "circuit" pill so the UI never drifts from reality.
+//
+// Per-method breakers exist when a config declares method-specific
+// failsafe blocks, but for the simulator's per-upstream "row" view a
+// single canonical state is what the operator wants — we surface the
+// catch-all because that's what serves the vast majority of methods.
+func (u *Upstream) CircuitBreakerState() failsafe.State {
+	if u == nil {
+		return failsafe.StateClosed
+	}
+	for _, fe := range u.failsafeExecutors {
+		if fe.MatchMethod() == "*" && len(fe.MatchFinality()) == 0 {
+			if br := fe.Breaker(); br != nil {
+				return br.State()
+			}
+			return failsafe.StateClosed
+		}
+	}
+	return failsafe.StateClosed
+}
+
 func (u *Upstream) Logger() *zerolog.Logger {
 	return u.logger
 }
@@ -302,50 +388,45 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
-func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(context.Background())
 
-	// First, try to find a specific match for both method and finality
+	// 4-tier priority: method+finality > method > finality > catch-all.
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) > 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && slices.Contains(fe.finalities, finality) {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp != "*" && len(fl) > 0 {
+			if matched, _ := common.WildcardMatch(mp, method); matched && slices.Contains(fl, finality) {
 				return fe
 			}
 		}
 	}
-
-	// Then, try to find a match for method only (empty finalities means any finality)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && (len(fe.finalities) == 0) {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp != "*" && len(fl) == 0 {
+			if matched, _ := common.WildcardMatch(mp, method); matched {
 				return fe
 			}
 		}
 	}
-
-	// Then, try to find a match for finality only
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) > 0 {
-			if slices.Contains(fe.finalities, finality) {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp == "*" && len(fl) > 0 {
+			if slices.Contains(fl, finality) {
 				return fe
 			}
 		}
 	}
-
-	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (len(fe.finalities) == 0) {
+		mp, fl := fe.MatchMethod(), fe.MatchFinality()
+		if mp == "*" && len(fl) == 0 {
 			return fe
 		}
 	}
-
 	return nil
 }
 
-func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*common.NormalizedResponse, error) {
 	// TODO Should we move byPassMethodExclusion to directives? How do we prevent clients from setting it?
 	startTime := time.Now()
 	cfg := u.Config()
@@ -442,23 +523,119 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds:
 		tryForward := func(
 			ctx context.Context,
-			exec failsafe.Execution[*common.NormalizedResponse],
-		) (*common.NormalizedResponse, error) {
+			isHedge bool,
+		) (resp *common.NormalizedResponse, retErr error) {
+			st := nrq.ExecState()
+			snap := st.Snapshot()
+			attemptStart := time.Now()
+			// Defer the participant record. We capture the named-return
+			// (resp, retErr) at exit so the outcome reflects the actual
+			// classification path.
+			defer func() {
+				if st == nil {
+					return
+				}
+				outcome := classifyUpstreamOutcome(resp, retErr)
+				reason := common.SelectionReasonPrimary
+				if isHedge {
+					reason = common.SelectionReasonHedge
+				} else if snap.Retries > 0 {
+					reason = common.SelectionReasonRetry
+				}
+				errCode := ""
+				errDetail := ""
+				if retErr != nil {
+					errCode = string(common.ErrorFingerprint(retErr))
+					es := retErr.Error()
+					if max := AttemptErrorDetailMaxLen; max > 0 && len(es) > max {
+						es = es[:max]
+					}
+					errDetail = es
+				}
+				st.RecordUpstreamAttempt(common.UpstreamAttempt{
+					UpstreamId:  cfg.Id,
+					VendorName:  u.VendorName(),
+					StartedAt:   attemptStart,
+					Duration:    time.Since(attemptStart),
+					Outcome:     outcome,
+					Reason:      reason,
+					IsHedge:     isHedge || isHedgeAttempt,
+					IsRetry:     snap.Retries > 0,
+					AttemptIdx:  snap.Attempts,
+					ErrorCode:   errCode,
+					ErrorDetail: errDetail,
+				})
+				// Prometheus: one outcome counter increment per attempt.
+				finality := nrq.Finality(ctx)
+				telemetry.MetricUpstreamAttemptOutcomeTotal.WithLabelValues(
+					u.ProjectId,
+					nrq.NetworkLabel(),
+					cfg.Id,
+					method,
+					string(outcome),
+					boolStr(isHedge || isHedgeAttempt),
+					boolStr(snap.Retries > 0),
+					finality.String(),
+				).Inc()
+				telemetry.MetricUpstreamSelectionTotal.WithLabelValues(
+					u.ProjectId,
+					nrq.NetworkLabel(),
+					cfg.Id,
+					method,
+					string(reason),
+					finality.String(),
+				).Inc()
+			}()
+
 			// Span to track pre-request overhead (metrics, finality calculation)
 			_, preReqSpan := common.StartDetailSpan(ctx, "Upstream.tryForward.PreRequest")
 
-			u.metricsTracker.RecordUpstreamRequest(
-				u,
-				method,
-			)
+			// Hedge attempts are excluded from the per-upstream rate counters
+			// (RequestsTotal / ErrorsTotal). They are speculative extra fan-out
+			// triggered by failsafe; counting them inflates the denominator on
+			// every hedged request and, if their cancellations were also counted
+			// as failures, would double-penalize slow-but-functional upstreams
+			// (latency already feeds the score). Hedge activity stays observable
+			// via MetricNetworkHedgeDiscardsTotal at the network layer, and
+			// successful hedge responses still contribute to ResponseQuantiles
+			// (filtered by isSuccess inside the tracker), so the latency signal
+			// is preserved.
+			//
+			// isHedgeAttempt is the OR of the explicit network-passed flag
+			// and any hedge fan-out from the upstream's own executor.
+			hedgeAttempt := isHedgeAttempt || isHedge
 			finality := nrq.Finality(ctx)
+			if !hedgeAttempt {
+				u.metricsTracker.RecordUpstreamRequest(
+					u,
+					method,
+					finality,
+				)
+			}
+			// TODO(memory): this and the matching MetricUpstreamErrorTotal /
+			// MetricUpstreamWrongEmptyResponseTotal / MetricUpstreamCanceledTotal
+			// sites in this file + erpc/networks.go all emit label-sets
+			// keyed by user-controlled inputs (method, finality, userId,
+			// agentName, etc.) WITHOUT going through a tracker cache, so
+			// the Prometheus registry accumulates one series per unique
+			// combo forever — even after the in-memory caches added in
+			// the 826df9f5 idle-sweep get cleared.
+			//
+			// The fix is parallel to the urdObsCache / remoteRateLimited
+			// pattern: wrap each WithLabelValues call in a cached*-style
+			// indirection that remembers the label tuple + a
+			// lastAccessedAtMs, then sweep on idle with
+			// MetricVec.DeleteLabelValues. Each direct call site needs the
+			// same retrofit. Out of scope for this PR — flagged for a
+			// follow-up titled "sweep direct Prom emissions in
+			// upstream/erpc hot paths".
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
 				u.NetworkLabel(),
 				cfg.Id,
 				method,
-				strconv.Itoa(exec.Attempts()),
+				strconv.Itoa(snap.Attempts),
 				nrq.CompositeType(),
 				finality.String(),
 				nrq.UserId(),
@@ -483,6 +660,23 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				if jrr != nil && jrr.Error == nil {
 					nrq.SetLastValidResponse(ctx, nrs)
 					isSuccess = true
+					// Track decoded result-body size to surface networks/methods
+					// that drive transient heap spikes via the JSON parse pipeline
+					// (each response peaks at ~3-4× its size in transient allocs:
+					// io.Copy → bytes.Buffer.grow → sonic.Unmarshal → []byte copy).
+					// Labels intentionally exclude vendor/upstream/user — those
+					// are correlatable via upstream_request_total and adding them
+					// here multiplies cardinality without changing the diagnostic
+					// answer (which net+method emits fat responses?).
+					if size := jrr.ResultLength(); size > 0 {
+						telemetry.ObserverHandle(
+							telemetry.MetricUpstreamResponseSizeBytes,
+							u.ProjectId,
+							u.NetworkLabel(),
+							method,
+							finality.String(),
+						).Observe(float64(size))
+					}
 				} else {
 					isSuccess = false
 				}
@@ -523,18 +717,30 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
-					// Cancelled request (e.g. hedge lost the race). Not the upstream's
-					// fault — skip failure recording and generic error metric. The
-					// network layer records hedge discards via MetricNetworkHedgeDiscardsTotal.
+					// Cancelled request (hedge lost the race or client
+					// disconnected). Not attributable to upstream quality
+					// from THIS layer for the error-rate counter — skip
+					// RecordUpstreamFailure and the generic error metric.
+					// Hedge discards are accounted at the network layer
+					// via MetricNetworkHedgeDiscardsTotal.
+					//
+					// Latency observation is also skipped (see the
+					// ObserveDuration call below) — elapsed-by-cancel is
+					// not a natural latency sample. Probe traffic from
+					// `probeExcluded` provides successful samples for
+					// upstreams that never win the hedge race.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
 					}
-					u.metricsTracker.RecordUpstreamFailure(
-						u,
-						method,
-						errCall,
-					)
+					if !hedgeAttempt {
+						u.metricsTracker.RecordUpstreamFailure(
+							u,
+							method,
+							finality,
+							errCall,
+						)
+					}
 					severity := common.ClassifySeverity(errCall)
 					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
 						u.ProjectId,
@@ -551,14 +757,36 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				}
 
-				// ExecutionException is a valid blockchain response (e.g. revert) — count its latency.
-				// All other errors should NOT contribute to the latency quantile.
+				// Only ExecutionException (EVM revert) feeds the latency
+				// quantile — the upstream did real work; the duration
+				// reflects actual response time.
+				//
+				// Cancellations (hedge-lost / client gave up / engine
+				// timeout) are deliberately excluded: the elapsed-by-
+				// cancel time is not natural latency. An upstream that
+				// only ever loses hedge races (e.g. always sees
+				// hedge-fired slow methods because the primary handles
+				// the fast ones) would otherwise accumulate a quantile
+				// of 100% cancellation observations, biasing its p70
+				// toward "however long the winner of the race took
+				// before cancellation." Cross-upstream comparisons
+				// (e.g. `latencyDeviationAbove`) would trip on this
+				// artificial signal even when per-method latencies are
+				// identical.
+				//
+				// With probeExcluded in the chain (default), excluded
+				// upstreams accumulate real successful samples via
+				// shadow-mirrored traffic — so the "every-hedge-loser
+				// stays optimistic forever" concern is handled without
+				// polluting the quantile. Without probeExcluded, rely
+				// on absolute thresholds (`latencyAbove(N)`) +
+				// non-latency signals (error rate, throttle rate, lag).
+				//
+				// All other errors fired before / instead of a meaningful
+				// response and would conflate "broken" with "slow" if
+				// counted; they stay out of the quantile.
 				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
 				timer.ObserveDuration(isRevert)
-				// We're converting a response+error into a pure error. Release the response to avoid retention.
-				// Only clear LVR for execution exceptions: these are "response+error" cases where
-				// this same response may have been stored as LVR above (line ~465). For missing-data
-				// and other retryable errors we keep LVR so network-level fallback can still work.
 				if isRevert {
 					nrq.ClearLastValidResponse()
 				}
@@ -566,29 +794,16 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					nrs.Release()
 					nrs = nil
 				}
-				if exec != nil {
-					return nil, common.NewErrUpstreamRequest(
-						errCall,
-						u,
-						u.NetworkId(),
-						method,
-						time.Since(startTime),
-						exec.Attempts(),
-						exec.Retries(),
-						exec.Hedges(),
-					)
-				} else {
-					return nil, common.NewErrUpstreamRequest(
-						errCall,
-						u,
-						u.NetworkId(),
-						method,
-						time.Since(startTime),
-						1,
-						0,
-						0,
-					)
-				}
+				return nil, common.NewErrUpstreamRequest(
+					errCall,
+					u,
+					u.NetworkId(),
+					method,
+					time.Since(startTime),
+					snap.Attempts,
+					snap.Retries,
+					snap.Hedges,
+				)
 			} else {
 				emptyish := nrs.IsResultEmptyish()
 				if emptyish {
@@ -620,62 +835,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, fmt.Errorf("no failsafe executor found for request")
 		}
 
-		// Track time from failsafe executor start to first callback invocation
-		upstreamFailsafeStartTime := time.Now()
+		// In-house executor: retry + hedge + breaker + timeout. Returns
+		// typed errors directly (ErrFailsafeRetryExceeded /
+		// ErrFailsafeCircuitBreakerOpen / ErrFailsafeTimeoutExceeded);
+		// no translation pass needed.
+		resp, execErr := failsafeExecutor.Run(ctx, nrq, tryForward)
 
-		resp, execErr := failsafeExecutor.executor.
-			WithContext(ctx).
-			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-				ectx, execSpan := common.StartSpan(exec.Context(), "Upstream.forwardAttempt",
-					trace.WithAttributes(
-						attribute.String("network.id", u.NetworkId()),
-						attribute.String("upstream.id", cfg.Id),
-						attribute.Int("execution.attempt", exec.Attempts()),
-						attribute.Int("execution.retry", exec.Retries()),
-						attribute.Int("execution.hedge", exec.Hedges()),
-						attribute.Int64("failsafe_init_latency_ms", time.Since(upstreamFailsafeStartTime).Milliseconds()),
-					),
-				)
-				defer execSpan.End()
-
-				if common.IsTracingDetailed {
-					execSpan.SetAttributes(
-						attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
-					)
-				}
-
-				if ctxErr := ectx.Err(); ctxErr != nil {
-					cause := context.Cause(ectx)
-					if cause != nil {
-						common.SetTraceSpanError(execSpan, cause)
-						return nil, cause
-					} else {
-						common.SetTraceSpanError(execSpan, ctxErr)
-						return nil, ctxErr
-					}
-				}
-				if failsafeExecutor.timeout != nil {
-					var cancelFn context.CancelFunc
-					ectx, cancelFn = context.WithTimeout(
-						ectx,
-						// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
-						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-						//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
-						//      but allow the failsafe execution to fail with timeout first for proper error handling.
-						*failsafeExecutor.timeout+5*time.Millisecond,
-					)
-					defer cancelFn()
-				}
-
-				nr, err := tryForward(ectx, exec)
-				if err != nil {
-					common.SetTraceSpanError(execSpan, err)
-					return nil, err
-				}
-				return nr, nil
-			})
-
-		if _, ok := execErr.(common.StandardError); !ok {
+		if _, ok := execErr.(common.StandardError); !ok && execErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				cause := context.Cause(ctx)
 				if cause != nil {
@@ -688,7 +854,28 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 		if execErr != nil {
 			common.SetTraceSpanError(span, execErr)
-			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
+			// Timeout-attribution metric: emit only when this scope's policy
+			// fired the timeout (cause is ErrDynamicTimeoutExceeded) and the
+			// error is not retry-exhausted (which wins ordering).
+			if failsafeExecutor.Timeout() != nil &&
+				!common.HasErrorCode(execErr, common.ErrCodeFailsafeRetryExceeded) &&
+				errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
+				finality := nrq.Finality(ctx)
+				telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
+					u.ProjectId,
+					nrq.NetworkLabel(),
+					method,
+					finality.String(),
+					string(common.ScopeUpstream),
+				).Inc()
+			}
+			// Wrap bare timeout sentinel as a typed error so downstream
+			// callers can pattern-match on ErrCodeFailsafeTimeoutExceeded.
+			if _, isStd := execErr.(common.StandardError); !isStd &&
+				errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
+				execErr = common.NewErrFailsafeTimeoutExceeded(common.ScopeUpstream, execErr, &startTime)
+			}
+			return nil, execErr
 		}
 
 		return resp, nil
@@ -702,26 +889,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	}
 }
 
-func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
-	// TODO extend this to per-network and/or per-method because of either upstream performance diff
-	// or if user wants diff policies (retry/cb/integrity) per network/method.
-
-	// Return the default executor (the one with "*" method and no finality filters)
-	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (len(fe.finalities) == 0) {
-			return fe.executor
-		}
-	}
-
-	// If no default executor found, return the first one
-	if len(u.failsafeExecutors) > 0 {
-		return u.failsafeExecutors[0].executor
-	}
-
-	// Return a no-op executor if none configured
-	return failsafe.NewExecutor[*common.NormalizedResponse]()
-}
-
 // TODO move to evm package
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	// Always make a real upstream call here. End-user requests can be short-circuited
@@ -729,7 +896,7 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
-	resp, err := u.Forward(ctx, pr, true)
+	resp, err := u.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}
@@ -824,7 +991,7 @@ func (u *Upstream) solanaVerifyGenesisHash(ctx context.Context, cluster string) 
 	}
 
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getGenesisHash","params":[]}`))
-	resp, err := u.Forward(ctx, pr, true)
+	resp, err := u.Forward(ctx, pr, true, false)
 	if err != nil {
 		// Check for HTTP-level errors (e.g. 401 Unauthorized, 403 Forbidden) to give a
 		// clearer diagnostic than "empty JSON input" when auth is required.
@@ -842,42 +1009,51 @@ func (u *Upstream) solanaVerifyGenesisHash(ctx context.Context, cluster string) 
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
-		return common.NewErrUpstreamClientInitialization(
-			&common.BaseError{Code: "ErrSolanaGenesisHashParseFailed", Cause: err}, u)
+		// Non-JSON / unparseable body (e.g. HTML auth wall, wrong endpoint URL) —
+		// won't self-heal on retry. Wrap with NewTaskFatal so the Initializer
+		// stops retrying (mirrors EVM's chainId parse-error handling).
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashParseFailed", Cause: err}, u))
 	}
 
 	// Detect non-JSON-RPC responses (e.g. HTML error pages, gateway auth walls).
 	// If both result and error are absent the upstream returned a non-RPC body.
+	// Permanent misconfiguration — task-fatal.
 	if jrr.Error == nil && len(jrr.GetResultBytes()) == 0 {
-		return common.NewErrUpstreamClientInitialization(
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 			&common.BaseError{
 				Code:  "ErrSolanaGenesisHashFetchFailed",
 				Cause: fmt.Errorf("upstream returned non-JSON-RPC body for getGenesisHash (check auth/endpoint URL)"),
-			}, u)
+			}, u))
 	}
 
 	if jrr.Error != nil {
-		return common.NewErrUpstreamClientInitialization(
+		// The node rejected a trivial static call — permanent (unsupported / auth).
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 			&common.BaseError{
 				Code:  "ErrSolanaGenesisHashRpcError",
 				Cause: fmt.Errorf("RPC error %d: %s", jrr.Error.Code, jrr.Error.Message),
-			}, u)
+			}, u))
 	}
 
 	var genesisHash string
 	if err := sonic.Unmarshal(jrr.GetResultBytes(), &genesisHash); err != nil {
-		return common.NewErrUpstreamClientInitialization(
-			&common.BaseError{Code: "ErrSolanaGenesisHashUnmarshalFailed", Cause: err}, u)
+		// Upstream returned a non-string genesis result — won't self-heal.
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashUnmarshalFailed", Cause: err}, u))
 	}
 	if genesisHash != expectedHash {
-		return common.NewErrUpstreamClientInitialization(
+		// Misconfiguration (wrong cluster for this upstream) — permanent.
+		// Wrap with NewTaskFatal so the Initializer stops retrying (mirrors
+		// EVM's chainId mismatch handling).
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 			&common.BaseError{
 				Code: "ErrSolanaClusterMismatch",
 				Cause: fmt.Errorf(
 					"genesis hash mismatch: upstream returned %q but cluster %q expects %q",
 					genesisHash, cluster, expectedHash,
 				),
-			}, u)
+			}, u))
 	}
 	return nil
 }
@@ -1343,6 +1519,10 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		}
 		nid, err := u.EvmGetChainId(ctx)
 		if err != nil {
+			// RPC / network failure — potentially transient (provider outage,
+			// rate limit during startup, DNS blip). Leave the init error
+			// unwrapped so the Initializer's auto-retry loop can keep trying;
+			// the upstream will self-heal if the provider recovers.
 			return common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdDetectionFailed",
@@ -1353,22 +1533,26 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		}
 		realChainID, err := strconv.ParseInt(nid, 0, 64)
 		if err != nil {
-			return common.NewErrUpstreamClientInitialization(
+			// Upstream returned a non-numeric chainId — won't self-heal on
+			// retry. Wrap with NewTaskFatal so the Initializer stops retrying.
+			return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdDetectionFailed",
 					Cause: err,
 				},
 				u,
-			)
+			))
 		}
 		if cfg.Evm.ChainId > 0 && cfg.Evm.ChainId != realChainID {
-			return common.NewErrUpstreamClientInitialization(
+			// Misconfiguration (wrong upstream for this network) — permanent.
+			// Wrap with NewTaskFatal so the Initializer stops retrying.
+			return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdMismatch",
 					Cause: fmt.Errorf("chainId mismatch: configured %d, detected %d", cfg.Evm.ChainId, realChainID),
 				},
 				u,
-			)
+			))
 		}
 		cfg.Evm.ChainId = realChainID
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
@@ -1456,7 +1640,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 
 	dirs := req.Directives()
 	if dirs != nil && dirs.UseUpstream != "" {
-		match, err := common.WildcardMatch(dirs.UseUpstream, u.config.Id)
+		match, err := common.UpstreamMatchesSelector(dirs.UseUpstream, u)
 		if err != nil {
 			return err, true
 		}
@@ -1465,52 +1649,17 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	// If block can be determined from request, enforce configured bounds early
-	if u.config.Evm != nil {
-		_, bn, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req)
-		if ebn == nil && bn > 0 {
-			minBound, maxBound := u.resolveAvailabilityBounds()
-			if minBound != math.MinInt64 && bn < minBound {
-				return common.NewErrUpstreamRequestSkipped(
-					fmt.Errorf("block below lower availability bound: %d < %d", bn, minBound),
-					u.config.Id,
-				), true
-			}
-			if maxBound != math.MaxInt64 && bn > maxBound {
-				return common.NewErrUpstreamRequestSkipped(
-					fmt.Errorf("block above upper availability bound: %d > %d", bn, maxBound),
-					u.config.Id,
-				), true
-			}
-		}
-	}
-
-	// Upper-bound enforcement against per-upstream latest/finality is handled at network level.
+	// Block availability bound enforcement (lower/upper) lives in a single place:
+	// Network.checkUpstreamBlockAvailability. It runs whenever the upstream has
+	// BlockAvailability bounds configured (or EnforceBlockAvailability resolves
+	// to true), classifies head-of-chain races within MaxRetryableBlockDistance
+	// as retryable, and routes through handleBlockSkip so the failsafe retry
+	// policy can apply blockUnavailableDelay. Centralising it there avoids the
+	// duplicate-error-class footgun where an early upstream-level check would
+	// short-circuit the retryable classification with a non-retryable
+	// ErrUpstreamRequestSkipped.
 
 	return nil, false
-}
-
-func (u *Upstream) getScoreMultipliers(networkId, method string, finalities []common.DataFinalityState) *common.ScoreMultiplierConfig {
-	if u.config.Routing != nil {
-		for _, mul := range u.config.Routing.ScoreMultipliers {
-			matchNet, err := common.WildcardMatch(mul.Network, networkId)
-			if err != nil {
-				continue
-			}
-			matchMeth, err := common.WildcardMatch(mul.Method, method)
-			if err != nil {
-				continue
-			}
-
-			matchFin := common.MatchFinalities(mul.Finality, finalities)
-
-			if matchNet && matchMeth && matchFin {
-				return mul
-			}
-		}
-	}
-
-	return common.DefaultScoreMultiplier
 }
 
 func (u *Upstream) MarshalJSON() ([]byte, error) {
@@ -1537,4 +1686,10 @@ func (u *Upstream) Cordon(method string, reason string) {
 
 func (u *Upstream) Uncordon(method string, reason string) {
 	u.metricsTracker.Uncordon(u, method, reason)
+}
+
+// CordonedReason returns the cordon reason and whether the (upstream,
+// method) is currently cordoned. Pass `"*"` for the wildcard scope.
+func (u *Upstream) CordonedReason(method string) (string, bool) {
+	return u.metricsTracker.CordonedReason(u, method)
 }

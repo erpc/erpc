@@ -61,6 +61,7 @@ func (l *dynamoLock) IsNil() bool {
 
 var sharedReadClient = &http.Client{
 	Transport: &http.Transport{
+		DialContext:         util.DefaultOutboundDialer().DialContext,
 		MaxIdleConns:        2048,
 		MaxIdleConnsPerHost: 2048,
 		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory
@@ -69,6 +70,7 @@ var sharedReadClient = &http.Client{
 }
 var sharedWriteClient = &http.Client{
 	Transport: &http.Transport{
+		DialContext:         util.DefaultOutboundDialer().DialContext,
 		MaxIdleConns:        256,
 		MaxIdleConnsPerHost: 256,
 		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory

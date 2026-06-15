@@ -871,8 +871,15 @@ func calculateConfigStats(cfg *common.Config) ConfigStats {
 			if upstream.Id != "" {
 				projectStats.Upstreams = append(projectStats.Upstreams, upstream.Id)
 			} else {
+				// Upstream has no explicit Id; synthesise a display name
+				// from its type + vendor (used by metrics/analytics; not a
+				// stable identifier).
+				vn := upstream.VendorName
+				if vn == "" {
+					vn = "unknown"
+				}
 				projectStats.Upstreams = append(projectStats.Upstreams,
-					fmt.Sprintf("%s-%s", upstream.Type, upstream.Group))
+					fmt.Sprintf("%s-%s", upstream.Type, vn))
 			}
 
 			if upstream.RateLimitBudget != "" {
@@ -1079,7 +1086,7 @@ func fetchBlockHashByNumber(ctx context.Context, ups *upstream.Upstream, blockTa
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
-	resp, err := ups.Forward(ctx, pr, true)
+	resp, err := ups.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}
@@ -1114,7 +1121,7 @@ func fetchBlockNumber(ctx context.Context, ups *upstream.Upstream, blockTag stri
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
-	resp, err := ups.Forward(ctx, pr, true)
+	resp, err := ups.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}
@@ -1161,7 +1168,7 @@ func fetchLatestNumber(ctx context.Context, ups *upstream.Upstream) (int64, erro
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["latest",false]}`, util.RandomID()),
 	))
-	resp, err := ups.Forward(ctx, pr, true)
+	resp, err := ups.Forward(ctx, pr, true, false)
 	if resp != nil {
 		defer resp.Release()
 	}

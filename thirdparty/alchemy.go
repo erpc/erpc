@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -18,7 +17,6 @@ import (
 var defaultAlchemyNetworkSubdomains = map[int64]string{
 	1:          "eth-mainnet",
 	11155111:   "eth-sepolia",
-	17000:      "eth-holesky",
 	560048:     "eth-hoodi",
 	10:         "opt-mainnet",
 	11155420:   "opt-sepolia",
@@ -26,7 +24,6 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	80002:      "polygon-amoy",
 	42161:      "arb-mainnet",
 	421614:     "arb-sepolia",
-	42170:      "arbnova-mainnet",
 	8453:       "base-mainnet",
 	84532:      "base-sepolia",
 	324:        "zksync-mainnet",
@@ -44,7 +41,6 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	5000:       "mantle-mainnet",
 	5003:       "mantle-sepolia",
 	42220:      "celo-mainnet",
-	44787:      "celo-alfajores",
 	11142220:   "celo-sepolia",
 	56:         "bnb-mainnet",
 	97:         "bnb-testnet",
@@ -72,8 +68,6 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	80069:      "berachain-bepolia",
 	360:        "shape-mainnet",
 	11011:      "shape-sepolia",
-	8008:       "polynomial-mainnet",
-	80008:      "polynomial-sepolia",
 	60808:      "bob-mainnet",
 	808813:     "bob-sepolia",
 	34443:      "mode-mainnet",
@@ -88,8 +82,6 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	1946:       "soneium-minato",
 	30:         "rootstock-mainnet",
 	31:         "rootstock-testnet",
-	994873017:  "lumia-prism",
-	2030232745: "lumia-beam",
 	130:        "unichain-mainnet",
 	1301:       "unichain-sepolia",
 	146:        "sonic-mainnet",
@@ -104,7 +96,7 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	57073:      "ink-mainnet",
 	763373:     "ink-sepolia",
 	2020:       "ronin-mainnet",
-	2021:       "ronin-saigon",
+	202601:     "ronin-saigon",
 	6985385:    "humanity-mainnet",
 	7080969:    "humanity-testnet",
 	1514:       "story-mainnet",
@@ -122,7 +114,8 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	613419:     "galactica-mainnet",
 	843843:     "galactica-cassiopeia",
 	510:        "synd-mainnet",
-	36900:      "adi-testnet",
+	36900:      "adi-mainnet",
+	99999:      "adi-testnet",
 	988:        "stable-mainnet",
 	2201:       "stable-testnet",
 	510525:     "clankermon-mainnet",
@@ -130,17 +123,39 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	5115:       "citrea-testnet",
 	5042002:    "arc-testnet",
 	1284:       "moonbeam-mainnet",
-	10218:      "tea-sepolia",
 	685685:     "gensyn-testnet",
 	11155931:   "rise-testnet",
 	6343:       "megaeth-testnet",
 	323432:     "worldmobile-testnet",
 	869:        "worldmobilechain-mainnet",
 	666666666:  "degen-mainnet",
+	196:        "xlayer-mainnet",
+	1952:       "xlayer-testnet",
+	1776:       "injective-mainnet",
+	1439:       "injective-testnet",
+	42018:      "mythos-mainnet",
+	4326:       "megaeth-mainnet",
+	4153:       "rise-mainnet",
+	4217:       "tempo-mainnet",
+	42431:      "tempo-moderato",
+	46630:      "robinhood-testnet",
+	685689:     "gensyn-mainnet",
+	1672:       "pharos-mainnet",
+	688689:     "pharos-atlantic",
+	747474:     "katana-mainnet",
+	737373:     "katana-bokuto",
+	5734951:    "jovay-mainnet",
+	2019775:    "jovay-testnet",
+	351243127:  "xmtp-ropsten",
+	728126428:  "tron-mainnet",
+	3448148188: "tron-testnet",
 }
 
 const DefaultAlchemyRecheckInterval = 24 * time.Hour
-const alchemyApiUrl = "https://app-api.alchemy.com/trpc/config.getNetworkConfig"
+
+// alchemyApiUrl is the tRPC endpoint used to discover Alchemy networks.
+// Declared as var (not const) so tests can point it at a mock server.
+var alchemyApiUrl = "https://app-api.alchemy.com/trpc/config.getNetworkConfig"
 
 type alchemyNetworkConfigResponse struct {
 	Result struct {
@@ -151,18 +166,16 @@ type alchemyNetworkConfigResponse struct {
 	} `json:"result"`
 }
 
+// AlchemyVendor uses RemoteDataCache for lock-free, async-refresh access to
+// the network list. See remote_cache.go for the request-path safety rule.
 type AlchemyVendor struct {
 	common.Vendor
-
-	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64]string
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[map[int64]string]
 }
 
 func CreateAlchemyVendor() common.Vendor {
 	return &AlchemyVendor{
-		remoteData:              make(map[string]map[int64]string),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[map[int64]string]("alchemy"),
 	}
 }
 
@@ -180,21 +193,21 @@ func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		return false, err
 	}
 
+	apiUrl, ok := settings["chainsUrl"].(string)
+	if !ok || apiUrl == "" {
+		apiUrl = alchemyApiUrl
+	}
+
+	if err = validateChainsURL(apiUrl); err != nil {
+		return false, err
+	}
+
 	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
 	if !ok {
 		recheckInterval = DefaultAlchemyRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, logger, recheckInterval)
-	if err != nil {
-		return false, fmt.Errorf("unable to load remote data: %w", err)
-	}
-
-	networks, ok := v.remoteData[alchemyApiUrl]
-	if !ok || networks == nil {
-		return false, nil
-	}
-
+	networks := v.resolveNetworks(logger, apiUrl, recheckInterval)
 	_, exists := networks[chainID]
 	return exists, nil
 }
@@ -219,19 +232,21 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 			return nil, fmt.Errorf("alchemy vendor requires upstream.evm.chainId to be defined")
 		}
 
+		apiUrl, ok := settings["chainsUrl"].(string)
+		if !ok || apiUrl == "" {
+			apiUrl = alchemyApiUrl
+		}
+
+		if err := validateChainsURL(apiUrl); err != nil {
+			return nil, err
+		}
+
 		recheckInterval, ok := settings["recheckInterval"].(time.Duration)
 		if !ok {
 			recheckInterval = DefaultAlchemyRecheckInterval
 		}
 
-		if err := v.ensureRemoteData(ctx, logger, recheckInterval); err != nil {
-			return nil, fmt.Errorf("unable to load remote data: %w", err)
-		}
-
-		networks, ok := v.remoteData[alchemyApiUrl]
-		if !ok || networks == nil {
-			return nil, fmt.Errorf("network data not available")
-		}
+		networks := v.resolveNetworks(logger, apiUrl, recheckInterval)
 
 		subdomain, ok := networks[chainID]
 		if !ok {
@@ -322,33 +337,29 @@ func (v *AlchemyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.Contains(ups.Endpoint, ".alchemy.com") || strings.Contains(ups.Endpoint, ".alchemyapi.io")
 }
 
-func (v *AlchemyVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	if ltm, ok := v.remoteDataLastFetchedAt[alchemyApiUrl]; ok && time.Since(ltm) < recheckInterval {
-		return nil
+// resolveNetworks returns the cached network map for apiUrl, or the
+// built-in static map if no remote data has been fetched yet. Always
+// non-blocking: lock-free Lookup, async refresh on staleness, never holds
+// a mutex during HTTP. See remote_cache.go for the safety rule.
+func (v *AlchemyVendor) resolveNetworks(logger *zerolog.Logger, apiUrl string, recheckInterval time.Duration) map[int64]string {
+	networks, fresh := v.cache.Lookup(apiUrl, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, apiUrl, func(ctx context.Context) (map[int64]string, error) {
+			return v.fetchAlchemyNetworks(ctx, apiUrl)
+		})
 	}
-
-	newData, err := v.fetchAlchemyNetworks(ctx)
-	if err != nil {
-		if _, ok := v.remoteData[alchemyApiUrl]; ok {
-			logger.Warn().Err(err).Msg("could not refresh Alchemy API data, will use stale data")
-			return nil
-		}
-		return err
+	if networks == nil {
+		// Cold start: built-in fallback while async refresh is in flight.
+		return defaultAlchemyNetworkSubdomains
 	}
-
-	v.remoteData[alchemyApiUrl] = newData
-	v.remoteDataLastFetchedAt[alchemyApiUrl] = time.Now()
-	return nil
+	return networks
 }
 
-func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context) (map[int64]string, error) {
+func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context, apiUrl string) (map[int64]string, error) {
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(rctx, "GET", alchemyApiUrl, nil)
+	req, err := http.NewRequestWithContext(rctx, "GET", apiUrl, nil)
 	if err != nil {
 		return nil, err
 	}

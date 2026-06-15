@@ -73,7 +73,7 @@ func TestNetworkRetry_MissingDataError(t *testing.T) {
 			},
 		)
 
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -222,7 +222,7 @@ func TestNetworkRetry_ServerSideException(t *testing.T) {
 			},
 		)
 
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -288,7 +288,7 @@ func TestNetworkRetry_ServerSideException(t *testing.T) {
 			},
 		)
 
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -357,7 +357,7 @@ func TestNetworkRetry_ExecutionException_NoRetry(t *testing.T) {
 			},
 		)
 
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -422,7 +422,7 @@ func TestNetworkRetry_RetryEmptyDirective(t *testing.T) {
 			},
 		)
 
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"0xa6d381"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -494,7 +494,7 @@ func TestNetworkRetry_ArchiveDataRequest(t *testing.T) {
 			},
 		)
 
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"0x1000000"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -564,7 +564,7 @@ func TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound(t *testing.T) {
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 5},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -633,7 +633,7 @@ func TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound(t *testing.T) {
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 5},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -759,7 +759,7 @@ func TestNetworkForward_TryAllUpstreams_ExecutionReverted_StopsImmediately(t *te
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 5},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -821,7 +821,7 @@ func TestNetworkForward_TryAllUpstreams_ValidationError_ContinuesToNextUpstream(
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 5},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -839,7 +839,7 @@ func TestNetworkForward_TryAllUpstreams_ValidationError_ContinuesToNextUpstream(
 		assert.Equal(t, 1, rpc1Calls)
 		assert.Equal(t, 1, rpc2Calls)
 		assert.Equal(t, 0, resp.Retries(), "no retry needed — both tried in same execution")
-		assert.Equal(t, 1, resp.Attempts(), "single execution attempt")
+		assert.Equal(t, 2, resp.Attempts(), "2 physical attempts (rpc1 missing-data + rpc2 success) in a single execution round")
 	})
 }
 
@@ -888,7 +888,7 @@ func TestNetworkForward_TryAllUpstreams_AllServerErrors(t *testing.T) {
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 2, Delay: common.Duration(10 * time.Millisecond)},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -951,7 +951,7 @@ func TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty(t *testing.T) {
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 3},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -969,7 +969,7 @@ func TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty(t *testing.T) {
 
 		assert.Equal(t, 1, rpc1Calls, "rpc1 should be called once")
 		assert.Equal(t, 1, rpc2Calls, "rpc2 should be called once")
-		assert.Equal(t, 1, resp.Attempts(), "single execution — both tried in same round")
+		assert.Equal(t, 2, resp.Attempts(), "2 physical attempts (rpc1 500 + rpc2 empty) in a single execution round")
 	})
 }
 
@@ -1018,7 +1018,7 @@ func TestNetworkForward_TryAllUpstreams_HappyPathFirstUpstream(t *testing.T) {
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 5},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1101,7 +1101,7 @@ func TestNetworkForward_TryAllUpstreams_SingleUpstreamBackwardCompat(t *testing.
 		)
 		// rpc1 first — in round 1 it errors, rpc2 also errors → lastErr → failsafe retries
 		// In round 2 rpc1 succeeds → happy path
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1116,7 +1116,8 @@ func TestNetworkForward_TryAllUpstreams_SingleUpstreamBackwardCompat(t *testing.
 		assert.Contains(t, jrr.GetResultString(), "0x42")
 
 		// Round 1: rpc1 error + rpc2 error → retry. Round 2: rpc1 success.
-		assert.Equal(t, 2, resp.Attempts(), "should take 2 attempts (round 1 all-error, round 2 success)")
+		// Physical calls = 3 (rpc1 fail + rpc2 fail + rpc1 success).
+		assert.Equal(t, 3, resp.Attempts(), "should make 3 physical calls (round 1: rpc1 fail + rpc2 fail; round 2: rpc1 success)")
 		assert.GreaterOrEqual(t, callCount, 2, "rpc1 should be called at least twice")
 	})
 }
@@ -1166,7 +1167,7 @@ func TestNetworkForward_EmptyResultDelayForMissingDataError(t *testing.T) {
 				EmptyResultDelay: common.Duration(300 * time.Millisecond),
 			},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1282,7 +1283,7 @@ func TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry(t *testin
 				EmptyResultDelay: common.Duration(10 * time.Millisecond),
 			},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1301,7 +1302,8 @@ func TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry(t *testin
 		assert.Contains(t, jrr.GetResultString(), "0xde0b6b3a7640000")
 
 		assert.GreaterOrEqual(t, rpc1Calls, 2, "rpc1 should be called in both rounds")
-		assert.Equal(t, 2, resp.Attempts(), "should take 2 attempts (round 1 all-error, round 2 success)")
+		// Physical calls = 3 (round 1: rpc1 + rpc2 missing-data; round 2: rpc1 success).
+		assert.Equal(t, 3, resp.Attempts(), "should make 3 physical calls (round 1: rpc1 + rpc2 missing-data; round 2: rpc1 success)")
 	})
 }
 
@@ -1351,7 +1353,7 @@ func TestNetworkForward_UpstreamReselection_WrongEmptyStillTracked(t *testing.T)
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1461,7 +1463,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1493,7 +1495,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.Equal(t, int64(0), metrics.MisbehaviorsTotal.Load(),
 			"rpc1 should NOT have misbehavior recorded — block 200 is outside its upper bound of 100")
 	})
@@ -1562,7 +1564,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1582,7 +1584,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
 			"rpc1 SHOULD have misbehavior recorded — block 200 is within its upper bound of 300")
 		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),
@@ -1648,7 +1650,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -1668,7 +1670,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
 			"rpc1 SHOULD have misbehavior recorded — no block availability bounds configured")
 		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),
@@ -1710,9 +1712,9 @@ func TestNetworkForward_BlockUnavailableDelay_AppliedAfterFullRound(t *testing.T
 		network := setupTestNetworkForMissingDataRetry(t, ctx,
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{
-				MaxAttempts:           3,
-				Delay:                 common.Duration(50 * time.Millisecond),
-				BlockUnavailableDelay: common.Duration(200 * time.Millisecond),
+				MaxAttempts:      3,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(200 * time.Millisecond),
 			},
 		)
 
@@ -1868,7 +1870,7 @@ func TestNetworkForward_PermanentErrorGated_RetryableRetried(t *testing.T) {
 				Delay:       common.Duration(10 * time.Millisecond),
 			},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -2071,7 +2073,7 @@ func TestNetworkForward_MixedMissingDataAndSuccess(t *testing.T) {
 				EmptyResultDelay: common.Duration(100 * time.Millisecond),
 			},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -2225,13 +2227,12 @@ func TestNetworkForward_BlockUnavailableDelay_TimingVerified(t *testing.T) {
 		network := setupTestNetworkForMissingDataRetry(t, ctx,
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{
-				MaxAttempts:           5,
-				Delay:                 common.Duration(50 * time.Millisecond),
-				EmptyResultDelay:      common.Duration(blockDelay),
-				BlockUnavailableDelay: common.Duration(blockDelay),
+				MaxAttempts:      5,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(blockDelay),
 			},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -2621,19 +2622,17 @@ func TestNetworkForward_BlockUnavailableVsEmptyDelay_Priority(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		blockDelay := 400 * time.Millisecond
 		emptyDelay := 100 * time.Millisecond
 
 		network := setupTestNetworkForMissingDataRetry(t, ctx,
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{
-				MaxAttempts:           5,
-				Delay:                 common.Duration(50 * time.Millisecond),
-				EmptyResultDelay:      common.Duration(emptyDelay),
-				BlockUnavailableDelay: common.Duration(blockDelay),
+				MaxAttempts:      5,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(emptyDelay),
 			},
 		)
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -2736,15 +2735,13 @@ func setupTestNetworkWithMethodIgnore(
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
 		nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -2752,6 +2749,7 @@ func setupTestNetworkWithMethodIgnore(
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	return network
 }
@@ -2817,15 +2815,13 @@ func setupTestNetworkWithCustomUpstreams(
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
 		nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -2833,6 +2829,7 @@ func setupTestNetworkWithCustomUpstreams(
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	return network
 }

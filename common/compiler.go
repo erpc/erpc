@@ -57,3 +57,14 @@ func CompileFunction(contents string) (sobek.Callable, error) {
 	}
 	return nil, fmt.Errorf("result is not a function")
 }
+
+// CompileProgram compiles a JS source string into a sobek.Program suitable
+// for `runtime.RunProgram`. A single compiled program is safe to share
+// across runtimes from a pool; only the runtimes themselves are per-goroutine.
+//
+// The source is wrapped in parentheses so a bare arrow-function expression
+// (the canonical selectionPolicy.eval form) parses as an expression rather
+// than a function declaration.
+func CompileProgram(source string) (*sobek.Program, error) {
+	return sobek.Compile("selection-policy.js", "("+source+")", false)
+}

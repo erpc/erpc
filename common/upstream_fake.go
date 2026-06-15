@@ -18,6 +18,7 @@ type FakeUpstream struct {
 	id                 string
 	config             *UpstreamConfig
 	network            Network
+	networkIDOverride  string // set via WithFakeUpstreamNetworkID; "" → fall back to default
 	evmStatePoller     EvmStatePoller
 	cordoned           bool
 	lastCordonedReason string
@@ -47,6 +48,34 @@ func WithEvmStatePoller(evmStatePoller EvmStatePoller) func(*FakeUpstream) {
 	}
 }
 
+// WithTags sets the upstream's config tags (used by consensus
+// requiredParticipants quotas, selection-policy tag filters, etc.).
+func WithTags(tags ...string) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.config.Tags = tags
+	}
+}
+
+// WithGrpcConfig sets the upstream's grpc config block (headers, etc.). Used by
+// client tests that exercise grpc.headers handling.
+func WithGrpcConfig(cfg *GrpcUpstreamConfig) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.config.Grpc = cfg
+	}
+}
+
+// WithFakeUpstreamNetworkID overrides the network ID this fake reports.
+// Tests that exercise per-network indexing (e.g.
+// `tracker.GetUpstreamMetrics`'s `upstreamsByNetwork` lookup) need
+// upstreams on DIFFERENT networks to validate the per-network scope.
+// Default (no override) keeps the historical "evm:123" string so
+// existing tests aren't affected.
+func WithFakeUpstreamNetworkID(networkID string) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.networkIDOverride = networkID
+	}
+}
+
 func (u *FakeUpstream) Id() string {
 	return u.id
 }
@@ -72,10 +101,16 @@ func (u *FakeUpstream) EvmGetChainId(context.Context) (string, error) {
 }
 
 func (u *FakeUpstream) NetworkId() string {
+	if u.networkIDOverride != "" {
+		return u.networkIDOverride
+	}
 	return "evm:123"
 }
 
 func (u *FakeUpstream) NetworkLabel() string {
+	if u.networkIDOverride != "" {
+		return u.networkIDOverride
+	}
 	return "evm:123"
 }
 
@@ -111,7 +146,7 @@ func (u *FakeUpstream) EvmStatePoller() EvmStatePoller {
 	return u.evmStatePoller
 }
 
-func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error) {
+func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck, isHedgeAttempt bool) (*NormalizedResponse, error) {
 	return nil, nil
 }
 
@@ -120,6 +155,20 @@ func (u *FakeUpstream) Cordon(method string, reason string) {
 	defer u.cordonMu.Unlock()
 	u.cordoned = true
 	u.lastCordonedReason = reason
+}
+
+// ShouldHandleMethod honors the upstream config's IgnoreMethods (glob patterns);
+// everything else is handled. Mirrors the concrete upstream's default-allow
+// behavior for tests.
+func (u *FakeUpstream) ShouldHandleMethod(method string) (bool, error) {
+	if u.config != nil {
+		for _, ig := range u.config.IgnoreMethods {
+			if m, err := WildcardMatch(ig, method); err == nil && m {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 func (u *FakeUpstream) Uncordon(method string, reason string) {
@@ -260,18 +309,18 @@ type FakeHealthTracker struct {
 	mu                  sync.Mutex
 }
 
-func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string) {
+func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.MisbehaviorRecorded = true
 	t.MisbehaviorCount++
 }
 
-func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string) {
+func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState) {
 	// No-op for testing
 }
 
-func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, err error) {
+func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, finality DataFinalityState, err error) {
 	// No-op for testing
 }
 

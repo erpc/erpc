@@ -13,7 +13,9 @@ import (
 	"syscall"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/common/legacy"
 	"github.com/erpc/erpc/erpc"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/util"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -26,6 +28,15 @@ import (
 
 func init() {
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, os.Stderr))
+
+	// Wire the legacy → modern config migration hook. Done here (init
+	// of cmd/erpc) rather than in common so that the common package
+	// itself stays free of the common/legacy dependency. Tests that
+	// exercise legacy YAML can mirror this assignment in TestMain.
+	common.LegacyTranslateFn = legacy.TranslateFromConfig
+	common.LegacyTranslateLogger = func(w string) {
+		log.Warn().Str("source", "config-migration").Msg(w)
+	}
 
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
@@ -133,7 +144,7 @@ func main() {
 	// Define the dump command
 	dumpCmd := &cli.Command{
 		Name:  "dump",
-		Usage: "Parse a config file (TS, JS, or YAML) and dump the fully resolved configuration with all defaults applied",
+		Usage: "Parse a config file (TS, JS, or YAML) and dump the exact configuration eRPC would run with — selectionPolicy filled with the effective policy per network, TS function sentinels resolved to source",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "format",
@@ -150,6 +161,13 @@ func main() {
 				util.OsExit(1)
 				return nil
 			}
+
+			// Make each network's effective selectionPolicy explicit — the
+			// rich default for nil, the upgrade for the trivial placeholder,
+			// and best-effort TS source resolution. Mirrors what the engine
+			// applies at register-time, so the dump matches what `erpc start`
+			// would actually run.
+			policy.ResolveEffectiveSelectionPolicies(cfg)
 
 			format := cmd.String("format")
 			switch format {

@@ -26,6 +26,15 @@ const (
 	DataFinalityStateUnknown
 )
 
+// DataFinalityStateAll is the internal wildcard sentinel used by the
+// health tracker to key its cross-finality aggregate rollups. NOT a
+// valid user-facing finality — never set on a request, never returned
+// from `Finality()`. Lives here so the tracker (health/) and the
+// policy engine (internal/policy/) can both reference it without a
+// cycle. Negative-valued so it sorts before any real finality bucket
+// and doesn't collide with the iota-based enum values.
+const DataFinalityStateAll DataFinalityState = -1
+
 func (f DataFinalityState) String() string {
 	names := []string{"finalized", "unfinalized", "realtime", "unknown"}
 	if int(f) < 0 || int(f) >= len(names) {

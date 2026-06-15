@@ -20,8 +20,6 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 	}
 
 	switch strings.ToLower(method) {
-	case "eth_blocknumber":
-		return projectPreForward_eth_blockNumber(ctx, network, nq)
 	case "eth_call":
 		return projectPreForward_eth_call(ctx, network, nq)
 	case "eth_chainid":
@@ -70,10 +68,14 @@ func HandleNetworkPostForward(ctx context.Context, network common.Network, nq *c
 	}
 
 	switch strings.ToLower(method) {
+	case "eth_blocknumber":
+		return networkPostForward_eth_blockNumber(ctx, network, nq, nr, re)
 	case "eth_getblockbynumber":
 		return networkPostForward_eth_getBlockByNumber(ctx, network, nq, nr, re)
 	case "eth_getlogs":
 		return networkPostForward_eth_getLogs(ctx, network, nq, nr, re)
+	case "eth_sendrawtransaction":
+		return networkPostForward_eth_sendRawTransaction(ctx, network, nq, nr, re)
 	case "trace_filter", "arbtrace_filter":
 		return networkPostForward_trace_filter(ctx, network, nq, nr, re)
 	default:
@@ -156,6 +158,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		}
 		// Then apply directive-based validation
 		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
+
+	case "trace_filter", "arbtrace_filter":
+		rs, validationErr = upstreamPostForward_trace_filter(ctx, n, u, rq, rs, re)
 
 	default:
 		// For other methods, only apply the mark empty check if configured

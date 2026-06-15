@@ -18,13 +18,12 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+// ChainstackVendor uses RemoteDataCache for lock-free, async-refresh access
+// to the per-(apiKey,filter) node list. See remote_cache.go for the
+// request-path safety rule.
 type ChainstackVendor struct {
 	common.Vendor
-
-	// local cache of nodes data
-	nodesDataLock          sync.RWMutex
-	nodesData              map[string][]*ChainstackNode // key is apiKey + filter params hash
-	nodesDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[[]*ChainstackNode]
 }
 
 type ChainstackNode struct {
@@ -61,8 +60,7 @@ const DefaultChainstackRecheckInterval = 1 * time.Hour
 
 func CreateChainstackVendor() common.Vendor {
 	return &ChainstackVendor{
-		nodesData:              make(map[string][]*ChainstackNode),
-		nodesDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[[]*ChainstackNode]("chainstack"),
 	}
 }
 
@@ -70,6 +68,8 @@ func (v *ChainstackVendor) Name() string {
 	return "chainstack"
 }
 
+// SupportsNetwork follows the request-path safety rule: lock-free read,
+// async refresh on staleness, retryable error on cold-start.
 func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
@@ -85,31 +85,45 @@ func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		return ok, nil
 	}
 
-	// If we have an API key, check if we have nodes for this chain ID
 	recheckInterval := DefaultChainstackRecheckInterval
 	if interval, ok := settings["recheckInterval"].(time.Duration); ok {
 		recheckInterval = interval
 	}
-
-	filterParams := v.extractFilterParams(settings)
-	err = v.ensureRefreshNodes(ctx, logger, apiKey, filterParams, recheckInterval)
-	if err != nil {
-		logger.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static network names")
-		return false, err
+	nodes, ok := v.resolveNodes(logger, apiKey, settings, recheckInterval)
+	if !ok {
+		return false, ErrRemoteCacheCold
 	}
-
-	cacheKey := v.getCacheKey(apiKey, filterParams)
-	v.nodesDataLock.RLock()
-	nodes := v.nodesData[cacheKey]
-	v.nodesDataLock.RUnlock()
-
 	for _, node := range nodes {
 		if node.ChainID == chainID && node.Status == "running" {
 			return true, nil
 		}
 	}
-
 	return false, nil
+}
+
+// resolveNodes does a lock-free Lookup, kicks off an async refresh on
+// staleness, and returns (nodes, true) on hit or (nil, false) on cold start.
+// See remote_cache.go for the request-path safety rule.
+func (v *ChainstackVendor) resolveNodes(logger *zerolog.Logger, apiKey string, settings common.VendorSettings, recheckInterval time.Duration) ([]*ChainstackNode, bool) {
+	filterParams := v.extractFilterParams(settings)
+	cacheKey := v.getCacheKey(apiKey, filterParams)
+	nodes, fresh := v.cache.Lookup(cacheKey, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, cacheKey, func(ctx context.Context) ([]*ChainstackNode, error) {
+			fetched, err := v.fetchNodes(ctx, logger, apiKey, filterParams)
+			if err != nil {
+				return nil, err
+			}
+			if err := v.fetchChainIDs(ctx, logger, fetched); err != nil {
+				logger.Warn().Err(err).Msg("some chainstack chain ID fetches failed; continuing with available data")
+			}
+			return fetched, nil
+		})
+	}
+	if nodes == nil {
+		return nil, false
+	}
+	return nodes, true
 }
 
 func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -137,17 +151,10 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			recheckInterval = interval
 		}
 
-		filterParams := v.extractFilterParams(settings)
-		err := v.ensureRefreshNodes(ctx, logger, apiKey, filterParams, recheckInterval)
-		if err != nil {
-			logger.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static endpoint generation")
-			return nil, err
+		nodes, ok := v.resolveNodes(logger, apiKey, settings, recheckInterval)
+		if !ok {
+			return nil, ErrRemoteCacheCold
 		}
-
-		cacheKey := v.getCacheKey(apiKey, filterParams)
-		v.nodesDataLock.RLock()
-		nodes := v.nodesData[cacheKey]
-		v.nodesDataLock.RUnlock()
 
 		var upstreams []*common.UpstreamConfig
 		for _, node := range nodes {
@@ -220,41 +227,6 @@ func (v *ChainstackVendor) getCacheKey(apiKey string, params *ChainstackFilterPa
 		key += "_t:" + params.Type
 	}
 	return key
-}
-
-func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerolog.Logger, apiKey string, filterParams *ChainstackFilterParams, recheckInterval time.Duration) error {
-	cacheKey := v.getCacheKey(apiKey, filterParams)
-
-	v.nodesDataLock.Lock()
-	defer v.nodesDataLock.Unlock()
-
-	// Check if we've fetched recently
-	if lastFetch, ok := v.nodesDataLastFetchedAt[cacheKey]; ok && time.Since(lastFetch) < recheckInterval {
-		return nil
-	}
-
-	// Fetch nodes from API
-	nodes, err := v.fetchNodes(ctx, logger, apiKey, filterParams)
-	if err != nil {
-		// Keep stale data if fetch fails
-		if _, hasData := v.nodesData[cacheKey]; hasData {
-			logger.Warn().Err(err).Msg("could not refresh Chainstack nodes data; will use stale data")
-			return nil
-		}
-		return err
-	}
-
-	// Fetch chain IDs in parallel with semaphore
-	err = v.fetchChainIDs(ctx, logger, nodes)
-	if err != nil {
-		logger.Warn().Err(err).Msg("some chain ID fetches failed, but continuing with available data")
-	}
-
-	// Update cache
-	v.nodesData[cacheKey] = nodes
-	v.nodesDataLastFetchedAt[cacheKey] = time.Now()
-
-	return nil
 }
 
 func (v *ChainstackVendor) fetchNodes(ctx context.Context, logger *zerolog.Logger, apiKey string, filterParams *ChainstackFilterParams) ([]*ChainstackNode, error) {

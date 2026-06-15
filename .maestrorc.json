@@ -1,0 +1,23 @@
+{
+  "$schema": "https://maestro.goldsky.com/maestrorc/schema",
+  "agent": {
+    "model": "opus",
+    "effort": "high"
+  },
+  "planning": {
+    "enabled": true
+  },
+  "security": {
+    "trusted_author_associations": ["OWNER", "MEMBER", "COLLABORATOR"]
+  },
+  "sandbox": {
+    "setup_commands": {
+      "post_clone": [
+        "GO_VERSION=$(grep -m1 '^toolchain go' go.mod | sed 's/.*go//'); GO_VERSION=${GO_VERSION:-$(grep -m1 '^go [0-9]' go.mod | awk '{print $2}')}; echo \"Installing Go ${GO_VERSION} from go.mod\" && curl -fsSL \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\" | tar -C /usr/local -xz && ln -sf /usr/local/go/bin/go /usr/local/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt",
+        "PNPM_VERSION=$(jq -r .packageManager package.json | cut -d@ -f2); echo \"Activating pnpm ${PNPM_VERSION} from package.json packageManager\" && corepack enable && corepack prepare \"pnpm@${PNPM_VERSION}\" --activate",
+        "go mod download",
+        "pnpm install --frozen-lockfile --ignore-scripts"
+      ]
+    }
+  }
+}

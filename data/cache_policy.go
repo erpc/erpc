@@ -256,6 +256,20 @@ func (p *CachePolicy) String() string {
 	return p.str
 }
 
+// GetTTL returns the fixed/fallback component of the policy TTL (always non-nil;
+// points to 0 when unset). Used for telemetry labels, which need a stable value
+// (the block-time-resolved TTL varies per sample and would explode cardinality).
 func (p *CachePolicy) GetTTL() *time.Duration {
-	return p.config.TTL.DurationPtr()
+	d := p.config.TTL.FixedDuration()
+	return &d
+}
+
+// ResolveTTL returns the effective TTL for the given network block time,
+// applying coldStartDefault when the policy is block-time dynamic but the
+// block time isn't known yet and no fallback is set. It is the single source
+// of truth shared by the write-side storage expiry and the read-side realtime
+// age guard, so a cached entry's lifetime always matches the window the guard
+// would serve it for.
+func (p *CachePolicy) ResolveTTL(blockTime, coldStartDefault time.Duration) time.Duration {
+	return p.config.TTL.Resolve(blockTime, coldStartDefault)
 }

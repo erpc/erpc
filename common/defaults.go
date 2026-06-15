@@ -132,10 +132,10 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 								BackoffFactor:   1.0,
 							},
 							Timeout: &TimeoutPolicyConfig{
-								Duration: Duration(120 * time.Second),
+								Duration: NewStaticDuration(120 * time.Second),
 							},
 							Hedge: &HedgePolicyConfig{
-								Quantile: 0.7,
+								Delay:    &AdaptiveDuration{Quantile: 0.7},
 								MaxCount: 2,
 							},
 						},
@@ -153,7 +153,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 								Delay:       Duration(500 * time.Millisecond),
 							},
 							Timeout: &TimeoutPolicyConfig{
-								Duration: Duration(60 * time.Second),
+								Duration: NewStaticDuration(60 * time.Second),
 							},
 						},
 					},
@@ -273,7 +273,10 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
-		// evm/eth_getBlockByNumber.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		// The post-forward hook in evm/eth_getBlockByNumber.go only enforces "latest"/"finalized"
+		// tag handling; it does not gate numeric block requests against per-upstream bounds.
+		// Numeric blocks beyond an upstream's known head will be forwarded and may return
+		// missing-data, which the failsafe retry policy can space out via emptyResultDelay.
 		EnforceBlockAvailability: util.BoolPtr(false),
 		// Don't interpolate "latest"/"finalized" tags for this method - it should fetch actual
 		// current state from upstream. This method is the source of truth for block tags,
@@ -713,6 +716,10 @@ func (s *ServerConfig) SetDefaults() error {
 	}
 	if s.IncludeErrorDetails == nil {
 		s.IncludeErrorDetails = util.BoolPtr(true)
+	}
+	if s.ExecutionHeaders == nil {
+		m := ExecutionHeadersAll
+		s.ExecutionHeaders = &m
 	}
 
 	// Safe defaults for client IP resolution
@@ -1180,33 +1187,6 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			return fmt.Errorf("failed to set defaults for cors: %w", err)
 		}
 	}
-	if p.ScoreMetricsWindowSize == 0 {
-		if p.DeprecatedHealthCheck != nil && p.DeprecatedHealthCheck.ScoreMetricsWindowSize != 0 {
-			p.ScoreMetricsWindowSize = p.DeprecatedHealthCheck.ScoreMetricsWindowSize
-		} else {
-			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
-		}
-	}
-	p.RoutingStrategy = strings.ToLower(strings.TrimSpace(p.RoutingStrategy))
-	if p.RoutingStrategy == "" {
-		p.RoutingStrategy = "score-based"
-	}
-	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
-	if p.ScoreGranularity == "" {
-		p.ScoreGranularity = "upstream"
-	}
-	// Numeric scoring defaults are intentionally NOT set here.
-	// ScoringConfig.withDefaults() is the single source of truth so that
-	// explicit zero values from the user (e.g. scoreSwitchHysteresis: 0)
-	// are not silently overridden. Use negative values to disable:
-	//   scorePenaltyDecayRate: -1   → no EMA memory (instant penalty only)
-	//   scoreSwitchHysteresis: -1   → no stickiness
-	//   scoreMinSwitchInterval: -1  → no cooldown
-	// Default score metrics mode to compact when not provided
-	if strings.TrimSpace(p.ScoreMetricsMode) == "" {
-		p.ScoreMetricsMode = "compact"
-	}
-
 	return nil
 }
 
@@ -1402,6 +1382,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "blockdaemon", "evm+blockdaemon":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
 	case "erpc", "evm+erpc":
 		settings := VendorSettings{
 			"endpoint": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/"),
@@ -1518,8 +1502,11 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if u.VendorName == "" {
 		u.VendorName = defaults.VendorName
 	}
-	if u.Group == "" {
-		u.Group = defaults.Group
+	// Inherit Tags from upstreamDefaults when this upstream specifies none.
+	// All-or-nothing inheritance matches user expectations (the defaults are
+	// a template; specifying any tag means "I want my own").
+	if len(u.Tags) == 0 && len(defaults.Tags) > 0 {
+		u.Tags = append(u.Tags[:0:0], defaults.Tags...)
 	}
 	if u.Failsafe == nil && defaults.Failsafe != nil {
 		u.Failsafe = defaults.Failsafe
@@ -1570,14 +1557,14 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			Headers:       defaults.JsonRpc.Headers,
 		}
 	}
+	if u.Grpc == nil && defaults.Grpc != nil {
+		u.Grpc = defaults.Grpc.Copy()
+	}
 	// Integrity moved under Evm.Integrity
 	if u.Evm != nil && defaults.Evm != nil {
 		if u.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 			u.Evm.Integrity = defaults.Evm.Integrity.Copy()
 		}
-	}
-	if u.Routing == nil {
-		u.Routing = defaults.Routing
 	}
 	if u.AllowMethods == nil && defaults.AllowMethods != nil {
 		u.AllowMethods = append([]string{}, defaults.AllowMethods...)
@@ -1587,6 +1574,20 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	}
 	if u.AutoIgnoreUnsupportedMethods == nil && defaults.AutoIgnoreUnsupportedMethods != nil {
 		u.AutoIgnoreUnsupportedMethods = defaults.AutoIgnoreUnsupportedMethods
+	}
+	// Routing — all-or-nothing inheritance matching the Tags pattern:
+	// when this upstream omitted its own `routing` block, clone the
+	// project-level `upstreamDefaults.routing` so it survives to runtime.
+	// Cloning (not pointer-sharing) keeps each upstream independently
+	// owned in case any later step mutates the matcher list. Inner
+	// `*ScoreMultiplierConfig` entries are treated as immutable so the
+	// pointers are reused.
+	if u.Routing == nil && defaults.Routing != nil && defaults != u {
+		cp := *defaults.Routing
+		if defaults.Routing.ScoreMultipliers != nil {
+			cp.ScoreMultipliers = append([]*ScoreMultiplierConfig{}, defaults.Routing.ScoreMultipliers...)
+		}
+		u.Routing = &cp
 	}
 
 	return nil
@@ -1702,13 +1703,6 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	if err := u.JsonRpc.SetDefaults(); err != nil {
 		return fmt.Errorf("failed to set defaults for json rpc: %w", err)
 	}
-	if u.Routing == nil {
-		u.Routing = &RoutingConfig{}
-	}
-	if err := u.Routing.SetDefaults(); err != nil {
-		return fmt.Errorf("failed to set defaults for routing: %w", err)
-	}
-
 	// By default if any allowed methods are specified, all other methods are ignored (unless ignoreMethods is explicitly defined by user)
 	// Similar to how common network security policies work.
 	if u.AllowMethods != nil {
@@ -1886,6 +1880,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.TraceFilterSplitConcurrency == 0 && defaults.Evm.TraceFilterSplitConcurrency != 0 {
 				n.Evm.TraceFilterSplitConcurrency = defaults.Evm.TraceFilterSplitConcurrency
 			}
+			if n.Evm.ServedTip == nil && defaults.Evm.ServedTip != nil {
+				cp := *defaults.Evm.ServedTip
+				n.Evm.ServedTip = &cp
+			}
+			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
+				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
+			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
@@ -1929,10 +1930,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	}
 
 	if len(upstreams) > 0 {
-		anyUpstreamInFallbackGroup := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-			return u.Group == "fallback"
+		anyUpstreamInFallbackTier := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
+			return u.HasTag("tier:fallback")
 		})
-		if anyUpstreamInFallbackGroup && n.SelectionPolicy == nil {
+		if anyUpstreamInFallbackTier && n.SelectionPolicy == nil {
 			defCfg := NewDefaultNetworkConfig(upstreams)
 			n.SelectionPolicy = defCfg.SelectionPolicy
 		}
@@ -1974,13 +1975,54 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
-const DefaultBlockUnavailableDelayMultiplier = 0.8
+const DefaultBlockUnavailableDelayMultiplier = 1.0
+
+// DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
+// upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
+// ErrUpstreamBlockUnavailable): one original attempt + one retry after ~one block.
+// Separate from MaxAttempts, which governs genuine-error failover.
+const DefaultEmptyResultMaxAttempts = 2
 
 // DefaultEmptyResultAccept returns a fresh copy of the methods for which an
-// empty/null result is considered valid (e.g. eth_getLogs, eth_call). A new
-// slice is returned on every call so callers cannot mutate the shared default.
+// empty/null/zero result is the canonical, final answer — NOT a "data is
+// missing, retry elsewhere" signal. For these methods an emptyish response
+// (`[]`, `0x`, `0x0`, `null`) is accepted immediately instead of burning the
+// retry budget (and its emptyResultDelay sleeps) chasing a non-empty answer
+// that will never come. A fresh slice is returned every call so callers
+// cannot mutate the shared default.
+//
+// Safety: this only governs what to do once a response arrives. The
+// per-upstream block-availability gate still runs BEFORE the call — an
+// upstream that doesn't yet have the requested block is skipped, so we never
+// accept a stale empty from a lagging node.
+//
+// Two categories qualify:
+//
+//   - Filter / range queries that return an array; `[]` means "nothing
+//     matched in this range", which is a complete answer:
+//     eth_getLogs, trace_filter, arbtrace_filter.
+//
+//   - Point state reads where the zero value is a real value, not absence:
+//     eth_call (empty/0x return), eth_getBalance (0x0 = zero balance),
+//     eth_getCode (0x = EOA / no code), eth_getStorageAt (0x0 = empty slot),
+//     eth_getTransactionCount (0x0 = nonce zero / no txns).
+//
+// Methods deliberately EXCLUDED — for these, empty/null means "not found
+// yet, try another upstream": eth_getBlockByNumber, eth_getBlockByHash,
+// eth_getTransactionByHash, eth_getTransactionReceipt, eth_getBlockReceipts.
 func DefaultEmptyResultAccept() []string {
-	return []string{"eth_getLogs", "eth_call"}
+	return []string{
+		// Filter / range queries — empty array is a valid "no matches".
+		"eth_getLogs",
+		"trace_filter",
+		"arbtrace_filter",
+		// Point state reads — zero value is a real value, not absence.
+		"eth_call",
+		"eth_getBalance",
+		"eth_getCode",
+		"eth_getStorageAt",
+		"eth_getTransactionCount",
+	}
 }
 
 // DefaultMarkEmptyAsErrorMethods returns a fresh copy of the methods for which
@@ -1992,11 +2034,17 @@ func DefaultEmptyResultAccept() []string {
 // upstreams commonly return empty for this method, which is expected behavior.
 // Note: eth_getTransactionReceipt is excluded as a quick remedy. Ideally we'd
 // only allow null for pending txs.
+// Note: eth_getBlockReceipts is excluded for the same reason as
+// eth_getTransactionReceipt — an empty array is the legitimate response for
+// blocks with zero transactions and should not be retried as missing data.
+// Including it here forces the post-forward hook to convert correct empty
+// responses into ErrEndpointMissingData, which bypasses emptyResultAccept and
+// drives retry-with-emptyResultDelay loops that can outrun the network outer
+// timeout (see incident note in the PR description).
 func DefaultMarkEmptyAsErrorMethods() []string {
 	return []string{
 		"eth_blockNumber",
 		"eth_getBlockByNumber",
-		"eth_getBlockReceipts",
 		"eth_getTransactionByHash",
 		"eth_getTransactionByBlockHashAndIndex",
 		"eth_getTransactionByBlockNumberAndIndex",
@@ -2023,6 +2071,15 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.BlockUnavailableDelayMultiplier == nil {
 		d := DefaultBlockUnavailableDelayMultiplier
 		e.BlockUnavailableDelayMultiplier = &d
+	}
+	if e.EmptyResultConfidence == 0 {
+		// Default: an empty point-lookup is retryable only for blocks at/below the
+		// latest head; a block above the head isn't produced yet → return it empty.
+		e.EmptyResultConfidence = AvailbilityConfidenceBlockHead
+	}
+	if e.MaxFutureBlockRetryDistance != nil {
+		log.Warn().Msg("config: evm.maxFutureBlockRetryDistance is deprecated and ignored; use evm.emptyResultConfidence (blockHead|finalizedBlock) instead")
+		e.MaxFutureBlockRetryDistance = nil
 	}
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}
@@ -2154,10 +2211,14 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 }
 
 func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {
-	if defaults != nil && t.Duration == 0 {
-		t.Duration = defaults.Duration
+	if defaults == nil || defaults.Duration.IsZero() {
+		return nil
 	}
-
+	if t.Duration.IsZero() {
+		t.Duration = defaults.Duration.Copy()
+		return nil
+	}
+	t.Duration.inheritFrom(defaults.Duration)
 	return nil
 }
 
@@ -2197,13 +2258,19 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 			r.Jitter = Duration(0 * time.Millisecond)
 		}
 	}
-	// Only set EmptyResultConfidence if provided through defaults
-	if r.EmptyResultConfidence == 0 && defaults != nil && defaults.EmptyResultConfidence != 0 {
-		r.EmptyResultConfidence = defaults.EmptyResultConfidence
-	}
 	// Backward compat: migrate deprecated EmptyResultIgnore → EmptyResultAccept
 	if r.EmptyResultAccept == nil && r.EmptyResultIgnore != nil {
 		r.EmptyResultAccept = r.EmptyResultIgnore
+	}
+	// Backward compat (config-loading only): deprecated blockUnavailableDelay was merged
+	// into emptyResultDelay (same purpose). Migrate an old value over, then clear the
+	// legacy field so nothing downstream ever reads it.
+	if r.BlockUnavailableDelay > 0 {
+		if r.EmptyResultDelay == 0 {
+			r.EmptyResultDelay = r.BlockUnavailableDelay
+		}
+		log.Warn().Msg("config: retry.blockUnavailableDelay is deprecated and has been merged into retry.emptyResultDelay; please update your config")
+		r.BlockUnavailableDelay = 0
 	}
 	// Inherit from defaults
 	if r.EmptyResultAccept == nil && defaults != nil {
@@ -2217,10 +2284,14 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		r.EmptyResultAccept = DefaultEmptyResultAccept()
 	}
 
-	// Default EmptyResultMaxAttempts to MaxAttempts if not set
+	// "Data not available yet" (empty/missing-data/block-unavailable) retries are all
+	// capped here — default one original + one retry (~one block apart). Separate from
+	// MaxAttempts, which governs genuine-error failover.
 	if r.EmptyResultMaxAttempts == 0 {
 		if defaults != nil && defaults.EmptyResultMaxAttempts != 0 {
 			r.EmptyResultMaxAttempts = defaults.EmptyResultMaxAttempts
+		} else {
+			r.EmptyResultMaxAttempts = DefaultEmptyResultMaxAttempts
 		}
 	}
 
@@ -2230,43 +2301,33 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		r.EmptyResultDelay = defaults.EmptyResultDelay
 	}
 
-	// BlockUnavailableDelay inherits from defaults if provided, no hardcoded fallback.
-	// When not set, block-unavailable retries use the normal delay/backoff.
-	if r.BlockUnavailableDelay == 0 && defaults != nil && defaults.BlockUnavailableDelay != 0 {
-		r.BlockUnavailableDelay = defaults.BlockUnavailableDelay
-	}
-
 	return nil
 }
 
+// Hedge policy defaults: Min floors at 100ms (prevents hedges firing
+// before the primary has a real chance) and Max ceilings at 999s
+// (effectively unbounded but defensive). MaxCount defaults to 1.
+const (
+	defaultHedgeMinDelay = 100 * time.Millisecond
+	defaultHedgeMaxDelay = 999 * time.Second
+)
+
 func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
-	if h.Delay == 0 {
-		if defaults != nil && defaults.Delay != 0 {
-			h.Delay = defaults.Delay
-		} else {
-			h.Delay = Duration(0)
-		}
+	if h.Delay == nil {
+		h.Delay = &AdaptiveDuration{}
 	}
-	if h.Quantile == 0 {
-		if defaults != nil && defaults.Quantile != 0 {
-			h.Quantile = defaults.Quantile
-		}
+	var defDelay *AdaptiveDuration
+	if defaults != nil {
+		defDelay = defaults.Delay
 	}
-	if h.MinDelay == 0 {
-		if defaults != nil && defaults.MinDelay != 0 {
-			h.MinDelay = defaults.MinDelay
-		} else {
-			h.MinDelay = Duration(100 * time.Millisecond)
-		}
+	h.Delay.inheritFrom(defDelay)
+	if h.Delay.Min == 0 {
+		h.Delay.Min = Duration(defaultHedgeMinDelay)
 	}
-	if h.MaxDelay == 0 {
-		if defaults != nil && defaults.MaxDelay != 0 {
-			h.MaxDelay = defaults.MaxDelay
-		} else {
-			// Intentionally high, so it never hits in practical scenarios
-			h.MaxDelay = Duration(999 * time.Second)
-		}
+	if h.Delay.Max == 0 {
+		h.Delay.Max = Duration(defaultHedgeMaxDelay)
 	}
+
 	if h.MaxCount == 0 {
 		if defaults != nil && defaults.MaxCount != 0 {
 			h.MaxCount = defaults.MaxCount
@@ -2363,6 +2424,26 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		c.PreferLargerResponses = util.BoolPtr(true)
 	}
 
+	// Wait-cap defaults: adaptive p50 with bounds. Once any non-empty
+	// response is in, give the rest at most ~typical_response_time more;
+	// when only empties have arrived, wait a bit longer for a real answer
+	// to land. Both clamp at [5ms, 1s] to keep tail latency bounded
+	// even when the latency distribution is degenerate.
+	if c.MaxWaitOnResult == nil {
+		c.MaxWaitOnResult = &AdaptiveDuration{
+			Quantile: 0.5,
+			Min:      Duration(5 * time.Millisecond),
+			Max:      Duration(1 * time.Second),
+		}
+	}
+	if c.MaxWaitOnEmpty == nil {
+		c.MaxWaitOnEmpty = &AdaptiveDuration{
+			Quantile: 0.9,
+			Min:      Duration(50 * time.Millisecond),
+			Max:      Duration(2 * time.Second),
+		}
+	}
+
 	// Destination defaults
 	if c.MisbehaviorsDestination != nil {
 		if err := c.MisbehaviorsDestination.SetDefaults(); err != nil {
@@ -2428,161 +2509,101 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 	return nil
 }
 
-func (r *RoutingConfig) SetDefaults() error {
-	if len(r.ScoreMultipliers) == 0 {
-		r.ScoreMultipliers = []*ScoreMultiplierConfig{
-			// For realtime/unfinalized: prioritize block lag (need fresh data)
-			{
-				Network:  "*",
-				Method:   "*",
-				Finality: []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized},
-
-				ErrorRate:       util.Float64Ptr(4.0),
-				RespLatency:     util.Float64Ptr(6.0),
-				TotalRequests:   util.Float64Ptr(1.0),
-				ThrottledRate:   util.Float64Ptr(3.0),
-				BlockHeadLag:    util.Float64Ptr(8.0),
-				FinalizationLag: util.Float64Ptr(2.0),
-				Misbehaviors:    util.Float64Ptr(5.0),
-				Overall:         util.Float64Ptr(1.0),
-			},
-			// For finalized/unknown: prioritize latency (block lag doesn't matter)
-			// Even though "unknown" might include requests for tx hashes or block hashes
-			// of tip-of-chain range, they'll be retried due to retryEmpty logic if
-			//  an upstream doesn't have the data. This is not ideal for numeric getBlockByNumber calls.
-			{
-				Network:  "*",
-				Method:   "*",
-				Finality: []DataFinalityState{DataFinalityStateFinalized, DataFinalityStateUnknown},
-
-				ErrorRate:       util.Float64Ptr(4.0),
-				RespLatency:     util.Float64Ptr(8.0),
-				TotalRequests:   util.Float64Ptr(1.0),
-				ThrottledRate:   util.Float64Ptr(3.0),
-				BlockHeadLag:    util.Float64Ptr(2.0),
-				FinalizationLag: util.Float64Ptr(1.0),
-				Misbehaviors:    util.Float64Ptr(5.0),
-				Overall:         util.Float64Ptr(1.0),
-			},
-		}
-	} else {
-		for _, multiplier := range r.ScoreMultipliers {
-			if err := multiplier.SetDefaults(); err != nil {
-				return fmt.Errorf("failed to set defaults for score multiplier: %w", err)
-			}
-		}
-	}
-	if r.ScoreLatencyQuantile == 0 {
-		r.ScoreLatencyQuantile = 0.70
-	}
-
-	return nil
-}
-
-var DefaultScoreMultiplier = &ScoreMultiplierConfig{
-	Network: "*",
-	Method:  "*",
-	// Finality: nil means match all finality states
-
-	ErrorRate:       util.Float64Ptr(4.0),
-	RespLatency:     util.Float64Ptr(8.0),
-	TotalRequests:   util.Float64Ptr(1.0),
-	ThrottledRate:   util.Float64Ptr(3.0),
-	BlockHeadLag:    util.Float64Ptr(2.0),
-	FinalizationLag: util.Float64Ptr(1.0),
-	Misbehaviors:    util.Float64Ptr(5.0),
-
-	Overall: util.Float64Ptr(1.0),
-}
-
-func (s *ScoreMultiplierConfig) SetDefaults() error {
-	if s.Network == "" {
-		s.Network = DefaultScoreMultiplier.Network
-	}
-	if s.Method == "" {
-		s.Method = DefaultScoreMultiplier.Method
-	}
-	if s.ErrorRate == nil {
-		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
-	}
-	if s.RespLatency == nil {
-		s.RespLatency = DefaultScoreMultiplier.RespLatency
-	}
-	if s.TotalRequests == nil {
-		s.TotalRequests = DefaultScoreMultiplier.TotalRequests
-	}
-	if s.ThrottledRate == nil {
-		s.ThrottledRate = DefaultScoreMultiplier.ThrottledRate
-	}
-	if s.BlockHeadLag == nil {
-		s.BlockHeadLag = DefaultScoreMultiplier.BlockHeadLag
-	}
-	if s.FinalizationLag == nil {
-		s.FinalizationLag = DefaultScoreMultiplier.FinalizationLag
-	}
-	if s.Misbehaviors == nil {
-		s.Misbehaviors = DefaultScoreMultiplier.Misbehaviors
-	}
-	if s.Overall == nil {
-		s.Overall = DefaultScoreMultiplier.Overall
-	}
-
-	return nil
-}
-
-const DefaultPolicyFunction = `
-	(upstreams, method) => {
-		const defaults = upstreams.filter(u => u.config.group !== 'fallback')
-		const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-
-		const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
-		const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
-		const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
-
-		const healthyOnes = defaults.filter(
-			u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-		)
-
-		if (healthyOnes.length >= minHealthyThreshold) {
-			return healthyOnes
-		}
-
-		if (fallbacks.length > 0) {
-			let healthyFallbacks = fallbacks.filter(
-				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-			)
-
-			if (healthyFallbacks.length > 0) {
-				return healthyFallbacks
-			}
-		}
-
-		// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
-		// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
-		return upstreams
-	}
-`
+// DefaultSelectionPolicySource is the fallback JS used when a user has not
+// supplied `selectionPolicy.eval`. It is a placeholder until Phase 5.15
+// embeds the real default policy from `internal/policy/default_policy.js`.
+const DefaultSelectionPolicySource = `(upstreams, ctx) => upstreams`
 
 func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
-		c.EvalInterval = Duration(1 * time.Minute)
+		// 15s default — the JS interpreter doesn't need sub-second
+		// re-evaluation for production-stable ranking. With the
+		// default `scoreMetricsWindowSize: 1m` you get 4 quantile
+		// samples per window — enough for stable rankings without
+		// between-tick flicker. The probeExcluded re-admission flow
+		// (`minSamplesWindow: 60s`) lines up too. See the
+		// selection-policies docs "Advanced tuning" section.
+		//
+		// Tests requiring sub-second eval reactivity to observe
+		// policy decisions inside their assertion windows MUST set
+		// `EvalInterval` explicitly (most already do; the few that
+		// relied on the implicit 1s default were updated when this
+		// default moved to 15s).
+		c.EvalInterval = Duration(15 * time.Second)
 	}
-	if c.EvalFunction == nil {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
-			return fmt.Errorf("failed to compile default selection policy function: %w", err)
-		}
-		c.EvalFunction = evalFunction
+	if c.EvalTimeout == 0 {
+		c.EvalTimeout = Duration(100 * time.Millisecond)
 	}
-	if c.ResampleExcluded {
-		if c.ResampleInterval == 0 {
-			c.ResampleInterval = Duration(5 * time.Minute)
-		}
-		if c.ResampleCount == 0 {
-			c.ResampleCount = 10
+	// Resolve EvalScope. `evalScope` is the canonical knob; the
+	// `evalPerMethod` / `evalPerFinality` pointer-bool fields are a
+	// config-load-time alias kept so older YAML/TS configs from main
+	// keep working when users upgrade. After SetDefaults the bool
+	// fields are NILED OUT — engine + downstream code only consult
+	// EvalScope. The boundary lives entirely in the config layer.
+	//
+	// Pointer-typed bools let us distinguish three states:
+	//   nil          → key absent
+	//   *(false)     → key explicitly false
+	//   *(true)      → key explicitly true
+	// Explicit-false counts as "operator set the key" for purposes of
+	// the "both alias and canonical set" branch below — operator
+	// intent is unambiguous either way.
+	aliasMethodSet := c.EvalPerMethod != nil
+	aliasFinalitySet := c.EvalPerFinality != nil
+	aliasMethod := aliasMethodSet && *c.EvalPerMethod
+	aliasFinality := aliasFinalitySet && *c.EvalPerFinality
+
+	if c.EvalScope == "" {
+		// No explicit evalScope — translate from the alias bools (or
+		// fall back to the default `network`).
+		switch {
+		case aliasMethod && aliasFinality:
+			c.EvalScope = EvalScopeNetworkMethodFinality
+		case aliasMethod:
+			c.EvalScope = EvalScopeNetworkMethod
+		case aliasFinality:
+			c.EvalScope = EvalScopeNetworkFinality
+		default:
+			c.EvalScope = EvalScopeNetwork
 		}
 	}
+	// If BOTH evalScope and the alias bools are set, evalScope wins
+	// (it's the canonical surface). No warning — silent translation
+	// is the contract for the alias path.
+	switch c.EvalScope {
+	case EvalScopeNetworkMethodFinality, EvalScopeNetworkMethod, EvalScopeNetworkFinality, EvalScopeNetwork:
+		// Valid; clear the alias fields so no downstream consumer
+		// can accidentally read stale data.
+		c.EvalPerMethod = nil
+		c.EvalPerFinality = nil
+	default:
+		return fmt.Errorf("selectionPolicy.evalScope=%q: must be one of "+
+			"network / network-method / network-finality / network-method-finality",
+			c.EvalScope)
+	}
+	_ = aliasMethodSet
+	_ = aliasFinalitySet
+	if c.EvalFunc == "" {
+		c.EvalFunc = DefaultSelectionPolicySource
+	}
+	c.EvalFuncOriginal = c.EvalFunc
+
+	// TS-loaded configs put the function on `globalThis.__erpcFns[id]`
+	// inside every pool runtime (via the user-script primer) — EvalFunc
+	// just carries the lookup id. No `sobek.Compile` here: the
+	// engine resolves the function natively from the runtime where the
+	// user's whole TS module evaluated, so closures + helpers stay
+	// intact. See loadConfigFromTypescript.
+	if IsTSFunctionSentinel(c.EvalFunc) {
+		c.CompiledProgram = nil
+		return nil
+	}
+
+	program, err := CompileProgram(c.EvalFunc)
+	if err != nil {
+		return fmt.Errorf("failed to compile selectionPolicy.evalFunc: %w", err)
+	}
+	c.CompiledProgram = program
 
 	return nil
 }
@@ -2824,29 +2845,11 @@ func (c *CORSConfig) SetDefaults() error {
 	return nil
 }
 
+// NewDefaultNetworkConfig builds an empty NetworkConfig. Selection-policy
+// defaults are now applied uniformly by `SelectionPolicyConfig.SetDefaults`,
+// so this helper no longer auto-attaches a fallback-group policy. Users who
+// want a non-trivial policy must declare `selectionPolicy.eval` explicitly,
+// or rely on the translator (Phase 12) to synthesize one from legacy fields.
 func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
-	hasAnyFallbackUpstream := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-		return u.Group == "fallback"
-	})
-	n := &NetworkConfig{}
-	if hasAnyFallbackUpstream {
-		evalFunction, err := CompileFunction(DefaultPolicyFunction)
-		if err != nil {
-			// This should never happen with the default function - it's a programming error
-			panic(fmt.Sprintf("failed to compile default selection policy function: %v", err))
-		}
-
-		selectionPolicy := &SelectionPolicyConfig{
-			EvalInterval:     Duration(1 * time.Minute),
-			EvalFunction:     evalFunction,
-			EvalPerMethod:    false,
-			ResampleInterval: Duration(5 * time.Minute),
-			ResampleCount:    10,
-
-			evalFunctionOriginal: DefaultPolicyFunction,
-		}
-
-		n.SelectionPolicy = selectionPolicy
-	}
-	return n
+	return &NetworkConfig{}
 }

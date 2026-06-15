@@ -1,0 +1,507 @@
+---
+title: Retry
+description: When a provider misbehaves, eRPC automatically rotates to the next one — and paces retries for missing data to match the chain's own block time.
+---
+
+import {
+	LLMsTxtLink,
+	AISection,
+	ConfigTabs,
+	SourceLink,
+	PromptExample,
+} from "../../../components";
+
+<LLMsTxtLink />
+
+# Retry
+
+A single bad response no longer reaches your users. eRPC retries at two levels: rotate
+to a fresh upstream when a provider fails, and re-hit the same upstream for brief
+connectivity blips. For "block not yet available" conditions it paces retries to the
+chain's own block time instead of hammering upstreams pointlessly.
+
+**What you get**
+
+- Automatic failover across providers on any retryable error
+- Block-time-aware pacing for missing data — no hammering while waiting for the next block
+- A separate cap for "data not ready yet" retries so they can't crowd out hard-error failover
+- Per-method tuning via `matchMethod` — aggressive failover for reads, conservative for writes
+
+## Quick taste
+
+Illustrative, not a tuned production config — rotate upstreams immediately on error, pace
+missing-data retries to block time:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[].retry"
+  focusYaml="8-10,12-16"
+  focusTs="8-10,12-16"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        failsafe:
+          - matchMethod: "*"
+            retry:
+              # rotate upstreams immediately on error
+              maxAttempts: 5
+              delay: 0ms
+              backoffFactor: 1.2
+              backoffMaxDelay: 3s
+              # pace block-wait retries to chain block time
+              emptyResultMaxAttempts: 2
+              emptyResultDelay: 1s`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    failsafe: [{
+      matchMethod: "*",
+      retry: {
+        // rotate upstreams immediately on error
+        maxAttempts: 5,
+        delay: "0ms",
+        backoffFactor: 1.2,
+        backoffMaxDelay: "3s",
+        // pace block-wait retries to chain block time
+        emptyResultMaxAttempts: 2,
+        emptyResultDelay: "1s",
+      },
+    }],
+  }],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="configure retry failover from scratch"
+	defaultOpen
+	prompt={`Set up eRPC retry so provider failures automatically rotate to the next upstream,
+with block-time-aware pacing for missing data. I'm running Ethereum mainnet and a
+couple of fast L2s (Base, Arbitrum). Use separate failsafe entries per finality
+state and set emptyResultDelay to match each chain's block cadence. My config is
+in my eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/failsafe/retry.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="tune emptyResultDelay and maxAttempts for my chains"
+	prompt={`Audit the retry settings in my eRPC config: check that
+emptyResultDelay matches the block time of each configured chain, that
+emptyResultMaxAttempts won't multiply upstream calls into a fan-out, and that
+maxAttempts is roughly equal to my number of healthy upstreams. Flag any
+mismatches. Reference:
+https://docs.erpc.cloud/config/failsafe/retry.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug repeated missing-data errors on a fast L2"
+	prompt={`My eRPC node on Polygon (2s blocks) keeps returning empty or missing-data
+responses instead of retrying. The erpc_network_retry_attempt_total metric shows
+reason=missing_data but I still get nulls. Diagnose whether retryEmpty is gated
+off, emptyResultMaxAttempts is exhausted too quickly, or emptyResultDelay is
+miscalibrated. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/failsafe/retry.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="add pending-tx polling with block-time pacing"
+	prompt={`I need eRPC to keep retrying eth_getTransactionReceipt until the tx is mined,
+paced to roughly one retry per block, without hammering upstreams. Enable
+retryPending and retryEmpty for that method only, cap emptyResultMaxAttempts
+sensibly, and leave other methods unaffected. Work with my existing eRPC config.
+Reference: https://docs.erpc.cloud/config/failsafe/retry.llms.txt`}
+/>
+
+<PromptExample
+	n={5}
+	title="cap retry fan-out on large getLogs responses"
+	prompt={`On Base, finalized eth_getLogs requests are producing huge responses (~100 MB)
+and when they retry they spike memory because up to 6 upstream calls parse the
+same body in parallel. Reduce maxAttempts for finalized getLogs to 2, tighten
+emptyResultMaxAttempts to 1, and keep the existing aggressive retry for
+unfinalized getLogs. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/failsafe/retry.llms.txt`}
+/>
+
+<AISection title="Retry — full agent reference">
+
+### How it works
+
+**Two retry scopes, one config shape.** Both the network executor (`erpc/network_executor.go`) and the upstream executor (`upstream/upstream_executor.go`) consume the same `RetryPolicyConfig` struct, but their semantics differ:
+
+- **Network-scope retry** (`networkExecutor.runRetry`): after all upstreams have been tried within one execution round and still produced no satisfying response, the retry loop fires another full upstream sweep (all upstreams, ordered by the selection policy). This handles "every upstream is seeing the same error right now" scenarios and is the primary failover mechanism.
+- **Upstream-scope retry** (`upstreamExecutor.runRetry`): retries the same upstream's HTTP transport for transient connectivity blips. The default `maxAttempts: 1` disables it in practice; production configs typically set it to 2–3 only for idempotent methods where a brief TCP issue on a trusted endpoint is plausible.
+
+The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.maxAttempts: 3` = up to 9 physical calls per client request. Keep network attempts roughly equal to the number of healthy upstreams you want to exhaust.
+
+**Execution flow (non-consensus, non-hedge case).** `networkExecutor.Run` → `runRetryHedge` → `runRetry` calls `hedged(ctx)` which is ultimately `runUpstreamSweep`. Within one sweep, every upstream is tried in priority order until success or all return errors. After the sweep returns `(resp, err)`, `shouldRetryWithReason` classifies the outcome:
+
+1. `err == nil` — no retry (success).
+2. `ErrEndpointExecutionException` with `retryableTowardNetwork: false` — no retry.
+3. `ErrUpstreamBlockUnavailable` — retry reason `"block_unavailable"` (unless `emptyResultMaxAttempts` cap reached).
+4. `ErrEndpointMissingData` + `RetryEmpty == false` directive — no retry; otherwise reason `"missing_data"` (unless cap reached).
+5. `IsRetryableTowardNetwork(err) == true` — reason `"retryable_error"`.
+6. `resp.IsResultEmptyish()` + `RetryEmpty == true` directive + method NOT in `emptyResultAccept` — reason `"empty_result"` (unless cap reached).
+7. `RetryPending == true` + tx-lookup method — reason `"pending_tx"` (unless cap reached).
+
+**"Data not yet available" unified delay path.** When the retry reason is `block_unavailable`, `empty_result`, or `missing_data`, `computeDelay` takes a special path: it first tries `dynamicBlockUnavailableDelay()` — the per-network EMA block time × `blockUnavailableDelayMultiplier` (default 1.0). If the EMA hasn't warmed yet (returns 0), it falls back to the static `emptyResultDelay` config value. For genuine errors (`retryable_error`, `pending_tx`) it uses the standard `ComputeBackoff` formula.
+
+**`emptyResultDelay` is a static fallback, NOT a floor.** The dynamic EMA-based delay is unconditionally preferred when the EMA is warm. `emptyResultDelay` only activates before the EMA has seen enough block data (cold start). Setting `emptyResultDelay` does NOT set a floor on the dynamic path.
+
+**`emptyResultMaxAttempts` is a separate counter from `maxAttempts`.** It caps the total number of data-unavailability attempts (including the first try) via a single shared `dataUnavailableAttemptsCount` counter across ALL network retry rounds — not per round. With default value 2, only one empty-type retry fires across the entire request lifetime regardless of `maxAttempts`.
+
+**Backoff formula.** `ComputeBackoff(cfg, attempt)` where `attempt` is 0-based (first retry = 0). If `Delay == 0`: return 0 immediately. Otherwise: `d = Delay × BackoffFactor^attempt`, capped at `BackoffMaxDelay`, then additive uniform jitter in `[0, Jitter)` using `math/rand`. Because attempt is 0-indexed, the first retry always uses exactly `Delay` (exponent 0 = 1).
+
+**`retryEmpty` is the master gate.** When `false` (the default), neither scope retries empty/missing-data/block-unavailable responses — the null is passed through unchanged to the client.
+
+**Empty-as-error conversion.** The EVM post-forward hook converts `result: null` for methods in `markEmptyAsErrorMethods` into `ErrEndpointMissingData`. This fires only when `RetryEmpty == true`. The confidence guard (`emptyResultBeyondConfidence`) stops the conversion if the requested block is above the latest known head, returning the truthful null instead.
+
+**BestResponse preference.** While retrying, the loop tracks `bestResp` — the last non-nil response seen. When the final attempt fails with an error but `bestResp != nil`, the response is returned with `nil` error, preferring a result over an error. Source: <SourceLink file="erpc/network_executor.go" lines="264-267" />
+
+**`eth_sendRawTransaction` special-case.** If retries are exhausted and the final cause is `ErrEndpointExecutionException` for `eth_sendRawTransaction`, the raw execution error is returned unwrapped — the "execution reverted" IS the answer. Source: <SourceLink file="erpc/network_executor.go" lines="279-283" />
+
+**First-informative-error capture.** The network retry loop captures the first non-degenerate error in `firstInformativeErr`. Later retry rounds can degenerate into bare `ErrNoUpstreamsLeftToSelect` (all previously-tried upstreams marked consumed). On final wrap, the richer first error is surfaced rather than the degenerate one. Source: <SourceLink file="erpc/network_executor.go" lines="302-309" />
+
+**Upstream-scope retry differences.** The upstream executor does NOT have data-unavailability logic in `computeDelay` — it always uses `ComputeBackoff` regardless of retry reason. It does not track `bestResp` for emptyish responses. Its `shouldRetry` is simpler: only error-based, no response-based retry, no reason string. Non-retryable write methods (`evm.IsNonRetryableWriteMethod`) are also blocked at the upstream scope — `eth_sendRawTransaction` still uses network-scope retry for idempotency handling, but the upstream executor will not re-issue it. Source: <SourceLink file="upstream/upstream_executor.go" lines="243-246" />
+
+### Config schema
+
+#### Envelope selector fields (`failsafe[i]` level, above `retry`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `matchMethod` | string | `"*"` | WildcardMatch pattern against JSON-RPC method. Empty string is a **validation error** after `SetDefaults` — use `"*"` explicitly. Legacy single-object YAML failsafe format forces `"*"` automatically. Source: <SourceLink file="common/validation.go" lines="985-988" /> |
+| `matchFinality` | []string | `[]` (any) | Finality states: `finalized`, `unfinalized`, `realtime`, `unknown`. Empty = wildcard. At defaults-merge time: two arrays match if either is empty OR they share an element. At dispatch time: `slices.Contains`. No glob syntax inside the array. Numeric string values `"0"`–`"3"` are also accepted by YAML unmarshal for backward compatibility; any other string causes an unmarshal error at config load time. Source: <SourceLink file="common/defaults.go" lines="17-34" /> |
+
+**`SelectExecutor` 4-tier priority** (first match wins within each tier):
+1. Specific method + specific finality
+2. Specific method, any finality
+3. Wildcard method, specific finality
+4. Wildcard method, any finality (catch-all)
+
+Source: <SourceLink file="common/match.go" lines="18-78" />
+
+#### `RetryPolicyConfig` fields (`failsafe[i].retry`)
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `maxAttempts` | int | `3` (system); `5` for injected network default; `1` for upstream default | Total execution rounds including the first. `1` = no retries. Network-scope out-of-box default is `5`. Source: <SourceLink file="common/defaults.go" lines="127-157" /> |
+| `delay` | Duration | `0` | Base delay before the first retry. `0` = retry immediately (does NOT disable retry — set `maxAttempts: 1` to disable). Source: <SourceLink file="common/defaults.go" lines="2247-2252" /> |
+| `backoffFactor` | float32 | `1.2` | Exponential multiplier per attempt (0-indexed). `1.0` = constant delay. Must be &gt; 0 — validation error if explicitly set to `0`. Source: <SourceLink file="common/defaults.go" lines="2233-2238" /> |
+| `backoffMaxDelay` | Duration | `3s` | Cap on computed backoff before jitter. Must be non-zero — validation error if explicitly set to `0`. Source: <SourceLink file="common/defaults.go" lines="2240-2244" /> |
+| `jitter` | Duration | `0` | Uniform random additive jitter in `[0, jitter)` using non-crypto `math/rand`. Source: <SourceLink file="common/defaults.go" lines="2254-2259" /> |
+| `emptyResultAccept` | []string | `["eth_getLogs","trace_filter","arbtrace_filter","eth_call","eth_getBalance","eth_getCode","eth_getStorageAt","eth_getTransactionCount"]` | Methods where empty/null is valid data — no retry. Overrides `emptyResultIgnore` (deprecated). Source: <SourceLink file="common/defaults.go" lines="2013-2026" /> |
+| `emptyResultIgnore` | []string | `nil` | **DEPRECATED alias for `emptyResultAccept`.** Migrated to `emptyResultAccept` only when `emptyResultAccept == nil`. If both are set, `emptyResultIgnore` is silently ignored. Field is NOT cleared after migration. Source: <SourceLink file="common/defaults.go" lines="2261-2263" /> |
+| `emptyResultMaxAttempts` | int | `2` | Shared cap (including the first attempt) for ALL data-unavailability reasons: `empty_result`, `missing_data`, `block_unavailable`, `pending_tx`. A single `dataUnavailableAttemptsCount` counter is shared across all network retry rounds — not per round. Source: <SourceLink file="common/defaults.go" lines="1984" /> |
+| `emptyResultDelay` | Duration | `0` (no hardcoded fallback; inherits from parent defaults only) | Static fallback delay before data-availability retries **when EMA block time is cold (returns 0)**. When EMA is warm, dynamic delay overrides this unconditionally. `0` means "use dynamic only" — not "no delay". Set to ~1s for Ethereum cold-start safety. Source: <SourceLink file="common/config.go" lines="1355-1361" /> |
+| `blockUnavailableDelay` | Duration | `0` | **DEPRECATED.** `json:"-"` — never appears in TypeScript types. Merged into `emptyResultDelay` when `emptyResultDelay == 0`, then cleared to 0. Deprecation warning always logged when found. Source: <SourceLink file="common/config.go" lines="1363-1369" /> |
+
+#### Related fields outside `RetryPolicyConfig`
+
+| Field | YAML path | Type | Default | Behavior |
+|---|---|---|---|---|
+| `retryEmpty` | `networks[].directiveDefaults.retryEmpty` | \*bool | `nil` (→ false) | Master gate. When false, neither scope retries empty/missing-data/block-unavailable. Overridable per-request via `X-ERPC-Retry-Empty: true` header or `?retry-empty=true`. |
+| `retryPending` | `networks[].directiveDefaults.retryPending` | \*bool | `nil` | Retries tx-lookup methods until `emptyResultMaxAttempts` reached. |
+| `blockUnavailableDelayMultiplier` | `networks[].evm.blockUnavailableDelayMultiplier` | \*float64 | `1.0` | Scales EMA block time: `dynamicDelay = blockTime × multiplier`. Source: <SourceLink file="common/defaults.go" lines="1978" /> |
+| `emptyResultConfidence` | `networks[].evm.emptyResultConfidence` | string | `"blockHead"` | Confidence guard: `blockHead` = trust empties at chain tip; `finalizedBlock` = stricter, retry empties for non-finalized blocks. Source: <SourceLink file="common/defaults.go" lines="2075-2079" /> |
+| `markEmptyAsErrorMethods` | `networks[].evm.markEmptyAsErrorMethods` | []string | `["eth_blockNumber","eth_getBlockByNumber","eth_getTransactionByHash","eth_getTransactionByBlockHashAndIndex","eth_getTransactionByBlockNumberAndIndex","eth_getUncleByBlockHashAndIndex","eth_getUncleByBlockNumberAndIndex","debug_traceTransaction","trace_transaction","trace_block","trace_get"]` | Methods whose `null` result is converted to `ErrEndpointMissingData`. Conversion only fires when `retryEmpty == true`. Source: <SourceLink file="common/defaults.go" lines="2044-2058" /> |
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Finality-split catch-alls (the production baseline).** Realtime/unfinalized requests
+race block-availability: a node may not have propagated the latest block yet. A non-zero
+`delay` gives the shared-state poller a few milliseconds to refresh before the next
+upstream is tried. Finalized requests have no such race — `delay: 0` rotates immediately:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "*"
+    matchFinality: ["realtime", "unfinalized"]
+    retry:
+      maxAttempts: 6
+      # Non-zero: gives shared-state propagation time to catch up before the
+      # next upstream sweep fires. 0ms here would retry instantly, amplifying
+      # block-availability races across upstreams.
+      delay: 50ms
+      emptyResultMaxAttempts: 2
+      emptyResultDelay: 500ms  # cold-start fallback; warm EMA overrides this
+  - matchMethod: "*"
+    matchFinality: ["finalized", "unknown"]
+    retry:
+      maxAttempts: 6
+      # Finalized data is canonical — no block-availability race, rotate instantly.
+      delay: 0ms
+      emptyResultMaxAttempts: 2
+      emptyResultDelay: 500ms`}
+  ts={`failsafe: [
+  {
+    matchMethod: "*",
+    matchFinality: ["realtime", "unfinalized"],
+    retry: {
+      maxAttempts: 6,
+      // Non-zero: gives shared-state propagation time to catch up.
+      delay: "50ms",
+      emptyResultMaxAttempts: 2,
+      emptyResultDelay: "500ms",
+    },
+  },
+  {
+    matchMethod: "*",
+    matchFinality: ["finalized", "unknown"],
+    retry: {
+      maxAttempts: 6,
+      // Finalized data is canonical — no race, rotate instantly.
+      delay: 0,
+      emptyResultMaxAttempts: 2,
+      emptyResultDelay: "500ms",
+    },
+  },
+]`}
+/>
+
+**2. Aggressive `eth_getBlockByHash` retry.** During indexing, `eth_getBlockByNumber`
+may return a hash that only a few nodes have ingested yet. Null from one node is likely
+"not propagated yet", not "does not exist" — so raise both caps to 6 and keep
+`emptyResultDelay` at 500ms to space out the rotation:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getBlockByHash"
+    retry:
+      maxAttempts: 6
+      delay: 0ms
+      # Match maxAttempts: every attempt is an empty-result attempt here —
+      # a null block hash means "node hasn't seen it yet", never "not found".
+      emptyResultMaxAttempts: 6
+      emptyResultDelay: 500ms`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getBlockByHash",
+  retry: {
+    maxAttempts: 6,
+    delay: "0ms",
+    // Match maxAttempts: every attempt is an empty-result attempt here.
+    emptyResultMaxAttempts: 6,
+    emptyResultDelay: "500ms",
+  },
+}]`}
+/>
+
+**3. Conservative tx-lookup failsafe — one retry, one block of patience.**
+A null `eth_getTransactionByHash` / `eth_getTransactionReceipt` means the tx is not
+indexed yet. Rotating through all 6 upstreams × 6 retries (18–33 calls) for a tx that
+simply isn't propagated yet wastes quota. Cap to 2 attempts; the EMA block-time delay
+drives the single retry once it warms up, so `emptyResultDelay` is only a cold-start
+fallback. No hedge: parallel-blasting a not-found tx just multiplies load:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getTransactionByHash|eth_getTransactionReceipt"
+    retry:
+      maxAttempts: 2
+      delay: 500ms
+      # emptyResultMaxAttempts intentionally omitted → inherits default 2
+      # (one original + one retry). Explicit 1 would mean ZERO retries.
+      emptyResultDelay: 500ms  # cold-start; warm EMA drives ~one block wait`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getTransactionByHash|eth_getTransactionReceipt",
+  retry: {
+    maxAttempts: 2,
+    delay: "500ms",
+    // emptyResultMaxAttempts omitted → default 2 (one original + one retry).
+    // Explicit 1 would mean ZERO retries — the cap is hit at attempt 0.
+    emptyResultDelay: "500ms",
+  },
+}]`}
+/>
+
+**4. Capping retry fan-out on large `eth_getLogs` responses.** Finalized historical
+scans can produce very large responses (100 MB+). With `maxAttempts: 6` and hedging,
+each client request can trigger up to 12 upstream calls that each parse the same large
+body, spiking transient heap. Tighten finalized getLogs to 2 attempts and suppress
+empty-result retry (`emptyResultMaxAttempts: 1`) while keeping aggressive retry for
+unfinalized data where reorg detection matters:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+    matchFinality: ["unfinalized", "unknown"]
+    retry:
+      maxAttempts: 6
+      delay: 0ms
+      emptyResultDelay: 500ms
+  - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+    matchFinality: ["finalized"]
+    retry:
+      # Cap fan-out: 100 MB responses × 6 retries × hedge = >1 GB transient heap.
+      maxAttempts: 2
+      delay: 0ms
+      emptyResultDelay: 500ms
+      # 1 means ZERO empty-result retries (cap reached at attempt 0) — finalized
+      # data is canonical, a null here is definitive, not "not yet".
+      emptyResultMaxAttempts: 1`}
+  ts={`failsafe: [
+  {
+    matchMethod: "eth_getLogs|eth_getBlockReceipts",
+    matchFinality: ["unfinalized", "unknown"],
+    retry: { maxAttempts: 6, delay: "0ms", emptyResultDelay: "500ms" },
+  },
+  {
+    matchMethod: "eth_getLogs|eth_getBlockReceipts",
+    matchFinality: ["finalized"],
+    retry: {
+      // Cap fan-out: large responses × retries × hedge = heap spike.
+      maxAttempts: 2,
+      delay: "0ms",
+      emptyResultDelay: "500ms",
+      // 1 = ZERO empty-result retries — finalized null is definitive.
+      emptyResultMaxAttempts: 1,
+    },
+  },
+]`}
+/>
+
+**5. Ethereum mainnet with 1 s `emptyResultDelay` and state-read integrity.** Mainnet's
+~12 s block time means the EMA quickly warms to ~12 s, making the static fallback
+`emptyResultDelay` mostly irrelevant in steady state — but setting it to 1000ms ensures
+cold-start (first few minutes after deploy) doesn't hammer upstreams with zero-delay
+empty-result retries. The `emptyResultDelay: 1000ms` value also surfaces in
+`erpc_network_data_unavailable_wait_seconds` histograms as a debug signal when the EMA
+is cold:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+    matchFinality: ["unfinalized", "unknown"]
+    retry:
+      maxAttempts: 6
+      delay: 0ms
+      # 1000ms cold-start safety: Ethereum block time ~12s, but the EMA needs
+      # a few blocks to warm; without this, cold-start empty retries fire at 0ms.
+      emptyResultDelay: 1000ms`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getLogs|eth_getBlockReceipts",
+  matchFinality: ["unfinalized", "unknown"],
+  retry: {
+    maxAttempts: 6,
+    delay: "0ms",
+    // 1000ms cold-start safety: EMA warms in ~minutes; before that,
+    // emptyResultDelay is the only guard against 0ms retry hammering.
+    emptyResultDelay: "1000ms",
+  },
+}]`}
+/>
+
+### Request/response behavior
+
+- `retryEmpty` can be overridden per-request via `X-ERPC-Retry-Empty: true` header or `?retry-empty=true` query param, overriding the `directiveDefaults.retryEmpty` network setting.
+- `retryPending` can similarly be overridden per-request via `X-ERPC-Retry-Pending: true`.
+- When retries exhaust and a prior round produced any non-nil `bestResp`, eRPC returns that response with `nil` error rather than surfacing the final error — caller receives an emptyish result, not an error. Source: <SourceLink file="erpc/network_executor.go" lines="264-267" />
+- `ErrEndpointExecutionException` (e.g., execution reverted) is never retried at network scope. For `eth_sendRawTransaction`, the execution error is returned unwrapped — not wrapped in `ErrFailsafeRetryExceeded`. Source: <SourceLink file="erpc/network_executor.go" lines="279-283" />
+- Batch/composite requests bypass both scopes' retry logic entirely. Source: <SourceLink file="erpc/network_executor.go" lines="378-380" />
+- `SleepCtx` respects context cancellation — if the client disconnects during a delay sleep, the retry loop exits immediately.
+
+### Best practices
+
+- **Set `emptyResultDelay: 1s` for Ethereum, ~200ms for fast L2s.** Without it, cold-start empty-result retries fire with zero delay, hammering upstreams during the first minutes after deploy.
+- **Enable `retryEmpty` at the network level only when clients need it.** It is `false` by default; enabling it per-request via the `X-ERPC-Retry-Empty` header is safer for mixed workloads.
+- **Size `maxAttempts` ≈ number of healthy upstreams.** The network scope tries a fresh sweep each round — if you have 3 upstreams, `maxAttempts: 3–5` exhausts them all.
+- **Keep `emptyResultMaxAttempts` small (2–3).** The counter is shared across all retry rounds; raising it to match `maxAttempts` can multiply total call volume sharply when all upstreams return missing data.
+- **Leave upstream-scope `maxAttempts: 1` (disabled) for most use cases.** Only raise it for trusted archival nodes on idempotent methods where TCP blips are the dominant failure mode.
+- **Combine with hedge for latency SLOs.** Retry covers errors; hedge cuts tail latency. They compose: each retry attempt fires a fresh hedge race. See [Hedge](/config/failsafe/hedge).
+- **Remove `emptyResultIgnore` once you've added `emptyResultAccept`.** If both are set, `emptyResultIgnore` is silently dropped — it does NOT merge with `emptyResultAccept`.
+
+### Edge cases & gotchas
+
+1. **`emptyResultMaxAttempts` gates ALL data-availability reasons via one shared counter.** With default `emptyResultMaxAttempts: 2`, only one empty-type retry fires across the entire request lifetime, regardless of `maxAttempts`. Confirmed by `TestNetworkExecutor_ShouldRetry_DataUnavailableSharesOneCap`.
+2. **Zero EMA + zero `emptyResultDelay` → immediate empty retry.** During startup (first minutes) the EMA is cold. If `emptyResultDelay` is also `0`, missing-data retries fire with no delay, hammering upstreams. Set `emptyResultDelay: 1s` for Ethereum, `~200ms` for fast chains. Confirmed by `TestNetworkExecutor_ComputeDelay_EmptyResultFallsBackToFixed`.
+3. **`emptyResultDelay` is NOT a floor; EMA overrides it unconditionally when warm.** Do not rely on `emptyResultDelay` as a minimum spacing in steady state — it only applies during cold start. See [`common/config.go:L1355-L1361`](https://github.com/erpc/erpc/blob/main/common/config.go#L1355-L1361).
+4. **`emptyResultDelay` is the unified fallback for BOTH `empty_result` AND `block_unavailable` retries.** The former `blockUnavailableDelay` field was merged into `emptyResultDelay`. A config with `blockUnavailableDelay` set still loads but emits a deprecation warning, then uses the value as `emptyResultDelay`. Confirmed by `TestNetworkExecutor_ComputeDelay_BlockUnavailableUsesEmptyResultDelay`.
+5. **`retryEmpty == false` gates BOTH the upstream mark-empty-as-error conversion AND network/upstream retry decisions.** When `retryEmpty: false`, `upstreamPostForward_markUnexpectedEmpty` returns the raw null without converting it to `ErrEndpointMissingData`. Even if a null is converted by some other path, `shouldRetryWithReason` and `shouldRetry` check the directive again and block the retry. Confirmed by `TestNetworkForward_RetryEmptyDisabled_BlocksMissingData`.
+6. **`emptyResultAccept` silences empty-result retry but NOT `missing_data` retry.** If an upstream returns an explicit JSON-RPC error classified as `ErrEndpointMissingData` (e.g., `missing trie node`), it bypasses `emptyResultAccept` and triggers retry unless `retryEmpty == false`. Confirmed by `TestNetworkForward_TryAllUpstreams_AllEmpty_DelayBetweenRounds`.
+7. **Within-round upstream fallback has no delay.** Delays fire between retry rounds, not between upstreams within a round. Upstream A fails → upstream B is tried immediately within the same sweep. Confirmed by `TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound`.
+8. **All-upstreams-missing-data = `maxAttempts` rounds × N upstreams calls.** With `maxAttempts: 3` and 2 upstreams both returning `ErrEndpointMissingData`, 6 total upstream calls are made. Confirmed by `AllUpstreamsMissingData_NetworkRetryHappens`.
+9. **`bestResp` masks later errors.** A prior empty response (round 1) beats a subsequent hard error (round 2) — caller receives `(emptyResp, nil)`. This can hide retry-round errors behind an empty-but-valid shell. Confirmed by `TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty`.
+10. **`emptyResultIgnore` + `emptyResultAccept` both set → `emptyResultIgnore` silently dropped.** The migration condition is `emptyResultAccept == nil`. If both are present, only `emptyResultAccept` takes effect. Field is not cleared. Source: [`common/defaults.go:L2262`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2262).
+11. **`backoffFactor: 0` or `backoffMaxDelay: 0` are validation errors.** Since `SetDefaults` always fills `1.2` and `3s`, these only surface when explicitly set to `0` in config. Source: [`common/validation.go:L1020-L1027`](https://github.com/erpc/erpc/blob/main/common/validation.go#L1020-L1027).
+12. **Client-side errors (`ErrEndpointClientSideException`, -32600) ARE retryable at network scope.** No `retryableTowardNetwork: false` flag — another upstream might accept the request. Confirmed by `TestIsRetryableTowardNetwork_ClientError`.
+13. **`ErrFailsafeConfiguration` aborts startup, never raised at request time.** Triggers: (a) circuit breaker in a network-scope failsafe entry; (b) consensus in an upstream-scope failsafe entry.
+14. **Backoff attempt index is 0-based.** First retry = attempt 0, so `BackoffFactor^0 = 1` — the first retry always uses exactly `Delay`. Only second retry onward grows. Differs from libraries where attempt 0 is the initial request.
+15. **`blockUnavailableDelay` migration does not overwrite user-set `emptyResultDelay`.** If both are set, `blockUnavailableDelay` is discarded (deprecation warning still fires). Source: [`common/defaults.go:L2269`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2269).
+16. **Wrong-empty punishment respects block availability bounds.** When an upstream returns null for a method in `markEmptyAsErrorMethods` but the block is outside its configured `blockAvailability` range, the upstream's `MisbehaviorsTotal` is NOT incremented. Confirmed by `TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds`.
+17. **Failsafe defaults merge uses wildcard method matching.** A default entry `matchMethod: "eth_*"` provides defaults for network entry `matchMethod: "eth_getBlockByNumber"`. A catch-all `matchMethod: "*"` is required to cover all entries uniformly. Source: [`common/defaults.go:L1793-L1832`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1793-L1832).
+18. **Upstreams that returned MissingData in round N are eligible again in round N+1.** Missing-data errors do not permanently block re-selection in the next retry round. Confirmed by `TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry`.
+19. **`IsRetryableTowardNetwork` uses explicit iteration over multi-error wrappers.** The function handles `errors.Join`-style wrappers by iterating children explicitly — if ANY child is retryable, the bundle is retryable. If the wrapper doesn't implement `Unwrap() []error`, the code falls through to single-cause chain walk (only first child is seen). Source: <SourceLink file="common/errors.go" lines="2400-2410" />
+20. **`IsRetryableTowardsUpstream` blocklist.** The following error codes are never retried at upstream scope: `ErrCodeFailsafeCircuitBreakerOpen`, `ErrCodeUpstreamRequestSkipped`, `ErrCodeUpstreamMethodIgnored`, `ErrCodeEndpointUnsupported`, `ErrCodeEndpointBillingIssue`, `ErrCodeJsonRpcRequestUnmarshal`, `ErrCodeEndpointExecutionException`, `ErrCodeEndpointUnauthorized`, `ErrCodeEndpointRequestTooLarge`, `ErrCodeEndpointContentValidation`. Any `IsCapacityIssue` error (rate-limits) is also blocked. Source: <SourceLink file="common/errors.go" lines="2455-2497" />
+21. **`IsRetryableTowardNetwork` full classification by error type.** `ErrUpstreamsExhausted` with no cause → false; wrapping all `ErrEndpointExecutionException` → false; wrapping any `ErrEndpointMissingData`, `ErrEndpointServerSideException`, or mixed timeout+missing-data → true. Standalone `ErrEndpointClientSideException` (-32600) → true (no `retryableTowardNetwork: false` flag). Confirmed by `common/errors_retry_test.go`. Source: <SourceLink file="common/errors.go" lines="2379-2436" />
+
+### Observability
+
+| Metric | Type | Labels | When fired |
+|---|---|---|---|
+| `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | Every network-scope retry that fires; `reason` ∈ {`empty_result`, `pending_tx`, `retryable_error`, `block_unavailable`, `missing_data`} |
+| `erpc_network_data_unavailable_wait_seconds` | histogram | project, network, category, reason, finality | Wall-clock delay slept before a data-unavailability retry (`block_unavailable`, `empty_result`, `missing_data` — NOT `pending_tx`); buckets: 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64 |
+| `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | Per physical upstream attempt; `is_retry="true"` when upstream retries fired |
+| `erpc_network_failed_request_total` | counter | project, network, category, attempt, error, severity, finality, user, agent_name | Final failed request after all retries exhausted; `attempt` label = total attempt count |
+
+**OTel span attributes** (set on the span wrapping each upstream attempt):
+- `execution.attempts`, `execution.retries` — aggregate totals across all scopes
+- `execution.hedges` — total hedge fires across all scopes
+- `execution.network_attempts`, `execution.network_retries`, `execution.network_hedges` — network-scope counters
+- `execution.upstream_attempts`, `execution.upstream_retries`, `execution.upstream_hedges` — upstream-scope counters
+
+Source: <SourceLink file="common/exec_state.go" lines="279-285" />
+
+**Error codes produced:**
+
+| Error | When produced |
+|---|---|
+| `ErrFailsafeConfiguration` | Startup only — invalid policy placement (circuit breaker at network scope, consensus at upstream scope). Server aborts before serving any request. Source: <SourceLink file="common/errors.go" lines="1573-1584" /> |
+| `ErrFailsafeRetryExceeded` | After all retry rounds exhausted; wraps the last error with `ScopeNetwork` or `ScopeUpstream` and `durationMs`. For `eth_sendRawTransaction` with `ErrEndpointExecutionException`, the error is returned unwrapped (not inside `ErrFailsafeRetryExceeded`). Source: <SourceLink file="erpc/network_executor.go" lines="279-283" /> |
+
+**Log messages:**
+- `config: retry.blockUnavailableDelay is deprecated and has been merged into retry.emptyResultDelay; please update your config` — emitted as `log.Warn` at `RetryPolicyConfig.SetDefaults` time whenever `BlockUnavailableDelay > 0` is found, even if the value was discarded. Source: <SourceLink file="common/defaults.go" lines="2272" />
+- `config: evm.maxFutureBlockRetryDistance is deprecated and ignored; use evm.emptyResultConfidence (blockHead|finalizedBlock) instead` — emitted as `log.Warn` at `EvmNetworkConfig.SetDefaults` time. Source: <SourceLink file="common/defaults.go" lines="2081" />
+
+### Source code entry points
+
+- [`common/config.go:L1279-L1387`](https://github.com/erpc/erpc/blob/main/common/config.go#L1279-L1387) — `FailsafeConfig`, `RetryPolicyConfig` struct definitions; `emptyResultDelay` comment at L1355-L1361; `blockUnavailableDelay` deprecation at L1363-L1369
+- [`common/defaults.go:L2225-L2305`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2225-L2305) — `RetryPolicyConfig.SetDefaults`: all per-field defaults, `emptyResultIgnore` migration (L2261-L2263), `blockUnavailableDelay` migration + warn (L2265-L2274)
+- [`erpc/network_executor.go:L227-L349`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L227-L349) — `networkExecutor.runRetry`: main network-scope retry loop, `shouldRetryWithReason`, `computeDelay`, data-unavailability delay path (L481-L513), shared empty-result cap counter (L358-L377)
+- [`upstream/upstream_executor.go:L186-L255`](https://github.com/erpc/erpc/blob/main/upstream/upstream_executor.go#L186-L255) — `upstreamExecutor.runRetry`: upstream-scope loop; simpler semantics, always `ComputeBackoff`, no data-availability logic
+- [`failsafe/backoff.go:L21-L65`](https://github.com/erpc/erpc/blob/main/failsafe/backoff.go#L21-L65) — `ComputeBackoff` (pure function) and `SleepCtx` (context-aware sleep)
+- [`architecture/evm/common.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/common.go) — `upstreamPostForward_markUnexpectedEmpty`, `emptyResultBeyondConfidence`; `null` → `ErrEndpointMissingData` conversion
+- [`architecture/evm/hooks.go:L109-L183`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go#L109-L183) — `HandleUpstreamPostForward` dispatcher that calls `markUnexpectedEmpty` for methods in `markEmptyAsErrorMethods`
+- [`common/config.go:L2105-L2152`](https://github.com/erpc/erpc/blob/main/common/config.go#L2105-L2152) — `DirectiveDefaultsConfig` (`retryEmpty`, `retryPending` fields)
+- [`common/errors.go:L2379-L2436`](https://github.com/erpc/erpc/blob/main/common/errors.go#L2379-L2436) — `IsRetryableTowardNetwork`: multi-error explicit iteration (L2400-L2410); `IsRetryableTowardsUpstream` blocklist (L2455-L2497)
+- [`erpc/networks_registry.go:L98-L137`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L98-L137) — constructs `dynamicBlockUnavailableDelay` closure (EMA × multiplier) and wires into each `networkExecutor`
+- [`erpc/networks_retry_missing_data_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_retry_missing_data_test.go) — integration tests covering network retry, missing data, execution exception, retry-empty directive, upstream re-selection, wrong-empty punishment
+
+### Related pages
+
+- [Hedge](/config/failsafe/hedge) — wraps retry; each retry attempt fires a fresh hedge race.
+- [Timeout](/config/failsafe/timeout) — bounds the whole retry+hedge execution from outside.
+- [Circuit breaker](/config/failsafe/circuit-breaker) — upstream-scope only; trips fast when a single provider degrades.
+- [Selection & scoring](/config/projects/selection-policies) — decides which upstream each sweep round picks first.
+- [Rate limiters](/config/rate-limiters) — prevents retry bursts from blowing provider budgets.
+- [Survive provider outages](/use-cases/survive-provider-outages) — the outcome this feature primarily serves.
+
+</AISection>

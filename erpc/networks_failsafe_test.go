@@ -230,7 +230,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 tried first, then rpc2 on retry
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["0x123"]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -255,8 +255,9 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		// With the try-all-upstreams-before-returning behavior, rpc2 is found
 		// within the same execution round (no retry delay needed). This is more
 		// efficient than the old behavior which required a full retry round.
+		// Physical calls = 2 (rpc1 returned empty/null, rpc2 returned the tx).
 		assert.Equal(t, 0, resp.Retries())
-		assert.Equal(t, 1, resp.Attempts())
+		assert.Equal(t, 2, resp.Attempts())
 	})
 
 	t.Run("RetryEmptyTrue_IgnoreIncludesReceipt_NoRetry", func(t *testing.T) {
@@ -670,7 +671,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		)
 
 		// Ensure deterministic upstream ordering: rpc1 first
-		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
 		req := common.NewNormalizedRequest(requestBytes)
@@ -687,9 +688,13 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		assert.Nil(t, jrr.Error)
 		assert.True(t, jrr.IsResultEmptyish())
 
-		// Verify no retries
+		// Verify no retries. Network still rotates to rpc2 within the same
+		// execution round (eth_getBlockByNumber is not in EmptyResultAccept,
+		// so emptyish from rpc1 doesn't short-circuit the loop), then keeps
+		// rpc1's null as bestResp. Physical calls = 2 (rpc1 emptied, rpc2
+		// also attempted before settling).
 		assert.Equal(t, 0, resp.Retries())
-		assert.Equal(t, 1, resp.Attempts())
+		assert.Equal(t, 2, resp.Attempts())
 	})
 }
 
@@ -758,8 +763,6 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
 		nil,
 	)
 
@@ -767,7 +770,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -775,9 +778,10 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
-	upstream.ReorderUpstreams(upstreamsRegistry)
-
+	// TODO(phase-10): migrate to policy.OverrideAllForTest(<engine>); was: upstream.ReorderUpstreams(upstreamsRegistry)
+	upstreamsRegistry.OverrideOrderForTest(util.EvmNetworkId(123))
 	return network
 }
 
@@ -835,8 +839,6 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 		pr,
 		nil,
 		metricsTracker,
-		time.Second,
-		nil,
 		nil,
 	)
 
@@ -844,7 +846,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 
 	time.Sleep(100 * time.Millisecond)
 
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -852,6 +854,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 
 	err = network.Bootstrap(ctx)
 	require.NoError(t, err)
+	network.PinUpstreamOrderForTest()
 
 	return network
 }

@@ -1,294 +1,597 @@
 ---
-description: Consensus policy compares responses from multiple upstreams and returns the agreed result
+title: Consensus
+description: Fan out every request to multiple providers simultaneously, agree on a single canonical answer, and automatically flag — or silence — the ones that lie.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import {
+	AISection,
+	ConfigTabs,
+	LLMsTxtLink,
+	PromptExample,
+	SourceLink,
+} from "../../../components";
+
+<LLMsTxtLink />
 
 # Consensus
 
-The `consensus` policy sends the same request to multiple upstreams and returns the result only when enough of them agree. This improves correctness, detects misbehaving nodes, and provides deterministic behavior during faults.
+Stale data, silent bugs, and misconfigured nodes all look like valid responses — until you compare them. eRPC fans out every request to multiple providers simultaneously, groups identical answers by hash, and declares a winner only when enough agree. Providers that consistently disagree get flagged, cordoned, and forensically logged. One config field turns on multi-provider truth.
 
-<Callout type="warning">
-  Consensus can only be configured at **network level** since it requires multiple upstreams to compare results.
-</Callout>
+**What you get**
 
-## Configuration
+- Majority-agreed responses instead of trusting a single provider
+- Automatic misbehavior detection with configurable cordon punishment
+- Block-head leader preference and highest-value preference for chain-tip reads
+- Full dispute forensics exported to file or S3 for offline analysis
+- First-class `eth_sendRawTransaction` broadcast mode with fire-and-forget delivery
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-projects:
+## Quick taste
+
+Illustrative, not a tuned production config — fan out to 3, require 2 to agree:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[].consensus"
+  focusYaml="8-11,13"
+  focusTs="8-11,13"
+  yaml={`projects:
   - id: main
     networks:
       - architecture: evm
-        evm:
-          chainId: 42161
+        evm: { chainId: 1 }
         failsafe:
-          - matchMethod: "*" # Configure per-method thresholds if needed
+          - matchMethod: "*"
             consensus:
-              maxParticipants: 4
+              # fan out to 3 upstreams, require 2 to agree
+              maxParticipants: 3
               agreementThreshold: 2
-              disputeBehavior: returnError # acceptMostCommonValidResult | preferBlockHeadLeader | onlyBlockHeadLeader
-              lowParticipantsBehavior: acceptMostCommonValidResult  # returnError | preferBlockHeadLeader | onlyBlockHeadLeader
-              preferNonEmpty: true
-              preferLargerResponses: true
-              ignoreFields:
-                eth_getBlockByNumber: ["timestamp"]
-              misbehaviorsDestination:
-                type: file        # 'file' | 's3'
-                path: /var/log/erpc/misbehaviors   # absolute directory for file, or s3://bucket/prefix for S3
-                filePattern: "{timestampMs}-{method}-{networkId}"  # default for file; S3 default adds -{instanceId}
-                # s3:
-                #   region: us-west-2
-                #   maxRecords: 100
-                #   maxSize: 1048576        # 1MB
-                #   flushInterval: 60s
-                #   contentType: application/jsonl
-                #   credentials:
-                #     mode: env            # 'env' | 'file' | 'secret'
-                #     # for mode 'file':
-                #     # credentialsFile: ~/.aws/credentials
-                #     # profile: default
-                #     # for mode 'secret':
-                #     # accessKeyID: AKIA...
-                #     # secretAccessKey: ...
-              punishMisbehavior: # (optional) To exclude bad upstreams from consensus for a while
-                disputeThreshold: 10 
-                disputeWindow: 10m
-                sitOutPenalty: 30m
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+              # on dispute, pick the most common valid result instead of erroring
+              disputeBehavior: acceptMostCommonValidResult`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "evm",
+    evm: { chainId: 1 },
+    failsafe: [{
+      matchMethod: "*",
+      consensus: {
+        // fan out to 3 upstreams, require 2 to agree
+        maxParticipants: 3,
+        agreementThreshold: 2,
+        // on dispute, pick the most common valid result instead of erroring
+        disputeBehavior: "acceptMostCommonValidResult",
+      },
+    }],
+  }],
+}]`}
+/>
 
-export default createConfig({
-  projects: [{
-    id: "main",
-    networks: [
-      {
-        architecture: "evm",
-        evm: { chainId: 42161 },
-        failsafe: [
-          {
-            matchMethod: "*",      // Can be configured per-method
-            consensus: {
-              maxParticipants: 3,
-              agreementThreshold: 2,
-              disputeBehavior: "acceptMostCommonValidResult",   // "returnError" | "preferBlockHeadLeader" | "onlyBlockHeadLeader"
-              lowParticipantsBehavior: "acceptMostCommonValidResult", // "returnError" | "preferBlockHeadLeader" | "onlyBlockHeadLeader"
-              preferNonEmpty: true,
-              preferLargerResponses: true,
-              ignoreFields: { eth_getBlockByNumber: ["timestamp"] },
-              misbehaviorsDestination: {
-                type: "file",
-                path: "/var/log/erpc/misbehaviors",
-                filePattern: "{timestampMs}-{method}-{networkId}.jsonl",
-                // s3: {
-                //   region: "us-west-2",
-                //   maxRecords: 100,
-                //   maxSize: 1048576,
-                //   flushInterval: "60s",
-                //   contentType: "application/jsonl",
-                //   credentials: { mode: "env" }
-                //   credentials: { mode: "secret", accessKeyID: "...", secretAccessKey: "..." }
-                // }
-              },
-              punishMisbehavior: {
-                disputeThreshold: 3,
-                disputeWindow: "10s",
-                sitOutPenalty: "30s"
-              }
-            }
-          }
-        ]
-      }
-    ]
-  }]
-});
-```
-  </Tabs.Tab>
-</Tabs>
+## Agent reference
 
-#### A real-world example of `ignoreFields`
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-The following fields are often safe to ignore, but you should verify them for your specific use case:
+<PromptExample
+	n={1}
+	title="set up consensus from scratch"
+	defaultOpen
+	prompt={`I want to verify that my RPC responses are correct by checking agreement across
+multiple providers, using eRPC's Consensus feature. Fan out to 3 upstreams and require
+2 to agree, with sensible ignoreFields so blockTimestamp differences don't cause false
+disputes. Work with my existing eRPC config. Read the full reference first:
+https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
+/>
 
-```yaml
-ignoreFields:
-  eth_getLogs:
-    - "*.blockTimestamp"
-  eth_getTransactionReceipt:
-    - "blockTimestamp"
-    - "logs.*.blockTimestamp"
-    - "l1Fee"
-    - "l1GasPrice"
-    - "l1GasUsed"
-    - "gasUsedForL1"
-    - "timeboosted"
-    - "l1BlockNumber"
-  eth_getBlockByHash:
-    - "requestsHash"
-    - "transactions.*.gasPrice"
-    - "transactions.*.accessList"
-    - "transactions.*.chainId"
-    - "transactions.*.l1Fee"
-    - "transactions.*.yParity"
-    - "transactions.*.isSystemTx"
-    - "transactions.*.depositReceiptVersion"
-  eth_getBlockByNumber:
-    - "requestsHash"
-    - "transactions.*.gasPrice"
-    - "transactions.*.accessList"
-    - "transactions.*.chainId"
-    - "transactions.*.l1Fee"
-    - "transactions.*.yParity"
-    - "transactions.*.isSystemTx"
-    - "transactions.*.depositReceiptVersion"
-  eth_getBlockReceipts:
-    - "*.blockTimestamp"
-    - "*.l1Fee"
-    - "*.l1GasPrice"
-    - "*.l1GasUsed"
-    - "*.logs.*.blockTimestamp"
-```
+<PromptExample
+	n={2}
+	title="add highest-value consensus for fee and nonce reads"
+	prompt={`My app sends transactions and sometimes gets stuck because eth_gasPrice or
+eth_getTransactionCount return stale low values from a lagging node. Add
+preferHighestValueFor consensus for these two methods so eRPC fans out to 4 upstreams
+and picks the highest value. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
+/>
 
-## Key options
+<PromptExample
+	n={3}
+	title="broadcast eth_sendRawTransaction to multiple nodes"
+	prompt={`I want my eth_sendRawTransaction submissions to propagate faster by broadcasting
+to all available upstreams simultaneously and returning the first accepted hash (fire-
+and-forget mode). The consensus threshold should be 1 since any accepted tx hash is
+valid. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
+/>
 
-### `maxParticipants`
-Number of upstreams to query in each consensus round. The policy selects the first N healthy upstreams based on their scores.
+<PromptExample
+	n={4}
+	title="debug spurious consensus disputes on log queries"
+	prompt={`My eRPC instance is logging consensus disputes for eth_getLogs and
+eth_getBlockReceipts calls even though the data looks correct. I suspect the nodes
+are returning different blockTimestamp or L2-specific fields (gasUsedForL1, l1Fee,
+etc.). Show me how to extend ignoreFields to suppress these false disputes without
+removing the built-in defaults. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
+/>
 
-### `agreementThreshold`
-Minimum number of identical responses needed to reach consensus. For example, with `maxParticipants: 3` and `agreementThreshold: 2`, at least 2 upstreams must return the same result.
+<PromptExample
+	n={5}
+	title="add misbehavior tracking and automatic cordon"
+	prompt={`I want eRPC to automatically detect and temporarily remove providers that
+consistently return wrong data. After 3 disputes within 5 minutes, cordon the
+offending upstream for 10 minutes. Export all dispute rounds as JSONL to S3 for
+offline analysis. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/config/failsafe/consensus.llms.txt`}
+/>
 
-### disputeBehavior
-When upstreams disagree (no group meets threshold):
-- `acceptMostCommonValidResult`: Use preferences and select the best valid result among groups that meet threshold. If none meet threshold, returns dispute.
-- `returnError`: Always return a dispute error in disagreement scenarios.
-- `preferBlockHeadLeader`: If the block head leader has a non-error result, return it; otherwise fall back to `acceptMostCommonValidResult` logic.
-- `onlyBlockHeadLeader`: Return the leader’s non-error result if available; otherwise dispute.
+<AISection title="Consensus — full agent reference">
 
-## Behavior options
+### How it works
 
-### preferNonEmpty
-Prioritize meaningful data over empty, and empty over errors. Applies with `acceptMostCommonValidResult`:
-- Above threshold: If both a non-empty and a consensus-valid error group meet threshold, pick the best non-empty (by count, then size).
-- Below threshold: With exactly one non-empty and at least one empty, pick the non-empty.
-- Prevents short-circuiting to empty/consensus-error when a non-empty may still arrive.
+**Integration point.** Consensus sits at `networkExecutor.Run`. When a `ConsensusPolicyConfig` is present and the `SkipConsensus` directive is false, the executor calls `consensus.Run(ctx, req, slotInner)` where `slotInner` is `retry(hedge(tryOneUpstream))`. Without consensus the path is `retry(hedge(runUpstreamSweep))`. Composition order: `consensus(retry(hedge(tryOneUpstream)))`. (<SourceLink file="erpc/network_executor.go" lines="183-188" />)
 
-### preferLargerResponses
-Prefer larger non-empty results:
-- Below threshold (AcceptMostCommon): choose the largest non-empty.
-- Above threshold with multiple valid groups: choose the largest non-empty.
-- If a smaller non-empty meets threshold but a larger non-empty exists:
-  - `acceptMostCommonValidResult`: choose the largest
-  - `returnError`: dispute (don’t accept the smaller)
+**Participant selection.** Before spawning goroutines, if `requiredParticipants` is configured, `reorderForParticipantQuota` front-loads tag-matching upstreams so the first `maxParticipants` drawn satisfy every `{tag, minParticipants}` entry. Tag matching uses exact equality first, then glob wildcards (`*`, `?`). This is best-effort: quota shortfalls are handled by `lowParticipantsBehavior`. The executor then spawns exactly `maxParticipants` goroutines, each calling `slotInner` independently. (<SourceLink file="consensus/quota.go" lines="27-79" />)
 
-### ignoreFields
-Per-method fields ignored when computing canonical hashes (useful for timestamps etc.).
+**Collection and analysis loop.** The `runAnalyzer` goroutine reads responses from a buffered channel. After each response it calls `newConsensusAnalysis` (classify, hash, group) and `determineWinner` (apply 24 priority-ordered rules). If `shouldShortCircuit` returns true, the outcome is sent immediately and remaining requests are cancelled (or left running in fire-and-forget mode). After all participants respond — or a wait-cap deadline fires — the final outcome is sent to the caller's select.
 
-### lowParticipantsBehavior
-When fewer than `agreementThreshold` valid responses are available:
-- `acceptMostCommonValidResult`: Apply preferences to pick a valid result; still respects threshold semantics.
-- `returnError`: Return a low-participants error.
-- `preferBlockHeadLeader`: If the block head leader has a non-error result, return it; otherwise fall back to `acceptMostCommonValidResult`.
-- `onlyBlockHeadLeader`: If the leader has a non-error result, return it; if the leader only has an error, return that error; otherwise return a low-participants error.
+**Response classification.** Each response is classified into one of four types: `ResponseTypeNonEmpty` (successful non-null result), `ResponseTypeEmpty` (successful but null/empty result), `ResponseTypeConsensusError` (JSON-RPC execution exception, client exception, unsupported, or missing-data), `ResponseTypeInfrastructureError` (all other errors including `ErrUpstreamsExhausted`). Infrastructure errors are excluded from `validParticipants`. `ErrUpstreamsExhausted` is always infra even when it wraps execution exceptions via the shared `ErrorsByUpstream` map. (<SourceLink file="consensus/analysis.go" lines="333-344" />) Specific error-code mappings: `ErrCodeEndpointExecutionException` (EVM revert, code 3) → `ConsensusError`; `ErrCodeEndpointClientSideException`, `ErrCodeEndpointUnsupported`, `ErrCodeEndpointMissingData` → `ConsensusError`; all other errors (timeout, network, server 500) → `InfrastructureError`; nil JSON-RPC response on a successful response object → `InfrastructureError` with hash `"error:generic"`. A successful response where `IsResultEmptyish` returns true → `ResponseTypeEmpty`.
 
-<Callout type="info">
-  **Block Head Leader**: The upstream reporting the highest block number. This is determined by each upstream's state poller and ensures you're getting data from the most synchronized node.
-</Callout>
+**Hashing.** Non-error responses are hashed via `JsonRpcResponse.CanonicalHash()` or `CanonicalHashWithIgnoredFields(fields)` when `ignoreFields` is configured for the method. Errors are hashed via `errorToConsensusHash`: JSON-RPC exceptions hash as `"jsonrpc:<normalized_code>"`; standard errors hash as their code; unknown errors hash as `"error:generic"`. Within each hash group, `LargestResult` tracks the member with the highest `CachedResponseSize`; the winner returns `group.LargestResult`, not the first response. (<SourceLink file="consensus/analysis.go" lines="102-117" />)
 
-## How it works
-1. Send the request to up to `maxParticipants` (if less upstreams it continues with the available ones); group identical results/errors.
-2. If any valid group meets `agreementThreshold`, it wins
-3. If no winner, apply behaviors:
-   - Low participants → `lowParticipantsBehavior`
-   - Otherwise → `disputeBehavior`
-4. Preferences (non-empty, larger responses) may override selection in specific contexts (see above).
-5. Ties without preferences → dispute.
-6. All upstreams return identical error → return that error; otherwise return low-participants error.
+**Rule evaluation.** `determineWinner` walks `consensusRules` in priority order (<SourceLink file="consensus/rules.go" lines="24" />). Full 24-rule ordering:
 
-## Misbehavior tracking
+| Priority | Rule | Triggers when | Action |
+|---|---|---|---|
+| 1 | `eth_sendRawTransaction` special | Method is `eth_sendRawTransaction` AND any non-empty response exists | Return first non-empty; threshold ignored |
+| 2 | `preferHighestValueFor` | Method configured AND extractable numeric values exist | Group by numeric value; highest ≥ threshold wins; else dispute |
+| 3 | `onlyBlockHeadLeader` on dispute | `disputeBehavior == onlyBlockHeadLeader` AND no group meets threshold | Leader non-error → leader error (incl. infra) → dispute |
+| 4 | `onlyBlockHeadLeader` on low participants | `lowParticipantsBehavior == onlyBlockHeadLeader` AND low participants | Leader non-error → leader non-infra error → low-participants error |
+| 5 | `preferBlockHeadLeader` on dispute/low | `preferBlockHeadLeader` AND no group meets threshold AND leader non-error exists | Return leader non-error; else dispute |
+| 6 | `preferLarger + acceptMostCommon` below threshold | `preferLargerResponses` AND `acceptMostCommon` AND below threshold | Return largest non-empty by size |
+| 7 | `acceptMostCommon + preferNonEmpty` above threshold (empty/error leads) | `preferNonEmpty` AND `acceptMostCommon` AND threshold met AND leader is empty or error AND non-empty exists | Return best non-empty (count, then size) |
+| 8 | Tie at/above threshold (no preference) | Multiple non-error groups share best count ≥ threshold | Dispute |
+| 9 | `acceptMostCommon` below threshold: non-empty over empty | `preferNonEmpty` AND `acceptMostCommon` AND below threshold AND exactly 1 non-empty AND ≥1 empty | Return single non-empty |
+| 10 | `acceptMostCommon` below threshold: non-empty over error | `preferNonEmpty` AND `acceptMostCommon` AND below threshold AND leader is error AND non-empty exists | Return best non-empty |
+| 11 | `returnError + preferNonEmpty` (empty threshold winner) | `disputeBehavior == returnError` AND empty meets threshold AND non-empty minority exists | Dispute (escalate from empty winner) |
+| 12 | `acceptMostCommon + preferNonEmpty` above threshold (both qualify) | Both non-empty and consensus-error ≥ threshold | Return best non-empty |
+| 13 | Tie above threshold (general, no preference) | Multiple valid groups share best count ≥ threshold | Dispute |
+| 14 | `preferLarger`: above threshold, multiple groups | `preferLargerResponses` AND best meets threshold AND &gt;1 group ≥ threshold | Return largest non-empty by size |
+| 15 | `preferLarger + acceptMostCommon`: larger exists below threshold | `preferLargerResponses` AND `acceptMostCommon` AND best meets threshold AND non-empty AND larger exists below | Return largest non-empty by size |
+| 16 | `returnError + preferLarger`: smaller wins but larger exists | `disputeBehavior == returnError` AND `preferLargerResponses` AND threshold met AND larger below threshold | Dispute |
+| 17 | `acceptMostCommon` below threshold: unique leader | `acceptMostCommon` AND best count &lt; threshold AND best &gt; second-best | Return best valid group |
+| 18 | `lowParticipants + acceptMostCommon` | `lowParticipantsBehavior == acceptMostCommon` AND low participants | Non-empty (if untied) → empty → error → low-participants error |
+| 19 | Threshold winner (generic) | Any valid group meets threshold | Return result or consensus-error |
+| 20 | Dispute (multiple groups, none at threshold) | Best count &lt; threshold AND &gt;1 valid group | Dispute error |
+| 21 | All infra errors meet threshold | `validParticipants == 0` AND infra group meets threshold | Return agreed infra error |
+| 22 | `lowParticipants + returnError` | `lowParticipantsBehavior == returnError` AND low participants | Low-participants error |
+| 23 | No responses | `len(groups) == 0` | Low-participants error |
+| 24 | Fallback | Catch-all | Low-participants error |
 
-### `punishMisbehavior`
-Temporarily removes upstreams that consistently disagree with the consensus:
+**Short-circuit rules.** `shouldShortCircuit` evaluates 3 rules after each response. (1) `sendrawtx_first_success`: fires on any single non-empty for `eth_sendRawTransaction`, never blocked. (2) `consensus_error_threshold`: best group is consensus-error ≥ threshold; blocked when `preferHighestValueFor` configured, or `acceptMostCommon` active AND (`preferNonEmpty` OR `preferLargerResponses`). (3) `unassailable_lead`: best non-empty ≥ threshold with unassailable lead; blocked when `preferLargerResponses` active, `preferHighestValueFor` configured, or `preferNonEmpty` active and leader is empty.
 
-- **`disputeThreshold`**: Number of disputes before punishment (e.g., 3 strikes)
-- **`disputeWindow`**: Time window for counting disputes (e.g., 10m)
-- **`sitOutPenalty`**: How long the upstream is cordoned (e.g., 30m)
+**Misbehavior tracking and punishment.** After all responses, `trackAndPunishMisbehavingUpstreams` compares each group against the consensus group. Data disagreements count as misbehavior; error disagreements are tracked separately via `erpc_consensus_upstream_errors_total` and are NOT misbehavior. For each misbehaving upstream: `MetricConsensusMisbehaviorDetected` fires and `tracker.RecordUpstreamMisbehavior` is called. Punishment requires strict majority (`consensusGroup.Count > validParticipants / 2`) plus token-bucket denial (`disputeThreshold` tokens per `disputeWindow`); when both hold, the upstream is cordoned and `AfterFunc` calls `Uncordon` after `sitOutPenalty`. (<SourceLink file="consensus/executor.go" lines="784-1229" />)
 
-### `misbehaviorsDestination`
-Append full misbehavior events (JSONL) to a destination. Each line contains the full JSON-RPC request, all participant responses or errors, the analysis summary, the winner, and the policy snapshot. No truncation is applied.
+**`eth_sendRawTransaction` broadcast mode.** Rule 1 fires as soon as any single non-empty response exists — threshold is ignored entirely. Combined with `fireAndForget: true`, eRPC returns the first accepted tx hash immediately while remaining participant goroutines continue broadcasting using `context.WithoutCancel(ctx)` as their base, surviving HTTP client disconnection. They are bounded by upstream call completion, wait-cap timers, or process exit — not by graceful shutdown signals.
 
-- **type**: `file` | `s3`
-- **path**:
-  - For `file`: absolute directory path; files are created using `filePattern`.
-  - For `s3`: `s3://bucket/prefix` where files are uploaded using `filePattern`.
-- **filePattern** placeholders:
-  - `{dateByHour}`: UTC hour (`YYYY-MM-DD-HH`)
-  - `{dateByDay}`: UTC day (`YYYY-MM-DD`)
-  - `{method}`: JSON-RPC method
-  - `{networkId}`: network id with `:` replaced by `_`
-  - `{instanceId}`: unique instance ID (auto from env/pod/hostname or generated)
-  - `{timestampMs}`: UTC timestamp in milliseconds (useful to avoid key collisions on S3)
-  - Defaults: `{timestampMs}-{method}-{networkId}.jsonl`
-- **s3** (when type=`s3`):
-  - `region`, `maxRecords`, `maxSize` (bytes), `flushInterval`, `contentType`
-  - `credentials.mode`: `env` | `file` | `secret` (+ required fields per mode)
+**Wait caps.** `maxWaitOnResult` (adaptive p50, default min=5ms, max=1s) arms when the first non-empty response arrives. `maxWaitOnEmpty` (adaptive p90, default min=50ms, max=2s) arms on the very first response of any kind. When a cap fires, the analyzer resolves with what it has collected, applying `disputeBehavior` or `lowParticipantsBehavior` as appropriate. `erpc_consensus_wait_capped_total{trigger}` tracks firings.
 
-Notes:
-- File writes use atomic append; use external rotation for large files.
-- S3 uploads are buffered and flushed by size, count, or time.
+**SkipConsensus directive.** Any request can bypass consensus via `X-ERPC-Skip-Consensus: true` header, `?skip-consensus=true` query param, or `directiveDefaults.skipConsensus: true` in network/project config. When set, the executor falls through to `retry(hedge(runUpstreamSweep))`. Only `"true"` activates bypass; any other value keeps consensus active.
 
-## Performance
-Consensus increases costs and latency since it waits for multiple responses. Use it selectively for critical workloads and specific methods rather than all requests.
+**Misbehavior export.** When `misbehaviorsDestination` is configured, every round with at least one misbehaving upstream is serialized as a JSONL record containing timestamp, project/network/method/finality, full policy snapshot, request, winner snapshot, analysis snapshot (groups, counts, hashes), and per-participant snapshot. For `type: file`: records are written immediately to `path/<resolved-filename>`. For `type: s3`: records are buffered and flushed asynchronously when `maxRecords`, `maxSize`, or `flushInterval` fires; S3 uses `PutObject` — each flush replaces the object. JSONL record top-level fields: `ts` (int64, Unix ms), `projectId` (string), `networkId` (string), `method` (string), `finality` (string), `policy` (object: `maxParticipants`, `agreementThreshold`, `disputeBehavior`, `lowParticipantsBehavior`, `preferNonEmpty`, `preferLargerResponses`, `ignoreFields`), `request` (`{jsonrpc, id, method, params}`), `winner` (`{responseType, hash, size, upstreamId}`), `analysis` (`{totalParticipants, validParticipants, bestByCount, groups[]}`  — each group has `{hash, count, isTie, responseType, responseSize}`), `participants` (array — per upstream: `{upstreamId, vendor, responseType, responseHash, responseSize, response, error}`).
 
-## Transaction inclusion
+**Caller-abandoned handling.** If the HTTP client disconnects before consensus completes, a drain goroutine waits for `analyzerDone`, drains `outcomeCh`, and releases the winner's response buffer to prevent memory leaks. Metrics record `caller_abandoned` outcome. (<SourceLink file="consensus/executor.go" lines="287-338" />)
 
-For reliable transaction submission and inclusion, configure consensus policies for nonce, gas estimation, and broadcasting:
+**Panic safety.** Both `executeParticipant` and `runAnalyzer` have `recover()` defers. Panics send `errPanicInConsensus` on the relevant channel so the caller's select never deadlocks. `MetricConsensusPanics` is incremented on any recovery.
 
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-        failsafe:
-          # 1. Nonce: Always use the highest value to avoid "nonce too low" errors
-          - matchMethod: eth_getTransactionCount
-            consensus:
-              maxParticipants: 3
-              agreementThreshold: 1  # Accept any single response
-              preferHighestValueFor:
-                eth_getTransactionCount: ["result"]  # Pick the highest nonce
+### Config schema
 
-          # 2. Gas fees: Use highest values for better inclusion during congestion
-          - matchMethod: eth_gasPrice|eth_maxPriorityFeePerGas
-            consensus:
-              maxParticipants: 3
-              agreementThreshold: 1
-              preferHighestValueFor:
-                eth_gasPrice: ["result"]  # Legacy transactions
-                eth_maxPriorityFeePerGas: ["result"]  # EIP-1559 transactions
+All fields under `networks[].failsafe[].consensus.` (or project-level `failsafe[].consensus.`). Duration fields accept Go duration strings. `*bool` fields: unset means `SetDefaults` applies the documented default. Struct at <SourceLink file="common/config.go" lines="1591-1658" />.
 
-          # 3. Send transaction: Broadcast to all nodes, return immediately
-          - matchMethod: eth_sendRawTransaction
-            consensus:
-              maxParticipants: 5  # Broadcast widely (uses all available if fewer exist)
-              agreementThreshold: 1  # Return on first success
-              fireAndForget: true  # Don't cancel other requests - let them complete in background
-```
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `maxParticipants` | int | `5` (<SourceLink file="common/defaults.go" lines="2390-2392" />) | Number of upstreams to fan-out to. If ≤ 0, clamped to 1. |
+| `agreementThreshold` | int | `2` (<SourceLink file="common/defaults.go" lines="2393-2395" />) | Minimum participants that must agree on the same response hash. Also used by `isLowParticipants` (`validParticipants < threshold`). |
+| `disputeBehavior` | string enum | `"returnError"` (<SourceLink file="common/defaults.go" lines="2396-2398" />) | Action when `validParticipants >= agreementThreshold` but no group meets threshold. Values: `returnError`, `acceptMostCommonValidResult`, `preferBlockHeadLeader`, `onlyBlockHeadLeader`. |
+| `lowParticipantsBehavior` | string enum | `"acceptMostCommonValidResult"` (<SourceLink file="common/defaults.go" lines="2399-2401" />) | Action when `validParticipants < agreementThreshold` (fewer upstreams produced non-infrastructure-error responses than the threshold, typically because too few upstreams were reachable before wait caps fired). Same four values as `disputeBehavior`. Distinction: `disputeBehavior` fires when `validParticipants >= agreementThreshold` but no group meets threshold (participants disagree); `lowParticipantsBehavior` fires when there are not enough valid participants to even reach threshold. Under `acceptMostCommon`: non-empty &gt; empty &gt; error; ties among non-empty groups → dispute. |
+| `disputeLogLevel` | string | `"warn"` (<SourceLink file="common/defaults.go" lines="2402-2404" />) | Zerolog level for misbehavior events. Values: `trace`, `debug`, `info`, `warn`, `error`. **Footgun**: zerolog zero value is `TraceLevel`; builder coerces unset to `WarnLevel`. Set `"trace"` explicitly for trace-level logging. |
+| `ignoreFields` | `map[string][]string` | `{"eth_getLogs":["*.blockTimestamp"],"eth_getTransactionReceipt":["blockTimestamp","logs.*.blockTimestamp"],"eth_getBlockReceipts":["*.blockTimestamp","*.logs.*.blockTimestamp"]}` (<SourceLink file="common/defaults.go" lines="2405-2419" />) | Per-method dot-path field patterns excluded from canonical hash. **Set replacement, not merge**: setting ANY entry replaces the ENTIRE default map. To add a method, re-include all three defaults. Setting `{}` disables all defaults. |
+| `preferNonEmpty` | \*bool | `true` (<SourceLink file="common/defaults.go" lines="2420-2422" />) | Prefer non-empty over empty or consensus-error in dispute resolution. Disables short-circuit when empty would lead. |
+| `preferLargerResponses` | \*bool | `true` (<SourceLink file="common/defaults.go" lines="2423-2425" />) | Prefer larger response bodies. **Disables ALL short-circuit** when active — every request must wait for all participants. Increases latency for the common case. Disable in latency-sensitive scenarios. |
+| `preferHighestValueFor` | `map[string][]string` | `nil` (disabled) | Per-method ordered field paths. Responses grouped by numeric value; highest ≥ threshold wins. Bypasses all other rules. Disables short-circuit for that method. Field path `"result"` extracts the direct scalar result; any other path extracts `resultObj[fieldName]`. Multiple fields act as ordered tie-breakers: first field is primary, subsequent fields are tie-breakers. Numeric parsing handles hex strings (`0x...`), decimal strings, `json.Number`, `float64`, `int64`. If any configured field returns nil, the entire response is excluded from value grouping. Responses are regrouped by value (not hash), so differently-formatted representations of the same number match. (<SourceLink file="consensus/utils.go" lines="13-168" />) |
+| `fireAndForget` | bool | `false` (Go zero value; no `SetDefaults` entry) | When `true`, remaining in-flight requests are NOT cancelled after short-circuit. Goroutines use `context.WithoutCancel(ctx)` and survive HTTP disconnection. **Footgun**: process shutdown signals do not reach these goroutines; budget shutdown timeouts accordingly. |
+| `maxWaitOnResult` | \*AdaptiveDuration | `{quantile:0.5, min:"5ms", max:"1s"}` (<SourceLink file="common/defaults.go" lines="2432-2438" />) | Cap after first non-empty response. Cold-start fallback is `min` (5ms). If you configure without a `min`, cold start returns 0 — no cap until data accumulates. |
+| `maxWaitOnEmpty` | \*AdaptiveDuration | `{quantile:0.9, min:"50ms", max:"2s"}` (<SourceLink file="common/defaults.go" lines="2439-2445" />) | Cap after first response of any kind. Same cold-start behavior: fallback to `min` (50ms). |
+| `requiredParticipants` | `[]*ConsensusRequiredParticipant` | `[]` (disabled) | List of `{tag, minParticipants}` entries. Front-loads tag-matching upstreams. Best-effort: shortfall falls through to `lowParticipantsBehavior`. |
+| `requiredParticipants[].tag` | string | **Required** | Glob pattern matched against `upstream.tags[]`. Empty tag is a startup validation error. |
+| `requiredParticipants[].minParticipants` | int | **Required; no default** | Must be &gt; 0 and ≤ `maxParticipants`. Omitting or setting 0 is a startup validation error — not a silent no-op. |
+| `punishMisbehavior` | \*PunishMisbehaviorConfig | `nil` (disabled) | Enables cordon punishment for persistent misbehavior. |
+| `punishMisbehavior.disputeThreshold` | uint | **Required** &gt;0 | Token bucket capacity per `disputeWindow`. No `SetDefaults` entry — must be explicitly set; omitting is a startup validation error. |
+| `punishMisbehavior.disputeWindow` | Duration | **Required** &gt;0 | Token bucket window. Validated at startup AND guarded at runtime: `<= 0` silently disables punishment with a debug log. |
+| `punishMisbehavior.sitOutPenalty` | Duration | — | Cordon duration. `upstream.Uncordon` is called automatically after expiry. |
+| `misbehaviorsDestination` | \*MisbehaviorsDestinationConfig | `nil` (disabled) | Export target for misbehavior JSONL records. |
+| `misbehaviorsDestination.type` | string | `"file"` (<SourceLink file="common/defaults.go" lines="2460-2462" />) | `"file"` or `"s3"`. When `type: "s3"` is set, `SetDefaults` auto-creates the `s3` sub-block as `&S3FlushConfig{}` if it is nil — you do not need to provide an empty `s3:` block. (<SourceLink file="common/defaults.go" lines="2468-2471" />) |
+| `misbehaviorsDestination.path` | string | — | For `file`: absolute directory path (created with `0o750`; must be absolute). For `s3`: `s3://bucket/prefix/`. |
+| `misbehaviorsDestination.filePattern` | string | `"{timestampMs}-{method}-{networkId}"` (<SourceLink file="common/defaults.go" lines="2464-2466" />) | Filename template. Tokens: `{dateByHour}` (UTC `2006-01-02-15`), `{dateByDay}`, `{method}`, `{networkId}`, `{instanceId}`, `{timestampMs}`. Always appends `.jsonl` if no recognized extension. `{instanceId}` derived from `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → SHA256 hash of `now+pid`. |
+| `misbehaviorsDestination.s3.maxRecords` | int | `100` (<SourceLink file="common/defaults.go" lines="2472-2474" />) | Flush when any per-key buffer has ≥ this many records. |
+| `misbehaviorsDestination.s3.maxSize` | int64 | `1048576` (1 MiB) (<SourceLink file="common/defaults.go" lines="2475-2477" />) | Flush when any per-key buffer reaches this byte count. |
+| `misbehaviorsDestination.s3.flushInterval` | Duration | `"60s"` (<SourceLink file="common/defaults.go" lines="2478-2480" />) | Periodic flush regardless of thresholds. |
+| `misbehaviorsDestination.s3.region` | string | `""` → SDK default chain | AWS region. |
+| `misbehaviorsDestination.s3.contentType` | string | `"application/jsonl"` (<SourceLink file="common/defaults.go" lines="2481-2483" />) | `Content-Type` for S3 `PutObject`. |
+| `misbehaviorsDestination.s3.credentials.mode` | string | `""` → SDK default chain | `"secret"` (static key+secret), `"file"` (credentials file+profile), `"env"` (env vars), `""` (full SDK chain: env → `~/.aws/credentials` → IMDS). |
+| `misbehaviorsDestination.s3.credentials.accessKeyID` | string | — | **YAML key is `accessKeyID` (capital D)**. Using `accessKeyId` (lowercase d) silently falls back to SDK chain. |
+| `misbehaviorsDestination.s3.credentials.secretAccessKey` | string | — | Used when `mode: "secret"`. |
+| `misbehaviorsDestination.s3.credentials.credentialsFile` | string | — | Used when `mode: "file"`. |
+| `misbehaviorsDestination.s3.credentials.profile` | string | — | Used when `mode: "file"`. |
 
-### Key settings explained
+### Worked examples
 
-| Method | Goal | Settings |
-|--------|------|----------|
-| `eth_getTransactionCount` | Avoid "nonce too low" | `preferHighestValueFor` picks highest nonce |
-| `eth_gasPrice` | Better inclusion (legacy) | `preferHighestValueFor` picks highest gas price |
-| `eth_maxPriorityFeePerGas` | Better inclusion (EIP-1559) | `preferHighestValueFor` picks highest priority fee |
-| `eth_sendRawTransaction` | Maximum broadcast | `fireAndForget: true` returns quickly but broadcasts to all nodes |
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
 
-<Callout type="info">
-  **`fireAndForget`**: When enabled, consensus returns immediately upon reaching agreement but allows remaining upstream requests to complete in the background. This is ideal for write operations like `eth_sendRawTransaction` where you want to broadcast to as many nodes as possible while still returning quickly to the client.
-</Callout>
+**1. Standard 3-of-2 agreement for unfinalized log and receipt reads.** The most common
+production shape: fan out to 3 upstreams, require 2 to agree, accept the majority on
+disputes. Used on Base, Ethereum mainnet, Blast, and Sonic for `eth_getLogs` and
+`eth_getBlockReceipts` on recent (unfinalized) blocks where reorg-detection matters.
+`preferLargerResponses: false` is deliberate — keeping it `false` preserves the
+`unassailable_lead` short-circuit (returns as soon as 2 agree, without waiting for the
+3rd), cutting worst-case latency significantly:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+    matchFinality: "unfinalized"
+    consensus:
+      maxParticipants: 3
+      agreementThreshold: 2
+      disputeBehavior: acceptMostCommonValidResult
+      lowParticipantsBehavior: acceptMostCommonValidResult
+      # false keeps the unassailable_lead short-circuit active:
+      # once 2 of 3 agree, eRPC returns immediately without
+      # waiting for the third upstream to finish
+      preferLargerResponses: false
+      preferNonEmpty: true
+      ignoreFields:
+        eth_getLogs:
+          - "*.blockTimestamp"
+        eth_getTransactionReceipt:
+          - "blockTimestamp"
+          - "logs.*.blockTimestamp"
+          - "l1Fee"
+          - "l1GasUsed"
+        eth_getBlockReceipts:
+          - "*.blockTimestamp"
+          - "*.l1Fee"
+          - "*.l1GasUsed"`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getLogs|eth_getBlockReceipts",
+  matchFinality: "unfinalized",
+  consensus: {
+    maxParticipants: 3,
+    agreementThreshold: 2,
+    disputeBehavior: "acceptMostCommonValidResult",
+    lowParticipantsBehavior: "acceptMostCommonValidResult",
+    // false keeps the unassailable_lead short-circuit active:
+    // once 2 of 3 agree, eRPC returns immediately without
+    // waiting for the third upstream to finish
+    preferLargerResponses: false,
+    preferNonEmpty: true,
+    ignoreFields: {
+      eth_getLogs: ["*.blockTimestamp"],
+      eth_getTransactionReceipt: [
+        "blockTimestamp", "logs.*.blockTimestamp",
+        "l1Fee", "l1GasUsed",
+      ],
+      eth_getBlockReceipts: ["*.blockTimestamp", "*.l1Fee", "*.l1GasUsed"],
+    },
+  },
+}]`}
+/>
+
+**2. Highest-value consensus for fee and nonce reads.** The standard production
+pattern for preventing stale-low fee estimates and stuck nonces: fan out to 4 upstreams
+and return whichever reports the highest value. The `noBehaviors` pattern (omitting
+`disputeBehavior`/`lowParticipantsBehavior`) is intentional — with `preferHighestValueFor`
+active, dispute/low-participant rules never fire because the numeric-value rule evaluates
+first. Used in production for every EVM chain that accepts writes:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_gasPrice|eth_maxPriorityFeePerGas"
+    consensus:
+      maxParticipants: 4
+      agreementThreshold: 1
+      # ignoreFields: null — hash-based grouping is irrelevant when
+      # preferHighestValueFor regrouping by numeric value is active
+      preferHighestValueFor:
+        eth_gasPrice:
+          - result
+        eth_maxPriorityFeePerGas:
+          - result
+  - matchMethod: "eth_getTransactionCount"
+    hedge:
+      quantile: 0.95
+      maxCount: 1
+      minDelay: 500ms
+      maxDelay: 10s
+    retry:
+      maxAttempts: 6
+      delay: 0
+    consensus:
+      maxParticipants: 4
+      agreementThreshold: 1
+      preferHighestValueFor:
+        eth_getTransactionCount:
+          - result`}
+  ts={`failsafe: [
+  {
+    matchMethod: "eth_gasPrice|eth_maxPriorityFeePerGas",
+    consensus: {
+      maxParticipants: 4,
+      agreementThreshold: 1,
+      // ignoreFields not set — hash-based grouping is irrelevant when
+      // preferHighestValueFor regrouping by numeric value is active
+      preferHighestValueFor: {
+        eth_gasPrice: ["result"],
+        eth_maxPriorityFeePerGas: ["result"],
+      },
+    },
+  },
+  {
+    matchMethod: "eth_getTransactionCount",
+    hedge: { quantile: 0.95, maxCount: 1, minDelay: "500ms", maxDelay: "10s" },
+    retry: { maxAttempts: 6, delay: 0 },
+    consensus: {
+      maxParticipants: 4,
+      agreementThreshold: 1,
+      preferHighestValueFor: { eth_getTransactionCount: ["result"] },
+    },
+  },
+]`}
+/>
+
+**3. `eth_sendRawTransaction` broadcast with fire-and-forget.** Return the first accepted
+tx hash immediately while the remaining upstream goroutines continue broadcasting in
+background using `context.WithoutCancel`. Rule 1 fires as soon as any single non-empty
+response exists — the threshold is bypassed entirely. In production, `maxParticipants: 10`
+is paired with `hedge.maxCount: 2` so the hedge races 3 upstreams simultaneously, with
+remaining slots filling in asynchronously. Account for these goroutines in graceful
+shutdown timeout budgets — process shutdown signals do not reach them:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_sendRawTransaction"
+    hedge:
+      quantile: 0.95
+      maxCount: 2
+      minDelay: 50ms
+      maxDelay: 1s
+    retry:
+      maxAttempts: 6
+      delay: 0
+    consensus:
+      maxParticipants: 10
+      # threshold 1: Rule 1 fires on first non-empty anyway,
+      # but setting 1 makes the intent explicit
+      agreementThreshold: 1
+      # goroutines continue after first hash is returned to client
+      fireAndForget: true`}
+  ts={`failsafe: [{
+  matchMethod: "eth_sendRawTransaction",
+  hedge: { quantile: 0.95, maxCount: 2, minDelay: "50ms", maxDelay: "1s" },
+  retry: { maxAttempts: 6, delay: 0 },
+  consensus: {
+    maxParticipants: 10,
+    // threshold 1: Rule 1 fires on first non-empty anyway,
+    // but setting 1 makes the intent explicit
+    agreementThreshold: 1,
+    // goroutines continue after first hash is returned to client
+    fireAndForget: true,
+  },
+}]`}
+/>
+
+**4. State-trie integrity checks for high-value reads.** For Ethereum mainnet balance and
+call reads, production uses a strict 2-of-2 check: both participants must agree or the
+result is disputed. A tighter quorum (2/2 vs 2/3) makes it easier to detect a single
+rogue node, and `disputeLogLevel: "error"` escalates disagreements for alerting.
+`ignoreFields: null` is intentional — balance and call results have no metadata variance,
+so the default timestamp exclusions would only mask real bugs:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getBalance|eth_call"
+    matchFinality: "unfinalized"
+    timeout:
+      duration: 60s
+    hedge:
+      quantile: 0.95
+      maxCount: 1
+      minDelay: 500ms
+      maxDelay: 10s
+    retry:
+      maxAttempts: 6
+      delay: 0
+    consensus:
+      maxParticipants: 2
+      agreementThreshold: 2
+      # error-level so a PagerDuty alert fires on any balance/call mismatch
+      disputeLogLevel: "error"
+      # null: no ignoreFields — balance and call results have no timestamp
+      # variance; omitting fields would only mask genuine disagreements`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getBalance|eth_call",
+  matchFinality: "unfinalized",
+  timeout: { duration: "60s" },
+  hedge: { quantile: 0.95, maxCount: 1, minDelay: "500ms", maxDelay: "10s" },
+  retry: { maxAttempts: 6, delay: 0 },
+  consensus: {
+    maxParticipants: 2,
+    agreementThreshold: 2,
+    // error-level so a PagerDuty alert fires on any balance/call mismatch
+    disputeLogLevel: "error",
+    // no ignoreFields: balance and call results have no timestamp variance;
+    // omitting fields here would only mask genuine disagreements
+  },
+}]`}
+/>
+
+**5. Misbehavior tracking with S3 export and automatic cordon.** Used in production for
+Base `eth_getLogs` to detect and penalize upstreams that consistently return bad data.
+After 3 disputes within 5 minutes the offender is cordoned for 10 minutes.
+`{dateByHour}` in `filePattern` groups disputes by hour — each hourly flush overwrites
+the S3 object for that key, so use `{timestampMs}` if per-flush objects are preferred.
+The 100 MiB `maxSize` guard prevents unbounded memory use during high-dispute periods:
+
+<ConfigTabs
+  path="projects[].networks[].failsafe[]"
+  yaml={`failsafe:
+  - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+    matchFinality: "unfinalized"
+    consensus:
+      maxParticipants: 3
+      agreementThreshold: 2
+      disputeBehavior: acceptMostCommonValidResult
+      punishMisbehavior:
+        # 3 disputes within 5 minutes triggers a cordon
+        disputeThreshold: 3
+        disputeWindow: 5m
+        # cordon for 10 minutes then auto-uncordon
+        sitOutPenalty: 10m
+      misbehaviorsDestination:
+        type: s3
+        path: "s3://\${S3_BUCKET}/misbehaviors/mainnet/"
+        filePattern: "{dateByHour}-{method}"
+        s3:
+          region: "\${AWS_REGION}"
+          # flush at 100 records, 100 MiB, or every hour
+          maxRecords: 100
+          maxSize: 104857600
+          flushInterval: 1h`}
+  ts={`failsafe: [{
+  matchMethod: "eth_getLogs|eth_getBlockReceipts",
+  matchFinality: "unfinalized",
+  consensus: {
+    maxParticipants: 3,
+    agreementThreshold: 2,
+    disputeBehavior: "acceptMostCommonValidResult",
+    punishMisbehavior: {
+      // 3 disputes within 5 minutes triggers a cordon
+      disputeThreshold: 3,
+      disputeWindow: "5m",
+      // cordon for 10 minutes then auto-uncordon
+      sitOutPenalty: "10m",
+    },
+    misbehaviorsDestination: {
+      type: "s3",
+      path: \`s3://\${S3_BUCKET}/misbehaviors/mainnet/\`,
+      filePattern: "{dateByHour}-{method}",
+      s3: {
+        region: process.env.AWS_REGION,
+        // flush at 100 records, 100 MiB, or every hour
+        maxRecords: 100,
+        maxSize: 104857600,
+        flushInterval: "1h",
+      },
+    },
+  },
+}]`}
+/>
+
+### Request/response behavior
+
+- Consensus wraps the composed `retry(hedge(tryOneUpstream))` inner function. Retry and hedge still fire per participant slot; the consensus layer sees only the final result from each slot.
+- A dispute produces `ErrConsensusDispute`: JSON-RPC wire code `-32603`, HTTP method-level status `409 Conflict` (wire status `200` for POST JSON-RPC). The `Cause` is `errors.Join(per-participant errors)`. Retryability: if ANY child error is retryable, the whole dispute error is retryable toward the network.
+- A low-participants outcome produces `ErrConsensusLowParticipants`: JSON-RPC wire code `-32603`, HTTP method-level status `412 Precondition Failed` (wire status `200`). Same multi-error retryability rule.
+- The `SkipConsensus` directive (`X-ERPC-Skip-Consensus: true` or `?skip-consensus=true`) causes the executor to skip the consensus branch entirely. Retry, hedge, circuit breaker, and timeout still apply. Only the string `"true"` activates bypass.
+- Within a consensus group, `group.LargestResult` is returned as the winner — not the first response received. This ensures the most complete representation is selected when multiple upstreams agree on the same canonical hash.
+- When `preferHighestValueFor` is configured for a method, responses are regrouped by extracted numeric value (not hash), allowing differently-formatted representations of the same value to match.
+
+### Best practices
+
+- Start with `maxParticipants: 3` and `agreementThreshold: 2`. Adding more participants increases coverage but raises cost and worst-case latency.
+- Disable `preferLargerResponses` in latency-sensitive scenarios — it disables all short-circuit and forces every request to wait for all participants.
+- When extending `ignoreFields`, always re-include all three default entries (`eth_getLogs`, `eth_getTransactionReceipt`, `eth_getBlockReceipts`). Setting any entry replaces the entire map; omitting defaults causes spurious disputes on `blockTimestamp` fields.
+- Set `disputeLogLevel: "warn"` (it is the default, but set it explicitly). Zerolog's zero value is `TraceLevel`; an unset field gets coerced to `WarnLevel` by the builder, which may mask trace-level intent.
+- Use `fireAndForget: true` only for `eth_sendRawTransaction` broadcast. For read methods it wastes upstream capacity after the winner is known. Account for these goroutines in graceful shutdown timeout budgets — process shutdown signals do not reach them.
+- For `punishMisbehavior`, set `disputeWindow` conservatively (e.g., `5m`) and `disputeThreshold` to at least 3. A too-tight window with threshold 1 will cordon flapping nodes on the first transient disagreement.
+- Monitor `erpc_consensus_wait_capped_total{trigger}` — frequent `"result"` firings mean your `maxWaitOnResult` is too short for the slowest participants; frequent `"empty"` firings indicate slow cold paths.
+
+### Edge cases & gotchas
+
+1. **`ignoreFields` is full set replacement.** Adding one method removes all three built-in entries. Spurious disputes on `blockTimestamp` fields result. Always re-include all default entries when extending the map. (<SourceLink file="consensus/analysis.go" lines="442-453" />)
+2. **`preferLargerResponses` disables all short-circuit.** Even a clear majority above threshold does not short-circuit because a larger response may still arrive. Disable in latency-sensitive scenarios.
+3. **`eth_sendRawTransaction` bypasses threshold entirely.** Rule 1 fires on any single non-empty response regardless of how many others errored. Intentional for tx broadcasting.
+4. **`preferNonEmpty` + `returnError` escalates empty threshold winner to dispute.** When empty meets threshold, non-empty minority exists, and `preferNonEmpty: true` under `disputeBehavior: returnError`, the result is a dispute — not the empty winner and not the minority non-empty. (Rule 11)
+5. **Tie among non-empty at/above threshold without preference → dispute.** Rule 8 fires before the generic threshold-winner rule 19. Enable `preferLargerResponses` to resolve ties by size.
+6. **`requiredParticipants` shortfall is silent.** No warning, no metric, no error. Operators cannot distinguish tag-quota shortfall from general upstream unavailability in current observability output.
+7. **`fireAndForget` goroutines survive graceful shutdown.** `context.WithoutCancel` strips shutdown signals. Budget shutdown timeouts to account for in-flight fire-and-forget participants.
+8. **S3 uses `PutObject`, not append.** With `{dateByHour}` in `filePattern`, flushes within the same hour overwrite the previous S3 object. Use `{timestampMs}` if each flush should create a new object.
+9. **S3 `accessKeyID` casing is load-bearing.** YAML key must be `accessKeyID` (capital D). Lowercase `accessKeyId` silently falls back to the SDK credential chain.
+10. **File export requires absolute path.** Relative paths are rejected at startup. (<SourceLink file="consensus/export.go" lines="37-41" />)
+11. **`disputeLogLevel` zero value coerces to warn.** Set `"trace"` explicitly if trace-level dispute logging is required.
+12. **`ErrConsensusDispute` is retryable when any child error is retryable.** A dispute caused partly by a retryable upstream error propagates retryability to the caller.
+13. **Misbehavior punishment only when majority consensus.** `shouldPunishUpstream` requires `consensusGroup.Count > validParticipants / 2`. With 2 of 5 agreeing (2 &gt; 2 fails), punishment is blocked. (<SourceLink file="consensus/executor.go" lines="1196" />)
+14. **`ErrUpstreamsExhausted` wrapping foreign consensus errors.** Without a guard, `HasErrorCode` traversal would misclassify exhausted errors as `ResponseTypeConsensusError`, creating phantom voting groups. The explicit check at <SourceLink file="consensus/analysis.go" lines="376-386" /> prevents this.
+15. **Context cancellation after all executions does NOT produce LowParticipants.** When the parent context is cancelled after every participant has completed but before outcome delivery, the non-blocking try-receive picks up the computed outcome rather than treating it as abandonment. (<SourceLink file="consensus/executor.go" lines="271-279" />)
+16. **Cold start for wait caps.** `AdaptiveDuration.Resolve` falls back to `min` when no latency data exists. If you configure `maxWaitOnResult: {quantile: 0.5, max: 1s}` without a `min`, cold start returns 0 — no cap until data accumulates.
+17. **S3 startup validation.** `newS3MisbehaviorExporter` calls `HeadBucket` synchronously. If the bucket is unreachable, S3 export is disabled and an error is logged — consensus continues normally.
+18. **`omitting minParticipants` in `requiredParticipants` is a startup error.** Go leaves unset `int` at 0, which immediately fails the `> 0` validation. The server will not start.
+19. **`IsTie` flag on response groups is per-type, per-count.** `responseGroup.IsTie` is `true` when at least two groups of the same `ResponseType` share the same `Count`. Infrastructure error groups always have `IsTie = false`. This flag is used by the `lowParticipants + acceptMostCommon` rule to escalate non-empty ties to dispute instead of returning an arbitrary winner. (<SourceLink file="consensus/analysis.go" lines="121-138" />)
+20. **Race-free analysis struct.** `newConsensusAnalysis` pre-populates all cached accessor fields before returning. After the analyzer sends the outcome to the caller, both goroutines may read the analysis concurrently (caller for metrics; analyzer for misbehavior tracking). Lazy-init under concurrent reads would be a data race. (<SourceLink file="consensus/analysis.go" lines="141-153" />)
+21. **`preferHighestValueFor` can be combined per-method with hash-based consensus.** The map allows different handling per method — `eth_getTransactionCount: ["result"]` uses highest-value while `eth_call` falls through to normal hash-based consensus on the same failsafe entry. The rule only matches when at least one valid group has extractable numeric values; if extraction fails for all responses it falls through to subsequent rules.
+22. **`ErrConsensusDispute` and `ErrConsensusLowParticipants` error contracts.** `ErrConsensusDispute` has HTTP method-level status `409 Conflict` and JSON-RPC wire code `-32603`; `ErrConsensusLowParticipants` has HTTP method-level status `412 Precondition Failed` and the same wire code. Wire HTTP status for POST JSON-RPC is `200` in both cases (errors are translated to JSON-RPC at the transport layer). Both errors carry `errors.Join(per-participant errors)` as their `Cause`; retryability propagates from children — if ANY child error is retryable, the whole dispute or low-participants error is retryable toward the network. `ErrConsensusLowParticipants.DeepestMessage()` includes per-participant info.
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_consensus_total` | Counter | `project`, `network`, `category`, `outcome`, `finality` | Every `Run` completion. `outcome`: `success`, `consensus_on_error`, `dispute`, `low_participants`, `generic_error`, `caller_abandoned`. |
+| `erpc_consensus_duration_seconds` | Histogram | same as total | Duration of each `Run`. Buckets: `[0.05, 0.5, 5, 30]`. |
+| `erpc_consensus_errors_total` | Counter | `project`, `network`, `category`, `error`, `finality` | When result is an error. |
+| `erpc_consensus_agreement_count` | Histogram | `project`, `network`, `category`, `finality` | Best group count per round. Buckets: linear 1–10. |
+| `erpc_consensus_responses_collected` | Histogram | `project`, `network`, `category`, `vendors`, `short_circuited`, `finality` | After all responses collected. `vendors` is comma-joined sorted vendor names. Buckets: linear 1–10. |
+| `erpc_consensus_short_circuit_total` | Counter | `project`, `network`, `category`, `reason`, `finality` | When short-circuit fires. `reason`: `sendrawtx_first_success`, `consensus_error_threshold`, `unassailable_lead`. |
+| `erpc_consensus_wait_capped_total` | Counter | `project`, `network`, `category`, `trigger`, `finality` | When `maxWaitOnResult` or `maxWaitOnEmpty` fires. `trigger`: `"result"` or `"empty"`. |
+| `erpc_consensus_misbehavior_detected_total` | Counter | `project`, `network`, `upstream`, `category`, `finality`, `response_type`, `larger_than_consensus` | Per misbehaving upstream per round. |
+| `erpc_consensus_upstream_punished_total` | Counter | `project`, `network`, `upstream` | When an upstream is cordoned for misbehavior. |
+| `erpc_consensus_upstream_errors_total` | Counter | `project`, `network`, `upstream`, `category`, `finality`, `response_type`, `error_code` | Per upstream per round when upstream has a consensus or infra error disagreeing with the consensus group. |
+| `erpc_consensus_cancellations_total` | Counter | `project`, `network`, `category`, `phase`, `finality` | `phase`: `before_execution`, `after_execution`, `caller_abandoned`. |
+| `erpc_consensus_panics_total` | Counter | `project`, `network`, `category`, `finality` | Per panic recovery in participant or analyzer goroutine. |
+
+**OTel trace spans:**
+
+| Span | Attributes | Notes |
+|---|---|---|
+| `Consensus.Run` | `network.id`, `request.method`, `consensus.outcome`, `consensus.achieved`, `participants.total`, `participants.valid` | Top-level span for the entire consensus operation. |
+| `Consensus.CollectResponses` | `short_circuited` (bool), `wait_capped` (bool), `responses.collected` (int) | Child span from first goroutine spawn to all-responses-collected. |
+
+**Notable log messages:** `"consensus rule matched"` (debug, per rule match), `"consensus misbehavior detected - upstreams differ from consensus"` (at `disputeLogLevel`, when `misbehavingCount > 0`; includes full participant breakdown with numbered keys `upstream1`, `responseType1`, `agreesWithConsensus1`, etc.), `"fire-and-forget mode: remaining requests complete in background"` (debug, on short-circuit when `fireAndForget: true`), `"misbehaviour limit exhausted, punishing upstream"` (warn), `"upstream already in sitout, skipping"` (debug, when punishment attempted but upstream already cordoned), `"consensus caller abandoned; analysis continues in background"` (warn), `"panic in consensus analyzer"` / `"Panic in consensus participant"` (error), `"failed to append misbehavior record"` (warn, when exporter errors), `"failed to initialize S3 misbehavior exporter; export disabled"` (error, S3 setup failure at init time — consensus continues normally), `"uploaded misbehavior records to S3"` (info, after each successful S3 PutObject), `"failed to upload misbehavior records to S3"` (error, on S3 PutObject failure).
+
+### Source code entry points
+
+- [`consensus/consensus.go`](https://github.com/erpc/erpc/blob/main/consensus/consensus.go) — `Consensus` struct, `NewConsensus`, entry-point `Run`
+- [`consensus/executor.go`](https://github.com/erpc/erpc/blob/main/consensus/executor.go) — `executeConsensus` (fan-out, wait caps, context racing), `runAnalyzer` (collection loop, short-circuit, misbehavior tracking), `executeParticipant`, `trackAndPunishMisbehavingUpstreams`
+- [`consensus/analysis.go`](https://github.com/erpc/erpc/blob/main/consensus/analysis.go) — `newConsensusAnalysis` (classify, hash, group), `classifyAndHashResponse`, `errorToConsensusHash`, `LargestResult` tracking
+- [`consensus/rules.go`](https://github.com/erpc/erpc/blob/main/consensus/rules.go) — `consensusRules` (24 rules) and `shortCircuitRules` (3 rules); all decision logic
+- [`consensus/quota.go`](https://github.com/erpc/erpc/blob/main/consensus/quota.go) — `reorderForParticipantQuota`, `upstreamMatchesTag` (glob matching)
+- [`consensus/export.go`](https://github.com/erpc/erpc/blob/main/consensus/export.go) — `misbehaviorExporter` interface, `fileMisbehaviorExporter`, JSONL record structs
+- [`consensus/export_s3.go`](https://github.com/erpc/erpc/blob/main/consensus/export_s3.go) — `s3MisbehaviorExporter`, buffered per-key S3 uploads with background flush worker
+- [`consensus/export_utils.go`](https://github.com/erpc/erpc/blob/main/consensus/export_utils.go) — `resolveFilePattern`/`resolveFilePatternWithDefaults`, `getInstanceID` (cached singleton using `INSTANCE_ID` → `POD_NAME` → `HOSTNAME` → SHA256 hash of now+pid), `sanitizeForFilename`, `parseS3Path`
+- [`consensus/utils.go`](https://github.com/erpc/erpc/blob/main/consensus/utils.go) — `extractFieldValues`, `parseNumericValue`, `valuesToKey`, `compareValueChains` for `preferHighestValueFor` logic
+- [`erpc/network_executor.go#L183-L188`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L183-L188) — Integration point: routing to `consensus.Run` vs. `retry(hedge(runUpstreamSweep))`
+- [`common/config.go#L1591-L1658`](https://github.com/erpc/erpc/blob/main/common/config.go#L1591-L1658) — `ConsensusPolicyConfig`, `ConsensusRequiredParticipant`, `MisbehaviorsDestinationConfig`, `S3FlushConfig`, `PunishMisbehaviorConfig`
+- [`common/defaults.go#L2389-L2487`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2389-L2487) — `ConsensusPolicyConfig.SetDefaults` and `MisbehaviorsDestinationConfig.SetDefaults`
+- [`consensus/executor_test.go`](https://github.com/erpc/erpc/blob/main/consensus/executor_test.go) — behavior-locking tests incl. context-cancel-after-execution and misbehavior tracking
+
+### Related pages
+
+- [Retry](/config/failsafe/retry) — wraps each consensus participant slot; each retry attempt is a fresh hedge race inside consensus.
+- [Hedge](/config/failsafe/hedge) — also wraps each participant slot; hedges individual upstream attempts within a slot.
+- [Timeout](/config/failsafe/timeout) — bounds the whole consensus race from outside.
+- [Selection & scoring](/config/projects/selection-policies) — decides which upstreams are drawn for participant slots.
+- [Rate limiters](/config/rate-limiters) — caps per-upstream cost from the extra fan-out requests.
+- [Survive provider outages](/use-cases/survive-provider-outages) — the reliability outcome consensus reinforces.
+
+</AISection>

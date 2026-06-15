@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -29,18 +28,16 @@ type ConduitResponse struct {
 	Endpoints []*ConduitNetwork `json:"endpoints"`
 }
 
+// ConduitVendor uses RemoteDataCache for lock-free, async-refresh access
+// to the network list. See remote_cache.go for the request-path safety rule.
 type ConduitVendor struct {
 	common.Vendor
-
-	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64]*ConduitNetwork
-	remoteDataLastFetchedAt map[string]time.Time
+	cache *RemoteDataCache[map[int64]*ConduitNetwork]
 }
 
 func CreateConduitVendor() common.Vendor {
 	return &ConduitVendor{
-		remoteData:              make(map[string]map[int64]*ConduitNetwork),
-		remoteDataLastFetchedAt: make(map[string]time.Time),
+		cache: NewRemoteDataCache[map[int64]*ConduitNetwork]("conduit"),
 	}
 }
 
@@ -68,18 +65,33 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		recheckInterval = DefaultConduitRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, logger, recheckInterval, networksUrl)
-	if err != nil {
-		return false, fmt.Errorf("unable to load remote data: %w", err)
-	}
-
-	networks, ok := v.remoteData[networksUrl]
-	if !ok || networks == nil {
-		return false, nil
+	networks, ok := v.resolveNetworks(logger, networksUrl, recheckInterval)
+	if !ok {
+		// Cold start: surface a retryable error so the bootstrap auto-retry
+		// loop reschedules; the async refresh kicked off above will
+		// populate the cache for the next attempt. NEVER blocks here.
+		return false, ErrRemoteCacheCold
 	}
 
 	network, exists := networks[chainID]
 	return exists && network != nil && network.HttpEndpoint != "", nil
+}
+
+// resolveNetworks does a lock-free Lookup, kicks off an async refresh on
+// staleness, and returns (data, true) on hit or (nil, false) on cold
+// start. Conduit has no built-in fallback map, so cold start surfaces as
+// a retryable error to callers. See remote_cache.go for the safety rule.
+func (v *ConduitVendor) resolveNetworks(logger *zerolog.Logger, networksUrl string, recheckInterval time.Duration) (map[int64]*ConduitNetwork, bool) {
+	networks, fresh := v.cache.Lookup(networksUrl, recheckInterval)
+	if !fresh {
+		v.cache.TriggerAsyncRefresh(logger, networksUrl, func(ctx context.Context) (map[int64]*ConduitNetwork, error) {
+			return v.fetchConduitNetworks(ctx, logger, networksUrl)
+		})
+	}
+	if networks == nil {
+		return nil, false
+	}
+	return networks, true
 }
 
 func (v *ConduitVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -121,13 +133,9 @@ func (v *ConduitVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 		recheckInterval = DefaultConduitRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, networksUrl); err != nil {
-		return nil, fmt.Errorf("unable to load remote data: %w", err)
-	}
-
-	networks, ok := v.remoteData[networksUrl]
-	if !ok || networks == nil {
-		return nil, fmt.Errorf("network data not available")
+	networks, ok := v.resolveNetworks(logger, networksUrl, recheckInterval)
+	if !ok {
+		return nil, ErrRemoteCacheCold
 	}
 
 	network, ok := networks[chainID]
@@ -211,28 +219,6 @@ func (v *ConduitVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	}
 
 	return false
-}
-
-func (v *ConduitVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, networksUrl string) error {
-	v.remoteDataLock.Lock()
-	defer v.remoteDataLock.Unlock()
-
-	if ltm, ok := v.remoteDataLastFetchedAt[networksUrl]; ok && time.Since(ltm) < recheckInterval {
-		return nil
-	}
-
-	newData, err := v.fetchConduitNetworks(ctx, logger, networksUrl)
-	if err != nil {
-		if _, ok := v.remoteData[networksUrl]; ok {
-			logger.Warn().Err(err).Msg("could not refresh Conduit API data; will use stale data")
-			return nil
-		}
-		return err
-	}
-
-	v.remoteData[networksUrl] = newData
-	v.remoteDataLastFetchedAt[networksUrl] = time.Now()
-	return nil
 }
 
 func (v *ConduitVendor) fetchConduitNetworks(ctx context.Context, logger *zerolog.Logger, networksUrl string) (map[int64]*ConduitNetwork, error) {

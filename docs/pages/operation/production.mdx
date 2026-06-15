@@ -1,116 +1,445 @@
 ---
-description: Recommendations for running eRPC in production...
+title: Production checklist
+description: Go live confidently — a short list of settings that separate a hardened eRPC deployment from a dev-mode one.
 ---
 
-import { Callout } from "nextra/components";
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
-# Production guidelines
+<LLMsTxtLink />
 
-Here are some recommendations for running eRPC in production.
+# Production checklist
 
-## Memory usage
+eRPC ships sane defaults, but a handful of settings must be deliberately set before serving real traffic. Miss them and you risk OOM kills on memory-limited pods, dropped connections during rolling restarts, or upstream API keys leaking to callers. Every item below is a one-line change with a disproportionate operational payoff.
 
-Biggest memory usage contributor in eRPC is size of responses of your requests. For example, for common requests such as `eth_getBlockByNumber` or `eth_getTransactionReceipt` the size (&lt;1MB) will be relatively smaller than `debug_traceTransaction` (which could potentially be up to 50MB). When using eRPC in Kubernetes for example your might see occesional `OOMKilled` errors which is most often because of high RPS of large request/responses.
+**What you get:**
+- Zero-dropped-connection rolling restarts
+- GC-safe memory headroom instead of container OOM kills
+- Bounded Prometheus cardinality that won't blow up your TSDB
+- Real client IPs for per-IP rate limits behind load balancers
+- Error responses that don't leak upstream credentials
 
-In majority of use-cases eRPC uses around 256MB of memory (and 1vCPU). To find the ideal memory limit based on your use-case start with a high limit first (e.g. 16GB) and route your production traffic (either shadow or real) to see what is the usage based on your request patterns.
+**Pre-launch checklist:**
 
-For more control you can configure Go's garbage collection with the following env variables (e.g. when facing OOM Killed errors on Kubernetes):
+1. Set `GOMEMLIMIT` to ~90 % of container memory limit
+2. Set `server.waitBeforeShutdown` and `server.waitAfterShutdown` to `30s`
+3. Set `server.includeErrorDetails: false` for external-facing deployments
+4. Configure `server.trustedIPForwarders` + `server.trustedIPHeaders` behind any proxy
+5. Set `metrics.errorLabelMode: compact` (already the default — verify it stays)
+6. Set explicit `evm.chainId` on every network and upstream to avoid startup burst
+7. Ensure `terminationGracePeriodSeconds` ≥ `waitBeforeShutdown` + `waitAfterShutdown` + drain time
 
-```bash
-# This flag controls when GC kicks in, for example when memory is increased by 30% try to run GC:
-export GOGC=30
+## Quick taste
 
-# This flag instructs Go to do a GC when memory goes over the 2GiB limit.
-# IMPORTANT: if this value is too low, it might cause high GC frequency,
-# which in turn might impact the performance without giving much memory benefits.
-export GOMEMLIMIT=2GiB
-```
+Illustrative, not a tuned production config — a typical hardened server block:
 
-## Failsafe policies
+<ConfigTabs
+  path="server"
+  focusYaml="3-4,6-9,11-12,17-18"
+  focusTs="3-4,6-11,16-17"
+  yaml={`server:
+  maxTimeout: 150s
+  # LB drain window — sleep this long on SIGTERM before stopping the HTTP server
+  waitBeforeShutdown: 30s
+  # keep process alive after shutdown so proxies can close open connections
+  waitAfterShutdown: 30s
+  # never expose upstream error details (may contain embedded API credentials)
+  includeErrorDetails: false
+  trustedIPForwarders:
+    - "10.0.0.0/8"
+  # real client IP header from your load balancer, used by IP-based rate limits
+  trustedIPHeaders:
+    - "X-Forwarded-For"
+metrics:
+  enabled: true
+  port: 4001
+  # compact keeps error labels bounded — verbose embeds block numbers / IPs
+  errorLabelMode: compact`}
+  ts={`server: {
+  maxTimeout: "150s",
+  // LB drain window — sleep this long on SIGTERM before stopping the HTTP server
+  waitBeforeShutdown: "30s",
+  // keep process alive after shutdown so proxies can close open connections
+  waitAfterShutdown: "30s",
+  // never expose upstream error details (may contain embedded API credentials)
+  includeErrorDetails: false,
+  trustedIPForwarders: ["10.0.0.0/8"],
+  // real client IP header from your load balancer, used by IP-based rate limits
+  trustedIPHeaders: ["X-Forwarded-For"],
+},
+metrics: {
+  enabled: true,
+  port: 4001,
+  // compact keeps error labels bounded — verbose embeds block numbers / IPs
+  errorLabelMode: "compact",
+}`}
+/>
 
-Make sure to configure [retry policy](/config/failsafe#retry-policy) on both network-level and upstream-level.
+## Agent reference
 
-- Network-level retry configuration is useful to try other upstreams if one has an issue. Even when you only have 1 upstream, network-level retry is still useful. Recommendation is to configure `maxCount` to be equal to the number of upstreams.
-- Upstream-level retry configuration covers intermittent issues with a specific upstream. It is recommended to set at least 2 and at most 5 as `maxCount`.
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-[Timeout policy](/config/failsafe#timeout-policy) depends on the expected response time for your use-case, for example when using "trace" methods on EVM chains, providers might take up to 10 seconds to respond. Therefore a low timeout might ultimately always fail. If you are not using heavy methods such as trace or large getLogs, you can use `3s` as a default timeout.
+<PromptExample
+	n={1}
+	title="harden a fresh deployment before go-live"
+	defaultOpen
+	prompt={`I'm about to put eRPC in front of real traffic on Kubernetes. Walk through every item on the production checklist and apply it to my config at my eRPC config: set GOMEMLIMIT to 90% of my container memory limit, set waitBeforeShutdown and waitAfterShutdown to 30s, set includeErrorDetails to false, configure trustedIPForwarders and trustedIPHeaders for my load balancer, set errorLabelMode to compact, and add explicit evm.chainId on every network. Read the full reference first: https://docs.erpc.cloud/operation/production.llms.txt`}
+/>
 
-[Hedge policy](/config/failsafe#hedge-policy) is **highly-recommended** if you prefer "fast response as soon as possible". For example setting `500ms` as "delay" will make sure if upstream A did not respond under 500 milliseconds, simultaneously another request to upstream B will be fired, and eRPC will respond back as soon as any of them comes back with result faster. Note: since more requests are sent, it might incur higher costs to achieve the "fast response" goal.
+<PromptExample
+	n={2}
+	title="audit an existing config for production gaps"
+	prompt={`Audit my eRPC config at my eRPC config against the production hardening checklist. For each item — GOMEMLIMIT, shutdown drain waits, error detail leakage, trusted-IP forwarding, Prometheus cardinality, explicit chainId — tell me whether it's correctly set, what the current value is, and what to change if anything is wrong. Reference: https://docs.erpc.cloud/operation/production.llms.txt`}
+/>
 
-## Caching database
+<PromptExample
+	n={3}
+	title="fix dropped connections during rolling restarts"
+	prompt={`My eRPC pods drop in-flight requests during Kubernetes rolling restarts. Walk me through configuring the graceful drain correctly: waitBeforeShutdown, waitAfterShutdown, and terminationGracePeriodSeconds so no requests are cut mid-flight. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/operation/production.llms.txt`}
+/>
 
-Storing cached RPC responses requires high storage for read-heavy use-cases such as indexing 100m blocks on Arbitrum. eRPC is designed to be robust towards cache database issues, so even if database is completely down it will not impact the RPC availability.
+<PromptExample
+	n={4}
+	title="reduce Prometheus cardinality explosion"
+	prompt={`My eRPC metrics are generating too many Prometheus series and threatening our TSDB. Configure histogramDropLabels to drop user and agent_name globally, but use histogramLabelOverrides to keep per-user latency on the network histogram only. Also confirm errorLabelMode is compact. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/operation/production.llms.txt`}
+/>
 
-As described in [Database](/config/database) section depending on your requirements choose the right type. You can start with Redis which is easiest to setup, and if amount of cached data is larger than available memory you can switch to PostgreSQL.
+<PromptExample
+	n={5}
+	title="add dynamic response headers for multi-region routing"
+	prompt={`I run eRPC in multiple regions and want each response to carry X-ERPC-Region and X-ERPC-Machine headers so callers can see which region served them. Add server.responseHeaders using the REGION and MACHINE_ID env vars, and configure trustedIPHeaders for my platform.s client-IP header. Work with my existing eRPC config. Reference: https://docs.erpc.cloud/operation/production.llms.txt`}
+/>
 
-Using [eRPC cloud](/deployment/cloud) solution will be most cost-efficient in terms of caching storage costs, as we'll be able to break the costs over many projects.
+<AISection title="Production checklist — full agent reference">
 
-## Horizontal scaling
+### How it works
 
-When running multiple eRPC instances (e.g., in a Kubernetes deployment with multiple replicas), it's recommended to enable shared state with Redis to ensure proper synchronization between instances.
+**GOMEMLIMIT and GC tuning.** eRPC's Kubernetes and Docker manifests ship without `GOMEMLIMIT`. With Go's default GC (`GOGC=100`) and a 3 Gi container limit, the heap can approach the hard limit before a GC cycle fires — the OS OOM killer then terminates the container before Go can reclaim memory. Set `GOMEMLIMIT` to 90 % of the container memory limit (e.g. `2700MiB` for a `3Gi` pod) so Go triggers a soft GC pass instead. Pair it with `GOGC=30` to reduce heap swing below the ceiling; values below 10 cause GC thrash. Source: <SourceLink file="kube/erpc.yml" lines="33-36" />
 
-The [shared state feature](/config/database/shared-state) allows your eRPC instances to share critical blockchain information such as latest and finalized block numbers, which reduces redundant upstream requests and improves integrity checks.
+**Server timeouts.** Three fields govern the full request lifecycle: `server.maxTimeout` (default `150s`) is a custom `TimeoutHandler` wrapping the entire HTTP handler chain — it is mandatory and validation rejects `0`. `server.readTimeout` (default `30s`) covers header and body read; `server.writeTimeout` (default `120s`) covers response write. These are Go `http.Server` fields. A `maxTimeout` hit returns JSON-RPC `-32603` with HTTP 200 for POST requests. Integer YAML values are interpreted as **milliseconds** — `maxTimeout: 150` means 150 ms, not 150 s; always use the string form.
 
-<Callout type="info">
-  Even if Redis becomes temporarily unavailable, eRPC will continue serving requests by falling back to local state tracking. This might cause a slight increase in upstream requests as each instance will need to poll for latest/finalized blocks independently, but the impact is minimal and service availability is maintained.
-</Callout>
+**Graceful drain (healthcheck probes).** On SIGTERM the shutdown sequence is: (1) `draining` flag flips immediately — healthcheck returns HTTP 503; (2) process sleeps `server.waitBeforeShutdown` (default `10s`) to let load-balancer drain the endpoint; (3) `http.Server.Shutdown` starts with a hardcoded 30 s budget; (4) after `appCtx` is done, `Init` sleeps `server.waitAfterShutdown` (default `10s`) before process exit. For Kubernetes with Cilium/Envoy, set both waits to `30s`. `terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + expected drain time` or the process receives SIGKILL mid-drain. Sources: <SourceLink file="erpc/http_server.go" lines="78-83" />, <SourceLink file="erpc/http_server.go" lines="209-221" />, <SourceLink file="erpc/init.go" lines="172-177" />
 
-The shared state feature requires minimal storage (less than 1MB per upstream) while significantly improving coordination between instances. For high-traffic deployments with multiple replicas, this pattern is strongly recommended.
+**Trusted-IP forwarding.** When eRPC runs behind a load-balancer, `server.trustedIPForwarders` defaults to loopback only (`["127.0.0.1/8", "::1/128"]`). IP-based rate limits and `network` auth strategies apply to the proxy IP unless you add the LB CIDR to the forwarders list and name the forwarding header in `server.trustedIPHeaders`. The resolver walks headers in preference order, strips trailing trusted proxies from the XFF list right-to-left, and picks the nearest untrusted hop.
 
-## Explicitly configure Chain ID
+**Error details in responses.** `server.includeErrorDetails` defaults to `true`. Upstream error messages frequently contain endpoint URLs with embedded API keys. Set to `false` before exposing eRPC to external callers. Errors are still logged internally at full verbosity regardless of this setting.
 
-Even though eRPC can automatically detect the chain ID, it's recommended to explicitly configure the chain ID in the project configuration. This ensures faster startup time and more resilient rollouts.
+**Prometheus metrics and alerting.** The metrics server starts on port `4001` (all interfaces). `metrics.errorLabelMode: compact` (the default) produces short stable error codes — `verbose` mode embeds full messages including block numbers or IP addresses, creating unbounded Prometheus cardinality. Six alert rules ship in `monitoring/prometheus/alert.rules`; two reference stale metric names (`erpc_upstream_request_self_rate_limited_total`, `erpc_network_request_self_rate_limited_total`) — use `erpc_rate_limits_total` instead. The monitoring container (Prometheus + Grafana combined) runs both processes under `tail -f /dev/null`; not suitable for production — run them as separate services.
 
-There are mainly 2 places to configure the chain ID:
+**Chain ID explicit configuration.** Without explicit `evm.chainId` in network and upstream config, eRPC calls `eth_chainId` on every upstream at startup. With many replicas and upstreams this produces a startup request burst. Set `evm.chainId` explicitly to eliminate it.
 
-* `networks.*.evm.chainId` under [Networks](/config/projects/networks) section
-* `upstreams.*.evm.chainId` under [Upstreams](/config/projects/upstreams) section
+**Config file discovery.** At startup eRPC searches for a config file in this order: `--config <path>` CLI flag → first positional argument → first match among `./erpc.yaml`, `./erpc.yml`, `./erpc.ts`, `./erpc.js`, `/erpc.yaml`, `/erpc.yml`, `/erpc.ts`, `/erpc.js`, `/root/erpc.yaml`, `/root/erpc.yml`, `/root/erpc.ts`, `/root/erpc.js`. If `--require-config` is set (or an explicit path was given) and no file is found, startup fails. Source: [`cmd/erpc/main.go:L279-L294`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L294)
 
-## Healthcheck
+**CLI subcommands.** Three subcommands are available: `erpc [config]` / `erpc start` starts the server; `erpc validate [--format json|md]` parses config, runs `erpc.GenerateValidationReport`, and exits non-zero on errors — useful for CI gates before a production deploy; `erpc dump [--format yaml|json]` parses config, resolves effective selection policies, and writes the merged config to stdout. Source: [`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go)
 
-For a zero-downtime smooth rollout, configure [Healthcheck](/operation/healthcheck) in your orchestration platform (e.g. kubernetes).
+**Runtime log environment variables.** Two env vars control logging at runtime without touching the config file: `LOG_LEVEL` overrides `cfg.LogLevel` and is parsed as a zerolog level (`trace`, `debug`, `info`, `warn`, `error`); `LOG_WRITER=console` switches to a human-readable zerolog console writer with `04:05.000ms` time format (useful in local dev or when piping to a log aggregator that cannot parse JSON). Source: [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363)
 
-#### Example: Cilium/Envoy and zero-downtime deployments
+### Config schema
 
-When using Cilium with Envoy (either Ingress or Gateway-API) we observed that keeping
-`waitBeforeShutdown` and `waitAfterShutdown` **both** at 30s (together with a readiness
-probe that fails in ≤ 10 s) eliminates `connection reset / refused` errors during
-rolling updates:
+Fields relevant to production hardening. All under `server.` or `metrics.` unless noted.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `server.maxTimeout` | `*Duration` | `150s` — <SourceLink file="common/defaults.go" lines="694-697" /> | Global per-request deadline. **Required non-zero** — validation rejects `0` with `"server.maxTimeout is required"`. On timeout returns JSON-RPC `-32603` with HTTP 200 (POST) or 504 (non-POST). Integer YAML values are milliseconds. |
+| `server.readTimeout` | `*Duration` | `30s` — <SourceLink file="common/defaults.go" lines="698-701" /> | `http.Server.ReadTimeout`. Covers reading headers + body. |
+| `server.writeTimeout` | `*Duration` | `120s` — <SourceLink file="common/defaults.go" lines="702-705" /> | `http.Server.WriteTimeout`. Covers writing the response. |
+| `server.waitBeforeShutdown` | `*Duration` | `10s` — <SourceLink file="common/defaults.go" lines="709-712" /> | Sleep between SIGTERM and starting `http.Server.Shutdown`. Healthcheck returns 503 immediately on SIGTERM; this window lets the LB drain the endpoint. |
+| `server.waitAfterShutdown` | `*Duration` | `10s` — <SourceLink file="common/defaults.go" lines="713-716" /> | Sleep in `Init` after shutdown, before `os.Exit`. Keeps the process alive for proxy to close open connections. |
+| `server.includeErrorDetails` | `*bool` | `true` — <SourceLink file="common/defaults.go" lines="717-719" /> | When `true`, error responses include `error.data` with the full upstream error. **Footgun:** upstream errors often embed API key fragments. Set `false` for external-facing deployments. |
+| `server.trustedIPForwarders` | `[]string` | `["127.0.0.1/8", "::1/128"]` — <SourceLink file="common/defaults.go" lines="725-729" /> | CIDR ranges of trusted proxies. Only headers from these peers are parsed for the real client IP. |
+| `server.trustedIPHeaders` | `[]string` | `[]` — <SourceLink file="common/defaults.go" lines="730-733" /> | Ordered header names (e.g. `X-Forwarded-For`, `CF-Connecting-IP`) read XFF-style for real client IP. |
+| `server.responseHeaders` | `map[string]string` | `nil` | Static headers on every response. Values are `os.ExpandEnv`-expanded once at startup. Headers with empty-after-expansion values are **silently dropped** — no warning. |
+| `server.executionHeaders` | `*ExecutionHeadersMode` | `"all"` — <SourceLink file="common/defaults.go" lines="720-723" /> | `"all"` = full `X-ERPC-*` diagnostic headers; `"summary"` = counters + metadata only; `"off"` = no diagnostic headers. |
+| `metrics.enabled` | `*bool` | `true` (production); `nil` under `go test` — <SourceLink file="common/defaults.go" lines="750-752" /> | Whether the `/metrics` HTTP server starts. |
+| `metrics.port` | `*int` | `4001` — <SourceLink file="common/defaults.go" lines="759-761" /> | Metrics server port. Always binds `0.0.0.0:<port>` regardless of `metrics.hostV4`. |
+| `metrics.errorLabelMode` | `string` | `"compact"` — <SourceLink file="common/defaults.go" lines="762-763" /> | `"compact"` = short stable error codes (bounded cardinality). `"verbose"` = full messages including block numbers / IPs (unbounded cardinality risk). |
+| `metrics.histogramDropLabels` | `[]string` | `nil` | Labels dropped from all `LabeledHistogram` instances. Counters unaffected. |
+| `GOMEMLIMIT` (env) | string | not set in any manifest — <SourceLink file="kube/erpc.yml" lines="33-36" /> | Set to ~90% of container memory limit. Without it, Go GC may allow heap to approach the hard limit before triggering, causing OOM kill. |
+| `LOG_LEVEL` (env) | string | value of `cfg.LogLevel` | Overrides the config file's `logLevel`. Parsed as a zerolog level: `trace`, `debug`, `info`, `warn`, `error`. Useful for elevating verbosity on a running pod without a config change. Source: [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363) |
+| `LOG_WRITER` (env) | string | `""` (JSON lines) | Set to `"console"` for human-readable output with `04:05.000ms` time format. Default is structured JSON. Source: [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) |
+
+**Hardcoded constants (not configurable):**
+- `http.Server.IdleTimeout` = 300 s — <SourceLink file="erpc/http_server.go" lines="185" />
+- `MaxHeaderBytes` = 1 MiB — <SourceLink file="erpc/http_server.go" lines="186" />
+- Graceful shutdown budget = 30 s — <SourceLink file="erpc/http_server.go" lines="1642" />
+- Metrics shutdown budget = 5 s — <SourceLink file="erpc/init.go" lines="162-168" />
+- Metrics server binds `0.0.0.0:<port>` — `hostV4`/`hostV6` config fields are defined but unused — <SourceLink file="erpc/init.go" lines="149" />
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. Kubernetes deployment — full hardened server block.** A customer-facing multi-region edge deployment behind a load balancer. Both drain waits at 30s match a typical LB drain window; `terminationGracePeriodSeconds: 90` in the pod spec leaves buffer. The `responseHeaders` block injects per-machine routing metadata without any per-request overhead:
 
 ```yaml
-server:
-  waitBeforeShutdown: 30s # pod is in draining mode
-  waitAfterShutdown:  30s # process stays alive until Envoy finishes
+# Pod environment — set alongside your eRPC container spec.
+# GOMEMLIMIT omitted from all bundled kube manifests; add it yourself.
+env:
+  - name: GOMEMLIMIT
+    # 90% of the container memory limit (3Gi pod → 2700MiB).
+    # Without this Go GC allows the heap to reach the hard limit before
+    # triggering a collection, causing OOM kills instead of soft GC passes.
+    value: "2700MiB"
+  - name: GOGC
+    # Reduce heap swing below GOMEMLIMIT ceiling; values < 10 cause GC thrash.
+    value: "30"
+resources:
+  limits:
+    memory: "3Gi"
+  requests:
+    memory: "1Gi"
 ```
 
-Shorter values let Envoy reuse a connection after the listener is gone or try to reach
-a pod that has already exited. Use these numbers as a safe starting point and adjust
-to match your own probe intervals.
-
-## Custom response headers
-
-You can add custom headers to all HTTP responses using `server.responseHeaders`. This is useful for exposing instance metadata (region, machine ID, pod name) directly in responses for debugging.
-
-Values support environment variable expansion using `${VAR}` syntax. Headers with empty values (after expansion) are automatically omitted.
-
-```yaml
-server:
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  maxTimeout: 150s
+  # LB drain window — most load balancers and k8s ingresses need 20-30s to drain an endpoint.
+  waitBeforeShutdown: 30s
+  # Keep the process alive after shutdown so proxies can close open connections.
+  waitAfterShutdown: 30s
+  # CRITICAL for external-facing deployments — upstream errors routinely embed API keys.
+  includeErrorDetails: false
+  # RFC-1918 covers most private meshes and cloud VPCs; tighten if your LB
+  # uses a narrower range.
+  trustedIPForwarders:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+  # some platforms inject the real client IP in their own header (e.g. Fly-Client-IP, CF-Connecting-IP); prefer it over X-Forwarded-For
+  # which can be spoofed by the caller.
+  trustedIPHeaders:
+    - "CF-Connecting-IP"
+  # Env vars are expanded once at startup; if REGION is unset the header is silently
+  # dropped — no warning. Confirm both vars are present in your machine environment.
   responseHeaders:
-    X-ERPC-Region: ${FLY_REGION}         # Fly.io region
-    X-ERPC-Machine: ${FLY_MACHINE_ID}    # Fly.io machine ID
-    # Or for Kubernetes:
-    # X-ERPC-Pod: ${HOSTNAME}
-```
+    X-ERPC-Region: \${REGION}
+    X-ERPC-Machine: \${MACHINE_ID}
+metrics:
+  enabled: true
+  port: 4001
+  # compact is the default; confirm it explicitly so a future config merge can't flip it.
+  errorLabelMode: compact
+  # Drop user + agent_name from all histograms to keep Prometheus series bounded.
+  # erpc_upstream_request_duration_seconds × user × agent_name = O(users × upstreams)
+  # which blows up TSDB at multi-tenant scale. Re-add selectively below.
+  histogramDropLabels:
+    - user
+    - composite
+  # Re-add user only on the network histogram where per-user latency analysis matters.
+  histogramLabelOverrides:
+    network_request_duration_seconds:
+      - user`}
+  ts={`server: {
+  maxTimeout: "150s",
+  // LB drain window — most load balancers and k8s ingresses need 20-30s to drain an endpoint.
+  waitBeforeShutdown: "30s",
+  // Keep the process alive after shutdown so proxies can close open connections.
+  waitAfterShutdown: "30s",
+  // CRITICAL for external-facing deployments — upstream errors routinely embed API keys.
+  includeErrorDetails: false,
+  // RFC-1918 covers most private meshes and cloud VPCs; tighten if your LB
+  // uses a narrower range.
+  trustedIPForwarders: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+  // some platforms inject the real client IP in their own header (e.g. Fly-Client-IP, CF-Connecting-IP); prefer it over X-Forwarded-For
+  // which can be spoofed by the caller.
+  trustedIPHeaders: ["CF-Connecting-IP"],
+  // Env vars are expanded once at startup; if REGION is unset the header is silently
+  // dropped — no warning. Confirm both vars are present in your machine environment.
+  responseHeaders: {
+    "X-ERPC-Region": "\${REGION}",
+    "X-ERPC-Machine": "\${MACHINE_ID}",
+  },
+},
+metrics: {
+  enabled: true,
+  port: 4001,
+  // compact is the default; confirm it explicitly so a future config merge can't flip it.
+  errorLabelMode: "compact",
+  // Drop user + agent_name from all histograms to keep Prometheus series bounded.
+  histogramDropLabels: ["user", "composite"],
+  // Re-add user only on the network histogram where per-user latency analysis matters.
+  histogramLabelOverrides: {
+    "network_request_duration_seconds": ["user"],
+  },
+}`}
+/>
 
-This allows quick identification of which instance handled a request without checking traces:
+**2. Internal indexing deployment (no public exposure).** An internal indexing fleet on Kubernetes with gRPC enabled for cache connectors. `includeErrorDetails` is omitted (left at default `true`) because callers are internal services that need the full upstream error for debugging. `logLevel: error` cuts log volume drastically for high-QPS indexers where `warn` produces too much noise:
 
-```
-HTTP/1.1 200 OK
-X-ERPC-Version: main
-X-ERPC-Region: sin
-X-ERPC-Machine: 4d891234ab
-```
+<ConfigTabs
+  path="server"
+  yaml={`logLevel: error
+server:
+  # Same 30s drain waits as edge — service-mesh networking also needs the full window.
+  waitBeforeShutdown: 30s
+  waitAfterShutdown: 30s
+  # gRPC enabled for cache connectors; shares port 4000 with HTTP by default.
+  # If you separate the ports add an explicit Docker -p flag — only 4000/4001/6060 are EXPOSED.
+  grpcEnabled: true
+metrics:
+  enabled: true
+  port: 4001
+  errorLabelMode: compact
+  # Fine-grained histogram buckets tuned for fast internal RPC (10ms–30s range).
+  # Default buckets miss the 10–100ms region where most indexer calls land.
+  histogramBuckets: "0.010,0.030,0.050,0.100,0.250,0.500,1,3,5,10,30"`}
+  ts={`logLevel: "error",
+server: {
+  // Same 30s drain waits as edge — service-mesh networking also needs the full window.
+  waitBeforeShutdown: "30s",
+  waitAfterShutdown: "30s",
+  // gRPC enabled for cache connectors; shares port 4000 with HTTP by default.
+  // If you separate the ports add an explicit Docker -p flag — only 4000/4001/6060 are EXPOSED.
+  grpcEnabled: true,
+},
+metrics: {
+  enabled: true,
+  port: 4001,
+  errorLabelMode: "compact",
+  // Fine-grained histogram buckets tuned for fast internal RPC (10ms–30s range).
+  histogramBuckets: "0.010,0.030,0.050,0.100,0.250,0.500,1,3,5,10,30",
+}`}
+/>
 
-<Callout type="info">
-  For deeper debugging, combine this with [custom trace attributes](/operation/tracing#custom-resource-attributes) to get full observability in your tracing backend.
-</Callout>
+**3. Docker Compose / local staging — minimal hardening.** Smaller memory budget; drain waits shortened to 5s because no Kubernetes LB lifecycle is involved. `includeErrorDetails: false` should still be set even in staging so configs don't accidentally mirror prod with it enabled:
+
+<ConfigTabs
+  path="server"
+  yaml={`server:
+  maxTimeout: 60s
+  waitBeforeShutdown: 5s
+  waitAfterShutdown: 5s
+  includeErrorDetails: false
+metrics:
+  enabled: true
+  port: 4001
+  errorLabelMode: compact`}
+  ts={`server: {
+  maxTimeout: "60s",
+  waitBeforeShutdown: "5s",
+  waitAfterShutdown: "5s",
+  includeErrorDetails: false,
+},
+metrics: {
+  enabled: true,
+  port: 4001,
+  errorLabelMode: "compact",
+}`}
+/>
+
+**4. Multi-tenant high-cardinality deployment with selective label overrides.** When serving many users across many upstreams, `erpc_upstream_request_duration_seconds` with `user` and `agent_name` labels creates O(users × upstreams) Prometheus series. The production pattern drops both globally and re-adds `user` only on the network-level histogram where per-user latency SLO reporting is needed:
+
+<ConfigTabs
+  path="metrics"
+  yaml={`metrics:
+  errorLabelMode: compact
+  # Drop high-cardinality labels from ALL histograms first.
+  # erpc_upstream_request_duration_seconds × 50 users × 20 upstreams = 1000 series minimum.
+  histogramDropLabels:
+    - user
+    - agent_name
+  # Then selectively restore user on the one histogram that feeds per-user latency dashboards.
+  histogramLabelOverrides:
+    network_request_duration_seconds:
+      - user`}
+  ts={`metrics: {
+  errorLabelMode: "compact",
+  // Drop high-cardinality labels from ALL histograms first.
+  histogramDropLabels: ["user", "agent_name"],
+  // Then selectively restore user on the one histogram that feeds per-user latency dashboards.
+  histogramLabelOverrides: {
+    "network_request_duration_seconds": ["user"],
+  },
+}`}
+/>
+
+### Request/response behavior
+
+- On `SIGTERM`, healthcheck returns HTTP 503 plain-text `"shutting down"` immediately, before any drain wait. [<SourceLink file="erpc/http_server.go" lines="78-83" />]
+- `waitBeforeShutdown` elapses before `http.Server.Shutdown` starts; `waitAfterShutdown` elapses after `appCtx` is done, before `os.Exit`. [<SourceLink file="erpc/http_server.go" lines="209-221" />, <SourceLink file="erpc/init.go" lines="172-177" />]
+- A `maxTimeout` hit returns JSON-RPC `-32603` `"http request handling timeout"` with HTTP 200 for POST, 504 for non-POST — not a Go deadline cancellation. [<SourceLink file="erpc/http_timeout.go" lines="107-122" />]
+- `server.responseHeaders` env expansion runs once at `NewHttpServer` construction time, not per-request. Empty-after-expansion values are silently dropped. [<SourceLink file="erpc/http_server.go" lines="135-148" />]
+- The metrics server binds `0.0.0.0:<port>` — `metrics.hostV4` / `hostV6` are defined but unused. Restrict scrape access via firewall or network policy. [<SourceLink file="erpc/init.go" lines="149" />]
+- `metrics.errorLabelMode: compact` is applied at `erpc.Init`; any series created before `Init` carry `verbose` labels until they expire. [<SourceLink file="erpc/init.go" lines="138-140" />]
+- Idle-series sweep evicts stale `upstream_request_duration_seconds` and `rate_limits_total` Prometheus series every ~5 minutes with a 30-minute idle window. [<SourceLink file="health/tracker.go" lines="557-563" />, <SourceLink file="health/tracker.go" lines="598-631" />]
+
+### Best practices
+
+- Set `GOMEMLIMIT` to 90 % of your container memory limit. The bundled kube/erpc.yml omits it entirely — Go's default GC will let the heap grow to the container ceiling, causing OOM kills rather than soft GC passes.
+- Both `waitBeforeShutdown` and `waitAfterShutdown` default to `10s` — raise both to `30s` for Kubernetes + Envoy/Cilium environments where LB drain windows are typically 20–30 s.
+- `terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + expected drain time`. With both waits at 30 s, use `terminationGracePeriodSeconds: 90` minimum.
+- Always set `includeErrorDetails: false` before exposing eRPC externally — the default is `true` and upstream error messages routinely contain embedded API keys.
+- Set `evm.chainId` explicitly on every network and upstream to avoid an `eth_chainId` call burst on every pod restart or scale-out event.
+- For high-traffic multi-tenant deployments, add `user` and `agent_name` to `metrics.histogramDropLabels` — `erpc_upstream_request_duration_seconds` with those labels can produce thousands of Prometheus series; use `histogramLabelOverrides` to selectively re-add them on specific histograms where per-user analysis is needed.
+- Alert on `erpc_unexpected_panic_total` at any non-zero rate — recovered panics mean a request goroutine crashed; they are surfaced as `-32603` errors to the caller rather than crashing the process, so they can go undetected without an alert.
+
+### Edge cases & gotchas
+
+1. **`maxTimeout: 0` (or bare `0`) fails validation** — `"server.maxTimeout is required"`. Integer YAML values are milliseconds: `maxTimeout: 150` = 150 ms. Always use string form `"150s"`. Source: <SourceLink file="common/validation.go" lines="90-92" />, <SourceLink file="common/duration.go" lines="8-32" />
+2. **`GOMEMLIMIT` is absent from all bundled manifests.** With a 3 Gi kube limit and default GC, heap can approach the limit before GC fires. Set `GOMEMLIMIT=2700MiB` as a container env var. Source: <SourceLink file="kube/erpc.yml" lines="33-36" />
+3. **`terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + drain time`.** With both set to 30 s, use `terminationGracePeriodSeconds: 90` minimum. Kubernetes SIGKILL fires when this expires, cutting in-flight requests.
+4. **`metrics.hostV4: 127.0.0.1` does not restrict the metrics port.** The bind address is always `0.0.0.0:<port>`. Restrict via firewall, network policy, or run the metrics server inside a VPC. Source: <SourceLink file="erpc/init.go" lines="149" />
+5. **`server.responseHeaders` with an env var that is unset at startup silently omits the header.** No warning is emitted. If `X-ERPC-Region: ${REGION}` is configured and that env var is absent in a new region, the header disappears with no observable error. Source: <SourceLink file="erpc/http_server.go" lines="135-148" />
+6. **`metrics.errorLabelMode: verbose` can create unbounded Prometheus cardinality.** Full error messages include block numbers and IP addresses. Existing `compact` series and new `verbose` series co-exist until the verbose ones expire. Source: <SourceLink file="common/errors.go" lines="17-66" />
+7. **The monitoring container (Prometheus + Grafana combined) is not production-suitable.** It runs both processes under `tail -f /dev/null`; if either crashes neither restarts. Use separate Prometheus and Grafana deployments in production. Source: `monitoring/Dockerfile`
+8. **Alert rules reference stale metric names.** `HighRateLimiting` and `NetworkRateLimiting` use `erpc_upstream_request_self_rate_limited_total` / `erpc_network_request_self_rate_limited_total`. The current metric is `erpc_rate_limits_total`. Source: `monitoring/prometheus/alert.rules`
+9. **`kube/postgres.yml` pins `postgres:latest`.** No digest. Pin a specific PostgreSQL version before deploying the bundled manifest. Source: `kube/postgres.yml`
+10. **`docker compose down` (without `--volumes`) preserves monitoring data; `make down` passes `--volumes` and destroys `prometheus_data` and `grafana_data`.** Source: <SourceLink file="Makefile" lines="114" />
+11. **`trustedIPHeaders: []` (the default) means all requests appear to originate from the load-balancer IP.** IP-based rate limits and `network` auth strategies become effectively global rather than per-client. Source: <SourceLink file="common/defaults.go" lines="730-733" />
+12. **`includeErrorDetails: true` in production exposes upstream endpoint URLs and potentially embedded API keys** in JSON-RPC `error.data`. Source: <SourceLink file="erpc/http_server.go" lines="1424-1433" />
+13. **gRPC traffic on the shared port bypasses `maxTimeout` and the gzip handler.** By default `server.grpcPortV4 = server.httpPortV4 = 4000`. When `grpcEnabled: true`, gRPC and HTTP share port 4000 via in-handler mux. If you separate the ports (e.g. gRPC on 4002), add the explicit Docker `-p 4002:4002` flag — only ports 4000, 4001, and 6060 are `EXPOSE`d in the Dockerfile. Source: <SourceLink file="erpc/http_server.go" lines="158-177" />, <SourceLink file="Dockerfile" lines="84" />
+14. **The distroless/nonroot image has no shell, no package manager, and no debug tools.** The final container runs as a nonroot user with the minimal distroless base. Exec-ing into the container, mounting files dynamically, or attaching profilers requires a privileged sidecar. The default `CMD` is `/erpc-server`, not a shell wrapper. Source: `Dockerfile`
+15. **TypeScript config files (`erpc.ts`) require Node.js, which is NOT in the distroless image.** The compiled TypeScript SDK and `node_modules` are present, and eRPC invokes a bundled Node execution path for `.ts` config loading. If `node_modules` is stripped from a custom image layer, TypeScript config loading fails silently and the process may not find a valid config file.
+16. **`erpc-server-pprof` is present in every image but is never the default CMD.** The pprof binary is always built into the image at `/erpc-server-pprof` but the default `CMD` is `/erpc-server`. Operators must override the container command to use pprof — it is not activated by any env var or config flag. Source: `Dockerfile:L84`, `Makefile` (`run-pprof` target)
+17. **The `prometheus.yaml` at the repo root is NOT the monitoring container's config.** It is the production Prometheus Operator config (with `remote_write` to Mimir, in-cluster job discovery). The monitoring container at `monitoring/prometheus/prometheus.yml` is a separate file with different scrape targets. Loading the wrong one into the monitoring container will produce empty or incorrect dashboards. Source: `prometheus.yaml`, `monitoring/prometheus/prometheus.yml`
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity | upstream attempt errored; used by `HighErrorRate` alert |
+| `erpc_upstream_request_duration_seconds` | LabeledHistogram | project, vendor, network, upstream, category | upstream attempt duration |
+| `erpc_upstream_request_duration_seconds_budget` | LabeledHistogram | project, vendor, network, upstream, category | upstream attempt duration (budget variant); used by `SlowRequests` alert (p95 `histogram_quantile`) |
+| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category | each upstream attempt; used by `HighRequestRate` / `LowRequestRate` alerts |
+| `erpc_rate_limits_total` | counter | project, network, vendor, upstream, category, budget, scope, origin | rate-limit event (local or remote upstream 429); replaces stale `self_rate_limited_total` alert metrics |
+| `erpc_unexpected_panic_total` | counter | scope, extra, error | recovered panic by location; alert on any non-zero rate |
+| `erpc_upstream_cordoned` | gauge | project, vendor, network, upstream, category, reason | 1 when upstream is cordoned; 0 on uncordon |
+
+**Bundled alert rules** (`monitoring/prometheus/alert.rules`):
+
+| Alert | Condition | Severity |
+|---|---|---|
+| `HighErrorRate` | upstream error rate &gt; 5% for 5 min | warning |
+| `SlowRequests` | upstream p95 latency &gt; 1 s for 5 min | warning |
+| `HighRateLimiting` | upstream self-rate-limited &gt; 10% for 5 min (stale metric — use `erpc_rate_limits_total`) | warning |
+| `NetworkRateLimiting` | network self-rate-limited &gt; 10 req/s for 5 min (stale metric) | warning |
+| `HighRequestRate` | upstream request rate &gt; 1000 req/s for 5 min | warning |
+| `LowRequestRate` | upstream request rate &lt; 1 req/s for 15 min | warning |
+
+### Source code entry points
+
+- [`erpc/http_server.go:L78-L83`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L78-L83) — drain flag set on SIGTERM; healthcheck returns 503
+- [`erpc/http_server.go:L209-L221`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L209-L221) — `waitBeforeShutdown` sleep + `Shutdown` call with 30 s budget
+- [`erpc/init.go:L172-L177`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L172-L177) — `waitAfterShutdown` sleep before process exit
+- [`erpc/http_timeout.go:L36-L143`](https://github.com/erpc/erpc/blob/main/erpc/http_timeout.go#L36-L143) — custom `TimeoutHandler` (timeout/cancel bodies, buffered response, panic propagation)
+- [`erpc/init.go:L137-L170`](https://github.com/erpc/erpc/blob/main/erpc/init.go#L137-L170) — metrics HTTP server construction; `promhttp.Handler()` on `:%d`; 5 s shutdown
+- [`common/defaults.go:L694-L733`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L694-L733) — `ServerConfig.SetDefaults`: maxTimeout, readTimeout, writeTimeout, waitBeforeShutdown, waitAfterShutdown, includeErrorDetails, executionHeaders, trustedIPForwarders, trustedIPHeaders
+- [`common/defaults.go:L749-L767`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L749-L767) — `MetricsConfig.SetDefaults`: enabled, port, errorLabelMode
+- [`kube/erpc.yml:L33-L36`](https://github.com/erpc/erpc/blob/main/kube/erpc.yml#L33-L36) — reference kube resource spec (3 Gi / 2 CPU; no GOMEMLIMIT)
+- [`monitoring/prometheus/alert.rules`](https://github.com/erpc/erpc/blob/main/monitoring/prometheus/alert.rules) — 6 bundled alerting rules
+- [`cmd/erpc/main.go:L279-L294`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L279-L294) — config file discovery: 12-path ordered search
+- [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363) — `LOG_LEVEL` env var override
+- [`cmd/erpc/main.go:L53-L57`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L53-L57) — `LOG_WRITER=console` zerolog console writer
+- [`cmd/erpc/main.go`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go) — `validate` and `dump` CLI subcommands
+
+### Related pages
+
+- [Deployment](/deployment) — Docker, Kubernetes, and Compose setup instructions.
+- [Rate limiters](/config/rate-limiters) — per-IP and per-user budget configuration that depends on correct `trustedIPHeaders`.
+- [Auth](/config/auth) — the `network` auth strategy uses the resolved client IP.
+- [Observability](/operation/monitoring) — full metrics and alerting reference.
+- [Fail-safe: timeout](/config/failsafe/timeout) — per-request upstream deadline distinct from `server.maxTimeout`.
+
+</AISection>

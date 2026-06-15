@@ -63,7 +63,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx, logger, "testProject",
 			[]*common.UpstreamConfig{up1},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil,
+			ssr, rlr, vr, pr, nil, mt, nil,
 		)
 		upsReg.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -76,6 +76,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			},
 			rlr, upsReg, mt,
+			nil,
 		)
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -146,7 +147,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			Evm:           &common.EvmUpstreamConfig{ChainId: 123},
 		}
 
-		upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
@@ -157,10 +158,11 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 				Failsafe: []*common.FailsafeConfig{
-					{Timeout: &common.TimeoutPolicyConfig{Duration: common.Duration(250 * time.Millisecond)}},
+					{Timeout: &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(250 * time.Millisecond)}},
 				},
 			},
 			rlr, upr, mt,
+			nil,
 		)
 		require.NoError(t, err)
 		require.NoError(t, ntw.Bootstrap(ctx))
@@ -265,8 +267,6 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			pr,
 			nil,
 			mt,
-			1*time.Second,
-			nil,
 			nil,
 		)
 
@@ -291,7 +291,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 				Failsafe: []*common.FailsafeConfig{
 					{
 						Timeout: &common.TimeoutPolicyConfig{
-							Duration: common.Duration(1 * time.Second), // Timeout to prevent actual infinite loop
+							Duration: common.NewStaticDuration(1 * time.Second), // Timeout to prevent actual infinite loop
 						},
 					},
 				},
@@ -299,6 +299,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			rlr,
 			upsReg,
 			mt,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -446,8 +447,6 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			pr,
 			nil,
 			mt,
-			1*time.Second,
-			nil,
 			nil,
 		)
 
@@ -470,6 +469,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			rlr,
 			upsReg,
 			mt,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -492,5 +492,120 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			// Verify the response came from upstream3
 			assert.Equal(t, "upstream3", resp.Upstream().Id(), "Response should come from upstream3")
 		}
+	})
+}
+
+// TestNetwork_Forward_UseUpstreamTagSelector verifies that the `use-upstream`
+// selector matches on TAGS (not just upstream ids): a request targeting
+// `family:systx` is served only by the systx-tagged upstream, and failover
+// never crosses into the other family. An unmatched tag selector fails fast.
+func TestNetwork_Forward_UseUpstreamTagSelector(t *testing.T) {
+	// build wires a network with two same-chain upstreams in different
+	// families; both CAN serve eth_getBlockByNumber. Caller sets up gock
+	// (poller + any forward mocks) BEFORE calling build so the pollers bind.
+	build := func(ctx context.Context) *Network {
+		logger := &log.Logger
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		rlr, err := upstream.NewRateLimitersRegistry(ctx, &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, logger)
+		require.NoError(t, err)
+
+		mt := health.NewTracker(logger, "testProject", 2*time.Second)
+
+		// Use the hosts that SetupMocksForEvmStatePoller already mocks
+		// (rpc1/rpc2) so both pollers bootstrap; the families differ by tag.
+		systx := &common.UpstreamConfig{
+			Id:       "systx-1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Tags:     []string{"family:systx"},
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+		standard := &common.UpstreamConfig{
+			Id:       "standard-1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc2.localhost",
+			Tags:     []string{"family:standard"},
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+
+		upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{systx, standard}, ssr, rlr, vr, pr, nil, mt, nil)
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+
+		ntw, err := NewNetwork(ctx, logger, "testProject",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			},
+			rlr, upr, mt, nil,
+		)
+		require.NoError(t, err)
+		require.NoError(t, ntw.Bootstrap(ctx))
+		time.Sleep(100 * time.Millisecond)
+		return ntw
+	}
+
+	t.Run("TagSelector_RoutesWithinFamily", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		// Only the systx endpoint (rpc1) is allowed to serve the forward; if
+		// routing leaked to the standard family (rpc2), gock would have no
+		// matching mock for the historical-block call and the forward would
+		// error, and AssertNoPendingMocks would catch the unconsumed systx mock.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0", "id": 1,
+				"result": map[string]interface{}{"number": "0x1234", "hash": "0xabcd", "parentHash": "0xefgh"},
+			})
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw := build(ctx)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+		req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:systx"})
+
+		resp, err := ntw.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		defer resp.Release()
+		assert.Equal(t, "systx-1", resp.Upstream().Id(), "tag selector should route only to the systx family")
+	})
+
+	t.Run("TagSelector_NoMatch_FailsFast", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw := build(ctx)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
+		req.SetDirectives(&common.RequestDirectives{UseUpstream: "family:ghost"})
+
+		start := time.Now()
+		resp, err := ntw.Forward(ctx, req)
+		assert.Error(t, err, "selector matching no upstream should fail, not hang")
+		assert.Nil(t, resp)
+		assert.Less(t, time.Since(start), 2*time.Second)
 	})
 }

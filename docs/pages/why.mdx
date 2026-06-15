@@ -1,53 +1,144 @@
 ---
-description: Main use-cases for eRPC
+title: Why eRPC?
+description: eRPC eliminates provider failures, stale data, and blind spots — one proxy in front of every RPC upstream you run.
 ---
+
+import { LLMsTxtLink, AISection } from "../components";
+
+<LLMsTxtLink />
 
 # Why eRPC?
 
-These are the main reasons eRPC was built:
+Every RPC provider drops requests, returns stale blocks, and silently serves empty results. eRPC sits in front of all of them and fixes that — automatically.
 
-- To **reduce overall costs** of RPC usage and egress traffic, by local caching.
-- To provide a **fault-tolerant** and **reliable source** for RPC consumers in case of one or more provider outages.
-- To give a global **observability** about your RPC usage both within internal teams and projects, and towards the upstream RPC 3rd party companies.
+A request that hits eRPC gets auth-checked, deduplicated if identical calls are already in-flight, served from cache if the data is finalized, and then sent through a failsafe chain that retries, hedges, and falls over to a backup upstream — all before your application sees anything. If a provider has a slow moment, a hedge request races it silently. If it goes dark, retry and failover kick in. A single Prometheus endpoint covers the whole fleet.
 
-# Features
+The result: provider outages stop reaching your users, historical data is never re-fetched, and you finally know which upstream is slow and why.
 
-- [Score](/config/projects/upstreams#priority--selection-mechanism) multiple upstreams by tracking their response time, error rate, blockchain sync status, etc.
-- [Failsafe](/config/failsafe) policies to help with intermittent issues and increase general resiliency (retries, hedging, circuit breakers).
-- Offer self-imposed [rate limitting](/config/rate-limiters) per project, or network, or upstream to avoid abuse, and unintentional DDoS.
-- Prometheus metrics collection and Grafana dashboards to [monitor](/operation/monitoring) costs, usage and health of your RPC endpoints.
-- [Caching](/config/database/evm-json-rpc-cache) and multiplexing (auto-merging identical requests) to reduce redundant RPC calls and costs.
-- [Integrity](/config/failsafe/integrity) module helps increase data quality on certain methods such as eth_getLogs or eth_getBlockByNumber.
+<AISection title="Why eRPC — full agent reference">
 
-# Use-cases
+### How it works
 
-For the start the main focus of eRPC will be on read-heavy use-cases such as:
+The request pipeline runs in a fixed order. An HTTP request arrives at `erpc/http_server.go`, is parsed (batch requests fan out concurrently), and forwarded through `RequestProcessor.ProcessUnary` (`erpc/request_processor.go:35-67`). That function resolves the project, validates the JSON-RPC body, authenticates the consumer, resolves the network, applies `DirectiveDefaults`, and calls `project.Forward`.
 
-### Frontend of dApps
+**Project layer** (`erpc/projects.go`): acquires a project-level rate limit permit, fires `HandleProjectPreForward` (EVM hook for `eth_blockNumber`, `eth_call`, `eth_chainId`, `eth_getLogs`, `trace_filter` — may short-circuit with an early response), then delegates to `network.Forward`.
 
-Often many requests made from dApps can be multiplexed into a single RPC call, or use cache to reduce costs.
+**Network layer** (`erpc/networks.go:931-1603`): in order —
+1. Static response check — matched entries return immediately without touching any upstream.
+2. Multiplexing — identical in-flight requests are deduplicated; followers wait for the leader's result.
+3. Cache read — a non-null hit is returned immediately and closes the multiplexer.
+4. Upstream ordering — the policy engine scores upstreams on latency, error rate, throttling, and block lag, returning them in score order.
+5. EVM pre-forward hook — range splitting for `eth_getLogs`, shortcircuit for `eth_chainId`.
+6. Future-block short-circuit — `eth_getBlockByNumber` requests for blocks beyond all upstream heads return a truthful `null` immediately.
+7. Block-tag normalization — `"latest"` and `"finalized"` are replaced with concrete hex block numbers before the request reaches any upstream.
+8. Failsafe execution — the selected executor runs `timeout(retry(hedge(runUpstreamSweep)))`, or `timeout(consensus(retry(hedge(tryOneUpstream))))` when consensus is enabled.
+9. Async cache write — on a successful non-null response, the result is written to cache in a background goroutine with a 10-second deadline using the application context (not the request context, so client disconnects do not abort the write).
+10. State poller enrichment — for `eth_getBlockByNumber?latest/finalized` and `eth_blockNumber`, the returned block number is fed back to the upstream's `EvmStatePoller`.
 
-Here are real production case studies where eRPC serves 8k RPS and 1B requests / month:
+**Failsafe nesting order** is always fixed regardless of config order:
+```
+timeout
+  └─ [consensus]
+       └─ retry
+            └─ hedge
+                 └─ upstream sweep
+```
+Timeout wraps the entire invocation so a single wall-clock budget governs all retry and hedge attempts. Retry sits outside hedge so a hedge race counts as one retry attempt. Consensus sits outside both because it orchestrates multiple upstream slots, each of which can independently retry and hedge.
 
-- 🚀 [Moonwell: How eRPC slashed RPC calls by 67%](https://erpc.cloud/case-studies/moonwell)
-- 🚀 [Chronicle: How eRPC reduced RPC cost by 45%](https://erpc.cloud/case-studies/chronicle)
+**Upstream sweep loop** (`erpc/networks.go:1226-1407`): iterates upstreams in score order, skipping permanently errored ones and those blocked by `UseUpstream` directive filters. For each candidate, block availability is gated — requests for blocks within 128 blocks of the upstream's latest are retryable; beyond that, the upstream is permanently skipped for this request. Winners set `Attempts/Retries/Hedges` on the response.
 
+**Response ID normalization** rewrites the JSON-RPC `id` field byte-for-byte using `IDRawBytes()` to preserve large 64-bit integers that cannot be round-tripped through `float64`.
 
-### Data indexing using Ponder, Graph, Envio, Flair, etc.
+### Config schema
 
-When using any of the web3 indexing tools you will be making lots of requests towards your RPC provider, especially during re-backfills for historical data.
+The `/why` page is an overview. Each capability has its own config surface:
 
-eRPC can help in two main areas:
+| Config area | Canonical page |
+|---|---|
+| Failsafe (timeout / retry / hedge / consensus) | [/config/failsafe](/config/failsafe) |
+| Caching policies and storage drivers | [/use-cases/cut-costs-and-latency](/use-cases/cut-costs-and-latency) |
+| Upstream selection and scoring | [/config/projects/selection-policies](/config/projects/selection-policies) |
+| EVM block tracking and served tip | [/reference/evm/block-tracking](/reference/evm/block-tracking) |
+| Multiplexing | `networks[].multiplexing.enabled` (bool, default `false`) — [/config/projects/networks](/config/projects/networks) |
+| Rate limiters | [/config/rate-limiters](/config/rate-limiters) |
+| Auth | [/config/auth](/config/auth) |
 
-- Cache already made RPC calls (eth_getLogs, eth_call, eth_getBlockByNumber, etc)
-- Rate-limit upstream pressure towards RPC nodes to avoid fatal error
+### Worked examples
 
-### Resilient load balancer for self-hosted RPC nodes
+**1. Survive a provider outage with automatic failover.** Two upstreams configured; retry with 3 attempts and a hedge after 200ms means a down provider is bypassed within one request cycle, with no client timeout fired:
 
-For app-specific chains and rollups, or projects who prefer to self-host RPC nodes for performance reasons, it makes sense to use eRPC as the entry-point load-balancer.
+See [/use-cases/survive-provider-outages](/use-cases/survive-provider-outages) for a full annotated config.
 
-Compared to more traditional LB solutions (ALB, K8S Services, etc) eRPC will provide EVM-focused features like:
+**2. Eliminate re-fetches for finalized data.** Cache all finalized blocks to Redis so `eth_getBlockByNumber("0x1234567")` only hits an upstream once ever. Block-tag normalization ensures `eth_getBlockByNumber("latest")` is stored under its concrete number, not the `"latest"` tag:
 
-- EVM-aware healthchecks (e.g. how many blocks behind)
-- EVM-aware fallbacks (e.g. if a 4xx is because of missing block, try another upstream)
-- EVM-aware method filters (e.g. certain methods to go to node A and other methods to go to node B)
+See [/use-cases/cut-costs-and-latency](/use-cases/cut-costs-and-latency) for cache policy configuration.
+
+**3. Multi-chain fan-out with per-network failsafe tuning.** Each `networks[]` entry carries its own `failsafe[]` array, so Ethereum mainnet can use aggressive hedging while a cheaper L2 uses a simple retry-only policy — all in a single eRPC instance.
+
+**4. Request deduplication under thundering herd.** When many callers request the same `eth_getLogs` range simultaneously (common in indexer deployments), multiplexing (`networks[].multiplexing.enabled: true`) collapses them into one upstream call. Every caller receives a copy of the result with their own request ID patched in.
+
+### Request/response behavior
+
+- Every response carries `X-ERPC-*` diagnostic headers: `X-ERPC-Attempts`, `X-ERPC-Upstream-Retries`, `X-ERPC-Upstream-Hedges`, `X-ERPC-Cache` (HIT/MISS), `X-ERPC-Upstream` (winning upstream ID), `X-ERPC-Duration`. Source: [`erpc/http_server.go:L1105`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L1105)
+- HTTP status follows JSON-RPC spec: 200 for all JSON-RPC responses (including errors); transport-level failures get appropriate 4xx/5xx codes.
+- Batch requests are dispatched concurrently; all results are re-assembled in order before writing the response.
+- Internal requests (state pollers, chainId probes) set `IsInternal=true` — they bypass retry, hedge, and circuit breaker policies; only per-attempt timeout applies.
+- Request directives (`X-ERPC-Use-Upstream`, `X-ERPC-Skip-Cache-Read`, `X-ERPC-Retry-Empty`, etc.) override network `directiveDefaults` on a per-request basis. See the directive reference in [KB 01](/reference/architecture).
+
+### Best practices
+
+- Start with the [use-cases](/use-cases/) pages — each one maps a concrete operational goal (survive outages, cut costs, low-latency reads) to a minimal working config.
+- Enable multiplexing (`networks[].multiplexing.enabled: true`) for any network that receives burst traffic or shared infrastructure queries; the deduplication is zero-cost when no duplicates arrive.
+- Leave `evm.enforceBlockAvailability` at its default (enabled) — it prevents requests from being sent to upstreams that haven't indexed the requested block yet, turning silent wrong-data scenarios into handled retries.
+- Pair hedging with [rate limiters](/config/rate-limiters) on paid upstreams — each hedge fires a real request; without a budget cap, a spike can trigger overage charges.
+- Use `server.executionHeaders: "summary"` in production to reduce per-response header size while keeping attempt/retry/hedge counters; use `"all"` only for debugging (it emits per-attempt upstream trace strings).
+- The async cache write uses `appCtx`, not the request context — a client disconnect or timeout does NOT abort a cache write in progress. The 10-second limit governs the write itself.
+
+### Edge cases & gotchas
+
+1. **`ApplyDirectiveDefaults` is a no-op if directives are already set.** The HTTP server sets directives before `Network.Forward` calls `ApplyDirectiveDefaults` defensively. A request constructed programmatically (gRPC, internal) without HTTP headers uses the network defaults unchanged. Source: `common/request.go:563-565`
+2. **Multiplexer followers may arrive during leader teardown.** The `LoadOrStore` loop retries — a late follower either joins a new leader slot or becomes the new leader itself. Source: `erpc/networks.go:2017-2025`
+3. **`"safe"` and `"pending"` block tags are NOT interpolated.** eRPC does not track the safe checkpoint or mempool state; these tags pass through to upstreams unchanged. Source: `architecture/evm/json_rpc.go:L76-L82`
+4. **Composite requests skip network-scope retry and hedge.** Range-split `eth_getLogs` sub-requests and query shim sub-requests bypass both policies to prevent exponential sub-request amplification. Source: `erpc/network_executor.go:378-380`, `521-526`
+5. **`ErrNoUpstreamsLeftToSelect` masking on retry.** After the first retry round, consumed upstreams may all be marked, producing a bare `ErrNoUpstreamsLeftToSelect` that loses the root cause. The executor tracks `firstInformativeErr` and surfaces it in the final `ErrFailsafeRetryExceeded`. Source: `erpc/network_executor.go:265-284`
+6. **Cache write panics are recovered.** Panics in the async cache-write goroutine are caught and reported via `erpc_unexpected_panic_total{scope="cache-set"}` — the process does not crash. Source: `erpc/networks.go:1496-1508`
+7. **Future-block short-circuit is per-method.** Only `eth_getBlockByNumber` with a concrete block number triggers the early-null return. Other methods (e.g. `eth_getTransactionReceipt`) go through the normal upstream sweep and rely on block-availability gating per upstream.
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_requests_received_total` | counter | project, network, category, finality, user, agent_name | Request enters `project.Forward` |
+| `erpc_network_successful_request_total` | counter | project, network, vendor, upstream, category, attempt, finality, emptyish, user, agent_name | `project.Forward` returns non-error |
+| `erpc_network_failed_request_total` | counter | project, network, category, attempt, error, severity, finality, user, agent_name | `project.Forward` returns error |
+| `erpc_network_request_duration_seconds` | histogram | project, network, vendor, upstream, category, finality, user | Per-request total duration (success and error) |
+| `erpc_network_multiplexed_requests_total` | counter | project, network, category | Follower piggybacks on in-flight leader |
+| `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | Each network-scope retry attempt |
+| `erpc_network_hedged_request_total` | counter | project, network, upstream, category, hedgeCount, finality, user, agent_name | Hedge attempt fired to a specific upstream |
+| `erpc_network_hedge_winner_total` | counter | project, network, upstream, category, finality | Upstream won a hedge race |
+| `erpc_network_timeout_fired_total` | counter | project, network, category, finality, scope | Network-scope timeout fired |
+| `erpc_network_static_response_served_total` | counter | project, network, category | Static response matched |
+
+Key OTel spans: `Network.Forward`, `Project.Forward`, `PolicyEngine.GetOrdered`, `Network.forwardAttempt`, `Network.UpstreamLoop`, `Network.TryForward`, `Cache.Get`, `Cache.Set`. Source: `erpc/networks.go`, `erpc/projects.go`, `architecture/evm/json_rpc_cache.go`.
+
+### Source code entry points
+
+- [`erpc/request_processor.go`](https://github.com/erpc/erpc/blob/main/erpc/request_processor.go) — unified entry point for unary and gRPC stream requests; wires project, auth, and network resolution
+- [`erpc/network_executor.go:L70-L200`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L70-L200) — failsafe policy orchestration; fixed timeout/consensus/retry/hedge nesting
+- [`erpc/networks.go:L931-L1603`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L931-L1603) — `Network.Forward`: static check, multiplexing, cache read, upstream ordering, block availability gating, failsafe execution, async cache write
+- [`erpc/projects.go`](https://github.com/erpc/erpc/blob/main/erpc/projects.go) — project-level rate limiting, metrics, EVM hook wrappers
+- [`erpc/http_server.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go) — HTTP ingress, batch dispatch, directive enrichment, `X-ERPC-*` response header emission
+- [`architecture/evm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go) — four EVM hook dispatch entry-points (HandleProjectPreForward, HandleNetworkPreForward, HandleNetworkPostForward, HandleUpstreamPostForward)
+- [`common/request.go`](https://github.com/erpc/erpc/blob/main/common/request.go) — directive system, upstream round-robin selection, exec state, finality caching
+
+### Related pages
+
+- [Survive provider outages](/use-cases/survive-provider-outages) — the canonical failover use case
+- [Cut costs and latency](/use-cases/cut-costs-and-latency) — caching and deduplication in practice
+- [Failsafe overview](/config/failsafe) — timeout, retry, hedge, consensus config
+- [Selection policies](/config/projects/selection-policies) — upstream scoring and ordering
+- [Rate limiters](/config/rate-limiters) — budget caps for upstream and project traffic
+- [Auth](/config/auth) — consumer authentication and access control
+- [Networks config](/config/projects/networks) — multiplexing, directiveDefaults, EVM block tracking
+
+</AISection>

@@ -1,156 +1,433 @@
 ---
-description: eRPC batches requests towards upstreams which support it. Also you can send batched requests (an array of multiple requests) to eRPC itself.
+title: Batching & multiplexing
+description: Send one request, get back a merged response — eRPC parallelises inbound batch arrays, re-batches calls to supporting upstreams, and collapses identical in-flight requests so each unique call hits the network exactly once.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
-# Batch requests
+<LLMsTxtLink />
 
-eRPC automatically batches requests towards upstreams which support it. Additionally you can send batched requests (an array of multiple requests) to eRPC itself.
+# Batching & multiplexing
 
-<Callout emoji="👋">
-  Most often json-rpc batching for EVM is [anti-pattern](https://www.quicknode.com/guides/quicknode-products/apis/guide-to-efficient-rpc-requests#avoid-batching-multiple-rpc-requests), as it increases resource consumption without significant benefits:
-  - All requests will be as slow as the slowest request inside the batch.
-  - JSON handling will be more expensive causing memory spikes and OOM errors.
-  - Handling partial failures will be burdensome for the client (status code is always 200 OK).
-  - Many 3rd-party providers (Alchemy, Infura, etc) charge based on number of method calls, not actual requests.
-  - When running eRPC in private network locally close to your services, overhead of many single requests is negligible.
-</Callout>
+Send a JSON array and eRPC fans it out in parallel — one failure never aborts the rest. Upstreams that support batching receive your calls as a single HTTP POST, slashing per-request overhead. And when multiple clients ask for the same data at the same time, eRPC collapses them into one upstream call and hands every caller its own copy.
 
-### How it works?
+**What you get**
+- Inbound `[…]` arrays unpacked into parallel sub-requests, results merged in order
+- Outbound re-batching to compatible upstreams, timer- and size-gated
+- In-flight deduplication: N concurrent identical calls → 1 upstream round-trip
 
-* When an upstream is configured to support batching, eRPC will accumulate as many requests as possible for that upstream, even if you send many single requests.
-* Batching mechanism respects other aspects of eRPC such as allowed/ignored methods, rate limits, supported/unsupported methods, therefore one huge batch request might be split into smaller ones depending on the most efficient distribution among upstreams.
-* Requests will be handled separately (or in mini-batches) and at the end results will be merged back together.
-* Response status code will always be `200 OK` because there might be a mix of successful and failed requests.
-* At the moment self-imposed rate limiters work as-if these requests are sent individually (Ping our engineers if this becomes an issue).
+## Quick taste
 
-<Callout type="info">
-  Even if you send many single requests to eRPC they might be batched together if the upstream supports it. This minimizes the need to actually batch the requests on client-side, unless "network traffic" is a concern.
+Illustrative, not a tuned production config — enable outbound batching on one upstream:
 
-  In this scenario auto-batching mechanism is transparent to you.
-</Callout>
-
-## Upstream config
-
-You can explicitly enable batching for an upstream as follows:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-# ...
-projects:
+<ConfigTabs
+  path="projects[].upstreams[].jsonRpc"
+  focusYaml="7-12"
+  focusTs="7-12"
+  yaml={`projects:
   - id: main
     upstreams:
-      - id: blastapi-chain-42161
-        # ...
-        endpoint: https://arbitrum-one.blastapi.io/xxxxxx
+      - id: alchemy-mainnet
+        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
         jsonRpc:
-          # When enabled eRPC will wait for a specified amount of time to batch as many requests as possible.
+          # enable outbound batching to this upstream
           supportsBatch: true
-          # The maximum amount of time to wait to collect requests for a batch.
-          batchMaxWait: 100ms
-          # The maximum amount of requests in a single batch, which is usually enforced by the provider.
+          # flush once 100 calls have accumulated
           batchMaxSize: 100
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+          # safety valve: flush after 50ms even if batch isn't full
+          batchMaxWait: 50ms`}
+  ts={`projects: [{
+  id: "main",
+  upstreams: [{
+    id: "alchemy-mainnet",
+    endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+    jsonRpc: {
+      // enable outbound batching to this upstream
+      supportsBatch: true,
+      // flush once 100 calls have accumulated
+      batchMaxSize: 100,
+      // safety valve: flush after 50ms even if batch isn't full
+      batchMaxWait: "50ms",
+    },
+  }],
+}]`}
+/>
 
-export default createConfig({
-  projects: [
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="enable outbound batching on an archive upstream"
+	defaultOpen
+	prompt={`I want to reduce HTTP overhead when my indexer fires hundreds of eth_getLogs calls
+per second. Enable outbound batching on my archive upstream in my eRPC config so eRPC
+accumulates calls into a single POST, with a safe size cap and a timer flush for
+low-traffic periods. Read the full reference first:
+https://docs.erpc.cloud/operation/batch.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="audit multiplexer setting across all networks"
+	prompt={`Review my eRPC config and tell me which networks have the multiplexer
+enabled vs disabled. For each network explain whether the current setting is correct
+given the workload (dashboard/polling vs indexer), and how to use networkDefaults to
+apply a single toggle instead of repeating it per network. Reference:
+https://docs.erpc.cloud/operation/batch.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="debug duplicate upstream calls on a hot read"
+	prompt={`My eRPC instance is firing multiple upstream calls for the same eth_blockNumber even
+when many clients poll simultaneously — I expected the multiplexer to collapse them.
+Check my eRPC config to see if multiplexing is accidentally disabled, explain the
+nil-vs-false semantics, and fix it. Reference:
+https://docs.erpc.cloud/operation/batch.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="integrate batching with rate limiter budget"
+	prompt={`My upstream charges per HTTP request. I want outbound batching to accumulate as many
+calls as possible before flushing so I stay within my rate-limit budget. Configure
+the right batchMaxSize, batchMaxWait, and rate limiter in my eRPC config so batches are
+large but callers never time out waiting. Reference:
+https://docs.erpc.cloud/operation/batch.llms.txt`}
+/>
+
+<AISection title="Batching & multiplexing — full agent reference">
+
+### How it works
+
+There are three independent subsystems that compose:
+
+**Inbound batch handling** is unconditional. Detection is a single-byte test: if `body[0] == '['` the HTTP handler treats the body as a JSON-RPC batch. The body is unmarshalled into `[]json.RawMessage`; failure returns HTTP 400 with `ErrJsonRpcRequestUnmarshal`. A `responses []interface{}` slice sized to the request count preserves positional ordering — each sub-request runs in its own goroutine with a deferred `recover()`, so a panic in one slot produces a `-32603` error at that index while all other goroutines continue unaffected. After `wg.Wait()`, if the HTTP context is already cancelled eRPC drops all responses and writes a fatal error; otherwise it writes HTTP 200 and streams the array through `BatchResponseWriter.WriteTo` — the full batch response is never buffered in memory. HTTP status is always 200 for a batch POST regardless of how many sub-requests failed; callers must inspect each array element for `"error"` fields.
+
+**Outbound upstream batching** activates when `upstream.jsonRpc.supportsBatch: true`. The upstream client switches from `sendSingleRequest` to a queue-and-flush loop. Each call creates a `batchRequest` struct with per-request response and error channels, takes `batchMu`, and calls `queueRequest`. A duplicate JSON-RPC `id` in the pending map triggers an immediate flush before re-queuing to prevent ID collision during response matching. The first request in an empty queue arms a `time.AfterFunc(batchMaxWait, processBatch)` timer; when the queue reaches `batchMaxSize` the timer is stopped and `processBatch` fires immediately. `processBatch` drops already-cancelled requests, builds a batch context from the earliest requester deadline, serialises the array, and fires one HTTP POST. Response matching uses `sonic/ast` zero-copy JSON traversal keyed by `id`. Three upstream response shapes are handled: a JSON array (normal), a single JSON object (broadcast error for all queued requests), and non-JSON (all queued requests receive `ErrUpstreamMalformedResponse`).
+
+**In-flight multiplexer** intercepts at `Network.Forward`, after static-response short-circuit but before cache lookup and upstream selection. It is enabled by default — `MultiplexingEnabled()` returns `true` when the `multiplexing` field is `nil` (omitted). The deduplication key is `"<method>:<sha256_hex_of_params>"` computed by `JsonRpcRequest.CacheHash()`; the JSON-RPC `id` is not part of the hash, so two requests with identical method and params but different IDs are treated as duplicates. Leader/follower election uses `sync.Map.LoadOrStore`: the first goroutine to insert a hash entry is the leader and proceeds to cache lookup and upstream dispatch. Every subsequent goroutine for the same hash becomes a follower: it registers via `copyWg.Add(1)`, increments `erpc_network_multiplexed_request_total`, and waits on the leader's `done` channel. When the leader closes, each follower calls `CopyResponseForRequest` which deep-clones the parsed `JsonRpcResponse` and rewrites its `id` to the follower's original request `id`. Cleanup ordering prevents use-after-free: `cleanupMultiplexer` marks `closed = true`, deletes the hash from `inFlightRequests`, then calls `copyWg.Wait()` so all active followers finish copying before `resp.Release()` is called.
+
+### Config schema
+
+#### Inbound batch
+
+Inbound batch handling is automatic and unconditional. There are no config fields to enable, disable, or size-limit it. Any POST body whose first byte is `[` is treated as a batch. Source: [`erpc/http_server.go:L405`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L405).
+
+#### Outbound upstream batching (`upstream.jsonRpc.*`)
+
+Config struct: <SourceLink file="common/config.go" lines="1072-1094" />.
+`SetDefaults` for `JsonRpcUpstreamConfig` is a no-op — all three fields below have no system defaults and must be provided explicitly. Source: <SourceLink file="common/defaults.go" lines="1777-1779" />.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `upstream.jsonRpc.supportsBatch` | `*bool` | `nil` (batch **disabled**) | When `true`, all requests through this upstream are queued and dispatched as batches. When `nil` or `false`, every request uses `sendSingleRequest`. No other `jsonRpc` batch fields are read unless this is `true`. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="132-137" /> |
+| `upstream.jsonRpc.batchMaxSize` | `int` | `0` (no size cap) | Max requests before an immediate flush. **Footgun:** a value of `0` means the size condition is always met, flushing every queued request immediately and negating batching. Always set a non-zero value. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="294-297" /> |
+| `upstream.jsonRpc.batchMaxWait` | `Duration` | `0` (timer fires immediately) | Time from first queued request before flushing. Uses `time.AfterFunc`. A zero value fires on the next event loop tick. Always set a non-zero value such as `50ms` when using outbound batching. Source: <SourceLink file="clients/http_json_rpc_client.go" lines="289-292" /> |
+
+#### Multiplexer (`network.multiplexing`)
+
+Config field: <SourceLink file="common/config.go" lines="1995-2039" />.
+Network defaults propagation: <SourceLink file="common/defaults.go" lines="1841-1843" />.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `network.multiplexing` | `*bool` | `nil` → **enabled** | **`nil` means ON.** `MultiplexingEnabled()` returns `true` when the field is `nil` or `true`; returns `false` only when explicitly set to `false`. Omitting the key activates the multiplexer. **Footgun:** there is no project-level or global toggle; the knob is strictly per-network (or via `networkDefaults.multiplexing`). Source: <SourceLink file="common/config.go" lines="2034-2039" /> |
+
+`networkDefaults.multiplexing` at <SourceLink file="common/config.go" lines="593-600" /> propagates to all per-network configs that do not set the field explicitly.
+
+### Worked examples
+
+All patterns below are distilled from real production fleets; comments explain the
+non-obvious choices.
+
+**1. High-throughput indexer — outbound batching to saturate allowance.**
+An indexer firing hundreds of `eth_getLogs` calls per second benefits from accumulating calls
+into large batches, reducing HTTP overhead and round-trip count. Set `batchMaxSize` large
+enough to fill batches under load; `batchMaxWait` is a safety valve for low-traffic periods.
+Always set both — zero for either field is a footgun (immediate or unbounded flush):
+
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - id: node-archive
+    endpoint: https://archive.example.com/v2/\${ARCHIVE_KEY}
+    jsonRpc:
+      supportsBatch: true
+      # large cap: under full indexer load batches fill quickly —
+      # this prevents the timer from being the bottleneck
+      batchMaxSize: 200
+      # safety valve: flush after 100ms even when batch isn't full
+      # (low-traffic gaps should not block individual callers for long)
+      batchMaxWait: 100ms`}
+  ts={`upstreams: [{
+  id: "node-archive",
+  endpoint: \`https://archive.example.com/v2/\${process.env.ARCHIVE_KEY}\`,
+  jsonRpc: {
+    supportsBatch: true,
+    // large cap: under full indexer load batches fill quickly
+    batchMaxSize: 200,
+    // safety valve for low-traffic gaps
+    batchMaxWait: "100ms",
+  },
+}]`}
+/>
+
+**2. Frontend dApp — inbound fan-out, no extra config.**
+A dApp wallet sends a single `[eth_getBalance, eth_getTransactionCount, eth_chainId]` batch
+in one fetch. eRPC detects the `[` body, dispatches all three in parallel sub-goroutines,
+and returns the merged array — inbound batch handling is always-on and requires no config:
+
+```json
+// POST /main/evm/1
+[
+  {"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc…","latest"]},
+  {"jsonrpc":"2.0","id":2,"method":"eth_getTransactionCount","params":["0xabc…","latest"]},
+  {"jsonrpc":"2.0","id":3,"method":"eth_chainId","params":[]}
+]
+```
+
+**3. Production fleet — explicitly disable multiplexer via networkDefaults.**
+In production, the multiplexer is disabled fleet-wide via `networkDefaults` because indexer
+workloads issue unique block-range requests that rarely collide; deduplication adds lock
+contention with no benefit. Individual networks that DO serve hot dashboard traffic (many
+identical `eth_blockNumber` polls) can re-enable it locally. Omitting `multiplexing:` from
+a network inherits the default — so the knob only needs to appear where it differs:
+
+<ConfigTabs
+  path="projects[]"
+  yaml={`projects:
+  - id: main
+    networkDefaults:
+      # explicitly off fleet-wide: indexer traffic is unique-per-request,
+      # so the sync.Map election overhead buys nothing; dashboards re-enable below
+      multiplexing: false
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        # inherits multiplexing: false from networkDefaults — no override needed
+      - architecture: evm
+        evm: { chainId: 137 }
+        # dashboard / wallet traffic: many tabs poll eth_blockNumber simultaneously —
+        # re-enable here so N identical polls collapse to 1 upstream round-trip
+        multiplexing: true`}
+  ts={`projects: [{
+  id: "main",
+  networkDefaults: {
+    // explicitly off fleet-wide: indexer traffic is unique-per-request
+    multiplexing: false,
+  },
+  networks: [
     {
-      id: "main",
-      upstreams: [
-        {
-          id: "blastapi-chain-42161",
-          // ...
-          endpoint: "https://arbitrum-one.blastapi.io/xxxxxx",
-          jsonRpc: {
-            // When enabled eRPC will wait for a specified amount of time to batch as many requests as possible.
-            supportsBatch: true,
-            // The maximum amount of time to wait to collect requests for a batch.
-            batchMaxWait: "100ms",
-            // The maximum amount of requests in a single batch, which is usually enforced by the provider.
-            batchMaxSize: 100,
-          },
-        },
-      ],
+      architecture: "evm",
+      evm: { chainId: 1 },
+      // inherits multiplexing: false — no override needed
+    },
+    {
+      architecture: "evm",
+      evm: { chainId: 137 },
+      // dashboard traffic: re-enable for hot identical polls
+      multiplexing: true,
     },
   ],
-});
-```
-</Tabs.Tab>
-</Tabs>
+}]`}
+/>
 
-<Callout type="info">
-  For certain known providers (Alchemy, Infura, etc) batching is enabled by default.
-</Callout>
+**4. Cache upstream with tight hedging — keep batching disabled, tune failsafe per-upstream.**
+Production cache connectors (gRPC or HTTP) use a tight per-upstream failsafe rather than
+outbound batching: the cache must answer fast or not at all, so a tight timeout plus a
+low-delay hedge races a second cache node before falling through to live upstreams.
+Outbound batching is left disabled on cache upstreams — their latency is already
+sub-millisecond and batch accumulation would only add wait time:
 
-### Example single chain
-
-When all the requests are for the same chain, you can send them to the URL that includes chain id.
-
-```bash
-curl --location 'http://localhost:4000/main/evm/1' \
---header 'Content-Type: application/json' \
---data '[
-    {
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203318888888888",
-            false
-        ],
-        "id": 8888,
-        "jsonrpc": "2.0"
+<ConfigTabs
+  path="projects[].upstreams[]"
+  yaml={`upstreams:
+  - id: cache-sepolia
+    endpoint: https://cache.example.com/sepolia
+    # supportsBatch omitted → disabled (default); cache reads must be fast
+    allowMethods:
+      - eth_getLogs
+      - eth_getBlockByNumber
+      - eth_getTransactionByHash
+      - eth_getTransactionReceipt
+    failsafe:
+      - matchMethod: "*"
+        timeout:
+          duration: 1s
+          # adaptive: cut off slow cache reads more aggressively as p80 warms up
+          quantile: 0.8
+          minDuration: 200ms
+          maxDuration: 1s
+        hedge:
+          # race a second cache node quickly — cache latency is stable, static delay is fine
+          quantile: 0.9
+          maxCount: 1
+          minDelay: 50ms
+          maxDelay: 100ms`}
+  ts={`upstreams: [{
+  id: "cache-sepolia",
+  endpoint: "https://cache.example.com/sepolia",
+  // supportsBatch omitted → disabled; cache reads must be fast
+  allowMethods: [
+    "eth_getLogs",
+    "eth_getBlockByNumber",
+    "eth_getTransactionByHash",
+    "eth_getTransactionReceipt",
+  ],
+  failsafe: [{
+    matchMethod: "*",
+    timeout: {
+      duration: "1s",
+      // adaptive: cut off slow cache reads more aggressively as p80 warms
+      quantile: 0.8,
+      minDuration: "200ms",
+      maxDuration: "1s",
     },
-    {
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203319",
-            false
-        ],
-        "id": 9999,
-        "jsonrpc": "2.0"
-    }
-]'
-```
-
-### Example multi-chain
-
-You can provide "networkId" within each request to specify which chain it is for by sending the request to project endpoint:
-
-```bash
-curl --location 'http://localhost:4000/main' \
---header 'Content-Type: application/json' \
---data '[
-    {
-        "networkId": "evm:1",
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203888",
-            false
-        ],
-        "id": 888,
-        "jsonrpc": "2.0"
+    hedge: {
+      // race a second cache node; cache latency is stable — static delay works
+      quantile: 0.9,
+      maxCount: 1,
+      minDelay: "50ms",
+      maxDelay: "100ms",
     },
-    {
-        "networkId": "evm:42161",
-        "method": "eth_getBlockByNumber",
-        "params": [
-            "0x1203999",
-            false
-        ],
-        "id": 999,
-        "jsonrpc": "2.0"
-    }
-]'
-```
+  }],
+}]`}
+/>
 
-#### Roadmap
+**5. Debugging — disable multiplexer to trace individual upstream calls.**
+When troubleshooting, force every request to hit the upstream individually so each request
+appears as its own upstream span without follower short-circuiting:
 
-On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+<ConfigTabs
+  path="projects[].networks[]"
+  yaml={`networks:
+  - architecture: evm
+    evm: { chainId: 1 }
+    multiplexing: false`}
+  ts={`networks: [{
+  architecture: "evm",
+  evm: { chainId: 1 },
+  multiplexing: false,
+}]`}
+/>
 
-<br />
-- [ ] Auto-batch multiple `eth_call`s for evm upstreams using multicall3 contracts if available on that chain.
+### Request/response behavior
+
+**Inbound batch**
+- HTTP response status is always **200 OK**, even when every sub-request fails. Callers must inspect each array element for `"error"` fields. Source: [`erpc/http_server.go:L703-L707`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L703-L707).
+- Body is a JSON array in the original request order; each element is either `{"jsonrpc":"2.0","id":…,"result":…}` or `{"jsonrpc":"2.0","id":…,"error":{…}}`.
+- A panicking sub-goroutine produces `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,…}}` — `id` is `null` because the request ID cannot be determined at panic time.
+- An empty input `[]` returns `[]` with HTTP 200; no error. Source: [`erpc/http_server.go:L429-L431`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L429-L431).
+- Response is streamed directly via `BatchResponseWriter.WriteTo` — the full array is never buffered in memory.
+
+**Outbound batch**
+- `batchMaxSize: 0` means `len(batchRequests) >= 0` is always true → immediate flush on every request (equivalent to no batching). Always set a non-zero value.
+- Earliest deadline across all queued requests sets the batch HTTP context deadline. A short-deadline request can cut off the entire batch; all receive `ErrEndpointRequestTimeout`. Source: [`clients/http_json_rpc_client.go:L362-L372`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L362-L372).
+- A request whose context is already cancelled when `queueRequest` is called is failed immediately and never added to the batch map. Source: [`clients/http_json_rpc_client.go:L241-L253`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L241-L253).
+- On network error, all batched requests receive the error after a 5 ms grace window that lets per-request failsafe sentinels (`ErrDynamicTimeoutExceeded`) become observable before error classification. Source: [`clients/http_json_rpc_client.go:L470-L476`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L470-L476).
+- If the application context is cancelled during shutdown, `processBatch` drains silently without signalling pending requests (intentional — supervisor is shutting down). Source: [`clients/http_json_rpc_client.go:L305-L330`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L305-L330).
+- Duplicate JSON-RPC `id` in the pending map triggers an immediate flush before re-queuing the conflicting request. Source: [`clients/http_json_rpc_client.go:L255-L262`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L255-L262).
+- A single-object upstream response is treated as a broadcast error for all queued requests.
+- A non-JSON upstream body causes all queued requests to receive `ErrUpstreamMalformedResponse`.
+
+**Multiplexer**
+- Follower response `id` is always overwritten with the follower's original request `id` before delivery. `CopyResponseForRequest` also copies metadata fields (`upstream`, `fromCache`, `attempts`, `retries`, `hedges`, `evmBlockRef`, `evmBlockNumber`) verbatim from the leader's response. Source: [`common/response.go:L581-L647`](https://github.com/erpc/erpc/blob/main/common/response.go#L581-L647).
+- `X-ERPC-Skip-Cache-Read` on a follower has no effect — the directive is evaluated only on the leader's path; followers always receive the leader's (possibly cached) result. Source: [`erpc/networks.go:L983-L1001`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L983-L1001).
+- A cache hit on the leader closes the multiplexer; all followers receive the cached response. Followers cannot force a cache miss.
+- Deduplication scope is per `Network` instance: one `sync.Map` (`inFlightRequests`) is allocated per network in `NewNetwork`. Source: [`erpc/networks_registry.go:L164`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L164).
+- `CacheHash()` `hashValue()` handles `bool`, `int`, `float64`, `string`, `[]interface{}`, and `map[string]interface{}` recursively. Param types outside this set cause `CacheHash()` to return an error, silently bypassing the multiplexer. Source: [`common/json_rpc.go:L1453-L1500`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1453-L1500).
+
+### Best practices
+
+- Always set **both** `batchMaxSize` and `batchMaxWait` to non-zero values when enabling outbound batching — either alone leaves the other as a footgun (immediate or unbounded flushing).
+- Use `batchMaxWait: 50ms` as a starting point; tune up only if your upstream charges per-request and your traffic is bursty.
+- Do not use repetitive JSON-RPC `id` values (e.g. always `1`) with outbound batching — duplicate IDs trigger premature single-request flushes, defeating the accumulation benefit.
+- The multiplexer is on by default; leave it enabled for read-heavy workloads like dashboards, price feeds, and block polling.
+- Set `multiplexing: false` only when per-request upstream tracing is needed (debugging) or when your workload relies on non-idempotent methods that eRPC cannot detect.
+- Use `networkDefaults.multiplexing` to apply a single toggle across all networks in a project rather than repeating it per network.
+- Monitor `erpc_network_multiplexed_request_total` to quantify how many upstream calls are being saved — a high ratio signals the multiplexer is significantly reducing costs.
+
+### Edge cases & gotchas
+
+1. **Inbound batch always HTTP 200.** Even if every sub-request fails, status is 200. Callers must inspect each array element for `"error"` fields. Source: [`erpc/http_server.go:L703-L707`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L703-L707).
+2. **Inbound empty array returns `[]`.** A body of `[]` produces a zero-element responses slice and writes `[]` with HTTP 200. No error. Source: [`erpc/http_server.go:L429-L431`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L429-L431).
+3. **Outbound `batchMaxSize: 0` means immediate flush.** Every queued request flushes immediately — functionally equivalent to `supportsBatch: false` unless `batchMaxWait` is non-zero. Always set both fields. Source: [`clients/http_json_rpc_client.go:L294`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L294).
+4. **Outbound duplicate IDs trigger premature flush.** Workloads with repetitive JSON-RPC `id` values (e.g., always `1`) will cause single-request batches, defeating the batching benefit. Source: [`clients/http_json_rpc_client.go:L255-L262`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L255-L262).
+5. **Outbound earliest-deadline batch context.** A short-deadline request can cut off all longer-deadline requests in the same batch — all receive `ErrEndpointRequestTimeout`. Source: [`clients/http_json_rpc_client.go:L362-L372`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L362-L372).
+6. **Outbound partial upstream response errors only missing items.** If the upstream returns fewer responses than sent, only missing items receive `"no response received for request ID"` errors; other requests succeed. Source: [`clients/http_json_rpc_client.go:L597-L605`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L597-L605).
+7. **Outbound non-JSON upstream body — all requests fail.** All batched requests receive `ErrUpstreamMalformedResponse`. Source: [`clients/http_json_rpc_client.go:L632-L636`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L632-L636).
+8. **Multiplexer enabled by default — `nil` is not `false`.** Because the field is `*bool`, omitting `multiplexing:` activates the multiplexer. Explicitly set `multiplexing: false` to disable. Source: [`common/config.go:L2034-L2038`](https://github.com/erpc/erpc/blob/main/common/config.go#L2034-L2038).
+9. **Multiplexer: `skipCacheRead` on a follower has no effect.** The directive is evaluated only on the leader's path; followers always receive the leader's result. Source: [`erpc/networks.go:L983-L1001`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L983-L1001).
+10. **Multiplexer: followers cannot force a cache miss.** The leader performs cache lookup; a cache hit closes the multiplexer and all followers receive the cached response via `CopyResponseForRequest`. Source: [`erpc/networks.go:L1003-L1019`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1003-L1019).
+11. **Multiplexer: closed-state follower retries become the new leader.** A follower finding `inf.closed == true` retries `LoadOrStore`; after `cleanupMultiplexer` deletes the old entry, the retrying goroutine becomes the new leader. Source: [`erpc/networks.go:L2016-L2023`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L2016-L2023).
+12. **Multiplexer: unhashable param type silently skips dedup.** If `CacheHash()` returns `""` or an error, the request bypasses the multiplexer and proceeds to upstream selection normally. Source: [`erpc/networks.go:L1996-L1999`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1996-L1999).
+13. **Multiplexer is per-network, not per-project or global.** There is no project-level toggle; use `networkDefaults.multiplexing` to apply a default across all networks in a project. Source: [`common/config.go:L593-L600`](https://github.com/erpc/erpc/blob/main/common/config.go#L593-L600).
+14. **Outbound batch: upstream returns a single JSON object.** Interpreted as a broadcast error applying to all batched requests. Source: [`clients/http_json_rpc_client.go:L606-L636`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L606-L636).
+15. **Multiplexer stress test verifies exactly 1 upstream call per cohort.** `TestNetwork_Multiplexer_FollowersReceiveResponse` runs 10, 50, and 3-wave×10 concurrent requests and asserts exactly one upstream call per cohort. Source: [`erpc/networks_multiplexer_test.go:L34-L363`](https://github.com/erpc/erpc/blob/main/erpc/networks_multiplexer_test.go#L34-L363).
+16. **`copyWg.Wait()` prevents use-after-free.** `cleanupMultiplexer` calls `mlx.copyWg.Wait()` after marking `closed = true`, ensuring all followers have finished copying before `mlx.resp.Release()` is called. Source: [`erpc/networks.go:L2088-L2110`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L2088-L2110).
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_multiplexed_request_total` | counter | `project`, `network`, `category`, `finality`, `user`, `agent_name` | Incremented once per follower registration — each time a request is deduplicated into an in-flight identical request. The leader itself is **not** counted. |
+
+No dedicated batch metrics exist; outbound batch dispatch is transparent to the existing upstream-level counters (`erpc_upstream_request_duration_histogram`, etc.).
+
+**Trace spans**
+
+| Span name | Attributes | Notes |
+|---|---|---|
+| `Multiplexer.Close` | `multiplexer.hash` | Emitted inside `sync.Once`, fires only on the leader's goroutine. Source: <SourceLink file="erpc/multiplexer.go" lines="37-39" /> |
+| `Network.WaitForMultiplexResult` | `multiplexer.hash` | Emitted for every follower; spans the entire wait from registration to response copy. Source: <SourceLink file="erpc/networks.go" lines="2058-2060" /> |
+
+The leader's `Forward` span receives `multiplexer.hash` and `multiplexer.role = "leader"`; follower `Forward` spans receive `multiplexed = true` and `multiplexer.role = "follower"`. Source: <SourceLink file="erpc/networks.go" lines="986-998" />.
+
+**Log messages**
+
+| Level | Message pattern | Context |
+|---|---|---|
+| `TRACE` | `"checking if multiplexing is possible"` | Every request when multiplexing is enabled |
+| `DEBUG` | `"could not get multiplexing hash for request"` | When `CacheHash()` returns error or empty |
+| `DEBUG` | `"found identical request initiating multiplexer"` | Follower successfully registered |
+| `TRACE` | `"multiplexed request result"` | After follower receives result |
+| `WARN` | `"multiplexer follower got nil response and no error, retrying"` | Unexpected state, follower retries |
+| `DEBUG` | `"queuing request %+v for batch (current batch size: %d)"` | Each request added to outbound batch |
+| `DEBUG` | `"processing batch with %d requests"` | Each outbound batch flush |
+| `TRACE` | `"starting batch timer"` | First request in an empty batch |
+| `TRACE` | `"committing batch to process total of %d requests"` | Size-limit flush (batch reached `batchMaxSize`) |
+| `WARN` | `"unexpected response received without ID"` | Element in upstream batch array has null or missing `id` |
+| `WARN` | `"unexpected response received with ID: %s"` | Element `id` from upstream not found in the pending request map |
+| `ERROR` | `"some requests did not receive a response (matching ID)"` | Upstream returned fewer responses than sent |
+
+### Source code entry points
+
+- [`erpc/http_server.go:L398-L746`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L398-L746) — inbound batch detection (`body[0]=='['`), parallel goroutine dispatch with `recover()`, `wg.Wait()`, `BatchResponseWriter` invocation
+- [`erpc/http_batch_resp.go:L21-L130`](https://github.com/erpc/erpc/blob/main/erpc/http_batch_resp.go#L21-L130) — `BatchResponseWriter.WriteTo`: streaming inbound batch serialisation, per-element `*NormalizedResponse`, `*HttpJsonRpcErrorResponse`, and error paths
+- [`clients/http_json_rpc_client.go:L29-L637`](https://github.com/erpc/erpc/blob/main/clients/http_json_rpc_client.go#L29-L637) — `GenericHttpJsonRpcClient`: outbound batch queue, timer, size-flush, `processBatch`, `processBatchResponse`, ID matching
+- [`erpc/networks.go:L1989-L2110`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1989-L2110) — `handleMultiplexing`, `waitForMultiplexResult`, `cleanupMultiplexer`: hash-based leader election via `sync.Map.LoadOrStore`, follower registration with `copyWg`, cleanup ordering
+- [`erpc/multiplexer.go:L36-L88`](https://github.com/erpc/erpc/blob/main/erpc/multiplexer.go#L36-L88) — `Multiplexer.Close`: `sync.Once` guard, panic recovery, `done` channel close, `jrr.Clone()`
+- [`common/config.go:L1072-L1094`](https://github.com/erpc/erpc/blob/main/common/config.go#L1072-L1094) — `JsonRpcUpstreamConfig`: `SupportsBatch`, `BatchMaxSize`, `BatchMaxWait` fields
+- [`common/config.go:L1995-L2039`](https://github.com/erpc/erpc/blob/main/common/config.go#L1995-L2039) — `NetworkConfig.Multiplexing` field and `MultiplexingEnabled()`
+- [`common/json_rpc.go:L1385-L1409`](https://github.com/erpc/erpc/blob/main/common/json_rpc.go#L1385-L1409) — `JsonRpcRequest.CacheHash()`: `method:sha256(params)` with atomic caching
+- [`common/response.go:L581-L647`](https://github.com/erpc/erpc/blob/main/common/response.go#L581-L647) — `CopyResponseForRequest`: deep-clone with follower `id` overwrite
+- [`telemetry/metrics.go:L413-L417`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L413-L417) — `MetricNetworkMultiplexedRequests` counter
+- [`erpc/networks_registry.go:L164`](https://github.com/erpc/erpc/blob/main/erpc/networks_registry.go#L164) — `NewNetwork`: allocates `inFlightRequests *sync.Map` used by the multiplexer
+- [`erpc/networks_multiplexer_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_multiplexer_test.go) — concurrent follower, stress, multi-wave, slow-upstream tests
+- [`clients/http_json_json_client_test.go:L105-L421`](https://github.com/erpc/erpc/blob/main/clients/http_json_json_client_test.go#L105-L421) — outbound batch race condition, timeout, partial response, single-object error, non-JSON response tests
+- [`erpc/networks_client_test.go:L130-L322`](https://github.com/erpc/erpc/blob/main/erpc/networks_client_test.go#L130-L322) — `TestNetwork_BatchRequests`: simple batch, duplicate IDs, single-object upstream error
+
+### Related pages
+
+- [Timeout](/config/failsafe/timeout) — bounds how long a sub-request or batch waits before aborting.
+- [Retry](/config/failsafe/retry) — retries individual sub-requests on failure; independent of batch grouping.
+- [Hedge](/config/failsafe/hedge) — races backup requests; disabled for composite batch requests.
+- [Rate limiters](/config/rate-limiters) — caps upstream call volume; works alongside outbound batching to stay within provider limits.
+- [Cache](/config/database/evm-json-rpc-cache) — the multiplexer leader checks cache before upstream; followers benefit automatically.
+- [Survive provider outages](/use-cases/survive-provider-outages) — batching reduces the blast radius of per-request failures.
+
+</AISection>

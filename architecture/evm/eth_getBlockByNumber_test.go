@@ -11,7 +11,8 @@ import (
 
 // testNetwork is a simple test implementation of common.Network interface for this file
 type testNetwork struct {
-	cfg *common.NetworkConfig
+	cfg           *common.NetworkConfig
+	finalityState common.DataFinalityState
 }
 
 func (t *testNetwork) Architecture() common.NetworkArchitecture {
@@ -75,7 +76,7 @@ func (t *testNetwork) GetMethodMetrics(method string) common.TrackedMetrics {
 }
 
 func (t *testNetwork) GetFinality(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) common.DataFinalityState {
-	return common.DataFinalityStateFinalized
+	return t.finalityState
 }
 
 func TestAllPhantomTransactions(t *testing.T) {
@@ -297,7 +298,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Should return null without error for tagged blocks when enforcement is disabled
 		assert.NoError(t, err)
@@ -321,7 +322,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Numeric blocks ALWAYS return error when null, regardless of directive
 		// This is the key behavior: numeric null blocks indicate real data problems (pruned/missing)
@@ -346,7 +347,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Should return error for tagged blocks when enforcement is enabled
 		assert.Error(t, err)
@@ -370,7 +371,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: Should return null without error for "latest" tag when enforcement is disabled
 		assert.NoError(t, err)
@@ -393,7 +394,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(request, response)
+		result, err := enforceNonNullBlock(context.Background(), request, response)
 
 		// Assert: When directives are nil, should NOT enforce (allow null)
 		// The defaults are applied at network level via DirectiveDefaults.SetDefaults()

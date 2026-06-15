@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
@@ -30,9 +30,7 @@ func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 			},
 			Projects: []*common.ProjectConfig{
 				{
-					Id:                     "test_project",
-					ScoreMetricsWindowSize: common.Duration(30 * time.Second),       // Short window for testing
-					ScoreRefreshInterval:   common.Duration(100 * time.Millisecond), // Fast refresh for testing
+					Id: "test_project",
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
@@ -47,6 +45,14 @@ func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 									},
 								},
 							},
+							SelectionPolicy: &common.SelectionPolicyConfig{
+								EvalInterval:    common.Duration(100 * time.Millisecond),
+								EvalTimeout:     common.Duration(50 * time.Millisecond),
+								// Weight misbehavior heavily so the misbehaving upstream is
+								// deprioritized over time. Matches the legacy intent of the
+								// per-upstream `scoreMultipliers: { misbehaviors: 10 }` config.
+								EvalFunc: `(upstreams, ctx) => upstreams.sortByScore({ misbehaviors: 10 })`,
+							},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -54,64 +60,22 @@ func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 							Id:       "rpc1",
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-							Routing: &common.RoutingConfig{
-								ScoreMultipliers: []*common.ScoreMultiplierConfig{
-									{
-										Network:      "*",
-										Method:       "*",
-										Overall:      util.Float64Ptr(1.0),  // Normal priority
-										Misbehaviors: util.Float64Ptr(10.0), // High penalty for misbehavior
-									},
-								},
-							},
+							Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
 						},
 						{
 							Id:       "rpc2",
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-							Routing: &common.RoutingConfig{
-								ScoreMultipliers: []*common.ScoreMultiplierConfig{
-									{
-										Network:      "*",
-										Method:       "*",
-										Overall:      util.Float64Ptr(1.0),
-										Misbehaviors: util.Float64Ptr(10.0),
-									},
-								},
-							},
+							Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
 						},
 						{
 							Id:       "rpc3-misbehaving",
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc3.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-							Routing: &common.RoutingConfig{
-								ScoreMultipliers: []*common.ScoreMultiplierConfig{
-									{
-										Network:      "*",
-										Method:       "*",
-										Overall:      util.Float64Ptr(1.0),
-										Misbehaviors: util.Float64Ptr(10.0), // Will be penalized when misbehaving
-									},
-								},
-							},
+							Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
 						},
 					},
 				},
@@ -184,7 +148,7 @@ func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
-		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		policy.OverrideOrderForTest(prj.policyEngine, "evm:123", "rpc1", "rpc2", "rpc3-misbehaving")
 
 		// First request - establish baseline
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1}`, nil, nil)

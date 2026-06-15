@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -79,6 +80,7 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 		}
 
 		transport := &http.Transport{
+			DialContext:           util.DefaultOutboundDialer().DialContext,
 			MaxIdleConns:          1024,
 			MaxIdleConnsPerHost:   256,
 			MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)

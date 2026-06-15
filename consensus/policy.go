@@ -5,45 +5,12 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/failsafe-go/failsafe-go"
-	"github.com/failsafe-go/failsafe-go/policy"
 	"github.com/rs/zerolog"
 )
 
-// If the execution is configured with a Context, a child context will be created for each attempt and outstanding
-// contexts are canceled when the ConsensusPolicy is finished.
-//
-// R is the execution result type. This type is concurrency safe.
-type ConsensusPolicy interface {
-	failsafe.Policy[*common.NormalizedResponse]
-}
-
-// R is the execution result type. This type is not concurrency safe.
-type ConsensusPolicyBuilder interface {
-	WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder
-	WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder
-	WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder
-	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder
-	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder
-	WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder
-	WithMisbehaviorsDestination(cfg *common.MisbehaviorsDestinationConfig) ConsensusPolicyBuilder
-	OnAgreement(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
-	OnDispute(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
-	OnLowParticipants(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
-	WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder
-	WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder
-	WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder
-	WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder
-	WithPreferHighestValueFor(preferHighestValueFor map[string][]string) ConsensusPolicyBuilder
-	WithFireAndForget(fireAndForget bool) ConsensusPolicyBuilder
-
-	// Build returns a new ConsensusPolicy using the builder's configuration.
-	Build() ConsensusPolicy
-}
-
+// config carries the consensus-policy configuration through the
+// builder-style API.
 type config struct {
-	*policy.BaseAbortablePolicy[*common.NormalizedResponse]
-
 	maxParticipants         int
 	agreementThreshold      int
 	disputeBehavior         common.ConsensusDisputeBehavior
@@ -58,131 +25,101 @@ type config struct {
 	preferLargerResponses   bool
 	preferHighestValueFor   map[string][]string
 	fireAndForget           bool
-
-	onAgreement       func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
-	onDispute         func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
-	onLowParticipants func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
+	maxWaitOnResult         *common.AdaptiveDuration
+	maxWaitOnEmpty          *common.AdaptiveDuration
+	requiredParticipants    []*common.ConsensusRequiredParticipant
 }
 
-var _ ConsensusPolicyBuilder = &config{}
-
-func NewConsensusPolicyBuilder() ConsensusPolicyBuilder {
-	return &config{
-		BaseAbortablePolicy: &policy.BaseAbortablePolicy[*common.NormalizedResponse]{},
-	}
+// builder is the internal builder used by NewConsensus.
+// It's not exposed externally — callers construct a *Consensus via
+// NewConsensus(cfg, logger) and call Run().
+type builder struct {
+	cfg config
 }
 
-type consensusPolicy struct {
-	*config
-	logger                          *zerolog.Logger
-	misbehavingUpstreamsLimiter     *sync.Map // [string, *ratelimiter.Limiter]
-	misbehavingUpstreamsSitoutTimer *sync.Map // [string, *time.Timer]
-	disputeLogLevel                 zerolog.Level
-	exporter                        misbehaviorExporter
+func newBuilder() *builder { return &builder{} }
+
+// NewConsensusPolicyBuilder is a test-friendly alias for newBuilder
+// — callers in the same package use newBuilder, tests use this name to
+// keep their fluent-builder DSL readable.
+func NewConsensusPolicyBuilder() *builder { return &builder{} }
+
+// Build constructs the *Consensus runtime entry point. Used by both
+// production code (via NewConsensus) and tests (fluent-builder DSL).
+func (b *builder) Build() *Consensus {
+	pol := b.build()
+	return &Consensus{policy: pol, logger: pol.logger}
 }
 
-var _ ConsensusPolicy = &consensusPolicy{}
-
-func (c *config) WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder {
-	c.maxParticipants = maxParticipants
-	return c
+func (b *builder) WithMaxParticipants(n int) *builder {
+	b.cfg.maxParticipants = n
+	return b
+}
+func (b *builder) WithAgreementThreshold(n int) *builder {
+	b.cfg.agreementThreshold = n
+	return b
+}
+func (b *builder) WithDisputeBehavior(v common.ConsensusDisputeBehavior) *builder {
+	b.cfg.disputeBehavior = v
+	return b
+}
+func (b *builder) WithLowParticipantsBehavior(v common.ConsensusLowParticipantsBehavior) *builder {
+	b.cfg.lowParticipantsBehavior = v
+	return b
+}
+func (b *builder) WithPunishMisbehavior(v *common.PunishMisbehaviorConfig) *builder {
+	b.cfg.punishMisbehavior = v
+	return b
+}
+func (b *builder) WithMisbehaviorsDestination(v *common.MisbehaviorsDestinationConfig) *builder {
+	b.cfg.misbehaviorsDestination = v
+	return b
+}
+func (b *builder) WithLogger(lg *zerolog.Logger) *builder { b.cfg.logger = lg; return b }
+func (b *builder) WithDisputeLogLevel(l zerolog.Level) *builder {
+	b.cfg.disputeLogLevel = l
+	return b
+}
+func (b *builder) WithIgnoreFields(m map[string][]string) *builder {
+	b.cfg.ignoreFields = m
+	return b
+}
+func (b *builder) WithPreferNonEmpty(v bool) *builder { b.cfg.preferNonEmpty = v; return b }
+func (b *builder) WithPreferLargerResponses(v bool) *builder {
+	b.cfg.preferLargerResponses = v
+	return b
+}
+func (b *builder) WithPreferHighestValueFor(m map[string][]string) *builder {
+	b.cfg.preferHighestValueFor = m
+	return b
+}
+func (b *builder) WithFireAndForget(v bool) *builder { b.cfg.fireAndForget = v; return b }
+func (b *builder) WithMaxWaitOnResult(d *common.AdaptiveDuration) *builder {
+	b.cfg.maxWaitOnResult = d
+	return b
+}
+func (b *builder) WithMaxWaitOnEmpty(d *common.AdaptiveDuration) *builder {
+	b.cfg.maxWaitOnEmpty = d
+	return b
+}
+func (b *builder) WithRequiredParticipants(v []*common.ConsensusRequiredParticipant) *builder {
+	b.cfg.requiredParticipants = v
+	return b
 }
 
-func (c *config) WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder {
-	c.agreementThreshold = agreementThreshold
-	return c
-}
+// build snapshots the config and constructs the runtime consensus policy.
+func (b *builder) build() *consensusPolicy {
+	hCopy := b.cfg
+	log := hCopy.logger.With().Str("component", "consensus").Logger()
 
-func (c *config) WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder {
-	c.disputeBehavior = disputeBehavior
-	return c
-}
-
-func (c *config) WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder {
-	c.punishMisbehavior = cfg
-	return c
-}
-
-func (c *config) WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder {
-	c.lowParticipantsBehavior = lowParticipantsBehavior
-	return c
-}
-
-func (c *config) WithMisbehaviorsDestination(cfg *common.MisbehaviorsDestinationConfig) ConsensusPolicyBuilder {
-	c.misbehaviorsDestination = cfg
-	return c
-}
-
-func (c *config) WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder {
-	c.logger = logger
-	return c
-}
-
-func (c *config) OnAgreement(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder {
-	c.onAgreement = listener
-	return c
-}
-
-func (c *config) OnDispute(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder {
-	c.onDispute = listener
-	return c
-}
-
-func (c *config) OnLowParticipants(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder {
-	c.onLowParticipants = listener
-	return c
-}
-
-func (c *config) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder {
-	c.disputeLogLevel = level
-	return c
-}
-
-func (c *config) WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder {
-	c.ignoreFields = ignoreFields
-	return c
-}
-
-func (c *config) WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder {
-	c.preferNonEmpty = preferNonEmpty
-	return c
-}
-
-func (c *config) WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder {
-	c.preferLargerResponses = preferLargerResponses
-	return c
-}
-
-func (c *config) WithPreferHighestValueFor(preferHighestValueFor map[string][]string) ConsensusPolicyBuilder {
-	c.preferHighestValueFor = preferHighestValueFor
-	return c
-}
-
-func (c *config) WithFireAndForget(fireAndForget bool) ConsensusPolicyBuilder {
-	c.fireAndForget = fireAndForget
-	return c
-}
-
-func (c *config) Build() ConsensusPolicy {
-	hCopy := *c
-	if !c.BaseAbortablePolicy.IsConfigured() {
-		c.AbortIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], r *common.NormalizedResponse, err error) bool {
-			// We'll let the executor handle the actual consensus check
-			return false
-		})
-	}
-
-	log := c.logger.With().Str("component", "consensus").Logger()
-
-	// Set default dispute log level if not specified
-	disputeLevel := c.disputeLogLevel
+	disputeLevel := hCopy.disputeLogLevel
 	if disputeLevel == 0 {
 		disputeLevel = zerolog.WarnLevel
 	}
 
 	var exp misbehaviorExporter
-	if c.misbehaviorsDestination != nil {
-		exp = createMisbehaviorExporter(c.misbehaviorsDestination, &log)
+	if hCopy.misbehaviorsDestination != nil {
+		exp = createMisbehaviorExporter(hCopy.misbehaviorsDestination, &log)
 	}
 
 	return &consensusPolicy{
@@ -195,50 +132,22 @@ func (c *config) Build() ConsensusPolicy {
 	}
 }
 
-func (p *consensusPolicy) WithMaxParticipants(required int) ConsensusPolicy {
-	pCopy := *p
-	pCopy.maxParticipants = required
-	return &pCopy
+// consensusPolicy is the runtime consensus state. It owns per-upstream
+// misbehavior rate limiters and the misbehavior exporter. Construction
+// goes through the package-private builder; callers receive a
+// *Consensus from NewConsensus().
+type consensusPolicy struct {
+	*config
+	logger                          *zerolog.Logger
+	misbehavingUpstreamsLimiter     *sync.Map // map[string]*rate.Limiter
+	misbehavingUpstreamsSitoutTimer *sync.Map // map[string]*time.Timer
+	disputeLogLevel                 zerolog.Level
+	exporter                        misbehaviorExporter
 }
 
-func (p *consensusPolicy) WithAgreementThreshold(threshold int) ConsensusPolicy {
-	pCopy := *p
-	pCopy.agreementThreshold = threshold
-	return &pCopy
-}
-
-func (p *consensusPolicy) WithTimeout(timeout time.Duration) ConsensusPolicy {
-	pCopy := *p
-	pCopy.timeout = timeout
-	return &pCopy
-}
-
-func (p *consensusPolicy) WithLogger(logger *zerolog.Logger) ConsensusPolicy {
-	pCopy := *p
-	lg := logger.With().Str("component", "consensus").Logger()
-	pCopy.logger = &lg
-	return &pCopy
-}
-
-func (p *consensusPolicy) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicy {
-	pCopy := *p
-	pCopy.disputeLogLevel = level
-	return &pCopy
-}
-
-func (p *consensusPolicy) ToExecutor(_ *common.NormalizedResponse) any {
-	return p.Build()
-}
-
-func (p *consensusPolicy) Build() policy.Executor[*common.NormalizedResponse] {
-	e := &executor{
-		BaseExecutor:    &policy.BaseExecutor[*common.NormalizedResponse]{},
-		consensusPolicy: p,
-	}
-	return e
-}
-
-// createMisbehaviorExporter creates the appropriate exporter based on configuration
+// createMisbehaviorExporter selects the configured exporter
+// implementation. Errors are logged and the exporter is disabled —
+// misbehavior export is best-effort.
 func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) misbehaviorExporter {
 	if cfg == nil || cfg.Path == "" {
 		return nil

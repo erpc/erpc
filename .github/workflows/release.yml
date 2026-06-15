@@ -203,42 +203,35 @@ jobs:
         env:
           CI: true
 
-      # Publish packages
+      # Publish packages. publish-npm.sh tolerates already-published versions
+      # (idempotent re-runs) but fails the job on any other error, e.g. an
+      # expired NPM_TOKEN (npm reports rejected auth as E404 on the PUT).
       - name: Build and publish CLI package
         working-directory: typescript/cli
         run: |
           pnpm run build
-          pnpm publish --access public --no-git-checks || true
+          ../../.github/scripts/publish-npm.sh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish the same package under the "erpc" name
+      - name: Publish erpc alias package
+        working-directory: typescript/cli
+        run: ../../.github/scripts/publish-npm.sh erpc
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Publish the same package under the "start-rpc" name
       - name: Publish start-rpc alias package
         working-directory: typescript/cli
-        run: |
-          # Backup the original package.json
-          cp package.json package.json.bak
-          # Modify the package.json name from "@erpc-cloud/cli" to "start-rpc"
-          sed -i 's/"@erpc-cloud\/cli"/"start-rpc"/' package.json
-          # Publish under the new name
-          pnpm publish --access public --no-git-checks || true
-          # Restore the original package.json
-          mv package.json.bak package.json
+        run: ../../.github/scripts/publish-npm.sh start-rpc
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Publish the same package under the "start-erpc" name
       - name: Publish start-erpc alias package
         working-directory: typescript/cli
-        run: |
-          # Backup the original package.json
-          cp package.json package.json.bak
-          # Modify the package.json name from "@erpc-cloud/cli" to "start-erpc"
-          sed -i 's/"@erpc-cloud\/cli"/"start-erpc"/' package.json
-          # Publish under the new name
-          pnpm publish --access public --no-git-checks || true
-          # Restore the original package.json
-          mv package.json.bak package.json
+        run: ../../.github/scripts/publish-npm.sh start-erpc
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -246,9 +239,31 @@ jobs:
         working-directory: typescript/config
         run: |
           pnpm run build
-          pnpm publish --access public --no-git-checks || true
+          ../../.github/scripts/publish-npm.sh
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Hard guarantee that every package name actually serves this version,
+      # so a swallowed or half-failed publish can never go unnoticed again.
+      # NODE_AUTH_TOKEN is needed because setup-node's .npmrc references it
+      # for every npm invocation, not just publishes.
+      - name: Verify packages are live on npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          for pkg in @erpc-cloud/cli erpc start-rpc start-erpc @erpc-cloud/config; do
+            for attempt in 1 2 3 4 5; do
+              if [ -n "$(npm view "${pkg}@${VERSION}" version 2>/dev/null)" ]; then
+                echo "OK: ${pkg}@${VERSION} is live"
+                continue 2
+              fi
+              echo "Waiting for ${pkg}@${VERSION} (attempt ${attempt}/5)..."
+              sleep 10
+            done
+            echo "::error::${pkg}@${VERSION} is not on the registry after publishing"
+            exit 1
+          done
 
   # Native single-arch builds on matching runners; then compose a multi-arch manifest
   docker-build-amd64:

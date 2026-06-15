@@ -1,75 +1,175 @@
 ---
-description: eRPC can be deployed on Railway using the following template...
+title: Railway
+description: From zero to a running eRPC proxy with Grafana monitoring in one click — no infra to manage, public endpoints ready immediately.
 ---
 
-import { Steps } from "nextra/components";
-import { Callout } from "nextra/components";
+import { LLMsTxtLink, AISection, PromptExample } from "../../components";
 
-# Railway installation
+<LLMsTxtLink />
 
-[Railway](https://railway.app) provides a quick and easy way to deploy eRPC. To get started, please ensure that you have signed up or logged in to Railway and connected your GitHub account.
+# Railway
 
-<Steps>
-
-### Deploy
-
-Click the `Deploy on Railway` button below to get started. This will take you to our eRPC template, which includes proxy and monitoring services.
+The fastest way to get eRPC running. Click the button, Railway deploys both the proxy and a full Prometheus + Grafana monitoring stack in seconds. The default config already covers every supported chain using public free endpoints — no API keys required to start sending requests.
 
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/10iW1q)
 
-<Callout type="info">
-  This template comes with a default [erpc.yaml](/config/projects/providers#repository) configuration that will give you access to 2,000+ chains and 4,000+ public free EVM RPC endpoints.
-</Callout>
+## Agent reference
 
-### Config customizaiton 
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
 
-<Callout type="warning">
-  **Frontend / browser usage?** If you plan to consume eRPC from a frontend (e.g browser), be sure to set up 
-  the appropriate CORS headers in your [erpc.yaml](/config/projects/cors#config) configuration. 
-</Callout>
+<PromptExample
+	n={1}
+	title="deploy eRPC on Railway with monitoring"
+	defaultOpen
+	prompt={`Deploy eRPC on Railway using the one-click template, then connect my own fork so I can
+customize eRPC config with premium upstream API keys stored as Railway environment
+variables. Include Grafana monitoring. My config will go in my eRPC config. Read the
+full reference first: https://docs.erpc.cloud/deployment/railway.llms.txt`}
+/>
 
-  If you need further [customization](/config/example#full-config-example), you can fork the [template's repository](https://github.com/erpc/railway-deployment). E.g. you can create an `erpc.yaml` file in your forked repository to add your own premium RPC endpoints, caching, customised network or upstream level failsafe configs, etc. 
+<PromptExample
+	n={2}
+	title="secure the public endpoint before production"
+	prompt={`My Railway-deployed eRPC instance is publicly accessible without any auth. Add
+authentication and rate limiting to my eRPC config so the public URL is safe for
+production traffic, and show me how to inject the secret via Railway environment
+variables without committing it to the repo. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/deployment/railway.llms.txt`}
+/>
 
-  After forking and adjustments, you can either connect your forked repository to your existing deployment or create a new service linked to this forked repository.
+<PromptExample
+	n={3}
+	title="call eRPC from another service in the same project"
+	prompt={`I have a Railway service that needs to call my eRPC instance without going over the
+public internet. Configure the internal .railway.internal hostname and show me the
+correct fetch call. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/deployment/railway.llms.txt`}
+/>
 
-  ![image](https://i.imgur.com/xZQudNq.png)
+<AISection title="Railway — full agent reference">
 
-### Usage in your services
+### How it works
 
-If your backend services (like indexers or MEV bots) are on the same Railway project as eRPC, you can reduce cost and overhead by using private networking (`.railway.internal`) to connect:
+The template deploys from the [`erpc/railway-deployment`](https://github.com/erpc/railway-deployment) repository and creates two Railway services:
+
+- **erpc** — the proxy, listening on port 4000. Railway assigns a public URL automatically.
+- **monitoring** — the same combined Prometheus v3.9.1 + Grafana 12.3.3 container as the repo's `monitoring/Dockerfile`. Grafana is accessible on port 3000.
+
+The default `erpc.yaml` in the template uses public free RPC endpoints across all supported chains, so traffic flows immediately without any credentials.
+
+**Private networking.** Services within the same Railway project communicate via `.railway.internal` hostnames without leaving Railway's network and without incurring egress costs. Services outside the project (or local clients) use the public URL.
+
+**Config customization.** Railway deploys from a connected Git repository. To change `erpc.yaml`, fork [`erpc/railway-deployment`](https://github.com/erpc/railway-deployment), edit the config in your fork, and connect Railway to your fork under **Settings → Source**. Pushing to the connected branch triggers an automatic redeploy.
+
+**Monitoring.** After deploying, open the `monitoring` service in Railway, find the Grafana URL under **Settings → Networking → Public Networking**, and log in with `admin`/`admin`. The Grafana dashboard loads automatically with 80+ panels covering request rates, latency, failover events, and cache metrics.
 
 ```js
+// Calling eRPC from another Railway service (private network)
 const result = await fetch("https://my-erpc.railway.internal/main/evm/1", {
   method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-  },
+  headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     method: "eth_getBlockByNumber",
     params: ["0x1203319", false],
-    id: 9199,
+    id: 1,
     jsonrpc: "2.0",
   }),
 });
 ```
 
-If you need external access or your services are hosted elsewhere, use the public URL found under `Settings > Networking > Public Networking` in your eRPC service:
+Use the public URL (found under **Settings → Networking → Public Networking** in the eRPC service) for clients outside the same Railway project.
 
-![image](https://i.imgur.com/WRezSaK.png)
+### Config schema
 
-### Monitoring
+Railway deployment has no eRPC-specific config fields. Configuration is entirely through `erpc.yaml` in the connected repository. Railway injects standard env vars (`PORT`, `RAILWAY_ENVIRONMENT`, etc.) which eRPC does not use directly.
 
-After sending more requests, click on `monitoring` service and find your Grafana url under `Settings > Networking > Public Networking`
+The relevant eRPC env vars that operators may set via Railway's environment variable UI:
 
-You can login with the following credentials:
+| Variable | Effect |
+|---|---|
+| `LOG_LEVEL` | `trace`/`debug`/`info`/`warn`/`error` — overrides `cfg.LogLevel` |
+| `LOG_WRITER` | Set to `console` for human-readable log output |
+| `GOMEMLIMIT` | Go soft memory limit; set to ~90% of the service's memory allocation |
 
-- username: `admin`
-- password: `admin`
+### Worked examples
 
-![image](https://i.imgur.com/sOpBuXe.png)
+**1. One-click deploy from the template.** Click the Railway button above, sign in or create a Railway account, click **Deploy**. Done — both services start in under a minute.
 
-Send more requests and watch the metrics being collected and visualized in Grafana.
+**2. Adding premium upstreams.** Fork [`erpc/railway-deployment`](https://github.com/erpc/railway-deployment) and edit `erpc.yaml` to add your Alchemy or QuickNode keys. In Railway, go to your eRPC service → **Settings → Source** and connect your fork. Subsequent pushes to main auto-deploy:
 
-![image](https://i.imgur.com/2aOA960.png)
+```yaml
+# erpc.yaml in your fork
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        upstreams:
+          - id: alchemy-mainnet
+            endpoint: https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
+```
 
-</Steps>
+Set `ALCHEMY_KEY` as a Railway environment variable so it's not committed to the repo.
+
+**3. Enabling CORS for browser usage.** If you call eRPC directly from a frontend, add a CORS block to `erpc.yaml`. See [CORS](/config/projects/cors) for full options:
+
+```yaml
+projects:
+  - id: main
+    cors:
+      allowedOrigins:
+        - "https://your-app.com"
+```
+
+**4. Securing the public endpoint.** The default config proxies all chains to anyone with the public URL. Add authentication before going to production:
+
+```yaml
+projects:
+  - id: main
+    auth:
+      strategies:
+        - type: secret
+          secret:
+            value: ${AUTH_SECRET}
+```
+
+Set `AUTH_SECRET` in Railway's environment variable UI.
+
+### Best practices
+
+- **Change the Grafana password immediately.** The monitoring service ships with `admin`/`admin`. Set a strong password via Railway environment variables before sharing the public Grafana URL.
+- **Set `GOMEMLIMIT`** to ~90% of your Railway service's memory allocation. Without it, Go's GC may allow the heap to reach the hard memory limit and trigger a service restart.
+- **Use CORS before exposing to browsers.** eRPC's default config has no CORS headers. Add a `cors` block under your project in `erpc.yaml` before consuming from a frontend. See [CORS](/config/projects/cors).
+- **Use authentication before going public.** The default config proxies all supported chains without access control. Add [authentication](/config/auth) or [rate limiters](/config/rate-limiters) before exposing the public URL to untrusted clients.
+- **Keep secrets out of `erpc.yaml`.** Use Railway environment variables for API keys and reference them as `${VAR_NAME}` in your config file.
+- **Do not rely on the monitoring service for production observability.** Prometheus and Grafana share one container — a crash in either is not independently restarted. For production monitoring, use separate Railway services or an external observability stack.
+
+### Edge cases & gotchas
+
+1. **Default credentials**: Grafana ships with `admin`/`admin`. Set a strong password via Railway env vars before exposing the public URL.
+2. **CORS for browser usage**: eRPC's default config has no CORS headers. Add a `cors` block under your project in `erpc.yaml` before consuming from a frontend. See [CORS](/config/projects/cors).
+3. **Config changes require a connected repo**: Editing `erpc.yaml` triggers an automatic redeploy only if you connected your fork to Railway. Manual deploys are needed otherwise.
+4. **Monitoring container is single-process**: Prometheus and Grafana share one container. A crash in either is not independently restarted. Not suitable for production monitoring.
+5. **Public URL exposes all chains**: The default config proxies public endpoints for all supported chains. Add [authentication](/config/auth) or [rate limiters](/config/rate-limiters) before exposing the public URL to untrusted clients.
+6. **Private networking is project-scoped**: The `.railway.internal` hostname is only reachable from services within the same Railway project. External clients must use the public URL.
+
+### Source code entry points
+
+- [`railway-deployment` repository](https://github.com/erpc/railway-deployment) — template source with default `erpc.yaml`
+- [`monitoring/Dockerfile`](https://github.com/erpc/erpc/blob/main/monitoring/Dockerfile) — combined Prometheus v3.9.1 + Grafana 12.3.3 image
+- [`monitoring/scripts/entrypoint.sh`](https://github.com/erpc/erpc/blob/main/monitoring/scripts/entrypoint.sh) — dual-process startup and `SERVICE_ENDPOINT` substitution
+- [`cmd/erpc/main.go:L354-L363`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L354-L363) — `LOG_LEVEL` env var handling
+- [`cmd/erpc/main.go:L72-L74`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L72-L74) — SIGTERM graceful shutdown via `signal.NotifyContext`
+
+### Related pages
+
+- [Docker](/deployment/docker) — self-hosted container deploy with local compose stack.
+- [Kubernetes](/deployment/kubernetes) — production-grade orchestration with resource sizing and drain tuning.
+- [Monitoring & metrics](/operation/monitoring) — full metrics reference for dashboards and alerting.
+- [Authentication](/config/auth) — lock down the public endpoint before production traffic.
+- [Rate limiters](/config/rate-limiters) — cap per-client or per-upstream traffic.
+- [CORS](/config/projects/cors) — required for browser-side usage.
+
+</AISection>

@@ -12,8 +12,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	"github.com/failsafe-go/failsafe-go"
-	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,59 +65,7 @@ func validResponseWithCloser(value string, closeCount *atomic.Int32) *common.Nor
 	return validResponseWithValue(value).WithBody(&trackingReadCloser{closeCount: closeCount})
 }
 
-type stubExecution struct {
-	ctx context.Context
-}
 
-func (s *stubExecution) Context() context.Context { return s.ctx }
-func (s *stubExecution) Attempts() int            { return 1 }
-func (s *stubExecution) Executions() int          { return 1 }
-func (s *stubExecution) Retries() int             { return 0 }
-func (s *stubExecution) Hedges() int              { return 0 }
-func (s *stubExecution) StartTime() time.Time     { return time.Now() }
-func (s *stubExecution) ElapsedTime() time.Duration {
-	return 0
-}
-func (s *stubExecution) LastResult() *common.NormalizedResponse { return nil }
-func (s *stubExecution) LastError() error                       { return nil }
-func (s *stubExecution) IsFirstAttempt() bool                   { return true }
-func (s *stubExecution) IsRetry() bool                          { return false }
-func (s *stubExecution) IsHedge() bool                          { return false }
-func (s *stubExecution) AttemptStartTime() time.Time            { return time.Now() }
-func (s *stubExecution) ElapsedAttemptTime() time.Duration      { return 0 }
-func (s *stubExecution) IsCanceled() bool                       { return s.ctx != nil && s.ctx.Err() != nil }
-func (s *stubExecution) Canceled() <-chan struct{} {
-	if s.ctx == nil {
-		return nil
-	}
-	return s.ctx.Done()
-}
-func (s *stubExecution) RecordResult(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-	return result
-}
-func (s *stubExecution) InitializeRetry() *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-	return nil
-}
-func (s *stubExecution) Cancel(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) {}
-func (s *stubExecution) IsCanceledWithResult() (bool, *failsafeCommon.PolicyResult[*common.NormalizedResponse]) {
-	return s.IsCanceled(), nil
-}
-func (s *stubExecution) CopyWithResult(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) failsafe.Execution[*common.NormalizedResponse] {
-	return s
-}
-func (s *stubExecution) CopyForCancellable() failsafe.Execution[*common.NormalizedResponse] {
-	return s
-}
-func (s *stubExecution) CopyForHedge() failsafe.Execution[*common.NormalizedResponse] {
-	return s
-}
-func (s *stubExecution) CopyForCancellableWithValue(key, value any) failsafe.Execution[*common.NormalizedResponse] {
-	ctx := s.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return &stubExecution{ctx: context.WithValue(ctx, key, value)}
-}
 
 // TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants verifies
 // the original bug fix: when the parent context is cancelled after every
@@ -151,7 +98,6 @@ func TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants(t *t
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -160,7 +106,7 @@ func TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants(t *t
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if started.Add(1) == 3 {
 				close(allStarted)
 			}
@@ -225,12 +171,12 @@ func TestExecuteParticipant_PostExecutionCancel_PreservesResult(t *testing.T) {
 	e.executeParticipant(
 		ctx,
 		&logger,
-		&stubExecution{ctx: ctx},
 		metricsLabels{},
-		func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			cancel()
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: expected}
+			return expected, nil
 		},
+		newTestRequest(),
 		0,
 		responseCh,
 	)
@@ -271,11 +217,10 @@ func TestConsensus_CallerAbandons_ParticipantsStillComplete(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	callerReturned := make(chan struct{})
 	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if innerFnStarts.Add(1) == 3 {
 				close(allStarted)
 			}
@@ -334,7 +279,6 @@ func TestConsensus_TwoParticipants_CancelAfterExecution_DoesNotReturnLowParticip
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -343,7 +287,7 @@ func TestConsensus_TwoParticipants_CancelAfterExecution_DoesNotReturnLowParticip
 	resultCh := make(chan result, 1)
 
 	go func() {
-		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if started.Add(1) == 2 {
 				close(allStarted)
 			}
@@ -403,10 +347,9 @@ func TestConsensus_ShortCircuit_CallerGetsWinnerBeforeSlowParticipants(t *testin
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	start := time.Now()
-	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		n := callCount.Add(1)
 		if n <= 2 {
 			return validResponse(), nil // two fast participants with matching responses
@@ -460,9 +403,8 @@ func TestConsensus_ShortCircuit_ReleasesLateResponses(t *testing.T) {
 	}()
 
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
-	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		n := callCount.Add(1)
 		started.Done()
 		<-allStarted
@@ -500,9 +442,8 @@ func TestConsensus_HappyPath_NoCancel(t *testing.T) {
 	req := newTestRequest()
 
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
-	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	resp, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		return validResponse(), nil
 	})
 
@@ -530,10 +471,9 @@ func TestConsensus_CancelBeforeExecution_ReturnsLowParticipants(t *testing.T) {
 	cancel() // cancel immediately, before any participant runs
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	var callCount atomic.Int32
-	_, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		callCount.Add(1)
 		return validResponse(), nil
 	})
@@ -577,11 +517,10 @@ func TestConsensus_FireAndForget_CallerCancelDoesNotStopParticipants(t *testing.
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	callerReturned := make(chan struct{})
 	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			if innerFnStarts.Add(1) == 3 {
 				close(allStarted)
 			}
@@ -646,11 +585,10 @@ func TestConsensus_CallerAbandons_WinnerResponseIsReleased(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	callerReturned := make(chan struct{})
 	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		_, _ = pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n := callCount.Add(1)
 			started.Done()
 			<-allStarted
@@ -711,11 +649,111 @@ func TestRecordMetricsAndTracing_NilAnalysis_DoesNotPanic(t *testing.T) {
 	}
 	span := trace.SpanFromContext(context.Background()) // noop span
 
-	result := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+	result := &slotResult{
 		Error: errors.New("simulated analyzer panic"),
 	}
 
 	require.NotPanics(t, func() {
 		e.recordMetricsAndTracing(req, time.Now(), result, nil /* analysis */, labels, span)
+	})
+}
+
+// TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError verifies
+// that rounds settling on a deterministic client/execution error (severity
+// info — e.g. all upstreams reject an eth_sendRawTransaction broadcast with
+// nonce-too-low) do not increment consensus_errors_total: consensus itself
+// succeeded, the error belongs to the caller. Non-info errors on the same
+// path must still be counted.
+func TestRecordMetricsAndTracing_InfoSeverityNotCountedAsConsensusError(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	cfg := &config{agreementThreshold: 2}
+	e := &executor{
+		consensusPolicy: &consensusPolicy{
+			config: cfg,
+			logger: &logger,
+		},
+	}
+
+	revertErr := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(3, 3, "execution reverted", nil, nil),
+	)
+
+	// Two participants agreeing on the same execution error → hasConsensus,
+	// outcome "consensus_on_error".
+	buildAgreedErrorAnalysis := func() *consensusAnalysis {
+		responses := []*execResult{
+			{Err: revertErr, Index: 0},
+			{Err: revertErr, Index: 1},
+		}
+		analysis := &consensusAnalysis{
+			config:            cfg,
+			groups:            make(map[string]*responseGroup),
+			totalParticipants: len(responses),
+			method:            "eth_sendRawTransaction",
+		}
+		for _, r := range responses {
+			classifyAndHashResponse(r, nil, cfg)
+			analysis.validParticipants++
+			group, exists := analysis.groups[r.CachedHash]
+			if !exists {
+				group = &responseGroup{
+					Hash:         r.CachedHash,
+					ResponseType: r.CachedResponseType,
+				}
+				analysis.groups[r.CachedHash] = group
+			}
+			group.Count++
+			group.Results = append(group.Results, r)
+			if group.FirstError == nil {
+				group.FirstError = r.Err
+			}
+		}
+		return analysis
+	}
+
+	span := trace.SpanFromContext(context.Background()) // noop span
+
+	t.Run("info severity skips consensus_errors_total", func(t *testing.T) {
+		labels := metricsLabels{
+			projectId:   "test-proj-info-sev",
+			networkId:   "test-net",
+			category:    "eth_sendRawTransaction",
+			finalityStr: "latest",
+			method:      "eth_sendRawTransaction",
+		}
+		errCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+			labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr)
+		totalCounter := telemetry.MetricConsensusTotal.WithLabelValues(
+			labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr)
+		errBefore := testutil.ToFloat64(errCounter)
+		totalBefore := testutil.ToFloat64(totalCounter)
+
+		e.recordMetricsAndTracing(newTestRequest(), time.Now(),
+			&slotResult{Error: revertErr}, buildAgreedErrorAnalysis(), labels, span)
+
+		assert.Equal(t, totalBefore+1, testutil.ToFloat64(totalCounter),
+			"round must still be counted in consensus_total with consensus_on_error outcome")
+		assert.Equal(t, errBefore, testutil.ToFloat64(errCounter),
+			"info-severity agreed error must not count as a consensus error")
+	})
+
+	t.Run("non-info severity still increments consensus_errors_total", func(t *testing.T) {
+		labels := metricsLabels{
+			projectId:   "test-proj-warn-sev",
+			networkId:   "test-net",
+			category:    "eth_sendRawTransaction",
+			finalityStr: "latest",
+			method:      "eth_sendRawTransaction",
+		}
+		serverErr := common.NewErrEndpointServerSideException(errors.New("boom"), nil, 500)
+		errCounter := telemetry.MetricConsensusErrors.WithLabelValues(
+			labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr)
+		errBefore := testutil.ToFloat64(errCounter)
+
+		e.recordMetricsAndTracing(newTestRequest(), time.Now(),
+			&slotResult{Error: serverErr}, buildAgreedErrorAnalysis(), labels, span)
+
+		assert.Equal(t, errBefore+1, testutil.ToFloat64(errCounter),
+			"non-info errors must still be counted as consensus errors")
 	})
 }

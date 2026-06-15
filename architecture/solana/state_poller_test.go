@@ -133,9 +133,10 @@ func (u *stubUpstream) Logger() *zerolog.Logger {
 	lg := zerolog.Nop()
 	return &lg
 }
-func (u *stubUpstream) Forward(_ context.Context, _ *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+func (u *stubUpstream) Forward(_ context.Context, _ *common.NormalizedRequest, _ bool, _ bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
+func (u *stubUpstream) ShouldHandleMethod(_ string) (bool, error) { return true, nil }
 func (u *stubUpstream) MetricsTracker() *health.Tracker             { return u.tracker }
 func (u *stubUpstream) Tracker() common.HealthTracker               { return nil }
 func (u *stubUpstream) EvmStatePoller() common.EvmStatePoller       { return nil }
@@ -152,7 +153,7 @@ func TestTrackerIntegration_SuggestLatestSlotUpdatesTracker(t *testing.T) {
 
 	p.SuggestLatestSlot(500_000)
 
-	metrics := tracker.GetUpstreamMethodMetrics(p.upstream, "*")
+	metrics := tracker.GetUpstreamMethodMetrics(p.upstream, "*", common.DataFinalityStateAll)
 	require.NotNil(t, metrics, "tracker should have metrics for the upstream")
 	// BlockHeadLag is relative — after one upstream update the network max equals
 	// the upstream value so lag should be 0.
@@ -165,7 +166,7 @@ func TestTrackerIntegration_FinalizedSlotUpdatesTracker(t *testing.T) {
 
 	p.SuggestFinalizedSlot(499_800)
 
-	metrics := tracker.GetUpstreamMethodMetrics(p.upstream, "*")
+	metrics := tracker.GetUpstreamMethodMetrics(p.upstream, "*", common.DataFinalityStateAll)
 	require.NotNil(t, metrics)
 	// finalizationLag = 0 when only one upstream in network
 	assert.Equal(t, int64(0), metrics.FinalizationLag.Load())
@@ -188,7 +189,7 @@ func TestTrackerIntegration_OnValueCallbackFires(t *testing.T) {
 
 	// The tracker should have metrics for the upstream because NewSolanaStatePoller
 	// wires an OnValue callback that calls tracker.SetLatestBlockNumber.
-	metrics := tracker.GetUpstreamMethodMetrics(p.upstream, "*")
+	metrics := tracker.GetUpstreamMethodMetrics(p.upstream, "*", common.DataFinalityStateAll)
 	require.NotNil(t, metrics, "tracker should have metrics after a slot suggestion")
 	// Lag is 0 because there is only one upstream in the network.
 	assert.Equal(t, int64(0), metrics.BlockHeadLag.Load(),

@@ -355,23 +355,7 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 	defer span.End()
 
 	if re == nil && rs != nil && rs.IsResultEmptyish(ctx) {
-		// This is to normalize empty logs responses (e.g. instead of returning "null")
-		jrr, err := common.NewJsonRpcResponse(rq.ID(), []interface{}{}, nil)
-		if err != nil {
-			return nil, err
-		}
-		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
-		nnr.SetFromCache(rs.FromCache())
-		nnr.SetEvmBlockRef(rs.EvmBlockRef())
-		nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
-		nnr.SetAttempts(rs.Attempts())
-		nnr.SetRetries(rs.Retries())
-		nnr.SetHedges(rs.Hedges())
-		nnr.SetUpstream(u)
-		rq.SetLastValidResponse(ctx, nnr)
-		// We replaced the original response with a normalized one; release the old instance
-		rs.Release()
-		return nnr, nil
+		return normalizeEmptyArrayResponse(ctx, u, rq, rs)
 	}
 
 	return rs, re

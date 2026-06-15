@@ -11,6 +11,7 @@ import (
 	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -24,6 +25,7 @@ type PreparedProject struct {
 	consumerAuthRegistry *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
+	policyEngine         *policy.Engine
 	cfgMu                sync.RWMutex
 }
 

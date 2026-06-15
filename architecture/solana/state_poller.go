@@ -256,7 +256,7 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 func (p *SolanaStatePoller) PollHealth(ctx context.Context) error {
 	pr := common.NewNormalizedRequest(reqGetHealth)
 
-	resp, err := p.upstream.Forward(ctx, pr, true)
+	resp, err := p.upstream.Forward(ctx, pr, true, false)
 	if err != nil {
 		p.healthy.Store(false)
 		return fmt.Errorf("getHealth: %w", err)
@@ -296,7 +296,7 @@ func (p *SolanaStatePoller) PollFinalizedSlot(ctx context.Context) (int64, error
 // the processed slot when the node's processing pipeline is backlogged.
 func (p *SolanaStatePoller) PollMaxShredInsertSlot(ctx context.Context) (int64, error) {
 	pr := common.NewNormalizedRequest(reqGetMaxShredInsertSlot)
-	resp, err := p.upstream.Forward(ctx, pr, true)
+	resp, err := p.upstream.Forward(ctx, pr, true, false)
 	if err != nil {
 		return 0, fmt.Errorf("getMaxShredInsertSlot: %w", err)
 	}
@@ -324,7 +324,7 @@ func (p *SolanaStatePoller) MaxShredInsertSlotLag() int64 {
 func (p *SolanaStatePoller) pollSlot(ctx context.Context, reqBody []byte, commitment string) (int64, error) {
 	pr := common.NewNormalizedRequest(reqBody)
 
-	resp, err := p.upstream.Forward(ctx, pr, true)
+	resp, err := p.upstream.Forward(ctx, pr, true, false)
 	if err != nil {
 		return 0, fmt.Errorf("getSlot(%s): %w", commitment, err)
 	}

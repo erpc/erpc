@@ -1,236 +1,508 @@
 ---
-description: Administrative operations for eRPC...
+title: Admin API
+description: A built-in operator control plane — inspect topology, cordon sick upstreams without restarts, and manage API keys, all over a secure JSON-RPC 2.0 endpoint.
 ---
 
-## Admin endpoint
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
 
-Administrative operations are available through:
-```
-https://<hostname>/admin
-```
+<LLMsTxtLink />
 
-Admin endpoints require authentication configured under root `admin` section:
-```yaml filename="erpc.yaml"
-admin:
+# Admin API
+
+eRPC ships a live control plane at `POST /admin` — completely separate from your consumer endpoints. Without touching config files or restarting the server, you can inspect the running topology, instantly pull a misbehaving upstream out of rotation, and manage API keys stored in your database connector.
+
+**What you get:**
+- Runtime introspection of every project, network, and upstream
+- One-call cordon/uncordon to remove an upstream from traffic without a deploy
+- API key provisioning backed by any database connector
+- `erpc validate` CLI to catch config errors before they reach production
+
+## Quick taste
+
+Illustrative, not a tuned production config — secret-token auth on the admin endpoint:
+
+<ConfigTabs
+  path="admin"
+  focusYaml="2-7"
+  focusTs="2-6"
+  yaml={`admin:
+  auth:
+    strategies:
+      # secret token — pass as x-erpc-secret-token header on every admin request
+      - type: secret
+        secret:
+          value: "your-admin-secret"`}
+  ts={`admin: {
+  auth: {
+    strategies: [{
+      // secret token — pass as x-erpc-secret-token header on every admin request
+      type: "secret",
+      secret: { value: "your-admin-secret" },
+    }],
+  },
+}`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+	n={1}
+	title="secure and enable the admin endpoint"
+	defaultOpen
+	prompt={`Enable the eRPC admin control plane in my eRPC config with secret-token auth and locked-down
+CORS so only my internal dashboard can reach it. Explain what happens if admin.auth is
+missing vs the entire admin block being absent. Read the full reference first:
+https://docs.erpc.cloud/operation/admin.llms.txt`}
+/>
+
+<PromptExample
+	n={2}
+	title="cordon a degraded upstream without a redeploy"
+	prompt={`One of my upstreams is returning elevated errors right now. Show me the exact admin API
+curl commands to cordon it immediately for all methods, verify the cordon took effect,
+and restore it when the vendor recovers. My eRPC admin endpoint is at
+https://erpc.example.com/admin. Reference:
+https://docs.erpc.cloud/operation/admin.llms.txt`}
+/>
+
+<PromptExample
+	n={3}
+	title="add erpc validate to my CI pipeline"
+	prompt={`I want to run erpc validate in CI to catch config errors before they reach production.
+Show me the correct command, how to parse the JSON output as a deployment blocker, and
+how to skip live endpoint checks in local dev. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/operation/admin.llms.txt`}
+/>
+
+<PromptExample
+	n={4}
+	title="provision and revoke consumer API keys at runtime"
+	prompt={`My project uses database-backed auth and I need to add, list, and revoke consumer API
+keys via the admin API without touching config files. Show me the correct
+erpc_addApiKey / erpc_listApiKeys / erpc_deleteApiKey calls and explain the connectorId
+vs admin auth difference. Work with my existing eRPC config. Reference:
+https://docs.erpc.cloud/operation/admin.llms.txt`}
+/>
+
+<AISection title="Admin API — full agent reference">
+
+### How it works
+
+Any `POST` or `OPTIONS` request whose path has exactly one segment equal to `"admin"` is routed to the admin endpoint by `parseUrlPath`. The handler first applies admin-specific CORS from `admin.cors` — OPTIONS preflights return 204 immediately, before any auth evaluation. For non-OPTIONS requests an `AuthPayload` is built from HTTP headers, then `AdminAuthenticate` is called against `adminAuthRegistry`. On success, `AdminHandleRequest` switch-dispatches on the JSON-RPC method name. Unrecognized methods produce `ErrEndpointUnsupported`.
+
+Two distinct failure modes exist for misconfigured admin. If the entire `admin:` block is absent, every request returns `"admin is not enabled for this project"` (HTTP 401) and OPTIONS also fails with 401 (the CORS block is skipped). If `admin:` is present but `admin.auth:` is omitted, requests return `"admin auth not configured"`. Both are HTTP 401 but require different fixes.
+
+`adminAuthRegistry` is built at startup inside `NewERPC` using `auth.NewAuthRegistry` — the same factory as project consumer auth. All strategy types are supported: `secret`, `jwt`, `siwe`, `network`, `database`. Most deployments use a single `type: secret` strategy.
+
+The API key management methods (`erpc_addApiKey` etc.) are authenticated by the admin auth registry but operate on connectors belonging to the project's consumer auth. The `connectorId` parameter must match a `database` strategy connector on the named project's consumer auth config, not on the admin config.
+
+CORS for the admin endpoint defaults to `allowedOrigins: ["*"]` with `allowCredentials: false` because the endpoint is gated by secret tokens. The full default set — `allowedMethods: ["GET","POST","OPTIONS"]`, `allowedHeaders: ["content-type","authorization","x-erpc-secret-token"]`, `maxAge: 3600` — is auto-synthesised at startup when no `admin.cors` block is present.
+
+### Config schema
+
+All fields are under the top-level `admin:` key.
+
+| Field | Type | Default | Behavior / footguns |
+|---|---|---|---|
+| `admin` | `*AdminConfig` | `nil` (absent) | When nil, every `POST /admin` returns 401 "admin is not enabled for this project". OPTIONS preflight also returns 401 — the CORS block is skipped. Source: [`erpc/http_server.go:L586-L610`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L586-L610) |
+| `admin.auth` | `*AuthConfig` | `nil` | When nil, `adminAuthRegistry` is nil and every request returns "admin auth not configured". Source: [`erpc/admin.go:L26-L30`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L26-L30) |
+| `admin.auth.strategies` | `[]*AuthStrategyConfig` | `[]` | Supports `secret`, `jwt`, `siwe`, `network`, `database`. Most deployments use `type: secret`. |
+| `admin.cors` | `*CORSConfig` | auto-synthesised: `{allowedOrigins: ["*"], allowCredentials: false}` | Admin-specific CORS; project-level CORS is never consulted for `/admin`. Intentionally defaults to `*` because the endpoint is token-gated. Source: [`common/defaults.go:L775-L784`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L775-L784) |
+| `admin.cors.allowedOrigins` | `[]string` | `["*"]` | Override in production, e.g. `["https://dashboard.example.com"]`. |
+| `admin.cors.allowedMethods` | `[]string` | `["GET", "POST", "OPTIONS"]` | Set by `CORSConfig.SetDefaults`. Source: [`common/defaults.go:L2828-L2829`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2828-L2829) |
+| `admin.cors.allowedHeaders` | `[]string` | `["content-type", "authorization", "x-erpc-secret-token"]` | The third entry is the standard header for eRPC secret-token strategies. Source: [`common/defaults.go:L2831-L2836`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2831-L2836) |
+| `admin.cors.exposedHeaders` | `[]string` | `nil` | Never set by defaults. When nil, `Access-Control-Expose-Headers` is omitted. Set explicitly if browser clients need to read custom eRPC response headers. |
+| `admin.cors.allowCredentials` | `*bool` | `false` (pointer) | Must stay `false` when `allowedOrigins: ["*"]` per CORS spec. Source: [`common/defaults.go:L2838-L2840`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2838-L2840) |
+| `admin.cors.maxAge` | `int` | `3600` | Preflight cache duration in seconds. `Access-Control-Max-Age` is emitted when `> 0`. Source: [`common/defaults.go:L2841-L2843`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2841-L2843) |
+
+### Worked examples
+
+**1. Secret-token admin endpoint (minimal production setup).** Lock down the control plane with a static shared secret; override `allowedOrigins` to match your internal dashboard origin:
+
+<ConfigTabs
+  path="admin"
+  yaml={`admin:
   auth:
     strategies:
       - type: secret
         secret:
-          value: <your-secret>
+          value: "changeme-use-env-var"
+  cors:
+    allowedOrigins:
+      - "https://ops.example.com"`}
+  ts={`admin: {
+  auth: {
+    strategies: [{
+      type: "secret",
+      secret: { value: "changeme-use-env-var" },
+    }],
+  },
+  cors: { allowedOrigins: ["https://ops.example.com"] },
+}`}
+/>
 
-server:
-  # ...
-projects:
-  # ...
+**2. Cordon a degraded upstream without a restart.** When a provider is returning elevated errors but hasn't fully failed, you can remove it from routing immediately:
+
+```sh
+# Cordon for all methods
+curl -X POST https://erpc.example.com/admin \
+  -H "x-erpc-secret-token: changeme-use-env-var" \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"erpc_cordonUpstream",
+       "params":[{"projectId":"myProject","upstream":"alchemy-mainnet","reason":"elevated 5xx"}]}'
+
+# Verify
+curl ... -d '{"jsonrpc":"2.0","id":2,"method":"erpc_listCordoned",
+              "params":[{"projectId":"myProject"}]}'
+
+# Restore when provider recovers
+curl ... -d '{"jsonrpc":"2.0","id":3,"method":"erpc_uncordonUpstream",
+              "params":[{"projectId":"myProject","upstream":"alchemy-mainnet"}]}'
 ```
-### Available admin methods
 
-#### erpc_taxonomy
-Returns a taxonomy of projects, networks, and upstreams configured in the system.
+**3. Validate config in CI.** Run `erpc validate` before deploying to catch chain-ID mismatches, orphan rate-limit budgets, and missing failsafe policies:
 
-**Example request:**
-```bash
-curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
-# OR as a header:
-# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "erpc_taxonomy",
-    "id": 1,
-    "jsonrpc": "2.0"
-}'
+```sh
+erpc validate --config ./erpc.yaml --format json
+# exits 0 = clean, 1 = errors
+# skip live checks for local dev nodes:
+ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION=true erpc validate --config ./erpc.yaml
 ```
 
-**Example Response:**
+**4. Provision an API key via admin (requires a database auth connector on the project).** Add, list, and revoke consumer API keys without any code deploys:
+
+```sh
+# Add
+curl ... -d '{"jsonrpc":"2.0","id":1,"method":"erpc_addApiKey","params":[{
+  "projectId":"myProject","connectorId":"my-dynamodb","apiKey":"sk_abc123",
+  "userId":"user-42","rateLimitBudget":"standard"}]}'
+
+# List (paginated, default limit 50)
+curl ... -d '{"jsonrpc":"2.0","id":2,"method":"erpc_listApiKeys","params":[{
+  "projectId":"myProject","connectorId":"my-dynamodb"}]}'
+
+# Delete
+curl ... -d '{"jsonrpc":"2.0","id":3,"method":"erpc_deleteApiKey","params":[{
+  "projectId":"myProject","connectorId":"my-dynamodb","apiKey":"sk_abc123"}]}'
+```
+
+### Request/response behavior
+
+#### Transport
+
+- **URL**: `POST /admin` (single path segment; no project/network/chain segments).
+- **Envelope**: JSON-RPC 2.0 — `{"jsonrpc":"2.0","id":<id>,"method":"<name>","params":[...]}`.
+- **Auth**: evaluated per-request before dispatch. Failure → HTTP 401 JSON-RPC error.
+- **Batch**: a JSON array body fans out to per-method goroutines, each independently authenticated.
+- **OPTIONS preflight**: returns 204 before auth is evaluated; uses `admin.cors` exclusively.
+
+---
+
+#### `erpc_taxonomy`
+
+**Params**: none.
+
+**Response**:
 ```json
 {
-    "jsonrpc": "2.0",
-    "result": {
-        "projects": [
-            {
-                "id": "frontend",
-                "networks": [
-                    {
-                        "id": "evm:1",
-                        "upstreams": [
-                            {
-                                "id": "blastapi-test"
-                            },
-                            {
-                                "id": "my-alchemy"
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]
-    }
-}
-```
-
-#### erpc_project
-Returns detailed configuration and upstream scoring/health information for a specific project.
-
-**Example request:**
-```bash
-curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
-# OR as a header:
-# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "erpc_project",
-    "params": ["main"],
-    "id": 1,
-    "jsonrpc": "2.0"
-}'
-```
-
-**Example response:**
-```json
-{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "result": {
-        "config": {
-            "id": "frontend",
-            "cors": { /* ... */ },
-            "upstreams": [
-                {
-                    "id": "blastapi-test",
-                    "endpoint": "blastapi#redacted=e6401",
-                    "type": "evm",
-                    "ignoreMethods": [
-                        "*"
-                    ],
-                    "allowMethods": [
-                        "eth_blockNumber"
-                    ],
-                },
-                // ...
-            ],
-            "networks": [
-                {
-                    "architecture": "evm",
-                    "evm": {
-                        "chainId": 1,
-                        "fallbackFinalityDepth": 1024
-                    },
-                    "rateLimitBudget": "my-network-budget",
-                    // ...
-                }
-            ],
-            "rateLimitBudget": "my-project-budget",
-            // ...
-        },
-        "health": {
-            "upstreams": [
-                {
-                    "id": "blastapi#redacted=e6401",
-                    "metrics": {
-                        "evm:1|eth_blockNumber": {
-                            "errorsTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "blockHeadLag": 0,
-                            "finalizationLag": 0,
-                            "cordoned": false,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            },
-                            "selfRateLimitedTotal": 0,
-                            "requestsTotal": 1,
-                            "lastCordonedReason": null
-                        },
-                        "*|eth_blockNumber": {
-                            "blockHeadLag": 0,
-                            "cordoned": false,
-                            "lastCordonedReason": null,
-                            "selfRateLimitedTotal": 0,
-                            "errorsTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "requestsTotal": 1,
-                            "finalizationLag": 0,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            }
-                        },
-                        "evm:1|*": {
-                            "blockHeadLag": 0,
-                            "finalizationLag": 0,
-                            "cordoned": false,
-                            "lastCordonedReason": null,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            },
-                            "errorsTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "selfRateLimitedTotal": 0,
-                            "requestsTotal": 1
-                        },
-                        "*|*": {
-                            "blockHeadLag": 0,
-                            "finalizationLag": 0,
-                            "latencySecs": {
-                                "p90": 0.110877458
-                            },
-                            "selfRateLimitedTotal": 0,
-                            "remoteRateLimitedTotal": 0,
-                            "requestsTotal": 1,
-                            "errorsTotal": 0,
-                            "cordoned": false,
-                            "lastCordonedReason": null
-                        }
-                    },
-                    "activeNetworks": [
-                        "evm:1"
-                    ]
-                },
-                // ...
-            ],
-            "sortedUpstreams": {
-                "evm:1": {
-                    "*": [
-                        "my-alchemy",
-                        "blastapi-test"
-                    ],
-                    "eth_blockNumber": [
-                        "my-alchemy",
-                        "blastapi-test"
-                    ]
-                },
-                "*": {
-                    "*": [
-                        "blastapi-test",
-                        "my-alchemy"
-                    ],
-                    "eth_blockNumber": [
-                        "my-alchemy",
-                        "blastapi-test"
-                    ]
-                }
-            },
-            "upstreamScores": {
-                "blastapi-test": {
-                    "evm:1": {
-                        "eth_blockNumber": 14,
-                        "*": 14
-                    },
-                    "*": {
-                        "*": 15.41420133288338,
-                        "eth_blockNumber": 14
-                    }
-                },
-                "my-alchemy": {
-                    "evm:1": {
-                        "*": 19,
-                        "eth_blockNumber": 19
-                    },
-                    "*": {
-                        "eth_blockNumber": 19,
-                        "*": 14
-                    }
-                }
-            }
+  "projects": [
+    {
+      "id": "myProject",
+      "networks": [
+        {
+          "id": "evm:1",
+          "alias": "ethereum",
+          "upstreams": [{"id": "alchemy-mainnet", "vendor": "alchemy"}],
+          "providers": []
         }
+      ]
     }
+  ]
 }
 ```
+Lists all loaded projects, their networks (with aliases if configured), and per-network upstreams with vendor name. `vendor` is empty string when no vendor is detected. The `providers` field is present in the response struct but is always an empty array in the current implementation — only `upstreams` is populated. Source: [`erpc/admin.go:L474-L541`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L474-L541)
+
+---
+
+#### `erpc_config`
+
+**Params**: none.
+
+**Response**: full `*common.Config` struct as JSON. Sensitive `secret.value` fields are replaced with `"REDACTED"` by `SecretStrategyConfig.MarshalJSON`. Source: [`erpc/admin.go:L456-L471`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L456-L471)
+
+---
+
+#### `erpc_project`
+
+**Params**: `["<projectId>"]`
+
+**Response**:
+```json
+{
+  "config": {},
+  "health": {
+    "upstreams": [],
+    "initialization": {}
+  }
+}
+```
+`config` is the current `*ProjectConfig` including lazy-loaded networks. `health.upstreams` is the live list from `UpstreamsRegistry.GetUpstreamsHealth()` with metrics and cordon state. `health.initialization` reflects the network initializer status. Returns `ErrInvalidRequest` if param is missing or not a string. Source: [`erpc/admin.go:L544-L588`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L544-L588)
+
+---
+
+#### `erpc_addApiKey`
+
+**Params**: `[{"projectId": string, "connectorId": string, "apiKey": string, "userId": string, "rateLimitBudget"?: string, "enabled"?: bool}]`
+
+`enabled` defaults to `true` when omitted. `connectorId` must match a `database` strategy connector in the **project's consumer auth config** (not admin auth). Source: [`erpc/admin.go:L102-L192`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L102-L192)
+
+**Response**:
+```json
+{"success": true, "apiKey": "<key>", "userId": "<userId>"}
+```
+
+---
+
+#### `erpc_listApiKeys`
+
+**Params**: `[{"projectId": string, "connectorId": string, "limit"?: number, "paginationToken"?: string}]`
+
+`limit` defaults to `50`. `paginationToken` is the opaque `nextToken` from a previous response. Source: [`erpc/admin.go:L195-L291`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L195-L291)
+
+**Response**:
+```json
+{
+  "apiKeys": [
+    {
+      "key": "abc123",
+      "userId": "user1",
+      "rateLimitBudget": "standard",
+      "enabled": true,
+      "createdAt": "<time.Now()>",
+      "updatedAt": "<time.Now()>"
+    }
+  ],
+  "nextToken": "<opaque>",
+  "hasMore": true,
+  "totalReturned": 50
+}
+```
+**Footgun**: `createdAt`/`updatedAt` are always `time.Now()` — actual creation timestamps are not stored.
+
+---
+
+#### `erpc_updateApiKey`
+
+**Params**: `[{"projectId": string, "connectorId": string, "apiKey": string, "updates": object}]`
+
+Applies patch semantics: `null` values in `updates` delete fields from the stored blob; non-null values overwrite. No schema enforcement — any JSON field can be added. Source: [`erpc/admin.go:L294-L381`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L294-L381)
+
+**Response**:
+```json
+{"success": true, "apiKey": "<key>", "updated": {/* mirror of the updates object passed in */}}
+```
+
+---
+
+#### `erpc_deleteApiKey`
+
+**Params**: `[{"projectId": string, "connectorId": string, "apiKey": string}]`
+
+Fetches the current record to retrieve `userId` (range key for deletion), then calls `connector.Delete`. Source: [`erpc/admin.go:L384-L453`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L384-L453)
+
+**Response**:
+```json
+{"success": true, "apiKey": "<key>", "userId": "<userId>"}
+```
+
+---
+
+#### `erpc_cordonUpstream`
+
+**Params**: `[{"projectId": string, "upstream": string, "method"?: string, "reason"?: string}]`
+
+`method` defaults to `"*"` (all methods). `reason` defaults to `"admin: manual cordon"`. Cordon state persists in-memory until explicitly uncordoned and does not survive process restart. Source: [`erpc/admin.go:L658-L687`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L658-L687)
+
+**Response**:
+```json
+{"projectId": "...", "upstream": "...", "method": "*", "cordoned": true, "reason": "admin: manual cordon"}
+```
+
+---
+
+#### `erpc_uncordonUpstream`
+
+**Params**: `[{"projectId": string, "upstream": string, "method"?: string, "reason"?: string}]`
+
+`method` defaults to `"*"`. `reason` defaults to `"admin: manual uncordon"` (different string from `erpc_cordonUpstream`). Source: [`erpc/admin.go:L658-L687`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L658-L687)
+
+**Response**:
+```json
+{"projectId": "...", "upstream": "...", "method": "*", "cordoned": false, "reason": "admin: manual uncordon"}
+```
+
+---
+
+#### `erpc_listCordoned`
+
+**Params**: `[{"projectId": string}]`
+
+**Footgun**: only reports upstreams cordoned for `"*"` (whole-upstream). Method-scoped cordons (e.g. cordon only for `eth_getLogs`) are invisible to this method. Use the `erpc_upstream_cordoned` metric with the `reason` label to track method-scoped cordons. Source: [`erpc/admin.go:L692-L729`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L692-L729)
+
+**Response**:
+```json
+{
+  "projectId": "myProject",
+  "cordoned": [
+    {"upstream": "alchemy-mainnet", "reason": "admin: manual cordon"}
+  ]
+}
+```
+
+---
+
+#### `erpc validate` CLI
+
+```sh
+erpc validate --config <path> [--format json|md]
+```
+
+Default format: `json`. Exit code 0 = clean; exit code 1 = errors present or config load failed. Logs are suppressed during validation. Set `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION=true` to skip live checks for local/private endpoints. An endpoint is considered local when its hostname is `localhost`, `127.0.0.1`, `::1`, matches `*.cluster.local`, or resolves to a private-range IP address. Source: [`erpc/config_analyzer.go:L28-L59`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L28-L59)
+
+**Static checks** — orphan rate-limit budgets, budgets used without `rateLimitAutoTune`, networks missing failsafe policies, upstreams with empty endpoints, invalid `metrics.histogramBuckets`.
+
+**Live upstream checks** — up to 50 concurrent goroutines per project, each with a 5s timeout and 3 retries. For every upstream: fetches `eth_chainId` (mismatch vs config → error), genesis block hash (skipped for `evm.nodeType: full` or `maxAvailableRecentBlocks > 0`), and a stable historical block hash (`min(finalized) - 64`, falling back to `min(latest) - 1024`). Within each project/chain group, majority voting flags upstreams that disagree with ≥2-of-≥3 consensus as errors; smaller samples produce warnings.
+
+**`ValidationReport` JSON schema**:
+```json
+{
+  "errors": [],
+  "warnings": [],
+  "notices": [],
+  "resources": {
+    "totals": {
+      "projectsTotal": 2,
+      "networksTotal": 5,
+      "upstreamsTotal": 12,
+      "rateLimitBudgetsTotal": 3
+    },
+    "tree": {
+      "projects": [
+        {
+          "id": "myProject",
+          "networks": [
+            {
+              "id": "evm:1",
+              "alias": "ethereum",
+              "upstreams": [{"id": "alchemy-mainnet"}]
+            }
+          ]
+        }
+      ],
+      "rateLimiters": {
+        "budgets": [{"id": "standard", "rulesCount": 2}]
+      }
+    }
+  }
+}
+```
+Source: [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L97-L142), [`erpc/config_analyzer.go:L76-L123`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L76-L123)
+
+### Best practices
+
+- Always set a real `admin.auth.strategies` entry — running without admin auth means the endpoint is unauthenticated.
+- Override `admin.cors.allowedOrigins` to a specific origin (e.g. your internal dashboard URL) when the admin endpoint is reachable from a browser; the default `"*"` is safe only when the endpoint is not browser-accessible.
+- Use method-scoped cordons (`"method": "eth_getLogs"`) to surgically remove an upstream from expensive calls while keeping it available for others — but remember `erpc_listCordoned` will not show them; monitor via `erpc_upstream_cordoned` metric.
+- Cordon state does not survive process restart. For permanent upstream removal, update config and redeploy. Cordons are a break-glass tool for transient degradations.
+- Run `erpc validate` in CI with `--format json` and parse the exit code. Treat any `errors` entry as a deployment blocker. Use `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION=true` in local dev to skip live checks that will fail against localhost URLs.
+- Do not store the admin secret in the config file directly — inject it via an environment variable reference or a secrets manager so it stays out of version control.
+
+### Edge cases & gotchas
+
+1. **Two distinct "admin not available" errors.** `admin:` absent → `"admin is not enabled for this project"`. `admin:` present but `admin.auth:` absent → `"admin auth not configured"`. Both return HTTP 401 but require different fixes. Source: [`erpc/http_server.go:L586-L610`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L586-L610), [`erpc/admin.go:L26-L30`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L26-L30)
+2. **`admin:` absent + OPTIONS = 401 not 204.** The CORS block requires `s.adminCfg != nil`. A browser-based admin dashboard won't work until an `admin:` block is present in config, even if only to enable preflight.
+3. **`erpc_listCordoned` hides method-scoped cordons.** Only `CordonedReason("*") == true` upstreams appear. Track method-scoped cordons via the `erpc_upstream_cordoned` metric with the `reason` label.
+4. **API key methods target the project's consumer auth connector, not admin auth.** The `connectorId` must exist in the project's consumer `auth.strategies[].database.connector` config. Source: [`erpc/admin.go:L82-L100`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L82-L100)
+5. **`erpc_listApiKeys` timestamps are always `time.Now()`.** `createdAt`/`updatedAt` do not reflect actual creation or modification time — timestamps are not stored in the connector. Source: [`erpc/admin.go:L257-L259`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L257-L259)
+6. **`erpc_updateApiKey` uses patch semantics.** `null` in `updates` deletes the field; non-null overwrites. No schema validation; any JSON field name is accepted. Source: [`erpc/admin.go:L351-L357`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L351-L357)
+7. **Cordon state does not survive process restart.** It persists in-memory across window rotations only. Source: [`erpc/admin.go:L641-L654`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L641-L654)
+8. **Config validator genesis check is skipped for full nodes.** `evm.nodeType: full` or `evm.maxAvailableRecentBlocks > 0` suppresses genesis hash fetching since full nodes may not retain block 0. Source: [`erpc/config_analyzer.go:L400-L403`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L400-L403)
+9. **Config validator groups by resolved chain ID.** If `eth_chainId` fails, the upstream is grouped under `"unknown"`. Two `"unknown"` upstreams skip cross-comparison to avoid false positives from different chains. The config-declared chain ID is used as a fallback grouping key when the live fetch fails. Source: [`erpc/config_analyzer.go:L449-L489`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L449-L489)
+10. **Config validator uses `finalized - 64` for historical hash comparison.** Falls back to `latest - 1024` when finalized is unsupported. This avoids reorg false-positives. Source: [`erpc/config_analyzer.go:L589-L631`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L589-L631)
+11. **Block heatmap `category` label uses the full JSON-RPC method name.** High-cardinality method sets significantly increase the number of time-series written to your metrics store.
+12. **`eth_blockNumber` always emits bucket label `"TIP"` and `finality="Realtime"`.** No block number extraction occurs for this method; it is special-cased as a direct TIP/Realtime emit in `recordEvmBlockRangeHeatmap`. Source: [`erpc/block_heatmap.go:L37-L40`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L37-L40)
+13. **CORS `exposedHeaders` is never set by defaults.** If browser clients need to read custom eRPC response headers, `admin.cors.exposedHeaders` must be set explicitly.
+14. **Batched admin requests fan out to per-method goroutines.** Each goroutine independently authenticates. A failed auth on one method in a batch does not block the others. Source: [`erpc/http_server.go:L404-L427`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L404-L427)
+15. **Block heatmap bucket start is always size-aligned.** `start = (blockNumber / size) * size` (integer floor-division). Two requests for blocks N and N+1 that straddle a size boundary land in different buckets. Source: [`erpc/block_heatmap.go:L91-L178`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L91-L178)
+16. **Block heatmap tip-unknown fallback.** When `tip ≤ 0`, `ComputeBlockHeatmapBucket` returns `size = 0`; the caller falls back to `telemetry.EvmBlockRangeBucketSize` (default `100000`) and formats absolute bucket labels. Source: [`erpc/block_heatmap.go:L63-L72`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L63-L72)
+
+### Block heatmap algorithm
+
+`ComputeBlockHeatmapBucket(blockNumber, tip, blockRef)` produces the `bucket` and `size` label values for `erpc_network_evm_block_range_requested_total`. Key details:
+
+**`selectDynamicBucketSize` — distance from tip → bucket size:**
+
+| Distance from tip | Bucket size |
+|---|---|
+| ≤ 1,000 | 100 |
+| ≤ 5,000 | 1,000 |
+| ≤ 20,000 | 5,000 |
+| ≤ 50,000 | 10,000 |
+| ≤ 100,000 | 30,000 |
+| ≤ 300,000 | 50,000 |
+| ≤ 1,000,000 | 100,000 |
+| ≤ 10,000,000 | 1,000,000 |
+| ≤ 30,000,000 | 10,000,000 |
+| ≤ 100,000,000 | 50,000,000 |
+| &gt; 100,000,000 | 50,000,000 |
+
+Source: [`erpc/block_heatmap.go:L91-L178`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L91-L178)
+
+**Label selection (first match wins):**
+- `blockRef == "latest"` → `"LATEST"`
+- `blockRef == "finalized"` → `"FINALIZED"`
+- `blockRef == "safe"` → `"SAFE"`
+- `blockRef == "pending"` → `"PENDING"`
+- `|blockNumber - tip| ≤ 4` → `"TIP"` (±4 block tolerance)
+- `blockNumber > tip + 4` → `"FUTURE"`
+- Near-tip zone (`tip - start ≤ 5,000,000`):
+  - If `end == tip`: `"L<size>"` (e.g. `"L100k"`)
+  - Otherwise: `"L<roundedStart>-L<roundedEnd>"`; if `roundedEnd == 0` the `-L0` suffix is omitted
+- Beyond 5M blocks from tip: absolute `"<start><unit>-<end><unit>"` using k/m/b suffixes (size &lt; 1M → thousands, &lt; 1B → millions, else billions)
+
+### Observability
+
+| Metric | Type | Labels | When it fires |
+|---|---|---|---|
+| `erpc_network_evm_block_range_requested_total` | counter | `project`, `network`, `vendor`, `upstream`, `category`, `user`, `finality`, `bucket`, `size` | Every successfully-forwarded EVM request. `bucket` = label like `"TIP"`, `"L100k"`, `"119m-120m"`. `size` = numeric bucket size as string. Source: [`telemetry/metrics.go:L724-L728`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L724-L728) |
+| `erpc_upstream_cordoned` | gauge | `project`, `vendor`, `network`, `upstream`, `category`, `reason` | Set to 1 on cordon, 0 on uncordon. Source: [`telemetry/metrics.go:L164-L168`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L164-L168) |
+| `erpc_upstream_cordon_duration_seconds` | histogram | `project`, `network`, `upstream` | Recorded on uncordon: time spent in cordoned state. Buckets 1–86400 seconds. Source: [`telemetry/metrics.go:L299`](https://github.com/erpc/erpc/blob/main/telemetry/metrics.go#L299) |
+
+No dedicated trace spans for admin methods. The HTTP server's standard OTel server span covers the entire request. The `component=admin` logger is used for all admin requests. The config analyzer uses a silent `zerolog.New(io.Discard)` logger during live upstream checks so that ephemeral upstream probes do not pollute CLI output. Source: [`erpc/config_analyzer.go:L282`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L282)
+
+### Source code entry points
+
+- [`erpc/admin.go:L38-L64`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L38-L64) — `AdminHandleRequest`: switch-dispatch on method name for all 10 admin methods
+- [`erpc/http_server.go:L835-L838`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L835-L838) — `parseUrlPath`: admin endpoint detection (single segment `"admin"`)
+- [`erpc/http_server.go:L295-L610`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L295-L610) — main handler: CORS, auth, dispatch, "admin not enabled" error path
+- [`erpc/erpc.go:L83-L88`](https://github.com/erpc/erpc/blob/main/erpc/erpc.go#L83-L88) — `NewERPC`: `adminAuthRegistry` construction from `cfg.Admin.Auth`
+- [`erpc/config_analyzer.go:L76-L728`](https://github.com/erpc/erpc/blob/main/erpc/config_analyzer.go#L76-L728) — `GenerateValidationReport`, `ValidationReport`/`ValidationResources` types, static + live check phases
+- [`erpc/block_heatmap.go:L1-L200`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap.go#L1-L200) — `recordEvmBlockRangeHeatmap`, `ComputeBlockHeatmapBucket`, `selectDynamicBucketSize`, label formatting
+- [`common/defaults.go:L775-L784`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L775-L784) — `AdminConfig.SetDefaults`: auto-synthesised CORS with full default values
+- [`cmd/erpc/main.go:L97-L142`](https://github.com/erpc/erpc/blob/main/cmd/erpc/main.go#L97-L142) — `validate` subcommand: config load, `GenerateValidationReport`, render, exit code
+- [`erpc/block_heatmap_test.go`](https://github.com/erpc/erpc/blob/main/erpc/block_heatmap_test.go) — bucket label tests with real Arbitrum block numbers, TIP tolerance, no-L0 guarantee
+- [`erpc/projects.go:L189-L190`](https://github.com/erpc/erpc/blob/main/erpc/projects.go#L189-L190) — `recordEvmBlockRangeHeatmap` call site in `project.Forward` (post-successful-forward)
+- [`data/connector.go`](https://github.com/erpc/erpc/blob/main/data/connector.go) — `ConnectorMainIndex = "idx_main"` constant used by API key management methods as the index key
+
+### Related pages
+
+- [Auth strategies](/config/auth) — the same strategy types used for `admin.auth.strategies`.
+- [Rate limiters](/config/rate-limiters) — rate-limit budgets validated by `erpc validate`.
+- [Failsafe policies](/config/failsafe/retry) — networks without failsafe policies trigger a notice in `erpc validate`.
+- [Deployment](/deployment/docker) — where to wire the `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION` env var.
+- [Observability](/operation/monitoring) — dashboards and alerting around `erpc_upstream_cordoned`.
+
+</AISection>

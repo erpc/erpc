@@ -22,11 +22,17 @@ const (
 
 type UpstreamType string
 
-// HealthTracker is an interface for tracking upstream health metrics
+// HealthTracker is an interface for tracking upstream health metrics.
+//
+// `finality` is the DataFinalityState the request resolved to —
+// `DataFinalityStateAll` when the caller can't determine finality
+// (legacy call sites, internal probes, batch retries). Cordon/Uncordon
+// stay finality-agnostic because cordoning is an admin-level decision
+// about an entire (upstream, method) pair, not a per-finality bucket.
 type HealthTracker interface {
-	RecordUpstreamMisbehavior(up Upstream, method string)
-	RecordUpstreamRequest(up Upstream, method string)
-	RecordUpstreamFailure(up Upstream, method string, err error)
+	RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState)
+	RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState)
+	RecordUpstreamFailure(up Upstream, method string, finality DataFinalityState, err error)
 	Cordon(upstream Upstream, method string, reason string)
 	Uncordon(upstream Upstream, method string, reason string)
 }
@@ -40,10 +46,17 @@ type Upstream interface {
 	Logger() *zerolog.Logger
 	Vendor() Vendor
 	Tracker() HealthTracker
-	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion bool) (*NormalizedResponse, error)
+	// Forward executes one attempt against this upstream. isHedgeAttempt
+	// flags whether this call is a hedged speculative attempt (set by the
+	// network layer where the hedge policy lives) — used to gate per-upstream
+	// rate counters so hedges don't inflate them.
+	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion, isHedgeAttempt bool) (*NormalizedResponse, error)
 	Cordon(method string, reason string)
 	Uncordon(method string, reason string)
 	IgnoreMethod(method string)
+	// ShouldHandleMethod reports whether this upstream is expected to serve the
+	// given method (false when ignored/unsupported, e.g. via autoIgnoreUnsupportedMethods).
+	ShouldHandleMethod(method string) (bool, error)
 }
 
 // UniqueUpstreamKey returns a unique hash for an upstream.

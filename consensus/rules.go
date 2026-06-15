@@ -4,21 +4,19 @@ import (
 	"math/big"
 
 	"github.com/erpc/erpc/common"
-
-	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 )
 
 // consensusRule represents a single consensus decision rule
 type consensusRule struct {
 	Description string
 	Condition   func(a *consensusAnalysis) bool
-	Action      func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse]
+	Action      func(a *consensusAnalysis) *slotResult
 }
 
 type shortCircuitRule struct {
 	Description string
 	Reason      string
-	Condition   func(winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool
+	Condition   func(winner *slotResult, a *consensusAnalysis) bool
 }
 
 // consensusRules defines all consensus rules in priority order
@@ -41,17 +39,17 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			// Return the first valid non-empty response
 			for _, g := range a.groups {
 				if g.ResponseType == ResponseTypeNonEmpty && g.LargestResult != nil {
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					return &slotResult{
 						Result: g.LargestResult,
 					}
 				}
 			}
 			// Shouldn't reach here since condition already verified, but fallback to dispute
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute(
 					"no valid tx hash response found",
 					a.participants(),
@@ -83,7 +81,7 @@ var consensusRules = []consensusRule{
 			}
 			return false // No extractable values, fall through to other rules
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			fields := a.config.preferHighestValueFor[a.method]
 			threshold := a.config.agreementThreshold
 			if threshold < 1 {
@@ -141,13 +139,13 @@ var consensusRules = []consensusRule{
 			}
 
 			if best != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				return &slotResult{
 					Result: best.response,
 				}
 			}
 
 			// No value met the threshold - return dispute error
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute(
 					"no value met agreement threshold for highest-value comparison",
 					a.participants(),
@@ -176,16 +174,16 @@ var consensusRules = []consensusRule{
 			// Always handle in dispute mode; action decides whether to return leader result or leader error
 			return true
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			if g := a.getLeaderGroupNonError(); g != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: g.LargestResult}
+				return &slotResult{Result: g.LargestResult}
 			}
 			// If leader exists but only has an error, return that error (prefer leader strictly),
 			// including infrastructure errors.
 			if err := a.getLeaderFirstErrorIncludingInfra(); err != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: err}
+				return &slotResult{Error: err}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -203,15 +201,15 @@ var consensusRules = []consensusRule{
 			// Trigger for any low participants case under OnlyBlockHeadLeader; action will decide outcome
 			return true
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			if g := a.getLeaderGroupNonError(); g != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: g.LargestResult}
+				return &slotResult{Result: g.LargestResult}
 			}
 			// If leader only has an error, return that error; otherwise low participants
 			if gAny := a.getLeaderGroupAny(); gAny != nil && gAny.FirstError != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: gAny.FirstError}
+				return &slotResult{Error: gAny.FirstError}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
 			}
 		},
@@ -238,11 +236,11 @@ var consensusRules = []consensusRule{
 			// Prefer leader group if available; otherwise let subsequent rules (accept-most-common) handle
 			return a.getLeaderGroupNonError() != nil
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			if g := a.getLeaderGroupNonError(); g != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: g.LargestResult}
+				return &slotResult{Result: g.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -263,12 +261,12 @@ var consensusRules = []consensusRule{
 			best := a.getBestByCount()
 			return best == nil || best.Count < a.config.agreementThreshold
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			largest := a.getBestBySize()
 			if largest != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: largest.LargestResult}
+				return &slotResult{Result: largest.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -300,7 +298,7 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			var bestNonEmpty *responseGroup
 			for _, g := range a.groups {
 				if g.ResponseType == ResponseTypeNonEmpty && (bestNonEmpty == nil || g.Count > bestNonEmpty.Count || (g.Count == bestNonEmpty.Count && g.ResponseSize > bestNonEmpty.ResponseSize)) {
@@ -308,9 +306,9 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if bestNonEmpty != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestNonEmpty.LargestResult}
+				return &slotResult{Result: bestNonEmpty.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -350,8 +348,8 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		Action: func(a *consensusAnalysis) *slotResult {
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -388,7 +386,7 @@ var consensusRules = []consensusRule{
 			}
 			return hasEmpty && nonEmptyGroups == 1
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			var bestNonEmpty *responseGroup
 			for _, g := range a.groups {
 				if g.ResponseType == ResponseTypeNonEmpty && (bestNonEmpty == nil || g.Count > bestNonEmpty.Count || (g.Count == bestNonEmpty.Count && g.ResponseSize > bestNonEmpty.ResponseSize)) {
@@ -396,9 +394,9 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if bestNonEmpty != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestNonEmpty.LargestResult}
+				return &slotResult{Result: bestNonEmpty.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -429,7 +427,7 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			var bestNonEmpty *responseGroup
 			for _, g := range a.groups {
 				if g.ResponseType == ResponseTypeNonEmpty && (bestNonEmpty == nil || g.Count > bestNonEmpty.Count || (g.Count == bestNonEmpty.Count && g.ResponseSize > bestNonEmpty.ResponseSize)) {
@@ -437,9 +435,9 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if bestNonEmpty != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestNonEmpty.LargestResult}
+				return &slotResult{Result: bestNonEmpty.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -468,9 +466,9 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			// With ReturnError + preferNonEmpty, do not override the threshold winner; dispute instead
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
+			return &slotResult{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
 		},
 	},
 	// AcceptMostCommon + PreferNonEmpty: when above threshold and both non-empty and consensus-error meet,
@@ -505,7 +503,7 @@ var consensusRules = []consensusRule{
 			}
 			return hasNonEmptyAbove && hasConsensusErrAbove
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			var bestNonEmpty *responseGroup
 			for _, g := range a.getValidGroups() {
 				if g.ResponseType == ResponseTypeNonEmpty && (bestNonEmpty == nil || g.Count > bestNonEmpty.Count || (g.Count == bestNonEmpty.Count && g.ResponseSize > bestNonEmpty.ResponseSize)) {
@@ -513,9 +511,9 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if bestNonEmpty != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestNonEmpty.LargestResult}
+				return &slotResult{Result: bestNonEmpty.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -544,8 +542,8 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		Action: func(a *consensusAnalysis) *slotResult {
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -573,13 +571,13 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			// Choose the largest non-empty among all, regardless of count tie specifics
 			largest := a.getBestBySize()
 			if largest != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: largest.LargestResult}
+				return &slotResult{Result: largest.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -612,12 +610,12 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			largest := a.getBestBySize()
 			if largest != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: largest.LargestResult}
+				return &slotResult{Result: largest.LargestResult}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
+			return &slotResult{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
 		},
 	},
 	// ReturnError behavior: if a smaller non-empty meets threshold but a larger non-empty exists (below threshold), dispute.
@@ -642,8 +640,8 @@ var consensusRules = []consensusRule{
 			}
 			return false
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
+		Action: func(a *consensusAnalysis) *slotResult {
+			return &slotResult{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
 		},
 	},
 	{
@@ -676,7 +674,7 @@ var consensusRules = []consensusRule{
 			// Below threshold and strictly unique leader
 			return best.Count < a.config.agreementThreshold && best.Count > second
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			// Pick the unique best-by-count valid group; resolve by response type
 			var best *responseGroup
 			second := 0
@@ -693,14 +691,14 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if best == nil || best.Count <= second {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				return &slotResult{
 					Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 				}
 			}
 			if best.ResponseType == ResponseTypeConsensusError {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: best.FirstError}
+				return &slotResult{Error: best.FirstError}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: best.LargestResult}
+			return &slotResult{Result: best.LargestResult}
 		},
 	},
 	{
@@ -711,22 +709,22 @@ var consensusRules = []consensusRule{
 			}
 			return a.validParticipants < a.config.agreementThreshold && len(a.getValidGroups()) > 0
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			if bestNonEmpty := a.getBestNonEmpty(); bestNonEmpty != nil {
 				if bestNonEmpty.IsTie {
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					return &slotResult{
 						Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 					}
 				}
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestNonEmpty.LargestResult}
+				return &slotResult{Result: bestNonEmpty.LargestResult}
 			}
 			if bestEmpty := a.getBestEmpty(); bestEmpty != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestEmpty.LargestResult}
+				return &slotResult{Result: bestEmpty.LargestResult}
 			}
 			if bestError := a.getBestError(); bestError != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: bestError.FirstError}
+				return &slotResult{Error: bestError.FirstError}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
 			}
 		},
@@ -743,7 +741,7 @@ var consensusRules = []consensusRule{
 			}
 			return bestValid != nil && bestValid.Count >= a.config.agreementThreshold
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			// Pick winner among valid groups only
 			var bestValid *responseGroup
 			for _, g := range a.getValidGroups() {
@@ -752,14 +750,14 @@ var consensusRules = []consensusRule{
 				}
 			}
 			if bestValid == nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				return &slotResult{
 					Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 				}
 			}
 			if bestValid.ResponseType == ResponseTypeConsensusError {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: bestValid.FirstError}
+				return &slotResult{Error: bestValid.FirstError}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestValid.LargestResult}
+			return &slotResult{Result: bestValid.LargestResult}
 		},
 	},
 	{
@@ -771,8 +769,8 @@ var consensusRules = []consensusRule{
 			}
 			return best.Count < a.config.agreementThreshold && len(a.getValidGroups()) > 1
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		Action: func(a *consensusAnalysis) *slotResult {
+			return &slotResult{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
 			}
 		},
@@ -791,12 +789,12 @@ var consensusRules = []consensusRule{
 			}
 			return best.Count >= a.config.agreementThreshold
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+		Action: func(a *consensusAnalysis) *slotResult {
 			best := a.getBestByCount()
 			if best != nil && best.FirstError != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: best.FirstError}
+				return &slotResult{Error: best.FirstError}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
 			}
 		},
@@ -811,8 +809,8 @@ var consensusRules = []consensusRule{
 			// Low participants when valid (non-infra-error) responses are fewer than threshold
 			return a.validParticipants < a.config.agreementThreshold
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		Action: func(a *consensusAnalysis) *slotResult {
+			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
 			}
 		},
@@ -822,8 +820,8 @@ var consensusRules = []consensusRule{
 		Condition: func(a *consensusAnalysis) bool {
 			return len(a.groups) == 0
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		Action: func(a *consensusAnalysis) *slotResult {
+			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("no responses available", nil, nil),
 			}
 		},
@@ -833,8 +831,8 @@ var consensusRules = []consensusRule{
 		Condition: func(a *consensusAnalysis) bool {
 			return true
 		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		Action: func(a *consensusAnalysis) *slotResult {
+			return &slotResult{
 				Error: common.NewErrConsensusLowParticipants("none of the rules were able to resolve consensus", nil, nil),
 			}
 		},
@@ -845,7 +843,7 @@ var shortCircuitRules = []shortCircuitRule{
 	{
 		Description: "eth_sendRawTransaction: short-circuit on first valid tx hash response",
 		Reason:      "sendrawtx_first_success",
-		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
+		Condition: func(w *slotResult, a *consensusAnalysis) bool {
 			// Only applies to eth_sendRawTransaction
 			if a.method != "eth_sendRawTransaction" {
 				return false
@@ -864,7 +862,7 @@ var shortCircuitRules = []shortCircuitRule{
 	{
 		Description: "consensus-valid error meets agreement threshold -> short-circuit to error",
 		Reason:      "consensus_error_threshold",
-		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
+		Condition: func(w *slotResult, a *consensusAnalysis) bool {
 			best := a.getBestByCount()
 			if best == nil {
 				return false
@@ -897,7 +895,7 @@ var shortCircuitRules = []shortCircuitRule{
 	{
 		Description: "winner meets agreement threshold, is non-empty, and lead is unassailable (no possible tie with remaining)",
 		Reason:      "unassailable_lead",
-		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
+		Condition: func(w *slotResult, a *consensusAnalysis) bool {
 			// With remaining participants, avoid short-circuiting when a preference could still
 			// change the winner. In particular, when PreferLargerResponses is enabled, a later
 			// larger response can override a smaller above-threshold winner regardless of counts.
