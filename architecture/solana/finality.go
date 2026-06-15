@@ -32,8 +32,9 @@ var neverCacheMethods = map[string]bool{
 	// Airdrops — side-effecting
 	"requestAirdrop":              true,
 	// Real-time cluster / node state — changes every slot; never safe to cache.
-	// (The state poller calls these with byPassMethodExclusion, so polling is
-	// unaffected; this only governs client-facing caching.)
+	// (The state poller polls some of these via upstream.Forward directly, which
+	// never runs GetFinality / the network cache path, so polling is unaffected;
+	// this list only governs client-facing caching.)
 	"getSlot":                true,
 	"getBlockHeight":         true,
 	"getHealth":              true,

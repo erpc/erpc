@@ -1,0 +1,228 @@
+---
+title: Solana behaviors
+description: How eRPC proxies Solana JSON-RPC — cluster verification on bootstrap, real-time slot/health polling, commitment-aware caching, sendTransaction double-broadcast prevention, and lag-aware failover that routes around nodes behind the chain tip.
+---
+
+import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from "../../components";
+
+<LLMsTxtLink />
+
+# Solana behaviors
+
+Solana's consistency model differs from EVM: slots advance ~every 400ms, and a request's `commitment` (`processed` / `confirmed` / `finalized`) decides how immutable the answer is. eRPC runs a per-upstream background state poller that tracks each node's processed and finalized slot plus its health, verifies cluster membership at bootstrap, caches responses according to commitment, refuses to re-broadcast `sendTransaction` across upstreams, and feeds slot lag into the selection policy so traffic routes away from nodes that fall behind the chain tip.
+
+**What you get**
+
+- **Cluster gate** — `getGenesisHash` is checked at bootstrap; a devnet node configured under `mainnet-beta` fails initialization instead of silently serving wrong-cluster data.
+- **Real-time slot + health tracking** — `getSlot` (processed and finalized), `getHealth`, and `getMaxShredInsertSlot` are polled concurrently every ~400ms.
+- **Commitment-aware caching** — `finalized` (or absent) → cacheable; `confirmed` → short TTL; `processed` → never cached. A `getBlock`/`getTransaction` asked for at `confirmed` is **not** cached as if finalized.
+- **Never-cache list** — ephemeral and side-effecting methods (`getLatestBlockhash`, `getSlot`, `sendTransaction`, …) are never served from cache.
+- **No transaction double-broadcast** — `sendTransaction` / `sendRawTransaction` errors are not retried on another upstream.
+- **Lag-aware failover by default** — the default selection policy already excludes upstreams behind the chain tip; for finalized reads you can additionally exclude nodes whose *finalized* slot lags (recipe below).
+
+## Quick taste
+
+A minimal Solana mainnet-beta network with two upstreams. No selection policy is set, so eRPC applies its hardened default — which already drops upstreams that fall behind the processed tip (and fails open if all are behind):
+
+<ConfigTabs
+  path="projects[].networks[]"
+  focusYaml="4-13"
+  focusTs="4-13"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: solana
+        solana:
+          cluster: mainnet-beta
+    upstreams:
+      - endpoint: https://api.mainnet-beta.solana.com
+        type: solana
+        solana:
+          cluster: mainnet-beta
+      - endpoint: https://your-provider.example/sol
+        type: solana
+        solana:
+          cluster: mainnet-beta`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "solana",
+    solana: { cluster: "mainnet-beta" },
+  }],
+  upstreams: [
+    { endpoint: "https://api.mainnet-beta.solana.com", type: "solana", solana: { cluster: "mainnet-beta" } },
+    { endpoint: "https://your-provider.example/sol",    type: "solana", solana: { cluster: "mainnet-beta" } },
+  ],
+}]`}
+/>
+
+## Agent reference
+
+Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
+points the agent at this page's machine-readable reference so it can do the work correctly:
+
+<PromptExample
+  n={1}
+  title="add Solana mainnet-beta with commitment-aware failover"
+  defaultOpen
+  prompt={`Add a Solana mainnet-beta network to my eRPC config with two upstreams, then write a
+selection policy that excludes nodes behind the chain tip and additionally keeps FINALIZED
+reads off any upstream whose finalized slot is lagging. Explain what commitment "finalized"
+vs "confirmed" means for caching and why sendTransaction is not retried. Reference:
+https://docs.erpc.cloud/reference/solana.llms.txt`}
+/>
+
+<PromptExample
+  n={2}
+  title="understand Solana caching & commitment levels"
+  prompt={`Explain how eRPC decides whether to cache a Solana response: the processed/confirmed/
+finalized mapping, which methods never cache (getLatestBlockhash, getSlot, sendTransaction…),
+and why getBlock at commitment "confirmed" is not cached as finalized. Reference:
+https://docs.erpc.cloud/reference/solana.llms.txt`}
+/>
+
+<PromptExample
+  n={3}
+  title="diagnose a genesis hash mismatch at startup"
+  prompt={`One of my Solana upstreams fails to initialize with a genesis hash mismatch. Explain what
+eRPC checks at bootstrap, why a wrong-cluster node is rejected permanently (not retried),
+and how to fix the misconfiguration. Reference:
+https://docs.erpc.cloud/reference/solana.llms.txt`}
+/>
+
+<AISection title="Solana behaviors — full agent reference">
+
+### How it works
+
+#### Cluster configuration and genesis verification
+
+Each Solana network and upstream declares a `cluster` (`mainnet-beta`, `devnet`, or `testnet`). At bootstrap eRPC calls `getGenesisHash` on the upstream and compares it to the known hash for the configured cluster. Permanent problems — a wrong-cluster hash, a non-JSON-RPC body (e.g. a misconfigured endpoint returning HTML), a parse/unmarshal failure, or an RPC error on that call — fail initialization as **task-fatal**: the bootstrap initializer does not retry them, mirroring EVM's `eth_chainId` mismatch handling. Transient problems — a network blip, or an HTTP-level error such as 401/403/5xx — stay **retryable** so a node that is briefly unreachable or still warming up can recover. Unknown/custom clusters (not in the known-hash table) skip verification. <SourceLink file="upstream/upstream.go" />
+
+#### State polling and slot tracking
+
+Each upstream runs a background `SolanaStatePoller` that, every ~400ms (≈one slot), polls four calls concurrently so a slow node never serializes the tick:
+
+1. **`getSlot(commitment: processed)`** — the real-time head; feeds `blockHeadLag`.
+2. **`getSlot(commitment: finalized)`** — the finalized tip; feeds `finalizationLag`.
+3. **`getHealth`** — `"ok"` marks the node healthy; an error/`-32005` marks it unhealthy.
+4. **`getMaxShredInsertSlot`** — if it exceeds the processed slot by more than ~100, the node is receiving shreds it can't process and is marked degraded even when `getHealth` returns `"ok"`.
+
+The debounce interval is fixed at 400ms in this phase (not yet a config knob). <SourceLink file="architecture/solana/state_poller.go" />
+
+#### Commitment and finality caching
+
+eRPC reads the optional `commitment` from the request's last params object and maps it to a cache finality state:
+
+- **`processed`** → `realtime` — never cached.
+- **`confirmed`** → `unfinalized` — short TTL (can still be rolled back).
+- **`finalized`**, or no commitment (Solana's own default is `finalized`) → `finalized` — cacheable per your cache policy's finalized TTL.
+
+Commitment governs *every* non-ephemeral method, including historical ones. A `getBlock`/`getTransaction` requested at `confirmed` or `processed` is **not** cached as finalized even though it is normally immutable — at a weaker commitment the queried slot can still reorg. <SourceLink file="architecture/solana/finality.go" />
+
+#### Never-cache methods
+
+These are ephemeral or side-effecting and are never served from cache regardless of commitment:
+
+- **Blockhash / fees** (change every ~400ms): `getLatestBlockhash`, `getRecentBlockhash`, `getFeeForMessage`
+- **Transaction submission / simulation** (side-effecting; never deduplicated): `sendTransaction`, `sendRawTransaction`, `simulateTransaction`
+- **In-flight status**: `getSignatureStatuses`, `getSignatureStatus`
+- **Cluster / validator state** (per slot/epoch): `getVoteAccounts`, `getLeaderSchedule`, `getEpochInfo`, `getEpochSchedule`, `getSlotLeaders`, `getRecentPerformanceSamples`, `getRecentPrioritizationFees`
+- **Airdrops**: `requestAirdrop`
+- **Real-time node/cluster state** (change every slot): `getSlot`, `getBlockHeight`, `getHealth`, `getFirstAvailableBlock`, `getHighestSnapshotSlot`, `getMaxRetransmitSlot`, `getMaxShredInsertSlot`
+
+The state poller calls some of these internally with method-exclusion bypassed, so polling is unaffected — only client-facing responses skip the cache. <SourceLink file="architecture/solana/finality.go" />
+
+#### sendTransaction is never re-broadcast across upstreams
+
+`sendTransaction` / `sendRawTransaction` errors are marked non-retryable toward the network: if the first upstream already broadcast the transaction to the TPU but then failed to respond, retrying on a second upstream would broadcast it again. The post-forward hook flags these errors `retryableTowardNetwork=false` so failsafe stops iterating and returns to the client — regardless of whether the error looks transient. (To intentionally fan a transaction out to multiple upstreams for landing rate, that must be an explicit opt-in, not retry.) <SourceLink file="architecture/solana/hooks.go" />
+
+#### Failover: default behavior and a commitment-aware recipe
+
+The slot lag the poller records flows into the shared health tracker and the selection policy. With **no** custom `selectionPolicy.evalFunc`, eRPC applies its hardened default, which (among error/latency checks) drops any upstream more than 16 blocks/slots or 30s behind the tip and **fails open** if every upstream is behind:
+
+```js
+.excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+.whenEmpty(() => upstreams)
+```
+
+For Solana, `blockNumberLagAbove` measures the **processed** slot lag — so a node whose real-time head stalls is already routed around by default.
+
+To *also* protect **finalized** reads from a node whose finalized slot lags (while its processed head looks current), set a custom policy. A custom `evalFunc` replaces the default, so include the baseline health checks too:
+
+<ConfigTabs
+  path="projects[].networks[].selectionPolicy"
+  focusYaml="6-19"
+  focusTs="6-18"
+  yaml={`projects:
+  - id: main
+    networks:
+      - architecture: solana
+        solana: { cluster: mainnet-beta }
+        selectionPolicy:
+          evalInterval: 15s
+          evalFunc: |
+            (upstreams, ctx) =>
+              upstreams
+                .removeCordoned()
+                .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+                .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+                // finalized reads must not hit a node whose finalized slot lags
+                .excludeIf(u => ctx.finality === "finalized" && u.metrics.finalizationLag > 32)
+                .whenEmpty(() => upstreams)
+                .sortByScore(PREFER_FRESHEST)`}
+  ts={`projects: [{
+  id: "main",
+  networks: [{
+    architecture: "solana",
+    solana: { cluster: "mainnet-beta" },
+    selectionPolicy: {
+      evalInterval: "15s",
+      evalFunc: (upstreams, ctx) =>
+        upstreams
+          .removeCordoned()
+          .excludeIf(all(samplesAbove(10), errorRateAbove(0.7)))
+          .excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))
+          // finalized reads must not hit a node whose finalized slot lags
+          .excludeIf((u) => ctx.finality === "finalized" && u.metrics.finalizationLag > 32)
+          .whenEmpty(() => upstreams)
+          .sortByScore(PREFER_FRESHEST),
+    },
+  }],
+}]`}
+/>
+
+Notes:
+- `ctx.finality` is `"finalized"`, `"unfinalized"` (confirmed), `"realtime"` (processed), or `"unknown"` — derived from the request's commitment via the mapping above.
+- `u.metrics.finalizationLag` / `u.metrics.blockHeadLag` are the slot deltas the poller maintains (see Metrics below).
+- `whenEmpty(() => upstreams)` keeps the policy fail-open — the last upstream is never hard-excluded.
+- `PREFER_FRESHEST` weights `blockHeadLag` and `finalizationLag` heavily when ranking survivors; use `PREFER_FASTEST` if latency matters more than freshness.
+- See [Selection policies](https://docs.erpc.cloud/config/projects/selection-policies) for the full predicate/primitive list.
+
+### Config schema
+
+#### `projects[].networks[].solana`
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `cluster` | `string` | required | `mainnet-beta`, `devnet`, or `testnet`. Drives `getGenesisHash` verification and the network id. Unknown values skip verification. |
+
+#### `projects[].upstreams[].solana`
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `cluster` | `string` | required | The cluster this upstream serves; verified against its `getGenesisHash` at bootstrap and must match the network. |
+
+The upstream also needs `type: solana` and an `endpoint`. Standard upstream fields (`id`, `headers`, `failsafe`, `rateLimitBudget`, `routing`, …) apply as usual.
+
+### Metrics
+
+The poller exports two per-upstream gauges used by the selection policy and useful for alerting:
+
+| Metric | Meaning |
+|---|---|
+| `erpc_upstream_block_head_lag` | Slots this upstream's **processed** head is behind the furthest-ahead upstream in the pool. |
+| `erpc_upstream_finalization_lag` | Slots this upstream's **finalized** slot is behind the furthest-finalized upstream in the pool. |
+
+Both are slot deltas (not seconds); at ~400ms/slot a lag of 16 is ≈6.4s. Example alerts: `max(erpc_upstream_finalization_lag) > 32 for 2m`, or `max(erpc_upstream_block_head_lag) > 16 for 1m`.
+
+</AISection>

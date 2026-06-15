@@ -51,6 +51,27 @@ func TestGetFinality_NeverCacheMethods(t *testing.T) {
 	}
 }
 
+// ── never-cache methods stay Realtime even with an explicit commitment ───────
+// (pins that the never-cache check runs BEFORE commitment extraction, so a
+// reorder or map-removal can't silently make ephemeral methods cacheable).
+
+func TestGetFinality_NeverCacheOverridesCommitment(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct{ method, commitment string }{
+		{"getSlot", "finalized"},
+		{"getBlockHeight", "confirmed"},
+		{"getHealth", "finalized"},
+		{"getLatestBlockhash", "finalized"},
+	}
+	for _, c := range cases {
+		req := buildReq(`{"jsonrpc":"2.0","id":1,"method":"` + c.method +
+			`","params":[{"commitment":"` + c.commitment + `"}]}`)
+		got := GetFinality(ctx, nil, req, nil)
+		assert.Equal(t, common.DataFinalityStateRealtime, got,
+			"%s must stay Realtime (never-cache) even at commitment %q", c.method, c.commitment)
+	}
+}
+
 // ── historical methods default to Finalized when no commitment is given ──────
 // (Solana's own default commitment is "finalized".)
 

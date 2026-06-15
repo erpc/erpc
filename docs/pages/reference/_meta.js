@@ -1,5 +1,6 @@
 module.exports = {
 	evm: { title: "EVM behaviors" },
+	solana: { title: "Solana behaviors" },
 	errors: { title: "Error taxonomy" },
 	metrics: { title: "Metrics reference" },
 	"grpc-bds": { title: "gRPC & BDS streaming" },
