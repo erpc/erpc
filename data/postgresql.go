@@ -563,13 +563,13 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 
 	if err != nil {
 		p.handleConnectionFailure(err)
-		go tx.Rollback(context.Background())
+		go tx.Rollback(context.Background()) // #nosec G118 -- ctx may be cancelled; background is correct for cleanup rollback
 		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to acquire advisory lock: %w", err)
 	}
 
 	if !acquired {
-		go tx.Rollback(context.Background())
+		go tx.Rollback(context.Background()) // #nosec G118 -- ctx may be cancelled; background is correct for cleanup rollback
 		err := fmt.Errorf("failed to acquire lock: already locked")
 		common.SetTraceSpanError(span, err)
 		return nil, err

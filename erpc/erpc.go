@@ -91,7 +91,7 @@ func NewERPC(
 	// Shutdown tracing after appCtx is finished/cancelled
 	go func() {
 		<-appCtx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // #nosec G118 -- intentional: appCtx is already done; background is correct for shutdown
 		defer cancel()
 		if err := common.ShutdownTracing(shutdownCtx); err != nil {
 			logger.Error().Err(err).Msg("failed to shutdown tracer provider")

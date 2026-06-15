@@ -388,7 +388,7 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout) // #nosec G118 -- probe runs independently; must not be cancelled by the originating request
 	defer cancel()
 
 	method, _ := req.Method()
