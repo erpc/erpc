@@ -1162,3 +1162,28 @@ func TestBuildProviderSettings(t *testing.T) {
 		assert.Nil(t, settings["tagLabels"])
 	})
 }
+
+// Regression: a duplicated SuccessThresholdCapacity default block used to
+// run before SuccessThresholdCount was defaulted, forcing capacity to 200.
+// In failsafe-go's half-open state the success-thresholding capacity also
+// bounds how many failures (capacity - successThreshold) are absorbed
+// before the breaker re-opens, so 200 made half-open recovery statistics
+// meaningless for low-traffic (e.g. WS-only) upstreams.
+func TestSetDefaults_CircuitBreakerSuccessThresholdCapacity(t *testing.T) {
+	t.Run("DefaultsTo8of10", func(t *testing.T) {
+		cfg := &CircuitBreakerPolicyConfig{}
+		assert.NoError(t, cfg.SetDefaults(nil))
+		assert.EqualValues(t, 8, cfg.SuccessThresholdCount)
+		assert.EqualValues(t, 10, cfg.SuccessThresholdCapacity)
+	})
+
+	t.Run("ExplicitValuesPreserved", func(t *testing.T) {
+		cfg := &CircuitBreakerPolicyConfig{
+			SuccessThresholdCount:    3,
+			SuccessThresholdCapacity: 10,
+		}
+		assert.NoError(t, cfg.SetDefaults(nil))
+		assert.EqualValues(t, 3, cfg.SuccessThresholdCount)
+		assert.EqualValues(t, 10, cfg.SuccessThresholdCapacity)
+	})
+}

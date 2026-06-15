@@ -94,6 +94,12 @@ var (
 		Help:      "Dynamically computed block time per network in milliseconds.",
 	}, []string{"project", "network"})
 
+	MetricUpstreamWebsocketConnected = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_websocket_connected",
+		Help:      "Whether the upstream WebSocket connection is currently established (1) or down/wedged (0).",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",
