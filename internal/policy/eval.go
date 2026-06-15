@@ -545,6 +545,15 @@ type EvalResult struct {
 	// so operators can audition a new (or removed) rule in production
 	// before flipping it for real.
 	ShadowReasons map[string][]string
+	// ProbeVerdicts[upstreamID] = the probe-eligibility verdict matrix
+	// accumulated by exclude-family steps (excludeIf / excludeTag /
+	// removeCordoned). Eligible = at least one probe-eligible step would
+	// drop the upstream; Blocking = at least one probe-blocking step
+	// would. An entry exists only for upstreams some tracked step judged
+	// droppable; upstreams excluded by untracked means carry no entry and
+	// default to probing. Always captured (drives prober candidate
+	// filtering), independent of stepLogEnabled.
+	ProbeVerdicts map[string]ProbeVerdict
 	// StickyHeld is true when `stickyPrimary` ACTIVELY held the previous
 	// primary this tick (i.e. challenger would have won under a no-sticky
 	// ordering, but cooldown or hysteresis kept the incumbent). Drives
@@ -675,6 +684,12 @@ func runEval(
 	if err := vm.GlobalObject().Set("__policyLeafReasons", vm.NewObject()); err != nil {
 		return nil, err
 	}
+	// Per-upstream probe-eligibility verdicts from exclude-family steps.
+	// Reset each tick; consumed by the slot to filter the prober's
+	// candidate set. Always captured, independent of `stepLogEnabled`.
+	if err := vm.GlobalObject().Set("__policyProbeVerdicts", vm.NewObject()); err != nil {
+		return nil, err
+	}
 	// Per-upstream "would-have-been-excluded" leaf slugs from
 	// `shadowExcludeIf`. Reset each tick; the metric emitter consumes it
 	// to drive `erpc_selection_shadow_exclusion_total`. Always captured
@@ -732,6 +747,7 @@ func runEval(
 		_ = vm.GlobalObject().Set("__policyStepLog", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyLeafReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyShadowReasons", sobek.Undefined())
+		_ = vm.GlobalObject().Set("__policyProbeVerdicts", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyStickyHeld", false)
 		_ = vm.GlobalObject().Set("__probeConfig", sobek.Undefined())
 		// Stub the sticky helpers back to no-ops so the pooled runtime
@@ -768,6 +784,7 @@ func runEval(
 	// the slot before metric emit.
 	out.LeafReasons = readReasonsMap(vm, "__policyLeafReasons")
 	out.ShadowReasons = readReasonsMap(vm, "__policyShadowReasons")
+	out.ProbeVerdicts = readProbeVerdicts(vm)
 	if heldVal := vm.GlobalObject().Get("__policyStickyHeld"); heldVal != nil && !sobek.IsUndefined(heldVal) && !sobek.IsNull(heldVal) {
 		out.StickyHeld = heldVal.ToBoolean()
 	}
@@ -853,6 +870,59 @@ func readProbeConfig(vm *sobek.Runtime) *ProbeConfig {
 // `shadowExcludeIf` → __policyShadowReasons) into a Go map. Empty map on
 // missing / malformed input — attribution is best-effort and shouldn't
 // break the eval if the JS-side wiring drifts.
+// ProbeVerdict is one upstream's row in the probe-eligibility verdict
+// matrix. See EvalResult.ProbeVerdicts.
+type ProbeVerdict struct {
+	Eligible bool
+	Blocking bool
+}
+
+// ShouldProbe resolves the matrix rule: probe iff at least one
+// probe-eligible step would drop the upstream AND no probe-blocking step
+// would. The zero value (no verdicts) resolves to true — upstreams
+// excluded only by untracked steps keep prior probe-everything behavior.
+func (v ProbeVerdict) ShouldProbe() bool {
+	if v.Blocking {
+		return false
+	}
+	return true
+}
+
+func readProbeVerdicts(vm *sobek.Runtime) map[string]ProbeVerdict {
+	v := vm.GlobalObject().Get("__policyProbeVerdicts")
+	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {
+		return nil
+	}
+	obj, ok := v.(*sobek.Object)
+	if !ok {
+		return nil
+	}
+	keys := obj.Keys()
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[string]ProbeVerdict, len(keys))
+	for _, k := range keys {
+		entryVal := obj.Get(k)
+		if entryVal == nil {
+			continue
+		}
+		entry, ok := entryVal.(*sobek.Object)
+		if !ok {
+			continue
+		}
+		pv := ProbeVerdict{}
+		if e := entry.Get("e"); e != nil {
+			pv.Eligible = e.ToBoolean()
+		}
+		if b := entry.Get("b"); b != nil {
+			pv.Blocking = b.ToBoolean()
+		}
+		out[k] = pv
+	}
+	return out
+}
+
 func readReasonsMap(vm *sobek.Runtime, globalName string) map[string][]string {
 	v := vm.GlobalObject().Get(globalName)
 	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {

@@ -427,7 +427,7 @@ export interface PolicyEvalUpstreamArray
   byId(id: Pattern): PolicyEvalUpstreamArray;
   excludeId(id: Pattern): PolicyEvalUpstreamArray;
   byTag(pat: TagPattern): PolicyEvalUpstreamArray;
-  excludeTag(pat: TagPattern): PolicyEvalUpstreamArray;
+  excludeTag(pat: TagPattern, opts?: { probe?: boolean }): PolicyEvalUpstreamArray;
   byVendor(v: Pattern): PolicyEvalUpstreamArray;
   excludeVendor(v: Pattern): PolicyEvalUpstreamArray;
   byType(t: Pattern): PolicyEvalUpstreamArray;
@@ -440,14 +440,14 @@ export interface PolicyEvalUpstreamArray
   removeByMisbehavior(max: number): PolicyEvalUpstreamArray;
   removeByLag(opts: RemoveByLagOptions): PolicyEvalUpstreamArray;
   removeByMinRequests(min: number): PolicyEvalUpstreamArray;
-  removeCordoned(): PolicyEvalUpstreamArray;
+  removeCordoned(opts?: { probe?: boolean }): PolicyEvalUpstreamArray;
   removeByLatency(opts: RemoveByLatencyOptions): PolicyEvalUpstreamArray;
   keepHealthy(opts?: KeepHealthyOptions): PolicyEvalUpstreamArray;
 
   // ─── 4.3a Predicate-driven exclusion ──────────────────────────────────
   excludeIf(
     predicate: PolicyEvalPredicate,
-    reasonOverride?: string,
+    reasonOverrideOrOpts?: string | { probe?: boolean; reason?: string },
   ): PolicyEvalUpstreamArray;
 
   /**

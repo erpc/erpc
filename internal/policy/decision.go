@@ -75,6 +75,12 @@ type ExcludedUpstream struct {
 	ID     string
 	Reason string
 	Step   string
+	// ProbeEligible is the resolved verdict-matrix outcome for this
+	// upstream: true when shadow probing can help it re-admit (some
+	// probe-eligible step excluded it and no probe-blocking step did,
+	// or it was excluded by untracked means). False means the prober
+	// skips it (e.g. static tag exclusion, cordon).
+	ProbeEligible bool
 	// LeafReasons is the stable metric-label slug(s) attributing this
 	// exclusion. Populated by `excludeIf`'s leaf-walk against compound
 	// predicates: `any(A,B)` excluding because A trips gives `[A.slug]`;
