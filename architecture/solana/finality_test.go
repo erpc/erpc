@@ -34,6 +34,14 @@ func TestGetFinality_NeverCacheMethods(t *testing.T) {
 		"getRecentPerformanceSamples",
 		"getRecentPrioritizationFees",
 		"requestAirdrop",
+		// Real-time cluster / node state
+		"getSlot",
+		"getBlockHeight",
+		"getHealth",
+		"getFirstAvailableBlock",
+		"getHighestSnapshotSlot",
+		"getMaxRetransmitSlot",
+		"getMaxShredInsertSlot",
 	}
 	for _, method := range methods {
 		req := buildReq(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":[]}`)
@@ -43,9 +51,10 @@ func TestGetFinality_NeverCacheMethods(t *testing.T) {
 	}
 }
 
-// ── alwaysFinalizedMethods ───────────────────────────────────────────────────
+// ── historical methods default to Finalized when no commitment is given ──────
+// (Solana's own default commitment is "finalized".)
 
-func TestGetFinality_AlwaysFinalizedMethods(t *testing.T) {
+func TestGetFinality_HistoricalMethodsDefaultFinalized(t *testing.T) {
 	ctx := context.Background()
 	methods := []string{
 		"getBlock",
@@ -61,7 +70,32 @@ func TestGetFinality_AlwaysFinalizedMethods(t *testing.T) {
 		req := buildReq(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":[]}`)
 		got := GetFinality(ctx, nil, req, nil)
 		assert.Equal(t, common.DataFinalityStateFinalized, got,
-			"method %q should map to Finalized (always-finalized)", method)
+			"method %q with no commitment should map to Finalized", method)
+	}
+}
+
+// ── commitment governs even historical methods (regression: confirmed/processed
+//    getBlock/getTransaction must NOT be cached as finalized — can roll back) ──
+
+func TestGetFinality_HistoricalMethodWeakerCommitment(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		method     string
+		commitment string
+		want       common.DataFinalityState
+	}{
+		{"getBlock", "confirmed", common.DataFinalityStateUnfinalized},
+		{"getBlock", "processed", common.DataFinalityStateRealtime},
+		{"getTransaction", "confirmed", common.DataFinalityStateUnfinalized},
+		{"getTransaction", "processed", common.DataFinalityStateRealtime},
+		{"getBlock", "finalized", common.DataFinalityStateFinalized},
+	}
+	for _, c := range cases {
+		req := buildReq(`{"jsonrpc":"2.0","id":1,"method":"` + c.method +
+			`","params":[123,{"commitment":"` + c.commitment + `"}]}`)
+		got := GetFinality(ctx, nil, req, nil)
+		assert.Equal(t, c.want, got,
+			"%q at commitment %q", c.method, c.commitment)
 	}
 }
 

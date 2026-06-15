@@ -31,27 +31,31 @@ var neverCacheMethods = map[string]bool{
 	"getRecentPrioritizationFees": true,
 	// Airdrops — side-effecting
 	"requestAirdrop":              true,
+	// Real-time cluster / node state — changes every slot; never safe to cache.
+	// (The state poller calls these with byPassMethodExclusion, so polling is
+	// unaffected; this only governs client-facing caching.)
+	"getSlot":                true,
+	"getBlockHeight":         true,
+	"getHealth":              true,
+	"getFirstAvailableBlock": true, // advances as the node prunes ledger
+	"getHighestSnapshotSlot": true,
+	"getMaxRetransmitSlot":   true,
+	"getMaxShredInsertSlot":  true,
 }
 
-// alwaysFinalizedMethods are immutable once finalized — cache indefinitely.
-var alwaysFinalizedMethods = map[string]bool{
-	"getBlock":               true,
-	"getTransaction":         true,
-	"getConfirmedBlock":      true, // deprecated alias
-	"getConfirmedTransaction": true, // deprecated alias
-	"getInflationReward":     true,
-	"getBlocks":              true,
-	"getBlockTime":           true,
-	"getSignaturesForAddress": true, // once finalized, historical sigs don't change
-}
-
-// GetFinality maps a Solana request + response to a DataFinalityState for cache decisions.
+// GetFinality maps a Solana request to a DataFinalityState for cache decisions.
 //
-//   - "finalized" commitment (or absent) → DataFinalityStateFinalized (immutable)
-//   - "confirmed" commitment             → DataFinalityStateUnfinalized (short TTL)
+//   - neverCacheMethods                  → DataFinalityStateRealtime (ephemeral)
 //   - "processed" commitment             → DataFinalityStateRealtime (no cache)
-//   - neverCacheMethods                  → DataFinalityStateRealtime
-//   - alwaysFinalizedMethods             → DataFinalityStateFinalized
+//   - "confirmed" commitment             → DataFinalityStateUnfinalized (short TTL)
+//   - "finalized" commitment (or absent) → DataFinalityStateFinalized
+//
+// Commitment governs finality for every non-ephemeral method — including
+// historical-data methods like getBlock/getTransaction. Those are immutable
+// only once the queried slot is finalized, so a request that explicitly asks
+// for the weaker "confirmed"/"processed" commitment (whose result can still be
+// rolled back) must NOT be cached as finalized. When no commitment is given,
+// Solana itself defaults to "finalized", so absent → Finalized.
 func GetFinality(ctx context.Context, _ common.Network, req *common.NormalizedRequest, _ *common.NormalizedResponse) common.DataFinalityState {
 	_, span := common.StartDetailSpan(ctx, "solana.GetFinality")
 	defer span.End()
@@ -61,21 +65,13 @@ func GetFinality(ctx context.Context, _ common.Network, req *common.NormalizedRe
 		return common.DataFinalityStateUnknown
 	}
 
-	// Never-cache methods take highest priority
+	// Never-cache methods take highest priority — ephemeral regardless of commitment.
 	if neverCacheMethods[method] {
 		return common.DataFinalityStateRealtime
 	}
 
-	// Always-finalized methods
-	if alwaysFinalizedMethods[method] {
-		return common.DataFinalityStateFinalized
-	}
-
-	// Extract commitment from params
-	commitment := extractCommitment(req)
-
-	// Normalise once so clients sending "CONFIRMED" still match.
-	switch common.SolanaCommitment(strings.ToLower(commitment)) {
+	// Commitment governs finality. Normalise once so "CONFIRMED" still matches.
+	switch common.SolanaCommitment(strings.ToLower(extractCommitment(req))) {
 	case common.SolanaCommitmentConfirmed:
 		return common.DataFinalityStateUnfinalized
 	case common.SolanaCommitmentProcessed:
