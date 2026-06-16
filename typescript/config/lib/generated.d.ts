@@ -28,10 +28,6 @@ export interface AdaptiveDuration {
     min?: Duration;
     max?: Duration;
 }
-export interface BlockTimeAdaptiveDuration {
-    fallback?: Duration;
-    blockTimeMultiplier?: number;
-}
 export declare const UpstreamTypeEvm: UpstreamType;
 export type EvmUpstream = Upstream;
 export type AvailbilityConfidence = number;
@@ -91,6 +87,28 @@ export interface EvmProbeEarliestInfo {
     probeType: EvmAvailabilityProbeType;
     earliestBlock: number;
     schedulerRunning?: boolean;
+}
+/**
+ * BlockTimeAdaptiveDuration is a duration that is either a fixed value or derived from the
+ * network's estimated block time. It's the reusable shape for knobs (e.g. cache
+ * TTLs) that should track each chain's cadence rather than a single constant.
+ * Wire format accepts a scalar shorthand or an object:
+ * 	ttl: 2s                                        # fixed
+ * 	ttl: { blockTimeMultiplier: 1 }                # blockTime * 1 (caller default until known)
+ * 	ttl: { blockTimeMultiplier: 1, fallback: 2s }  # with explicit cold-start fallback
+ * See Resolve for how the value is computed.
+ */
+export interface BlockTimeAdaptiveDuration {
+    /**
+     * Fallback is the fixed value. A scalar shorthand sets it directly; in object
+     * form it's the cold-start floor used until the block time is known.
+     */
+    fallback?: Duration;
+    /**
+     * BlockTimeMultiplier, when > 0, derives the value from the network's
+     * estimated block time (blockTime * multiplier).
+     */
+    blockTimeMultiplier?: number;
 }
 export type CacheDAL = any;
 export interface MockCacheDal {
@@ -318,6 +336,13 @@ export interface CachePolicyConfig {
     appliesTo?: 'get' | 'set' | 'both';
     minItemSize?: ByteSize;
     maxItemSize?: ByteSize;
+    /**
+     * TTL is either a fixed duration ("2s") or, in object form, derived from the
+     * network's estimated block time ({ blockTimeMultiplier: 1, fallback: 2s }).
+     * For realtime finality the resolved value is the age limit; the fixed/
+     * fallback component is also used as the cache storage expiry. See
+     * BlockTimeAdaptiveDuration.
+     */
     ttl?: Duration | BlockTimeAdaptiveDuration;
 }
 export type ConnectorDriverType = string;
@@ -375,6 +400,7 @@ export interface RedisConnectorConfig {
     getTimeout?: Duration;
     setTimeout?: Duration;
     lockRetryInterval?: Duration;
+    iamAuth?: RedisIAMAuthConfig;
 }
 export interface DynamoDBConnectorConfig {
     table?: string;
@@ -400,6 +426,7 @@ export interface PostgreSQLConnectorConfig {
     initTimeout?: Duration;
     getTimeout?: Duration;
     setTimeout?: Duration;
+    iamAuth?: PostgreSQLIAMAuthConfig;
 }
 export interface AwsAuthConfig {
     mode: 'file' | 'env' | 'secret';
@@ -407,6 +434,54 @@ export interface AwsAuthConfig {
     profile: string;
     accessKeyID: string;
     secretAccessKey: string;
+}
+/**
+ * RedisIAMAuthConfig enables AWS IAM authentication for ElastiCache (Valkey ≥7.2
+ * or Redis OSS ≥7.0). When enabled, eRPC mints SigV4-presigned auth tokens via
+ * go-redis's CredentialsProviderContext on every new connection. TLS is required
+ * (auto-enabled by SetDefaults). For IAM-enabled ElastiCache users, the user
+ * name and user ID must be identical — supply that single value as UserID.
+ */
+export interface RedisIAMAuthConfig {
+    enabled: boolean;
+    /**
+     * CacheName is the ElastiCache replication-group ID.
+     * Will be lowercased automatically (AWS lowercases cache names at creation time).
+     */
+    cacheName: string;
+    /**
+     * Region is optional — derived from AWS_REGION / instance metadata when omitted.
+     */
+    region?: string;
+    userID: string;
+    /**
+     * Auth selects the AWS credential source (same shape as DynamoDB's auth).
+     * Omit to use the default credential chain (instance role, env vars, …).
+     */
+    auth?: AwsAuthConfig;
+}
+/**
+ * PostgreSQLIAMAuthConfig enables AWS IAM authentication for RDS PostgreSQL.
+ * eRPC mints SigV4-presigned tokens via pgxpool.BeforeConnect on each new pool
+ * connection. SSL is required (auto-enforced via sslmode=require by SetDefaults).
+ */
+export interface PostgreSQLIAMAuthConfig {
+    enabled: boolean;
+    /**
+     * Endpoint is host:port of the RDS instance. If empty, derived from
+     * ConnectionUri at SetDefaults time.
+     */
+    endpoint?: string;
+    /**
+     * Region is optional — derived from AWS_REGION / instance metadata when omitted.
+     */
+    region?: string;
+    /**
+     * DBUser is the database user mapped to the IAM role (must be granted rds_iam
+     * in PostgreSQL). If empty, derived from the user in ConnectionUri.
+     */
+    dbUser?: string;
+    auth?: AwsAuthConfig;
 }
 export interface ProjectConfig {
     id: string;
@@ -1207,9 +1282,9 @@ export interface EvmNetworkConfig {
  * non-syncing upstreams — which can advertise a block only the single most-ahead
  * upstream has, causing "block not found" churn when requests route to a
  * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
- * served value is instead the MIN of the dominant agreement cluster among the
- * eligible upstreams, so any upstream in that cluster can serve the advertised
- * block.
+ * served value is instead the freshest block a strict MAJORITY of the eligible
+ * upstreams already have, so interpolated requests land on upstreams that can
+ * serve the advertised block.
  */
 export interface EvmServedTipConfig {
     /**
@@ -1219,18 +1294,18 @@ export interface EvmServedTipConfig {
      */
     enabledFor?: string[];
     /**
-     * ClusterDelta is the maximum block gap between adjacent sorted upstream heads
-     * that still groups them into one cluster. 0 auto-derives from the network's
-     * estimated block time (clamped to [2,10]).
+     * Deprecated: ClusterDelta configured the former cluster-based picker and is
+     * ignored — the majority order statistic needs no tuning. Kept only so
+     * existing configs keep parsing.
      */
     clusterDelta?: number;
     /**
      * GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
      * "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
      * serve the advertised latest. For a request on a matching method, "latest"
-     * resolves against the dominant cluster of only the upstreams that support it
+     * resolves against the majority of only the upstreams that support it
      * (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-     * Empty means only the global (all-eligible) cluster is computed.
+     * Empty means only the global (all-eligible) majority is computed.
      */
     guaranteedMethods?: string[];
 }

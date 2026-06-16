@@ -389,7 +389,9 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
     byId(id: Pattern): PolicyEvalUpstreamArray;
     excludeId(id: Pattern): PolicyEvalUpstreamArray;
     byTag(pat: TagPattern): PolicyEvalUpstreamArray;
-    excludeTag(pat: TagPattern): PolicyEvalUpstreamArray;
+    excludeTag(pat: TagPattern, opts?: {
+        probe?: boolean;
+    }): PolicyEvalUpstreamArray;
     byVendor(v: Pattern): PolicyEvalUpstreamArray;
     excludeVendor(v: Pattern): PolicyEvalUpstreamArray;
     byType(t: Pattern): PolicyEvalUpstreamArray;
@@ -400,10 +402,15 @@ export interface PolicyEvalUpstreamArray extends ReadonlyArray<PolicyEvalUpstrea
     removeByMisbehavior(max: number): PolicyEvalUpstreamArray;
     removeByLag(opts: RemoveByLagOptions): PolicyEvalUpstreamArray;
     removeByMinRequests(min: number): PolicyEvalUpstreamArray;
-    removeCordoned(): PolicyEvalUpstreamArray;
+    removeCordoned(opts?: {
+        probe?: boolean;
+    }): PolicyEvalUpstreamArray;
     removeByLatency(opts: RemoveByLatencyOptions): PolicyEvalUpstreamArray;
     keepHealthy(opts?: KeepHealthyOptions): PolicyEvalUpstreamArray;
-    excludeIf(predicate: PolicyEvalPredicate, reasonOverride?: string): PolicyEvalUpstreamArray;
+    excludeIf(predicate: PolicyEvalPredicate, reasonOverrideOrOpts?: string | {
+        probe?: boolean;
+        reason?: string;
+    }): PolicyEvalUpstreamArray;
     /**
      * Dry-run / observed-only counterpart of `excludeIf`. The predicate runs
      * for every upstream, but no upstream is actually dropped — instead, every
