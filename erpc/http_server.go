@@ -779,7 +779,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":%s}}`, msg)
 
-				fmt.Fprint(w, body)
+				fmt.Fprint(w, body) // #nosec G705 -- body is JSON-marshaled, not raw user input; XSS risk is a false positive
 				common.EnrichHTTPServerSpan(httpCtx, statusCode, err)
 			})
 		}

@@ -10,10 +10,10 @@
 		"llms": "node scripts/build-llms.mjs"
 	},
 	"dependencies": {
-		"@radix-ui/react-slot": "^1.2.4",
+		"@radix-ui/react-slot": "^1.2.5",
 		"@svgr/webpack": "^8.1.0",
 		"clsx": "^2.1.1",
-		"next": "^15.5.10",
+		"next": "^15.5.19",
 		"nextra": "^2.13.4",
 		"nextra-theme-docs": "^2.13.4",
 		"prism-react-renderer": "^2.4.1",
@@ -21,7 +21,7 @@
 		"react-dom": "^18.3.1"
 	},
 	"devDependencies": {
-		"@types/node": "^25.3.0",
+		"@types/node": "^25.9.3",
 		"typescript": "^5.9.3"
 	},
 	"pnpm": {

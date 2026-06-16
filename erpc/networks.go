@@ -1812,7 +1812,7 @@ func (n *Network) handleBlockSkip(
 	if isRetryable {
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				go func() {
+				go func() { // #nosec G118 -- fire-and-forget poll; must not share request lifetime
 					pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
 					_, _ = sp.PollLatestBlockNumber(pollCtx)
