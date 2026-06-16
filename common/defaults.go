@@ -1242,6 +1242,27 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 
 func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings, error) {
 	switch vendorName {
+	case "goldsky", "evm+goldsky":
+		// goldsky://<secret>[?tier=<tier>] — the authority segment is the Edge
+		// secret token (the host is always edge.goldsky.com). Falls back to a
+		// ?secret= query param when the authority is empty.
+		settings := VendorSettings{}
+		if endpoint.Host != "" {
+			settings["secret"] = endpoint.Host
+		}
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse goldsky query parameters: %w", err)
+			}
+			if secret := params.Get("secret"); secret != "" {
+				settings["secret"] = secret
+			}
+			if tier := params.Get("tier"); tier != "" {
+				settings["tier"] = tier
+			}
+		}
+		return settings, nil
 	case "alchemy", "evm+alchemy":
 		return VendorSettings{
 			"apiKey": endpoint.Host,

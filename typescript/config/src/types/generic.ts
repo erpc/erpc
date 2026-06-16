@@ -87,6 +87,7 @@ import type {
    */
   export type UpstreamType =
     | "evm"
+    | "evm+goldsky"
     | "evm+alchemy"
     | "evm+blastapi"
     | "evm+conduit"
