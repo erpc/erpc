@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2048,6 +2049,16 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
+		// wg tracks when all sendRawTx goroutines have exited the gock transport
+		// mutex. gock.Response.Map fires inside Responder, which is called after
+		// mutex.Unlock() in RoundTrip — after shouldUseNetwork — so wg.Wait()
+		// below establishes the happens-before that prevents a data race between
+		// shouldUseNetwork's config.Networking read and defer ResetGock()'s
+		// EnableNetworking write.
+		var wg sync.WaitGroup
+		wg.Add(3)
+		signalDone := func(res *http.Response) *http.Response { wg.Done(); return res }
+
 		// First upstream responds immediately - triggers short-circuit
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -2060,7 +2071,7 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  expectedTxHash,
-			})
+			}).Map(signalDone)
 
 		// Second upstream responds slowly - this is the key test:
 		// It should still complete even after parent context is cancelled
@@ -2076,7 +2087,7 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  expectedTxHash,
-			})
+			}).Map(signalDone)
 
 		// Third upstream even slower
 		gock.New("http://rpc3.localhost").
@@ -2091,7 +2102,7 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  expectedTxHash,
-			})
+			}).Map(signalDone)
 
 		// Create a cancellable context to simulate HTTP request lifecycle
 		ctx, cancel := context.WithCancel(context.Background())
@@ -2130,6 +2141,13 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 			return len(gock.Pending()) == util.EvmBlockTrackerMocks
 		}, 30*time.Second, 50*time.Millisecond,
 			"all sendRawTx mocks should be consumed - background requests must complete even after parent context cancelled")
+
+		// All mocks consumed means MatchMock has fired for each goroutine, but
+		// shouldUseNetwork (which reads config.Networking) runs immediately after
+		// inside the same transport mutex hold. wg.Wait() ensures every goroutine
+		// has reached the Map hook (called after mutex.Unlock in RoundTrip), so
+		// defer ResetGock() can safely write config.Networking without a race.
+		wg.Wait()
 	})
 
 	// REGRESSION TEST: Verifies that fire-and-forget lets requests complete even when
@@ -2141,6 +2159,10 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		var wg sync.WaitGroup
+		wg.Add(3)
+		signalDone := func(res *http.Response) *http.Response { wg.Done(); return res }
 
 		// ALL upstreams are slow - parent will be cancelled before any responds
 		gock.New("http://rpc1.localhost").
@@ -2155,7 +2177,7 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  expectedTxHash,
-			})
+			}).Map(signalDone)
 
 		gock.New("http://rpc2.localhost").
 			Post("").
@@ -2169,7 +2191,7 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  expectedTxHash,
-			})
+			}).Map(signalDone)
 
 		gock.New("http://rpc3.localhost").
 			Post("").
@@ -2183,7 +2205,7 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  expectedTxHash,
-			})
+			}).Map(signalDone)
 
 		// Create context that will be cancelled BEFORE any upstream responds
 		ctx, cancel := context.WithCancel(context.Background())
@@ -2215,6 +2237,8 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 			return len(gock.Pending()) == util.EvmBlockTrackerMocks
 		}, 30*time.Second, 50*time.Millisecond,
 			"fire-and-forget must broadcast to all nodes even when parent cancelled before short-circuit")
+
+		wg.Wait()
 	})
 }
 
