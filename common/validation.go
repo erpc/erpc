@@ -993,8 +993,14 @@ func (b *EvmAvailabilityBoundConfig) Validate() error {
 }
 
 func (f *FailsafeConfig) Validate() error {
-	// Validate MatchMethod - empty string is not allowed
-	if f.MatchMethod == "" {
+	if len(f.Matchers) > 0 {
+		// Matcher-based scoping supersedes matchMethod/matchFinality; in
+		// that mode matchMethod is allowed to be empty.
+		if err := ValidateMatchers(f.Matchers); err != nil {
+			return fmt.Errorf("failsafe.matchers validation failed: %w", err)
+		}
+	} else if f.MatchMethod == "" {
+		// Legacy scoping: empty matchMethod is not allowed (use '*').
 		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
 	}
 

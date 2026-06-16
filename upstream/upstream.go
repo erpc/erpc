@@ -369,12 +369,28 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
-func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamExecutor {
+func (u *Upstream) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *upstreamExecutor {
 	method, _ := req.Method()
-	finality := req.Finality(context.Background())
+	finality := req.Finality(ctx)
 
-	// 4-tier priority: method+finality > method > finality > catch-all.
+	// Matcher-based selection takes precedence: the first executor (in
+	// config order) whose matchers resolve to "include" for this request
+	// wins. Matchers can constrain on network/method/params/finality and
+	// explicitly include/exclude — a superset of matchMethod/matchFinality.
 	for _, fe := range u.failsafeExecutors {
+		if ms := fe.Matchers(); len(ms) > 0 {
+			if common.MatchMatchers(ctx, ms, req, nil) {
+				return fe
+			}
+		}
+	}
+
+	// Legacy 4-tier priority over executors WITHOUT matchers:
+	// method+finality > method > finality > catch-all.
+	for _, fe := range u.failsafeExecutors {
+		if len(fe.Matchers()) > 0 {
+			continue
+		}
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
 		if mp != "*" && len(fl) > 0 {
 			if matched, _ := common.WildcardMatch(mp, method); matched && slices.Contains(fl, finality) {
@@ -383,6 +399,9 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 		}
 	}
 	for _, fe := range u.failsafeExecutors {
+		if len(fe.Matchers()) > 0 {
+			continue
+		}
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
 		if mp != "*" && len(fl) == 0 {
 			if matched, _ := common.WildcardMatch(mp, method); matched {
@@ -391,6 +410,9 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 		}
 	}
 	for _, fe := range u.failsafeExecutors {
+		if len(fe.Matchers()) > 0 {
+			continue
+		}
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
 		if mp == "*" && len(fl) > 0 {
 			if slices.Contains(fl, finality) {
@@ -399,6 +421,9 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *upstreamE
 		}
 	}
 	for _, fe := range u.failsafeExecutors {
+		if len(fe.Matchers()) > 0 {
+			continue
+		}
 		mp, fl := fe.MatchMethod(), fe.MatchFinality()
 		if mp == "*" && len(fl) == 0 {
 			return fe
@@ -811,7 +836,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nrs, nil
 		}
 
-		failsafeExecutor := u.getFailsafeExecutor(nrq)
+		failsafeExecutor := u.getFailsafeExecutor(ctx, nrq)
 		if failsafeExecutor == nil {
 			return nil, fmt.Errorf("no failsafe executor found for request")
 		}

@@ -110,17 +110,37 @@ explain the thresholds. Reference: https://docs.erpc.cloud/config/failsafe.llms.
 - Circuit breakers are **upstream-scope only**. Placing a `circuitBreaker` block in a network-level `failsafe` entry causes startup failure with `ErrFailsafeConfiguration`. (<SourceLink file="erpc/network_executor.go" lines="68-73" />)
 - Consensus is **network-scope only**. Placing a `consensus` block in an upstream-level `failsafe` entry causes startup failure. (<SourceLink file="upstream/upstream_executor.go" lines="46-53" />)
 
-**Failsafe entry matching (`matchMethod` + `matchFinality`).** Each `failsafe[]` entry is matched top-to-bottom by a 4-tier priority (`SelectExecutor` in `common/match.go`):
-1. Specific method + specific finality (highest priority)
-2. Specific method, any finality
-3. Wildcard method (`"*"`), specific finality
-4. Wildcard method, any finality — catch-all (lowest priority)
+**Failsafe entry selection.** There are two ways to scope a `failsafe[]` entry to a class of requests: the unified `matchers` object (recommended) and the legacy `matchMethod` + `matchFinality` fields. They can be mixed across entries; a single entry uses whichever it sets.
 
-Within each tier, the first matching entry in config order wins. (<SourceLink file="common/match.go" lines="18-78" />)
+**Unified `matchers` (recommended).** Set `matchers` on a `failsafe[]` entry to scope it by `network`, `method`, request `params`, and/or `finality`, with an explicit `action` of `include` (default) or `exclude`:
 
-**`matchFinality` valid values.** `finalized`, `unfinalized`, `realtime`, `unknown`. A value like `"latest"` is not a valid finality token and silently never matches any request.
+```yaml filename="erpc.yaml"
+failsafe:
+  - matchers:
+      - method: "eth_getLogs"
+        finality: [unfinalized, realtime]
+        action: include
+    hedge:
+      maxCount: 2
+      delay: 100ms
+```
 
-**Defaults merge algorithm.** When a network has its own `failsafe` array AND `networkDefaults.failsafe` is also set, each entry in the network array is matched against the defaults array using the same `WildcardMatch + MatchFinalities` algorithm. When a match is found, unset sub-fields (retry, hedge, timeout, etc.) inherit from the matched default entry. A catch-all default (`matchMethod: "*"`) acts as a universal base for all network-specific entries. If the network has no `failsafe` entries but the defaults do, the entire defaults array is cloned. (<SourceLink file="common/defaults.go" lines="1793-1832" />)
+Semantics:
+- Within one entry's `matchers` list, rules are evaluated **last-to-first — the last matching rule wins** — and the entry is selected when that rule's `action` is `include`. This lets you write `[{method: "*", action: exclude}, {method: "eth_getLogs", action: include}]` for a default-exclude base with a narrow include.
+- `network` / `method` / string `params` use the standard wildcard grammar (globs, `|`/`&`/`!`, parentheses, `<empty>`, numeric `>=`/`<=`/`>`/`<`/`=` on hex values). `params` is positional and recursive (objects match a subset of keys, arrays match element-wise by exact length). `finality` is an OR-set of `finalized` / `unfinalized` / `realtime` / `unknown`. An unset field imposes no constraint.
+- Across `failsafe[]` entries, **the first entry (in config order) whose `matchers` resolve to `include` wins.** Matcher-based entries are considered before legacy `matchMethod`/`matchFinality` entries, so in a mixed config a matching matcher entry takes precedence over a legacy entry regardless of position. (<SourceLink file="common/matcher_config.go" lines="178-216" />, <SourceLink file="erpc/networks.go" lines="835-873" />, <SourceLink file="upstream/upstream.go" lines="372-433" />)
+
+Invalid wildcard patterns in `matchers` (e.g. an unbalanced paren) are rejected at config load rather than silently never matching.
+
+**Legacy `matchMethod` + `matchFinality` (deprecated).** Entries without `matchers` are selected by the prior algorithm, preserved for backward compatibility:
+- **Network scope:** first matching entry in config order wins (`matchMethod` wildcard + `matchFinality` set membership).
+- **Upstream scope:** 4-tier priority — (1) specific method + specific finality, (2) specific method any finality, (3) wildcard method specific finality, (4) wildcard method any finality (catch-all); within a tier, first in config order wins.
+
+**`matchFinality` valid values.** `finalized`, `unfinalized`, `realtime`, `unknown`. A value like `"latest"` is not a valid finality token and silently never matches any request. (The same finality tokens apply to a matcher's `finality` field.)
+
+**Defaults merge algorithm.** When a network has its own `failsafe` array AND `networkDefaults.failsafe` is also set, each entry in the network array is matched against the defaults array using the `WildcardMatch + MatchFinalities` algorithm on `matchMethod`/`matchFinality`. When a match is found, unset sub-fields (retry, hedge, timeout, etc.) inherit from the matched default entry. A catch-all default (`matchMethod: "*"`) acts as a universal base for all network-specific entries. If the network has no `failsafe` entries but the defaults do, the entire defaults array is cloned. (<SourceLink file="common/defaults.go" lines="1793-1832" />)
+
+> Note: the defaults-merge pairing keys off `matchMethod`/`matchFinality` only — it does **not** read `matchers`. A matcher-based entry keeps its `matchers` through the merge (they are never dropped) and inherits unset sub-policies from the catch-all default, but its `matchers` constraints are not used to pick which default it pairs with. If you rely on `networkDefaults.failsafe` inheritance, set the sub-policies explicitly on matcher-based entries rather than depending on per-method pairing.
 
 **Network-scope timeout is lifecycle-scoped, not per-attempt.** A 500ms network timeout with `maxAttempts: 3` has a 500ms total budget shared across all 3 retry rounds. There is no per-attempt timeout at the network scope.
 
@@ -256,7 +276,8 @@ Within each tier, the first matching entry in config order wins. (<SourceLink fi
 ### Source code entry points
 
 - [`erpc/network_executor.go:L183-L203`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L183-L203) — executor composition: consensus / retry / hedge / sweep wiring
-- [`common/match.go:L18-L78`](https://github.com/erpc/erpc/blob/main/common/match.go#L18-L78) — `SelectExecutor` 4-tier failsafe entry selection by (matchMethod, matchFinality)
+- [`common/matcher_config.go:L178-L216`](https://github.com/erpc/erpc/blob/main/common/matcher_config.go#L178-L216) — `MatchMatchers` / `MatchConfig`: unified matcher-based failsafe entry selection (network/method/params/finality + include/exclude)
+- [`erpc/networks.go:L835-L873`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L835-L873) / [`upstream/upstream.go:L372-L433`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go#L372-L433) — `getFailsafeExecutor`: matcher pre-pass then legacy `matchMethod`/`matchFinality` selection
 - [`common/defaults.go:L1793-L1832`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1793-L1832) — failsafe entry merge algorithm (network scope)
 - [`common/defaults.go:L1621-L1672`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1621-L1672) — failsafe entry merge algorithm (upstream scope)
 - [`erpc/network_executor.go:L68-L73`](https://github.com/erpc/erpc/blob/main/erpc/network_executor.go#L68-L73) — circuit breaker network-scope rejection at startup

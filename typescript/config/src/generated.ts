@@ -748,13 +748,71 @@ export interface EvmAvailabilityBoundConfig {
   updateRate?: Duration;
 }
 export interface FailsafeConfig {
-  matchMethod?: string;
-  matchFinality?: DataFinalityState[];
+  /**
+   * Matchers is the unified, params-aware way to scope this failsafe
+   * policy to a class of requests (network / method / params / finality
+   * + an explicit include/exclude action). When non-empty it supersedes
+   * MatchMethod/MatchFinality for selection. Leave empty to keep the
+   * legacy method/finality matching behavior.
+   */
+  matchers?: (MatcherConfig | undefined)[];
   retry?: RetryPolicyConfig;
   circuitBreaker?: CircuitBreakerPolicyConfig;
   timeout?: TimeoutPolicyConfig;
   hedge?: HedgePolicyConfig;
   consensus?: ConsensusPolicyConfig;
+  /**
+   * Deprecated: use Matchers instead. Retained for backward
+   * compatibility — a policy with no Matchers still selects on these.
+   */
+  matchMethod?: string;
+  matchFinality?: DataFinalityState[];
+}
+
+export type MatcherAction = string;
+export const MatcherInclude: MatcherAction = "include";
+export const MatcherExclude: MatcherAction = "exclude";
+
+/**
+ * MatcherConfig is the unified request matcher shared by failsafe-policy
+ * selection (and, in time, any other subsystem that needs to scope a
+ * policy to a class of requests). All set fields are AND-ed together; an
+ * unset field imposes no constraint. String fields use the WildcardMatch
+ * grammar (globs, `|`/`&`/`!`, parentheses, `<empty>`, numeric `>=`/`<=`
+ * comparisons).
+ */
+export interface MatcherConfig {
+  /**
+   * Network is a wildcard pattern matched against the request's network
+   * id (e.g. "evm:1"). Empty = match any network.
+   */
+  network?: string;
+  /**
+   * Method is a wildcard pattern matched against the JSON-RPC method.
+   * Empty = match any method.
+   */
+  method?: string;
+  /**
+   * Params is a positional list of patterns compared element-wise
+   * against the request params (recursive for objects/arrays). Empty =
+   * match any params. A shorter list constrains only the leading params.
+   */
+  params?: any[];
+  /**
+   * Finality is a set (OR) of finality states; the request matches if
+   * its finality is any member. Empty = match any finality.
+   */
+  finality?: DataFinalityState[];
+  /**
+   * Empty is a tri-state response-emptiness constraint (nil = no
+   * constraint). Only meaningful where a response is available at match
+   * time (e.g. a cache SET); inert for pre-forward failsafe selection.
+   */
+  empty?: CacheEmptyBehavior;
+  /**
+   * Action is "include" (default) or "exclude".
+   */
+  action?: 'include' | 'exclude';
 }
 /**
  * NetworkFailsafeConfig is the scope-specific alias for network-level

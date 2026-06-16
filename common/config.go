@@ -1283,13 +1283,22 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	// Matchers is the unified, params-aware way to scope this failsafe
+	// policy to a class of requests (network / method / params / finality
+	// + an explicit include/exclude action). When non-empty it supersedes
+	// MatchMethod/MatchFinality for selection. Leave empty to keep the
+	// legacy method/finality matching behavior.
+	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers,omitempty"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
 	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
 	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+
+	// Deprecated: use Matchers instead. Retained for backward
+	// compatibility — a policy with no Matchers still selects on these.
+	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
 }
 
 // NetworkFailsafeConfig is the scope-specific alias for network-level
@@ -1315,6 +1324,10 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 
 	copied := &FailsafeConfig{}
 	*copied = *c
+
+	// Deep copy the Matchers slice (each matcher, incl. its Params/Finality
+	// slices and Empty pointer, is cloned independently).
+	copied.Matchers = CopyMatchers(c.Matchers)
 
 	// Deep copy the MatchFinality array
 	if c.MatchFinality != nil {
