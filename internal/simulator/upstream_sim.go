@@ -116,9 +116,9 @@ func (h *UpstreamHub) Addr() string {
 // goroutine.
 func (h *UpstreamHub) Serve(ctx context.Context) error {
 	go h.advanceBlocks(ctx)
-	go func() {
+	go func() { // #nosec G118 -- intentional: ctx is already done; background is correct for shutdown
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second) // #nosec G118 -- intentional: ctx is already done; background is correct for shutdown
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = h.server.Shutdown(shutdownCtx)
 	}()

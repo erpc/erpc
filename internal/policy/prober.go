@@ -220,7 +220,7 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 			continue
 		}
 		p.wg.Add(1)
-		go p.mirror(req, u, cfg)
+		go p.mirror(req, u, cfg) // #nosec G118 -- probe runs independently; must not be cancelled by the originating request
 	}
 }
 
