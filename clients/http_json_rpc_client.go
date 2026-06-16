@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -673,9 +674,11 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "HttpJsonRpcClient.sendSingleRequest",
+		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("network.id", req.NetworkId()),
 			attribute.String("upstream.id", c.upstream.Id()),
+			semconv.PeerServiceKey.String(c.Url.Hostname()),
 		),
 	)
 	defer span.End()
