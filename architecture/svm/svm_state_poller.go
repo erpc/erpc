@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -92,6 +93,18 @@ func (e *SvmStatePoller) IsObjectNull() bool {
 	return e == nil
 }
 
+// recoverPanic keeps a panic in a poll tick or fan-out goroutine from taking
+// down the whole erpc process (which serves every other network too).
+func (e *SvmStatePoller) recoverPanic(where string) {
+	if r := recover(); r != nil {
+		e.logger.Error().
+			Interface("panic", r).
+			Str("where", where).
+			Bytes("stack", debug.Stack()).
+			Msg("recovered from panic in svm state poller")
+	}
+}
+
 func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
 	// The debounce gate defaults to one slot when not configured. It may have
 	// already been set via SetDebounceInterval (config can arrive before
@@ -130,13 +143,16 @@ func (e *SvmStatePoller) loop(interval time.Duration) {
 			e.logger.Debug().Msg("shutting down svm state poller due to app context interruption")
 			return
 		case <-ticker.C:
-			nctx, cancel := context.WithTimeout(e.appCtx, 15*time.Second)
-			if err := e.Poll(nctx); err != nil {
-				if !errors.Is(nctx.Err(), context.Canceled) {
-					e.logger.Warn().Err(err).Msg("svm state poll failed")
+			func() {
+				defer e.recoverPanic("loop")
+				nctx, cancel := context.WithTimeout(e.appCtx, 15*time.Second)
+				defer cancel()
+				if err := e.Poll(nctx); err != nil {
+					if !errors.Is(nctx.Err(), context.Canceled) {
+						e.logger.Warn().Err(err).Msg("svm state poll failed")
+					}
 				}
-			}
-			cancel()
+			}()
 		}
 	}
 }
@@ -165,12 +181,14 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 
 	go func() {
 		defer wg.Done()
+		defer e.recoverPanic("fetchHealth")
 		healthy := e.fetchHealth(ctx)
 		e.healthy.Store(healthy)
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer e.recoverPanic("fetchSlot.processed")
 		if slot, err := e.fetchSlot(ctx, reqGetSlotProcessed); err == nil && slot > 0 {
 			e.SuggestLatestSlot(slot)
 		}
@@ -178,6 +196,7 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 
 	go func() {
 		defer wg.Done()
+		defer e.recoverPanic("fetchSlot.finalized")
 		if slot, err := e.fetchSlot(ctx, reqGetSlotFinalized); err == nil && slot > 0 {
 			e.SuggestFinalizedSlot(slot)
 		}
@@ -185,6 +204,7 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 
 	go func() {
 		defer wg.Done()
+		defer e.recoverPanic("fetchSlot.maxShredInsert")
 		if shred, err := e.fetchSlot(ctx, reqGetMaxShredInsertSlot); err == nil && shred > 0 {
 			shredSlot = shred
 		}
@@ -284,6 +304,12 @@ func (e *SvmStatePoller) SuggestLatestSlot(slot int64) {
 		return
 	}
 	e.latestSlotShared.TryUpdate(e.appCtx, slot)
+	// Feed the shared health tracker so processed-slot lag drives score-based
+	// upstream selection on every path — not just the consensus slot-lag
+	// pre-filter (design §8). Solana slots carry no block timestamp, so pass 0.
+	if e.tracker != nil {
+		e.tracker.SetLatestBlockNumber(e.upstream, slot, 0)
+	}
 }
 
 func (e *SvmStatePoller) SuggestFinalizedSlot(slot int64) {
@@ -291,4 +317,8 @@ func (e *SvmStatePoller) SuggestFinalizedSlot(slot int64) {
 		return
 	}
 	e.finalizedSlotShared.TryUpdate(e.appCtx, slot)
+	// Feed finalized-slot lag into the tracker (FinalizationLag) for scoring.
+	if e.tracker != nil {
+		e.tracker.SetFinalizedBlockNumber(e.upstream, slot)
+	}
 }

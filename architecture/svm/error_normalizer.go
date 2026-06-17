@@ -94,6 +94,14 @@ func (e *JsonRpcErrorExtractor) Extract(
 					nil, details),
 				details, resp.StatusCode,
 			)
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			// Surface auth failures as a distinct, actionable class (missing/invalid
+			// API key) rather than a generic client-side error.
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorClientSideException,
+					fmt.Sprintf("svm upstream unauthorized (HTTP %d)", resp.StatusCode),
+					nil, details),
+			)
 		case resp.StatusCode >= 400 && resp.StatusCode <= 499:
 			// 4xx without a JSON body is typically an auth/config issue — treat as client-side,
 			// do not retry across upstreams.
