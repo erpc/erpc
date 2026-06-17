@@ -279,7 +279,7 @@ Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static 
 
 #### dwellir
 
-Static map of 70 chains → subdomain prefixes. URL: `https://{subdomain}.dwellir.com/{apiKey}`. OwnsUpstream: only `dwellir://` prefix (NOT `evm+dwellir://`) or `.dwellir.com` — the `evm+` form still works because shorthand conversion runs first. Avalanche appends `/ext/bc/C/rpc` to the URL. `SupportsNetwork` quirk: an unparseable numeric chain id part returns `(false, nil)` rather than an error (unlike every other static-map vendor which propagates the parse error).
+Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwellir.com/{apiKey}`. OwnsUpstream: only `dwellir://` prefix (NOT `evm+dwellir://`) or `.dwellir.com` — the `evm+` form still works because shorthand conversion runs first. Avalanche appends `/ext/bc/C/rpc` to the URL. `SupportsNetwork` quirk: an unparseable numeric chain id part returns `(false, nil)` rather than an error (unlike every other static-map vendor which propagates the parse error).
 
 | key | required | default |
 |---|---|---|
