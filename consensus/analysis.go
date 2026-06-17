@@ -75,7 +75,7 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 		}
 		if net := req.Network(); net != nil && net.Architecture() == common.ArchitectureEvm {
 			// Use the executor context; leader selection is read-only and fast
-			analysis.leaderUpstream = net.EvmLeaderUpstream(ctx)
+			analysis.leaderUpstream = common.EvmLeaderUpstream(net, ctx)
 		}
 	}
 

@@ -62,14 +62,14 @@ func resolveBlockTagToHex(ctx context.Context, network common.Network, tag strin
 	switch tag {
 	case "latest":
 		// Translate "latest" to the highest known latest block
-		if bn := network.EvmHighestLatestBlockNumber(ctx); bn > 0 {
+		if bn := common.EvmHighestLatestBlockNumber(network, ctx); bn > 0 {
 			if hx, err := common.NormalizeHex(bn); err == nil {
 				return hx, true
 			}
 		}
 	case "finalized":
 		// Translate "finalized" to the highest known finalized block
-		if bn := network.EvmHighestFinalizedBlockNumber(ctx); bn > 0 {
+		if bn := common.EvmHighestFinalizedBlockNumber(network, ctx); bn > 0 {
 			if hx, err := common.NormalizeHex(bn); err == nil {
 				return hx, true
 			}

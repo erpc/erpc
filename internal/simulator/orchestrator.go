@@ -266,7 +266,7 @@ func (o *Orchestrator) bootFromYAML(ctx context.Context, yamlSrc string) error {
 	o.currentYAML = yamlSrc
 	o.cfgMu.Unlock()
 
-	e, err := erpc.NewERPC(ctx, &o.logger, nil, nil, cfg)
+	e, err := erpc.NewERPC(ctx, &o.logger, nil, nil, nil, cfg)
 	if err != nil {
 		return fmt.Errorf("simulator: NewERPC: %w", err)
 	}
