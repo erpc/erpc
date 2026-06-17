@@ -9,6 +9,7 @@ type VendorsRegistry struct {
 func NewVendorsRegistry() *VendorsRegistry {
 	r := &VendorsRegistry{}
 
+	r.Register(CreateGoldskyVendor())
 	r.Register(CreateAlchemyVendor())
 	r.Register(CreateBlastApiVendor())
 	r.Register(CreateConduitVendor())

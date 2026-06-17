@@ -1143,6 +1143,30 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 }
 
 func TestBuildProviderSettings(t *testing.T) {
+	// Goldsky shorthand: authority is the Edge secret token.
+	t.Run("goldsky with secret in authority", func(t *testing.T) {
+		endpoint, _ := url.Parse("goldsky://my-edge-secret")
+		settings, err := buildProviderSettings("goldsky", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "my-edge-secret", settings["secret"])
+		assert.Nil(t, settings["tier"])
+	})
+
+	t.Run("goldsky with tier query param", func(t *testing.T) {
+		endpoint, _ := url.Parse("goldsky://my-edge-secret?tier=custom")
+		settings, err := buildProviderSettings("goldsky", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "my-edge-secret", settings["secret"])
+		assert.Equal(t, "custom", settings["tier"])
+	})
+
+	t.Run("goldsky with secret query param fallback", func(t *testing.T) {
+		endpoint, _ := url.Parse("goldsky://?secret=query-secret")
+		settings, err := buildProviderSettings("goldsky", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "query-secret", settings["secret"])
+	})
+
 	// Test case for Chainstack with query parameters
 	t.Run("chainstack with filters", func(t *testing.T) {
 		endpoint, _ := url.Parse("chainstack://test-api-key?project=proj-123&organization=org-456&region=us-east-1&provider=aws&type=dedicated")
