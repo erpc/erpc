@@ -694,3 +694,67 @@ projects:
 	require.Contains(t, jrr.GetResultString(), "0xfresh", "the fresh block must be served from the upstream")
 	resp.Release()
 }
+
+// TestNetworkAvailability_Issue934_ArcSyncFlow_CustomMethodAndFreshBlock mirrors the
+// real Arc rpc-sync use case (from the issue discussion): on each new head the client
+// immediately calls eth_getBlockByNumber(N) AND a custom consensus method,
+// arc_getCertificate, for the just-produced block — through eRPC, against upstreams
+// configured lower-only while the state poller is still a block behind.
+//
+// eth_getBlockByNumber(N) must be served (issue #934). arc_getCertificate is a custom
+// method: eRPC cannot extract a block reference for it (it is in none of the cache-method
+// maps), so block-availability gating fails open and the request is forwarded — i.e. it
+// is never constrained by the state poller. This test grounds both in reality.
+//
+// Note: eRPC does not provide the newHeads websocket subscription itself (the ws upstream
+// client is unimplemented and the server is request/response only), so — as in the issue
+// — the client subscribes to newHeads directly on a node and uses eRPC for the follow-up
+// JSON-RPC calls.
+func TestNetworkAvailability_Issue934_ArcSyncFlow_CustomMethodAndFreshBlock(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const staleTip = int64(0x1e8480) // 2,000,000
+	const freshBlockHex = "0x1e8481" // staleTip + 1 (the head the client just saw)
+	network, _ := setupLowerOnlyRaceNetwork(t, ctx, []lowerOnlyRaceFixture{
+		{id: "rpc1", staleTip: staleTip},
+		{id: "rpc2", staleTip: staleTip},
+	}, freshBlockHex)
+
+	// The Arc consensus custom method, served by the node for the fresh block.
+	for _, id := range []string{"rpc1", "rpc2"} {
+		gock.New("http://" + id + ".localhost").Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "arc_getCertificate")
+			}).
+			Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"certificate":"0xcert"}}`))
+	}
+
+	// 1) eth_getBlockByNumber(N) for the fresh head → served (issue #934 fix).
+	reqBlock := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
+	reqBlock.SetNetwork(network)
+	respBlock, err := network.Forward(ctx, reqBlock)
+	require.NoError(t, err, "fresh head block must be served, not rejected by the stale poller")
+	jrrBlock, jerr := respBlock.JsonRpcResponse(ctx)
+	require.NoError(t, jerr)
+	require.Contains(t, jrrBlock.GetResultString(), "0xfresh")
+	respBlock.Release()
+
+	// 2) arc_getCertificate(N) — custom method for the same fresh block. eRPC cannot
+	// extract a block reference, so gating fails open and it is forwarded regardless of
+	// the lower-only bounds or the lagging state poller.
+	reqCert := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":2,"method":"arc_getCertificate","params":["` + freshBlockHex + `"]}`))
+	reqCert.SetNetwork(network)
+	respCert, err := network.Forward(ctx, reqCert)
+	require.NoError(t, err,
+		"a custom method (arc_getCertificate) must be forwarded, never constrained by the state poller")
+	jrrCert, jerr := respCert.JsonRpcResponse(ctx)
+	require.NoError(t, jerr)
+	require.Contains(t, jrrCert.GetResultString(), "0xcert", "the custom method response must be served from the upstream")
+	respCert.Release()
+}
