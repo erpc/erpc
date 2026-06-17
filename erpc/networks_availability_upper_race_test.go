@@ -16,6 +16,7 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
+	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 )
 
@@ -544,4 +545,152 @@ func TestNetworkAvailability_Issue934_RangeMethod_DeferredToHook(t *testing.T) {
 	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getLogs")
 	require.NoError(t, skipErr,
 		"eth_getLogs is gated by its dedicated range hook, not by checkUpstreamBlockAvailability")
+}
+
+// mockIssue934Node mocks the EVM state-poller endpoints for one node plus the
+// concrete fresh block. The poller's "latest" reflects a STALE tip, while the node
+// would happily serve the fresh block if the request reaches it.
+func mockIssue934Node(endpoint, chainIDHex, staleTipHex, finalizedHex, freshBlockHex string) {
+	gock.New(endpoint).Post("").Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_chainId") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"` + chainIDHex + `"}`))
+	gock.New(endpoint).Post("").Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":false}`))
+	gock.New(endpoint).Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + staleTipHex + `","hash":"0xaaa","timestamp":"0x6702a8f0"}}`))
+	gock.New(endpoint).Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "finalized")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + finalizedHex + `","hash":"0xbbb","timestamp":"0x6702a8e0"}}`))
+	gock.New(endpoint).Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, freshBlockHex)
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + freshBlockHex + `","hash":"0xfresh","timestamp":"0x6702a900"}}`))
+}
+
+// TestNetworkAvailability_Issue934_ExactConfigFromYAML_ServesFreshBlock is the
+// definitive end-to-end check: it loads the issue's LITERAL erpc.yaml through the
+// real config pipeline (LoadConfig → SetDefaults, which merges upstreamDefaults),
+// asserts the resolved upstream config is lower-only (no synthesized upper), then
+// builds a real Network from the resolved configs and verifies that a block one
+// ahead of the stale poller tip — the exact scenario in the report — is SERVED
+// rather than rejected with ErrUpstreamBlockUnavailable.
+func TestNetworkAvailability_Issue934_ExactConfigFromYAML_ServesFreshBlock(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The exact config from https://github.com/erpc/erpc/issues/934
+	const yamlCfg = `
+logLevel: debug
+projects:
+  - id: my-chain
+    upstreamDefaults:
+      evm:
+        chainId: 5042002
+        statePollerDebounce: 250ms
+    upstreams:
+      - endpoint: http://node-1:8545
+        id: node-1
+        evm:
+          blockAvailability:
+            lower:
+              latestBlockMinus: 237600
+      - endpoint: http://node-2:8545
+        id: node-2
+        evm:
+          blockAvailability:
+            lower:
+              latestBlockMinus: 237600
+`
+	fs := afero.NewMemMapFs()
+	require.NoError(t, afero.WriteFile(fs, "erpc.yaml", []byte(yamlCfg), 0644))
+	cfg, err := common.LoadConfig(fs, "erpc.yaml", &common.DefaultOptions{})
+	require.NoError(t, err, "issue #934 config must load and validate")
+
+	// --- Config-side: the literal YAML must resolve to a lower-only bound ---
+	require.Len(t, cfg.Projects, 1)
+	upCfgs := cfg.Projects[0].Upstreams
+	require.Len(t, upCfgs, 2)
+	for _, u := range upCfgs {
+		require.NotNil(t, u.Evm.BlockAvailability, "blockAvailability must be parsed for %s", u.Id)
+		require.NotNil(t, u.Evm.BlockAvailability.Lower, "lower bound must be present for %s", u.Id)
+		require.NotNil(t, u.Evm.BlockAvailability.Lower.LatestBlockMinus)
+		require.Equal(t, int64(237600), *u.Evm.BlockAvailability.Lower.LatestBlockMinus)
+		require.Nil(t, u.Evm.BlockAvailability.Upper,
+			"a lower-only config must NOT synthesize an upper bound (issue #934)")
+	}
+
+	// --- Behavioral: build a real network from the resolved configs and serve ---
+	const chainID = int64(5042002)
+	const chainIDHex = "0x4cef52" // 5042002
+	const staleTip = int64(0x4c4b40) // 5,000,000
+	const finalizedHex = "0x4c4b30"  // staleTip - 16
+	const freshBlockHex = "0x4c4b41" // staleTip + 1 (the block the client saw via newHeads)
+	staleTipHex := fmt.Sprintf("0x%x", staleTip)
+	for _, u := range upCfgs {
+		mockIssue934Node(u.Endpoint, chainIDHex, staleTipHex, finalizedHex, freshBlockHex)
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "my-chain", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "my-chain", upCfgs, ssr, rlr, vr, pr, nil, mt, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: chainID}}
+	network, err := NewNetwork(ctx, &log.Logger, "my-chain", ntwCfg, rlr, upr, mt, nil)
+	require.NoError(t, err)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(chainID)))
+	require.NoError(t, network.Bootstrap(ctx))
+	network.PinUpstreamOrderForTest()
+
+	// Wait for both pollers to settle on the stale tip via real HTTP polling.
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(chainID))
+	require.Len(t, ups, 2)
+	for _, u := range ups {
+		uu := u
+		require.Eventually(t, func() bool { return uu.EvmStatePoller().LatestBlock() == staleTip }, 3*time.Second, 25*time.Millisecond,
+			"poller for %s should settle on stale tip", u.Id())
+	}
+
+	// The client already saw freshBlock via newHeads; request it through eRPC while the
+	// poller is still a block behind. It must be served, not rejected.
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + freshBlockHex + `",false]}`))
+	req.SetNetwork(network)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err,
+		"issue #934: with the literal config, a block one ahead of the stale poller tip must be served (the upstream has it)")
+	require.NotNil(t, resp)
+	jrr, jerr := resp.JsonRpcResponse(ctx)
+	require.NoError(t, jerr)
+	require.Contains(t, jrr.GetResultString(), "0xfresh", "the fresh block must be served from the upstream")
+	resp.Release()
 }
