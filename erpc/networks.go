@@ -1697,20 +1697,18 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
-// upstreamHasBlockAvailabilityBounds reports whether the upstream has any
-// BlockAvailability bounds (lower or upper) configured. Presence of explicit
-// bounds is treated as the user's intent to enforce them when no higher-priority
-// explicit override has been set.
-func upstreamHasBlockAvailabilityBounds(u common.Upstream) bool {
-	if u == nil {
+// methodHasDedicatedRangeAvailabilityHook reports whether a method enforces its own
+// block availability via a dedicated pre-forward hook (CheckBlockRangeAvailability),
+// rather than the single-block path in checkUpstreamBlockAvailability. These are
+// range methods (fromBlock/toBlock) where gating on a single extracted block number
+// would be wrong and would conflict with the range-aware hook.
+func methodHasDedicatedRangeAvailabilityHook(method string) bool {
+	switch strings.ToLower(method) {
+	case "eth_getlogs", "trace_filter", "arbtrace_filter":
+		return true
+	default:
 		return false
 	}
-	cfg := u.Config()
-	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil {
-		return false
-	}
-	ba := cfg.Evm.BlockAvailability
-	return ba.Lower != nil || ba.Upper != nil
 }
 
 // systemDefaultEnforceBlockAvailability returns the global system default for
@@ -1725,51 +1723,37 @@ func systemDefaultEnforceBlockAvailability(method string) *bool {
 	return nil
 }
 
-// resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability.
-// Precedence (highest to lowest):
-//  1. Explicit method-level user override that differs from the system default
-//     (system defaults get merged into n.cfg.Methods.Definitions during config
-//     loading, so a method-level value that matches the system default is
-//     treated as not-an-override).
-//  2. Explicit network-level user override (network.cfg.Evm.EnforceBlockAvailability).
-//  3. Per-upstream BlockAvailability bounds — configured bounds are themselves
-//     an opt-in signal that overrides the method common default.
-//  4. System default for this method (DefaultWithBlockCacheMethods).
-//  5. Fallback: enabled.
-func (n *Network) resolveEnforceBlockAvailability(method string, u common.Upstream) bool {
+// blockAvailabilityExplicitlyDisabled reports whether the user explicitly turned
+// OFF block availability enforcement for this method, via a method-level or
+// network-level enforceBlockAvailability:false. It is the escape hatch that lets an
+// operator disable bound enforcement even on an upstream that has bounds configured.
+//
+// The method-level value is only treated as an override when it differs from the
+// system default, because MethodsConfig.SetDefaults() merges DefaultWithBlockCacheMethods
+// into Methods.Definitions at config load — so a value that matches the merged-in
+// default is not a real user override.
+func (n *Network) blockAvailabilityExplicitlyDisabled(method string) bool {
 	sysDefault := systemDefaultEnforceBlockAvailability(method)
-
-	// 1. Method-level user override (only when it differs from the system default).
-	//    The defaults loader merges DefaultWithBlockCacheMethods into Methods.Definitions,
-	//    so we cannot tell apart a user's explicit value from a merged-in default by
-	//    presence alone. Comparing values is the cleanest way to distinguish — and is
-	//    semantically harmless because a user explicitly setting the same value as the
-	//    default has the same intent as not setting it.
 	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
 		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
 			if sysDefault == nil || *mc.EnforceBlockAvailability != *sysDefault {
-				return *mc.EnforceBlockAvailability
+				return !*mc.EnforceBlockAvailability
 			}
-			// Matches the system default — treat as not-an-override and fall through.
 		}
 	}
-	// 2. Explicit network-level user override
 	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.EnforceBlockAvailability != nil {
-		return *n.cfg.Evm.EnforceBlockAvailability
+		return !*n.cfg.Evm.EnforceBlockAvailability
 	}
-	// 3. Configured per-upstream bounds opt-in to enforcement, regardless of
-	//    method common defaults. This ensures that users who configure
-	//    BlockAvailability on an upstream actually get their bounds enforced
-	//    even for methods whose system default has it off (e.g. eth_getBlockByNumber).
-	if upstreamHasBlockAvailabilityBounds(u) {
-		return true
+	return false
+}
+
+// upstreamHeads returns the upstream's last-known latest and finalized block numbers,
+// or (0, 0) when the state poller is unavailable.
+func (n *Network) upstreamHeads(eu common.EvmUpstream) (latest int64, finalized int64) {
+	if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+		return sp.LatestBlock(), sp.FinalizedBlock()
 	}
-	// 4. System default for this method
-	if sysDefault != nil {
-		return *sysDefault
-	}
-	// 5. Fallback: enabled
-	return true
+	return 0, 0
 }
 
 // handleBlockSkip records telemetry when a block availability check causes an upstream to be skipped,
@@ -1844,27 +1828,58 @@ func (n *Network) recordHedgeDiscard(
 	common.SetTraceSpanError(span, common.NewErrUpstreamHedgeCancelled(u.Id(), err))
 }
 
-// checkUpstreamBlockAvailability performs per-upstream gating for the request based on block availability.
-// It is invoked just before forwarding to an upstream to avoid copying/filtering the list.
-// Returns (nil, false) if upstream has the block available.
-// Returns (error, isRetryable) if block is not available:
-//   - isRetryable=true: block is just slightly ahead (within MaxRetryableBlockDistance), upstream may catch up
-//   - isRetryable=false: block is too far ahead or below lower bound, not worth retrying this upstream
+// checkUpstreamBlockAvailability performs per-upstream gating for the request based on
+// the upstream's configured block availability bounds. It is invoked just before
+// forwarding to an upstream to avoid copying/filtering the list.
 //
-// This is the single point of block-availability enforcement. It runs whenever
-// EnforceBlockAvailability resolves to true OR the upstream has explicit
-// BlockAvailability bounds configured (the user's signal that they want bounds
-// enforced regardless of per-method defaults).
+// Returns (nil, false) if the upstream is allowed to serve the block.
+// Returns (error, isRetryable) if the block is outside the configured range:
+//   - below the lower bound (pruned/historical) → not retryable
+//   - above the upper bound AND ahead of the live head within MaxRetryableBlockDistance → retryable
+//   - above the upper bound otherwise → not retryable
 //
-// FAIL-OPEN BEHAVIOR: If we cannot determine block availability (e.g., state poller issues),
-// we allow the request to proceed rather than blocking traffic.
+// SCOPE: this enforces ONLY the upstream's structural serving range — the configured
+// blockAvailability lower/upper bounds (which also cover the legacy
+// maxAvailableRecentBlocks via EvmBlockAvailabilityBounds). It deliberately does NOT
+// apply any implicit "blockNumber > latestBlock" head check. Tip-awareness — i.e.
+// "is this block past the chain head?" — is owned elsewhere:
+//   - served-tip short-circuits concrete future blocks beyond the network tip, and
+//   - integrity.enforceHighestBlock keeps "latest"/"finalized" tag responses honest.
+//
+// Coupling an implicit head check to this path raced with the state poller on fast
+// block-time chains and falsely rejected fresh blocks an upstream already had
+// (https://github.com/erpc/erpc/issues/934). Operators who want a node to serve only
+// blocks it has actually synced can express that explicitly as
+// blockAvailability.upper.latestBlockMinus: 0.
+//
+// FAIL-OPEN BEHAVIOR: If we cannot determine the bounds or block number (e.g. state
+// poller not ready), we allow the request to proceed rather than blocking traffic.
 func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
 	if n.cfg.Architecture != common.ArchitectureEvm {
 		return nil, false
 	}
-	if !n.resolveEnforceBlockAvailability(method, u) {
+	// Range methods (eth_getLogs, trace_filter, arbtrace_filter) enforce block
+	// availability via their own range-aware pre-forward hooks; gating them here on a
+	// single extracted block number would conflict with that.
+	if methodHasDedicatedRangeAvailabilityHook(method) {
 		return nil, false
 	}
+	// Explicit method/network enforceBlockAvailability:false is an operator opt-out.
+	if n.blockAvailabilityExplicitlyDisabled(method) {
+		return nil, false
+	}
+	eu, ok := u.(common.EvmUpstream)
+	if !ok {
+		return nil, false
+	}
+	// Resolve the upstream's configured serving range (explicit blockAvailability
+	// lower/upper, or the legacy maxAvailableRecentBlocks lower bound). Unbounded on
+	// both sides means the upstream advertises no restriction → nothing to enforce.
+	minBound, maxBound := eu.EvmBlockAvailabilityBounds()
+	if minBound == math.MinInt64 && maxBound == math.MaxInt64 {
+		return nil, false
+	}
+
 	// Prefer the cached block number from normalization. Fall back to extracting
 	// from the request (defensive: handles paths that bypass json_rpc.go's
 	// normalization, and methods whose params haven't been pre-cached yet).
@@ -1883,48 +1898,36 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 		// If still unknown, skip gating (fail-open)
 		return nil, false
 	}
-	eu, ok := u.(common.EvmUpstream)
-	if !ok {
-		return nil, false
-	}
-	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, bn)
-	if err != nil {
-		// FAIL-OPEN: Error during availability check - allow the request to proceed
-		// This prevents blocking traffic due to state poller or detection issues
-		n.logger.Debug().
-			Err(err).
-			Str("upstreamId", u.Id()).
-			Int64("blockNumber", bn).
-			Str("method", method).
-			Msg("block availability check failed; failing open to allow request")
-		return nil, false
-	}
-	if !available {
-		// Get poller state for detailed error
-		var latestBlock, finalizedBlock int64
-		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			latestBlock = sp.LatestBlock()
-			finalizedBlock = sp.FinalizedBlock()
-		}
 
-		blockErr := common.NewErrUpstreamBlockUnavailable(u.Id(), bn, latestBlock, finalizedBlock)
+	// Below the configured lower bound: the upstream genuinely cannot serve this
+	// historical block (e.g. pruned). Not retryable on this upstream.
+	if minBound != math.MinInt64 && bn < minBound {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			n.projectId, eu.VendorName(), n.Label(), eu.Id(), method, common.AvailbilityConfidenceBlockHead.String(),
+		).Inc()
+		latestBlock, finalizedBlock := n.upstreamHeads(eu)
+		return common.NewErrUpstreamBlockUnavailable(eu.Id(), bn, latestBlock, finalizedBlock), false
+	}
 
-		// Determine if this is retryable based on distance
-		// Upper bound issue (block ahead of latest): retryable if within max distance
-		// Lower bound issue (block too old): not retryable
+	// Above the configured upper bound. Classify retryability by distance to the live
+	// head: a block just ahead of the head (e.g. upper=latestBlockMinus:0) may become
+	// serveable shortly, so it is retryable within MaxRetryableBlockDistance.
+	if maxBound != math.MaxInt64 && bn > maxBound {
+		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+			n.projectId, eu.VendorName(), n.Label(), eu.Id(), method, common.AvailbilityConfidenceBlockHead.String(),
+		).Inc()
+		latestBlock, finalizedBlock := n.upstreamHeads(eu)
+		blockErr := common.NewErrUpstreamBlockUnavailable(eu.Id(), bn, latestBlock, finalizedBlock)
 		if bn > latestBlock && latestBlock > 0 {
-			distance := bn - latestBlock
 			maxDistance := int64(128) // default
 			if n.cfg.Evm != nil && n.cfg.Evm.MaxRetryableBlockDistance != nil {
 				maxDistance = *n.cfg.Evm.MaxRetryableBlockDistance
 			}
-			isRetryable := distance <= maxDistance
-			return blockErr, isRetryable
+			return blockErr, bn-latestBlock <= maxDistance
 		}
-
-		// Lower bound issue or unknown state - not retryable
 		return blockErr, false
 	}
+
 	return nil, false
 }
 

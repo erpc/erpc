@@ -1010,11 +1010,11 @@ func TestNetworkAvailability_Enforce_ConfiguredBounds_Override_DefaultFalse(t *t
 
 // Regression: MethodsConfig.SetDefaults() merges DefaultWithBlockCacheMethods
 // into the network's Methods.Definitions map at config load time. Before the
-// fix, resolveEnforceBlockAvailability treated any presence in that map as an
-// explicit user override and short-circuited the configured-bounds opt-in tier.
-// This test sets up the realistic shape (where the merged-in default for
-// eth_getBlockByNumber has EnforceBlockAvailability=false) and asserts that
-// configured per-upstream bounds still take effect.
+// fix, the enforcement resolver (resolveBlockAvailabilityEnforcement) treated any
+// presence in that map as an explicit user override and short-circuited the
+// configured-bounds opt-in tier. This test sets up the realistic shape (where the
+// merged-in default for eth_getBlockByNumber has EnforceBlockAvailability=false)
+// and asserts that configured per-upstream bounds still take effect.
 func TestNetworkAvailability_Enforce_MergedDefaults_DoNotMaskConfiguredBounds(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1156,7 +1156,10 @@ func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
 	require.NoError(t, skipErr, "expected no skip error (allowed)")
 }
 
-// Test that ErrUpstreamBlockUnavailable is returned when block is beyond upstream's latest
+// Test that ErrUpstreamBlockUnavailable is returned when block is beyond upstream's latest.
+// Head-gating ("only serve blocks the node has actually synced") is now expressed
+// explicitly as blockAvailability.upper.latestBlockMinus:0 rather than being implied
+// by enforceBlockAvailability (issue #934).
 func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1173,6 +1176,10 @@ func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(
 			ChainId:             123,
 			StatePollerInterval: common.Duration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			// Upper = latest: an explicit "serve only blocks up to the head" bound.
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)},
+			},
 		},
 	}
 
@@ -1241,6 +1248,11 @@ func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) 
 			ChainId:             123,
 			StatePollerInterval: common.Duration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			// Upper = latest: a block just ahead of the head is above this bound but
+			// within MaxRetryableBlockDistance, so the skip is retryable.
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)},
+			},
 		},
 	}
 
@@ -1333,6 +1345,11 @@ func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
 			ChainId:             123,
 			StatePollerInterval: common.Duration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			// Upper = latest, so a block beyond the head is rejected and the error
+			// carries the upstream's latest/finalized for diagnostics.
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)},
+			},
 		},
 	}
 
@@ -1415,6 +1432,11 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 			ChainId:             123,
 			StatePollerInterval: common.Duration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			// Upper = latest makes a block just ahead of the head a retryable skip,
+			// which is the condition this test exercises for the no-spin guarantee.
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)},
+			},
 		},
 	}
 
@@ -1525,11 +1547,11 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 			count := latestPollCount.Add(1)
 			bl := pollBaseline.Load()
 			sinceBaseline := count - bl
-			// Before baseline is set (bl==0) or the first poll after baseline
-			// (EvmAssertBlockAvailability): return old block 0x11118888.
-			// Subsequent polls (handleBlockSkip async): return new block 0x11118889.
+			// Bounds-only gating no longer force-polls synchronously, so the first
+			// poll after baseline is handleBlockSkip's async refresh — it must observe
+			// the newer block so we can prove the refresh fired.
 			bn := "0x11118888"
-			if bl > 0 && sinceBaseline > 1 {
+			if bl > 0 && sinceBaseline >= 1 {
 				bn = "0x11118889"
 			}
 			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, bn)
@@ -1560,6 +1582,10 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 			ChainId:             123,
 			StatePollerInterval: common.Duration(120 * time.Second),
 			StatePollerDebounce: common.Duration(1 * time.Nanosecond), // Near-zero debounce so every PollLatestBlockNumber fires (0 is overridden to 5s by defaults)
+			// Upper = latest turns "block just ahead of the head" into a retryable skip.
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)},
+			},
 		},
 	}
 
@@ -1614,9 +1640,10 @@ func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
 
 	afterPolls := latestPollCount.Load()
 	delta := afterPolls - pollBaseline.Load()
-	// EvmAssertBlockAvailability fires 1 synchronous poll + handleBlockSkip fires 1 async poll = 2
-	require.GreaterOrEqual(t, delta, int64(2),
-		"retryable block skip should trigger at least 2 polls after baseline (availability check + async refresh); delta=%d", delta)
+	// Bounds-only gating no longer force-polls synchronously; handleBlockSkip fires
+	// at least the async refresh poll for a retryable skip.
+	require.GreaterOrEqual(t, delta, int64(1),
+		"retryable block skip should trigger at least 1 async refresh poll after baseline; delta=%d", delta)
 
 	// The async poll returned 0x11118889 → state poller should have updated
 	ups, upsErr := upr.GetSortedUpstreams(ctx, util.EvmNetworkId(123), "eth_getBalance")
@@ -1690,6 +1717,10 @@ func TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh(t *testing.T) {
 			ChainId:             123,
 			StatePollerInterval: common.Duration(120 * time.Second),
 			StatePollerDebounce: common.Duration(1 * time.Nanosecond),
+			// Upper = latest; a block far beyond the head is a non-retryable skip.
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{LatestBlockMinus: i64(0)},
+			},
 		},
 	}
 
@@ -1745,9 +1776,10 @@ func TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh(t *testing.T) {
 
 	afterPolls := latestPollCount.Load()
 	delta := afterPolls - pollBaseline.Load()
-	// Without handleBlockSkip's async poll: only EvmAssertBlockAvailability fires 1 poll
-	require.Equal(t, int64(1), delta,
-		"non-retryable block skip should trigger exactly 1 poll after baseline (availability check only); delta=%d", delta)
+	// Bounds-only gating does not force-poll, and a non-retryable skip fires no async
+	// refresh, so no poll happens after baseline.
+	require.Equal(t, int64(0), delta,
+		"non-retryable block skip should trigger no polls after baseline; delta=%d", delta)
 
 	// The state poller should still report the old block (no async refresh happened)
 	ups, upsErr := upr.GetSortedUpstreams(ctx, util.EvmNetworkId(123), "eth_getBalance")
