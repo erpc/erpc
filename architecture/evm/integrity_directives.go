@@ -26,6 +26,10 @@ func integrityCheckSet(dirs *common.RequestDirectives) integrity.CheckSet {
 		return cs
 	}
 
+	// Decode-or-reject guard for the aggregate methods, matching the inline
+	// validators that rejected a malformed result before any other check.
+	cs.Enable("schemaConformance", nil)
+
 	// Receipt structural checks that the previous validator ran unconditionally
 	// once any directive was present.
 	cs.Enable("sameBlockHash", nil)
