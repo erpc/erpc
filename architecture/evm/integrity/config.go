@@ -12,6 +12,12 @@ type CheckConfig struct {
 	// the caller (library mode) or, later, by the authoritative resolver. The
 	// consuming check type-asserts it.
 	Data any
+	// FailOverride, when non-nil, overrides this check's default verdict on a
+	// violation. The default is the class verdict: Deterministic → reject,
+	// ReorgSensitive → per-finality (the ReorgPolicy). Set from a per-check
+	// onFailure config; lets an operator soft-flag a check that would otherwise
+	// reject (e.g. for a legitimate chain quirk) or vice versa.
+	FailOverride *Behavior
 }
 
 // CheckSet is the resolved configuration for a request: check id -> CheckConfig.

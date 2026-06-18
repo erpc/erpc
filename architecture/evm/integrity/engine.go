@@ -74,36 +74,40 @@ func Validate(ctx context.Context, in Input) Result {
 
 	var res Result
 	for _, c := range enabled {
-		// For a reorg-sensitive check, resolve the verdict for this block's
-		// finality up front. If it would be ignored (e.g. invalidBehavior
-		// unfinalized: off), skip the check entirely — and with it any
-		// force-fetch it would have issued. Deterministic checks always reject.
-		behavior := BehaviorError
-		if c.Class == ReorgSensitive {
-			behavior = in.behaviorFor(ctx, d)
-			if behavior == BehaviorIgnore {
-				continue
-			}
+		cfg := in.Checks.For(c.ID)
+		// Resolve the verdict for this check up front. If it would be ignored
+		// (invalidBehavior unfinalized: off, or a per-check onFailure: off),
+		// skip the check entirely — and with it any force-fetch it would issue.
+		behavior := in.verdictFor(ctx, c, cfg, d)
+		if behavior == BehaviorIgnore {
+			continue
 		}
 
-		v := c.Run(ctx, d, in.Checks.For(c.ID))
+		v := c.Run(ctx, d, cfg)
 		if v == nil {
 			continue
 		}
 
-		if c.Class == Deterministic || behavior == BehaviorError {
+		if behavior == BehaviorError {
 			res.Err = contentValidation(c, v, in.Upstream)
 			return res
 		}
-		// reorg-sensitive mismatch on unfinalized data — surface, still serve.
+		// soft-flag: surface the violation but still serve the response.
 		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason})
 	}
 	return res
 }
 
-// behaviorFor decides how to treat a reorg-sensitive mismatch for the response's
-// block, given its finality (via the resolver) and the policy.
-func (in Input) behaviorFor(ctx context.Context, d *Decoded) Behavior {
+// verdictFor decides what to do on a violation of check c: a per-check override
+// wins; otherwise deterministic checks reject and reorg-sensitive checks defer
+// to finality (via the resolver) and the ReorgPolicy.
+func (in Input) verdictFor(ctx context.Context, c *Check, cfg CheckConfig, d *Decoded) Behavior {
+	if cfg.FailOverride != nil {
+		return *cfg.FailOverride
+	}
+	if c.Class == Deterministic {
+		return BehaviorError
+	}
 	final, known := false, false
 	if in.Resolver != nil {
 		final, known = in.Resolver.IsFinalized(ctx, d.BlockNumber())
