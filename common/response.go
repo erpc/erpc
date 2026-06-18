@@ -288,6 +288,18 @@ func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
 	return r
 }
 
+// WithFinality explicitly sets the finality of the response, bypassing the
+// automatic derivation logic. Use this when constructing synthetic responses
+// (e.g. in tests or direct cache seeding) where the normal upstream/network
+// inference is not available.
+func (r *NormalizedResponse) WithFinality(f DataFinalityState) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.finality.Store(f)
+	return r
+}
+
 func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcResponse, error) {
 	if len(ctx) > 0 {
 		_, span := StartDetailSpan(ctx[0], "Response.ResolveJsonRpc")

@@ -68,6 +68,7 @@ var dwellirNetworkSubdomains = map[int64]string{
 	42161:     "api-arbitrum-mainnet-archive.n",
 	42220:     "api-celo-mainnet-archive.n",
 	43114:     "api-avalanche-mainnet-archive.n",
+	57073:     "api-ink-mainnet.n",
 	59144:     "api-linea-mainnet-archive.n",
 	80002:     "api-polygon-amoy.n",
 	80069:     "api-berachain-bepolia.n",

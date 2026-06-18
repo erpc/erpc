@@ -822,3 +822,140 @@ func TestRedisConnector_ChainIsolation(t *testing.T) {
 		require.Equal(t, blockNumberB, valueWildcardB, "wildcard lookup for chain B should return chain B's data")
 	}
 }
+
+// TestGenerateElastiCacheIAMToken verifies the token format without making real
+// AWS calls. A static-credentials session produces a deterministic presigned URL.
+func TestGenerateElastiCacheIAMToken(t *testing.T) {
+	t.Parallel()
+
+	sess, err := createAWSSession(&common.AwsAuthConfig{
+		Mode:            "secret",
+		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	}, "us-east-1")
+	require.NoError(t, err)
+
+	t.Run("basic replication group", func(t *testing.T) {
+		cfg := &common.RedisIAMAuthConfig{
+			Enabled:   true,
+			CacheName: "my-cluster",
+			Region:    "us-east-1",
+			UserID:    "iam-user-01",
+		}
+		token, err := generateElastiCacheIAMToken(sess, cfg)
+		require.NoError(t, err)
+
+		// Token must have scheme stripped.
+		require.False(t, strings.HasPrefix(token, "http://"), "token must not have http:// prefix")
+		require.False(t, strings.HasPrefix(token, "https://"), "token must not have https:// prefix")
+
+		// Must start with the cache name (as the host portion).
+		require.True(t, strings.HasPrefix(token, "my-cluster/"), "token must start with cache name: %s", token)
+
+		// SigV4 proof.
+		require.Contains(t, token, "X-Amz-Algorithm=AWS4-HMAC-SHA256", "token must contain SigV4 algorithm param")
+		require.Contains(t, token, "Action=connect", "token must contain Action=connect")
+		require.Contains(t, token, "User=iam-user-01", "token must contain user")
+
+		// ResourceType must not be present (Serverless is not supported).
+		require.NotContains(t, token, "ResourceType=ServerlessCache")
+	})
+
+	t.Run("cache name is lowercased in token host", func(t *testing.T) {
+		cfg := &common.RedisIAMAuthConfig{
+			Enabled:   true,
+			CacheName: "My-Cluster", // intentionally mixed case
+			Region:    "us-east-1",
+			UserID:    "iam-user-01",
+		}
+		token, err := generateElastiCacheIAMToken(sess, cfg)
+		require.NoError(t, err)
+		require.True(t, strings.HasPrefix(token, "my-cluster/"), "token host must be lowercased, got: %s", token)
+	})
+}
+
+// TestRedisIAMAuthCredentialsProvider verifies that the credentials provider
+// returns the correct username and a properly stripped IAM token.
+func TestRedisIAMAuthCredentialsProvider(t *testing.T) {
+	t.Parallel()
+
+	sess, err := createAWSSession(&common.AwsAuthConfig{
+		Mode:            "secret",
+		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	}, "us-east-1")
+	require.NoError(t, err)
+
+	iamCfg := &common.RedisIAMAuthConfig{
+		Enabled:   true,
+		CacheName: "test-cluster",
+		Region:    "us-east-1",
+		UserID:    "iam-user-01",
+	}
+
+	provider := newElastiCacheCredentialsProvider(sess, iamCfg)
+
+	username, token, err := provider(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "iam-user-01", username)
+	require.NotEmpty(t, token)
+	require.False(t, strings.HasPrefix(token, "https://"), "token must not retain https:// prefix")
+	require.False(t, strings.HasPrefix(token, "http://"), "token must not retain http:// prefix")
+	require.Contains(t, token, "X-Amz-Algorithm=AWS4-HMAC-SHA256", "token must be SigV4-presigned")
+}
+
+// TestRedisIAMAuthValidation verifies that misconfigured IAM auth is rejected at
+// validation time with a clear message.
+func TestRedisIAMAuthValidation(t *testing.T) {
+	t.Parallel()
+
+	base := func() *common.RedisConnectorConfig {
+		cfg := &common.RedisConnectorConfig{
+			URI: "rediss://my-cluster.example.com:6379/0",
+			IAMAuth: &common.RedisIAMAuthConfig{
+				Enabled:   true,
+				CacheName: "my-cluster",
+				Region:    "us-east-1",
+				UserID:    "iam-user-01",
+			},
+		}
+		return cfg
+	}
+
+	t.Run("valid config passes", func(t *testing.T) {
+		require.NoError(t, base().Validate())
+	})
+
+	t.Run("missing cacheName", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.CacheName = ""
+		require.ErrorContains(t, cfg.Validate(), "cacheName")
+	})
+
+
+
+	t.Run("missing userID", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.UserID = ""
+		require.ErrorContains(t, cfg.Validate(), "userID")
+	})
+
+	t.Run("non-TLS URI rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.URI = "redis://my-cluster.example.com:6379/0"
+		require.ErrorContains(t, cfg.Validate(), "rediss://")
+	})
+
+	t.Run("static password + IAM auth rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.URI = "rediss://iam-user-01:some-password@my-cluster.example.com:6379/0"
+		require.ErrorContains(t, cfg.Validate(), "static password")
+	})
+
+	t.Run("invalid auth mode rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.IAMAuth.Auth = &common.AwsAuthConfig{Mode: "typo"}
+		require.ErrorContains(t, cfg.Validate(), "auth.mode")
+	})
+}
+

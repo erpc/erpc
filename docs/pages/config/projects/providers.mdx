@@ -1,6 +1,6 @@
 ---
 title: Providers & vendors
-description: One API key, every chain — declare a single provider entry and eRPC auto-generates upstreams for each network on first request, with 22 built-in vendor integrations.
+description: One API key, every chain — declare a single provider entry and eRPC auto-generates upstreams for each network on first request, with 23 built-in vendor integrations.
 ---
 
 import {
@@ -17,7 +17,7 @@ import {
 
 One API key, every chain. Instead of wiring one upstream per (vendor, network) pair, you
 declare a single provider and eRPC lazy-generates concrete upstreams the moment a new
-network is first requested. 22 vendor integrations are built in — from general-purpose node
+network is first requested. 23 vendor integrations are built in — from general-purpose node
 providers to ERC-4337 bundlers to public-endpoint catalogs — and a project with no config
 at all gets a sensible zero-cost default automatically.
 
@@ -109,7 +109,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 
 ### How it works
 
-**Two distinct concepts.** A *vendor* (`common.Vendor` interface) is stateless integration logic: `Name()`, `OwnsUpstream(cfg)`, `SupportsNetwork(ctx, logger, settings, networkId)`, `GenerateConfigs(...)`, and `GetVendorSpecificErrorIfAny(...)`. A *provider* is a configured instance of a vendor: `ProviderConfig{Id, Vendor, Settings, OnlyNetworks, IgnoreNetworks, UpstreamIdTemplate, Overrides}`. All 22 vendors are registered in a global `VendorsRegistry` at startup; a per-project `ProvidersRegistry` resolves each `providers[].vendor` string and fails startup if the name is unknown. <SourceLink file="thirdparty/vendors_registry.go" lines="9-35" /> <SourceLink file="thirdparty/providers_registry.go" lines="15-34" />
+**Two distinct concepts.** A *vendor* (`common.Vendor` interface) is stateless integration logic: `Name()`, `OwnsUpstream(cfg)`, `SupportsNetwork(ctx, logger, settings, networkId)`, `GenerateConfigs(...)`, and `GetVendorSpecificErrorIfAny(...)`. A *provider* is a configured instance of a vendor: `ProviderConfig{Id, Vendor, Settings, OnlyNetworks, IgnoreNetworks, UpstreamIdTemplate, Overrides}`. All 23 vendors are registered in a global `VendorsRegistry` at startup; a per-project `ProvidersRegistry` resolves each `providers[].vendor` string and fails startup if the name is unknown. <SourceLink file="thirdparty/vendors_registry.go" lines="9-36" /> <SourceLink file="thirdparty/providers_registry.go" lines="15-34" />
 
 **Lazy upstream generation.** When a request arrives for a network with no prepared upstreams, `UpstreamsRegistry.PrepareUpstreamsForNetwork` schedules — exactly once per network via `sync.Once` — one bootstrap task per declared provider named `network/<networkId>/provider/<providerId>`. Each task: (1) calls `Provider.SupportsNetwork`, applying `ignoreNetworks` deny-list first, then `onlyNetworks` allow-list, then delegating to the vendor; (2) calls `Provider.GenerateUpstreamConfigs`, which copies the first wildcard-matching `overrides` entry (or creates a fresh defaults-filled config), stamps `VendorName`, renders the upstream id from `upstreamIdTemplate`, and runs `os.ExpandEnv` over every generated endpoint; (3) registers the resulting configs as ordinary upstream bootstrap tasks. The caller waits up to 30 seconds (polling every 200 ms) for at least one upstream to become ready. While tasks run, clients receive the retryable `ErrNetworkInitializing`; if all tasks finish without producing any upstreams, the error becomes the retryable `ErrNetworkNotSupported`. Failed tasks auto-retry with exponential backoff (factor 1.5, 3 s → 130 s). <SourceLink file="upstream/registry.go" lines="155-293" />
 
@@ -135,7 +135,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | field | type | default | behavior / footguns |
 |---|---|---|---|
 | `id` | string | vendor name (`p.Id = p.Vendor`) | Unique handle; appears in `<PROVIDER>` placeholder and bootstrap task names `network/<networkId>/provider/<id>`. Shorthand-converted providers get `<vendor>-<n>` (process-wide counter). No duplicate-id check — two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="common/defaults.go" lines="1474-1476" /> <SourceLink file="util/ids.go" lines="32-41" /> |
-| `vendor` | string | — (required) | Must exactly match one of 22 registered `Name()` strings: `alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-33" /> |
+| `vendor` | string | — (required) | Must exactly match one of 23 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-34" /> |
 | `settings` | `map[string]any` (VendorSettings) | `nil` | Free-form, vendor-interpreted. Redacted in JSON/YAML marshaling (never echoed in admin dump). See per-vendor tables below. <SourceLink file="common/config.go" lines="667-700" /> |
 | `onlyNetworks` | `[]string` | `nil` | Exhaustive allow-list (`evm:<positiveInt>` format, validated). If set, vendor's own `SupportsNetwork` is **not** called. Mutually exclusive with `ignoreNetworks` (validation error). <SourceLink file="thirdparty/provider.go" lines="42-49" /> |
 | `ignoreNetworks` | `[]string` | `nil` | Exact-match deny-list checked **before** `onlyNetworks` and before vendor. Same `evm:<positiveInt>` validation. Omitted from `MarshalJSON` (present in YAML marshal). <SourceLink file="thirdparty/provider.go" lines="34-40" /> |
@@ -146,6 +146,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 
 | shorthand | derived settings |
 |---|---|
+| `goldsky://<secret>[?tier=&secret=]` | `{secret: authority}` + `tier`/`secret` from query (host is always `edge.goldsky.com`) |
 | `alchemy://<key>` | `{apiKey: key}` |
 | `ankr://<key>` | `{apiKey: key}` |
 | `blastapi://<key>` | `{apiKey: key}` |
@@ -171,6 +172,18 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | unknown scheme | config-load error: `unsupported vendor name in vendor.settings: <scheme>` |
 
 ### Vendor catalog
+
+#### goldsky
+
+[Goldsky Edge](https://docs.goldsky.com/edge-rpc/introduction) — a multi-region public RPC service built on eRPC. One secret token covers every chain Goldsky serves; upstreams are lazy-generated per network. SupportsNetwork probes live `eth_chainId` against `https://edge.goldsky.com/{tier}/evm/{chainId}?secret={secret}` (10 s timeout) and confirms the returned chain id matches — so the secret's plan authoritatively decides chain support. A missing `secret` makes SupportsNetwork return `(false, nil)` (silent skip, no retry storm). `tier` defaults to `standard`; `endpoint` defaults to `https://edge.goldsky.com` and may be overridden for enterprise/custom deployments (an explicit path on the base URL is respected verbatim and the tier route is not injected). The secret can also be supplied out-of-band via the `X-ERPC-Secret-Token` header on a preset endpoint. Probe clients are cached per `"{url}-{chainId}"`. OwnsUpstream: `goldsky://`/`evm+goldsky://` prefix, `vendorName=="goldsky"`, or endpoint contains `edge.goldsky.com`.
+
+| key | required | default |
+|---|---|---|
+| `secret` | yes (auth fails without it) | — |
+| `tier` | no | `standard` |
+| `endpoint` | no | `https://edge.goldsky.com` |
+
+<SourceLink file="thirdparty/goldsky.go" lines="31-249" />
 
 #### alchemy
 
@@ -266,7 +279,7 @@ Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static 
 
 #### dwellir
 
-Static map of 70 chains → subdomain prefixes. URL: `https://{subdomain}.dwellir.com/{apiKey}`. OwnsUpstream: only `dwellir://` prefix (NOT `evm+dwellir://`) or `.dwellir.com` — the `evm+` form still works because shorthand conversion runs first. Avalanche appends `/ext/bc/C/rpc` to the URL. `SupportsNetwork` quirk: an unparseable numeric chain id part returns `(false, nil)` rather than an error (unlike every other static-map vendor which propagates the parse error).
+Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwellir.com/{apiKey}`. OwnsUpstream: only `dwellir://` prefix (NOT `evm+dwellir://`) or `.dwellir.com` — the `evm+` form still works because shorthand conversion runs first. Avalanche appends `/ext/bc/C/rpc` to the URL. `SupportsNetwork` quirk: an unparseable numeric chain id part returns `(false, nil)` rather than an error (unlike every other static-map vendor which propagates the parse error).
 
 | key | required | default |
 |---|---|---|
@@ -696,7 +709,7 @@ export default createConfig({
 17. **dwellir `OwnsUpstream` only matches `dwellir://` prefix** (not `evm+dwellir://`) or `.dwellir.com` domain; the `evm+` shorthand still works because shorthand conversion runs before vendor lookup. <SourceLink file="thirdparty/dwellir.go" lines="173-180" />
 18. **Live-probe vendors dial out during routing decisions**: envio/erpc/pimlico/routemesh/thirdweb perform a real `eth_chainId` HTTP call (10 s timeout) on the provider bootstrap path. Probe clients are cached forever in `sync.Map`s keyed by chain id or `"{url}-{chainId}"`.
 19. **`PrepareUpstreamsForNetwork` succeeds as soon as one upstream registers** (`minReady=1`). Slow providers continue adding upstreams in the background without blocking the first request. If all provider tasks finish with zero upstreams, there is a 100 ms grace re-check before the retryable `ErrNetworkNotSupported` is returned; if tasks are still running, the caller receives `ErrNetworkInitializing`. <SourceLink file="upstream/registry.go" lines="188-293" />
-20. **`LookupByUpstream` with an explicit but non-existent `vendorName` returns nil** — it does not fall through to `OwnsUpstream` matching. If `upstream.vendorName` is set to an unregistered name, vendor error-mapping is silently lost. Registration order of the 22 vendors determines which vendor wins when multiple `OwnsUpstream` checks return true for the same endpoint. <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
+20. **`LookupByUpstream` with an explicit but non-existent `vendorName` returns nil** — it does not fall through to `OwnsUpstream` matching. If `upstream.vendorName` is set to an unregistered name, vendor error-mapping is silently lost. Registration order of the 23 vendors determines which vendor wins when multiple `OwnsUpstream` checks return true for the same endpoint. <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
 21. **`llama` and `routemesh` `OwnsUpstream` do not check their own scheme prefixes**: `llama.OwnsUpstream` only matches `.llamarpc.com`; `routemesh.OwnsUpstream` only matches `vendorName=="routemesh"` or endpoint containing `routemes.sh`. Both shorthands (`llama://`, `routemesh://`) work only because shorthand conversion in `common/defaults.go` runs before vendor lookup. <SourceLink file="thirdparty/llama.go" lines="95-97" /> <SourceLink file="thirdparty/routemesh.go" lines="135-140" />
 22. **dwellir `SupportsNetwork` returns `(false, nil)` for an unparseable chain id** — unlike every other static-map vendor which propagates the parse error. <SourceLink file="thirdparty/dwellir.go" lines="109-113" />
 
@@ -727,7 +740,7 @@ Notable log messages:
 
 ### Source code entry points
 
-- <SourceLink file="thirdparty/vendors_registry.go" lines="9-35" /> — global 22-vendor registry; `LookupByName` / `LookupByUpstream` / `SupportedVendors`
+- <SourceLink file="thirdparty/vendors_registry.go" lines="9-36" /> — global 23-vendor registry; `LookupByName` / `LookupByUpstream` / `SupportedVendors`
 - <SourceLink file="thirdparty/providers_registry.go" lines="15-34" /> — per-project ProviderConfig → Provider binding; unknown-vendor startup error
 - <SourceLink file="thirdparty/provider.go" lines="13-162" /> — `SupportsNetwork` gating, `GenerateUpstreamConfigs`, id templating, env expansion
 - <SourceLink file="thirdparty/remote_cache.go" lines="13-78" /> — `RemoteDataCache[T]` algorithm; request-path safety rationale; `ErrRemoteCacheCold`

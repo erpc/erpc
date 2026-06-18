@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -1142,6 +1143,30 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 }
 
 func TestBuildProviderSettings(t *testing.T) {
+	// Goldsky shorthand: authority is the Edge secret token.
+	t.Run("goldsky with secret in authority", func(t *testing.T) {
+		endpoint, _ := url.Parse("goldsky://my-edge-secret")
+		settings, err := buildProviderSettings("goldsky", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "my-edge-secret", settings["secret"])
+		assert.Nil(t, settings["tier"])
+	})
+
+	t.Run("goldsky with tier query param", func(t *testing.T) {
+		endpoint, _ := url.Parse("goldsky://my-edge-secret?tier=custom")
+		settings, err := buildProviderSettings("goldsky", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "my-edge-secret", settings["secret"])
+		assert.Equal(t, "custom", settings["tier"])
+	})
+
+	t.Run("goldsky with secret query param fallback", func(t *testing.T) {
+		endpoint, _ := url.Parse("goldsky://?secret=query-secret")
+		settings, err := buildProviderSettings("goldsky", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "query-secret", settings["secret"])
+	})
+
 	// Test case for Chainstack with query parameters
 	t.Run("chainstack with filters", func(t *testing.T) {
 		endpoint, _ := url.Parse("chainstack://test-api-key?project=proj-123&organization=org-456&region=us-east-1&provider=aws&type=dedicated")
@@ -1339,4 +1364,71 @@ func TestSetDefaults_SelectionPolicy_EvalScope(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "evalScope")
 	})
+}
+
+// TestRedisIAMAuthDefaults verifies that SetDefaults lowercases the cacheName
+// and auto-enables TLS so the URI uses rediss://.
+func TestRedisIAMAuthDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := &RedisConnectorConfig{
+		Addr: "MY-CLUSTER.example.com:6379",
+		IAMAuth: &RedisIAMAuthConfig{
+			Enabled:   true,
+			CacheName: "MY-CLUSTER",
+			Region:    "us-east-1",
+			UserID:    "iam-user-01",
+		},
+	}
+	err := cfg.SetDefaults()
+	require.NoError(t, err)
+
+	assert.Equal(t, "my-cluster", cfg.IAMAuth.CacheName, "SetDefaults must lowercase cacheName")
+	assert.NotNil(t, cfg.TLS, "SetDefaults must create TLS config when IAM auth is on")
+	assert.True(t, cfg.TLS.Enabled, "TLS must be enabled when IAM auth is on")
+	assert.True(t, strings.HasPrefix(cfg.URI, "rediss://"), "URI must use rediss:// when IAM auth is on, got: %s", cfg.URI)
+}
+
+// TestPostgreSQLIAMAuthDeriveFromURI verifies that SetDefaults derives Endpoint
+// and DBUser from ConnectionUri and appends sslmode=require automatically.
+func TestPostgreSQLIAMAuthDeriveFromURI(t *testing.T) {
+	t.Parallel()
+
+	cfg := &PostgreSQLConnectorConfig{
+		ConnectionUri: "postgres://erpc-user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc",
+		IAMAuth: &PostgreSQLIAMAuthConfig{
+			Enabled: true,
+			Region:  "us-east-1",
+			// Endpoint and DBUser intentionally left empty — should be derived.
+		},
+	}
+
+	err := cfg.SetDefaults(connectorScopeCache)
+	require.NoError(t, err)
+
+	assert.Equal(t, "mydb.abc123.us-east-1.rds.amazonaws.com:5432", cfg.IAMAuth.Endpoint, "Endpoint must be derived from ConnectionUri")
+	assert.Equal(t, "erpc-user", cfg.IAMAuth.DBUser, "DBUser must be derived from ConnectionUri")
+	assert.Contains(t, cfg.ConnectionUri, "sslmode=require", "sslmode=require must be appended automatically")
+}
+
+// TestPostgreSQLIAMAuthDeriveFromURIExplicitOverrides verifies that explicitly
+// set Endpoint/DBUser are not overwritten by SetDefaults.
+func TestPostgreSQLIAMAuthDeriveFromURIExplicitOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := &PostgreSQLConnectorConfig{
+		ConnectionUri: "postgres://erpc-user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/erpc",
+		IAMAuth: &PostgreSQLIAMAuthConfig{
+			Enabled:  true,
+			Region:   "us-east-1",
+			Endpoint: "custom-endpoint:5432",
+			DBUser:   "custom-user",
+		},
+	}
+
+	err := cfg.SetDefaults(connectorScopeCache)
+	require.NoError(t, err)
+
+	assert.Equal(t, "custom-endpoint:5432", cfg.IAMAuth.Endpoint, "explicit Endpoint must not be overwritten")
+	assert.Equal(t, "custom-user", cfg.IAMAuth.DBUser, "explicit DBUser must not be overwritten")
 }

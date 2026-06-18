@@ -968,6 +968,19 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 		r.LockRetryInterval = Duration(500 * time.Millisecond)
 	}
 
+	if r.IAMAuth != nil && r.IAMAuth.Enabled {
+		// AWS lowercases cache names at creation time; the SigV4-signed host
+		// header must match exactly or authentication fails.
+		r.IAMAuth.CacheName = strings.ToLower(strings.TrimSpace(r.IAMAuth.CacheName))
+
+		// IAM auth requires TLS in-transit. Enable it so URI construction below
+		// emits a rediss:// scheme.
+		if r.TLS == nil {
+			r.TLS = &TLSConfig{}
+		}
+		r.TLS.Enabled = true
+	}
+
 	// URI is provided directly
 	if r.URI != "" {
 		return nil
@@ -1053,6 +1066,28 @@ func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 	}
 	if p.SetTimeout == 0 {
 		p.SetTimeout = Duration(2 * time.Second)
+	}
+
+	if p.IAMAuth != nil && p.IAMAuth.Enabled {
+		// Derive Endpoint and DBUser from ConnectionUri so operators don't need
+		// to repeat themselves. Explicit values in IAMAuth still take precedence.
+		if parsed, err := url.Parse(p.ConnectionUri); err == nil {
+			if p.IAMAuth.Endpoint == "" {
+				p.IAMAuth.Endpoint = parsed.Host // already host:port
+			}
+			if p.IAMAuth.DBUser == "" && parsed.User != nil {
+				p.IAMAuth.DBUser = parsed.User.Username()
+			}
+		}
+
+		// RDS IAM auth requires SSL — append sslmode=require if no sslmode is set yet.
+		if parsed, err := url.Parse(p.ConnectionUri); err == nil && !parsed.Query().Has("sslmode") {
+			sep := "?"
+			if strings.Contains(p.ConnectionUri, "?") {
+				sep = "&"
+			}
+			p.ConnectionUri += sep + "sslmode=require"
+		}
 	}
 
 	return nil
@@ -1242,6 +1277,27 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 
 func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings, error) {
 	switch vendorName {
+	case "goldsky", "evm+goldsky":
+		// goldsky://<secret>[?tier=<tier>] — the authority segment is the Edge
+		// secret token (the host is always edge.goldsky.com). Falls back to a
+		// ?secret= query param when the authority is empty.
+		settings := VendorSettings{}
+		if endpoint.Host != "" {
+			settings["secret"] = endpoint.Host
+		}
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse goldsky query parameters: %w", err)
+			}
+			if secret := params.Get("secret"); secret != "" {
+				settings["secret"] = secret
+			}
+			if tier := params.Get("tier"); tier != "" {
+				settings["tier"] = tier
+			}
+		}
+		return settings, nil
 	case "alchemy", "evm+alchemy":
 		return VendorSettings{
 			"apiKey": endpoint.Host,

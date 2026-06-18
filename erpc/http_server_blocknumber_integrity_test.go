@@ -286,9 +286,14 @@ func bniSeedCache(t *testing.T, ntw *Network, hexValue string) {
 	req.SetNetwork(ntw)
 	jrr, err := common.NewJsonRpcResponse(1, hexValue, nil)
 	require.NoError(t, err)
-	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	// eth_blockNumber is a realtime method; the cache policy targets Realtime
+	// finality. Synthetic responses (no upstream) would otherwise resolve to
+	// Unfinalized (block is above the lowest-finalized head), so we pin the
+	// finality explicitly to match the policy and allow the write to succeed.
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).WithFinality(common.DataFinalityStateRealtime)
 	require.NoError(t, ntw.cacheDal.Set(context.Background(), req, resp))
-	v, ok := bniProbeCache(ntw)
+	// Ristretto Set is asynchronous; poll until the entry is visible.
+	v, ok := bniWaitForCachedValue(ntw, 2*time.Second)
 	require.True(t, ok, "seeded cache entry must be readable back")
 	require.Equal(t, hexValue, fmt.Sprintf("0x%x", v))
 }
