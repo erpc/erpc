@@ -69,6 +69,40 @@ func TestCompileIntegritySettings(t *testing.T) {
 	})
 }
 
+func TestResolveRequestSettings(t *testing.T) {
+	base := common.IntegritySettings{Level: "intrinsic"}
+	profiles := map[string]*common.IntegritySettings{"strict": {Level: "authoritative"}}
+	cfgWith := func(mode string) *common.IntegrityConfig {
+		return &common.IntegrityConfig{IntegritySettings: base, HeaderMode: mode, Profiles: profiles}
+	}
+
+	t.Run("nil config → nil", func(t *testing.T) {
+		assert.Nil(t, resolveRequestSettings(nil, "strict"))
+	})
+	t.Run("empty selector → base unchanged", func(t *testing.T) {
+		assert.Equal(t, "intrinsic", resolveRequestSettings(cfgWith("full"), "").Level)
+	})
+	t.Run("off mode ignores the selector", func(t *testing.T) {
+		assert.Equal(t, "intrinsic", resolveRequestSettings(cfgWith("off"), "strict").Level)
+		assert.Equal(t, "intrinsic", resolveRequestSettings(cfgWith(""), "strict").Level)
+	})
+	t.Run("profiles mode selects a named profile", func(t *testing.T) {
+		assert.Equal(t, "authoritative", resolveRequestSettings(cfgWith("profiles"), "strict").Level)
+	})
+	t.Run("profiles mode rejects a bare level word (restricted)", func(t *testing.T) {
+		assert.Equal(t, "intrinsic", resolveRequestSettings(cfgWith("profiles"), "authoritative").Level)
+	})
+	t.Run("profiles mode ignores an unknown profile", func(t *testing.T) {
+		assert.Equal(t, "intrinsic", resolveRequestSettings(cfgWith("profiles"), "nope").Level)
+	})
+	t.Run("full mode accepts a level word", func(t *testing.T) {
+		assert.Equal(t, "authoritative", resolveRequestSettings(cfgWith("full"), "authoritative").Level)
+	})
+	t.Run("full mode selects a profile by name", func(t *testing.T) {
+		assert.Equal(t, "authoritative", resolveRequestSettings(cfgWith("full"), "strict").Level)
+	})
+}
+
 func TestParseBehavior(t *testing.T) {
 	cases := map[string]struct {
 		want integrity.Behavior

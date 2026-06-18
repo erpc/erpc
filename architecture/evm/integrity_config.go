@@ -63,6 +63,86 @@ func applyCheckOverride(cs integrity.CheckSet, id string, oc *common.IntegrityCh
 	}
 }
 
+// resolveIntegrity computes the effective CheckSet and ReorgPolicy for a request.
+// When the network declares an integrity config, that config governs (level /
+// profiles / header selector); otherwise the legacy per-request directives do.
+// The two paths are mutually exclusive: a config opts the network into the
+// declarative model wholesale.
+func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integrity.CheckSet, integrity.ReorgPolicy) {
+	var cfg *common.IntegrityConfig
+	if n != nil && n.Config() != nil {
+		cfg = n.Config().Integrity
+	}
+	if cfg == nil {
+		return integrityCheckSet(dirs), integrity.DefaultReorgPolicy()
+	}
+	selector := ""
+	if dirs != nil {
+		selector = dirs.IntegritySelector
+	}
+	return compileIntegritySettings(resolveRequestSettings(cfg, selector))
+}
+
+// resolveRequestSettings computes the effective settings for one request: the
+// configured base, with the per-request header selector overlaid when headerMode
+// permits. In profiles mode a request may only select a named profile; in full
+// mode it may also set a level word; off ignores the selector.
+func resolveRequestSettings(cfg *common.IntegrityConfig, selector string) *common.IntegritySettings {
+	if cfg == nil {
+		return nil
+	}
+	base := cfg.IntegritySettings.Copy()
+	if base == nil {
+		base = &common.IntegritySettings{}
+	}
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return base
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.HeaderMode)) {
+	case common.IntegrityHeaderModeProfiles:
+		overlaySettings(base, cfg.Profiles[selector])
+	case common.IntegrityHeaderModeFull:
+		if isIntegrityLevel(selector) {
+			base.Level = strings.ToLower(selector)
+		} else {
+			overlaySettings(base, cfg.Profiles[selector])
+		}
+	}
+	return base
+}
+
+// overlaySettings merges over's set (non-zero) fields onto base. Reused for both
+// project⊕network precedence and applying a selected profile.
+func overlaySettings(base, over *common.IntegritySettings) {
+	if base == nil || over == nil {
+		return
+	}
+	if over.Level != "" {
+		base.Level = over.Level
+	}
+	if over.Budget != nil {
+		base.Budget = over.Budget.Copy()
+	}
+	if over.InvalidBehavior != nil {
+		base.InvalidBehavior = over.InvalidBehavior.Copy()
+	}
+	for id, c := range over.Checks {
+		if base.Checks == nil {
+			base.Checks = make(map[string]*common.IntegrityCheckConfig, len(over.Checks))
+		}
+		base.Checks[id] = c.Copy()
+	}
+}
+
+func isIntegrityLevel(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "off", "intrinsic", "corroborated", "authoritative":
+		return true
+	}
+	return false
+}
+
 // parseBehavior maps the config/header vocabulary (reject | soft-flag | off) to
 // an engine Behavior. ok=false when the string is empty/unrecognized so callers
 // keep their default.

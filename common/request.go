@@ -59,6 +59,7 @@ const (
 	headerDirectiveValidateTxFields           = "X-ERPC-Validate-Transaction-Fields"
 	headerDirectiveValidateTxBlockInfo        = "X-ERPC-Validate-Transaction-Block-Info"
 	headerDirectiveValidateLogFields          = "X-ERPC-Validate-Log-Fields"
+	headerDirectiveIntegrity                  = "X-ERPC-Integrity"
 )
 
 const (
@@ -85,6 +86,7 @@ const (
 	queryDirectiveValidateTxFields           = "validate-transaction-fields"
 	queryDirectiveValidateTxBlockInfo        = "validate-transaction-block-info"
 	queryDirectiveValidateLogFields          = "validate-log-fields"
+	queryDirectiveIntegrity                  = "integrity"
 )
 
 var directiveKeyRegistry = []directiveKeyNames{
@@ -193,6 +195,12 @@ type RequestDirectives struct {
 	// block's canonical receipts (via the network) and compared. Reorg-sensitive:
 	// a mismatch on a finalized block is rejected, on an unfinalized block recorded.
 	EnforceReceiptCorroboration bool `json:"enforceReceiptCorroboration,omitempty"`
+
+	// IntegritySelector is the per-request integrity selection from the
+	// X-ERPC-Integrity header / integrity query param. It is a bare word — a
+	// level (off/intrinsic/corroborated/authoritative) or a configured profile
+	// name. Honored only when the effective integrity headerMode permits it.
+	IntegritySelector string `json:"integritySelector,omitempty"`
 
 	// Validation: Receipt-to-Transaction Cross-Validation
 	// When true, validates that receipt[i].transactionHash == tx[i].hash (requires GroundTruthTransactions)
@@ -812,8 +820,14 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get(headerDirectiveValidateLogFields); hv != "" {
 		r.directives.ValidateLogFields = strings.ToLower(hv) == "true"
 	}
+	if hv := headers.Get(headerDirectiveIntegrity); hv != "" {
+		r.directives.IntegritySelector = strings.TrimSpace(hv)
+	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
+	if hv := queryArgs.Get(queryDirectiveIntegrity); hv != "" {
+		r.directives.IntegritySelector = strings.TrimSpace(hv)
+	}
 	if useUpstream := queryArgs.Get(queryDirectiveUseUpstream); useUpstream != "" {
 		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
 	}

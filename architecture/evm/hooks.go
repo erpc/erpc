@@ -140,13 +140,14 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// recursing back into the engine.
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
+		cs, policy := resolveIntegrity(n, dirs)
 		res := integrity.Validate(ctx, integrity.Input{
 			Method:   methodLower,
 			Upstream: u,
 			Response: rs,
-			Checks:   integrityCheckSet(dirs),
+			Checks:   cs,
 			Resolver: newIntegrityResolver(n, u),
-			Reorg:    integrity.DefaultReorgPolicy(),
+			Reorg:    policy,
 		})
 		for _, rec := range res.Recorded {
 			log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).

@@ -220,6 +220,45 @@ func TestIntegrity_Network_ReceiptCorroborationFailsOver(t *testing.T) {
 	assert.Equal(t, "0x0", li, "served receipt must match the canonical block (logIndex 0x0), not the plausible-but-wrong 0x5")
 }
 
+// TestIntegrity_Network_ConfigLevelDrivesCorroboration proves the config model
+// end-to-end: a network configured with integrity level "authoritative" runs
+// the corroboration tier with no per-request directive — the same plausible-
+// but-wrong receipt is force-fetched, rejected, and failed over.
+func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gock.New("http://rpc1.localhost").Post("").Times(1).
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
+		Reply(200).JSON([]byte(receiptOneLog("0x5")))
+	gock.New("http://rpc2.localhost").Post("").Times(1).
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
+		Reply(200).JSON([]byte(receiptOneLog("0x0")))
+	mockMethod("http://rpc1.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
+	mockMethod("http://rpc2.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
+
+	ntw := buildIntegrityNetwork(t, ctx)
+	// Enable the authoritative tier via CONFIG, not a per-request directive.
+	ntw.Config().Integrity = &common.IntegrityConfig{
+		IntegritySettings: common.IntegritySettings{Level: "authoritative"},
+	}
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
+	resp, err := ntw.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
+	require.NoError(t, err)
+	assert.Equal(t, "0x0", li, "config level:authoritative must drive corroboration without any directive")
+}
+
 // TestIntegrity_Network_AllUpstreamsCorrupt asserts that when every upstream
 // returns corrupt data the request fails (rather than serving garbage).
 func TestIntegrity_Network_AllUpstreamsCorrupt(t *testing.T) {
