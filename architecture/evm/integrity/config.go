@@ -7,6 +7,11 @@ package integrity
 type CheckConfig struct {
 	Enabled bool
 	Params  map[string]string
+	// Data carries structured inputs a check needs that don't fit string
+	// params — e.g. ground-truth transactions for cross-validation, supplied by
+	// the caller (library mode) or, later, by the authoritative resolver. The
+	// consuming check type-asserts it.
+	Data any
 }
 
 // CheckSet is the resolved configuration for a request: check id -> CheckConfig.
