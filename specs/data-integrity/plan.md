@@ -17,7 +17,7 @@ Acceptance: corrupt index → content-validation error → failover; clean respo
 
 The first real module. Everything here is free at runtime.
 
-1. **Config surface (§9)**: the `integrity` block (project + network) with `level` as the only required field and the three axes (`checks` / `budget` / `onFailure`) and the per-finality `onReorgMismatch` verdict for reorg-sensitive checks; the precedence chain (chain-profile → level → project → network → request); and the generic `X-ERPC-Integrity` header gated by `allowHeaderOverrides`. Wire the `level → check-set` mapping and the built-in per-chain profiles in one auditable place.
+1. **Config surface (§9)**: the `integrity` block (project + network) with `level` as the only required field and the three axes (`checks` / `budget` / `onFailure`) and the per-finality `invalidBehavior` verdict for reorg-sensitive checks; the precedence chain (chain-profile → level → project → network → request); and the generic `X-ERPC-Integrity` header gated by `allowHeaderOverrides`. Wire the `level → check-set` mapping and the built-in per-chain profiles in one auditable place.
 2. **Data-point model + resolver**: the `requiredDataPoints` declaration per check and the cost-ordered resolve function (feature.md §5). Phase 1 resolves from warm sources only (in-flight response, cache, observed metadata) — no force-fetch.
 3. **Passive feeder**: a single observer on the post-forward path that records data points (`blockHash`, `txCount`, …) with provenance tags from any block-bearing response already flowing through.
 4. **Corroboration checks**: block-hash agreement and receipt/tx-count agreement, implemented by auto-filling the existing `ValidationExpected*` directives from resolved data points. Soft-flag when the only available source is `observed-single-source`; hard-fail when `network-verified`.
@@ -29,7 +29,7 @@ Acceptance: with `level: corroborated`, a response whose block hash or tx count 
 ## Phase 2 — Authoritative tier (force-fetch + cross-validation)
 
 1. **Force-fetch**: extend the resolver to issue the minimal canonical `network.Forward` fetch for missing data points when `level: authoritative` (feature.md §7), with the recursion-skip marker.
-2. **Budget/coalescing**: token-bucket `budget.maxPerSecond`, `budget.maxConcurrent`, single-flight per block, `onReorgMismatch.unfinalized: off` to confine force-fetch to finalized blocks; graceful degradation to `corroborated` on budget exhaustion.
+2. **Budget/coalescing**: token-bucket `budget.maxPerSecond`, `budget.maxConcurrent`, single-flight per block, `invalidBehavior.unfinalized: off` to confine force-fetch to finalized blocks; graceful degradation to `corroborated` on budget exhaustion.
 3. **Cross-validation checks**: receipt ↔ block (transaction index, logIndex range), exact receipt count, contract-creation consistency, log completeness — by auto-filling `GroundTruth*` / `ReceiptsCountExact` from the force-fetched canonical block.
 4. **Per-item authenticity + encoding correctness**: transaction-hash and sender recovery (feature.md §6.2), with the typed-envelope, receipt-variant, synthetic/system/**phantom-transaction detection & stripping**, and fail-closed fork-activation rules (§6.7) needed to make recomputation and contiguity correct across chain families.
 5. **Metrics**: force-fetches issued, cache-hit ratio, throttled events.

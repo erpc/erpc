@@ -75,7 +75,7 @@ func Validate(ctx context.Context, in Input) Result {
 	var res Result
 	for _, c := range enabled {
 		// For a reorg-sensitive check, resolve the verdict for this block's
-		// finality up front. If it would be ignored (e.g. onReorgMismatch
+		// finality up front. If it would be ignored (e.g. invalidBehavior
 		// unfinalized: off), skip the check entirely — and with it any
 		// force-fetch it would have issued. Deterministic checks always reject.
 		behavior := BehaviorError
