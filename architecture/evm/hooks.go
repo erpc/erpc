@@ -129,6 +129,19 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	var validationErr error
 
+	// Always-on integrity check (independent of directives): reject responses
+	// carrying a provably-impossible logIndex/transactionIndex by converting
+	// them into a content-validation error. The existing retry/consensus
+	// machinery then routes around the corrupt upstream — in particular,
+	// consensus already excludes error responses from preferLargerResponses, so
+	// a corrupt-but-larger response can no longer dispute an honest majority.
+	if indexIntegrityMethods[methodLower] {
+		if validationErr = validateIndexIntegrity(ctx, u, rs); validationErr != nil {
+			rq.ClearLastValidResponse()
+			return rs, validationErr
+		}
+	}
+
 	// Check if this method should have empty results marked as errors
 	shouldMarkEmpty := isMethodInMarkEmptyList(n, methodLower)
 
