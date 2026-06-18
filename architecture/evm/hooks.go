@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 )
 
@@ -129,14 +130,18 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	var validationErr error
 
-	// Always-on integrity check (independent of directives): reject responses
-	// carrying a provably-impossible logIndex/transactionIndex by converting
-	// them into a content-validation error. The existing retry/consensus
-	// machinery then routes around the corrupt upstream — in particular,
-	// consensus already excludes error responses from preferLargerResponses, so
-	// a corrupt-but-larger response can no longer dispute an honest majority.
-	if indexIntegrityMethods[methodLower] {
-		if validationErr = validateIndexIntegrity(ctx, u, rs); validationErr != nil {
+	// Unified integrity checks. The engine selects the checks applicable to the
+	// method and enabled by config, runs them over a single decode, and converts
+	// a violation into a content-validation error so retry/consensus route around
+	// the upstream (consensus already excludes errors from preferLargerResponses,
+	// so a corrupt-but-larger response can no longer dispute an honest majority).
+	if integrity.HasChecks(methodLower) {
+		if validationErr = integrity.Validate(ctx, integrity.Input{
+			Method:   methodLower,
+			Upstream: u,
+			Response: rs,
+			Checks:   integrityCheckSet(rq.Directives()),
+		}); validationErr != nil {
 			rq.ClearLastValidResponse()
 			return rs, validationErr
 		}
