@@ -52,6 +52,20 @@ func integrityCheckSet(dirs *common.RequestDirectives) integrity.CheckSet {
 		cs.Enable("logIndexContiguity", nil)
 	}
 
+	// Block checks (eth_getBlockByNumber / eth_getBlockByHash).
+	if dirs.ValidateTransactionsRoot {
+		cs.Enable("transactionsRootConsistency", nil)
+	}
+	if dirs.ValidateHeaderFieldLengths {
+		cs.Enable("headerFieldShapes", nil)
+	}
+	if dirs.ValidateTransactionFields {
+		cs.Enable("txFieldUniqueness", nil)
+	}
+	if dirs.ValidateTransactionBlockInfo {
+		cs.Enable("txBlockInfo", nil)
+	}
+
 	// Caller-provided (ground-truth / expected) checks.
 	if dirs.ValidationExpectedBlockHash != "" || dirs.ValidationExpectedBlockNumber != nil {
 		params := map[string]string{}
