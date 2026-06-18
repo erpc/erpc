@@ -2,11 +2,13 @@ package integrity
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"testing"
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,6 +82,38 @@ func TestCheck_BlockHashRecompute(t *testing.T) {
 		// with a deliberately wrong hash, the check must skip rather than reject.
 		raw := blockJSON(t, h, "0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead",
 			map[string]string{"l2CustomRoot": "0x6666666666666666666666666666666666666666666666666666666666666666"})
+		assert.NoError(t, run(t, MethodGetBlockByNumber, raw, cs))
+	})
+}
+
+func TestCheck_TransactionsRootRecompute(t *testing.T) {
+	tx1, _ := signTx(t, 0)
+	tx2, _ := signTx(t, 1)
+	root := gethtypes.DeriveSha(gethtypes.Transactions{tx1, tx2}, trie.NewStackTrie(nil)).Hex()
+	j1, _ := tx1.MarshalJSON()
+	j2, _ := tx2.MarshalJSON()
+	cs := only("transactionsRootRecompute", nil)
+
+	block := func(rootHex, txsJSON string) []byte {
+		return []byte(fmt.Sprintf(`{"transactionsRoot":"%s","transactions":[%s]}`, rootHex, txsJSON))
+	}
+
+	t.Run("matching root passes", func(t *testing.T) {
+		assert.NoError(t, run(t, MethodGetBlockByNumber, block(root, string(j1)+","+string(j2)), cs))
+	})
+
+	t.Run("tampered root is rejected", func(t *testing.T) {
+		bad := block("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead", string(j1)+","+string(j2))
+		require.Error(t, run(t, MethodGetBlockByNumber, bad, cs))
+	})
+
+	t.Run("a substituted/missing tx changes the root → rejected", func(t *testing.T) {
+		// Claim the two-tx root but deliver only one → recompute differs.
+		require.Error(t, run(t, MethodGetBlockByNumber, block(root, string(j1)), cs))
+	})
+
+	t.Run("hashes-only response is skipped", func(t *testing.T) {
+		raw := block(root, fmt.Sprintf(`"%s","%s"`, tx1.Hash().Hex(), tx2.Hash().Hex()))
 		assert.NoError(t, run(t, MethodGetBlockByNumber, raw, cs))
 	})
 }

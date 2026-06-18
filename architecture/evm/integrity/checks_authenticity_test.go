@@ -12,21 +12,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// signedTxJSON signs a real EIP-1559 transaction and renders it the way an RPC
-// would (the signed fields plus the RPC-added "from"). go-ethereum is the oracle.
-func signedTxJSON(t *testing.T) (raw []byte, from, hash string) {
+// signTx signs a real EIP-1559 transaction with a fresh key. go-ethereum is the
+// oracle for every authenticity/commitment test.
+func signTx(t *testing.T, nonce uint64) (*gethtypes.Transaction, string) {
 	t.Helper()
 	key, err := crypto.GenerateKey()
 	require.NoError(t, err)
 	chainID := big.NewInt(1)
 	to := gethcommon.HexToAddress("0x00000000000000000000000000000000000000aa")
 	tx, err := gethtypes.SignNewTx(key, gethtypes.LatestSignerForChainID(chainID), &gethtypes.DynamicFeeTx{
-		ChainID: chainID, Nonce: 7, GasTipCap: big.NewInt(1), GasFeeCap: big.NewInt(100),
+		ChainID: chainID, Nonce: nonce, GasTipCap: big.NewInt(1), GasFeeCap: big.NewInt(100),
 		Gas: 21000, To: &to, Value: big.NewInt(1000),
 	})
 	require.NoError(t, err)
-	from = crypto.PubkeyToAddress(key.PublicKey).Hex()
+	return tx, crypto.PubkeyToAddress(key.PublicKey).Hex()
+}
 
+// signedTxJSON renders a signed tx the way an RPC would (signed fields plus the
+// RPC-added "from").
+func signedTxJSON(t *testing.T) (raw []byte, from, hash string) {
+	t.Helper()
+	tx, from := signTx(t, 7)
 	b, err := tx.MarshalJSON()
 	require.NoError(t, err)
 	var m map[string]json.RawMessage

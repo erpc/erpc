@@ -43,7 +43,7 @@ var levelMembership = map[Level][]string{
 		"transactionIndexConsistency", "logFieldShapes", "logMetadata",
 		"bloomEmptiness", "bloomMatch", "logIndexContiguity",
 		"transactionsRootConsistency", "headerFieldShapes", "txFieldUniqueness", "txBlockInfo",
-		"blockHashRecompute", "senderRecovery",
+		"blockHashRecompute", "senderRecovery", "transactionsRootRecompute",
 	},
 	LevelCorroborated: {
 		"expectedBlock", "receiptsCount", "receiptTransactionMatch",
