@@ -27,7 +27,7 @@ func init() {
 	// expectedBlock — every receipt's blockHash/blockNumber matches the value
 	// the caller expected for the requested block. Params: "hash", "number".
 	register(&Check{
-		ID: "expectedBlock", Family: FamilyStructural, Class: ReorgSensitive,
+		ID: "expectedBlock", Family: FamilyStructural, Class: Deterministic,
 		Methods: []string{MethodGetBlockReceipts},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			wantHash := cfg.param("hash", "")
@@ -55,7 +55,7 @@ func init() {
 	// receiptsCount — the number of receipts matches an exact count or a floor.
 	// Params: "exact", "atLeast" (decimal).
 	register(&Check{
-		ID: "receiptsCount", Family: FamilyStructural, Class: ReorgSensitive,
+		ID: "receiptsCount", Family: FamilyStructural, Class: Deterministic,
 		Methods: []string{MethodGetBlockReceipts},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			n := int64(len(d.Receipts()))

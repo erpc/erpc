@@ -91,6 +91,14 @@ func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
 	ntw.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 	upr.OverrideOrderForTest(util.EvmNetworkId(123))
+	// Seed a finalized head so corroboration's per-finality verdict is
+	// deterministic (any block below this is finalized). Harmless for the
+	// intrinsic-check tests, which don't consult finality.
+	for _, ups := range upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
+		if sp := ups.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			sp.SuggestFinalizedBlock(0x11117FFF)
+		}
+	}
 	return ntw
 }
 
@@ -153,6 +161,63 @@ func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
 	require.NoError(t, err)
 	assert.Equal(t, "0x0", li)
+}
+
+// receiptOneLog builds an eth_getTransactionReceipt with a single log at the
+// given logIndex for a finalized block (number well below the poller's
+// finalized head 0x11117777).
+func receiptOneLog(logIndex string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}}`, logIndex)
+}
+
+func blockReceiptsOneLog(logIndex string) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}]}`, logIndex)
+}
+
+func mockMethod(url, method, body string) {
+	gock.New(url).Post("").Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), method) }).
+		Reply(200).JSON([]byte(body))
+}
+
+// TestIntegrity_Network_ReceiptCorroborationFailsOver exercises the authoritative
+// tier end-to-end: the first upstream returns a receipt with a *plausible* but
+// wrong logIndex (0x5) — it passes all intrinsic checks. With corroboration on,
+// the engine force-fetches the block's canonical receipts (logIndex 0x0) through
+// the real network, detects the mismatch on a finalized block, rejects it, and
+// fails over to the upstream whose receipt matches the canonical block.
+func TestIntegrity_Network_ReceiptCorroborationFailsOver(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// rpc1: plausible-but-wrong receipt; rpc2: correct receipt.
+	gock.New("http://rpc1.localhost").Post("").Times(1).
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
+		Reply(200).JSON([]byte(receiptOneLog("0x5")))
+	gock.New("http://rpc2.localhost").Post("").Times(1).
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
+		Reply(200).JSON([]byte(receiptOneLog("0x0")))
+	// canonical block receipts (the truth): logIndex 0x0, available on both.
+	mockMethod("http://rpc1.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
+	mockMethod("http://rpc2.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
+
+	ntw := buildIntegrityNetwork(t, ctx)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
+	req.SetDirectives(&common.RequestDirectives{EnforceReceiptCorroboration: true})
+	resp, err := ntw.Forward(ctx, req)
+	require.NoError(t, err, "must fail over to the upstream whose receipt matches the canonical block")
+	require.NotNil(t, resp)
+
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
+	require.NoError(t, err)
+	assert.Equal(t, "0x0", li, "served receipt must match the canonical block (logIndex 0x0), not the plausible-but-wrong 0x5")
 }
 
 // TestIntegrity_Network_AllUpstreamsCorrupt asserts that when every upstream

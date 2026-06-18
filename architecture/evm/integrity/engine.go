@@ -14,48 +14,102 @@ type Input struct {
 	Upstream common.Upstream
 	Response *common.NormalizedResponse
 	Checks   CheckSet
+	// Resolver enables cross-source corroboration checks (finality + force-fetch
+	// of the canonical block). Nil disables them gracefully.
+	Resolver Resolver
+	// Reorg maps finality state to the behavior for reorg-sensitive mismatches.
+	Reorg ReorgPolicy
 }
 
-// Validate runs every enabled, applicable integrity check against the response
-// and returns an ErrEndpointContentValidation on the first violation, so the
-// existing retry/consensus machinery routes around the offending upstream.
-// It returns nil when no applicable check is enabled, when the response is
-// empty/null, or when all enabled checks pass.
-func Validate(ctx context.Context, in Input) error {
+// Recorded is a reorg-sensitive mismatch that was observed but not rejected
+// (the block was unfinalized, so it may be a benign reorg). Callers emit a
+// metric/log for it.
+type Recorded struct {
+	CheckID string
+	Reason  string
+}
+
+// Result is the outcome of validating a response. Err is non-nil when a check
+// hard-failed (the response must be rejected); Recorded lists soft-flagged
+// reorg-sensitive mismatches the caller should surface but still serve.
+type Result struct {
+	Err      error
+	Recorded []Recorded
+}
+
+// DefaultReorgPolicy is the safe default: a mismatch on finalized data is a
+// rejection; on unfinalized data it is recorded (it might be a reorg).
+func DefaultReorgPolicy() ReorgPolicy {
+	return ReorgPolicy{Finalized: BehaviorError, Unfinalized: BehaviorRecord}
+}
+
+// Validate runs every enabled, applicable integrity check against the response.
+// Deterministic violations reject immediately; reorg-sensitive violations are
+// resolved against finality via the ReorgPolicy. It returns early on the first
+// hard failure.
+func Validate(ctx context.Context, in Input) Result {
 	method := strings.ToLower(in.Method)
 	checks := checksFor(method)
 	if len(checks) == 0 || in.Response == nil {
-		return nil
+		return Result{}
 	}
-
-	// Decide enablement before paying for any decode.
 	enabled := enabledChecks(checks, in.Checks)
 	if len(enabled) == 0 {
-		return nil
+		return Result{}
 	}
-
 	if in.Response.IsObjectNull() || in.Response.IsResultEmptyish() {
-		return nil
+		return Result{}
 	}
 	jrr, err := in.Response.JsonRpcResponse(ctx)
 	if err != nil || jrr == nil {
-		return nil
+		return Result{}
 	}
 	raw := jrr.GetResultBytes()
 	if len(raw) == 0 {
-		return nil
+		return Result{}
 	}
 
+	ctx = withResolver(ctx, in.Resolver)
 	d := newDecoded(method, raw)
+
+	var res Result
 	for _, c := range enabled {
-		if v := c.Run(ctx, d, in.Checks.For(c.ID)); v != nil {
-			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("integrity check %q failed: %s", c.ID, v.Reason),
-				in.Upstream,
-			)
+		v := c.Run(ctx, d, in.Checks.For(c.ID))
+		if v == nil {
+			continue
+		}
+		switch c.Class {
+		case Deterministic:
+			res.Err = contentValidation(c, v, in.Upstream)
+			return res
+		case ReorgSensitive:
+			switch in.behaviorFor(ctx, d) {
+			case BehaviorError:
+				res.Err = contentValidation(c, v, in.Upstream)
+				return res
+			case BehaviorRecord:
+				res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason})
+			case BehaviorIgnore:
+			}
 		}
 	}
-	return nil
+	return res
+}
+
+// behaviorFor decides how to treat a reorg-sensitive mismatch for the response's
+// block, given its finality (via the resolver) and the policy.
+func (in Input) behaviorFor(ctx context.Context, d *Decoded) Behavior {
+	final, known := false, false
+	if in.Resolver != nil {
+		final, known = in.Resolver.IsFinalized(ctx, d.BlockNumber())
+	}
+	return in.Reorg.behaviorFor(final, known)
+}
+
+func contentValidation(c *Check, v *Violation, u common.Upstream) error {
+	return common.NewErrEndpointContentValidation(
+		fmt.Errorf("integrity check %q failed: %s", c.ID, v.Reason), u,
+	)
 }
 
 // HasChecks reports whether any check is registered for a method, so callers
@@ -72,4 +126,20 @@ func enabledChecks(checks []*Check, cs CheckSet) []*Check {
 		}
 	}
 	return out
+}
+
+// --- resolver propagation via context (avoids a signature change on Check.Run) ---
+
+type resolverKey struct{}
+
+func withResolver(ctx context.Context, r Resolver) context.Context {
+	if r == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, resolverKey{}, r)
+}
+
+func resolverFrom(ctx context.Context) Resolver {
+	r, _ := ctx.Value(resolverKey{}).(Resolver)
+	return r
 }

@@ -91,6 +91,10 @@ func integrityCheckSet(dirs *common.RequestDirectives) integrity.CheckSet {
 		}
 		cs.Enable("receiptsCount", params)
 	}
+	// Authoritative corroboration (force-fetches the canonical block).
+	if dirs.EnforceReceiptCorroboration {
+		cs.Enable("receiptVsBlock", nil)
+	}
 	if dirs.ValidateReceiptTransactionMatch && len(dirs.GroundTruthTransactions) > 0 {
 		gt := make([]integrity.GroundTruthTx, len(dirs.GroundTruthTransactions))
 		for i, t := range dirs.GroundTruthTransactions {
