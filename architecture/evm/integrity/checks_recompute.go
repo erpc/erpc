@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math/big"
 
+	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/trie"
 )
@@ -124,4 +125,94 @@ func init() {
 			return nil
 		},
 	})
+
+	// receiptsRootRecompute — the Merkle-Patricia root of a block's receipts must
+	// equal the header's receiptsRoot. Cross-method: the receipts come from the
+	// response, the committed root is force-fetched from the header (by block
+	// hash, so it is the same immutable block — hence Deterministic). Conservative
+	// via a receipt field-allowlist: a receipt carrying any field the reference
+	// decoder doesn't know (e.g. an L2 with custom receipt fields) skips the whole
+	// recompute rather than false-flag.
+	register(&Check{
+		ID: "receiptsRootRecompute", Family: FamilyCommitment, Class: Deterministic,
+		Methods: []string{MethodGetBlockReceipts},
+		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
+			resolver := resolverFrom(ctx)
+			if resolver == nil {
+				return nil
+			}
+			var rawReceipts []json.RawMessage
+			if err := json.Unmarshal(d.raw, &rawReceipts); err != nil || len(rawReceipts) == 0 {
+				return nil
+			}
+			ref := d.BlockRef()
+			if ref == "" {
+				return nil
+			}
+			header, ok := resolver.CanonicalHeader(ctx, ref)
+			if !ok || header == nil || header.ReceiptsRoot == "" {
+				return nil
+			}
+
+			typed := make(gethtypes.Receipts, 0, len(rawReceipts))
+			for _, rr := range rawReceipts {
+				var fields map[string]json.RawMessage
+				if json.Unmarshal(rr, &fields) != nil {
+					return nil
+				}
+				for k := range fields {
+					if _, ok := knownReceiptFields[k]; !ok {
+						return nil // custom receipt field → not fully modeled; skip
+					}
+				}
+				var rcpt gethtypes.Receipt
+				if rcpt.UnmarshalJSON(rr) != nil {
+					return nil
+				}
+				typed = append(typed, &rcpt)
+			}
+
+			if got := gethtypes.DeriveSha(typed, trie.NewStackTrie(nil)).Hex(); !eqHex(got, header.ReceiptsRoot) {
+				return failf("receiptsRoot %s does not match recomputed %s", header.ReceiptsRoot, got)
+			}
+			return nil
+		},
+	})
+}
+
+// knownReceiptFields is the set of JSON keys a standard receipt carries:
+// everything the reference receipt encoder knows (derived from it) plus the
+// RPC-added meta fields. A receipt with any other key is not fully modeled here.
+var knownReceiptFields = deriveKnownReceiptFields()
+
+func deriveKnownReceiptFields() map[string]struct{} {
+	set := map[string]struct{}{
+		// RPC-added fields not present on the consensus receipt struct
+		"from": {}, "to": {},
+	}
+	// A fully-populated receipt so MarshalJSON emits every field (an empty one
+	// omits the zero-valued ones like blockHash/transactionHash).
+	sample := &gethtypes.Receipt{
+		Type:              gethtypes.DynamicFeeTxType,
+		Status:            gethtypes.ReceiptStatusSuccessful,
+		CumulativeGasUsed: 1,
+		TxHash:            gethcommon.Hash{0x1},
+		ContractAddress:   gethcommon.Address{0x1},
+		GasUsed:           1,
+		EffectiveGasPrice: big.NewInt(1),
+		BlobGasUsed:       1,
+		BlobGasPrice:      big.NewInt(1),
+		BlockHash:         gethcommon.Hash{0x1},
+		BlockNumber:       big.NewInt(1),
+		TransactionIndex:  1,
+	}
+	if raw, err := sample.MarshalJSON(); err == nil {
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) == nil {
+			for k := range m {
+				set[k] = struct{}{}
+			}
+		}
+	}
+	return set
 }

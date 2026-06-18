@@ -60,3 +60,30 @@ func (r *integrityResolver) CanonicalReceipts(ctx context.Context, blockRef stri
 	}
 	return receipts, true
 }
+
+func (r *integrityResolver) CanonicalHeader(ctx context.Context, blockRef string) (*integrity.Header, bool) {
+	// A 32-byte hash reference (0x + 64 hex) resolves by hash; otherwise treat
+	// blockRef as a block number/tag.
+	method := "eth_getBlockByNumber"
+	if len(blockRef) == 66 {
+		method = "eth_getBlockByHash"
+	}
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":1,"method":"%s","params":["%s",false]}`, method, blockRef)))
+	req.SetDirectives(&common.RequestDirectives{IsInternal: true})
+	req.SetNetwork(r.network)
+
+	resp, err := r.network.Forward(ctx, req)
+	if err != nil || resp == nil {
+		return nil, false
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil {
+		return nil, false
+	}
+	var h integrity.Header
+	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &h); err != nil {
+		return nil, false
+	}
+	return &h, true
+}

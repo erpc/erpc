@@ -19,6 +19,11 @@ type Resolver interface {
 	// — the network is configured with). Returns ok=false when unavailable, in
 	// which case a corroboration check no-ops rather than failing.
 	CanonicalReceipts(ctx context.Context, blockRef string) (receipts []Receipt, ok bool)
+
+	// CanonicalHeader force-fetches a block's header (for cross-method
+	// commitment checks such as receipts-root, where the committed root lives in
+	// the header but the data lives in another method). ok=false when unavailable.
+	CanonicalHeader(ctx context.Context, blockRef string) (header *Header, ok bool)
 }
 
 // Behavior is what to do when a reorg-sensitive check finds a mismatch.

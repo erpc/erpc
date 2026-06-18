@@ -50,7 +50,7 @@ var levelMembership = map[Level][]string{
 		"parentHashLinkage", "hashStability",
 	},
 	LevelAuthoritative: {
-		"receiptVsBlock",
+		"receiptVsBlock", "receiptsRootRecompute",
 	},
 }
 

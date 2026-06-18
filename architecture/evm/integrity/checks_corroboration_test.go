@@ -14,7 +14,8 @@ type mockResolver struct {
 	known     bool
 	receipts  []Receipt
 	have      bool
-	fetches   *int // optional: counts CanonicalReceipts calls (shared via pointer)
+	fetches   *int    // optional: counts CanonicalReceipts calls (shared via pointer)
+	header    *Header // optional: returned by CanonicalHeader
 }
 
 func (m mockResolver) IsFinalized(ctx context.Context, bn int64) (bool, bool) {
@@ -25,6 +26,9 @@ func (m mockResolver) CanonicalReceipts(ctx context.Context, ref string) ([]Rece
 		*m.fetches++
 	}
 	return m.receipts, m.have
+}
+func (m mockResolver) CanonicalHeader(ctx context.Context, ref string) (*Header, bool) {
+	return m.header, m.header != nil
 }
 
 func validateReceipt(t *testing.T, result []byte, cs CheckSet, r Resolver) Result {

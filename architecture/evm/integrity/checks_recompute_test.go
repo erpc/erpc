@@ -1,11 +1,13 @@
 package integrity
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"testing"
 
+	"github.com/erpc/erpc/common"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/trie"
@@ -115,5 +117,65 @@ func TestCheck_TransactionsRootRecompute(t *testing.T) {
 	t.Run("hashes-only response is skipped", func(t *testing.T) {
 		raw := block(root, fmt.Sprintf(`"%s","%s"`, tx1.Hash().Hex(), tx2.Hash().Hex()))
 		assert.NoError(t, run(t, MethodGetBlockByNumber, raw, cs))
+	})
+}
+
+func runReceipts(t *testing.T, result []byte, cs CheckSet, r Resolver) Result {
+	t.Helper()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x10"]}`))
+	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
+	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	in := Input{Method: "eth_getBlockReceipts", Upstream: common.NewFakeUpstream("u"), Response: rs, Checks: cs, Reorg: DefaultReorgPolicy()}
+	if r != nil {
+		in.Resolver = r
+	}
+	return Validate(context.Background(), in)
+}
+
+func TestCheck_ReceiptsRootRecompute(t *testing.T) {
+	bh := gethcommon.HexToHash("0xabababababababababababababababababababababababababababababababab")
+	mk := func(cumGas uint64, n uint64) *gethtypes.Receipt {
+		return &gethtypes.Receipt{
+			Type:              gethtypes.DynamicFeeTxType,
+			Status:            gethtypes.ReceiptStatusSuccessful,
+			CumulativeGasUsed: cumGas,
+			Logs:              []*gethtypes.Log{},
+			TxHash:            gethcommon.BigToHash(big.NewInt(int64(n))),
+			BlockHash:         bh,
+			BlockNumber:       big.NewInt(0x10),
+		}
+	}
+	r0, r1 := mk(21000, 1), mk(42000, 2)
+	root := gethtypes.DeriveSha(gethtypes.Receipts{r0, r1}, trie.NewStackTrie(nil)).Hex()
+	j0, _ := r0.MarshalJSON()
+	j1, _ := r1.MarshalJSON()
+	resp := []byte("[" + string(j0) + "," + string(j1) + "]")
+	cs := only("receiptsRootRecompute", nil)
+
+	t.Run("matching receipts root passes", func(t *testing.T) {
+		res := runReceipts(t, resp, cs, mockResolver{header: &Header{ReceiptsRoot: root}})
+		assert.NoError(t, res.Err)
+	})
+
+	t.Run("tampered/foreign receipts root is rejected", func(t *testing.T) {
+		res := runReceipts(t, resp, cs, mockResolver{header: &Header{ReceiptsRoot: "0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead"}})
+		require.Error(t, res.Err)
+	})
+
+	t.Run("no resolver → skip", func(t *testing.T) {
+		assert.NoError(t, runReceipts(t, resp, cs, nil).Err)
+	})
+
+	t.Run("header unavailable → skip", func(t *testing.T) {
+		assert.NoError(t, runReceipts(t, resp, cs, mockResolver{}).Err)
+	})
+
+	t.Run("unknown receipt field → skip, never false-flagged", func(t *testing.T) {
+		var arr []map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(resp, &arr))
+		arr[0]["l1Fee"], _ = json.Marshal("0x1")
+		custom, _ := json.Marshal(arr)
+		res := runReceipts(t, custom, cs, mockResolver{header: &Header{ReceiptsRoot: "0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead"}})
+		assert.NoError(t, res.Err)
 	})
 }
