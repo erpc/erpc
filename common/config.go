@@ -575,6 +575,10 @@ type ProjectConfig struct {
 	IgnoreMethods  []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods   []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
 
+	// Integrity is the project-wide data-integrity configuration. It applies to
+	// all networks; each network may override it with its own integrity block.
+	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
+
 	// ScoreMetricsWindowSize is the tumbling window the per-upstream
 	// health tracker uses for its rolling counters (errorRate, p50/p70/
 	// p95 latency, throttledRate, misbehaviorRate). At each tick the
@@ -2058,6 +2062,9 @@ type NetworkConfig struct {
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+	// Integrity overrides the project-wide data-integrity configuration for this
+	// network. Merges over the project block (network wins).
+	Integrity *IntegrityConfig `yaml:"integrity,omitempty" json:"integrity,omitempty"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
