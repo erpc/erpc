@@ -21,7 +21,7 @@ The first real module. Everything here is free at runtime.
 2. **Data-point model + resolver**: the `requiredDataPoints` declaration per check and the cost-ordered resolve function (feature.md §5). Phase 1 resolves from warm sources only (in-flight response, cache, observed metadata) — no force-fetch.
 3. **Passive feeder**: a single observer on the post-forward path that records data points (`blockHash`, `txCount`, …) with provenance tags from any block-bearing response already flowing through.
 4. **Corroboration checks**: block-hash agreement and receipt/tx-count agreement, implemented by auto-filling the existing `ValidationExpected*` directives from resolved data points. Soft-flag when the only available source is `observed-single-source`; hard-fail when `network-verified`.
-5. **Complete the intrinsic tier** for aggregate methods (feature.md §6): enable the existing self-verifying validators (transactions-root, bloom, field shapes) via the level, and add the thin missing ones — block-hash recompute, receipts-root recompute, log/transaction-index contiguity, log-metadata cross-reference. All are pure functions, unit-testable in isolation, with no upstream cost.
+5. **Complete the intrinsic tier** for aggregate methods (feature.md §6.1–§6.4): enable the existing self-verifying validators (transactions-root, bloom, field shapes, schema conformance) via the level, and add the thin missing ones — block-hash recompute, receipts-root recompute, log/transaction-index contiguity, generalized embedded-block-identity match. All are pure functions, unit-testable in isolation, no upstream cost. Each check declares its failure class — retryable vs deterministic (§6.8).
 6. **Metrics**: checks run/passed/failed by network/method/level/check.
 
 Acceptance: with `level: corroborated`, a response whose block hash or tx count contradicts already-seen, network-verified data is rejected; nothing extra is fetched; hot blocks self-satisfy.
@@ -31,7 +31,7 @@ Acceptance: with `level: corroborated`, a response whose block hash or tx count 
 1. **Force-fetch**: extend the resolver to issue the minimal canonical `network.Forward` fetch for missing data points when `level: authoritative` and `forceFetch.enabled` (feature.md §7), with the recursion-skip marker.
 2. **Budget/coalescing**: token-bucket `maxPerSecond`, `maxConcurrent`, single-flight per block, `onlyFinalized` default; graceful degradation to `corroborated` on budget exhaustion.
 3. **Cross-validation checks**: receipt ↔ block (transaction index, logIndex range), exact receipt count, contract-creation consistency, log completeness — by auto-filling `GroundTruth*` / `ReceiptsCountExact` from the force-fetched canonical block.
-4. **Per-item authenticity + encoding correctness**: transaction-hash and sender recovery (feature.md §6.3), with the typed-envelope, receipt-variant, synthetic-transaction, and fail-closed fork-activation rules (§6.5) needed to make recomputation correct across chain families.
+4. **Per-item authenticity + encoding correctness**: transaction-hash and sender recovery (feature.md §6.2), with the typed-envelope, receipt-variant, synthetic/system/**phantom-transaction detection & stripping**, and fail-closed fork-activation rules (§6.7) needed to make recomputation and contiguity correct across chain families.
 5. **Metrics**: force-fetches issued, cache-hit ratio, throttled events.
 
 Acceptance: with `level: authoritative` on a cold block, a single canonical fetch is issued, shared and cached; a receipt whose logIndex range or count contradicts the block is rejected; budget caps hold.
@@ -42,6 +42,7 @@ Acceptance: with `level: authoritative` on a cold block, a single canonical fetc
 - Verify-after-serve mode for latency-sensitive projects (serve, validate out-of-band, cordon a lying upstream).
 - Per-chain default check profiles.
 - Proactive seeding (e.g. fetching finalized-block aggregates ahead of demand).
+- **Cross-block continuity & reorg-awareness (Family E) and log completeness (§6.5–§6.6)** — stateful checks over a recent `number → hash` history; most valuable for cache correctness and serving consecutive ranges.
 
 ## Risks / watch-items
 

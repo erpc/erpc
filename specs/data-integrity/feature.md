@@ -76,6 +76,13 @@ Each data point can be produced by several methods at different cost. The resolv
 | `txHashes` + transaction index | `eth_getBlockByNumber(false)` | tx hashes are in the header response |
 | `logCount`, `logIndex` ordering, per-receipt bloom | `eth_getBlockReceipts` | the only source for log-level facts |
 | full transaction fields (contract creation, gas) | `eth_getBlockByNumber(true)` / `eth_getBlockReceipts` | heaviest |
+| signed tx fields (sender recovery, tx-hash recompute) | `eth_getBlockByNumber(true)` | full bodies incl. signature `(r,s,v)` |
+| raw transaction bytes (synthetic/system tx hash) | a raw-transaction method | only when the body can't be reconstructed from JSON |
+| sender nonce (phantom-tx detection) | `eth_getTransactionCount(sender, block)` | chain-specific; for stripping reverted/phantom txs |
+| reverted/phantom-tx logs (bloom superset) | a tracing method | chain-specific; expensive; off by default |
+| recent `number → hash` history (continuity, fork, anti-rollback) | accumulated from observed responses | cross-block state, not a per-request fetch |
+
+The last rows are auxiliary or cross-block inputs used only by specific checks (§6.5–§6.7). The `number → hash` history lives in the metadata store and is maintained from observed traffic, not fetched per request.
 
 Block-relative fields (`logIndex`, `transactionIndex`) are positions in the block's global ordering and have no meaning in isolation — they can only be validated against the block aggregate, which is why those checks require `getBlockReceipts`/`getBlockByNumber`, never a second copy of the narrow method.
 
@@ -98,75 +105,104 @@ Two consequences:
 
 ## 6. Integrity check catalog
 
-Checks fall into four strength tiers. Higher tiers give stronger guarantees; lower tiers are cheaper and catch a wider class of *malformed* (as opposed to maliciously-consistent) data. Each check is either an existing validator or a thin addition, and each maps to the data points it consumes (§5) and therefore to a level.
+The catalog spans five families ordered by strength, plus cross-cutting encoding rules and a failure-handling model. Higher families give stronger guarantees; lower ones are cheaper and catch a wider class of *malformed* (as opposed to maliciously-consistent) data. **Every check is an independently-controllable unit** — an enable flag, plus where noted, parameters (bloom equality-vs-superset, receipt gas-field variant, contiguity rules, reorg depth, retry budget). A level (§4) is a named preset over these flags; nothing here is all-or-nothing.
 
-A foundational observation drives the level mapping: **the canonical block-aggregate responses carry their own cryptographic commitments**. Most strong checks are therefore *intrinsic* when validating a `getBlockByNumber`/`getBlockReceipts` response (the response proves itself), and become *authoritative* only when validating a narrow method (a single receipt/transaction/log) that lacks those commitments and must be checked against a fetched aggregate.
+The level mapping rests on one observation: **the canonical block-aggregate responses carry their own cryptographic commitments**, so the strong checks are *intrinsic* when validating a `getBlockByNumber`/`getBlockReceipts` response (the response proves itself) and become *authoritative* only for a narrow method (a single receipt/transaction/log) that lacks those commitments and must be checked against a fetched aggregate. Where an existing directive already implements a check, the module **enables and feeds it** rather than re-implementing; checks marked *(new)* are additions.
 
-Where an existing directive already implements a check, the module **enables and feeds it** rather than re-implementing — it only adds the data-gathering and the handful of thin checks marked "new".
+### 6.1 Family A — Cryptographic commitment recomputation (strongest)
 
-### 6.1 Tier A — Cryptographic commitment recomputation (strongest)
+Recompute a value and compare it to the chain's own commitment carried in the same data. A match is cryptographic proof of authenticity, down to the header.
 
-Recompute a value and compare it to the chain's own commitment carried in the same data. A match is cryptographic proof the data is authentic (down to the header itself).
-
-| Check | Recompute | Compare to | Inputs | Level: aggregate / narrow |
+| Check | Recompute | Compare to | Inputs | Params |
 |---|---|---|---|---|
-| Block hash | `RLP(canonical header fields)` → keccak256 | `block.hash` | full header | intrinsic / authoritative |
-| Transactions root | trie over `RLP(index) → typed-tx RLP` | header `transactionsRoot` | full tx bodies | intrinsic / authoritative |
-| Receipts root | trie over `RLP(index) → typed-receipt RLP` | header `receiptsRoot` | receipts + `receiptsRoot` | intrinsic\* / authoritative |
-| Logs bloom | 2048-bit bloom from each log's address + topics | receipt/header bloom — equality, or **superset** (every set bit present, node may add bits) | logs + bloom | intrinsic |
+| Block hash | `RLP(header fields)` → keccak256 | `block.hash` | full header | — |
+| Transactions root | trie of `RLP(i) → typed-tx RLP` | header `transactionsRoot` | full tx bodies | — |
+| Receipts root | trie of `RLP(i) → typed-receipt RLP` | header `receiptsRoot` | receipts + `receiptsRoot` | `gasField: cumulative\|perTx` |
+| Logs bloom | 2048-bit bloom from each log's address+topics | header/receipt bloom | logs + bloom | `mode: equality\|superset` |
 
-\* receipts-root needs the header's `receiptsRoot`; intrinsic when the aggregate under validation includes it, otherwise one corroborated data point.
+- **Block hash** — header fields RLP'd in order, appending upgrade-added fields only when active for the block (§6.7): parent hash, uncles hash, miner, state root, transactions root, receipts root, logs bloom, difficulty, number, gas limit, gas used, timestamp, extra data, mix hash, nonce; then base-fee-per-gas, withdrawals root, blob-gas-used + excess-blob-gas, parent-beacon-block-root, requests hash. Some chains **wrap** the standard header in an outer structure (extra leading fields); the recompute must match that layout.
+- **Receipts root** — needs the header's `receiptsRoot` (intrinsic when the aggregate includes it, else one corroborated data point). `gasField`: some providers put per-tx gas where the standard uses cumulative gas.
+- **Logs bloom** — `superset` mode tolerates a node setting extra bits; an advanced variant explains the extra bits by including logs from reverted/phantom transactions retrieved via tracing (expensive; off by default).
 
-Header fields RLP'd in order, appending upgrade-added fields only when active for the block (§6.5): parent hash, uncles hash, miner, state root, transactions root, receipts root, logs bloom, difficulty, number, gas limit, gas used, timestamp, extra data, mix hash, nonce; then base-fee-per-gas, withdrawals root, blob-gas-used + excess-blob-gas, parent-beacon-block-root, requests hash.
+These are **reorg-race-sensitive** (§6.8): a transient mismatch in the reorg window is retryable, not a hard reject.
 
-### 6.2 Tier B — Structural & cross-reference consistency
-
-No cryptographic commitment, but strong invariants over the block's shape. These catch mixed-block/caching bugs and ordering corruption (the class that motivated the first intrinsic check).
-
-- **Log-index contiguity** — `logIndex` over all logs in the block is exactly `0..N-1`, strictly increasing, no gaps.
-- **Transaction-index contiguity** — `transactionIndex` over all transactions/receipts is exactly `0..N-1`.
-- **Log metadata cross-reference** — each log's `blockHash`/`blockNumber` equals the block header, and its `transactionHash`/`transactionIndex` equals its parent receipt. (Catches a provider mixing data from different blocks.)
-- **Receipt ↔ transaction correspondence** — receipts count equals transactions count; `receipt[i].transactionHash == transactions[i].hash`; `transactionIndex == i`.
-- **Single block identity** — all receipts/logs share one `blockHash`, equal to the requested block's.
-- **Contract-creation consistency** — `contractAddress` present iff the transaction has no `to`.
-- **Uniqueness** — transaction hashes unique within the block.
-
-### 6.3 Tier C — Per-item cryptographic authenticity
+### 6.2 Family B — Per-item cryptographic authenticity
 
 Verify a single transaction without the whole block; intrinsic to any method returning full transaction bodies.
 
-- **Sender recovery** — recover the signer from `(r, s, v|yParity)` over the type-specific signing payload (accounting for replay-protection encodings, typed-transaction signing rules, and alternative/account-abstraction signature schemes) and require it to equal the announced `from`.
-- **Transaction-hash verification** — `keccak256(canonical typed-tx RLP) == tx.hash`. For transactions whose body cannot be reconstructed from JSON (some system/synthetic transactions), fetch the canonical raw bytes via a raw-transaction method and verify `keccak256(raw) == hash`.
+- **Sender recovery** — recover the signer from `(r, s, v|yParity)` over the type-specific signing payload (replay-protection encodings, typed-tx signing rules, and alternative/account-abstraction signature schemes) and require it to equal the announced `from`.
+- **Transaction-hash recompute** — `keccak256(canonical typed-tx RLP) == tx.hash`. For transactions whose body cannot be reconstructed from JSON (some system/synthetic transactions), fetch the canonical raw bytes via a raw-transaction method and verify `keccak256(raw) == hash`.
 
-### 6.4 Tier D — Shape & sanity (cheap, intrinsic)
+### 6.3 Family C — Structural & cross-reference consistency (within a block/aggregate)
 
-- **Index magnitude** — no `logIndex`/`transactionIndex` beyond a physically-possible bound (the already-shipped check).
-- **Field shapes** — address = 20 bytes, topic/hash = 32 bytes, bounded topic count, well-formed hex quantities.
+No cryptographic commitment, but strong shape invariants. These catch mixed-block/caching bugs and ordering corruption (the class that motivated the first shipped check). **Deterministic** — fail fast (§6.8).
+
+- **Log-index contiguity** — `logIndex` over all logs in the block is exactly `0..N-1`, strictly increasing, no gaps. (Param: `startAtZero` — relax for chains that don't reset per block.)
+- **Transaction-index contiguity** — `transactionIndex` over all transactions/receipts is exactly `0..N-1`.
+- **Embedded block-identity match** *(generalized)* — every sub-object's self-reported coordinates match its container: each transaction/receipt/log/trace-frame's `blockHash`/`blockNumber` equals the enclosing block; each log's `transactionHash`/`transactionIndex` equals its parent receipt/transaction. (Catches a provider mixing data from different blocks — the dominant cache-poisoning failure.)
+- **Receipt ↔ transaction correspondence** — receipts count equals transactions count; `receipt[i].transactionHash == transactions[i].hash`; `transactionIndex == i`.
+- **Single block identity** — all receipts/logs/traces share one `blockHash`, equal to the requested block's.
+- **Contract-creation consistency** — `contractAddress` present iff the transaction has no `to`.
+- **Uniqueness** — transaction hashes unique within the block.
+- **Count exactness / floor** — receipts/logs counts match (`exact`) or meet a minimum (`atLeast`).
+
+### 6.4 Family D — Shape & sanity (cheap, intrinsic)
+
+- **Index magnitude** — no `logIndex`/`transactionIndex` beyond a physically-possible bound (shipped).
+- **Field shapes / lengths** — address = 20 bytes, topic/hash = 32 bytes, bloom = 256 bytes, bounded topic count, well-formed hex quantities (applies to header, transaction, and log fields independently).
 - **Bloom emptiness** — a zero bloom iff zero logs.
-- **Hardfork-gated field presence** — see §6.5.
+- **Schema conformance** — the response matches the expected structural schema for the method (required fields present and well-typed) before any deeper check runs; tolerates field-name casing variants some providers emit.
+- **Hardfork-gated field presence** — a field required after a fork's activation is present then and absent before (§6.7).
+- **Tagged-block non-null** — a response to a block *tag* (latest/finalized/safe) must not be null.
 
-### 6.5 Encoding correctness & verification principles (cross-cutting)
+### 6.5 Family E — Cross-block continuity & reorg-awareness *(new; stateful)*
 
-The Tier-A/C recomputations are only correct if encoding rules are exact. Several principles keep them honest and are mandatory for any implementation:
+These span multiple responses and need a small per-network recent `number → hash` history (which the metadata store already accumulates). **Reorg-race-sensitive** (§6.8); most valuable for cache correctness and serving consecutive ranges. Higher cost; off below `authoritative` unless explicitly enabled.
 
-- **Typed envelopes** — EIP-2718 type-prefixed RLP for legacy, access-list, dynamic-fee, blob, and authorization transactions, plus chain-family-specific types (rollup system/deposit/retryable transactions; sidechain synthetic state-sync transactions), each with its own field layout and trie-inclusion rule.
-- **Receipt encoding variants** — some providers encode per-transaction gas where the standard uses cumulative gas; some chains append hardfork-gated trailing receipt fields. The recompute must follow the chain's actual rule.
-- **Synthetic/system transactions** — some chains inject a system transaction at a fixed index, or append a synthetic transaction that is *excluded from* (older rule) or *included in* (newer rule) the tries. Handling must follow the chain's rule and may require out-of-band raw bytes (verified by hash) that standard block JSON cannot provide — this is the only check class that may need an auxiliary fetch beyond the block aggregate.
-- **Fail-closed on fork state** — hardfork-dependent field presence is gated on an authoritative activation cutoff (block number/timestamp), **never inferred from the response**; otherwise a provider that strips a field could trick the verifier into accepting a wrong-shaped object.
-- **Config-time validation** — an enabled check that would be a silent no-op for the configured chain (e.g. a chain-specific field check on a chain that lacks the field) is rejected at startup, so an operator can never believe integrity is enforced when it is not.
-- **Normalization** — all hex comparisons are case-insensitive and zero-padding tolerant.
-- **Independent toggles** — every check is independently switchable; a level (§4) is a named preset over these toggles plus the resolver/fetch settings.
+- **Parent-hash linkage** — for consecutive blocks, `block[N].parentHash == block[N-1].hash`. (Param: `confirmationDepth`.)
+- **Fork detection** — a block seen at a height whose hash differs from a previously-served hash at that height signals a fork; data on the abandoned branch must not be served as canonical. (Param: `reorgDepth`.)
+- **Hash stability / finality probe** — a finalized block's `number → hash` must not change; a re-fetch at the finalized commitment must match, else the earlier answer was on a fork. (Param: probe cadence.)
+- **Anti-rollback / highest-block** — never serve a block or tip below the highest already observed for the network.
+- **Range contiguity** — a served block range has no gaps (every height present).
 
-### 6.6 Level mapping summary
+### 6.6 Completeness *(new)*
 
-| Tier | On aggregate methods | On narrow methods |
+- **Log completeness** — for a block, the logs a filtered `getLogs` returns are consistent with the block's bloom (every matching log's address/topics have bits set in the header bloom) and, under full corroboration, equal the logs carried by the block's receipts. Guards against a provider silently dropping matching logs. (A *filtered* `getLogs` only bounds the count from below — see §11.)
+- **Range bounds** — `getLogs` block-range within the configured cap; an adjacent guardrail rather than a correctness check.
+
+### 6.7 Encoding correctness & verification principles (cross-cutting)
+
+The recomputations in A/B are only correct if encoding rules are exact. These are mandatory:
+
+- **Typed envelopes** — type-prefixed RLP for legacy, access-list, dynamic-fee, blob, and authorization transactions, plus chain-family-specific types (rollup system/deposit/retryable transactions; sidechain synthetic state-sync transactions; alternative-fee-token transactions), each with its own field layout and trie-inclusion rule.
+- **Receipt encoding variants** — cumulative vs per-transaction gas; hardfork-gated trailing fields on some receipt types.
+- **Synthetic / system / phantom transactions** — some chains inject a system transaction at a fixed index, append a synthetic transaction *excluded from* (older rule) or *included in* (newer rule) the tries, or expose **phantom** transactions (reverted/never-applied) that must be **detected and stripped before structural checks**, with `transactionIndex`/`logIndex` renumbered afterward. Detection signals: zero signature (`v=r=s=0`), zero gas price, or a sender nonce never consumed. Inclusion may require out-of-band raw bytes (verified by hash) the block JSON cannot provide — the only check class needing an auxiliary fetch beyond the block aggregate.
+- **Fail-closed on fork state** — hardfork-dependent field presence is gated on an authoritative activation cutoff (block number/timestamp), **never inferred from the response**; otherwise a provider that strips a field could trick the verifier.
+- **Config-time validation** — an enabled check that would be a silent no-op for the configured chain (e.g. a chain-specific field check on a chain that lacks it) is rejected at startup, so an operator can never believe integrity is enforced when it is not.
+- **Normalization** — all hex comparisons case-insensitive and zero-padding tolerant; field-name casing variants accepted.
+- **Independent toggles + parameters** — every check is individually switchable and, where listed, parameterized; a level (§4) is a named preset over these.
+
+### 6.8 Failure handling: retryable vs deterministic
+
+Two failure classes, warranting different responses:
+
+- **Reorg-race-sensitive** (Families A and E) — a mismatch can be a transient artifact of the reorg window across load-balanced backends. Treat as **retryable**: try another upstream / re-fetch, bounded by a retry budget, before giving up. (The content-validation error is already retryable-toward-network; these get the standard treatment plus, optionally, a small bounded re-fetch.)
+- **Deterministic** (Families B, C, D, Completeness) — a violation is provable from committed data and cannot be a transient race. **Fail fast**: reject and fail over immediately.
+
+Each check declares its class; the classification is itself overridable per check.
+
+### 6.9 Level mapping summary
+
+| Family | On aggregate methods | On narrow methods |
 |---|---|---|
 | A — commitments | intrinsic | authoritative (fetch the aggregate) |
-| B — structural | intrinsic (whole-block) / corroborated (single item vs block) | corroborated → authoritative |
-| C — per-item authenticity | intrinsic (if full tx body present) | intrinsic (if full tx body present) |
+| B — per-item authenticity | intrinsic (if full tx body present) | intrinsic (if full tx body present) |
+| C — structural | intrinsic (whole-block) / corroborated (item vs block) | corroborated → authoritative |
 | D — shape / sanity | intrinsic | intrinsic |
+| E — cross-block continuity | corroborated (warm history) / authoritative | authoritative |
+| Completeness | corroborated / authoritative | authoritative |
 
-This is why `intrinsic` is far more powerful than "a few cheap checks": for the aggregate methods it already includes full cryptographic self-verification, with no extra upstream calls.
+`intrinsic` is therefore far more than "a few cheap checks": for the aggregate methods it already includes full cryptographic self-verification with no extra upstream calls.
 
 ## 7. Authoritative fetch
 
@@ -213,10 +249,18 @@ networks:
         onlyFinalized: true      # do not chase the reorg-prone tip
         maxPerSecond: 50         # the cost lever (token bucket)
         maxConcurrent: 8
-      # Optional: override individual checks on top of the level
+      # Optional: override individual checks on top of the level.
+      # Each check takes `off`, `on`, or an object of its parameters,
+      # plus an optional `failureMode: retryable|deterministic` override.
       checks:
-        validateLogsBloomMatch: off
-        receiptsCountExact: on
+        blockHash:           on
+        receiptsRoot:        { enabled: on, gasField: cumulative }   # cumulative | perTx
+        logsBloom:           { enabled: on, mode: superset }         # equality | superset
+        logIndexContiguity:  { enabled: on, startAtZero: true }
+        senderRecovery:      off                                     # CPU-heavy; opt out
+        parentHashLinkage:   { enabled: on, confirmationDepth: 12 }
+        forkDetection:       { enabled: on, reorgDepth: 64 }
+        receiptsCount:       { enabled: on, mode: exact }            # exact | atLeast
 ```
 
 | Field | Type | Default | Description |
@@ -226,7 +270,7 @@ networks:
 | `forceFetch.onlyFinalized` | bool | `true` | Only force-fetch for finalized blocks (immutable; no reorg ambiguity). |
 | `forceFetch.maxPerSecond` | int | conservative | Token-bucket rate cap on canonical fetches; the primary cost control. |
 | `forceFetch.maxConcurrent` | int | small | Concurrency cap on in-flight canonical fetches. |
-| `checks.<name>` | bool | per-level | Per-check override, additive/subtractive on top of the level. Power users only. |
+| `checks.<name>` | bool \| object | per-level | Per-check override: `off`/`on`, or an object carrying that check's parameters (§6) and an optional `failureMode: retryable\|deterministic`. **Every check in §6 has its own flag**; the level just presets them. |
 
 Rules that keep it simple:
 
