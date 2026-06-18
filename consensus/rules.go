@@ -602,9 +602,10 @@ var consensusRules = []consensusRule{
 			if best.ResponseType != ResponseTypeNonEmpty {
 				return false
 			}
-			// Check if a larger non-empty exists
+			// Check if a larger non-empty exists (integrity-invalid groups, e.g.
+			// an underflowed logIndex, are not considered legitimately larger)
 			for _, g := range a.getValidGroups() {
-				if g.ResponseType == ResponseTypeNonEmpty && g.ResponseSize > best.ResponseSize {
+				if g.ResponseType == ResponseTypeNonEmpty && !g.IntegrityInvalid && g.ResponseSize > best.ResponseSize {
 					return true
 				}
 			}
@@ -632,9 +633,12 @@ var consensusRules = []consensusRule{
 			if best == nil || best.Count < a.config.agreementThreshold || best.ResponseType != ResponseTypeNonEmpty {
 				return false
 			}
-			// Trigger only when the larger non-empty exists but is below threshold (single or minority)
+			// Trigger only when a legitimately larger non-empty exists but is
+			// below threshold (single or minority). Integrity-invalid groups
+			// (e.g. an underflowed logIndex that only inflates byte size) are
+			// excluded so one corrupt upstream cannot dispute an honest majority.
 			for _, g := range a.getValidGroups() {
-				if g.ResponseType == ResponseTypeNonEmpty && g.ResponseSize > best.ResponseSize && g.Count < a.config.agreementThreshold {
+				if g.ResponseType == ResponseTypeNonEmpty && !g.IntegrityInvalid && g.ResponseSize > best.ResponseSize && g.Count < a.config.agreementThreshold {
 					return true
 				}
 			}

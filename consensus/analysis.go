@@ -19,6 +19,12 @@ type responseGroup struct {
 	ResponseType ResponseType
 	ResponseSize int // Size of the largest result in the group
 
+	// IntegrityInvalid is true when responses in this group contain a
+	// provably-impossible value (e.g. an underflowed logIndex). Such a group is
+	// excluded from the preferLargerResponses candidate set so a corrupt-but-
+	// larger response cannot win or dispute against an honest majority.
+	IntegrityInvalid bool
+
 	// Cached largest result/error for quick access (prefer largest response even within same consensus group)
 	LargestResult *common.NormalizedResponse
 	FirstError    error
@@ -83,6 +89,15 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 	for _, r := range responses {
 		classifyAndHashResponse(r, ctx, config)
 
+		// Flag provably-corrupt responses (e.g. underflowed logIndex). Computed
+		// only when preferLargerResponses is active — its sole consumer — to
+		// avoid the extra parse on every response otherwise.
+		if config.preferLargerResponses &&
+			r.CachedResponseType == ResponseTypeNonEmpty &&
+			hasInvalidIntegrity(ctx, r.Result, analysis.method) {
+			r.CachedIntegrityInvalid = true
+		}
+
 		if r.CachedResponseType != ResponseTypeInfrastructureError {
 			analysis.validParticipants++
 		}
@@ -95,6 +110,9 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 				ResponseSize: r.CachedResponseSize,
 			}
 			analysis.groups[r.CachedHash] = group
+		}
+		if r.CachedIntegrityInvalid {
+			group.IntegrityInvalid = true
 		}
 
 		group.Count++
@@ -249,11 +267,16 @@ func (a *consensusAnalysis) getBestByCount() *responseGroup {
 	return a.cachedBestByCount
 }
 
-// getBestBySize returns the largest non-empty group (cached)
+// getBestBySize returns the largest non-empty group (cached). Groups flagged
+// with invalid integrity (e.g. an underflowed logIndex) are excluded so a
+// corrupt-but-larger response is never preferred for its size.
 func (a *consensusAnalysis) getBestBySize() *responseGroup {
 	if a.cachedBestBySize == nil {
 		var best *responseGroup
 		for _, group := range a.groups {
+			if group.IntegrityInvalid {
+				continue
+			}
 			if group.ResponseType == ResponseTypeNonEmpty && (best == nil || group.ResponseSize > best.ResponseSize) {
 				best = group
 			}
