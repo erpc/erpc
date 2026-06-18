@@ -17,6 +17,9 @@ type Input struct {
 	// Resolver enables cross-source corroboration checks (finality + force-fetch
 	// of the canonical block). Nil disables them gracefully.
 	Resolver Resolver
+	// History enables cross-block continuity checks (parent-hash linkage, hash
+	// stability) by remembering number→hash from observed blocks. Nil disables them.
+	History History
 	// Reorg maps finality state to the behavior for reorg-sensitive mismatches.
 	Reorg ReorgPolicy
 }
@@ -70,6 +73,7 @@ func Validate(ctx context.Context, in Input) Result {
 	}
 
 	ctx = withResolver(ctx, in.Resolver)
+	ctx = withHistory(ctx, in.History)
 	d := newDecoded(method, raw)
 
 	var res Result

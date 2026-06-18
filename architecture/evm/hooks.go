@@ -141,14 +141,19 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
 		cs, policy := resolveIntegrity(n, dirs)
-		res := integrity.Validate(ctx, integrity.Input{
+		hist := networkHistory(n)
+		input := integrity.Input{
 			Method:   methodLower,
 			Upstream: u,
 			Response: rs,
 			Checks:   cs,
 			Resolver: newIntegrityResolver(n, u),
 			Reorg:    policy,
-		})
+		}
+		if hist != nil {
+			input.History = hist
+		}
+		res := integrity.Validate(ctx, input)
 		for _, rec := range res.Recorded {
 			log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).
 				Msg("integrity: recorded reorg-sensitive mismatch on unfinalized block")
@@ -157,6 +162,10 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			validationErr = res.Err
 			rq.ClearLastValidResponse()
 			return rs, validationErr
+		}
+		// Feed continuity history with this validated block.
+		if isBlockMethod(methodLower) {
+			observeBlock(ctx, hist, rs)
 		}
 	}
 

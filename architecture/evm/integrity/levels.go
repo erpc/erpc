@@ -47,6 +47,7 @@ var levelMembership = map[Level][]string{
 	},
 	LevelCorroborated: {
 		"expectedBlock", "receiptsCount", "receiptTransactionMatch",
+		"parentHashLinkage", "hashStability",
 	},
 	LevelAuthoritative: {
 		"receiptVsBlock",
