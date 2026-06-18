@@ -14,16 +14,25 @@ type mockResolver struct {
 	known     bool
 	receipts  []Receipt
 	have      bool
+	fetches   *int // optional: counts CanonicalReceipts calls (shared via pointer)
 }
 
 func (m mockResolver) IsFinalized(ctx context.Context, bn int64) (bool, bool) {
 	return m.finalized, m.known
 }
 func (m mockResolver) CanonicalReceipts(ctx context.Context, ref string) ([]Receipt, bool) {
+	if m.fetches != nil {
+		*m.fetches++
+	}
 	return m.receipts, m.have
 }
 
 func validateReceipt(t *testing.T, result []byte, cs CheckSet, r Resolver) Result {
+	t.Helper()
+	return validateReceiptPolicy(t, result, cs, r, DefaultReorgPolicy())
+}
+
+func validateReceiptPolicy(t *testing.T, result []byte, cs CheckSet, r Resolver, policy ReorgPolicy) Result {
 	t.Helper()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xaa"]}`))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
@@ -34,7 +43,7 @@ func validateReceipt(t *testing.T, result []byte, cs CheckSet, r Resolver) Resul
 		Response: rs,
 		Checks:   cs,
 		Resolver: r,
-		Reorg:    DefaultReorgPolicy(),
+		Reorg:    policy,
 	})
 }
 
@@ -85,5 +94,15 @@ func TestCheck_ReceiptVsBlock(t *testing.T) {
 	t.Run("no resolver → no-op", func(t *testing.T) {
 		res := validateReceipt(t, narrow, cs, nil)
 		assert.NoError(t, res.Err)
+	})
+
+	t.Run("unfinalized:off skips the force-fetch entirely", func(t *testing.T) {
+		fetches := 0
+		policy := ReorgPolicy{Finalized: BehaviorError, Unfinalized: BehaviorIgnore}
+		res := validateReceiptPolicy(t, narrow, cs,
+			mockResolver{known: true, finalized: false, receipts: mismatch, have: true, fetches: &fetches}, policy)
+		assert.NoError(t, res.Err)
+		assert.Empty(t, res.Recorded)
+		assert.Equal(t, 0, fetches, "an ignored reorg-sensitive check must issue no canonical fetch")
 	})
 }

@@ -74,24 +74,29 @@ func Validate(ctx context.Context, in Input) Result {
 
 	var res Result
 	for _, c := range enabled {
+		// For a reorg-sensitive check, resolve the verdict for this block's
+		// finality up front. If it would be ignored (e.g. onReorgMismatch
+		// unfinalized: off), skip the check entirely — and with it any
+		// force-fetch it would have issued. Deterministic checks always reject.
+		behavior := BehaviorError
+		if c.Class == ReorgSensitive {
+			behavior = in.behaviorFor(ctx, d)
+			if behavior == BehaviorIgnore {
+				continue
+			}
+		}
+
 		v := c.Run(ctx, d, in.Checks.For(c.ID))
 		if v == nil {
 			continue
 		}
-		switch c.Class {
-		case Deterministic:
+
+		if c.Class == Deterministic || behavior == BehaviorError {
 			res.Err = contentValidation(c, v, in.Upstream)
 			return res
-		case ReorgSensitive:
-			switch in.behaviorFor(ctx, d) {
-			case BehaviorError:
-				res.Err = contentValidation(c, v, in.Upstream)
-				return res
-			case BehaviorRecord:
-				res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason})
-			case BehaviorIgnore:
-			}
 		}
+		// reorg-sensitive mismatch on unfinalized data — surface, still serve.
+		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason})
 	}
 	return res
 }
