@@ -460,31 +460,40 @@ type PostgreSQLConnectorConfig struct {
 	GetTimeout    Duration                 `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 	SetTimeout    Duration                 `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
 	IAMAuth       *PostgreSQLIAMAuthConfig `yaml:"iamAuth,omitempty" json:"iamAuth,omitempty"`
+	// SkipSchemaSetup skips all startup DDL (CREATE TABLE/INDEX, column
+	// migrations, pg_cron) and the local expired-row cleanup DELETE loop. Set
+	// it for connectors whose ConnectionUri targets a read-only replica (e.g.
+	// an Aurora global-database secondary): DDL cannot execute there (SQLSTATE
+	// 25006) and is not write-forwarded, so the writer-region connector owns
+	// the schema and the replica receives it via storage replication.
+	SkipSchemaSetup bool `yaml:"skipSchemaSetup,omitempty" json:"skipSchemaSetup"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]interface{}{
-		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
-		"table":         p.Table,
-		"minConns":      fmt.Sprintf("%d", p.MinConns),
-		"maxConns":      fmt.Sprintf("%d", p.MaxConns),
-		"initTimeout":   p.InitTimeout.String(),
-		"getTimeout":    p.GetTimeout.String(),
-		"setTimeout":    p.SetTimeout.String(),
-		"iamAuth":       p.IAMAuth,
+		"connectionUri":   util.RedactEndpoint(p.ConnectionUri),
+		"table":           p.Table,
+		"minConns":        fmt.Sprintf("%d", p.MinConns),
+		"maxConns":        fmt.Sprintf("%d", p.MaxConns),
+		"initTimeout":     p.InitTimeout.String(),
+		"getTimeout":      p.GetTimeout.String(),
+		"setTimeout":      p.SetTimeout.String(),
+		"iamAuth":         p.IAMAuth,
+		"skipSchemaSetup": p.SkipSchemaSetup,
 	})
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalYAML() (interface{}, error) {
 	return map[string]interface{}{
-		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
-		"table":         p.Table,
-		"minConns":      p.MinConns,
-		"maxConns":      p.MaxConns,
-		"initTimeout":   p.InitTimeout.String(),
-		"getTimeout":    p.GetTimeout.String(),
-		"setTimeout":    p.SetTimeout.String(),
-		"iamAuth":       p.IAMAuth,
+		"connectionUri":   util.RedactEndpoint(p.ConnectionUri),
+		"table":           p.Table,
+		"minConns":        p.MinConns,
+		"maxConns":        p.MaxConns,
+		"initTimeout":     p.InitTimeout.String(),
+		"getTimeout":      p.GetTimeout.String(),
+		"setTimeout":      p.SetTimeout.String(),
+		"iamAuth":         p.IAMAuth,
+		"skipSchemaSetup": p.SkipSchemaSetup,
 	}, nil
 }
 

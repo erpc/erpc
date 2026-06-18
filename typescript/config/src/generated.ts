@@ -456,6 +456,15 @@ export interface PostgreSQLConnectorConfig {
   getTimeout?: Duration;
   setTimeout?: Duration;
   iamAuth?: PostgreSQLIAMAuthConfig;
+  /**
+   * SkipSchemaSetup skips all startup DDL (CREATE TABLE/INDEX, column
+   * migrations, pg_cron) and the local expired-row cleanup DELETE loop. Set
+   * it for connectors whose ConnectionUri targets a read-only replica (e.g.
+   * an Aurora global-database secondary): DDL cannot execute there (SQLSTATE
+   * 25006) and is not write-forwarded, so the writer-region connector owns
+   * the schema and the replica receives it via storage replication.
+   */
+  skipSchemaSetup?: boolean;
 }
 export interface AwsAuthConfig {
   mode: 'file' | 'env' | 'secret'; // "file", "env", "secret"
