@@ -172,7 +172,7 @@ These span multiple responses and need a small per-network recent `number → ha
 
 ### 6.7 Encoding correctness & verification principles (cross-cutting)
 
-The recomputations in A/B are only correct if encoding rules are exact. These are mandatory:
+The recomputations in A/B are only correct if encoding rules are exact (per-chain specifics catalogued in Appendix A). These are mandatory:
 
 - **Typed envelopes** — type-prefixed RLP for legacy, access-list, dynamic-fee, blob, and authorization transactions, plus chain-family-specific types (rollup system/deposit/retryable transactions; sidechain synthetic state-sync transactions; alternative-fee-token transactions), each with its own field layout and trie-inclusion rule.
 - **Receipt encoding variants** — cumulative vs per-transaction gas; hardfork-gated trailing fields on some receipt types.
@@ -325,3 +325,57 @@ No new validation logic, no new agreement logic, no new trusted-source logic.
 2. Whether to ship the dedicated metadata store in the first iteration or rely solely on the cache (§10).
 3. Hard-fail vs verify-after-serve as the `authoritative` default (correctness vs latency).
 4. Per-chain default check profiles (which strict checks are safe to enable by default per architecture/chain).
+
+---
+
+## Appendix A — Per-chain nuances & edge-cases
+
+The recomputations and structural checks (§6) assume canonical EVM encoding. Real chains deviate in public, documented ways; each deviation below must be handled for the affected checks to be *correct* rather than false-positive. Each is an independently-toggleable, chain-gated rule (§6.7) that config-time validation refuses to enable on a chain that doesn't need it. The list is non-exhaustive and grows with chain support; it is grouped by behavior class, with well-known chains named only as examples.
+
+### A.1 Sidechains with a synthetic state-sync transaction *(e.g. Polygon PoS, Shibarium)*
+- A synthetic "state-sync" transaction is appended at the **last index** of any block with cross-layer activity.
+- **Older encoding**: a legacy (type-`0x0`) transaction with all-zero `from`/`v`/`r`/`s` and zero `gasPrice`, **excluded** from both tries → skip it when recomputing roots.
+- **Newer encoding**: a distinct type (`0x7f`), **included** in both tries (`0x7f || rlp([...stateSyncData])` for the tx; `0x7f || rlp(status, cumulativeGasUsed, logsBloom, logs)` for the receipt). Its body **cannot be reconstructed from block JSON** → fetch raw bytes via a raw-transaction method and verify `keccak256(raw) == tx.hash` (Family B).
+- Detection is case-insensitive on the type byte and zero-padding tolerant; the all-zero-signature combination is unique (no replay-protected legacy tx has `v=0`).
+- *Affects*: transactions-root, receipts-root, tx-count, contiguity.
+
+### A.2 Optimistic rollups with deposit transactions *(e.g. Optimism, Base)*
+- A **deposit transaction** type (`0x7e`): `sourceHash, from, to, mint (default 0), value, gas, isSystemTransaction (default false; accept both `isSystemTransaction` and `isSystemTx`), input`; canonical hash from RLP, not the JSON `hash`.
+- The **deposit receipt** gains trailing `depositNonce` + `depositReceiptVersion` fields **after a specific hardfork**, gated by that hardfork's **activation timestamp** (authoritative). Post-fork both must be present; pre-fork `depositReceiptVersion` must be absent — fail closed (§6.7).
+- **Blob transactions (`0x3`) are not present** — omit that type from the envelope set.
+- Receipts carry L2 fee fields (`l1Fee`, `l1GasUsed`, `l1GasPrice`, fee scalars, `blobGasUsed`, …); a presence check requires the keys to exist (values may be null) and must be config-rejected on non-rollup chains.
+- *Affects*: transactions-root, receipts-root, hardfork-gated field presence.
+
+### A.3 Rollups with an alternative fee token *(e.g. Celo)*
+- An EIP-1559-like type (`0x7b`) with a trailing `feeCurrency` field (20-byte address, or empty for the native token) before the signature.
+- Its receipt is the standard 4-field form, or a **5-field form with a trailing base-fee** for fee-currency transactions.
+- *Affects*: transactions-root, receipts-root.
+
+### A.4 Arbitrum-style rollups
+- An **internal system transaction is injected at index 0** of every block (`0x6a || rlp([chainId, data])`), signature fields all zero.
+- Additional system types — submit-retryable (`0x69`), retry (`0x68`), deposit (`0x64`) — with specific RLP layouts; nullable `to`/`retryTo` encoded as empty bytes when absent.
+- **Sender recovery is skipped** for these system types (not user-signed).
+- *Affects*: transactions-root, receipts-root, sender recovery.
+
+### A.5 Cosmos-EVM / app-chain EVMs *(e.g. Cronos)*
+- **Per-transaction gas in receipts**: receipts-root recompute must use `gasUsed` not `cumulativeGasUsed` (`gasField: perTx`).
+- **Phantom transactions** (historical client bug): some transactions appear with no receipt or `status=0` yet were never applied (the sender nonce was never consumed). **Detect** via the sender's transaction count at that block; **strip** them before structural checks and **renumber** `transactionIndex`/`logIndex`.
+- **"Leaked" logs bloom**: the header bloom is a **superset** of the bloom computed from receipt logs, because logs from reverted/phantom transactions leak into the header. Verify superset, then explain the extra bits by including those reverted/phantom logs (retrieved via tracing).
+- Some app-chain EVMs use a **different trie algorithm** → root checks don't apply and must be disabled for them.
+- *Affects*: receipts-root, logs-bloom, contiguity, counts.
+
+### A.6 Account-abstraction & alternative-signature chains
+- Transactions may carry **non-secp256k1 signatures** (P256/NIST, WebAuthn, delegated "keychain" schemes). The sender is derived from an embedded public key (`keccak256(pubX || pubY)[12:]`) or is a fixed account address, not via ECDSA recovery — sender recovery (Family B) must branch on signature type.
+- Some such chains **wrap the standard header** in an outer RLP structure (extra leading fields); the block-hash recompute must match the wrapped layout (§6.1).
+- *Affects*: sender recovery, block-hash.
+
+### A.7 Legacy / pre-Byzantium blocks
+- Pre-Byzantium receipts carry a post-state **`root`** field instead of **`status`**; receipt encoding must accept both.
+- **EIP-155 replay protection**: for legacy transactions `v` encodes the chain id — recovery = `v − (chainId·2 + 35)`; `v ∈ {27,28}` is unprotected (recovery = `v − 27`); the pre-EIP-155 signing payload omits the chain id.
+- *Affects*: receipts-root, sender recovery.
+
+### A.8 Provider & serialization variants (cross-chain)
+- **Field-name casing**: some clients emit access-list `storage_keys` (vs `storageKeys`) and authorization-list fields in snake_case with nested `signature.odd_y_parity`; decoders must accept both (schema conformance, §6.4).
+- **Hex normalization**: always compare case-insensitively and zero-padding tolerant.
+- **Zero-gas system transactions**: some chains expose system transactions with `gasPrice = 0` that must be filtered from tries and from sender recovery.
+- **Availability/finality RPC quirks**: a tagged/finalized query may return a "cannot query unfinalized data"-style error (treat as null) or an "invalid block height"-style error (retry with backoff); chain-specific error strings, handled in the retryable class (§6.8).
