@@ -71,7 +71,7 @@ Each data point can be produced by several methods at different cost. The resolv
 
 | Data point | Cheapest provider | Notes |
 |---|---|---|
-| `blockHash`, `parentHash`, `transactionsRoot`, block `logsBloom` | `eth_getBlockByNumber(false)` | header-only |
+| `blockHash`, `parentHash`, `transactionsRoot`, `receiptsRoot`, block `logsBloom`, full header | `eth_getBlockByNumber(false)` | header-only; enough for block-hash recompute |
 | `txCount` | `eth_getBlockTransactionCountByNumber` | a single number — cheapest of all |
 | `txHashes` + transaction index | `eth_getBlockByNumber(false)` | tx hashes are in the header response |
 | `logCount`, `logIndex` ordering, per-receipt bloom | `eth_getBlockReceipts` | the only source for log-level facts |
@@ -96,24 +96,77 @@ Two consequences:
 - `corroborated` and `authoritative` are the **same resolver** with a single flag: *may I pay for a miss?* Both maximize free hits.
 - Because every observed block-bearing response feeds the store, **hot blocks self-satisfy** and force-fetch cost concentrates on cold/rare blocks — the cheapest possible cost shape.
 
-## 6. Check catalog
+## 6. Integrity check catalog
 
-Each check is an existing validator (or a thin addition), mapped to the lowest level at which it can run and the data points it needs. The level merely decides which run and whether missing data points may be fetched.
+Checks fall into four strength tiers. Higher tiers give stronger guarantees; lower tiers are cheaper and catch a wider class of *malformed* (as opposed to maliciously-consistent) data. Each check is either an existing validator or a thin addition, and each maps to the data points it consumes (§5) and therefore to a level.
 
-| Check | Min level | Data points | Existing directive |
-|---|---|---|---|
-| Index magnitude (no impossible `logIndex`/`transactionIndex`) | `intrinsic` | response only | logIndex magnitude validator |
-| Bloom ↔ logs emptiness consistency | `intrinsic` | response only | `ValidateLogsBloomEmptiness` |
-| Bloom recompute matches logs | `intrinsic` | response only | `ValidateLogsBloomMatch` |
-| Tx-hash uniqueness within response | `intrinsic` | response only | `ValidateTxHashUniqueness` |
-| Log field shapes (address/topic lengths) | `intrinsic` | response only | `ValidateLogFields` |
-| Transactions root recompute | `intrinsic` | response only | `ValidateTransactionsRoot` |
-| Block hash agreement | `corroborated` | `blockHash` | `ValidationExpectedBlockHash` (auto-filled) |
-| Receipt/tx count agreement | `corroborated` | `txCount` | `ReceiptsCountExact` (auto-filled) |
-| `getLogs` blocks present with matching hash | `corroborated` | `blockHash` per block | (new, thin) |
-| Receipt ↔ block cross-validation (tx index, logIndex range) | `authoritative` | block receipts | `ValidateReceiptTransactionMatch` + `GroundTruth*` (auto-filled) |
-| Contract-creation consistency | `authoritative` | full tx fields | `ValidateContractCreation` |
-| Log completeness for a block | `authoritative` | `logCount`, `logIndex` set | (new, thin) |
+A foundational observation drives the level mapping: **the canonical block-aggregate responses carry their own cryptographic commitments**. Most strong checks are therefore *intrinsic* when validating a `getBlockByNumber`/`getBlockReceipts` response (the response proves itself), and become *authoritative* only when validating a narrow method (a single receipt/transaction/log) that lacks those commitments and must be checked against a fetched aggregate.
+
+Where an existing directive already implements a check, the module **enables and feeds it** rather than re-implementing — it only adds the data-gathering and the handful of thin checks marked "new".
+
+### 6.1 Tier A — Cryptographic commitment recomputation (strongest)
+
+Recompute a value and compare it to the chain's own commitment carried in the same data. A match is cryptographic proof the data is authentic (down to the header itself).
+
+| Check | Recompute | Compare to | Inputs | Level: aggregate / narrow |
+|---|---|---|---|---|
+| Block hash | `RLP(canonical header fields)` → keccak256 | `block.hash` | full header | intrinsic / authoritative |
+| Transactions root | trie over `RLP(index) → typed-tx RLP` | header `transactionsRoot` | full tx bodies | intrinsic / authoritative |
+| Receipts root | trie over `RLP(index) → typed-receipt RLP` | header `receiptsRoot` | receipts + `receiptsRoot` | intrinsic\* / authoritative |
+| Logs bloom | 2048-bit bloom from each log's address + topics | receipt/header bloom — equality, or **superset** (every set bit present, node may add bits) | logs + bloom | intrinsic |
+
+\* receipts-root needs the header's `receiptsRoot`; intrinsic when the aggregate under validation includes it, otherwise one corroborated data point.
+
+Header fields RLP'd in order, appending upgrade-added fields only when active for the block (§6.5): parent hash, uncles hash, miner, state root, transactions root, receipts root, logs bloom, difficulty, number, gas limit, gas used, timestamp, extra data, mix hash, nonce; then base-fee-per-gas, withdrawals root, blob-gas-used + excess-blob-gas, parent-beacon-block-root, requests hash.
+
+### 6.2 Tier B — Structural & cross-reference consistency
+
+No cryptographic commitment, but strong invariants over the block's shape. These catch mixed-block/caching bugs and ordering corruption (the class that motivated the first intrinsic check).
+
+- **Log-index contiguity** — `logIndex` over all logs in the block is exactly `0..N-1`, strictly increasing, no gaps.
+- **Transaction-index contiguity** — `transactionIndex` over all transactions/receipts is exactly `0..N-1`.
+- **Log metadata cross-reference** — each log's `blockHash`/`blockNumber` equals the block header, and its `transactionHash`/`transactionIndex` equals its parent receipt. (Catches a provider mixing data from different blocks.)
+- **Receipt ↔ transaction correspondence** — receipts count equals transactions count; `receipt[i].transactionHash == transactions[i].hash`; `transactionIndex == i`.
+- **Single block identity** — all receipts/logs share one `blockHash`, equal to the requested block's.
+- **Contract-creation consistency** — `contractAddress` present iff the transaction has no `to`.
+- **Uniqueness** — transaction hashes unique within the block.
+
+### 6.3 Tier C — Per-item cryptographic authenticity
+
+Verify a single transaction without the whole block; intrinsic to any method returning full transaction bodies.
+
+- **Sender recovery** — recover the signer from `(r, s, v|yParity)` over the type-specific signing payload (accounting for replay-protection encodings, typed-transaction signing rules, and alternative/account-abstraction signature schemes) and require it to equal the announced `from`.
+- **Transaction-hash verification** — `keccak256(canonical typed-tx RLP) == tx.hash`. For transactions whose body cannot be reconstructed from JSON (some system/synthetic transactions), fetch the canonical raw bytes via a raw-transaction method and verify `keccak256(raw) == hash`.
+
+### 6.4 Tier D — Shape & sanity (cheap, intrinsic)
+
+- **Index magnitude** — no `logIndex`/`transactionIndex` beyond a physically-possible bound (the already-shipped check).
+- **Field shapes** — address = 20 bytes, topic/hash = 32 bytes, bounded topic count, well-formed hex quantities.
+- **Bloom emptiness** — a zero bloom iff zero logs.
+- **Hardfork-gated field presence** — see §6.5.
+
+### 6.5 Encoding correctness & verification principles (cross-cutting)
+
+The Tier-A/C recomputations are only correct if encoding rules are exact. Several principles keep them honest and are mandatory for any implementation:
+
+- **Typed envelopes** — EIP-2718 type-prefixed RLP for legacy, access-list, dynamic-fee, blob, and authorization transactions, plus chain-family-specific types (rollup system/deposit/retryable transactions; sidechain synthetic state-sync transactions), each with its own field layout and trie-inclusion rule.
+- **Receipt encoding variants** — some providers encode per-transaction gas where the standard uses cumulative gas; some chains append hardfork-gated trailing receipt fields. The recompute must follow the chain's actual rule.
+- **Synthetic/system transactions** — some chains inject a system transaction at a fixed index, or append a synthetic transaction that is *excluded from* (older rule) or *included in* (newer rule) the tries. Handling must follow the chain's rule and may require out-of-band raw bytes (verified by hash) that standard block JSON cannot provide — this is the only check class that may need an auxiliary fetch beyond the block aggregate.
+- **Fail-closed on fork state** — hardfork-dependent field presence is gated on an authoritative activation cutoff (block number/timestamp), **never inferred from the response**; otherwise a provider that strips a field could trick the verifier into accepting a wrong-shaped object.
+- **Config-time validation** — an enabled check that would be a silent no-op for the configured chain (e.g. a chain-specific field check on a chain that lacks the field) is rejected at startup, so an operator can never believe integrity is enforced when it is not.
+- **Normalization** — all hex comparisons are case-insensitive and zero-padding tolerant.
+- **Independent toggles** — every check is independently switchable; a level (§4) is a named preset over these toggles plus the resolver/fetch settings.
+
+### 6.6 Level mapping summary
+
+| Tier | On aggregate methods | On narrow methods |
+|---|---|---|
+| A — commitments | intrinsic | authoritative (fetch the aggregate) |
+| B — structural | intrinsic (whole-block) / corroborated (single item vs block) | corroborated → authoritative |
+| C — per-item authenticity | intrinsic (if full tx body present) | intrinsic (if full tx body present) |
+| D — shape / sanity | intrinsic | intrinsic |
+
+This is why `intrinsic` is far more powerful than "a few cheap checks": for the aggregate methods it already includes full cryptographic self-verification, with no extra upstream calls.
 
 ## 7. Authoritative fetch
 
