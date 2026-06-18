@@ -188,6 +188,12 @@ type RequestDirectives struct {
 	// For methods without logs in response (e.g., eth_getBlockByNumber), use GroundTruthLogs
 	ValidateLogsBloomMatch bool `json:"validateLogsBloomMatch,omitempty"`
 
+	// Validation: Authoritative corroboration
+	// When true, a single eth_getTransactionReceipt is force-fetched against the
+	// block's canonical receipts (via the network) and compared. Reorg-sensitive:
+	// a mismatch on a finalized block is rejected, on an unfinalized block recorded.
+	EnforceReceiptCorroboration bool `json:"enforceReceiptCorroboration,omitempty"`
+
 	// Validation: Receipt-to-Transaction Cross-Validation
 	// When true, validates that receipt[i].transactionHash == tx[i].hash (requires GroundTruthTransactions)
 	ValidateReceiptTransactionMatch bool `json:"validateReceiptTransactionMatch,omitempty"`

@@ -87,6 +87,56 @@ func newDecoded(method string, raw []byte) *Decoded {
 	return &Decoded{method: method, raw: raw}
 }
 
+// BlockNumber returns the response's block number (best-effort, from the header,
+// then a receipt, then a log), or -1 if none is present/parseable. Used to look
+// up finality for reorg-sensitive verdicts.
+func (d *Decoded) BlockNumber() int64 {
+	var s string
+	if h := d.Header(); h != nil {
+		s = h.Number
+	}
+	if s == "" {
+		if r := d.Receipts(); len(r) > 0 {
+			s = r[0].BlockNumber
+		}
+	}
+	if s == "" {
+		if l := d.Logs(); len(l) > 0 {
+			s = l[0].BlockNumber
+		}
+	}
+	if s == "" {
+		return -1
+	}
+	n, err := common.HexToInt64(s)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// BlockRef returns the most precise block reference available for force-fetching
+// the canonical aggregate: the block hash if present (immutable, reorg-proof),
+// else the block number hex.
+func (d *Decoded) BlockRef() string {
+	if h := d.Header(); h != nil && h.Hash != "" {
+		return h.Hash
+	}
+	if r := d.Receipts(); len(r) > 0 {
+		if r[0].BlockHash != "" {
+			return r[0].BlockHash
+		}
+		return r[0].BlockNumber
+	}
+	if l := d.Logs(); len(l) > 0 {
+		if l[0].BlockHash != "" {
+			return l[0].BlockHash
+		}
+		return l[0].BlockNumber
+	}
+	return ""
+}
+
 // Header returns the block header for block methods, or nil otherwise.
 func (d *Decoded) Header() *Header {
 	if d.headerDone {

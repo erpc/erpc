@@ -33,12 +33,14 @@ func run(t *testing.T, method string, result []byte, cs CheckSet) error {
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":[]}`, method)))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
 	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-	return Validate(context.Background(), Input{
+	res := Validate(context.Background(), Input{
+		Reorg:    DefaultReorgPolicy(),
 		Method:   method,
 		Upstream: common.NewFakeUpstream("u"),
 		Response: rs,
 		Checks:   cs,
 	})
+	return res.Err
 }
 
 func magnitudeOnly() CheckSet { return CheckSet{}.Enable("indexMagnitude", nil) }

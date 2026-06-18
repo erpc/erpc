@@ -6,6 +6,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog/log"
 )
 
 // HandleProjectPreForward is the early pre-forward hook executed at project layer
@@ -135,13 +136,24 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// a violation into a content-validation error so retry/consensus route around
 	// the upstream (consensus already excludes errors from preferLargerResponses,
 	// so a corrupt-but-larger response can no longer dispute an honest majority).
-	if integrity.HasChecks(methodLower) {
-		if validationErr = integrity.Validate(ctx, integrity.Input{
+	// Internal requests (e.g. the corroboration force-fetch) are skipped to avoid
+	// recursing back into the engine.
+	dirs := rq.Directives()
+	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
+		res := integrity.Validate(ctx, integrity.Input{
 			Method:   methodLower,
 			Upstream: u,
 			Response: rs,
-			Checks:   integrityCheckSet(rq.Directives()),
-		}); validationErr != nil {
+			Checks:   integrityCheckSet(dirs),
+			Resolver: newIntegrityResolver(n, u),
+			Reorg:    integrity.DefaultReorgPolicy(),
+		})
+		for _, rec := range res.Recorded {
+			log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).
+				Msg("integrity: recorded reorg-sensitive mismatch on unfinalized block")
+		}
+		if res.Err != nil {
+			validationErr = res.Err
 			rq.ClearLastValidResponse()
 			return rs, validationErr
 		}
@@ -154,28 +166,6 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	switch methodLower {
 	case "eth_getlogs":
 		rs, validationErr = upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
-
-	case "eth_getblockreceipts":
-		// First check for unexpected empty (if enabled for this method)
-		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-			if validationErr != nil {
-				break
-			}
-		}
-		// Then apply directive-based validation
-		rs, validationErr = upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
-
-	case "eth_getblockbynumber", "eth_getblockbyhash":
-		// First check for unexpected empty (if enabled for this method)
-		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-			if validationErr != nil {
-				break
-			}
-		}
-		// Then apply directive-based validation
-		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
 
 	case "trace_filter", "arbtrace_filter":
 		rs, validationErr = upstreamPostForward_trace_filter(ctx, n, u, rq, rs, re)
