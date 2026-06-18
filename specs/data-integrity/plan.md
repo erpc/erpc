@@ -17,7 +17,7 @@ Acceptance: corrupt index → content-validation error → failover; clean respo
 
 The first real module. Everything here is free at runtime.
 
-1. **Config surface**: an `integrity` block on the project-wide network defaults and per-network config, with `level` as the only required field. Wire `level → directive defaults` mapping in one auditable place.
+1. **Config surface (§9)**: the `integrity` block (project + network) with `level` as the only required field and the three axes (`checks` / `forceFetch` / `onFailure`); the precedence chain (chain-profile → level → project → network → request); and the generic `X-ERPC-Integrity` header gated by `allowHeaderOverrides`. Wire the `level → check-set` mapping and the built-in per-chain profiles in one auditable place.
 2. **Data-point model + resolver**: the `requiredDataPoints` declaration per check and the cost-ordered resolve function (feature.md §5). Phase 1 resolves from warm sources only (in-flight response, cache, observed metadata) — no force-fetch.
 3. **Passive feeder**: a single observer on the post-forward path that records data points (`blockHash`, `txCount`, …) with provenance tags from any block-bearing response already flowing through.
 4. **Corroboration checks**: block-hash agreement and receipt/tx-count agreement, implemented by auto-filling the existing `ValidationExpected*` directives from resolved data points. Soft-flag when the only available source is `observed-single-source`; hard-fail when `network-verified`.

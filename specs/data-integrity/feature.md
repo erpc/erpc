@@ -228,58 +228,101 @@ Corroboration is only meaningful if a data point came from an independent-enough
 
 A **hard-fail** check (returns a content-validation error) requires a source whose provenance is trustworthy enough for the configured level; otherwise it **soft-flags** (metric + log, no rejection). This is a single field, not a voting system. The circular case is further mitigated because intrinsic checks catch the unanimous-corruption case regardless of provenance, and stronger independence is available by enabling consensus on the network.
 
-## 9. Configuration
+## 9. Configuration model
 
-One knob per project, overridable per network, mirroring the existing directive-defaults precedent. The `level` expands internally into the appropriate directive defaults plus resolver/fetch settings — it is sugar over the existing directive pipeline.
+Integrity is configured through a single `integrity` block with one front door (`level`), one shared vocabulary (the §6 check ids), one precedence chain, and three orthogonal axes. The block lives at the project level (applies to all networks) and the network level (overrides). The existing per-network/project directive defaults remain as the low-level layer it compiles into (§9.5).
+
+### 9.1 The block — one preset, three axes
 
 ```yaml
 # Project-wide default for all networks
 integrity:
-  level: corroborated          # off | intrinsic | corroborated | authoritative
+  level: corroborated            # the one knob most users set: off | intrinsic | corroborated | authoritative
 
 networks:
   - architecture: evm
     evm: { chainId: 1 }
 
-    # Per-network override
+    # Per-network override — same shape, merges over the project block
     integrity:
       level: authoritative
-      forceFetch:
-        enabled: true           # gate for level=authoritative fetches
-        onlyFinalized: true      # do not chase the reorg-prone tip
-        maxPerSecond: 50         # the cost lever (token bucket)
+
+      checks:                                  # axis 1 — WHAT to verify (ids are the §6 check names)
+        senderRecovery: off                    #   off | on | { enabled, <params>, failureMode }
+        logsBloom: { mode: superset }          #   equality | superset
+        receiptsRoot: { gasField: cumulative } #   cumulative | perTx
+        parentHashLinkage: { confirmationDepth: 12 }
+
+      forceFetch:                              # axis 2 — HOW HARD / at what cost to gather missing data
+        enabled: true
+        onlyFinalized: true
+        maxPerSecond: 50
         maxConcurrent: 8
-      # Optional: override individual checks on top of the level.
-      # Each check takes `off`, `on`, or an object of its parameters,
-      # plus an optional `failureMode: retryable|deterministic` override.
-      checks:
-        blockHash:           on
-        receiptsRoot:        { enabled: on, gasField: cumulative }   # cumulative | perTx
-        logsBloom:           { enabled: on, mode: superset }         # equality | superset
-        logIndexContiguity:  { enabled: on, startAtZero: true }
-        senderRecovery:      off                                     # CPU-heavy; opt out
-        parentHashLinkage:   { enabled: on, confirmationDepth: 12 }
-        forkDetection:       { enabled: on, reorgDepth: 64 }
-        receiptsCount:       { enabled: on, mode: exact }            # exact | atLeast
+
+      onFailure:                               # axis 3 — WHAT TO DO on a violation
+        default: reject                        #   reject | soft-flag (else the check's class default, §6.8)
+        parentHashLinkage: soft-flag
+
+      allowHeaderOverrides: false              # per-request header control (§9.3); off by default
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `level` | enum | `corroborated` | `off` / `intrinsic` / `corroborated` / `authoritative`. The only field most users set. |
-| `forceFetch.enabled` | bool | `true` at `authoritative` | Master gate for on-demand canonical fetches. |
-| `forceFetch.onlyFinalized` | bool | `true` | Only force-fetch for finalized blocks (immutable; no reorg ambiguity). |
-| `forceFetch.maxPerSecond` | int | conservative | Token-bucket rate cap on canonical fetches; the primary cost control. |
-| `forceFetch.maxConcurrent` | int | small | Concurrency cap on in-flight canonical fetches. |
-| `checks.<name>` | bool \| object | per-level | Per-check override: `off`/`on`, or an object carrying that check's parameters (§6) and an optional `failureMode: retryable\|deterministic`. **Every check in §6 has its own flag**; the level just presets them. |
+| `level` | enum | `corroborated` | `off`/`intrinsic`/`corroborated`/`authoritative`. The only field most users set; presets all three axes. |
+| `checks.<id>` | bool \| object | per-level | Override one check by its §6 id: `off`/`on`, or an object with its parameters and an optional `failureMode`. New catalog checks get an id here automatically. |
+| `forceFetch.enabled` | bool | on at `authoritative` | Master gate for on-demand canonical fetches. |
+| `forceFetch.onlyFinalized` | bool | `true` | Force-fetch only for finalized (immutable) blocks. |
+| `forceFetch.maxPerSecond` | int | conservative | Token-bucket cap on canonical fetches — the primary cost lever. |
+| `forceFetch.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
+| `onFailure.default` | enum | per-check class | `reject` or `soft-flag` for all checks unless overridden per id; the per-check class (§6.8) applies when unset. |
+| `allowHeaderOverrides` | bool | `false` | Whether per-request headers may adjust integrity for this network (§9.3). |
 
-Rules that keep it simple:
+`level` alone is a complete configuration; every other field has a derived default.
 
-- `level` alone is a complete configuration; every other field has a derived default.
-- The `level → {directive defaults, resolver, fetch}` mapping lives in one place (defaults), and is auditable.
-- Per-check overrides compose on top of the level; they never need to be set for the common case.
-- `integrity` is available at the project level (applies to all networks) and the network level (overrides). Per-network is the finest granularity.
+### 9.2 Precedence chain
 
-### 9.1 Level → behavior mapping
+The effective check-set for a request is a deterministic merge of five layers, lowest to highest precedence:
+
+1. **Built-in per-chain profile** (§9.4, Appendix A) — the floor: which checks are *applicable* for the chain and their chain-specific params.
+2. **Level preset** — the named subset.
+3. **Project `integrity`** (network defaults).
+4. **Network `integrity`** (per-network override).
+5. **Per-request override** (§9.3) — only when `allowHeaderOverrides` is on.
+
+Each layer may set `level` and/or individual check ids; a higher layer wins. This one chain replaces every ad-hoc placement/override path.
+
+### 9.3 Generic per-request header
+
+Per-request control is a **single, generic header** (and an equivalent query parameter) that speaks the same check-id grammar — there is no header-per-check to define, so the catalog can grow without touching the HTTP surface:
+
+```
+X-ERPC-Integrity: level=authoritative
+X-ERPC-Integrity: senderRecovery=off; logsBloom.mode=superset
+X-ERPC-Integrity: off
+```
+
+It is gated by one switch, `allowHeaderOverrides` (default **off**): when off the header is ignored; when on it merges as the highest-precedence layer (§9.2). The single switch is deliberate — operators decide whether clients may influence integrity at all, without managing a per-check allowlist. (A future refinement could split "allow tighten only" from "allow loosen"; the base design is one boolean.)
+
+### 9.4 Per-chain profiles (built-in, automatic)
+
+The per-chain nuances (Appendix A) ship as **built-in profiles applied automatically** as the precedence floor — operators do not hand-configure chain quirks (state-sync transactions, deposit-receipt fields, per-tx gas, …). A profile contributes both *applicability* (which checks can run) and *parameters* (e.g. the receipt `gasField` for a chain family). Config-time validation **rejects** enabling a check a chain cannot satisfy, so a silently-inert check never looks enforced (§6.7). An operator may still override a profile-supplied parameter via `checks.<id>`.
+
+### 9.5 Compatibility & migration
+
+`integrity` is the recommended front door, but it does not orphan what exists:
+
+- The current per-network/project directive defaults (`Validate*`/`Enforce*`) and the deprecated chain-integrity block keep working as the **low-level layer** the `level` compiles into.
+- The existing per-check `X-ERPC-Validate-*` headers keep working through a deprecation window; the generic header (§9.3) supersedes them.
+- When a `level` and a conflicting explicit low-level directive are both set, the explicit value wins (it sits higher in its layer) and the engine emits a warning, so drift is visible.
+
+### 9.6 Introspection
+
+Because resolution is layered, the effective decision is observable:
+
+- a debug header `X-ERPC-Integrity-Explain` returns the effective check-set for the request and which layer enabled each check;
+- a trace attribute and the metric labels (§13) carry the same, so "what integrity actually ran" is answerable per request and in aggregate.
+
+### 9.7 Level → behavior mapping
 
 | Level | Intrinsic checks | Corroboration (warm data) | Force-fetch on miss |
 |---|---|---|---|
@@ -287,6 +330,8 @@ Rules that keep it simple:
 | `intrinsic` | yes | — | — |
 | `corroborated` | yes | yes | no |
 | `authoritative` | yes | yes | yes (budgeted) |
+
+Named, reusable profiles (`integrity.profiles.<name>`, `extends` a level, referenced per network) are a possible future addition if check-lists begin repeating across many networks — deferred until that repetition appears.
 
 ## 10. Architecture & integration
 
@@ -324,7 +369,7 @@ No new validation logic, no new agreement logic, no new trusted-source logic.
 1. Default level for new projects (proposed: `corroborated` — free and safe).
 2. Whether to ship the dedicated metadata store in the first iteration or rely solely on the cache (§10).
 3. Hard-fail vs verify-after-serve as the `authoritative` default (correctness vs latency).
-4. Per-chain default check profiles (which strict checks are safe to enable by default per architecture/chain).
+4. Which checks each built-in per-chain profile (§9.4) enables by default — the per-chain default-on set, now that the mechanism (automatic profiles) is settled.
 
 ---
 
