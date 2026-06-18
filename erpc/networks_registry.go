@@ -353,5 +353,8 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 		}
 		prj.ExposeNetworkConfig(nwCfg)
 	}
+	// Fold the project-wide integrity block into this network's (network wins).
+	// Runs once per network at bootstrap, so the merge is not repeated.
+	nwCfg.Integrity = common.MergeIntegrityConfig(prj.Config.Integrity, nwCfg.Integrity)
 	return nwCfg, nil
 }

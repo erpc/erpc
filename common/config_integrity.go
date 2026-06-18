@@ -65,6 +65,47 @@ type IntegrityInvalidBehaviorConfig struct {
 	Unfinalized string `yaml:"unfinalized,omitempty" json:"unfinalized,omitempty"`
 }
 
+// MergeIntegrityConfig overlays over (e.g. a network block) onto base (e.g. the
+// project block): set fields in over win; maps union with over winning per key.
+// Either argument may be nil. The result is always a fresh deep copy, so callers
+// may keep it without aliasing the inputs.
+func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
+	if base == nil {
+		return over.Copy()
+	}
+	if over == nil {
+		return base.Copy()
+	}
+	out := base.Copy()
+
+	if over.Level != "" {
+		out.Level = over.Level
+	}
+	if over.Budget != nil {
+		out.Budget = over.Budget.Copy()
+	}
+	if over.InvalidBehavior != nil {
+		out.InvalidBehavior = over.InvalidBehavior.Copy()
+	}
+	for id, c := range over.Checks {
+		if out.Checks == nil {
+			out.Checks = make(map[string]*IntegrityCheckConfig, len(over.Checks))
+		}
+		out.Checks[id] = c.Copy()
+	}
+
+	if over.HeaderMode != "" {
+		out.HeaderMode = over.HeaderMode
+	}
+	for name, p := range over.Profiles {
+		if out.Profiles == nil {
+			out.Profiles = make(map[string]*IntegritySettings, len(over.Profiles))
+		}
+		out.Profiles[name] = p.Copy()
+	}
+	return out
+}
+
 // --- deep copies (match the per-sub-config Copy() convention in config.go) ---
 
 func (c *IntegritySettings) Copy() *IntegritySettings {

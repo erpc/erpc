@@ -59,6 +59,39 @@ profiles:
 	assert.Equal(t, "reject", cfg.Profiles["strict"].InvalidBehavior.Unfinalized)
 }
 
+func TestMergeIntegrityConfig(t *testing.T) {
+	project := &IntegrityConfig{
+		IntegritySettings: IntegritySettings{Level: "corroborated", Budget: &IntegrityBudgetConfig{MaxPerSecond: 10}},
+		HeaderMode:        "off",
+		Profiles:          map[string]*IntegritySettings{"a": {Level: "intrinsic"}},
+	}
+	network := &IntegrityConfig{
+		IntegritySettings: IntegritySettings{Level: "authoritative"}, // overrides level only
+		Profiles:          map[string]*IntegritySettings{"b": {Level: "off"}},
+	}
+
+	t.Run("nil base returns over", func(t *testing.T) {
+		assert.Equal(t, "authoritative", MergeIntegrityConfig(nil, network).Level)
+	})
+	t.Run("nil over returns base", func(t *testing.T) {
+		assert.Equal(t, "corroborated", MergeIntegrityConfig(project, nil).Level)
+	})
+	t.Run("network overrides project; unspecified fields inherited", func(t *testing.T) {
+		m := MergeIntegrityConfig(project, network)
+		assert.Equal(t, "authoritative", m.Level) // network wins
+		require.NotNil(t, m.Budget)
+		assert.Equal(t, 10, m.Budget.MaxPerSecond) // inherited from project
+		assert.Equal(t, "off", m.HeaderMode)       // inherited (network unset)
+		assert.Contains(t, m.Profiles, "a")        // project profile kept
+		assert.Contains(t, m.Profiles, "b")        // network profile added
+	})
+	t.Run("result is a deep copy of inputs", func(t *testing.T) {
+		m := MergeIntegrityConfig(project, network)
+		m.Budget.MaxPerSecond = 999
+		assert.Equal(t, 10, project.Budget.MaxPerSecond)
+	})
+}
+
 func TestIntegrityConfig_CopyIsDeep(t *testing.T) {
 	tru := true
 	orig := &IntegrityConfig{
