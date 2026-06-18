@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 )
 
@@ -128,6 +129,23 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	}
 
 	var validationErr error
+
+	// Unified integrity checks. The engine selects the checks applicable to the
+	// method and enabled by config, runs them over a single decode, and converts
+	// a violation into a content-validation error so retry/consensus route around
+	// the upstream (consensus already excludes errors from preferLargerResponses,
+	// so a corrupt-but-larger response can no longer dispute an honest majority).
+	if integrity.HasChecks(methodLower) {
+		if validationErr = integrity.Validate(ctx, integrity.Input{
+			Method:   methodLower,
+			Upstream: u,
+			Response: rs,
+			Checks:   integrityCheckSet(rq.Directives()),
+		}); validationErr != nil {
+			rq.ClearLastValidResponse()
+			return rs, validationErr
+		}
+	}
 
 	// Check if this method should have empty results marked as errors
 	shouldMarkEmpty := isMethodInMarkEmptyList(n, methodLower)
