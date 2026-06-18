@@ -230,7 +230,7 @@ A **hard-fail** check (returns a content-validation error) requires a source who
 
 ## 9. Configuration model
 
-Integrity is configured through a single `integrity` block with one front door (`level`), one shared vocabulary (the §6 check ids), one precedence chain, and three orthogonal axes. The block lives at the project level (applies to all networks) and the network level (overrides). The existing per-network/project directive defaults remain as the low-level layer it compiles into (§9.5).
+Integrity is configured through a single `integrity` block with one front door (`level`), one shared vocabulary (the §6 check ids), one precedence chain, three orthogonal axes (`checks` / `budget` / `onFailure`), and one maturity boundary (`enforceFrom`). The block lives at the project level (applies to all networks) and the network level (overrides). The existing per-network/project directive defaults remain as the low-level layer it compiles into (§9.5).
 
 ### 9.1 The block — one preset, three axes
 
@@ -247,17 +247,20 @@ networks:
     integrity:
       level: authoritative
 
+      # Maturity boundary. At/above it, checks hard-fail and the resolver may
+      # force-fetch ground truth; below it (reorg-prone) checks are advisory
+      # (soft-flag) and nothing is fetched. A finality tag or a confirmation depth.
+      enforceFrom: finalized                   # finalized | safe | latest | <N confirmations>
+
       checks:                                  # axis 1 — WHAT to verify (ids are the §6 check names)
         senderRecovery: off                    #   off | on | { enabled, <params>, failureMode }
         logsBloom: { mode: superset }          #   equality | superset
         receiptsRoot: { gasField: cumulative } #   cumulative | perTx
         parentHashLinkage: { confirmationDepth: 12 }
 
-      forceFetch:                              # axis 2 — HOW HARD / at what cost to gather missing data
-        enabled: true
-        onlyFinalized: true
-        maxPerSecond: 50
-        maxConcurrent: 8
+      budget:                                  # axis 2 — COST cap on the canonical fetches it issues
+        maxPerSecond: 50                       #   force-fetch is enabled by level=authoritative, not a
+        maxConcurrent: 8                       #   flag; maxPerSecond: 0 disables it (checks stay on warm data)
 
       onFailure:                               # axis 3 — WHAT TO DO on a violation
         default: reject                        #   reject | soft-flag (else the check's class default, §6.8)
@@ -268,12 +271,11 @@ networks:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `level` | enum | `corroborated` | `off`/`intrinsic`/`corroborated`/`authoritative`. The only field most users set; presets all three axes. |
+| `level` | enum | `corroborated` | `off`/`intrinsic`/`corroborated`/`authoritative`. The only field most users set; presets everything below. |
+| `enforceFrom` | finality \| int | `finalized` | Block maturity at/above which checks **hard-fail** and the resolver may **force-fetch**; below it, checks soft-flag and nothing is fetched (never reject on reorg-prone data). A tag (`finalized`/`safe`/`latest`) or a confirmation depth. Applies at every level. |
 | `checks.<id>` | bool \| object | per-level | Override one check by its §6 id: `off`/`on`, or an object with its parameters and an optional `failureMode`. New catalog checks get an id here automatically. |
-| `forceFetch.enabled` | bool | on at `authoritative` | Master gate for on-demand canonical fetches. |
-| `forceFetch.onlyFinalized` | bool | `true` | Force-fetch only for finalized (immutable) blocks. |
-| `forceFetch.maxPerSecond` | int | conservative | Token-bucket cap on canonical fetches — the primary cost lever. |
-| `forceFetch.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
+| `budget.maxPerSecond` | int | conservative | Token-bucket cap on canonical fetches — the primary cost lever. `0` disables force-fetch while keeping authoritative checks on warm data (i.e. `corroborated` behavior). |
+| `budget.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
 | `onFailure.default` | enum | per-check class | `reject` or `soft-flag` for all checks unless overridden per id; the per-check class (§6.8) applies when unset. |
 | `allowHeaderOverrides` | bool | `false` | Whether per-request headers may adjust integrity for this network (§9.3). |
 
@@ -346,17 +348,17 @@ No new validation logic, no new agreement logic, no new trusted-source logic.
 
 ## 11. Correctness & edge cases
 
-- **Reorgs**: key block facts by hash, not number; near-tip mismatches soft-flag rather than hard-fail; `onlyFinalized` confines hard-fail force-fetches to immutable data.
+- **Reorgs**: key block facts by hash, not number; near-tip mismatches soft-flag rather than hard-fail; `enforceFrom` confines hard-fail and force-fetch to mature (e.g. finalized) blocks.
 - **Filtered `eth_getLogs`**: a filtered result is a *lower bound* on a block's log count — usable for "at least" checks, never for exact counts or completeness unless unfiltered.
 - **Chain-specific semantics**: index/log conventions vary across chains and L2s; strict checks must be per-chain overridable so a legitimate chain quirk is not flagged.
 - **Recursion**: internal canonical fetches must be marked so they do not re-enter the integrity manager (§7).
-- **Latency**: a force-fetch adds a round trip to the user path; default `onlyFinalized`, coalescing, and cache amortization keep this rare. A future "verify-after-serve" mode (serve, then validate out-of-band and cordon a lying upstream) can remove it entirely for latency-sensitive projects — out of scope for the initial implementation.
+- **Latency**: a force-fetch adds a round trip to the user path; the default `enforceFrom: finalized`, coalescing, and cache amortization keep this rare. A future "verify-after-serve" mode (serve, then validate out-of-band and cordon a lying upstream) can remove it entirely for latency-sensitive projects — out of scope for the initial implementation.
 - **Provenance/circularity**: see §8.
 
 ## 12. Cost model
 
 - Levels `off`/`intrinsic`/`corroborated` add **no upstream calls** — only CPU for parsing/validation and memory for the metadata.
-- `authoritative` adds at most one canonical fetch per *cold* block, shared across all narrow requests for that block and cached thereafter. Cost is **per-block, not per-request**, bounded by `forceFetch.maxPerSecond`. When the budget is exceeded the request degrades to `corroborated` behavior (skip the missing-data check, emit a throttled metric) and never blocks the user path.
+- `authoritative` adds at most one canonical fetch per *cold* block, shared across all narrow requests for that block and cached thereafter. Cost is **per-block, not per-request**, bounded by `budget.maxPerSecond`. When the budget is exceeded the request degrades to `corroborated` behavior (skip the missing-data check, emit a throttled metric) and never blocks the user path.
 
 ## 13. Observability
 
