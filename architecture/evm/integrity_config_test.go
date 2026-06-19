@@ -21,7 +21,7 @@ func TestCompileIntegritySettings(t *testing.T) {
 	t.Run("level authoritative enables every tier", func(t *testing.T) {
 		cs, _ := compileIntegritySettings(&common.IntegritySettings{Level: "authoritative"})
 		assert.True(t, cs.For("indexMagnitude").Enabled)
-		assert.True(t, cs.For("expectedBlock").Enabled)
+		assert.True(t, cs.For("parentHashLinkage").Enabled)
 		assert.True(t, cs.For("receiptVsBlock").Enabled)
 	})
 

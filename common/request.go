@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,20 +44,6 @@ const (
 	headerDirectiveEnforceHighestBlock        = "X-ERPC-Enforce-Highest-Block"
 	headerDirectiveEnforceGetLogsRange        = "X-ERPC-Enforce-GetLogs-Range"
 	headerDirectiveEnforceNonNullTaggedBlocks = "X-ERPC-Enforce-Non-Null-Tagged-Blocks"
-	headerDirectiveEnforceLogIndexStrict      = "X-ERPC-Enforce-Log-Index-Strict-Increments"
-	headerDirectiveValidateLogsBloomEmpty     = "X-ERPC-Validate-Logs-Bloom-Emptiness"
-	headerDirectiveValidateLogsBloomMatch     = "X-ERPC-Validate-Logs-Bloom-Match"
-	headerDirectiveValidateTxHashUniq         = "X-ERPC-Validate-Tx-Hash-Uniqueness"
-	headerDirectiveValidateTxIndex            = "X-ERPC-Validate-Transaction-Index"
-	headerDirectiveReceiptsCountExact         = "X-ERPC-Receipts-Count-Exact"
-	headerDirectiveReceiptsCountAtLeast       = "X-ERPC-Receipts-Count-At-Least"
-	headerDirectiveValidationBlockHash        = "X-ERPC-Validation-Expected-Block-Hash"
-	headerDirectiveValidationBlockNumber      = "X-ERPC-Validation-Expected-Block-Number"
-	headerDirectiveValidateTransactionsRoot   = "X-ERPC-Validate-Transactions-Root"
-	headerDirectiveValidateHeaderFieldLengths = "X-ERPC-Validate-Header-Field-Lengths"
-	headerDirectiveValidateTxFields           = "X-ERPC-Validate-Transaction-Fields"
-	headerDirectiveValidateTxBlockInfo        = "X-ERPC-Validate-Transaction-Block-Info"
-	headerDirectiveValidateLogFields          = "X-ERPC-Validate-Log-Fields"
 	headerDirectiveIntegrity                  = "X-ERPC-Integrity"
 )
 
@@ -72,20 +57,6 @@ const (
 	queryDirectiveEnforceHighestBlock        = "enforce-highest-block"
 	queryDirectiveEnforceGetLogsRange        = "enforce-getlogs-range"
 	queryDirectiveEnforceNonNullTaggedBlocks = "enforce-non-null-tagged-blocks"
-	queryDirectiveEnforceLogIndexStrict      = "enforce-log-index-strict-increments"
-	queryDirectiveValidateLogsBloomEmpty     = "validate-logs-bloom-emptiness"
-	queryDirectiveValidateLogsBloomMatch     = "validate-logs-bloom-match"
-	queryDirectiveValidateTxHashUniq         = "validate-tx-hash-uniqueness"
-	queryDirectiveValidateTxIndex            = "validate-transaction-index"
-	queryDirectiveReceiptsCountExact         = "receipts-count-exact"
-	queryDirectiveReceiptsCountAtLeast       = "receipts-count-at-least"
-	queryDirectiveValidationBlockHash        = "validation-expected-block-hash"
-	queryDirectiveValidationBlockNumber      = "validation-expected-block-number"
-	queryDirectiveValidateTransactionsRoot   = "validate-transactions-root"
-	queryDirectiveValidateHeaderFieldLengths = "validate-header-field-lengths"
-	queryDirectiveValidateTxFields           = "validate-transaction-fields"
-	queryDirectiveValidateTxBlockInfo        = "validate-transaction-block-info"
-	queryDirectiveValidateLogFields          = "validate-log-fields"
 	queryDirectiveIntegrity                  = "integrity"
 )
 
@@ -99,20 +70,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveEnforceHighestBlock, query: queryDirectiveEnforceHighestBlock},
 	{header: headerDirectiveEnforceGetLogsRange, query: queryDirectiveEnforceGetLogsRange},
 	{header: headerDirectiveEnforceNonNullTaggedBlocks, query: queryDirectiveEnforceNonNullTaggedBlocks},
-	{header: headerDirectiveEnforceLogIndexStrict, query: queryDirectiveEnforceLogIndexStrict},
-	{header: headerDirectiveValidateLogsBloomEmpty, query: queryDirectiveValidateLogsBloomEmpty},
-	{header: headerDirectiveValidateLogsBloomMatch, query: queryDirectiveValidateLogsBloomMatch},
-	{header: headerDirectiveValidateTxHashUniq, query: queryDirectiveValidateTxHashUniq},
-	{header: headerDirectiveValidateTxIndex, query: queryDirectiveValidateTxIndex},
-	{header: headerDirectiveReceiptsCountExact, query: queryDirectiveReceiptsCountExact},
-	{header: headerDirectiveReceiptsCountAtLeast, query: queryDirectiveReceiptsCountAtLeast},
-	{header: headerDirectiveValidationBlockHash, query: queryDirectiveValidationBlockHash},
-	{header: headerDirectiveValidationBlockNumber, query: queryDirectiveValidationBlockNumber},
-	{header: headerDirectiveValidateTransactionsRoot, query: queryDirectiveValidateTransactionsRoot},
-	{header: headerDirectiveValidateHeaderFieldLengths, query: queryDirectiveValidateHeaderFieldLengths},
-	{header: headerDirectiveValidateTxFields, query: queryDirectiveValidateTxFields},
-	{header: headerDirectiveValidateTxBlockInfo, query: queryDirectiveValidateTxBlockInfo},
-	{header: headerDirectiveValidateLogFields, query: queryDirectiveValidateLogFields},
+	{header: headerDirectiveIntegrity, query: queryDirectiveIntegrity},
 }
 
 type RequestDirectives struct {
@@ -162,170 +120,36 @@ type RequestDirectives struct {
 	// latency over multi-upstream agreement.
 	SkipConsensus bool `json:"skipConsensus"`
 
-	// Validation: Block Integrity
+	// Validation: Block Integrity (consumed by the EVM block/getLogs hooks; not
+	// part of the data-integrity module).
 	EnforceHighestBlock        bool `json:"enforceHighestBlock,omitempty"`
 	EnforceGetLogsBlockRange   bool `json:"enforceGetLogsBlockRange,omitempty"`
 	EnforceNonNullTaggedBlocks bool `json:"enforceNonNullTaggedBlocks,omitempty"`
 
-	// ValidateTransactionsRoot: when true (default), checks that the transactionsRoot is consistent
-	// with the transaction count. Disable for non-standard chains that use unusual trie roots.
-	ValidateTransactionsRoot bool `json:"validateTransactionsRoot,omitempty"`
-
-	// Validation: Header Field Lengths (only via config/library, not HTTP headers)
-	ValidateHeaderFieldLengths bool `json:"validateHeaderFieldLengths,omitempty"`
-
-	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
-	ValidateTransactionFields    bool `json:"validateTransactionFields,omitempty"`
-	ValidateTransactionBlockInfo bool `json:"validateTransactionBlockInfo,omitempty"`
-
-	// Validation: Receipts & Logs
-	EnforceLogIndexStrictIncrements bool `json:"enforceLogIndexStrictIncrements,omitempty"`
-	ValidateTxHashUniqueness        bool `json:"validateTxHashUniqueness,omitempty"`
-	ValidateTransactionIndex        bool `json:"validateTransactionIndex,omitempty"`
-	ValidateLogFields               bool `json:"validateLogFields,omitempty"`
-
-	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
-	ValidateLogsBloomEmptiness bool `json:"validateLogsBloomEmptiness,omitempty"`
-	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
-	// For methods without logs in response (e.g., eth_getBlockByNumber), use GroundTruthLogs
-	ValidateLogsBloomMatch bool `json:"validateLogsBloomMatch,omitempty"`
-
-	// Validation: Authoritative corroboration
-	// When true, a single eth_getTransactionReceipt is force-fetched against the
-	// block's canonical receipts (via the network) and compared. Reorg-sensitive:
-	// a mismatch on a finalized block is rejected, on an unfinalized block recorded.
-	EnforceReceiptCorroboration bool `json:"enforceReceiptCorroboration,omitempty"`
-
-	// IntegritySelector is the per-request integrity selection from the
+	// IntegritySelector is the per-request data-integrity selection from the
 	// X-ERPC-Integrity header / integrity query param. It is a bare word — a
 	// level (off/intrinsic/corroborated/authoritative) or a configured profile
 	// name. Honored only when the effective integrity headerMode permits it.
 	IntegritySelector string `json:"integritySelector,omitempty"`
-
-	// Validation: Receipt-to-Transaction Cross-Validation
-	// When true, validates that receipt[i].transactionHash == tx[i].hash (requires GroundTruthTransactions)
-	ValidateReceiptTransactionMatch bool `json:"validateReceiptTransactionMatch,omitempty"`
-	// When true, validates contract creation consistency (no tx.to → receipt must have contractAddress)
-	ValidateContractCreation bool `json:"validateContractCreation,omitempty"`
-
-	// Validation: numeric checks (nil means unset/don't check)
-	ReceiptsCountExact   *int64 `json:"receiptsCountExact,omitempty"`
-	ReceiptsCountAtLeast *int64 `json:"receiptsCountAtLeast,omitempty"`
-
-	// Validation: Expected Ground Truths (nil means unset/don't check)
-	ValidationExpectedBlockHash   string `json:"validationExpectedBlockHash,omitempty"`
-	ValidationExpectedBlockNumber *int64 `json:"validationExpectedBlockNumber,omitempty"`
-
-	// Ground Truth Data (library-mode only, NOT settable via HTTP headers/query params)
-	// These fields allow library users to pass full objects for cross-entity validation.
-	//
-	// GroundTruthTransactions: expected transactions for receipt validation (uses manifesto evm.Transaction)
-	// When set with ValidateReceiptTransactionMatch, receipts are validated against these transactions
-	GroundTruthTransactions []*GroundTruthTransaction `json:"-"`
-	//
-	// GroundTruthLogs: expected logs for bloom validation when logs aren't in the response
-	// Used with ValidateLogsBloomMatch for methods like eth_getBlockByNumber that don't return logs
-	GroundTruthLogs []*GroundTruthLog `json:"-"`
-}
-
-// GroundTruthTransaction represents expected transaction data for cross-validation.
-// Uses manifesto-compatible structure for library-mode validation.
-type GroundTruthTransaction struct {
-	// Hash is the transaction hash (required for matching)
-	Hash []byte
-	// To is the recipient address (nil/empty for contract creation)
-	To []byte
-	// TransactionIndex is the expected position in the block
-	TransactionIndex *uint32
-}
-
-// GroundTruthLog represents expected log data for bloom validation.
-// Uses manifesto-compatible structure for library-mode validation.
-type GroundTruthLog struct {
-	// Address is the contract address that emitted the log
-	Address []byte
-	// Topics are the indexed event parameters
-	Topics [][]byte
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
 	if d == nil {
 		return &RequestDirectives{}
 	}
-	cloned := &RequestDirectives{
-		RetryEmpty:                      d.RetryEmpty,
-		RetryPending:                    d.RetryPending,
-		SkipCacheRead:                   d.SkipCacheRead,
-		UseUpstream:                     d.UseUpstream,
-		ByPassMethodExclusion:           d.ByPassMethodExclusion,
-		SkipInterpolation:               d.SkipInterpolation,
-		SkipConsensus:                   d.SkipConsensus,
-		EnforceHighestBlock:             d.EnforceHighestBlock,
-		EnforceGetLogsBlockRange:        d.EnforceGetLogsBlockRange,
-		EnforceNonNullTaggedBlocks:      d.EnforceNonNullTaggedBlocks,
-		ValidateTransactionsRoot:        d.ValidateTransactionsRoot,
-		ValidateHeaderFieldLengths:      d.ValidateHeaderFieldLengths,
-		ValidateTransactionFields:       d.ValidateTransactionFields,
-		ValidateTransactionBlockInfo:    d.ValidateTransactionBlockInfo,
-		EnforceLogIndexStrictIncrements: d.EnforceLogIndexStrictIncrements,
-		ValidateTxHashUniqueness:        d.ValidateTxHashUniqueness,
-		ValidateTransactionIndex:        d.ValidateTransactionIndex,
-		ValidateLogFields:               d.ValidateLogFields,
-		ValidateLogsBloomEmptiness:      d.ValidateLogsBloomEmptiness,
-		ValidateLogsBloomMatch:          d.ValidateLogsBloomMatch,
-		ValidateReceiptTransactionMatch: d.ValidateReceiptTransactionMatch,
-		ValidateContractCreation:        d.ValidateContractCreation,
-		ValidationExpectedBlockHash:     d.ValidationExpectedBlockHash,
+	return &RequestDirectives{
+		RetryEmpty:                 d.RetryEmpty,
+		RetryPending:               d.RetryPending,
+		SkipCacheRead:              d.SkipCacheRead,
+		UseUpstream:                d.UseUpstream,
+		ByPassMethodExclusion:      d.ByPassMethodExclusion,
+		SkipInterpolation:          d.SkipInterpolation,
+		SkipConsensus:              d.SkipConsensus,
+		EnforceHighestBlock:        d.EnforceHighestBlock,
+		EnforceGetLogsBlockRange:   d.EnforceGetLogsBlockRange,
+		EnforceNonNullTaggedBlocks: d.EnforceNonNullTaggedBlocks,
+		IntegritySelector:          d.IntegritySelector,
 	}
-	// Deep copy pointer fields
-	if d.ReceiptsCountExact != nil {
-		v := *d.ReceiptsCountExact
-		cloned.ReceiptsCountExact = &v
-	}
-	if d.ReceiptsCountAtLeast != nil {
-		v := *d.ReceiptsCountAtLeast
-		cloned.ReceiptsCountAtLeast = &v
-	}
-	if d.ValidationExpectedBlockNumber != nil {
-		v := *d.ValidationExpectedBlockNumber
-		cloned.ValidationExpectedBlockNumber = &v
-	}
-	// Deep copy GroundTruthTransactions slice (shallow copy of byte slices is fine - they're immutable)
-	if len(d.GroundTruthTransactions) > 0 {
-		cloned.GroundTruthTransactions = make([]*GroundTruthTransaction, len(d.GroundTruthTransactions))
-		for i, tx := range d.GroundTruthTransactions {
-			if tx == nil {
-				continue
-			}
-			clonedTx := &GroundTruthTransaction{
-				Hash: tx.Hash,
-				To:   tx.To,
-			}
-			if tx.TransactionIndex != nil {
-				v := *tx.TransactionIndex
-				clonedTx.TransactionIndex = &v
-			}
-			cloned.GroundTruthTransactions[i] = clonedTx
-		}
-	}
-	// Deep copy GroundTruthLogs slice
-	if len(d.GroundTruthLogs) > 0 {
-		cloned.GroundTruthLogs = make([]*GroundTruthLog, len(d.GroundTruthLogs))
-		for i, log := range d.GroundTruthLogs {
-			if log == nil {
-				continue
-			}
-			clonedLog := &GroundTruthLog{
-				Address: log.Address,
-			}
-			if len(log.Topics) > 0 {
-				clonedLog.Topics = make([][]byte, len(log.Topics))
-				copy(clonedLog.Topics, log.Topics)
-			}
-			cloned.GroundTruthLogs[i] = clonedLog
-		}
-	}
-	return cloned
 }
 
 type NormalizedRequest struct {
@@ -620,73 +444,9 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	if directiveDefaults.EnforceNonNullTaggedBlocks != nil {
 		r.directives.EnforceNonNullTaggedBlocks = *directiveDefaults.EnforceNonNullTaggedBlocks
 	}
-
-	// Validation: TransactionsRoot
-	if directiveDefaults.ValidateTransactionsRoot != nil {
-		r.directives.ValidateTransactionsRoot = *directiveDefaults.ValidateTransactionsRoot
-	}
-
-	// Validation: Header Field Lengths
-	if directiveDefaults.ValidateHeaderFieldLengths != nil {
-		r.directives.ValidateHeaderFieldLengths = *directiveDefaults.ValidateHeaderFieldLengths
-	}
-
-	// Validation: Transactions
-	if directiveDefaults.ValidateTransactionFields != nil {
-		r.directives.ValidateTransactionFields = *directiveDefaults.ValidateTransactionFields
-	}
-	if directiveDefaults.ValidateTransactionBlockInfo != nil {
-		r.directives.ValidateTransactionBlockInfo = *directiveDefaults.ValidateTransactionBlockInfo
-	}
-
-	// Validation: Receipts & Logs
-	if directiveDefaults.EnforceLogIndexStrictIncrements != nil {
-		r.directives.EnforceLogIndexStrictIncrements = *directiveDefaults.EnforceLogIndexStrictIncrements
-	}
-	if directiveDefaults.ValidateTxHashUniqueness != nil {
-		r.directives.ValidateTxHashUniqueness = *directiveDefaults.ValidateTxHashUniqueness
-	}
-	if directiveDefaults.ValidateTransactionIndex != nil {
-		r.directives.ValidateTransactionIndex = *directiveDefaults.ValidateTransactionIndex
-	}
-	if directiveDefaults.ValidateLogFields != nil {
-		r.directives.ValidateLogFields = *directiveDefaults.ValidateLogFields
-	}
-
-	// Validation: Bloom Filter
-	if directiveDefaults.ValidateLogsBloomEmptiness != nil {
-		r.directives.ValidateLogsBloomEmptiness = *directiveDefaults.ValidateLogsBloomEmptiness
-	}
-	if directiveDefaults.ValidateLogsBloomMatch != nil {
-		r.directives.ValidateLogsBloomMatch = *directiveDefaults.ValidateLogsBloomMatch
-	}
-
-	// Validation: Receipt-to-Transaction Cross-Validation
-	if directiveDefaults.ValidateReceiptTransactionMatch != nil {
-		r.directives.ValidateReceiptTransactionMatch = *directiveDefaults.ValidateReceiptTransactionMatch
-	}
-	if directiveDefaults.ValidateContractCreation != nil {
-		r.directives.ValidateContractCreation = *directiveDefaults.ValidateContractCreation
-	}
-
-	// Validation: numeric checks (copy pointer values)
-	if directiveDefaults.ReceiptsCountExact != nil {
-		v := *directiveDefaults.ReceiptsCountExact
-		r.directives.ReceiptsCountExact = &v
-	}
-	if directiveDefaults.ReceiptsCountAtLeast != nil {
-		v := *directiveDefaults.ReceiptsCountAtLeast
-		r.directives.ReceiptsCountAtLeast = &v
-	}
-
-	// Validation: Expected Ground Truths
-	if directiveDefaults.ValidationExpectedBlockHash != nil {
-		r.directives.ValidationExpectedBlockHash = *directiveDefaults.ValidationExpectedBlockHash
-	}
-	if directiveDefaults.ValidationExpectedBlockNumber != nil {
-		v := *directiveDefaults.ValidationExpectedBlockNumber
-		r.directives.ValidationExpectedBlockNumber = &v
-	}
+	// Data-integrity validation defaults are not applied to request directives:
+	// they are translated into the network's integrity config at config-load
+	// time (see common/defaults.go).
 }
 
 func hasDirectiveInHeaders(headers http.Header) bool {
@@ -771,55 +531,6 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get(headerDirectiveEnforceNonNullTaggedBlocks); hv != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get(headerDirectiveEnforceLogIndexStrict); hv != "" {
-		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(hv)) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateLogsBloomEmpty); hv != "" {
-		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(hv)) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateLogsBloomMatch); hv != "" {
-		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(hv)) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateTxHashUniq); hv != "" {
-		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(hv)) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateTxIndex); hv != "" {
-		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(hv)) == "true"
-	}
-
-	if hv := headers.Get(headerDirectiveReceiptsCountExact); hv != "" {
-		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
-			r.directives.ReceiptsCountExact = &v
-		}
-	}
-	if hv := headers.Get(headerDirectiveReceiptsCountAtLeast); hv != "" {
-		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
-			r.directives.ReceiptsCountAtLeast = &v
-		}
-	}
-	if hv := headers.Get(headerDirectiveValidationBlockHash); hv != "" {
-		r.directives.ValidationExpectedBlockHash = hv
-	}
-	if hv := headers.Get(headerDirectiveValidationBlockNumber); hv != "" {
-		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
-			r.directives.ValidationExpectedBlockNumber = &v
-		}
-	}
-	if hv := headers.Get(headerDirectiveValidateTransactionsRoot); hv != "" {
-		r.directives.ValidateTransactionsRoot = strings.ToLower(strings.TrimSpace(hv)) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateHeaderFieldLengths); hv != "" {
-		r.directives.ValidateHeaderFieldLengths = strings.ToLower(hv) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateTxFields); hv != "" {
-		r.directives.ValidateTransactionFields = strings.ToLower(hv) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateTxBlockInfo); hv != "" {
-		r.directives.ValidateTransactionBlockInfo = strings.ToLower(hv) == "true"
-	}
-	if hv := headers.Get(headerDirectiveValidateLogFields); hv != "" {
-		r.directives.ValidateLogFields = strings.ToLower(hv) == "true"
-	}
 	if hv := headers.Get(headerDirectiveIntegrity); hv != "" {
 		r.directives.IntegritySelector = strings.TrimSpace(hv)
 	}
@@ -861,54 +572,6 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if v := queryArgs.Get(queryDirectiveEnforceNonNullTaggedBlocks); v != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveEnforceLogIndexStrict); v != "" {
-		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateLogsBloomEmpty); v != "" {
-		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateLogsBloomMatch); v != "" {
-		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateTxHashUniq); v != "" {
-		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateTxIndex); v != "" {
-		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveReceiptsCountExact); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			r.directives.ReceiptsCountExact = &n
-		}
-	}
-	if v := queryArgs.Get(queryDirectiveReceiptsCountAtLeast); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			r.directives.ReceiptsCountAtLeast = &n
-		}
-	}
-	if v := queryArgs.Get(queryDirectiveValidationBlockHash); v != "" {
-		r.directives.ValidationExpectedBlockHash = v
-	}
-	if v := queryArgs.Get(queryDirectiveValidationBlockNumber); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			r.directives.ValidationExpectedBlockNumber = &n
-		}
-	}
-	if v := queryArgs.Get(queryDirectiveValidateTransactionsRoot); v != "" {
-		r.directives.ValidateTransactionsRoot = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateHeaderFieldLengths); v != "" {
-		r.directives.ValidateHeaderFieldLengths = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateTxFields); v != "" {
-		r.directives.ValidateTransactionFields = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateTxBlockInfo); v != "" {
-		r.directives.ValidateTransactionBlockInfo = strings.ToLower(strings.TrimSpace(v)) == "true"
-	}
-	if v := queryArgs.Get(queryDirectiveValidateLogFields); v != "" {
-		r.directives.ValidateLogFields = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
 }
 

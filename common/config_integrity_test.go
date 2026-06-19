@@ -122,3 +122,37 @@ func TestIntegrityConfig_CopyIsDeep(t *testing.T) {
 	assert.Equal(t, "reject", cp.InvalidBehavior.Finalized)
 	assert.Equal(t, "intrinsic", cp.Profiles["p"].Level)
 }
+
+func TestMigrateLegacyIntegrityChecks(t *testing.T) {
+	tru := true
+	t.Run("deprecated directive-default flags become integrity checks", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture:      "evm",
+			DirectiveDefaults: &DirectiveDefaultsConfig{ValidateLogsBloomMatch: &tru, EnforceLogIndexStrictIncrements: &tru},
+		}
+		migrateLegacyIntegrityChecks(n)
+		require.NotNil(t, n.Integrity)
+		require.Contains(t, n.Integrity.Checks, "bloomMatch")
+		require.NotNil(t, n.Integrity.Checks["bloomMatch"].Enabled)
+		assert.True(t, *n.Integrity.Checks["bloomMatch"].Enabled)
+		assert.Contains(t, n.Integrity.Checks, "logIndexContiguity")
+	})
+
+	t.Run("explicit integrity config wins over the legacy flag", func(t *testing.T) {
+		fls := false
+		n := &NetworkConfig{
+			DirectiveDefaults: &DirectiveDefaultsConfig{ValidateLogsBloomMatch: &tru},
+			Integrity: &IntegrityConfig{IntegritySettings: IntegritySettings{
+				Checks: map[string]*IntegrityCheckConfig{"bloomMatch": {Enabled: &fls}},
+			}},
+		}
+		migrateLegacyIntegrityChecks(n)
+		assert.False(t, *n.Integrity.Checks["bloomMatch"].Enabled, "user's explicit check must win")
+	})
+
+	t.Run("no legacy flags → no integrity config created", func(t *testing.T) {
+		n := &NetworkConfig{DirectiveDefaults: &DirectiveDefaultsConfig{}}
+		migrateLegacyIntegrityChecks(n)
+		assert.Nil(t, n.Integrity)
+	})
+}

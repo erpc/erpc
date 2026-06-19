@@ -82,10 +82,20 @@ func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
 	}
 
 	fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}}
+	tru := true
 	ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		Failsafe:     []*common.FailsafeConfig{fsCfg},
+		// Enable the intrinsic logIndex magnitude check (the corrupt-receipt
+		// tests rely on it). Integrity is opt-in, so it must be configured.
+		Integrity: &common.IntegrityConfig{
+			IntegritySettings: common.IntegritySettings{
+				Checks: map[string]*common.IntegrityCheckConfig{
+					"indexMagnitude": {Enabled: &tru},
+				},
+			},
+		},
 	}, rlr, upr, mt, nil)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
@@ -178,46 +188,6 @@ func mockMethod(url, method, body string) {
 	gock.New(url).Post("").Persist().
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), method) }).
 		Reply(200).JSON([]byte(body))
-}
-
-// TestIntegrity_Network_ReceiptCorroborationFailsOver exercises the authoritative
-// tier end-to-end: the first upstream returns a receipt with a *plausible* but
-// wrong logIndex (0x5) — it passes all intrinsic checks. With corroboration on,
-// the engine force-fetches the block's canonical receipts (logIndex 0x0) through
-// the real network, detects the mismatch on a finalized block, rejects it, and
-// fails over to the upstream whose receipt matches the canonical block.
-func TestIntegrity_Network_ReceiptCorroborationFailsOver(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// rpc1: plausible-but-wrong receipt; rpc2: correct receipt.
-	gock.New("http://rpc1.localhost").Post("").Times(1).
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
-		Reply(200).JSON([]byte(receiptOneLog("0x5")))
-	gock.New("http://rpc2.localhost").Post("").Times(1).
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getTransactionReceipt") }).
-		Reply(200).JSON([]byte(receiptOneLog("0x0")))
-	// canonical block receipts (the truth): logIndex 0x0, available on both.
-	mockMethod("http://rpc1.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
-	mockMethod("http://rpc2.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
-
-	ntw := buildIntegrityNetwork(t, ctx)
-
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
-	req.SetDirectives(&common.RequestDirectives{EnforceReceiptCorroboration: true})
-	resp, err := ntw.Forward(ctx, req)
-	require.NoError(t, err, "must fail over to the upstream whose receipt matches the canonical block")
-	require.NotNil(t, resp)
-
-	jrr, err := resp.JsonRpcResponse(ctx)
-	require.NoError(t, err)
-	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
-	require.NoError(t, err)
-	assert.Equal(t, "0x0", li, "served receipt must match the canonical block (logIndex 0x0), not the plausible-but-wrong 0x5")
 }
 
 // TestIntegrity_Network_ConfigLevelDrivesCorroboration proves the config model

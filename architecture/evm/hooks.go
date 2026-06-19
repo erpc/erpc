@@ -131,41 +131,42 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	var validationErr error
 
-	// Unified integrity checks. The engine selects the checks applicable to the
-	// method and enabled by config, runs them over a single decode, and converts
-	// a violation into a content-validation error so retry/consensus route around
-	// the upstream (consensus already excludes errors from preferLargerResponses,
-	// so a corrupt-but-larger response can no longer dispute an honest majority).
-	// Internal requests (e.g. the corroboration force-fetch) are skipped to avoid
-	// recursing back into the engine.
+	// Data-integrity checks. Opt-in: the network's integrity config selects the
+	// checks (empty config → nothing runs). The engine runs them over a single
+	// decode and converts a violation into a content-validation error so
+	// retry/consensus route around the upstream (consensus already excludes
+	// errors from preferLargerResponses, so a corrupt-but-larger response can no
+	// longer dispute an honest majority). Internal requests (e.g. the
+	// corroboration force-fetch) are skipped to avoid recursing into the engine.
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
-		cs, policy := resolveIntegrity(n, dirs)
-		hist := networkHistory(n)
-		input := integrity.Input{
-			Method:   methodLower,
-			Upstream: u,
-			Response: rs,
-			Checks:   cs,
-			Resolver: newIntegrityResolver(n, u),
-			Reorg:    policy,
-		}
-		if hist != nil {
-			input.History = hist
-		}
-		res := integrity.Validate(ctx, input)
-		for _, rec := range res.Recorded {
-			log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).
-				Msg("integrity: recorded reorg-sensitive mismatch on unfinalized block")
-		}
-		if res.Err != nil {
-			validationErr = res.Err
-			rq.ClearLastValidResponse()
-			return rs, validationErr
-		}
-		// Feed continuity history with this validated block.
-		if isBlockMethod(methodLower) {
-			observeBlock(ctx, hist, rs)
+		if cs, policy := resolveIntegrity(n, dirs); len(cs) > 0 {
+			hist := networkHistory(n)
+			input := integrity.Input{
+				Method:   methodLower,
+				Upstream: u,
+				Response: rs,
+				Checks:   cs,
+				Resolver: newIntegrityResolver(n, u),
+				Reorg:    policy,
+			}
+			if hist != nil {
+				input.History = hist
+			}
+			res := integrity.Validate(ctx, input)
+			for _, rec := range res.Recorded {
+				log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).
+					Msg("integrity: recorded reorg-sensitive mismatch on unfinalized block")
+			}
+			if res.Err != nil {
+				validationErr = res.Err
+				rq.ClearLastValidResponse()
+				return rs, validationErr
+			}
+			// Feed continuity history with this validated block.
+			if isBlockMethod(methodLower) {
+				observeBlock(ctx, hist, rs)
+			}
 		}
 	}
 

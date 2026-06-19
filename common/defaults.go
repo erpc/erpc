@@ -2025,7 +2025,50 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		return err
 	}
 
+	// Backward compatibility: translate the deprecated per-check data-integrity
+	// validation flags (DirectiveDefaults.Validate*/Enforce*) into the integrity
+	// config. They used to enable specific checks; the module now selects checks
+	// via the integrity block. The user's explicit integrity config wins per id.
+	migrateLegacyIntegrityChecks(n)
+
 	return nil
+}
+
+// migrateLegacyIntegrityChecks maps the deprecated DirectiveDefaults validation
+// flags onto the network's integrity check set. This is the only place that
+// knows the old flag→check mapping; the runtime sees only the integrity config.
+func migrateLegacyIntegrityChecks(n *NetworkConfig) {
+	dd := n.DirectiveDefaults
+	if dd == nil {
+		return
+	}
+	legacy := map[string]*bool{
+		"bloomMatch":                  dd.ValidateLogsBloomMatch,
+		"bloomEmptiness":              dd.ValidateLogsBloomEmptiness,
+		"logIndexContiguity":          dd.EnforceLogIndexStrictIncrements,
+		"transactionsRootConsistency": dd.ValidateTransactionsRoot,
+		"headerFieldShapes":           dd.ValidateHeaderFieldLengths,
+		"txFieldUniqueness":           dd.ValidateTransactionFields,
+		"txBlockInfo":                 dd.ValidateTransactionBlockInfo,
+		"txHashUniqueness":            dd.ValidateTxHashUniqueness,
+		"transactionIndexConsistency": dd.ValidateTransactionIndex,
+		"logFieldShapes":              dd.ValidateLogFields,
+	}
+	for id, flag := range legacy {
+		if flag == nil || !*flag {
+			continue
+		}
+		if n.Integrity == nil {
+			n.Integrity = &IntegrityConfig{}
+		}
+		if n.Integrity.Checks == nil {
+			n.Integrity.Checks = map[string]*IntegrityCheckConfig{}
+		}
+		if _, exists := n.Integrity.Checks[id]; !exists { // explicit config wins
+			enabled := true
+			n.Integrity.Checks[id] = &IntegrityCheckConfig{Enabled: &enabled}
+		}
+	}
 }
 
 const DefaultEvmFinalityDepth = 1024

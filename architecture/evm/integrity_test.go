@@ -22,6 +22,29 @@ func receiptResultBytes(logIndexes []string) []byte {
 	return []byte(fmt.Sprintf(`{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","status":"0x1","transactionIndex":"0x0","logs":[%s]}`, strings.Join(logs, ",")))
 }
 
+// integrityTestNetwork is a minimal common.Network whose only job is to carry an
+// integrity config (the hook reads Config().Integrity). Integrity is opt-in, so
+// the wiring test must configure it.
+type integrityTestNetwork struct {
+	common.Network
+	cfg *common.NetworkConfig
+}
+
+func (n *integrityTestNetwork) Config() *common.NetworkConfig { return n.cfg }
+func (n *integrityTestNetwork) Id() string                    { return "evm:123" }
+
+// indexMagnitudeNetwork enables just the intrinsic logIndex magnitude check.
+func indexMagnitudeNetwork() common.Network {
+	tru := true
+	return &integrityTestNetwork{cfg: &common.NetworkConfig{
+		Integrity: &common.IntegrityConfig{
+			IntegritySettings: common.IntegritySettings{
+				Checks: map[string]*common.IntegrityCheckConfig{"indexMagnitude": {Enabled: &tru}},
+			},
+		},
+	}}
+}
+
 var canonicalLogIndexes = []string{"0x0", "0x1", "0x2", "0x3", "0x4", "0x5", "0x6", "0x7", "0x8"}
 
 // 0xfffffff7..0xffffffff == -9..-1 read as int32; the signature of the real bug.
@@ -41,7 +64,7 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), receiptResultBytes(underflowedLogIndexes), nil)
 		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
-		_, err := HandleUpstreamPostForward(ctx, nil, u, req, rs, nil, false)
+		_, err := HandleUpstreamPostForward(ctx, indexMagnitudeNetwork(), u, req, rs, nil, false)
 		require.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointContentValidation))
 	})
@@ -51,7 +74,7 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), receiptResultBytes(canonicalLogIndexes), nil)
 		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
-		gotRs, err := HandleUpstreamPostForward(ctx, nil, u, req, rs, nil, false)
+		gotRs, err := HandleUpstreamPostForward(ctx, indexMagnitudeNetwork(), u, req, rs, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, rs, gotRs)
 	})
@@ -61,7 +84,19 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`{"logIndex":"0xfffffff7"}`), nil)
 		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
-		_, err := HandleUpstreamPostForward(ctx, nil, u, req, rs, nil, false)
+		_, err := HandleUpstreamPostForward(ctx, indexMagnitudeNetwork(), u, req, rs, nil, false)
 		assert.NoError(t, err)
+	})
+
+	t.Run("opt-in: with no integrity config, a corrupt receipt is not checked", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"]}`))
+		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), receiptResultBytes(underflowedLogIndexes), nil)
+		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+		// Network with no Integrity block → nothing runs (safe-by-default deploy).
+		noIntegrity := &integrityTestNetwork{cfg: &common.NetworkConfig{}}
+		gotRs, err := HandleUpstreamPostForward(ctx, noIntegrity, u, req, rs, nil, false)
+		require.NoError(t, err)
+		assert.Equal(t, rs, gotRs)
 	})
 }

@@ -35,16 +35,16 @@ func TestCheckSetForLevel(t *testing.T) {
 
 	intrinsic := CheckSetForLevel(LevelIntrinsic)
 	assert.True(t, intrinsic.For("indexMagnitude").Enabled)
-	assert.False(t, intrinsic.For("expectedBlock").Enabled, "corroborated check absent from intrinsic")
+	assert.False(t, intrinsic.For("parentHashLinkage").Enabled, "corroborated check absent from intrinsic")
 	assert.False(t, intrinsic.For("receiptVsBlock").Enabled, "authoritative check absent from intrinsic")
 
 	corroborated := CheckSetForLevel(LevelCorroborated)
 	assert.True(t, corroborated.For("indexMagnitude").Enabled, "includes all lower levels")
-	assert.True(t, corroborated.For("expectedBlock").Enabled)
+	assert.True(t, corroborated.For("parentHashLinkage").Enabled)
 	assert.False(t, corroborated.For("receiptVsBlock").Enabled, "authoritative still excluded")
 
 	authoritative := CheckSetForLevel(LevelAuthoritative)
 	assert.True(t, authoritative.For("indexMagnitude").Enabled)
-	assert.True(t, authoritative.For("expectedBlock").Enabled)
+	assert.True(t, authoritative.For("parentHashLinkage").Enabled)
 	assert.True(t, authoritative.For("receiptVsBlock").Enabled, "the force-fetch tier is on")
 }

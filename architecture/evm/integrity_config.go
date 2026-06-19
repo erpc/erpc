@@ -64,23 +64,18 @@ func applyCheckOverride(cs integrity.CheckSet, id string, oc *common.IntegrityCh
 }
 
 // resolveIntegrity computes the effective CheckSet and ReorgPolicy for a request.
-// When the network declares an integrity config, that config governs (level /
-// profiles / header selector); otherwise the legacy per-request directives do.
-// The two paths are mutually exclusive: a config opts the network into the
-// declarative model wholesale.
+// The network's integrity config is the single source: its level/profiles plus
+// the per-request header selector. With no config, nothing runs (opt-in).
 func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integrity.CheckSet, integrity.ReorgPolicy) {
-	var cfg *common.IntegrityConfig
-	if n != nil && n.Config() != nil {
-		cfg = n.Config().Integrity
-	}
-	if cfg == nil {
-		return integrityCheckSet(dirs), integrity.DefaultReorgPolicy()
+	// Opt-in: with no integrity config, nothing runs.
+	if n == nil || n.Config() == nil || n.Config().Integrity == nil {
+		return nil, integrity.ReorgPolicy{}
 	}
 	selector := ""
 	if dirs != nil {
 		selector = dirs.IntegritySelector
 	}
-	return compileIntegritySettings(resolveRequestSettings(cfg, selector))
+	return compileIntegritySettings(resolveRequestSettings(n.Config().Integrity, selector))
 }
 
 // resolveRequestSettings computes the effective settings for one request: the
