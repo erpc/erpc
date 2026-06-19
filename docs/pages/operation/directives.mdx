@@ -11,6 +11,8 @@ import { LLMsTxtLink, AISection, ConfigTabs, ConfigCode, SourceLink, PromptExamp
 
 Every request can carry its own instructions. Add an `X-ERPC-*` header or a `?param=` query string and eRPC instantly shifts routing, caching, integrity checks, or consensus behavior for that call only. No server restart. No config change. The same 23 directives can also be pinned as `directiveDefaults` on any network so every call starts with a sensible baseline.
 
+For production-facing projects, [`allowClientDirectives`](/config/projects) can restrict which directives clients may send — block cache-bypass or upstream-pinning headers while keeping validation directives available.
+
 After each response, eRPC echoes back what actually happened — which upstream won, cache hit or miss, retry and hedge counts — so you always know exactly what the proxy did.
 
 ## Quick taste
@@ -118,11 +120,20 @@ per-attempt trace while keeping the counter headers for dashboards. Work with my
 Reference: https://docs.erpc.cloud/operation/directives.llms.txt`}
 />
 
+<PromptExample
+	n={6}
+	title="lock down client directives on a public-facing project"
+	prompt={`My eRPC project serves public traffic and I want to prevent clients from sending
+X-ERPC-Skip-Cache-Read or X-ERPC-Use-Upstream headers to bypass caching or pin upstreams.
+Configure allowClientDirectives so validation directives are still allowed but operational
+ones are blocked. Reference: https://docs.erpc.cloud/operation/directives.llms.txt`}
+/>
+
 <AISection title="Directives — full agent reference">
 
 ### How it works
 
-**Parsing pipeline.** For every HTTP request eRPC runs two passes. First, `ApplyDirectiveDefaults` copies any `directiveDefaults` config block into the request struct (lowest priority). Second, `EnrichFromHttp` scans all 23 registered header and query names. If none are present it returns immediately after extracting User-Agent — zero allocations, zero locks. When directive inputs are present the struct is cloned before mutation so batch sub-requests that share the same pointer do not race.
+**Parsing pipeline.** For every HTTP request eRPC runs three steps. First, `ApplyDirectiveDefaults` copies any `directiveDefaults` config block into the request struct (lowest priority). Second, `SetAllowClientDirectives` stores the project-level `allowClientDirectives` pattern on the request. Third, `EnrichFromHttp` scans all 23 registered header and query names, skipping any directive whose query-param key does not match the `allowClientDirectives` pattern (via `isDirectiveAllowed` → `WildcardMatch`). If no directives are present it returns immediately after extracting User-Agent — zero allocations, zero locks. When directive inputs are present the struct is cloned before mutation so batch sub-requests that share the same pointer do not race.
 
 Precedence from lowest to highest: `directiveDefaults` config → HTTP header → URL query parameter. A query-param value always wins over the same header, which always wins over config. `ApplyDirectiveDefaults` is idempotent — once `r.directives` is non-nil every subsequent call is a no-op, so per-request overrides can never be clobbered by a second config pass. Source: [`common/request.go:563-676`](https://github.com/erpc/erpc/blob/main/common/request.go#L563-L676).
 
@@ -348,6 +359,7 @@ Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=he
 - **Pin `useUpstream` at config via `directiveDefaults` for known-good archival nodes** rather than relying on callers to send the header — this prevents a misconfigured client from silently routing archival calls to full nodes.
 - **Always send `"true"`, never `"1"` or `"yes"`**, for all `X-ERPC-*` directive headers. Four of the 23 headers (#20–23) lack `TrimSpace` — a value like `"  true  "` (with spaces) evaluates to `false` on those.
 - **On gRPC, per-request overrides are not available.** Wire all desired defaults into `directiveDefaults` in config; `EnrichFromHttp` is never called on the gRPC path.
+- **Lock down client directives on public-facing projects** with `allowClientDirectives: "!skip-cache-read & !use-upstream"` to prevent clients from bypassing your cache or pinning to specific upstreams while still allowing validation directives.
 
 ### Edge cases & gotchas
 
@@ -369,6 +381,7 @@ Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=he
 16. **`ValidateLogFields` cross-checks log fields against the enclosing receipt, not the block.** Absent log context fields (e.g., `blockHash` missing from a log entry) pass silently even when the receipt's field is set.
 17. **`nil *bool` in `DirectiveDefaultsConfig` ≠ `false *bool`.** Nil means "not set — skip"; a `*false` pointer means "explicitly disable". Only non-nil pointers are applied in `ApplyDirectiveDefaults`. Source: [`common/request.go:570-580`](https://github.com/erpc/erpc/blob/main/common/request.go#L570-L580).
 18. **`ValidateHeaderFieldLengths` struct comment is stale.** `common/request.go:172` says "only via config/library, not HTTP headers" — incorrect. The directive is fully HTTP-settable. Source: [`common/request.go:797-798`](https://github.com/erpc/erpc/blob/main/common/request.go#L797-L798).
+19. **`allowClientDirectives` filters HTTP-supplied directives only.** Config-set `directiveDefaults` always apply regardless of the filter. The pattern is evaluated against the directive's query-param key (e.g. `skip-cache-read`, `use-upstream`) using `WildcardMatch`. `nil` = all allowed; `""` = none allowed; `"!skip-cache-read & !use-upstream"` = all except those two. Does not filter `X-ERPC-Force-Trace` (processed before project resolution). Source: `isDirectiveAllowed` in `common/request.go`, `AllowClientDirectives` in `common/config.go`. See [projects config](/config/projects).
 
 ### Observability
 

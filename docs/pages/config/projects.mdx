@@ -63,7 +63,8 @@ machine-readable companions:
 
 Project-level config keys: `projects[].id`, `projects[].auth`, `projects[].cors`,
 `projects[].networkDefaults`, `projects[].upstreamDefaults`, `projects[].rateLimitBudget`,
-`projects[].healthCheck`, `projects[].providers`, `projects[].upstreams`, `projects[].networks`.
+`projects[].healthCheck`, `projects[].providers`, `projects[].upstreams`, `projects[].networks`,
+`projects[].allowClientDirectives`.
 Each is documented exhaustively in the child page whose topic it belongs to; multi-tenant
 behavior (URL shape `/{projectId}/{architecture}/{chainId}`) is covered in
 [URL structure](/operation/url).
@@ -114,6 +115,7 @@ behavior (URL shape `/{projectId}/{architecture}/{chainId}`) is covered in
 | `projects[].rateLimitBudget` | string | `""` (no project-level limiting) | Names a budget id under global `rateLimiters.budgets[]`. Enforced per request in `AcquireRateLimitPermit`. Must exist in `rateLimiters` — unknown budget fails startup. |
 | `projects[].userAgentMode` | `"simplified"` \| `"raw"` | `""` → treated as `simplified` at request time | `simplified` buckets the User-Agent into ~20 low-cardinality names (curl, viem, ethers, chrome, …); `raw` stores it verbatim (high metric cardinality). Used for the `agent_name` metric label. Query param `?user-agent=` takes precedence over the header. |
 | `projects[].forwardHeaders` | `[]string` (wildcard patterns) | `nil` (forward nothing) | Each pattern is wildcard-matched against every incoming header name; matches are forwarded to the upstream HTTP request. **FOOTGUN**: values are stored under the **pattern** key, so a wildcard pattern like `X-Custom-*` forwards the value under the literal header name `X-Custom-*`, not the original header name. Exact names work as expected. |
+| `projects[].allowClientDirectives` | `*string` (wildcard pattern) | `nil` (all directives allowed) | Controls which `X-ERPC-*` request directives (headers and query params) clients may use. The pattern is evaluated against each directive's query-param key (e.g. `skip-cache-read`, `use-upstream`, `skip-consensus`) using the standard wildcard/boolean grammar. `nil`/omitted = all allowed (backward-compatible). `""` = none allowed. `"!skip-cache-read & !use-upstream"` = all except those two. Config-set `directiveDefaults` always apply regardless of this filter. Does **not** filter `X-ERPC-Force-Trace` (which bypasses OTel sampling at span creation, before project resolution). |
 | `projects[].ignoreMethods` | `[]string` (wildcard) | `nil` (nothing ignored) | If any pattern matches the JSON-RPC method, the method is rejected — unless re-allowed by `allowMethods`. Rejection is JSON-RPC error `code: -32601` ("method not supported: X") returned without auth/upstream work. |
 | `projects[].allowMethods` | `[]string` (wildcard) | `nil` | Overrides `ignoreMethods` (e.g. `ignoreMethods: ["*"]` + `allowMethods: ["eth_getLogs"]` = only eth_getLogs). **NOTE**: `allowMethods` alone does NOT create an allowlist — a method matching neither list is still served (initial `shouldHandleMethod = true`). |
 | `projects[].scoreMetricsWindowSize` | Duration | `0` → falls back to **1 minute** at runtime | Rolling window of the per-upstream health tracker (10 sliding buckets). **FOOTGUN**: source-code comments in two places say "10m" but the actual code value is `var ScoreMetricsWindowSize = 1 * time.Minute`. To get a 10-minute window you must set `scoreMetricsWindowSize: 10m` explicitly. See [source](https://github.com/erpc/erpc/blob/main/erpc/projects_registry.go#L50). |
@@ -248,6 +250,8 @@ Notable logs: `registered project <id>` info at registration; `successfully forw
 24. **Inert legacy fields (`scoreGranularity`, `scorePenaltyDecayRate`, `scoreMetricsMode`, `scoreRefreshInterval`) do NOT synthesize an eval.** A config with only these four fields gets deprecation warnings but retains the full canonical default selection policy (`removeCordoned + keepHealthy + preferTag + sortByScore + stickyPrimary + probeExcluded`).
 25. **`routingStrategy: "score-based"` (or any non-`"round-robin"` non-empty string) synthesizes a `sortByScore + stickyPrimary` eval.** A per-network `selectionPolicy.eval` (new field) always wins over the synthesized legacy eval.
 26. **`scoreSwitchHysteresis` and `scoreMinSwitchInterval` are semantic fields that trigger eval synthesis even without `routingStrategy`.** If either is non-zero, a `sortByScore + stickyPrimary` eval is synthesized across all networks.
+27. **`allowClientDirectives` does not filter `X-ERPC-Force-Trace`** — force-trace bypasses OTel sampling at span creation in `StartHTTPServerSpan`, which runs before project resolution. Filtering it requires deferring the sampling decision until after project resolution.
+28. **`allowClientDirectives` does not affect `directiveDefaults`** — config-set directive defaults (via `networks[].directiveDefaults`) always apply regardless of the client directive filter. The filter only gates directives arriving via HTTP headers or query parameters.
 
 ## Source code entry points
 
