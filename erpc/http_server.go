@@ -656,7 +656,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if project.Config.UserAgentMode != "" {
 						uaMode = project.Config.UserAgentMode
 					}
-					nq.SetAllowClientDirectives(project.Config.AllowClientDirectives)
+					nq.SetAllowClientDirectiveMatcher(project.allowClientDirectiveMatcher)
 				}
 				nq.EnrichFromHttp(headers, queryArgs, uaMode)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
@@ -1274,8 +1274,10 @@ func formatUpstreamAttempt(a common.UpstreamAttempt) string {
 	return b.String()
 }
 
-func setInt(w http.ResponseWriter, name string, v int)      { w.Header().Set(name, strconv.Itoa(v)) }
-func setInt64(w http.ResponseWriter, name string, v int64)  { w.Header().Set(name, strconv.FormatInt(v, 10)) }
+func setInt(w http.ResponseWriter, name string, v int) { w.Header().Set(name, strconv.Itoa(v)) }
+func setInt64(w http.ResponseWriter, name string, v int64) {
+	w.Header().Set(name, strconv.FormatInt(v, 10))
+}
 
 // determineResponseStatusCode extracts any error from a response and determines
 // the appropriate HTTP status code. Defaults to 200 for JSON-RPC responses,

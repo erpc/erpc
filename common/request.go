@@ -113,6 +113,8 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveValidateLogFields, query: queryDirectiveValidateLogFields},
 }
 
+var DenyAllClientDirectives MatcherFunc = func(_ string) bool { return false }
+
 // headerToQueryKey is used to normalize header keys to query keys
 var headerToQueryKey map[string]string
 
@@ -332,10 +334,10 @@ type NormalizedRequest struct {
 	body           []byte
 	ForwardHeaders http.Header
 
-	method                string
-	directives            *RequestDirectives
-	allowClientDirectives *string
-	jsonRpcRequest        atomic.Pointer[JsonRpcRequest]
+	method                      string
+	directives                  *RequestDirectives
+	allowClientDirectiveMatcher MatcherFunc
+	jsonRpcRequest              atomic.Pointer[JsonRpcRequest]
 
 	// Upstream selection fields - protected by upstreamMutex
 	upstreamMutex    sync.Mutex
@@ -565,11 +567,11 @@ func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
 	r.directives = directives
 }
 
-func (r *NormalizedRequest) SetAllowClientDirectives(pattern *string) {
+func (r *NormalizedRequest) SetAllowClientDirectiveMatcher(matcher MatcherFunc) {
 	if r == nil {
 		return
 	}
-	r.allowClientDirectives = pattern
+	r.allowClientDirectiveMatcher = matcher
 }
 
 // ApplyDirectiveDefaults applies the default directives from the network configuration.
@@ -717,24 +719,19 @@ func hasDirectiveInQueryParams(queryArgs url.Values) bool {
 	return false
 }
 
-func isDirectiveAllowed(queryKey string, allowPattern *string) bool {
-	if allowPattern == nil {
+func (r *NormalizedRequest) isDirectiveAllowed(queryKey string) bool {
+	if r.allowClientDirectiveMatcher == nil {
 		return true
 	}
 	if queryKey == "" {
 		return false
 	}
-	if *allowPattern == "" {
-		return false
-	}
-	matched, err := WildcardMatch(*allowPattern, queryKey)
-	if err != nil {
-		return false
-	}
-	return matched
+	return r.allowClientDirectiveMatcher(queryKey)
 }
 
 func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
+
 	// Extract user agent (always needed)
 	userAgent := r.getUserAgent(headers, queryArgs)
 	if userAgent != "" {
@@ -745,11 +742,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		}
 	}
 
-	// Skip directive enrichment if no directives are allowed
-	if r.allowClientDirectives != nil && *r.allowClientDirectives == "" {
-		return
-	}
-	if !(hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)) {
+	if !hasDirectives {
 		return
 	}
 
@@ -767,7 +760,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	// Headers have precedence over directive defaults, but should only override when explicitly provided.
 
 	getHeader := func(key string) string {
-		if hv := headers.Get(key); hv != "" && isDirectiveAllowed(headerToQueryKey[key], r.allowClientDirectives) {
+		if hv := headers.Get(key); hv != "" && r.isDirectiveAllowed(headerToQueryKey[key]) {
 			return hv
 		}
 		return ""
@@ -855,7 +848,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	// Query parameters come after headers so they can still override when explicitly present in URL.
 
 	getQueryArg := func(key string) string {
-		if hv := queryArgs.Get(key); hv != "" && isDirectiveAllowed(key, r.allowClientDirectives) {
+		if hv := queryArgs.Get(key); hv != "" && r.isDirectiveAllowed(key) {
 			return hv
 		}
 		return ""

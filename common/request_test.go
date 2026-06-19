@@ -540,9 +540,8 @@ func TestSkipConsensusDirective_ClonePreservesValue(t *testing.T) {
 	}
 }
 
-func ptr(s string) *string { return &s }
-
 func TestDirectiveAllowFilter(t *testing.T) {
+	ptr := func(s string) *string { return &s }
 	tests := []struct {
 		name    string
 		pattern *string
@@ -578,7 +577,19 @@ func TestDirectiveAllowFilter(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isDirectiveAllowed(tc.key, tc.pattern)
+			req := NewNormalizedRequest(nil)
+			if tc.pattern != nil {
+				if *tc.pattern == "" {
+					req.SetAllowClientDirectiveMatcher(DenyAllClientDirectives)
+				} else {
+					matcher, err := NewWildcardMatcher(*tc.pattern)
+					if err != nil {
+						t.Fatalf("failed to compile pattern %q: %v", *tc.pattern, err)
+					}
+					req.SetAllowClientDirectiveMatcher(matcher)
+				}
+			}
+			got := req.isDirectiveAllowed(tc.key)
 			if got != tc.want {
 				patternStr := "<nil>"
 				if tc.pattern != nil {
@@ -588,6 +599,19 @@ func TestDirectiveAllowFilter(t *testing.T) {
 			}
 		})
 	}
+}
+
+func setDirectiveFilter(t *testing.T, req *NormalizedRequest, pattern string) {
+	t.Helper()
+	if pattern == "" {
+		req.SetAllowClientDirectiveMatcher(DenyAllClientDirectives)
+		return
+	}
+	matcher, err := NewWildcardMatcher(pattern)
+	if err != nil {
+		t.Fatalf("failed to compile pattern %q: %v", pattern, err)
+	}
+	req.SetAllowClientDirectiveMatcher(matcher)
 }
 
 func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
@@ -608,20 +632,30 @@ func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
 
 	t.Run("empty string blocks all directives", func(t *testing.T) {
 		req := NewNormalizedRequest(nil)
-		req.SetAllowClientDirectives(ptr(""))
+		setDirectiveFilter(t, req, "")
 		h := http.Header{}
 		h.Set("X-ERPC-Skip-Cache-Read", "true")
 		h.Set("X-ERPC-Use-Upstream", "alchemy")
 		h.Set("X-ERPC-Skip-Consensus", "true")
 		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)
-		if dir := req.Directives(); dir != nil {
-			t.Fatalf("expected nil directives when all blocked, got %+v", dir)
+		dir := req.Directives()
+		if dir == nil {
+			t.Fatal("expected directives struct to exist")
+		}
+		if dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked, got %q", dir.SkipCacheRead)
+		}
+		if dir.UseUpstream != "" {
+			t.Fatalf("expected UseUpstream blocked, got %q", dir.UseUpstream)
+		}
+		if dir.SkipConsensus {
+			t.Fatal("expected SkipConsensus=false")
 		}
 	})
 
 	t.Run("negation blocks specific directive", func(t *testing.T) {
 		req := NewNormalizedRequest(nil)
-		req.SetAllowClientDirectives(ptr("!skip-cache-read"))
+		setDirectiveFilter(t, req, "!skip-cache-read")
 		h := http.Header{}
 		h.Set("X-ERPC-Skip-Cache-Read", "true")
 		h.Set("X-ERPC-Use-Upstream", "alchemy")
@@ -637,7 +671,7 @@ func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
 
 	t.Run("blocks query params too", func(t *testing.T) {
 		req := NewNormalizedRequest(nil)
-		req.SetAllowClientDirectives(ptr("!skip-cache-read"))
+		setDirectiveFilter(t, req, "!skip-cache-read")
 		q := url.Values{}
 		q.Set("skip-cache-read", "true")
 		q.Set("use-upstream", "alchemy")
@@ -653,7 +687,7 @@ func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
 
 	t.Run("user agent always extracted regardless of filter", func(t *testing.T) {
 		req := NewNormalizedRequest(nil)
-		req.SetAllowClientDirectives(ptr(""))
+		setDirectiveFilter(t, req, "")
 		h := http.Header{}
 		h.Set("User-Agent", "curl/7.68.0")
 		h.Set("X-ERPC-Skip-Cache-Read", "true")
@@ -661,8 +695,9 @@ func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
 		if req.AgentName() == "" || req.AgentName() == "unknown" {
 			t.Fatalf("expected user-agent to be extracted even when all directives blocked, got %q", req.AgentName())
 		}
-		if dir := req.Directives(); dir != nil {
-			t.Fatalf("expected nil directives when all blocked, got %+v", dir)
+		dir := req.Directives()
+		if dir != nil && dir.SkipCacheRead != "" {
+			t.Fatalf("expected SkipCacheRead blocked, got %q", dir.SkipCacheRead)
 		}
 	})
 
@@ -672,7 +707,7 @@ func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
 		req.ApplyDirectiveDefaults(&DirectiveDefaultsConfig{
 			RetryEmpty: &retryEmpty,
 		})
-		req.SetAllowClientDirectives(ptr(""))
+		setDirectiveFilter(t, req, "")
 		h := http.Header{}
 		h.Set("X-ERPC-Skip-Cache-Read", "true")
 		req.EnrichFromHttp(h, nil, UserAgentTrackingModeSimplified)

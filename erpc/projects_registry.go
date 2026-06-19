@@ -210,6 +210,17 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		pp.policyEngine,
 		&lg,
 	)
+	if prjCfg.AllowClientDirectives != nil {
+		if *prjCfg.AllowClientDirectives == "" {
+			pp.allowClientDirectiveMatcher = common.DenyAllClientDirectives
+		} else {
+			matcher, err := common.NewWildcardMatcher(*prjCfg.AllowClientDirectives)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse AllowClientDirectives: %w", err)
+			}
+			pp.allowClientDirectiveMatcher = matcher
+		}
+	}
 	r.preparedProjects[prjCfg.Id] = pp
 
 	r.logger.Info().Msgf("registered project %s", prjCfg.Id)
