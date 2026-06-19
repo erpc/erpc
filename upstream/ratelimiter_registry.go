@@ -19,6 +19,7 @@ import (
 	"github.com/envoyproxy/ratelimit/src/utils"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 )
@@ -112,20 +113,28 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 
 	r.logger.Debug().Str("url", util.RedactEndpoint(url)).Bool("tls", useTLS).Int("poolSize", poolSize).Msg("attempting to connect to Redis for rate limiting")
 
-	client := redis.NewClientImpl(
-		store.Scope("erpc_rl"),
-		useTLS,
-		r.cfg.Store.Redis.Username,
-		"tcp",
-		"single",
-		url,
-		poolSize,
-		5*time.Millisecond,
-		32,
-		nil,
-		false,
-		nil,
-	)
+	var client redis.Client
+	if iam := r.cfg.Store.Redis.IAMAuth; iam != nil && iam.Enabled {
+		client, err = data.NewIAMRateLimitClient(r.cfg.Store.Redis)
+		if err != nil {
+			return fmt.Errorf("rate-limiter redis IAM connect: %w", err)
+		}
+	} else {
+		client = redis.NewClientImpl(
+			store.Scope("erpc_rl"),
+			useTLS,
+			r.cfg.Store.Redis.Username,
+			"tcp",
+			"single",
+			url,
+			poolSize,
+			5*time.Millisecond,
+			32,
+			nil,
+			false,
+			nil,
+		)
+	}
 
 	cache := redis.NewFixedRateLimitCacheImpl(
 		client,
