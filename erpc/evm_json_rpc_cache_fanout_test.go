@@ -299,6 +299,46 @@ func TestEvmJsonRpcCache_FanOut_ParentContextDeadlineStopsAll(t *testing.T) {
 		"deadline-cancelled connector calls must not emit cache_get_error_total — they are external cancellations, not connector failures")
 }
 
+// CancelledFanOutIsNotAMiss covers ERPC-553: when the parent context is
+// cancelled before any connector confirms a genuine miss, the fan-out is
+// aborted. Such a cancelled read must NOT be recorded as a success_miss —
+// otherwise the miss count is inflated and the cancellation latency (e.g. a
+// request-level failsafe/hedge timeout ceiling) is attributed to the connector.
+func TestEvmJsonRpcCache_FanOut_CancelledFanOutIsNotAMiss(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conns, network, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
+	})
+	cache.SetPolicies(fanOutPolicies(t, conns))
+
+	// Both connectors hang until their call context is cancelled, simulating a
+	// slow read that never returns a genuine result before the parent deadline.
+	for _, c := range conns {
+		c.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				callCtx := args.Get(0).(context.Context)
+				<-callCtx.Done()
+			}).
+			Return(nil, context.Canceled).Maybe()
+	}
+
+	beforeMiss := promUtil.CollectAndCount(telemetry.MetricCacheGetSuccessMissTotal)
+
+	getCtx, cancelGet := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelGet()
+	resp, err := cache.Get(getCtx, newGetBlockByNumberRequest(t, network, cache))
+
+	// Allow goroutines a brief moment to drain any (incorrect) metric emission.
+	time.Sleep(50 * time.Millisecond)
+	afterMiss := promUtil.CollectAndCount(telemetry.MetricCacheGetSuccessMissTotal)
+
+	require.NoError(t, err)
+	assert.Nil(t, resp, "a cancelled fan-out falls through to the upstream layer")
+	assert.Equal(t, beforeMiss, afterMiss,
+		"a context-cancelled fan-out must not emit cache_get_success_miss_total — it is an aborted read, not a genuine cache miss")
+}
+
 func TestEvmJsonRpcCache_FanOut_RespectsSkipCacheReadDirective(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

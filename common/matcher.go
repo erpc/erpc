@@ -31,14 +31,20 @@ type parser struct {
 	pos    int
 }
 
-func WildcardMatch(pattern, value string) (bool, error) {
+type MatcherFunc func(string) bool
+
+func NewWildcardMatcher(pattern string) (MatcherFunc, error) {
 	tokens, err := tokenize(pattern)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
 	p := &parser{tokens: tokens}
-	matcher, err := p.parseExpression()
+	return p.parseExpression()
+}
+
+func WildcardMatch(pattern, value string) (bool, error) {
+	matcher, err := NewWildcardMatcher(pattern)
 	if err != nil {
 		return false, err
 	}

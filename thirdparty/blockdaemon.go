@@ -82,12 +82,11 @@ func (v *BlockdaemonVendor) GenerateConfigs(ctx context.Context, logger *zerolog
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	apiKey, ok := settings["apiKey"].(string)
-	if !ok || apiKey == "" {
-		return nil, fmt.Errorf("apiKey is required in blockdaemon settings")
-	}
-
 	if upstream.Endpoint == "" {
+		apiKey, _ := settings["apiKey"].(string)
+		if apiKey == "" {
+			return nil, fmt.Errorf("apiKey is required in blockdaemon settings when endpoint is not set")
+		}
 		if upstream.Evm == nil {
 			return nil, fmt.Errorf("blockdaemon vendor requires upstream.evm to be defined")
 		}
@@ -109,13 +108,13 @@ func (v *BlockdaemonVendor) GenerateConfigs(ctx context.Context, logger *zerolog
 
 		upstream.Endpoint = parsedURL.String()
 		upstream.Type = common.UpstreamTypeEvm
-	}
 
-	if upstream.JsonRpc.Headers == nil {
-		upstream.JsonRpc.Headers = make(map[string]string)
-	}
-	if _, exists := upstream.JsonRpc.Headers["Authorization"]; !exists {
-		upstream.JsonRpc.Headers["Authorization"] = "Bearer " + apiKey
+		if upstream.JsonRpc.Headers == nil {
+			upstream.JsonRpc.Headers = make(map[string]string)
+		}
+		if upstream.JsonRpc.Headers["Authorization"] == "" && upstream.JsonRpc.Headers["authorization"] == "" {
+			upstream.JsonRpc.Headers["Authorization"] = "Bearer " + apiKey
+		}
 	}
 
 	return []*common.UpstreamConfig{upstream}, nil
@@ -148,9 +147,7 @@ func (v *BlockdaemonVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRe
 }
 
 func (v *BlockdaemonVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
-	if strings.HasPrefix(ups.Endpoint, "blockdaemon://") || strings.HasPrefix(ups.Endpoint, "evm+blockdaemon://") {
-		return true
-	}
-
-	return strings.Contains(ups.Endpoint, "svc.blockdaemon.com")
+	return strings.HasPrefix(ups.Endpoint, "blockdaemon://") ||
+		strings.HasPrefix(ups.Endpoint, "evm+blockdaemon://") ||
+		strings.Contains(ups.Endpoint, "svc.blockdaemon.com")
 }

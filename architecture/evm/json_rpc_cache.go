@@ -370,6 +370,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		lastMiss   *fanResult
 		lastReject *fanResult
 		lastError  *fanResult
+		aborted    bool
 	)
 drain:
 	for received := 0; received < spawned && jrr == nil; {
@@ -408,6 +409,16 @@ drain:
 			// so the hit IS in the channel — Go's select just happened to
 			// pick the Done branch over the receive branch. Picking up
 			// that hit here avoids a phantom miss under the race.
+			//
+			// Mark the fan-out aborted: if no hit surfaces from the buffer
+			// below, we exited because of cancellation (a)/(b), not because
+			// every connector confirmed a genuine miss. The post-fan-out
+			// block uses this to avoid recording a cancelled read as a
+			// success_miss (which would inflate the miss count and attribute
+			// the cancellation latency — e.g. a request-level failsafe
+			// timeout ceiling — to the connector). Case (c) sets jrr below,
+			// so this flag is irrelevant there.
+			aborted = true
 		drainBuffer:
 			for {
 				select {
@@ -440,6 +451,22 @@ drain:
 	}
 
 	if jrr == nil {
+		// The fan-out was aborted by context cancellation (caller cancelled
+		// the parent ctx, or the 30s defensive backstop fired) rather than
+		// every connector confirming a genuine miss. This is NOT a cache
+		// miss: counting it inflates success_miss with cancelled reads and
+		// records the cancellation latency (often a fixed request-level
+		// failsafe/hedge timeout ceiling) against the connector. Fall through
+		// to the upstream layer without emitting a miss metric — mirroring the
+		// per-goroutine "cancelled" guard above.
+		if aborted {
+			span.SetAttributes(
+				attribute.Bool("cache.hit", false),
+				attribute.String("cache.miss_reason", "cancelled"),
+			)
+			return nil, nil
+		}
+
 		// All connectors confirmed miss / errored / age-rejected. Attribute the
 		// fall-through metric to the most informative outcome we observed,
 		// preferring rejections over plain misses over errors.
