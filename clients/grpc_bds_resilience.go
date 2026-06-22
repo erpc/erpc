@@ -34,9 +34,11 @@ var (
 	// enough that a wedged stream doesn't pile up callers.
 	bdsHardCallTimeout = 20 * time.Second
 
-	// bdsPoolSize is the number of independent grpc.ClientConn instances
-	// kept per upstream. Round-robin across them so a single wedged conn
-	// only chokes ~1/N of in-flight callers.
+	// bdsPoolSize is the DEFAULT number of independent grpc.ClientConn
+	// instances kept per upstream, used when the connector/upstream config
+	// leaves poolSize unset. Round-robin across them so a single wedged conn
+	// only chokes ~1/N of in-flight callers. Override per connector/upstream
+	// via the `poolSize` config knob (see newBdsPool / GrpcConnectorConfig).
 	bdsPoolSize = 3
 
 	// bdsStuckCallThreshold / bdsStuckCallWindow drive the per-conn
@@ -98,22 +100,29 @@ type bdsPool struct {
 	logger     *zerolog.Logger
 }
 
+// newBdsPool builds a round-robin pool of poolSize independent connections.
+// A poolSize <= 0 means "unconfigured" and falls back to bdsPoolSize, so an
+// absent/zero/negative config value preserves the historical default.
 func newBdsPool(
 	logger *zerolog.Logger,
 	projectId, upstreamId, target string,
 	creds credentials.TransportCredentials,
 	serviceConfig string,
+	poolSize int,
 ) (*bdsPool, error) {
+	if poolSize <= 0 {
+		poolSize = bdsPoolSize
+	}
 	p := &bdsPool{
 		target:        target,
 		creds:         creds,
 		serviceConfig: serviceConfig,
-		conns:         make([]*bdsConn, bdsPoolSize),
+		conns:         make([]*bdsConn, poolSize),
 		projectId:     projectId,
 		upstreamId:    upstreamId,
 		logger:        logger,
 	}
-	for i := 0; i < bdsPoolSize; i++ {
+	for i := 0; i < poolSize; i++ {
 		c, err := p.dial()
 		if err != nil {
 			for _, prev := range p.conns[:i] {
@@ -126,6 +135,13 @@ func newBdsPool(
 		p.conns[i] = c
 	}
 	return p, nil
+}
+
+// Size returns the number of connection slots in the pool.
+func (p *bdsPool) Size() int {
+	p.poolMu.RLock()
+	defer p.poolMu.RUnlock()
+	return len(p.conns)
 }
 
 func (p *bdsPool) dial() (*bdsConn, error) {

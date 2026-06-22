@@ -53,12 +53,16 @@ type GenericGrpcBdsClient struct {
 	isLogLevelTrace bool
 }
 
+// NewGrpcBdsClient builds a BDS gRPC client backed by a round-robin connection
+// pool. poolSize sets the number of connections; <= 0 uses the built-in default
+// (bdsPoolSize).
 func NewGrpcBdsClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	projectId string,
 	upstream common.Upstream,
 	parsedUrl *url.URL,
+	poolSize int,
 ) (GrpcBdsClient, error) {
 	upsId := "n/a"
 	if upstream != nil {
@@ -123,7 +127,7 @@ func NewGrpcBdsClient(
 		}]
 	}`
 
-	pool, err := newBdsPool(logger, projectId, upsId, target, transportCredentials, serviceConfig)
+	pool, err := newBdsPool(logger, projectId, upsId, target, transportCredentials, serviceConfig, poolSize)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +141,7 @@ func NewGrpcBdsClient(
 
 	logger.Debug().
 		Str("target", target).
-		Int("pool_size", bdsPoolSize).
+		Int("pool_size", pool.Size()).
 		Dur("hard_call_timeout", bdsHardCallTimeout).
 		Msg("created gRPC BDS client")
 
