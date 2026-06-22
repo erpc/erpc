@@ -500,15 +500,21 @@ integrity:
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
+| `erpc_integrity_violation_total` | counter | project, vendor, network, upstream, category, **check**, **verdict** | A data-integrity check (Layer 2) failed. The `check` label is the rule id and `verdict` is `reject` (response failed over to another upstream) or `soft_flag` (recorded but served). This is how you see *which rule* is failing for which method/network/upstream. Only fires on a violation — passes and skips are not counted, so the per-method request counter is the rate denominator. |
 | `erpc_upstream_stale_latest_block_total` | counter | project, vendor, network, upstream, category | Upstream returned a block below the network-known latest head (Layer-1 highest-block enforcement). |
 | `erpc_upstream_stale_finalized_block_total` | counter | project, vendor, network, upstream | Upstream returned a finalized block below the known finalized head. |
 | `erpc_upstream_stale_upper_bound_total` / `_lower_bound_total` | counter | …, confidence | Request skipped: upstream's range doesn't cover the requested `toBlock`/`fromBlock`. |
 | `erpc_upstream_attempt_outcome_total` | counter | …, outcome | `outcome=block_unavailable` on range failure; `missing_data` on null responses. |
 | `erpc_network_retry_attempt_total` | counter | …, reason | `reason=block_unavailable` / `missing_data` on the corresponding retries. |
 
-Data-integrity violations surface as `ErrEndpointContentValidation` and feed the
-`validation` bucket of `ErrUpstreamsExhausted`; a `soft-flag` verdict emits a
-recorded-mismatch `WARN` log rather than failing the response.
+Data-integrity violations are counted by `erpc_integrity_violation_total` (labeled
+by the individual `check` id and `verdict`) and also surface as
+`ErrEndpointContentValidation` feeding the `validation` bucket of
+`ErrUpstreamsExhausted`; a `soft-flag` verdict additionally emits a
+recorded-mismatch `WARN` log rather than failing the response. The bundled Grafana
+dashboard ([`monitoring/grafana/dashboards/erpc.json`](https://github.com/erpc/erpc/blob/main/monitoring/grafana/dashboards/erpc.json))
+ships a collapsed **Data Integrity** row that breaks these violations down by
+check, verdict, network, upstream, vendor and method, with a drill-down table.
 
 ### Related pages
 
