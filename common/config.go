@@ -570,10 +570,11 @@ type ProjectConfig struct {
 	Networks         []*NetworkConfig  `yaml:"networks,omitempty" json:"networks"`
 	RateLimitBudget  string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	// Configure user agent tracking at the project level
-	UserAgentMode  UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
-	ForwardHeaders []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
-	IgnoreMethods  []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
-	AllowMethods   []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
+	UserAgentMode         UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
+	ForwardHeaders        []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
+	AllowClientDirectives *string               `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives"`
+	IgnoreMethods         []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
+	AllowMethods          []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
 
 	// ScoreMetricsWindowSize is the tumbling window the per-upstream
 	// health tracker uses for its rolling counters (errorRate, p50/p70/

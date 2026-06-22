@@ -18,14 +18,15 @@ import (
 )
 
 type PreparedProject struct {
-	Config               *common.ProjectConfig
-	Logger               *zerolog.Logger
-	networksRegistry     *NetworksRegistry
-	consumerAuthRegistry *auth.AuthRegistry
-	rateLimitersRegistry *upstream.RateLimitersRegistry
-	upstreamsRegistry    *upstream.UpstreamsRegistry
-	policyEngine         *policy.Engine
-	cfgMu                sync.RWMutex
+	Config                      *common.ProjectConfig
+	Logger                      *zerolog.Logger
+	networksRegistry            *NetworksRegistry
+	consumerAuthRegistry        *auth.AuthRegistry
+	rateLimitersRegistry        *upstream.RateLimitersRegistry
+	upstreamsRegistry           *upstream.UpstreamsRegistry
+	policyEngine                *policy.Engine
+	allowClientDirectiveMatcher common.MatcherFunc
+	cfgMu                       sync.RWMutex
 }
 
 type ProjectHealthInfo struct {
