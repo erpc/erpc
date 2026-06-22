@@ -15265,6 +15265,926 @@
       ],
       "title": "Auth",
       "type": "row"
+    },
+    {
+      "type": "row",
+      "collapsed": true,
+      "title": "Data Integrity",
+      "id": 915,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 1
+          },
+          "id": 906,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": false
+            },
+            "maxVizHeight": 49,
+            "minVizHeight": 0,
+            "minVizWidth": 8,
+            "namePlacement": "left",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "sizing": "auto",
+            "text": {},
+            "valueMode": "text"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (check) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
+              "legendFormat": "{{check}}",
+              "range": false,
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Top failing checks",
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "desc": true,
+                "fields": [
+                  "Value"
+                ],
+                "sort": [
+                  {
+                    "field": "Value"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "limit",
+              "options": {
+                "limit": 10,
+                "offset": 0
+              }
+            }
+          ],
+          "transparent": true,
+          "type": "bargauge",
+          "description": "Which integrity rules fire most over the selected range \u2014 the answer to 'which rule is failing'. Each bar is one check id."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 4,
+            "x": 8,
+            "y": 1
+          },
+          "id": 907,
+          "options": {
+            "displayLabels": [
+              "name",
+              "value"
+            ],
+            "legend": {
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true,
+              "values": [
+                "value"
+              ]
+            },
+            "pieType": "pie",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "sort": "desc",
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (verdict) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
+              "legendFormat": "{{verdict}}",
+              "range": false,
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Verdict split",
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "desc": true,
+                "fields": [
+                  "Value"
+                ],
+                "sort": [
+                  {
+                    "field": "Value"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "limit",
+              "options": {
+                "limit": 10,
+                "offset": 0
+              }
+            }
+          ],
+          "transparent": true,
+          "type": "piechart",
+          "description": "reject = response failed over to another upstream; soft_flag = recorded but served (unfinalized, reorg-sensitive)."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 1
+          },
+          "id": 908,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": false
+            },
+            "maxVizHeight": 49,
+            "minVizHeight": 0,
+            "minVizWidth": 8,
+            "namePlacement": "left",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true,
+            "sizing": "auto",
+            "text": {},
+            "valueMode": "text"
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (upstream, vendor) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
+              "legendFormat": "{{upstream}} \u00b7 {{vendor}}",
+              "range": false,
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Top offending upstreams",
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "desc": true,
+                "fields": [
+                  "Value"
+                ],
+                "sort": [
+                  {
+                    "field": "Value"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "limit",
+              "options": {
+                "limit": 10,
+                "offset": 0
+              }
+            }
+          ],
+          "transparent": true,
+          "type": "bargauge",
+          "description": "Which providers produced the most integrity violations in range \u2014 candidates to down-weight or remove."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Per-check violation rate over time. Top series = the rule firing most.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.8,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 0,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 9
+          },
+          "id": 909,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (check) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{check}}",
+              "range": true,
+              "instant": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Violations by check (rate)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Hard rejects (failovers) vs soft-flags (recorded-but-served), per second.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.8,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 0,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 9
+          },
+          "id": 910,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (verdict) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{verdict}}",
+              "range": true,
+              "instant": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Verdict over time (reject vs soft-flag)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Which chains see the most integrity failures.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.8,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 0,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 17
+          },
+          "id": 911,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (network) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{network}}",
+              "range": true,
+              "instant": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Violations by network",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Per-upstream violation rate \u2014 pair with 'Top offending upstreams' above.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.8,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 0,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 17
+          },
+          "id": 912,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (upstream, vendor) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{upstream}} \u00b7 {{vendor}}",
+              "range": true,
+              "instant": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Violations by upstream",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Which RPC method (category) the failures land on.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.8,
+                "drawStyle": "bars",
+                "fillOpacity": 100,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 0,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "fieldMinMax": false,
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 17
+          },
+          "id": 913,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "sum",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Total",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (category) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{category}}",
+              "range": true,
+              "instant": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Violations by method",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Full breakdown over the dashboard range \u2014 the single drill-down to answer 'which rule is failing where'. Sorted by count.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto",
+                "filterable": true
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 25
+          },
+          "id": 914,
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Count (range)",
+                "desc": true
+              }
+            ]
+          },
+          "pluginVersion": "12.3.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum by (check, verdict, network, upstream, vendor, category) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
+              "legendFormat": "",
+              "range": false,
+              "instant": true,
+              "refId": "A",
+              "format": "table"
+            }
+          ],
+          "title": "Top violations (check \u00d7 network \u00d7 upstream \u00d7 method \u00d7 verdict)",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "check": "Check",
+                  "verdict": "Verdict",
+                  "network": "Network",
+                  "upstream": "Upstream",
+                  "vendor": "Vendor",
+                  "category": "Method",
+                  "Value": "Count (range)"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        }
+      ]
     }
   ],
   "preload": false,
