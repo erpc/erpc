@@ -90,11 +90,11 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 <PromptExample
 	n={4}
 	title="disable validation for a non-standard chain"
-	prompt={`I'm adding zkSync Era to eRPC and eth_getBlockByNumber responses from zkSync don't
-have a valid transactionsRoot field — eRPC is rejecting them. Override directiveDefaults
-for the zkSync network only to disable validateTransactionsRoot without touching the
-global policy. Work with my existing eRPC config. Reference:
-https://docs.erpc.cloud/config/projects/networks.llms.txt`}
+	prompt={`I'm adding zkSync Era to eRPC and eth_getBlockByNumber responses from zkSync use a
+non-standard transactionsRoot — the data-integrity module is rejecting them. For the
+zkSync network only, make sure data-integrity is off (or disable the transactionsRoot
+checks via the integrity block) without touching the global policy. Work with my existing
+eRPC config. Reference: https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 />
 
 <PromptExample
@@ -206,22 +206,8 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `enforceHighestBlock` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1458-1460" />) |
 | `enforceGetLogsBlockRange` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1461-1463" />) |
 | `enforceNonNullTaggedBlocks` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1464-1466" />) |
-| `validateTransactionsRoot` | `*bool` | **`true`** (<SourceLink file="common/defaults.go" lines="1467-1469" />) |
-| `validateHeaderFieldLengths` | `*bool` | `nil` |
-| `validateTransactionFields` | `*bool` | `nil` |
-| `validateTransactionBlockInfo` | `*bool` | `nil` |
-| `enforceLogIndexStrictIncrements` | `*bool` | `nil` |
-| `validateTxHashUniqueness` | `*bool` | `nil` |
-| `validateTransactionIndex` | `*bool` | `nil` |
-| `validateLogFields` | `*bool` | `nil` |
-| `validateLogsBloomEmptiness` | `*bool` | `nil` |
-| `validateLogsBloomMatch` | `*bool` | `nil` |
-| `validateReceiptTransactionMatch` | `*bool` | `nil` |
-| `validateContractCreation` | `*bool` | `nil` |
-| `receiptsCountExact` | `*int64` | `nil` |
-| `receiptsCountAtLeast` | `*int64` | `nil` |
-| `validationExpectedBlockHash` | `*string` | `nil` |
-| `validationExpectedBlockNumber` | `*int64` | `nil` |
+
+> **Data-integrity validation** is configured under `networks[].integrity` (not `directiveDefaults`) — an opt-in `level`/`checks`/`profiles` block. The deprecated per-check flags (`validateLogsBloomMatch`, `enforceLogIndexStrictIncrements`, `validateTransactionsRoot`, …) are translated into it at startup. See [Integrity checks](/config/failsafe/integrity).
 
 #### `projects[].networkDefaults` — NetworkDefaults
 
@@ -452,29 +438,21 @@ non-obvious choices.
 }]`}
 />
 
-**4. Disable `validateTransactionsRoot` for non-standard chains.** ZkSync Era and other ZK-rollups omit or zero-fill `transactionsRoot` — eRPC's default validation rejects the response. Set `directiveDefaults` at the network level (not project-wide) so only that chain skips the check:
+**4. Skip data-integrity validation for non-standard chains.** ZkSync Era and other ZK-rollups use a non-standard `transactionsRoot` (and other encodings) the [data-integrity module](/config/failsafe/integrity)'s recompute checks can't model. The module is opt-in, but if you enabled it project-wide, turn it off for that chain — a network `integrity` block overrides the project one:
 
 <ConfigTabs
-  path="projects[].networks[].directiveDefaults"
+  path="projects[].networks[].integrity"
   yaml={`networks:
   - evm: { chainId: 324 }
     alias: zksync-mainnet
-    # directiveDefaults is ALL-OR-NOTHING: setting any field here means
-    # networkDefaults.directiveDefaults is completely ignored for this network
-    directiveDefaults:
-      validateTransactionsRoot: false
-      # Re-state any networkDefaults.directiveDefaults fields you still want
-      retryEmpty: true
-      retryPending: false`}
+    # Override the project-wide integrity level to off for this chain
+    # (or disable just the transactionsRoot checks via integrity.checks).
+    integrity:
+      level: off`}
   ts={`networks: [{
   evm: { chainId: 324 },
   alias: "zksync-mainnet",
-  // directiveDefaults is ALL-OR-NOTHING — re-state shared fields you want kept
-  directiveDefaults: {
-    validateTransactionsRoot: false,
-    retryEmpty: true,
-    retryPending: false,
-  },
+  integrity: { level: "off" },
 }]`}
 />
 
