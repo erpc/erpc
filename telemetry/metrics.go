@@ -320,6 +320,19 @@ var (
 		Help:      "Total number of times a request was skipped due to requested lower bound block being less than upstream's available block range.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "confidence"})
 
+	// MetricIntegrityViolation counts data-integrity check violations by the
+	// individual check id and the verdict applied. "reject" means the response
+	// was converted to a content-validation error and failed over to another
+	// upstream; "soft_flag" means a reorg-sensitive mismatch on unfinalized data
+	// was recorded but the response was still served. Only fires on a violation
+	// (passes/skips are not counted) so cardinality stays low. The denominator
+	// for a violation rate is the existing per-method request counter.
+	MetricIntegrityViolation = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_violation_total",
+		Help:      "Total data-integrity check violations, by check id and verdict (reject = failed over; soft_flag = recorded but served).",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict"})
+
 	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_success_total",

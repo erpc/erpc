@@ -33,11 +33,13 @@ type Recorded struct {
 }
 
 // Result is the outcome of validating a response. Err is non-nil when a check
-// hard-failed (the response must be rejected); Recorded lists soft-flagged
-// reorg-sensitive mismatches the caller should surface but still serve.
+// hard-failed (the response must be rejected) — RejectedCheckID names that
+// check, for metrics. Recorded lists soft-flagged reorg-sensitive mismatches the
+// caller should surface but still serve.
 type Result struct {
-	Err      error
-	Recorded []Recorded
+	Err             error
+	RejectedCheckID string
+	Recorded        []Recorded
 }
 
 // DefaultReorgPolicy is the safe default: a mismatch on finalized data is a
@@ -94,6 +96,7 @@ func Validate(ctx context.Context, in Input) Result {
 
 		if behavior == BehaviorError {
 			res.Err = contentValidation(c, v, in.Upstream)
+			res.RejectedCheckID = c.ID
 			return res
 		}
 		// soft-flag: surface the violation but still serve the response.

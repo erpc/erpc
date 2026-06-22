@@ -6,6 +6,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
 )
 
@@ -155,10 +156,16 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			}
 			res := integrity.Validate(ctx, input)
 			for _, rec := range res.Recorded {
+				telemetry.MetricIntegrityViolation.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, "soft_flag",
+				).Inc()
 				log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).
 					Msg("integrity: recorded reorg-sensitive mismatch on unfinalized block")
 			}
 			if res.Err != nil {
+				telemetry.MetricIntegrityViolation.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject",
+				).Inc()
 				validationErr = res.Err
 				rq.ClearLastValidResponse()
 				return rs, validationErr

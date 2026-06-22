@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +34,8 @@ type integrityTestNetwork struct {
 
 func (n *integrityTestNetwork) Config() *common.NetworkConfig { return n.cfg }
 func (n *integrityTestNetwork) Id() string                    { return "evm:123" }
+func (n *integrityTestNetwork) ProjectId() string             { return "test-project" }
+func (n *integrityTestNetwork) Label() string                 { return "evm:123" }
 
 // indexMagnitudeNetwork enables just the intrinsic logIndex magnitude check.
 func indexMagnitudeNetwork() common.Network {
@@ -86,6 +90,22 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 
 		_, err := HandleUpstreamPostForward(ctx, indexMagnitudeNetwork(), u, req, rs, nil, false)
 		assert.NoError(t, err)
+	})
+
+	t.Run("a rejection increments the integrity_violation metric (check + verdict labels)", func(t *testing.T) {
+		// Unique labels so the delta is isolated from other tests.
+		labels := []string{"test-project", "", "evm:123", "test-upstream", "eth_gettransactionreceipt", "indexMagnitude", "reject"}
+		before := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(labels...))
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"]}`))
+		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), receiptResultBytes(underflowedLogIndexes), nil)
+		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+		_, err := HandleUpstreamPostForward(ctx, indexMagnitudeNetwork(), u, req, rs, nil, false)
+		require.Error(t, err)
+
+		after := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(labels...))
+		assert.Equal(t, before+1, after, "indexMagnitude/reject counter must increment by exactly 1")
 	})
 
 	t.Run("opt-in: with no integrity config, a corrupt receipt is not checked", func(t *testing.T) {
