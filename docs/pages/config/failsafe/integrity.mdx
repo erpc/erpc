@@ -206,10 +206,11 @@ One knob picks a preset over the check catalog. Each level is a superset of the 
     finalized: reject               # reject | soft-flag | off
     unfinalized: soft-flag
 
-  # Override individual checks by id (enable/disable/params/onFailure).
+  # Override individual checks by id (enable / disable / params / onFailure).
   checks:
-    bloomMatch: { params: { mode: superset } }
-    receiptVsBlock: { enabled: false }
+    receiptVsBlock: { enabled: false }          # drop one authoritative check
+    bloomMatch:     { onFailure: soft-flag }     # record instead of reject
+    txHashUniqueness: { params: { strict: "true" } }  # the one check with a param
 
   # Cost cap on the canonical force-fetches the authoritative tier issues.
   budget:
@@ -219,8 +220,9 @@ One knob picks a preset over the check catalog. Each level is a superset of the 
   level: "authoritative",
   invalidBehavior: { finalized: "reject", unfinalized: "soft-flag" },
   checks: {
-    bloomMatch: { params: { mode: "superset" } },
     receiptVsBlock: { enabled: false },
+    bloomMatch: { onFailure: "soft-flag" },
+    txHashUniqueness: { params: { strict: "true" } },
   },
   budget: { maxPerSecond: 50, maxConcurrent: 8 },
 }`}
@@ -235,20 +237,33 @@ recomputes are **chain-safe**: the known-field set is derived from the reference
 (go-ethereum), so a chain with custom header/receipt fields, a system/deposit tx, or a
 hashes-only response is **skipped, never false-flagged**.
 
-**`intrinsic` — self-consistency + commitment (no upstream cost):**
+Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **receipts** = `eth_getBlockReceipts`; **receipt** = `eth_getTransactionReceipt`; **logs** = `eth_getLogs`; **txByHash** = `eth_getTransactionByHash`.
 
-- *Shape:* `schemaConformance` (decode-or-reject), `indexMagnitude` (logIndex/txIndex not int32-underflowed), `headerFieldShapes`, `logFieldShapes`, `bloomEmptiness`.
-- *Structural:* `sameBlockHash`, `txHashUniqueness`, `transactionIndexConsistency`, `logMetadata`, `logIndexContiguity`, `transactionsRootConsistency`, `txFieldUniqueness`, `txBlockInfo`.
-- *Commitment (recompute & compare):* `blockHashRecompute` (keccak(RLP(header))), `transactionsRootRecompute` (tx MPT root), `bloomMatch` (bloom from logs).
-- *Authenticity:* `senderRecovery` (ecrecover the signer == `from`).
+| Check id | Level | Methods | What it catches |
+|---|---|---|---|
+| `schemaConformance` | intrinsic | block, receipts | a result that doesn't decode to the expected shape |
+| `indexMagnitude` | intrinsic | receipt, receipts, logs | `logIndex`/`transactionIndex` int32-underflow (the Amoy incident) |
+| `headerFieldShapes` | intrinsic | block | header hash fields ≠ 32 bytes, `logsBloom` ≠ 256 bytes |
+| `logFieldShapes` | intrinsic | receipts, receipt, logs | log address ≠ 20 bytes, topic count > 4, topic ≠ 32 bytes |
+| `bloomEmptiness` | intrinsic | receipts | logs present but zero bloom (or non-zero bloom with no logs) |
+| `sameBlockHash` | intrinsic | receipts | receipts that don't all share one `blockHash` |
+| `txHashUniqueness` | intrinsic | receipts | duplicate `transactionHash` (param `strict: "true"` also rejects empty) |
+| `transactionIndexConsistency` | intrinsic | receipts | `transactionIndex` ≠ array position |
+| `logMetadata` | intrinsic | receipts | a log's block/tx fields ≠ its parent receipt |
+| `logIndexContiguity` | intrinsic | receipts | global `logIndex` not `0,1,2,…N` across all receipts |
+| `transactionsRootConsistency` | intrinsic | block | `transactionsRoot` ↔ tx-count (phantom-tx-aware) |
+| `txFieldUniqueness` | intrinsic | block | duplicate / non-32-byte tx hashes (hydrated blocks) |
+| `txBlockInfo` | intrinsic | block | `tx.blockHash`/`blockNumber`/`transactionIndex` ≠ header |
+| `bloomMatch` | intrinsic | receipts | `logsBloom` ≠ bloom recomputed from the logs |
+| `blockHashRecompute` | intrinsic | block | `keccak(RLP(header))` ≠ the claimed block hash |
+| `transactionsRootRecompute` | intrinsic | block | the transactions' Merkle-Patricia root ≠ header `transactionsRoot` |
+| `senderRecovery` | intrinsic | txByHash | `ecrecover(signature)` ≠ the reported `from` |
+| `parentHashLinkage` ※ | corroborated | block | block N's `parentHash` ≠ the hash observed for N-1 |
+| `hashStability` ※ | corroborated | block | a block number's hash changed from what was observed |
+| `receiptVsBlock` ※ | authoritative | receipt | a single receipt ≠ the force-fetched canonical block |
+| `receiptsRootRecompute` | authoritative | receipts | receipt MPT root ≠ the header's `receiptsRoot` (force-fetched by hash) |
 
-**`corroborated` — cross-block continuity (passive memory, no upstream cost):**
-
-- `parentHashLinkage` (block N's `parentHash` == observed hash of N-1), `hashStability` (a block number's hash must not change). Backed by a bounded per-network `number→hash` store fed only from blocks your own traffic already pulled through — **never fetches a block sequence**.
-
-**`authoritative` — force-fetch corroboration (budgeted):**
-
-- `receiptVsBlock` (force-fetch the block's canonical receipts; a single receipt must match), `receiptsRootRecompute` (receipt MPT root vs the header's `receiptsRoot`, fetched by block hash). Force-fetches go through the normal network path (cache-backed, recursion-guarded) and are capped by `budget`.
+※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. `corroborated` adds passive cross-block memory (a bounded per-network `number→hash` store fed only from blocks your own traffic already pulled — it **never fetches a block sequence**). `authoritative` force-fetches the canonical block through the normal network path (cache-backed, recursion-guarded), capped by `budget`.
 
 ### Per-finality verdict: `invalidBehavior`
 
@@ -320,6 +335,132 @@ fields, and the non-functional `upstreams[].integrity` block no longer exist —
 | `headerMode` | enum | `off` | `off`/`profiles`/`full` — whether/how `X-ERPC-Integrity` may adjust integrity per request. |
 | `profiles.<name>` | object | — | Named settings (`level`/`checks`/`invalidBehavior`/`budget`) a request may select by name. |
 
+### Worked examples — real-world scenarios
+
+**1. Free structural hardening for an indexer (the common starting point).** Catch malformed / cryptographically-inconsistent data with zero extra upstream calls — bad responses fail over to another upstream before they reach your database:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic`}
+  ts={`integrity: { level: "intrinsic" }`}
+/>
+
+**2. One default for the whole project, stronger on a high-value network.** A project-wide block applies to every network; a network block overrides it field-by-field:
+
+<ConfigTabs path="projects[]"
+  yaml={`integrity:
+  level: intrinsic           # project-wide default
+networks:
+  - evm: { chainId: 1 }
+    integrity:
+      level: authoritative   # mainnet gets force-fetch corroboration`}
+  ts={`integrity: { level: "intrinsic" },
+networks: [{ evm: { chainId: 1 }, integrity: { level: "authoritative" } }]`}
+/>
+
+**3. Strongest guarantees, cost-bounded.** `authoritative` force-fetches the canonical block to corroborate single receipts and recompute the receipts root. Cap the fetch rate, and skip corroboration on the volatile tip (where a mismatch is usually a reorg, not corruption):
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: authoritative
+  invalidBehavior:
+    finalized: reject
+    unfinalized: off       # don't force-fetch / corroborate the hot tip
+  budget:
+    maxPerSecond: 50
+    maxConcurrent: 8`}
+  ts={`integrity: {
+  level: "authoritative",
+  invalidBehavior: { finalized: "reject", unfinalized: "off" },
+  budget: { maxPerSecond: 50, maxConcurrent: 8 },
+}`}
+/>
+
+**4. Cross-block / cache correctness.** `corroborated` adds parent-hash linkage and hash-stability over blocks you've already seen — catching a node serving a block that doesn't link to the chain you were served before. Still no extra upstream calls:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: corroborated`}
+  ts={`integrity: { level: "corroborated" }`}
+/>
+
+**5. Safe rollout — observe before you enforce.** Set everything to `soft-flag` first: violations are recorded (a `WARN` log + the `validation` metrics bucket) but the response is still served, so you can measure your upstreams' data quality without failing traffic. Once it's quiet, flip `finalized` back to `reject`:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic
+  invalidBehavior:
+    finalized: soft-flag     # record, don't reject — flip to 'reject' after rollout
+    unfinalized: soft-flag`}
+  ts={`integrity: {
+  level: "intrinsic",
+  invalidBehavior: { finalized: "soft-flag", unfinalized: "soft-flag" },
+}`}
+/>
+
+`invalidBehavior` only governs the reorg-sensitive checks (the ※ rows). To soft-flag a *deterministic* check during rollout, give it `onFailure: soft-flag` — e.g. `checks: { bloomMatch: { onFailure: soft-flag } }`.
+
+**6. Non-standard chain — leave it off.** ZK-rollups and chains with custom encodings: the recompute checks already skip what they can't model, but the simplest answer is to not enable the module for that network (it's off by default — this is only needed if you turned it on project-wide):
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`networks:
+  - evm: { chainId: 324 }     # zkSync Era
+    integrity:
+      level: off`}
+  ts={`networks: [{ evm: { chainId: 324 }, integrity: { level: "off" } }]`}
+/>
+
+**7. Per-tenant strictness via profiles + header.** Define named presets and let callers pick one per request (without letting them set arbitrary levels):
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic           # the default for callers who send no header
+  headerMode: profiles       # off | profiles | full
+  profiles:
+    strict:  { level: authoritative }
+    relaxed: { level: off }`}
+  ts={`integrity: {
+  level: "intrinsic",
+  headerMode: "profiles",
+  profiles: { strict: { level: "authoritative" }, relaxed: { level: "off" } },
+}`}
+/>
+
+```
+X-ERPC-Integrity: strict       # or  ?integrity=strict
+```
+
+**8. Add or drop a single check around a level.** Levels are presets — fine-tune with `checks`:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  level: intrinsic
+  checks:
+    receiptVsBlock: { enabled: true }    # pull one authoritative check up to intrinsic
+    bloomMatch:     { enabled: false }   # …and drop one you don't want`}
+  ts={`integrity: {
+  level: "intrinsic",
+  checks: { receiptVsBlock: { enabled: true }, bloomMatch: { enabled: false } },
+}`}
+/>
+
+Enabling an authoritative check (like `receiptVsBlock`) at a lower level turns on its force-fetch — set a `budget` too.
+
+**9. Migrating from the old `validate*` flags.** If your config still sets the deprecated `directiveDefaults.validateLogsBloomMatch: true` (etc.), they're translated into `integrity.checks` automatically at startup — nothing breaks. To make it explicit (recommended), move them into an `integrity` block:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`# old (still works, auto-translated at startup):
+#   directiveDefaults: { validateLogsBloomMatch: true, enforceLogIndexStrictIncrements: true }
+# new (explicit):
+integrity:
+  checks:
+    bloomMatch:         { enabled: true }
+    logIndexContiguity: { enabled: true }`}
+  ts={`integrity: {
+  checks: { bloomMatch: { enabled: true }, logIndexContiguity: { enabled: true } },
+}`}
+/>
+
 ### Request/response behavior
 
 - Violations produce `ErrEndpointContentValidation` — HTTP 200 with JSON-RPC error body `{"code": -32603}`. Retryable at network scope (try another upstream), not at the same upstream. <SourceLink file="common/errors.go" lines="2719-2747" />
@@ -328,11 +469,15 @@ fields, and the non-functional `upstreams[].integrity` block no longer exist —
 
 ### Best practices
 
-- **Start at `level: intrinsic`.** It's free (no extra upstream calls) and catches malformed/self-inconsistent data plus the cryptographic recompute checks.
-- **Use `authoritative` only where data quality warrants it**, and set a `budget` — it force-fetches the canonical block (one fetch per cold block, cache-amortized).
-- **Leave `invalidBehavior.unfinalized` at `soft-flag`** (or `off` to save the hot-tip force-fetch) — rejecting unfinalized mismatches would reject benign reorgs.
+- **Start at `level: intrinsic`.** It's free (no extra upstream calls) and catches malformed/self-inconsistent data plus the cryptographic recompute checks. Most teams never need more.
+- **Roll out with `soft-flag`, then flip to `reject`.** Run `invalidBehavior: { finalized: soft-flag, unfinalized: soft-flag }` (and `onFailure: soft-flag` on any deterministic checks you're unsure about) first, watch the metrics for a few days, then enforce. This avoids failing real traffic on day one if an upstream has a quirk you didn't anticipate.
+- **Use `authoritative` only where data quality warrants it**, and always set a `budget` — it force-fetches the canonical block (one fetch per *cold* block, cache-amortized). Pair it with `invalidBehavior.unfinalized: off` to skip the force-fetch on the hot tip.
+- **Leave `invalidBehavior.unfinalized` at `soft-flag` (or `off`)** — rejecting unfinalized mismatches would reject benign reorgs. Only finalized data is safe to hard-reject on a cross-observation mismatch.
+- **It needs ≥2 upstreams to be useful.** A `reject` is a *failover* signal (`ErrEndpointContentValidation` is retryable toward the network) — with a single upstream it just surfaces an error. Pair integrity with a [retry](/config/failsafe/retry) policy.
+- **It's defense-in-depth with [consensus](/config/failsafe/consensus).** Consensus catches a *minority* bad upstream; integrity catches the case consensus can't see — when *every* serving upstream returns the same wrong value (shared client/indexer bug). High-value paths use both.
 - **Skip the module on non-standard chains** (ZK-rollups with custom encodings). The recompute checks are chain-safe (they skip what they can't model), but if a chain's normal data looks "custom", just leave `integrity` off for it and keep Layer-1 enforcement.
-- **Profiles, not free-form, for untrusted callers** — `headerMode: profiles` lets callers pick a named preset without setting arbitrary levels.
+- **Profiles, not free-form, for untrusted callers** — `headerMode: profiles` lets callers pick a named preset without setting arbitrary levels; `headerMode: off` (default) ignores the header entirely.
+- **Watch the rollout, then the steady state.** A persistent stream of recorded-mismatch `WARN` logs / `validation`-bucket metrics for one upstream means that provider's data quality is poor — down-weight or remove it.
 
 ### Edge cases & gotchas
 
