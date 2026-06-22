@@ -85,7 +85,7 @@ func TestBlockdaemonVendor_GenerateConfigs(t *testing.T) {
 		})
 	}
 
-	t.Run("passes through preset endpoint", func(t *testing.T) {
+	t.Run("passes through preset endpoint with apiKey", func(t *testing.T) {
 		ups := &common.UpstreamConfig{
 			Endpoint: "https://svc.blockdaemon.com/base/mainnet/native/http-rpc",
 			Evm:      &common.EvmUpstreamConfig{ChainId: 8453},
@@ -94,6 +94,19 @@ func TestBlockdaemonVendor_GenerateConfigs(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Len(t, cfgs, 1)
 		assert.Equal(t, ups.Endpoint, cfgs[0].Endpoint)
+		// apiKey is ignored when endpoint is already set; caller manages their own auth
+		assert.Empty(t, cfgs[0].JsonRpc.Headers["Authorization"])
+	})
+
+	t.Run("passes through preset endpoint without apiKey", func(t *testing.T) {
+		ups := &common.UpstreamConfig{
+			Endpoint: "https://svc.blockdaemon.com/ethereum/mainnet/native",
+			JsonRpc:  &common.JsonRpcUpstreamConfig{Headers: map[string]string{"Authorization": "Bearer pre-set"}},
+		}
+		cfgs, err := vendor.GenerateConfigs(ctx, &logger, ups, common.VendorSettings{})
+		assert.NoError(t, err)
+		assert.Len(t, cfgs, 1)
+		assert.Equal(t, "Bearer pre-set", cfgs[0].JsonRpc.Headers["Authorization"])
 	})
 }
 
