@@ -128,7 +128,7 @@ func TestMigrateLegacyIntegrityChecks(t *testing.T) {
 	t.Run("deprecated directive-default flags become integrity checks", func(t *testing.T) {
 		n := &NetworkConfig{
 			Architecture:      "evm",
-			DirectiveDefaults: &DirectiveDefaultsConfig{ValidateLogsBloomMatch: &tru, EnforceLogIndexStrictIncrements: &tru},
+			DirectiveDefaults: &DirectiveDefaultsConfig{DeprecatedValidateLogsBloomMatch: &tru, DeprecatedEnforceLogIndexStrictIncrements: &tru},
 		}
 		migrateLegacyIntegrityChecks(n)
 		require.NotNil(t, n.Integrity)
@@ -141,7 +141,7 @@ func TestMigrateLegacyIntegrityChecks(t *testing.T) {
 	t.Run("explicit integrity config wins over the legacy flag", func(t *testing.T) {
 		fls := false
 		n := &NetworkConfig{
-			DirectiveDefaults: &DirectiveDefaultsConfig{ValidateLogsBloomMatch: &tru},
+			DirectiveDefaults: &DirectiveDefaultsConfig{DeprecatedValidateLogsBloomMatch: &tru},
 			Integrity: &IntegrityConfig{IntegritySettings: IntegritySettings{
 				Checks: map[string]*IntegrityCheckConfig{"bloomMatch": {Enabled: &fls}},
 			}},
@@ -154,5 +154,14 @@ func TestMigrateLegacyIntegrityChecks(t *testing.T) {
 		n := &NetworkConfig{DirectiveDefaults: &DirectiveDefaultsConfig{}}
 		migrateLegacyIntegrityChecks(n)
 		assert.Nil(t, n.Integrity)
+	})
+
+	t.Run("SetDefaults does not enable any data-integrity check (opt-in)", func(t *testing.T) {
+		dd := &DirectiveDefaultsConfig{}
+		require.NoError(t, dd.SetDefaults())
+		assert.Nil(t, dd.DeprecatedValidateTransactionsRoot, "deprecated validation flags must not be defaulted on")
+		n := &NetworkConfig{DirectiveDefaults: dd}
+		migrateLegacyIntegrityChecks(n)
+		assert.Nil(t, n.Integrity, "a defaulted network must run no integrity checks")
 	})
 }

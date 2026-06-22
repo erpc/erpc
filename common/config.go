@@ -1045,6 +1045,9 @@ type ShadowUpstreamConfig struct {
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
+// Deprecated: UpstreamIntegrityConfig is a non-functional legacy stub (never
+// read at runtime). Configure data integrity via the network `integrity` block.
+// Retained only so existing YAML still parses.
 type UpstreamIntegrityConfig struct {
 	EthGetBlockReceipts *UpstreamIntegrityEthGetBlockReceiptsConfig `yaml:"eth_getBlockReceipts,omitempty" json:"eth_getBlockReceipts"`
 }
@@ -1191,9 +1194,11 @@ type EvmUpstreamConfig struct {
 	// arbtrace_filter requests whose block range exceeds this value into contiguous
 	// sub-requests executed concurrently and merged before returning. Zero disables
 	// the feature.
-	TraceFilterAutoSplittingRangeThreshold int64                    `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
-	SkipWhenSyncing                        *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	Integrity                              *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	TraceFilterAutoSplittingRangeThreshold int64 `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
+	SkipWhenSyncing                        *bool `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	// Deprecated: never read at runtime. Configure data integrity via the network
+	// `integrity` block instead. Retained only so existing YAML still parses.
+	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
 	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
 	NodeType EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
@@ -1322,8 +1327,8 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v
 	}
-	if c.Integrity != nil {
-		copied.Integrity = c.Integrity.Copy()
+	if c.DeprecatedIntegrity != nil {
+		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
 	}
 	if c.DeprecatedGetLogsSplitOnError != nil {
 		v := *c.DeprecatedGetLogsSplitOnError
@@ -2178,40 +2183,32 @@ type DirectiveDefaultsConfig struct {
 	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 
-	// ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
-	// Defaults to true. Disable for non-standard chains that use unusual trie roots.
-	ValidateTransactionsRoot *bool `yaml:"validateTransactionsRoot,omitempty" json:"validateTransactionsRoot"`
-
-	// Validation: Header Field Lengths
-	ValidateHeaderFieldLengths *bool `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
-
-	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
-	ValidateTransactionFields    *bool `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`
-	ValidateTransactionBlockInfo *bool `yaml:"validateTransactionBlockInfo,omitempty" json:"validateTransactionBlockInfo"`
-
-	// Validation: Receipts & Logs
-	EnforceLogIndexStrictIncrements *bool `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
-	ValidateTxHashUniqueness        *bool `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
-	ValidateTransactionIndex        *bool `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
-	ValidateLogFields               *bool `yaml:"validateLogFields,omitempty" json:"validateLogFields"`
-
-	// Validation: Bloom Filter (simplified to 2 checks)
-	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
-	ValidateLogsBloomEmptiness *bool `yaml:"validateLogsBloomEmptiness,omitempty" json:"validateLogsBloomEmptiness"`
-	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
-	ValidateLogsBloomMatch *bool `yaml:"validateLogsBloomMatch,omitempty" json:"validateLogsBloomMatch"`
-
-	// Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
-	ValidateReceiptTransactionMatch *bool `yaml:"validateReceiptTransactionMatch,omitempty" json:"validateReceiptTransactionMatch"`
-	ValidateContractCreation        *bool `yaml:"validateContractCreation,omitempty" json:"validateContractCreation"`
-
-	// Validation: numeric checks
-	ReceiptsCountExact   *int64 `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`
-	ReceiptsCountAtLeast *int64 `yaml:"receiptsCountAtLeast,omitempty" json:"receiptsCountAtLeast"`
-
-	// Validation: Expected Ground Truths
-	ValidationExpectedBlockHash   *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
-	ValidationExpectedBlockNumber *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
+	// --- Deprecated data-integrity validation flags ---
+	//
+	// Deprecated: data integrity is now configured via the `integrity` block
+	// (projects[].integrity / networks[].integrity). These per-check flags are
+	// retained only so existing YAML still parses. At startup the flags that map
+	// to a current check are translated into `integrity.checks` by
+	// migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
+	// they are NOT read at runtime. The receipt-count / expected-block /
+	// receipt-to-transaction flags have no equivalent in the new model and are
+	// accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
+	DeprecatedValidateTransactionsRoot        *bool   `yaml:"validateTransactionsRoot,omitempty" json:"validateTransactionsRoot"`
+	DeprecatedValidateHeaderFieldLengths      *bool   `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
+	DeprecatedValidateTransactionFields       *bool   `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`
+	DeprecatedValidateTransactionBlockInfo    *bool   `yaml:"validateTransactionBlockInfo,omitempty" json:"validateTransactionBlockInfo"`
+	DeprecatedEnforceLogIndexStrictIncrements *bool   `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
+	DeprecatedValidateTxHashUniqueness        *bool   `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
+	DeprecatedValidateTransactionIndex        *bool   `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
+	DeprecatedValidateLogFields               *bool   `yaml:"validateLogFields,omitempty" json:"validateLogFields"`
+	DeprecatedValidateLogsBloomEmptiness      *bool   `yaml:"validateLogsBloomEmptiness,omitempty" json:"validateLogsBloomEmptiness"`
+	DeprecatedValidateLogsBloomMatch          *bool   `yaml:"validateLogsBloomMatch,omitempty" json:"validateLogsBloomMatch"`
+	DeprecatedValidateReceiptTransactionMatch *bool   `yaml:"validateReceiptTransactionMatch,omitempty" json:"validateReceiptTransactionMatch"`
+	DeprecatedValidateContractCreation        *bool   `yaml:"validateContractCreation,omitempty" json:"validateContractCreation"`
+	DeprecatedReceiptsCountExact              *int64  `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`
+	DeprecatedReceiptsCountAtLeast            *int64  `yaml:"receiptsCountAtLeast,omitempty" json:"receiptsCountAtLeast"`
+	DeprecatedValidationExpectedBlockHash     *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
+	DeprecatedValidationExpectedBlockNumber   *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
 }
 
 func (d *DirectiveDefaultsConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {

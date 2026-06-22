@@ -1520,9 +1520,9 @@ func (d *DirectiveDefaultsConfig) SetDefaults() error {
 	if d.EnforceNonNullTaggedBlocks == nil {
 		d.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
 	}
-	if d.ValidateTransactionsRoot == nil {
-		d.ValidateTransactionsRoot = util.BoolPtr(true)
-	}
+	// Note: the deprecated data-integrity validation flags are intentionally NOT
+	// defaulted on — data integrity is opt-in via the `integrity` config. An
+	// explicitly-set deprecated flag is translated by migrateLegacyIntegrityChecks.
 	return nil
 }
 
@@ -1616,10 +1616,11 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if u.Grpc == nil && defaults.Grpc != nil {
 		u.Grpc = defaults.Grpc.Copy()
 	}
-	// Integrity moved under Evm.Integrity
+	// Deprecated upstream integrity stub (never read at runtime) — copy from
+	// defaults only so existing YAML keeps parsing.
 	if u.Evm != nil && defaults.Evm != nil {
-		if u.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
-			u.Evm.Integrity = defaults.Evm.Integrity.Copy()
+		if u.Evm.DeprecatedIntegrity == nil && defaults.Evm.DeprecatedIntegrity != nil {
+			u.Evm.DeprecatedIntegrity = defaults.Evm.DeprecatedIntegrity.Copy()
 		}
 	}
 	if u.AllowMethods == nil && defaults.AllowMethods != nil {
@@ -2043,16 +2044,16 @@ func migrateLegacyIntegrityChecks(n *NetworkConfig) {
 		return
 	}
 	legacy := map[string]*bool{
-		"bloomMatch":                  dd.ValidateLogsBloomMatch,
-		"bloomEmptiness":              dd.ValidateLogsBloomEmptiness,
-		"logIndexContiguity":          dd.EnforceLogIndexStrictIncrements,
-		"transactionsRootConsistency": dd.ValidateTransactionsRoot,
-		"headerFieldShapes":           dd.ValidateHeaderFieldLengths,
-		"txFieldUniqueness":           dd.ValidateTransactionFields,
-		"txBlockInfo":                 dd.ValidateTransactionBlockInfo,
-		"txHashUniqueness":            dd.ValidateTxHashUniqueness,
-		"transactionIndexConsistency": dd.ValidateTransactionIndex,
-		"logFieldShapes":              dd.ValidateLogFields,
+		"bloomMatch":                  dd.DeprecatedValidateLogsBloomMatch,
+		"bloomEmptiness":              dd.DeprecatedValidateLogsBloomEmptiness,
+		"logIndexContiguity":          dd.DeprecatedEnforceLogIndexStrictIncrements,
+		"transactionsRootConsistency": dd.DeprecatedValidateTransactionsRoot,
+		"headerFieldShapes":           dd.DeprecatedValidateHeaderFieldLengths,
+		"txFieldUniqueness":           dd.DeprecatedValidateTransactionFields,
+		"txBlockInfo":                 dd.DeprecatedValidateTransactionBlockInfo,
+		"txHashUniqueness":            dd.DeprecatedValidateTxHashUniqueness,
+		"transactionIndexConsistency": dd.DeprecatedValidateTransactionIndex,
+		"logFieldShapes":              dd.DeprecatedValidateLogFields,
 	}
 	for id, flag := range legacy {
 		if flag == nil || !*flag {
