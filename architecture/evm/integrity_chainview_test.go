@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,28 @@ func TestChainView(t *testing.T) {
 	t.Run("zero window falls back to default", func(t *testing.T) {
 		c := newChainView(nil, 0)
 		assert.Equal(t, defaultReorgWindow, c.window)
+	})
+
+	// Fetch-once foundation: a cached header is served WITHOUT a fetch. The nil
+	// network proves it — any resolve() would fail, so a hit must come from cache.
+	t.Run("header cache hit serves without fetching", func(t *testing.T) {
+		c := newChainView(nil, 8)
+		h := &integrity.Header{Hash: "0xbb", Number: "0x10"}
+		c.observe(0x10, "0xbb", h)
+
+		byHash, ok := c.headerByHash(context.Background(), "0xbb")
+		require.True(t, ok)
+		assert.Equal(t, "0xbb", byHash.Hash)
+
+		byNum, ok := c.headerByNumber(context.Background(), 0x10, "0x10")
+		require.True(t, ok)
+		assert.Equal(t, "0xbb", byNum.Hash)
+	})
+
+	t.Run("cache miss with no network fails closed", func(t *testing.T) {
+		c := newChainView(nil, 8)
+		_, ok := c.headerByHash(context.Background(), "0xunknown")
+		assert.False(t, ok)
 	})
 }
 
