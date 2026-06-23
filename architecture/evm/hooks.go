@@ -218,9 +218,13 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				rq.ClearLastValidResponse()
 				return rs, validationErr
 			}
-			// Feed continuity history with this validated block.
+			// Feed the ChainView with this validated response: block responses
+			// populate pin+header; narrow responses (receipts/tx) pin the number→hash
+			// for FINALIZED blocks only (tip-thrash safety).
 			if isBlockMethod(methodLower) {
 				observeBlockView(ctx, view, rs)
+			} else if isAnchoredNarrowMethod(methodLower) {
+				observeNarrowView(ctx, view, u, rs)
 			}
 		}
 	}

@@ -100,6 +100,66 @@ func TestChainView(t *testing.T) {
 	})
 }
 
+func TestChainView_Receipts(t *testing.T) {
+	t.Run("receipts cache hit serves without fetching", func(t *testing.T) {
+		c := newChainView(nil, 8) // nil network → any fetch would fail
+		c.observeReceipts("0xbb", []integrity.Receipt{{TransactionHash: "0xaa", BlockHash: "0xbb"}})
+		got, ok := c.receiptsByHash(context.Background(), "0xbb")
+		require.True(t, ok)
+		require.Len(t, got, 1)
+		assert.Equal(t, "0xaa", got[0].TransactionHash)
+	})
+
+	t.Run("receipts cache miss with no network fails closed", func(t *testing.T) {
+		c := newChainView(nil, 8)
+		_, ok := c.receiptsByHash(context.Background(), "0xunknown")
+		assert.False(t, ok)
+	})
+
+	t.Run("receipts evicted with the window", func(t *testing.T) {
+		c := newChainView(nil, 2)
+		for i := 0; i < c.window+cacheSlack+2; i++ {
+			c.observeReceipts(fmt.Sprintf("0x%d", i), []integrity.Receipt{{TransactionHash: "0xaa"}})
+		}
+		_, ok := c.receiptsByHash(context.Background(), "0x0") // oldest → evicted, nil network
+		assert.False(t, ok, "oldest receipts should be evicted")
+	})
+}
+
+func TestChainView_NarrowAnchors(t *testing.T) {
+	t.Run("finalized block → pinned", func(t *testing.T) {
+		c := newChainView(nil, 32)
+		c.observeNarrowAnchors(0x20, []byte(`{"blockNumber":"0x10","blockHash":"0xbb","transactionHash":"0xaa"}`))
+		v, ok := c.HashAt(0x10)
+		require.True(t, ok)
+		assert.Equal(t, "0xbb", v)
+	})
+
+	t.Run("unfinalized block → not pinned (tip-thrash safety)", func(t *testing.T) {
+		c := newChainView(nil, 32)
+		c.observeNarrowAnchors(0x20, []byte(`{"blockNumber":"0x30","blockHash":"0xcc"}`)) // 0x30 > fin 0x20
+		_, ok := c.HashAt(0x30)
+		assert.False(t, ok)
+	})
+
+	t.Run("finality unknown (fin<=0) → no-op", func(t *testing.T) {
+		c := newChainView(nil, 32)
+		c.observeNarrowAnchors(0, []byte(`{"blockNumber":"0x10","blockHash":"0xbb"}`))
+		_, ok := c.HashAt(0x10)
+		assert.False(t, ok)
+	})
+
+	t.Run("array response (block receipts) → each finalized anchor pinned", func(t *testing.T) {
+		c := newChainView(nil, 32)
+		c.observeNarrowAnchors(0x20, []byte(`[{"blockNumber":"0x10","blockHash":"0xbb"},{"blockNumber":"0x11","blockHash":"0xbb"}]`))
+		v, ok := c.HashAt(0x10)
+		require.True(t, ok)
+		assert.Equal(t, "0xbb", v)
+		_, ok = c.HashAt(0x11)
+		assert.True(t, ok)
+	})
+}
+
 func TestObserveBlockView(t *testing.T) {
 	c := newChainView(nil, 8)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))

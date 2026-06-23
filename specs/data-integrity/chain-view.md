@@ -42,29 +42,50 @@ and a stateful check is active:
 
 ```
 type chainView struct {
-    mu          sync.RWMutex
-    canonical   map[int64]string          // number → committed hash (the "pin")
-    headers     map[string]*Header        // hash → header (content-addressed, immutable)
-    headerOrder []string                  // FIFO for header eviction
-    tip         int64                     // highest number observed (eviction anchor)
-    window      int                       // default 32, per-network override
-    inflight    map[string]*headerFlight  // inline singleflight: each block fetched once
+    mu            sync.RWMutex
+    canonical     map[int64]string           // number → committed hash (the "pin")
+    headers       map[string]*Header         // hash → header (content-addressed, immutable)
+    headerOrder   []string                   // FIFO for header eviction
+    receipts      map[string][]Receipt       // hash → canonical receipts (immutable)
+    receiptsOrder []string                   // FIFO for receipts eviction
+    tip           int64                      // highest number observed (eviction anchor)
+    window        int                        // default 32, per-network override
+    hInflight     map[string]*flight[*Header]  // singleflight: each header fetched once
+    rInflight     map[string]*flight[[]Receipt] // singleflight: each block's receipts once
 }
 ```
 
-`headers` holds headers only (small) — all the checks need is the *anchor*
-(the block's hash, parentHash, receiptsRoot); bodies/receipts are recomputed from
-the *response*. Extensible to cache bodies later behind the same window.
+`headers` + `receipts` are content-addressed by block hash (immutable), window-bounded.
+A generic `flight[T]`/`doOnce[T]` singleflight serves both so a block's header *and* its
+receipts are each fetched at most once. Bodies/tx aren't cached — the checks recompute
+those from the *response*; extensible behind the same window if a check ever needs them.
 
 ## Operations
 
-- **Observe(number, hash, header)** — called from the post-forward hook for every
-  forwarded response carrying chain data (user *and* aux). Upserts `headers[hash]`,
-  links `canonical[number] = hash`, runs the reorg check, evicts past the window.
-- **HashAt(number) → (hash, ok)** — the pin, for `hashStability` / `parentHashLinkage`.
-- **HeaderByHash(ctx, hash) → header** / **HeaderByNumber(ctx, number) → header** —
-  store hit → return in-memory; miss → `singleflight` → `network.Forward` once →
-  `Observe` → return. This is the dedup ("fetch once").
+- **observe(number, hash, header)** — pin + (optional) header upsert; runs the reorg
+  check; evicts past the window. Fed from validated **block** responses.
+- **observeNarrowAnchors(fin, body)** — pin `number→hash` from a **narrow** response
+  (receipts/tx), but **only for finalized blocks** (`number ≤ fin`). A single narrow
+  response must not redefine the canonical block for N at a jittery tip (thrash);
+  finalized is settled, so this is safe and gives cross-receipt consistency even for
+  blocks no `getBlock` pulled.
+- **observeReceipts(hash, receipts)** — cache a block's canonical receipts by hash.
+- **HashAt(number)** — the pin, for `hashStability` / `parentHashLinkage` / the
+  `receiptVsBlock` pin check.
+- **headerByHash / headerByNumber / receiptsByHash** — store hit → return in-memory;
+  miss → `singleflight` → `network.Forward` **once** → cache → return.
+
+### Contribution & dedup (Q1 / Q3)
+
+- **All traffic contributes.** Block responses feed pin+header; narrow responses feed
+  the finalized pin (above) and warm the by-hash receipts/header caches when a check
+  resolves them. Observe runs only on a **passing** validation, so a rejected/corrupt
+  response never poisons the store.
+- **Fetched once, no matter how.** Two layers: (1) the ChainView singleflight collapses
+  concurrent misses per key; (2) `network.Forward` itself multiplexes on `CacheHash()`
+  (method+params, ignoring `IsInternal`), so an internal fetch coalesces with any
+  concurrent **user** request for the same block. All check fetches go by hash → one
+  keyspace → block N's header and receipts each hit the upstream once.
 
 ## Reorg algorithm (in Observe)
 
