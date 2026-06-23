@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
@@ -154,7 +155,11 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			if hist != nil {
 				input.History = hist
 			}
+			vStart := time.Now()
 			res := integrity.Validate(ctx, input)
+			// Time spent on data-checks + aux force-fetches (which run inside
+			// Validate) — the latency overhead this attempt added to the request.
+			rq.AddIntegrityOverhead(time.Since(vStart))
 			// Per-check attempts/outcomes (pass/reject/soft_flag/off) — sum = total
 			// attempts. Higher volume than the violation counter below.
 			for _, oc := range res.Outcomes {

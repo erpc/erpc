@@ -135,6 +135,13 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	resp, err := p.doForward(ctx, network, nq)
 
+	// Per-request integrity latency overhead (data-checks + aux force-fetches the
+	// request waited on, summed across attempts). Recorded for both success and
+	// failure outcomes; excludes failover latency from rejections.
+	if oh := nq.IntegrityOverhead(); oh > 0 {
+		telemetry.ObserverHandle(telemetry.MetricIntegrityOverhead, p.Config.Id, network.Label(), method).Observe(oh.Seconds())
+	}
+
 	shadowUpstreams := network.ShadowUpstreams()
 	if len(shadowUpstreams) > 0 {
 		if resp != nil {

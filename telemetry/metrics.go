@@ -817,6 +817,7 @@ var (
 	MetricCacheGetErrorDuration               *LabeledHistogram
 	MetricRateLimiterRemoteDuration           *LabeledHistogram
 	MetricUpstreamResponseSizeBytes           *LabeledHistogram
+	MetricIntegrityOverhead                   *LabeledHistogram
 )
 
 // buildFilterAwareHistograms creates every LabeledHistogram using the current
@@ -842,6 +843,18 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
+
+	// Per-request integrity latency overhead — the time a request waited on
+	// integrity data-checks plus aux force-fetches (canonical header/receipts),
+	// summed across attempts; excludes failover latency from rejections. Uses the
+	// same config-driven buckets as the other latency metrics so its quantiles are
+	// consistent and operator-tunable.
+	MetricIntegrityOverhead = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "integrity_overhead_seconds",
+		Help:      "Per-request latency overhead added by integrity checks (data-checks + aux force-fetches the request waited on).",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category"})
 
 	MetricNetworkEvmGetLogsRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -1000,6 +1013,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 
 	MetricUpstreamRequestDuration = registerOrReuse(MetricUpstreamRequestDuration)
 	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
+	MetricIntegrityOverhead = registerOrReuse(MetricIntegrityOverhead)
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
 	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
 	MetricNetworkHedgeDelaySeconds = registerOrReuse(MetricNetworkHedgeDelaySeconds)

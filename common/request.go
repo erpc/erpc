@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
@@ -189,6 +190,7 @@ type NormalizedRequest struct {
 	lastValidResponse      atomic.Pointer[NormalizedResponse]
 	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
 	integrityRejectedCheck atomic.Value // id of the last check that rejected (the "why")
+	integrityOverheadNs    atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
 	lastUpstream           atomic.Value
 	evmBlockRef            atomic.Value
 	evmBlockNumber         atomic.Value
@@ -355,6 +357,23 @@ func (r *NormalizedRequest) IntegrityRejectedCheck() string {
 		return v.(string)
 	}
 	return ""
+}
+
+// AddIntegrityOverhead accumulates time the request waited on integrity work
+// (data-checks + aux force-fetches). Called once per upstream attempt; the total
+// is observed at the end of the request.
+func (r *NormalizedRequest) AddIntegrityOverhead(d time.Duration) {
+	if r != nil && d > 0 {
+		r.integrityOverheadNs.Add(int64(d))
+	}
+}
+
+// IntegrityOverhead returns the total time the request spent on integrity work.
+func (r *NormalizedRequest) IntegrityOverhead() time.Duration {
+	if r == nil {
+		return 0
+	}
+	return time.Duration(r.integrityOverheadNs.Load())
 }
 
 func (r *NormalizedRequest) Network() Network {

@@ -198,6 +198,8 @@ func TestIntegrity_Network_SavedRequestFlagged(t *testing.T) {
 
 	assert.True(t, req.IntegrityCaught(),
 		"a reject-then-recover request must be flagged so project.Forward counts it as saved")
+	assert.Positive(t, req.IntegrityOverhead(),
+		"the request records the integrity check + aux-fetch latency it waited on")
 	jrr, err := resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
 	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
