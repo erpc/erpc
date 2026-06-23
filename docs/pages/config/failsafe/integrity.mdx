@@ -482,10 +482,22 @@ integrity:
 ### Edge cases & gotchas
 
 1. **Opt-in means opt-in.** No `integrity:` block ⇒ zero data-integrity checks (Layer 1 enforcement still runs). Deploying this version changes nothing until you add the block.
-2. **Recompute checks skip rather than false-flag.** A header/receipt with a field the reference encoder doesn't know, a system/deposit tx, or a hashes-only block response is skipped — never rejected.
+2. **Recompute checks skip rather than false-flag** — *almost always*. A header/receipt with a field the reference encoder doesn't know, a system/deposit tx, or a hashes-only block response is skipped, never rejected. The one case the skip-guard can't catch is #6.
 3. **Continuity never fetches.** `parentHashLinkage`/`hashStability` only compare against blocks already observed (bounded per-network `number→hash` store); an unseen parent skips the check.
 4. **`authoritative` force-fetches are recursion-guarded** (marked internal, skipped by the engine) and budgeted; on budget exhaustion the corroboration check no-ops.
 5. **Project⊕network precedence.** A project-wide `integrity:` applies to all networks; a network block overrides field-by-field (profiles unioned).
+6. **Some chains need recompute checks disabled — proven: HyperEVM (chainId 999).** A chain whose `eth_getBlock` keeps *system transactions* in the header's `transactionsRoot` but omits them from the returned `transactions` list will **systematically** fail `transactionsRootRecompute` (and, by the same mechanism, `receiptsRootRecompute`) — even though every returned tx is valid. The skip-guard in #2 can't catch it: each individual tx hash verifies, only the Merkle root differs. This is a chain representation quirk, **not corruption**. Disable the affected check(s) on that network — the level preset stays, the one check is turned off:
+   ```yaml
+   networks:
+     - evm:
+         chainId: 999          # HyperEVM
+       integrity:
+         level: authoritative
+         checks:
+           transactionsRootRecompute: { enabled: false }   # confirmed in production
+           receiptsRootRecompute:     { enabled: false }   # same mechanism — disable if you run authoritative receipt corroboration
+   ```
+   **Diagnostic rule of thumb:** if `erpc_integrity_violation_total{check="…Recompute"}` rejects across *every* upstream of one chain, it's the check, not the data — disable that check for that chain (and consider opening an issue so it can be added to this list).
 
 ### Source code entry points
 
