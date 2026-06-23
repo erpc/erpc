@@ -13,6 +13,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// maxTraceResponseBytes caps the validated-response body recorded on integrity
+// spans in detailed tracing mode (for by-hand sanity checks). Larger bodies are
+// truncated — re-fetch by block number for the full payload.
+const maxTraceResponseBytes = 128 * 1024
+
 // HandleProjectPreForward is the early pre-forward hook executed at project layer
 // before cache and before upstream selection. Use this for transformations that
 // affect cache hash or short-circuit results without upstream context.
@@ -169,6 +174,20 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			res := integrity.Validate(vctx, input)
 			rq.AddIntegrityOverhead(time.Since(vStart))
 			annotateIntegritySpan(span, res)
+			// For a by-hand sanity check of a caught request, record the actual
+			// response body (detailed mode, only when a catch is in play): the
+			// rejected attempt carries the "original" data and the recovering pass
+			// carries the "corrected" data, so the two can be compared directly.
+			if common.IsTracingDetailed && (res.Err != nil || len(res.Recorded) > 0 || rq.IntegrityCaught()) {
+				if jrr, jerr := rs.JsonRpcResponse(vctx); jerr == nil && jrr != nil {
+					body := jrr.GetResultBytes()
+					if len(body) > maxTraceResponseBytes {
+						body = body[:maxTraceResponseBytes]
+						span.SetAttributes(attribute.Bool("integrity.response_truncated", true))
+					}
+					span.SetAttributes(attribute.String("integrity.response", string(body)))
+				}
+			}
 			span.End()
 			// Per-check attempts/outcomes (pass/reject/soft_flag/off) — sum = total
 			// attempts. Higher volume than the violation counter below.

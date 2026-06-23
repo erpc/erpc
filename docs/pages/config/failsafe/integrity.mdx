@@ -539,9 +539,13 @@ it. Attributes (simple mode): `integrity.method`, `integrity.upstream`,
 `integrity.outcome` (`pass`/`reject`/`soft_flag`), `integrity.checks`,
 `integrity.rejected_check`. In **detailed tracing mode** the span additionally
 records, verbatim and **without redaction**, the actual-vs-expected values of every
-violation (as `integrity.reject` / `integrity.soft_flag` events) plus each check's
-outcome — enough to pinpoint exactly which field was wrong/corrupt/missing. Sample
-a few requests in detailed mode to debug a specific upstream's bad data.
+violation (as `integrity.reject` / `integrity.soft_flag` events), each check's
+outcome, and — for caught requests — the **validated response body**
+(`integrity.response`, capped at 128 KB). That makes a caught request checkable by
+hand: the rejected attempt's span carries the *original* body and the recovering
+pass's span carries the *corrected* body, so you can confirm the catch was real and
+the correction was right. Sample a few requests in detailed mode to audit a specific
+upstream's data.
 
 ### Related pages
 

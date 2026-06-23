@@ -59,6 +59,34 @@ func TestIntegrity_DetailedTracingRecordsValues(t *testing.T) {
 		assert.Contains(t, evAttrs["reason"], "0xBBB", "the recomputed value, unredacted")
 	})
 
+	t.Run("the rejected response body is captured for a by-hand sanity check", func(t *testing.T) {
+		exp.Reset()
+		common.IsTracingDetailed = true
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"]}`))
+		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), receiptResultBytes(underflowedLogIndexes), nil)
+		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+		_, err := HandleUpstreamPostForward(context.Background(), indexMagnitudeNetwork(), common.NewFakeUpstream("test-upstream"), req, rs, nil, false)
+		require.Error(t, err)
+
+		var s *tracetest.SpanStub
+		spans := exp.GetSpans()
+		for i := range spans {
+			if spans[i].Name == "Integrity.Validate" {
+				s = &spans[i]
+			}
+		}
+		require.NotNil(t, s, "the hook emits an Integrity.Validate span")
+		attrs := map[string]string{}
+		for _, a := range s.Attributes {
+			attrs[string(a.Key)] = a.Value.AsString()
+		}
+		assert.Equal(t, "reject", attrs["integrity.outcome"])
+		assert.Contains(t, attrs["integrity.response"], "0xfffffff7",
+			"the actual rejected response body is recorded so it can be inspected by hand")
+	})
+
 	t.Run("simple mode keeps the outcome but drops per-check detail", func(t *testing.T) {
 		exp.Reset()
 		common.IsTracingDetailed = false
