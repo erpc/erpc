@@ -109,7 +109,7 @@ func TestGrpcBdsClientAppliesUpstreamGrpcHeaders(t *testing.T) {
 		},
 	}))
 
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL, 0)
 	require.NoError(t, err)
 
 	gc, ok := client.(*GenericGrpcBdsClient)
@@ -128,7 +128,7 @@ func TestGrpcBdsClientNilUpstreamNoHeaders(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
 	require.NoError(t, err)
 
 	gc, ok := client.(*GenericGrpcBdsClient)
@@ -143,7 +143,7 @@ func TestGrpcBdsClientQueryMethodsDoNotShortCircuit(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
 	require.NoError(t, err)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks","params":[{"fromBlock":"0x1","toBlock":"0x2","limit":1}]}`))

@@ -481,6 +481,11 @@ func (c *ConnectorConfig) Validate() error {
 			return err
 		}
 	}
+	if c.Grpc != nil {
+		if err := c.Grpc.Validate(); err != nil {
+			return err
+		}
+	}
 
 	for i, fsCfg := range c.FailsafeForGets {
 		if err := validateConnectorFailsafe(c.Id, "failsafeForGets", i, fsCfg); err != nil {
@@ -494,6 +499,33 @@ func (c *ConnectorConfig) Validate() error {
 	}
 
 	return nil
+}
+
+// MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
+// size. It guards against a fat-fingered value opening an absurd number of
+// connections to each backing server; it is not a recommended operating point.
+const MaxGrpcConnPoolSize = 256
+
+func validateGrpcConnPoolSize(scope string, poolSize int) error {
+	if poolSize < 0 {
+		return fmt.Errorf("%s.poolSize must not be negative", scope)
+	}
+	if poolSize > MaxGrpcConnPoolSize {
+		return fmt.Errorf("%s.poolSize must be <= %d", scope, MaxGrpcConnPoolSize)
+	}
+	return nil
+}
+
+// Validate checks the gRPC cache-connector knobs. A zero PoolSize is valid and
+// means "use the built-in default".
+func (g *GrpcConnectorConfig) Validate() error {
+	return validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize)
+}
+
+// Validate checks the gRPC upstream knobs. A zero PoolSize is valid and means
+// "use the built-in default".
+func (g *GrpcUpstreamConfig) Validate() error {
+	return validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize)
 }
 
 func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
@@ -912,6 +944,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	}
 	if u.JsonRpc != nil {
 		if err := u.JsonRpc.Validate(c); err != nil {
+			return err
+		}
+	}
+	if u.Grpc != nil {
+		if err := u.Grpc.Validate(); err != nil {
 			return err
 		}
 	}

@@ -398,6 +398,14 @@ export interface GrpcConnectorConfig {
   servers?: string[];
   headers?: { [key: string]: string};
   getTimeout?: Duration;
+  /**
+   * PoolSize is the number of independent gRPC connections opened to each
+   * backing server, selected round-robin per request. Larger values raise the
+   * concurrent-stream ceiling and shrink the blast radius of a single wedged
+   * connection, at the cost of more open connections per server. When unset
+   * (0) a built-in default is used.
+   */
+  poolSize?: number /* int */;
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
@@ -769,6 +777,12 @@ export interface JsonRpcUpstreamConfig {
  */
 export interface GrpcUpstreamConfig {
   headers?: { [key: string]: string};
+  /**
+   * PoolSize is the number of independent gRPC connections opened to this
+   * upstream, selected round-robin per request. See GrpcConnectorConfig.PoolSize.
+   * When unset (0) a built-in default is used.
+   */
+  poolSize?: number /* int */;
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
@@ -1803,3 +1817,13 @@ export interface User {
   id: string;
   ratelimitbudget: string;
 }
+
+//////////
+// source: validation.go
+
+/**
+ * MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
+ * size. It guards against a fat-fingered value opening an absurd number of
+ * connections to each backing server; it is not a recommended operating point.
+ */
+export const MaxGrpcConnPoolSize = 256;

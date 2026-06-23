@@ -121,7 +121,7 @@ func newTestClient(t *testing.T, addr string) *GenericGrpcBdsClient {
 	logger := zerolog.New(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", nil, parsedURL, 0)
 	require.NoError(t, err)
 	return client.(*GenericGrpcBdsClient)
 }
@@ -210,7 +210,7 @@ func TestSendRequest_ConfigHeadersReachWireAsMetadata(t *testing.T) {
 	ups := common.NewFakeUpstream("test-ups", common.WithGrpcConfig(&common.GrpcUpstreamConfig{
 		Headers: map[string]string{"authorization": "Bearer secret-token"},
 	}))
-	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL)
+	client, err := NewGrpcBdsClient(ctx, &logger, "test-project", ups, parsedURL, 0)
 	require.NoError(t, err)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))
