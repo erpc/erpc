@@ -155,6 +155,13 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				input.History = hist
 			}
 			res := integrity.Validate(ctx, input)
+			// Per-check attempts/outcomes (pass/reject/soft_flag/off) — sum = total
+			// attempts. Higher volume than the violation counter below.
+			for _, oc := range res.Outcomes {
+				telemetry.MetricIntegrityCheck.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, oc.CheckID, oc.Outcome,
+				).Inc()
+			}
 			for _, rec := range res.Recorded {
 				telemetry.MetricIntegrityViolation.WithLabelValues(
 					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, "soft_flag",
@@ -166,6 +173,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				telemetry.MetricIntegrityViolation.WithLabelValues(
 					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject",
 				).Inc()
+				// Remember we caught a bad response; if a retry then succeeds, the
+				// request was saved (see integrity_saved_total in project.Forward).
+				rq.MarkIntegrityCaught()
 				validationErr = res.Err
 				rq.ClearLastValidResponse()
 				return rs, validationErr

@@ -187,6 +187,7 @@ type NormalizedRequest struct {
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
 	lastValidResponse atomic.Pointer[NormalizedResponse]
+	integrityCaught   atomic.Bool // an integrity check rejected a response during this request
 	lastUpstream      atomic.Value
 	evmBlockRef       atomic.Value
 	evmBlockNumber    atomic.Value
@@ -323,6 +324,21 @@ func (r *NormalizedRequest) ClearLastValidResponse() {
 		return
 	}
 	r.lastValidResponse.Store(nil)
+}
+
+// MarkIntegrityCaught records that an integrity check rejected a response during
+// this request. Read once at the end (IntegrityCaught) to tell whether a retry
+// then saved the request.
+func (r *NormalizedRequest) MarkIntegrityCaught() {
+	if r != nil {
+		r.integrityCaught.Store(true)
+	}
+}
+
+// IntegrityCaught reports whether an integrity check rejected at least one
+// response during this request.
+func (r *NormalizedRequest) IntegrityCaught() bool {
+	return r != nil && r.integrityCaught.Load()
 }
 
 func (r *NormalizedRequest) Network() Network {

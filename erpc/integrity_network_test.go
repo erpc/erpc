@@ -173,6 +173,38 @@ func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 	assert.Equal(t, "0x0", li)
 }
 
+// TestIntegrity_Network_SavedRequestFlagged proves the "saved" signal: a corrupt
+// response is rejected, the request fails over to a healthy upstream, and the
+// request is flagged IntegrityCaught — so project.Forward emits
+// integrity_saved_total (a wrong response was prevented).
+func TestIntegrity_Network_SavedRequestFlagged(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1) // corrupt → rejected
+	mockReceipt("http://rpc2.localhost", receiptBody(canonicalIdx...), 1)   // canonical → served
+
+	ntw := buildIntegrityNetwork(t, ctx)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
+	req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+
+	resp, err := ntw.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.True(t, req.IntegrityCaught(),
+		"a reject-then-recover request must be flagged so project.Forward counts it as saved")
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	li, err := jrr.PeekStringByPath(ctx, "logs", 0, "logIndex")
+	require.NoError(t, err)
+	assert.Equal(t, "0x0", li, "the served receipt is the canonical one")
+}
+
 // receiptOneLog builds an eth_getTransactionReceipt with a single log at the
 // given logIndex for a finalized block (number well below the poller's
 // finalized head 0x11117777).

@@ -93,9 +93,12 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 	})
 
 	t.Run("a rejection increments the integrity_violation metric (check + verdict labels)", func(t *testing.T) {
-		// Unique labels so the delta is isolated from other tests.
+		// Unique labels so the delta is isolated from other tests. The same
+		// 7-tuple identifies both the violation series (…, check, verdict) and the
+		// per-check series (…, check, outcome) since the trailing value is "reject".
 		labels := []string{"test-project", "", "evm:123", "test-upstream", "eth_gettransactionreceipt", "indexMagnitude", "reject"}
 		before := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(labels...))
+		chkBefore := testutil.ToFloat64(telemetry.MetricIntegrityCheck.WithLabelValues(labels...))
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"]}`))
 		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), receiptResultBytes(underflowedLogIndexes), nil)
@@ -106,6 +109,8 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 
 		after := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(labels...))
 		assert.Equal(t, before+1, after, "indexMagnitude/reject counter must increment by exactly 1")
+		chkAfter := testutil.ToFloat64(telemetry.MetricIntegrityCheck.WithLabelValues(labels...))
+		assert.Equal(t, chkBefore+1, chkAfter, "integrity_check_total{outcome=reject} must increment by exactly 1")
 	})
 
 	t.Run("opt-in: with no integrity config, a corrupt receipt is not checked", func(t *testing.T) {

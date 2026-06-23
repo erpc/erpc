@@ -35,11 +35,23 @@ type Recorded struct {
 // Result is the outcome of validating a response. Err is non-nil when a check
 // hard-failed (the response must be rejected) — RejectedCheckID names that
 // check, for metrics. Recorded lists soft-flagged reorg-sensitive mismatches the
-// caller should surface but still serve.
+// caller should surface but still serve. Outcomes lists EVERY check that was
+// evaluated and what happened, for the per-check attempts/outcomes metric.
 type Result struct {
 	Err             error
 	RejectedCheckID string
 	Recorded        []Recorded
+	Outcomes        []CheckOutcome
+}
+
+// CheckOutcome records what one check evaluation did. Outcome is one of:
+// "pass" (ran, no violation — currently also covers a check that could not
+// evaluate the response), "reject" (failed, response rejected), "soft_flag"
+// (reorg-sensitive mismatch recorded but served), "off" (disabled for this
+// finality or check).
+type CheckOutcome struct {
+	CheckID string
+	Outcome string
 }
 
 // DefaultReorgPolicy is the safe default: a mismatch on finalized data is a
@@ -86,20 +98,24 @@ func Validate(ctx context.Context, in Input) Result {
 		// skip the check entirely — and with it any force-fetch it would issue.
 		behavior := in.verdictFor(ctx, c, cfg, d)
 		if behavior == BehaviorIgnore {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "off"})
 			continue
 		}
 
 		v := c.Run(ctx, d, cfg)
 		if v == nil {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "pass"})
 			continue
 		}
 
 		if behavior == BehaviorError {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reject"})
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID
 			return res
 		}
 		// soft-flag: surface the violation but still serve the response.
+		res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "soft_flag"})
 		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason})
 	}
 	return res

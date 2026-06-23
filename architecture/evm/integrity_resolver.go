@@ -6,6 +6,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 )
 
 // integrityResolver implements integrity.Resolver over the real network and the
@@ -23,6 +24,23 @@ func newIntegrityResolver(n common.Network, u common.Upstream) integrity.Resolve
 		return nil
 	}
 	return &integrityResolver{network: n, upstream: u}
+}
+
+// emitAux records an auxiliary (force-fetch) request the integrity engine made
+// while validating r.upstream's response — these are NOT part of the user's
+// request. ok reflects whether the force-fetch returned a usable response.
+func (r *integrityResolver) emitAux(kind string, ok bool) {
+	outcome := "error"
+	if ok {
+		outcome = "ok"
+	}
+	var vendor, ups string
+	if r.upstream != nil {
+		vendor, ups = r.upstream.VendorName(), r.upstream.Id()
+	}
+	telemetry.MetricIntegrityAuxRequest.WithLabelValues(
+		r.network.ProjectId(), vendor, r.network.Label(), ups, kind, outcome,
+	).Inc()
 }
 
 func (r *integrityResolver) IsFinalized(ctx context.Context, blockNumber int64) (bool, bool) {
@@ -47,6 +65,7 @@ func (r *integrityResolver) CanonicalReceipts(ctx context.Context, blockRef stri
 	req.SetNetwork(r.network)
 
 	resp, err := r.network.Forward(ctx, req)
+	r.emitAux("canonical_receipts", err == nil && resp != nil)
 	if err != nil || resp == nil {
 		return nil, false
 	}
@@ -74,6 +93,7 @@ func (r *integrityResolver) CanonicalHeader(ctx context.Context, blockRef string
 	req.SetNetwork(r.network)
 
 	resp, err := r.network.Forward(ctx, req)
+	r.emitAux("canonical_header", err == nil && resp != nil)
 	if err != nil || resp == nil {
 		return nil, false
 	}

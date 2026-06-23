@@ -175,6 +175,12 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 
 	if err == nil && resp != nil {
+		// Saved: an integrity check rejected a bad response earlier in this request
+		// and the failover ultimately returned a good one — without the module the
+		// client would have gotten the wrong/invalid response.
+		if nq.IntegrityCaught() {
+			telemetry.MetricIntegritySaved.WithLabelValues(p.Config.Id, network.Label(), method).Inc()
+		}
 		upstream := resp.Upstream()
 		vendor := "n/a"
 		upstreamId := "n/a"

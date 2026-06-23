@@ -333,6 +333,37 @@ var (
 		Help:      "Total data-integrity check violations, by check id and verdict (reject = failed over; soft_flag = recorded but served).",
 	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict"})
 
+	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
+	// pass (ran, no violation), skip (could not evaluate — unmodeled field /
+	// hashes-only response / missing data), reject (failed → response failed
+	// over), soft_flag (reorg-sensitive mismatch recorded but served), off
+	// (disabled for this finality or check). Sum over outcomes = total attempts.
+	// Higher volume than the violation counter (one series per check per request).
+	MetricIntegrityCheck = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_check_total",
+		Help:      "Total integrity check evaluations by outcome (pass/skip/reject/soft_flag/off); the sum across outcomes is total attempts.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "outcome"})
+
+	// MetricIntegrityAuxRequest counts auxiliary requests issued by integrity
+	// checks — force-fetches that are NOT part of the user's request (canonical
+	// header/receipts corroboration), by kind and outcome.
+	MetricIntegrityAuxRequest = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_aux_request_total",
+		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by kind (canonical_header/canonical_receipts) and outcome (ok/error).",
+	}, []string{"project", "vendor", "network", "upstream", "kind", "outcome"})
+
+	// MetricIntegritySaved counts requests the integrity module SAVED: a check
+	// rejected a bad response, the request failed over, and a good response was
+	// ultimately served — i.e. without the module the client would have received
+	// a wrong/invalid response. Incremented once per saved request.
+	MetricIntegritySaved = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_saved_total",
+		Help:      "Total requests where integrity rejected a bad response and a retry returned a good one (a wrong/invalid response prevented).",
+	}, []string{"project", "network", "category"})
+
 	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_success_total",
