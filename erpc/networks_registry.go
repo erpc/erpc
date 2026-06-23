@@ -249,7 +249,13 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
 			ups := nr.upstreamsRegistry.GetNetworkUpstreams(nr.appCtx, networkId)
 			if len(ups) == 0 {
-				nr.logger.Error().
+				// Warn, not Error: a network resolving to zero upstreams is
+				// usually a client requesting an unsupported/lazy network (e.g.
+				// an unknown chain id), which is expected and self-resolving —
+				// not an operator-actionable error. The initializer's per-task
+				// retry backoff (request path) already throttles how often this
+				// bootstrap re-runs, so this no longer fires once per request.
+				nr.logger.Warn().
 					Str("projectId", nr.project.Config.Id).
 					Str("networkId", networkId).
 					Err(err).

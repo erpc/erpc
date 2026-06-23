@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,86 @@ import (
 func setupInitializer(t *testing.T, ctx context.Context, conf *InitializerConfig) *Initializer {
 	logger := zerolog.New(zerolog.NewTestWriter(t))
 	return NewInitializer(ctx, &logger, conf)
+}
+
+// TestInitializer_FailedTaskBackoffGatesReRuns reproduces the production hot
+// path where NetworksRegistry.GetNetwork calls ExecuteTasks on every incoming
+// request for a network that never finishes initializing (e.g. a lazy-loaded
+// network that resolves to zero upstreams). Each request builds a fresh task
+// with the same name, so without a backoff gate the failing task is re-executed
+// on every single request — which is what flooded prod with ~900k/2h
+// "network initialization ended with zero upstreams" error logs.
+//
+// A just-failed task must NOT be re-executed again until its retry backoff has
+// elapsed; rapid requests inside that window should return the cached failure.
+func TestInitializer_FailedTaskBackoffGatesReRuns(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Auto-retry off isolates the request-path (ExecuteTasks) behavior; a large
+	// RetryMinDelay keeps every rapid re-execution inside the backoff window.
+	conf := &InitializerConfig{
+		TaskTimeout:   5 * time.Second,
+		AutoRetry:     false,
+		RetryFactor:   1.5,
+		RetryMinDelay: 10 * time.Second,
+		RetryMaxDelay: 130 * time.Second,
+	}
+	init := setupInitializer(t, appCtx, conf)
+
+	var runs atomic.Int32
+	fn := func(ctx context.Context) error {
+		runs.Add(1)
+		return errors.New("network initialization ended with zero upstreams")
+	}
+
+	const requests = 25
+	for i := 0; i < requests; i++ {
+		// Mirrors GetNetwork -> ExecuteTasks(buildNetworkBootstrapTask(id)):
+		// a fresh task object each time, keyed by the same name.
+		err := init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:999", fn))
+		require.Error(t, err, "every request must still surface the init failure")
+	}
+
+	assert.Equal(t, int32(1), runs.Load(),
+		"a failing task must not be re-executed on every request within its backoff window")
+}
+
+// TestInitializer_FailedTaskReRunsAfterBackoff is the complement: once the
+// backoff elapses, the task becomes eligible again so a subsequent request (or
+// the auto-retry loop) re-runs it — the gate delays re-execution, it does not
+// permanently pin a task to its first failure.
+func TestInitializer_FailedTaskReRunsAfterBackoff(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	conf := &InitializerConfig{
+		TaskTimeout:   5 * time.Second,
+		AutoRetry:     false,
+		RetryFactor:   1.5,
+		RetryMinDelay: 50 * time.Millisecond,
+		RetryMaxDelay: 130 * time.Second,
+	}
+	init := setupInitializer(t, appCtx, conf)
+
+	var runs atomic.Int32
+	fn := func(ctx context.Context) error {
+		runs.Add(1)
+		return errors.New("still failing")
+	}
+
+	_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
+	require.Equal(t, int32(1), runs.Load(), "first request runs the task")
+
+	// Within the backoff window: no re-run.
+	_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
+	require.Equal(t, int32(1), runs.Load(), "request inside backoff window must not re-run")
+
+	// After the backoff elapses: the next request re-runs the task.
+	time.Sleep(80 * time.Millisecond)
+	_ = init.ExecuteTasks(appCtx, NewBootstrapTask("network/evm:1000", fn))
+	require.Equal(t, int32(2), runs.Load(),
+		"a failing task must become eligible for re-execution once its backoff elapses")
 }
 
 func TestInitializer_SingleTaskSuccess(t *testing.T) {
