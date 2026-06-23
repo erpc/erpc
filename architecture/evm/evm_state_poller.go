@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,6 +95,18 @@ type EvmStatePoller struct {
 	earliestMu                   sync.RWMutex
 }
 
+// sharedCounterKey builds a shared-state counter key namespaced by the counter
+// value's wire-format version (data.CounterValueSchemaVersion). Namespacing by
+// version keeps erpc instances running incompatible counter formats from
+// reading or writing the same key — mixing the pre-0.0.63 bare-integer format
+// with the current JSON CounterInt64State on one key surfaces as an
+// "expected integer" parse error and breaks block-tip coordination. Crossing a
+// version boundary cold-starts the counter once; it re-seeds within a poll
+// interval, so requests are unaffected.
+func sharedCounterKey(parts ...string) string {
+	return data.CounterValueSchemaVersion + "/" + strings.Join(parts, "/")
+}
+
 func NewEvmStatePoller(
 	projectId string,
 	appCtx context.Context,
@@ -105,8 +118,8 @@ func NewEvmStatePoller(
 	networkId := up.NetworkId()
 	lg := logger.With().Str("component", "evmStatePoller").Str("networkId", networkId).Logger()
 
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
+	lbs := sharedState.GetCounterInt64(sharedCounterKey("latestBlock", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
+	fbs := sharedState.GetCounterInt64(sharedCounterKey("finalizedBlock", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 
 	e := &EvmStatePoller{
 		projectId:                    projectId,
@@ -737,7 +750,7 @@ func (e *EvmStatePoller) initializeEarliestBlockDetectionAndStartScheduler(ctx c
 
 		// Initialize shared var if missing
 		if _, ok := e.earliestByProbe[probe]; !ok {
-			key := fmt.Sprintf("earliestBlock/%s/%s", common.UniqueUpstreamKey(e.upstream), string(probe))
+			key := sharedCounterKey("earliestBlock", common.UniqueUpstreamKey(e.upstream), string(probe))
 			e.earliestByProbe[probe] = e.sharedStateRegistry.GetCounterInt64(key, 0)
 		}
 

@@ -15,6 +15,26 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// CounterValueSchemaVersion identifies the on-the-wire format this registry uses
+// to persist (Set) and publish (PublishCounterInt64) counter values. Callers
+// embed it in the counter key namespace (see the evm state poller) so that erpc
+// instances running incompatible counter formats never read or write the same
+// key.
+//
+// History:
+//   - v1 (erpc <= 0.0.62): bare integer string, e.g. "12345", parsed via Sscanf/ParseInt.
+//   - v2 (erpc >= 0.0.63): JSON CounterInt64State {value, updatedAt, updatedBy}.
+//
+// The two formats collide on a shared key: a v1 reader hitting a v2 JSON value
+// fails with "expected integer" and never seeds the counter, breaking
+// cross-instance block-tip coordination (and a v1 pub/sub subscriber silently
+// drops v2 messages). Bump this whenever the persisted value or the pub/sub
+// payload changes incompatibly. Crossing a version boundary cold-starts each
+// counter once; it re-seeds within a poll interval and the foreground request
+// path is local-only (see CounterInt64.TryUpdateIfStale), so requests are
+// unaffected.
+const CounterValueSchemaVersion = "v2"
+
 type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 	GetLockTtl() time.Duration
