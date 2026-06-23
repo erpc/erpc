@@ -174,11 +174,14 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			res := integrity.Validate(vctx, input)
 			rq.AddIntegrityOverhead(time.Since(vStart))
 			annotateIntegritySpan(span, res)
-			// For a by-hand sanity check of a caught request, record the actual
-			// response body (detailed mode, only when a catch is in play): the
-			// rejected attempt carries the "original" data and the recovering pass
-			// carries the "corrected" data, so the two can be compared directly.
-			if common.IsTracingDetailed && (res.Err != nil || len(res.Recorded) > 0 || rq.IntegrityCaught()) {
+			// Record the rejected/soft-flagged ("original") body on the violating
+			// attempt's span, for a by-hand sanity check. Only on a violation here:
+			// a recovering pass runs concurrently (hedged) so its IntegrityCaught
+			// flag may not be set yet — the "corrected" served body is recorded once
+			// at the request level (project.Forward) instead. The IsTracingDetailed
+			// gate short-circuits before any body copy, so it's zero-cost when
+			// tracing is off.
+			if common.IsTracingDetailed && (res.Err != nil || len(res.Recorded) > 0) {
 				if jrr, jerr := rs.JsonRpcResponse(vctx); jerr == nil && jrr != nil {
 					body := jrr.GetResultBytes()
 					if len(body) > maxTraceResponseBytes {

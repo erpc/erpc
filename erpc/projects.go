@@ -15,7 +15,12 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+// maxIntegrityTraceResponseBytes caps the served-response body recorded on the
+// Project.Forward span for a saved (integrity-caught) request in detailed tracing.
+const maxIntegrityTraceResponseBytes = 128 * 1024
 
 type PreparedProject struct {
 	Config                      *common.ProjectConfig
@@ -187,6 +192,20 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		// client would have gotten the wrong/invalid response.
 		if nq.IntegrityCaught() {
 			telemetry.MetricIntegritySaved.WithLabelValues(p.Config.Id, network.Label(), method).Inc()
+			// Record the corrected (served) body once, so a by-hand sanity check can
+			// compare it against the rejected "original" body on the integrity span.
+			// Reliable here (IntegrityCaught is set, the outcome is known) unlike the
+			// racy hedged pass. The IsTracingDetailed gate short-circuits before any
+			// body copy, so it's zero-cost when tracing is off.
+			if common.IsTracingDetailed {
+				if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
+					body := jrr.GetResultBytes()
+					if len(body) > maxIntegrityTraceResponseBytes {
+						body = body[:maxIntegrityTraceResponseBytes]
+					}
+					span.SetAttributes(attribute.String("integrity.served_response", string(body)))
+				}
+			}
 		}
 		upstream := resp.Upstream()
 		vendor := "n/a"
