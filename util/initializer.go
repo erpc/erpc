@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -209,7 +210,7 @@ func (i *Initializer) ExecuteTasks(ctx context.Context, tasks ...*BootstrapTask)
 	i.tasksMu.Unlock()
 
 	i.ensureAutoRetryIfEnabled()
-	i.attemptRemainingTasks()
+	i.attemptRemainingTasks(true)
 
 	return i.waitForTasks(ctx, tasksToWait...)
 }
@@ -245,12 +246,56 @@ func (i *Initializer) waitForTasks(ctx context.Context, tasks ...*BootstrapTask)
 	return nil
 }
 
+// retryBackoff returns the minimum delay that must elapse after a task's last
+// attempt before it may run again. It mirrors the auto-retry loop's schedule
+// (RetryMinDelay growing by RetryFactor, capped at RetryMaxDelay) so the
+// request path and the background loop pace re-attempts identically.
+func (i *Initializer) retryBackoff(attempts int32) time.Duration {
+	minDelay := i.conf.RetryMinDelay
+	maxDelay := i.conf.RetryMaxDelay
+	factor := i.conf.RetryFactor
+	if minDelay <= 0 {
+		minDelay = 3 * time.Second
+	}
+	if maxDelay <= 0 {
+		maxDelay = 130 * time.Second
+	}
+	if factor < 1 {
+		factor = 1.5
+	}
+	if attempts < 1 {
+		return minDelay
+	}
+	d := float64(minDelay) * math.Pow(factor, float64(attempts-1))
+	if d >= float64(maxDelay) {
+		return maxDelay
+	}
+	return time.Duration(d)
+}
+
+// taskReadyForRetry reports whether a failed/timed-out task's backoff has
+// elapsed since its last attempt. A task with no recorded attempt is always
+// ready (it has effectively never run).
+func (i *Initializer) taskReadyForRetry(t *BootstrapTask) bool {
+	lastAttempt, ok := t.lastAttempt.Load().(time.Time)
+	if !ok || lastAttempt.IsZero() {
+		return true
+	}
+	return time.Since(lastAttempt) >= i.retryBackoff(t.attempts.Load())
+}
+
 // attemptRemainingTasks tries to run any tasks in Pending, Failed or TimedOut states again.
 // This function must use appContext to avoid premature cancellation of tasks when caller context is cancelled.
 // The correct way to enforce timeout is to pass appropriate context to "waitForTasks()" function.
 // To enforce timeout of task execution set proper TaskTimeout in InitializerConfig.
 // To cancel a running task, use MarkTaskAsFailed() function instead.
-func (i *Initializer) attemptRemainingTasks() {
+//
+// respectBackoff gates re-attempts of already-failed/timed-out tasks behind
+// their per-task retry backoff. The request path (ExecuteTasks) sets it true so
+// a flood of requests for a not-yet-ready network cannot re-execute a failing
+// task on every request. The auto-retry loop sets it false because it already
+// paces itself, so it remains the authoritative driver of retry cadence.
+func (i *Initializer) attemptRemainingTasks(respectBackoff bool) {
 	i.tasksMu.Lock()
 	defer i.tasksMu.Unlock()
 
@@ -262,6 +307,18 @@ func (i *Initializer) attemptRemainingTasks() {
 		t := value.(*BootstrapTask)
 		state := TaskState(t.state.Load())
 		if state == TaskPending || state == TaskFailed || state == TaskTimedOut {
+			// Gate re-attempts of already-failed/timed-out tasks behind their
+			// retry backoff. ExecuteTasks (hence this function) runs on every
+			// request for a not-yet-ready network, so without this gate a
+			// permanently-failing task (e.g. a lazy-loaded network that resolves
+			// to zero upstreams) is re-executed on every single request — burning
+			// CPU and flooding logs. Pending tasks have never run, so they always
+			// start immediately. The auto-retry loop passes respectBackoff=false
+			// because it already paces its own cadence.
+			if respectBackoff && (state == TaskFailed || state == TaskTimedOut) && !i.taskReadyForRetry(t) {
+				wg.Done()
+				return true
+			}
 			// Attempt to swap from [Pending|Failed|Timeout] -> Running
 			// #nosec G115 - We know TaskState is small enough that int->int32 won't overflow
 			if t.state.CompareAndSwap(int32(state), int32(TaskRunning)) {
@@ -578,7 +635,7 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 			return
 		}
 		i.attempts.Add(1)
-		i.attemptRemainingTasks()
+		i.attemptRemainingTasks(false)
 		err := i.WaitForTasks(ctx)
 		state := i.State()
 		if state == StateFatal {
