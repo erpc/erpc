@@ -15348,8 +15348,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (check) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
-              "legendFormat": "{{check}}",
+              "expr": "sum by (check, cluster, namespace, network, vendor, upstream) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
+              "legendFormat": "{{check}} \u00b7 {{namespace}}/{{network}} \u00b7 {{vendor}}/{{upstream}}",
               "range": false,
               "instant": true,
               "refId": "A"
@@ -15554,8 +15554,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (upstream, vendor) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
-              "legendFormat": "{{upstream}} \u00b7 {{vendor}}",
+              "expr": "sum by (cluster, namespace, network, vendor, upstream) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
+              "legendFormat": "{{namespace}} \u00b7 {{network}} \u00b7 {{vendor}}/{{upstream}}",
               "range": false,
               "instant": true,
               "refId": "A"
@@ -15684,8 +15684,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (check) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
-              "legendFormat": "{{check}}",
+              "expr": "sum by (check, cluster, namespace, network, vendor, upstream) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{namespace}}, {{network}}, {{vendor}}, {{upstream}}, {{check}}",
               "range": true,
               "instant": false,
               "refId": "A"
@@ -15789,8 +15789,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (verdict) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
-              "legendFormat": "{{verdict}}",
+              "expr": "sum by (verdict, cluster, namespace, network, vendor, upstream) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{namespace}}, {{network}}, {{vendor}}, {{upstream}}, {{verdict}}",
               "range": true,
               "instant": false,
               "refId": "A"
@@ -15894,8 +15894,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (network) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
-              "legendFormat": "{{network}}",
+              "expr": "sum by (cluster, namespace, network) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{cluster}}, {{namespace}}, {{network}}",
               "range": true,
               "instant": false,
               "refId": "A"
@@ -15999,8 +15999,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (upstream, vendor) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
-              "legendFormat": "{{upstream}} \u00b7 {{vendor}}",
+              "expr": "sum by (cluster, namespace, network, vendor, upstream) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{namespace}}, {{network}}, {{vendor}}, {{upstream}}",
               "range": true,
               "instant": false,
               "refId": "A"
@@ -16104,8 +16104,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (category) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
-              "legendFormat": "{{category}}",
+              "expr": "sum by (category, cluster, namespace, network, vendor, upstream) (rate(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__rate_interval]))",
+              "legendFormat": "{{namespace}}, {{network}}, {{category}}, {{vendor}}, {{upstream}}",
               "range": true,
               "instant": false,
               "refId": "A"
@@ -16154,7 +16154,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum by (check, verdict, network, upstream, vendor, category) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
+              "expr": "sum by (check, verdict, cluster, namespace, network, vendor, upstream, category) (increase(erpc_integrity_violation_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", cluster=~\"${cluster:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", upstream=~\"${upstream:regex}\", vendor=~\"${vendor:regex}\", category=~\"${category:regex}\"}[$__range]))",
               "legendFormat": "",
               "range": false,
               "instant": true,
@@ -16177,7 +16177,9 @@
                   "upstream": "Upstream",
                   "vendor": "Vendor",
                   "category": "Method",
-                  "Value": "Count (range)"
+                  "Value": "Count (range)",
+                  "cluster": "Cluster",
+                  "namespace": "Namespace"
                 }
               }
             }
