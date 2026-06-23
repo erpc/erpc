@@ -9,6 +9,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // HandleProjectPreForward is the early pre-forward hook executed at project layer
@@ -155,11 +157,19 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			if hist != nil {
 				input.History = hist
 			}
+			// The span wraps Validate so its duration is the integrity overhead and
+			// the aux force-fetches (network.Forward) nest under it. Detailed tracing
+			// adds the actual mismatch values (verbatim) to pinpoint the bad field.
+			vctx, span := common.StartSpan(ctx, "Integrity.Validate",
+				trace.WithAttributes(
+					attribute.String("integrity.method", methodLower),
+					attribute.String("integrity.upstream", u.Id()),
+				))
 			vStart := time.Now()
-			res := integrity.Validate(ctx, input)
-			// Time spent on data-checks + aux force-fetches (which run inside
-			// Validate) — the latency overhead this attempt added to the request.
+			res := integrity.Validate(vctx, input)
 			rq.AddIntegrityOverhead(time.Since(vStart))
+			annotateIntegritySpan(span, res)
+			span.End()
 			// Per-check attempts/outcomes (pass/reject/soft_flag/off) — sum = total
 			// attempts. Higher volume than the violation counter below.
 			for _, oc := range res.Outcomes {
@@ -242,4 +252,43 @@ func isMethodInMarkEmptyList(n common.Network, methodLower string) bool {
 		}
 	}
 	return false
+}
+
+// annotateIntegritySpan records the integrity validation outcome on the span.
+// Simple mode: the outcome, how many checks were evaluated, and the rejecting
+// check. Detailed mode additionally records, verbatim and WITHOUT redaction, the
+// reason of every violation (the actual vs expected values) plus each check's
+// outcome — enough to pinpoint exactly which field was wrong/corrupt/missing.
+func annotateIntegritySpan(span trace.Span, res integrity.Result) {
+	outcome := "pass"
+	if res.Err != nil {
+		outcome = "reject"
+	} else if len(res.Recorded) > 0 {
+		outcome = "soft_flag"
+	}
+	span.SetAttributes(
+		attribute.Int("integrity.checks", len(res.Outcomes)),
+		attribute.String("integrity.outcome", outcome),
+	)
+	if res.RejectedCheckID != "" {
+		span.SetAttributes(attribute.String("integrity.rejected_check", res.RejectedCheckID))
+	}
+	if !common.IsTracingDetailed {
+		return
+	}
+	for _, rec := range res.Recorded {
+		span.AddEvent("integrity.soft_flag", trace.WithAttributes(
+			attribute.String("check", rec.CheckID),
+			attribute.String("reason", rec.Reason),
+		))
+	}
+	if res.Err != nil {
+		span.AddEvent("integrity.reject", trace.WithAttributes(
+			attribute.String("check", res.RejectedCheckID),
+			attribute.String("reason", res.Err.Error()),
+		))
+	}
+	for _, oc := range res.Outcomes {
+		span.SetAttributes(attribute.String("integrity.check."+oc.CheckID, oc.Outcome))
+	}
 }
