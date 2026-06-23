@@ -362,6 +362,13 @@ type GrpcConnectorConfig struct {
 	Servers    []string          `yaml:"servers,omitempty" json:"servers"`
 	Headers    map[string]string `yaml:"headers,omitempty" json:"headers"`
 	GetTimeout Duration          `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+
+	// PoolSize is the number of independent gRPC connections opened to each
+	// backing server, selected round-robin per request. Larger values raise the
+	// concurrent-stream ceiling and shrink the blast radius of a single wedged
+	// connection, at the cost of more open connections per server. When unset
+	// (0) a built-in default is used.
+	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
 }
 
 type MemoryConnectorConfig struct {
@@ -1162,6 +1169,11 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 // every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
 type GrpcUpstreamConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers"`
+
+	// PoolSize is the number of independent gRPC connections opened to this
+	// upstream, selected round-robin per request. See GrpcConnectorConfig.PoolSize.
+	// When unset (0) a built-in default is used.
+	PoolSize int `yaml:"poolSize,omitempty" json:"poolSize"`
 }
 
 func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {

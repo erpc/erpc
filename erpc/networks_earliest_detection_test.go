@@ -281,8 +281,8 @@ func TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 
 	// Pre-set a value in shared state (simulating another instance)
-	// The key format matches what evm_state_poller uses
-	presetKey := "earliestBlock/evm:123:rpc1/blockHeader"
+	// The key format matches what evm_state_poller uses (version-namespaced)
+	presetKey := data.CounterValueSchemaVersion + "/earliestBlock/evm:123:rpc1/blockHeader"
 	presetCounter := ssr.GetCounterInt64(presetKey, 0)
 	presetCounter.TryUpdate(ctx, 50) // Pre-set to 50
 
@@ -620,7 +620,7 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 	sha.Write([]byte("http://rpc1.localhost")) // upCfg.Endpoint
 	sha.Write([]byte("evm:123"))               // networkId
 	uniqueKey := "rpc1/" + hex.EncodeToString(sha.Sum(nil))
-	presetKey := fmt.Sprintf("earliestBlock/%s/blockHeader", uniqueKey)
+	presetKey := fmt.Sprintf("%s/earliestBlock/%s/blockHeader", data.CounterValueSchemaVersion, uniqueKey)
 	t.Logf("Pre-computed key: %s", presetKey)
 
 	// PRE-SET STALE/WRONG VALUE BEFORE BOOTSTRAP:
