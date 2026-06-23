@@ -173,9 +173,10 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				telemetry.MetricIntegrityViolation.WithLabelValues(
 					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject",
 				).Inc()
-				// Remember we caught a bad response; if a retry then succeeds, the
-				// request was saved (see integrity_saved_total in project.Forward).
-				rq.MarkIntegrityCaught()
+				// Remember we caught a bad response (and which check); project.Forward
+				// then counts it as saved (a retry succeeded) or failed (no good
+				// response found) — see integrity_saved_total / integrity_failed_total.
+				rq.MarkIntegrityCaught(res.RejectedCheckID)
 				validationErr = res.Err
 				rq.ClearLastValidResponse()
 				return rs, validationErr

@@ -226,6 +226,12 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		).Observe(dur.Seconds())
 		return resp, err
 	} else {
+		// Failed due to integrity: a check rejected a response and no good one was
+		// found (every candidate failed), so the request errored rather than serving
+		// bad data. The rejecting check is the "why".
+		if nq.IntegrityCaught() {
+			telemetry.MetricIntegrityFailed.WithLabelValues(p.Config.Id, network.Label(), method, nq.IntegrityRejectedCheck()).Inc()
+		}
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {

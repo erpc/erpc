@@ -275,6 +275,13 @@ func TestIntegrity_Network_AllUpstreamsCorrupt(t *testing.T) {
 	mockReceipt("http://rpc2.localhost", receiptBody(underflowedIdx...), 1)
 
 	ntw := buildIntegrityNetwork(t, ctx)
-	_, err := forwardReceipt(t, ctx, ntw)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
+	req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+
+	_, err := ntw.Forward(ctx, req)
 	require.Error(t, err, "no upstream returned valid data, so the request must fail")
+	// Every candidate was integrity-rejected → the request is flagged caught with a
+	// recorded reason, so project.Forward emits integrity_failed_total{check}.
+	assert.True(t, req.IntegrityCaught(), "failed request must be flagged integrity-caught")
+	assert.NotEmpty(t, req.IntegrityRejectedCheck(), "the rejecting check (the why) must be recorded")
 }

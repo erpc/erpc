@@ -364,6 +364,16 @@ var (
 		Help:      "Total requests where integrity rejected a bad response and a retry returned a good one (a wrong/invalid response prevented).",
 	}, []string{"project", "network", "category"})
 
+	// MetricIntegrityFailed counts requests that FAILED toward the user because of
+	// the integrity module: a check rejected a response and no good response was
+	// found (every candidate failed), so the request errored instead of serving
+	// bad data. The `check` label is the last rejecting check — the "why".
+	MetricIntegrityFailed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_failed_total",
+		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check.",
+	}, []string{"project", "network", "category", "check"})
+
 	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_success_total",

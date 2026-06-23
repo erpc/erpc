@@ -186,11 +186,12 @@ type NormalizedRequest struct {
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
-	lastValidResponse atomic.Pointer[NormalizedResponse]
-	integrityCaught   atomic.Bool // an integrity check rejected a response during this request
-	lastUpstream      atomic.Value
-	evmBlockRef       atomic.Value
-	evmBlockNumber    atomic.Value
+	lastValidResponse      atomic.Pointer[NormalizedResponse]
+	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
+	integrityRejectedCheck atomic.Value // id of the last check that rejected (the "why")
+	lastUpstream           atomic.Value
+	evmBlockRef            atomic.Value
+	evmBlockNumber         atomic.Value
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
@@ -326,12 +327,15 @@ func (r *NormalizedRequest) ClearLastValidResponse() {
 	r.lastValidResponse.Store(nil)
 }
 
-// MarkIntegrityCaught records that an integrity check rejected a response during
-// this request. Read once at the end (IntegrityCaught) to tell whether a retry
-// then saved the request.
-func (r *NormalizedRequest) MarkIntegrityCaught() {
+// MarkIntegrityCaught records that integrity check `checkID` rejected a response
+// during this request. Read at the end via IntegrityCaught (saved vs failed) and
+// IntegrityRejectedCheck (the "why").
+func (r *NormalizedRequest) MarkIntegrityCaught(checkID string) {
 	if r != nil {
 		r.integrityCaught.Store(true)
+		if checkID != "" {
+			r.integrityRejectedCheck.Store(checkID)
+		}
 	}
 }
 
@@ -339,6 +343,18 @@ func (r *NormalizedRequest) MarkIntegrityCaught() {
 // response during this request.
 func (r *NormalizedRequest) IntegrityCaught() bool {
 	return r != nil && r.integrityCaught.Load()
+}
+
+// IntegrityRejectedCheck returns the id of the last integrity check that
+// rejected during this request (the failure reason), or "" if none.
+func (r *NormalizedRequest) IntegrityRejectedCheck() string {
+	if r == nil {
+		return ""
+	}
+	if v := r.integrityRejectedCheck.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
 }
 
 func (r *NormalizedRequest) Network() Network {
