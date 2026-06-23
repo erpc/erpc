@@ -110,3 +110,50 @@ func TestCheck_ReceiptVsBlock(t *testing.T) {
 		assert.Equal(t, 0, fetches, "an ignored reorg-sensitive check must issue no canonical fetch")
 	})
 }
+
+func validateReceiptHist(t *testing.T, result []byte, cs CheckSet, r Resolver, hist History) Result {
+	t.Helper()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xaa"]}`))
+	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
+	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	return Validate(context.Background(), Input{
+		Method:   "eth_getTransactionReceipt",
+		Upstream: common.NewFakeUpstream("u"),
+		Response: rs,
+		Checks:   cs,
+		Resolver: r,
+		History:  hist,
+		Reorg:    DefaultReorgPolicy(),
+	})
+}
+
+// The pin-consistency guard: a receipt's block must be the one the ChainView
+// committed to serving for its number. This is what stops erpc looking like a
+// "mixed-up node" (block from one fork, receipt from another) — anchored to the
+// committed pin, NOT a racy fresh fetch.
+func TestCheck_ReceiptVsBlock_PinConsistency(t *testing.T) {
+	cs := only("receiptVsBlock", nil)
+	// Receipt claims block 0xbb at number 0x10; its logs corroborate cleanly.
+	narrow := []byte(`{"blockHash":"0xbb","blockNumber":"0x10","transactionHash":"0xaa","logs":[{"logIndex":"0x5"}]}`)
+	match := []Receipt{{BlockHash: "0xbb", TransactionHash: "0xaa", Logs: []Log{{LogIndex: "0x5"}}}}
+	res := mockResolver{finalized: true, known: true, receipts: match, have: true}
+
+	t.Run("receipt block matches the committed pin → pass", func(t *testing.T) {
+		out := validateReceiptHist(t, narrow, cs, res, mockHistory{0x10: "0xbb"})
+		assert.NoError(t, out.Err)
+		assert.Empty(t, out.Recorded)
+	})
+
+	t.Run("receipt block differs from the committed pin → reject", func(t *testing.T) {
+		// We committed a different block for number 0x10 — the receipt is from
+		// another fork than what we serve, so reject (retry for a consistent one).
+		out := validateReceiptHist(t, narrow, cs, res, mockHistory{0x10: "0xcafe"})
+		require.Error(t, out.Err)
+		assert.True(t, common.HasErrorCode(out.Err, common.ErrCodeEndpointContentValidation))
+	})
+
+	t.Run("number not yet pinned → falls through to corroboration", func(t *testing.T) {
+		out := validateReceiptHist(t, narrow, cs, res, mockHistory{0x99: "0xother"})
+		assert.NoError(t, out.Err)
+	})
+}

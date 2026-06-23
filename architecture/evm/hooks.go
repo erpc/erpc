@@ -150,7 +150,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
 		if cs, policy := resolveIntegrity(n, dirs); len(cs) > 0 {
-			hist := networkHistory(n)
+			view := networkChainView(n)
 			input := integrity.Input{
 				Method:   methodLower,
 				Upstream: u,
@@ -159,8 +159,8 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				Resolver: newIntegrityResolver(n, u),
 				Reorg:    policy,
 			}
-			if hist != nil {
-				input.History = hist
+			if view != nil {
+				input.History = view
 			}
 			// The span wraps Validate so its duration is the integrity overhead and
 			// the aux force-fetches (network.Forward) nest under it. Detailed tracing
@@ -220,7 +220,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			}
 			// Feed continuity history with this validated block.
 			if isBlockMethod(methodLower) {
-				observeBlock(ctx, hist, rs)
+				observeBlockView(ctx, view, rs)
 			}
 		}
 	}

@@ -26,6 +26,10 @@ type IntegritySettings struct {
 	// where invalid data is ambiguously a node bug or a reorg. Deterministic
 	// checks ignore it and always reject.
 	InvalidBehavior *IntegrityInvalidBehaviorConfig `yaml:"invalidBehavior,omitempty" json:"invalidBehavior,omitempty"`
+	// ReorgWindow is how many blocks back from the tip the integrity ChainView
+	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
+	// deep-reorg chains (e.g. polygon 256).
+	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
 }
 
 // IntegrityConfig is an IntegritySettings plus the per-request header-control
@@ -87,6 +91,9 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.InvalidBehavior != nil {
 		out.InvalidBehavior = over.InvalidBehavior.Copy()
 	}
+	if over.ReorgWindow != 0 {
+		out.ReorgWindow = over.ReorgWindow
+	}
 	for id, c := range over.Checks {
 		if out.Checks == nil {
 			out.Checks = make(map[string]*IntegrityCheckConfig, len(over.Checks))
@@ -116,6 +123,7 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		Level:           c.Level,
 		Budget:          c.Budget.Copy(),
 		InvalidBehavior: c.InvalidBehavior.Copy(),
+		ReorgWindow:     c.ReorgWindow,
 	}
 	if c.Checks != nil {
 		copied.Checks = make(map[string]*IntegrityCheckConfig, len(c.Checks))

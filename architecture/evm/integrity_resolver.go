@@ -17,13 +17,14 @@ import (
 type integrityResolver struct {
 	network  common.Network
 	upstream common.Upstream
+	view     *chainView
 }
 
 func newIntegrityResolver(n common.Network, u common.Upstream) integrity.Resolver {
 	if n == nil {
 		return nil
 	}
-	return &integrityResolver{network: n, upstream: u}
+	return &integrityResolver{network: n, upstream: u, view: networkChainView(n)}
 }
 
 // emitAux records an auxiliary (force-fetch) request the integrity engine made
@@ -81,29 +82,18 @@ func (r *integrityResolver) CanonicalReceipts(ctx context.Context, blockRef stri
 }
 
 func (r *integrityResolver) CanonicalHeader(ctx context.Context, blockRef string) (*integrity.Header, bool) {
-	// A 32-byte hash reference (0x + 64 hex) resolves by hash; otherwise treat
-	// blockRef as a block number/tag.
-	method := "eth_getBlockByNumber"
+	// Served from the per-network ChainView: a hit returns the committed header
+	// with no fetch; a miss fetches once (deduped) and pins it. A 32-byte hash
+	// (0x + 64 hex) resolves by hash; a hex number resolves through the pin; a tag
+	// resolves directly.
+	if r.view == nil {
+		return nil, false
+	}
 	if len(blockRef) == 66 {
-		method = "eth_getBlockByHash"
+		return r.view.headerByHash(ctx, blockRef)
 	}
-	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"%s","params":["%s",false]}`, method, blockRef)))
-	req.SetDirectives(&common.RequestDirectives{IsInternal: true})
-	req.SetNetwork(r.network)
-
-	resp, err := r.network.Forward(ctx, req)
-	r.emitAux("canonical_header", err == nil && resp != nil)
-	if err != nil || resp == nil {
-		return nil, false
+	if n, err := common.HexToInt64(blockRef); err == nil {
+		return r.view.headerByNumber(ctx, n, blockRef)
 	}
-	jrr, err := resp.JsonRpcResponse(ctx)
-	if err != nil || jrr == nil {
-		return nil, false
-	}
-	var h integrity.Header
-	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &h); err != nil {
-		return nil, false
-	}
-	return &h, true
+	return r.view.resolve(ctx, "eth_getBlockByNumber", blockRef)
 }

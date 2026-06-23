@@ -263,7 +263,7 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `receiptVsBlock` ※ | authoritative | receipt | a single receipt ≠ the force-fetched canonical block |
 | `receiptsRootRecompute` | authoritative | receipts | receipt MPT root ≠ the header's `receiptsRoot` (force-fetched by hash) |
 
-※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. `corroborated` adds passive cross-block memory (a bounded per-network `number→hash` store fed only from blocks your own traffic already pulled — it **never fetches a block sequence**). `authoritative` force-fetches the canonical block through the normal network path (cache-backed, recursion-guarded), capped by `budget`.
+※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. Both stateful tiers share one **reorg-aware per-network ChainView** — a bounded `number→hash` pin plus a content-addressed header cache (window `reorgWindow`, default 32). `corroborated` populates it passively from blocks your own traffic already pulled (it **never fetches a block sequence**); `authoritative` additionally force-fetches a missing anchor **once** through the normal network path (cache-backed, recursion-guarded, deduped by the ChainView), capped by `budget`. A changed hash for a number is treated as a reorg: the new fork is adopted and its stale descendants are rolled back, so the pin always reflects one consistent fork — block and receipts can't disagree.
 
 ### Per-finality verdict: `invalidBehavior`
 
@@ -332,6 +332,7 @@ fields, and the non-functional `upstreams[].integrity` block no longer exist —
 | `invalidBehavior.unfinalized` | enum | `soft-flag` | …on unfinalized data. `off` skips the check (and its force-fetch). |
 | `budget.maxPerSecond` | int | conservative | Token-bucket cap on the authoritative tier's canonical fetches. |
 | `budget.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
+| `reorgWindow` | int | `32` | How many blocks back from the tip the per-network ChainView keeps a `number→hash` pin + header and tracks reorgs. Raise for deep-reorg chains (e.g. polygon `256`). Bounds both reorg depth and memory. <SourceLink file="architecture/evm/integrity_chainview.go" /> |
 | `headerMode` | enum | `off` | `off`/`profiles`/`full` — whether/how `X-ERPC-Integrity` may adjust integrity per request. |
 | `profiles.<name>` | object | — | Named settings (`level`/`checks`/`invalidBehavior`/`budget`) a request may select by name. |
 
