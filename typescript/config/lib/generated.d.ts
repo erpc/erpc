@@ -369,6 +369,14 @@ export interface GrpcConnectorConfig {
         [key: string]: string;
     };
     getTimeout?: Duration;
+    /**
+     * PoolSize is the number of independent gRPC connections opened to each
+     * backing server, selected round-robin per request. Larger values raise the
+     * concurrent-stream ceiling and shrink the blast radius of a single wedged
+     * connection, at the cost of more open connections per server. When unset
+     * (0) a built-in default is used.
+     */
+    poolSize?: number;
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
@@ -428,6 +436,15 @@ export interface PostgreSQLConnectorConfig {
     getTimeout?: Duration;
     setTimeout?: Duration;
     iamAuth?: PostgreSQLIAMAuthConfig;
+    /**
+     * SkipSchemaSetup skips all startup DDL (CREATE TABLE/INDEX, column
+     * migrations, pg_cron) and the local expired-row cleanup DELETE loop. Set
+     * it for connectors whose ConnectionUri targets a read-only replica (e.g.
+     * an Aurora global-database secondary): DDL cannot execute there (SQLSTATE
+     * 25006) and is not write-forwarded, so the writer-region connector owns
+     * the schema and the replica receives it via storage replication.
+     */
+    skipSchemaSetup?: boolean;
 }
 export interface AwsAuthConfig {
     mode: 'file' | 'env' | 'secret';
@@ -742,6 +759,12 @@ export interface GrpcUpstreamConfig {
     headers?: {
         [key: string]: string;
     };
+    /**
+     * PoolSize is the number of independent gRPC connections opened to this
+     * upstream, selected round-robin per request. See GrpcConnectorConfig.PoolSize.
+     * When unset (0) a built-in default is used.
+     */
+    poolSize?: number;
 }
 export interface EvmUpstreamConfig {
     chainId: number;
@@ -1758,4 +1781,10 @@ export interface User {
     id: string;
     ratelimitbudget: string;
 }
+/**
+ * MaxGrpcConnPoolSize is the upper bound accepted for a gRPC connection-pool
+ * size. It guards against a fat-fingered value opening an absurd number of
+ * connections to each backing server; it is not a recommended operating point.
+ */
+export declare const MaxGrpcConnPoolSize = 256;
 //# sourceMappingURL=generated.d.ts.map
