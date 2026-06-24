@@ -1432,3 +1432,73 @@ func TestPostgreSQLIAMAuthDeriveFromURIExplicitOverrides(t *testing.T) {
 	assert.Equal(t, "custom-endpoint:5432", cfg.IAMAuth.Endpoint, "explicit Endpoint must not be overwritten")
 	assert.Equal(t, "custom-user", cfg.IAMAuth.DBUser, "explicit DBUser must not be overwritten")
 }
+
+func TestPostgreSQLIAMAuthAppliesSSLModeToReadonlyConnectionURIs(t *testing.T) {
+	t.Parallel()
+
+	cfg := &PostgreSQLConnectorConfig{
+		ConnectionUri: "postgres://erpc-user@primary.abc123.us-east-1.rds.amazonaws.com:5432/erpc",
+		ReadonlyConnectionUris: []string{
+			"postgres://erpc-user@replica-a.abc123.us-east-1.rds.amazonaws.com:5432/erpc",
+			"postgres://erpc-user@replica-b.abc123.us-east-1.rds.amazonaws.com:5432/erpc?connect_timeout=5",
+		},
+		IAMAuth: &PostgreSQLIAMAuthConfig{
+			Enabled: true,
+			Region:  "us-east-1",
+		},
+	}
+
+	err := cfg.SetDefaults(connectorScopeCache)
+	require.NoError(t, err)
+
+	assert.Contains(t, cfg.ConnectionUri, "sslmode=require")
+	assert.Contains(t, cfg.ReadonlyConnectionUris[0], "sslmode=require")
+	assert.Contains(t, cfg.ReadonlyConnectionUris[1], "connect_timeout=5&sslmode=require")
+}
+
+func TestPostgreSQLValidateRejectsEmptyReadonlyConnectionURI(t *testing.T) {
+	t.Parallel()
+
+	cfg := &PostgreSQLConnectorConfig{
+		ConnectionUri:          "postgres://user@primary.example.com:5432/erpc",
+		ReadonlyConnectionUris: []string{" "},
+		Table:                  "erpc_json_rpc_cache",
+		MinConns:               1,
+		MaxConns:               2,
+		InitTimeout:            Duration(time.Second),
+		GetTimeout:             Duration(time.Second),
+		SetTimeout:             Duration(time.Second),
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "readonlyConnectionUris[0]")
+}
+
+func TestPostgreSQLIAMAuthValidateReadonlyConnectionURIs(t *testing.T) {
+	t.Parallel()
+
+	cfg := &PostgreSQLConnectorConfig{
+		ConnectionUri: "postgres://erpc-user@primary.abc123.us-east-1.rds.amazonaws.com:5432/erpc?sslmode=require",
+		ReadonlyConnectionUris: []string{
+			"postgres://erpc-user:static@replica-a.abc123.us-east-1.rds.amazonaws.com:5432/erpc?sslmode=require",
+		},
+		Table:       "erpc_json_rpc_cache",
+		MinConns:    1,
+		MaxConns:    2,
+		InitTimeout: Duration(time.Second),
+		GetTimeout:  Duration(time.Second),
+		SetTimeout:  Duration(time.Second),
+		IAMAuth: &PostgreSQLIAMAuthConfig{
+			Enabled:  true,
+			Region:   "us-east-1",
+			Endpoint: "primary.abc123.us-east-1.rds.amazonaws.com:5432",
+			DBUser:   "erpc-user",
+		},
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "readonlyConnectionUris[0]")
+	assert.Contains(t, err.Error(), "static password")
+}

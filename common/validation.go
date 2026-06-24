@@ -577,6 +577,11 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 	if p.ConnectionUri == "" {
 		return fmt.Errorf("database.*.connector.postgresql.connectionUri is required")
 	}
+	for i, uri := range p.ReadonlyConnectionUris {
+		if strings.TrimSpace(uri) == "" {
+			return fmt.Errorf("database.*.connector.postgresql.readonlyConnectionUris[%d] must not be empty", i)
+		}
+	}
 	if p.Table == "" {
 		return fmt.Errorf("database.*.connector.postgresql.table is required")
 	}
@@ -606,25 +611,36 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 		if p.IAMAuth.DBUser == "" {
 			return fmt.Errorf("postgresql.iamAuth.dbUser could not be derived from connectionUri; set it explicitly or include a user in connectionUri")
 		}
-		if parsed, err := url.Parse(p.ConnectionUri); err == nil {
+		for i, connectionURI := range append([]string{p.ConnectionUri}, p.ReadonlyConnectionUris...) {
+			field := "connectionUri"
+			if i > 0 {
+				field = fmt.Sprintf("readonlyConnectionUris[%d]", i-1)
+			}
+			parsed, err := url.Parse(connectionURI)
+			if err != nil {
+				continue
+			}
+			if i > 0 && parsed.Host != "" && !strings.Contains(parsed.Host, ":") {
+				return fmt.Errorf("postgresql.iamAuth.%s endpoint must include a port (host:port)", field)
+			}
 			// Reject static password alongside IAM auth.
 			if parsed.User != nil {
 				if pw, hasPw := parsed.User.Password(); hasPw && pw != "" {
-					return fmt.Errorf("postgresql.iamAuth: cannot combine IAM auth with a static password in connectionUri (got password for user %q)", parsed.User.Username())
+					return fmt.Errorf("postgresql.iamAuth: cannot combine IAM auth with a static password in %s (got password for user %q)", field, parsed.User.Username())
 				}
 			}
 			// Reject dbUser that disagrees with the URI user — rdsutils signs for
 			// DBUser while pgx connects as the URI user, causing a silent auth mismatch.
 			if parsed.User != nil {
 				if uriUser := parsed.User.Username(); uriUser != "" && p.IAMAuth.DBUser != uriUser {
-					return fmt.Errorf("postgresql.iamAuth.dbUser %q does not match the user in connectionUri %q; they must be identical", p.IAMAuth.DBUser, uriUser)
+					return fmt.Errorf("postgresql.iamAuth.dbUser %q does not match the user in %s %q; they must be identical", p.IAMAuth.DBUser, field, uriUser)
 				}
 			}
 			// Require a TLS-enforcing sslmode; checking for sslmode= presence alone
 			// would let sslmode=disable through.
 			sslmode := parsed.Query().Get("sslmode")
 			if !slices.Contains([]string{"require", "verify-ca", "verify-full"}, sslmode) {
-				return fmt.Errorf("postgresql.iamAuth requires SSL; sslmode must be require, verify-ca, or verify-full (got %q; SetDefaults appends sslmode=require automatically)", sslmode)
+				return fmt.Errorf("postgresql.iamAuth requires SSL for %s; sslmode must be require, verify-ca, or verify-full (got %q; SetDefaults appends sslmode=require automatically)", field, sslmode)
 			}
 		}
 		if p.IAMAuth.Auth != nil {

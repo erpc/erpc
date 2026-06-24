@@ -1081,16 +1081,27 @@ func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 		}
 
 		// RDS IAM auth requires SSL — append sslmode=require if no sslmode is set yet.
-		if parsed, err := url.Parse(p.ConnectionUri); err == nil && !parsed.Query().Has("sslmode") {
-			sep := "?"
-			if strings.Contains(p.ConnectionUri, "?") {
-				sep = "&"
-			}
-			p.ConnectionUri += sep + "sslmode=require"
+		p.ConnectionUri = withPostgreSQLSSLModeRequire(p.ConnectionUri)
+		for i, uri := range p.ReadonlyConnectionUris {
+			p.ReadonlyConnectionUris[i] = withPostgreSQLSSLModeRequire(uri)
 		}
 	}
 
 	return nil
+}
+
+func withPostgreSQLSSLModeRequire(connectionURI string) string {
+	if strings.TrimSpace(connectionURI) == "" {
+		return connectionURI
+	}
+	if parsed, err := url.Parse(connectionURI); err == nil && !parsed.Query().Has("sslmode") {
+		sep := "?"
+		if strings.Contains(connectionURI, "?") {
+			sep = "&"
+		}
+		return connectionURI + sep + "sslmode=require"
+	}
+	return connectionURI
 }
 
 func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {

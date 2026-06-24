@@ -237,6 +237,7 @@ Connector `SetDefaults` is called with `scope = connectorScopeCache`, which sets
 | `connectors[*].dynamodb.statePollInterval` | Duration | driver default | State poller interval. |
 | `connectors[*].dynamodb.lockRetryInterval` | Duration | driver default | Distributed lock retry interval. |
 | `connectors[*].postgresql.connectionUri` | string | required | PostgreSQL connection URI. Redacted in marshal. |
+| `connectors[*].postgresql.readonlyConnectionUris` | `[]string` | nil | Optional PostgreSQL read-replica URIs. Cache `Get` and `List` round-robin across these pools; writes, schema setup, cleanup, locks, and pub/sub stay on `connectionUri`. |
 | `connectors[*].postgresql.table` | string | `"erpc_json_rpc_cache"` (cache scope) | Auto-set to `"erpc_json_rpc_cache"` when scope=cache and value is blank. Source: <SourceLink file="common/defaults.go" lines="1027" /> |
 | `connectors[*].postgresql.minConns` | int32 | `4` (cache scope) | Min pool connections. Source: <SourceLink file="common/defaults.go" lines="1034-1040" /> |
 | `connectors[*].postgresql.maxConns` | int32 | `32` (cache scope) | Max pool connections. Source: <SourceLink file="common/defaults.go" lines="1041-1047" /> |
@@ -772,6 +773,8 @@ in `erpc_cache_set_success_total`:
 21. **gRPC connector's block-head timestamp is set to zero when timestamp parse fails.** This is intentional: storing a stale timestamp from a previous poll would make `CacheLatestBlockTimestamp` report a dangerously stale age. Storing 0 makes the realtime guard fail-open (accept the cached result) rather than reject based on wrong age data. Source: [`data/grpc.go:L350-L356`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L350-L356).
 
 22. **`appliesTo: "get"` enables independent write/read policies with different TTLs or finality.** Setting `appliesTo: "get"` on a policy means it will never be written to — a separate write-only policy (possibly with a different finality bucket or size limit) can populate the connector while the read-only policy controls what is served. The default `"both"` means the same policy governs both directions.
+
+23. **PostgreSQL `readonlyConnectionUris` only moves reads.** `Get` and `List` round-robin across configured read-replica pools. `Set`, `Delete`, schema setup, TTL cleanup, advisory locks, and `LISTEN/NOTIFY` continue using the primary `connectionUri`. With IAM auth, every replica URI must use the same DB user and a TLS `sslmode` accepted by validation.
 
 ### Observability
 

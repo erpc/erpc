@@ -457,6 +457,7 @@ export interface DynamoDBConnectorConfig {
 }
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
+  readonlyConnectionUris?: string[];
   table: string;
   minConns?: number /* int32 */;
   maxConns?: number /* int32 */;

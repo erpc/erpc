@@ -14,8 +14,10 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TestIsPostgresConnectionError pins down the exact predicate that drives
@@ -216,6 +218,73 @@ func TestErrConnectorNotReadyChain(t *testing.T) {
 		"sentinel error string must remain stable for backward-compatible log/dashboard greps")
 }
 
+func TestPostgreSQLAcquireReadPoolFallsBackToPrimary(t *testing.T) {
+	t.Parallel()
+
+	primary := &pgxpool.Pool{}
+	p := &PostgreSQLConnector{conn: primary}
+
+	pool, release, err := p.acquireReadPool(trace.SpanFromContext(context.Background()))
+	require.NoError(t, err)
+	require.Same(t, primary, pool)
+	release()
+}
+
+func TestPostgreSQLAcquireReadPoolRoundRobinsReadonlyReplicas(t *testing.T) {
+	t.Parallel()
+
+	primary := &pgxpool.Pool{}
+	replica1 := &pgxpool.Pool{}
+	replica2 := &pgxpool.Pool{}
+	p := &PostgreSQLConnector{
+		conn:          primary,
+		readonlyConns: []*pgxpool.Pool{replica1, replica2},
+	}
+	span := trace.SpanFromContext(context.Background())
+
+	pool, release, err := p.acquireReadPool(span)
+	require.NoError(t, err)
+	require.Same(t, replica1, pool)
+	release()
+
+	pool, release, err = p.acquireReadPool(span)
+	require.NoError(t, err)
+	require.Same(t, replica2, pool)
+	release()
+
+	pool, release, err = p.acquireReadPool(span)
+	require.NoError(t, err)
+	require.Same(t, replica1, pool)
+	release()
+}
+
+func TestPostgreSQLIAMAuthForURIUsesReplicaEndpoint(t *testing.T) {
+	t.Parallel()
+
+	iam := &common.PostgreSQLIAMAuthConfig{
+		Enabled:  true,
+		Endpoint: "primary.example.com:5432",
+		DBUser:   "erpc-user",
+	}
+
+	primaryIAM, err := postgreSQLIAMAuthForURI(
+		"postgres://erpc-user@primary.example.com:5432/erpc",
+		iam,
+		true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "primary.example.com:5432", primaryIAM.Endpoint)
+
+	replicaIAM, err := postgreSQLIAMAuthForURI(
+		"postgres://erpc-user@replica-a.example.com:5432/erpc",
+		iam,
+		false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "replica-a.example.com:5432", replicaIAM.Endpoint)
+	require.Equal(t, "primary.example.com:5432", iam.Endpoint, "helper must not mutate shared IAM config")
+}
+
 // (timeoutErr is shared with failsafe_transport_test.go in the same package.)
 
 // TestEnsureSchema_RaceSafeAgainstConcurrentCallers proves the mutex-based
@@ -372,8 +441,6 @@ func TestPostgreSQLIAMAuthValidation(t *testing.T) {
 		require.NoError(t, base().Validate())
 	})
 
-
-
 	t.Run("missing endpoint", func(t *testing.T) {
 		cfg := base()
 		cfg.IAMAuth.Endpoint = ""
@@ -426,4 +493,3 @@ func TestPostgreSQLIAMAuthValidation(t *testing.T) {
 		require.ErrorContains(t, cfg.Validate(), "auth.mode")
 	})
 }
-

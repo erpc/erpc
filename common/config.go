@@ -459,14 +459,15 @@ type DynamoDBConnectorConfig struct {
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri string                   `yaml:"connectionUri" json:"connectionUri"`
-	Table         string                   `yaml:"table" json:"table"`
-	MinConns      int32                    `yaml:"minConns,omitempty" json:"minConns"`
-	MaxConns      int32                    `yaml:"maxConns,omitempty" json:"maxConns"`
-	InitTimeout   Duration                 `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
-	GetTimeout    Duration                 `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
-	SetTimeout    Duration                 `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
-	IAMAuth       *PostgreSQLIAMAuthConfig `yaml:"iamAuth,omitempty" json:"iamAuth,omitempty"`
+	ConnectionUri          string                   `yaml:"connectionUri" json:"connectionUri"`
+	ReadonlyConnectionUris []string                 `yaml:"readonlyConnectionUris,omitempty" json:"readonlyConnectionUris,omitempty"`
+	Table                  string                   `yaml:"table" json:"table"`
+	MinConns               int32                    `yaml:"minConns,omitempty" json:"minConns"`
+	MaxConns               int32                    `yaml:"maxConns,omitempty" json:"maxConns"`
+	InitTimeout            Duration                 `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout             Duration                 `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout             Duration                 `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	IAMAuth                *PostgreSQLIAMAuthConfig `yaml:"iamAuth,omitempty" json:"iamAuth,omitempty"`
 	// SkipSchemaSetup skips all startup DDL (CREATE TABLE/INDEX, column
 	// migrations, pg_cron) and the local expired-row cleanup DELETE loop. Set
 	// it for connectors whose ConnectionUri targets a read-only replica (e.g.
@@ -478,30 +479,43 @@ type PostgreSQLConnectorConfig struct {
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]interface{}{
-		"connectionUri":   util.RedactEndpoint(p.ConnectionUri),
-		"table":           p.Table,
-		"minConns":        fmt.Sprintf("%d", p.MinConns),
-		"maxConns":        fmt.Sprintf("%d", p.MaxConns),
-		"initTimeout":     p.InitTimeout.String(),
-		"getTimeout":      p.GetTimeout.String(),
-		"setTimeout":      p.SetTimeout.String(),
-		"iamAuth":         p.IAMAuth,
-		"skipSchemaSetup": p.SkipSchemaSetup,
+		"connectionUri":          util.RedactEndpoint(p.ConnectionUri),
+		"readonlyConnectionUris": redactEndpoints(p.ReadonlyConnectionUris),
+		"table":                  p.Table,
+		"minConns":               fmt.Sprintf("%d", p.MinConns),
+		"maxConns":               fmt.Sprintf("%d", p.MaxConns),
+		"initTimeout":            p.InitTimeout.String(),
+		"getTimeout":             p.GetTimeout.String(),
+		"setTimeout":             p.SetTimeout.String(),
+		"iamAuth":                p.IAMAuth,
+		"skipSchemaSetup":        p.SkipSchemaSetup,
 	})
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalYAML() (interface{}, error) {
 	return map[string]interface{}{
-		"connectionUri":   util.RedactEndpoint(p.ConnectionUri),
-		"table":           p.Table,
-		"minConns":        p.MinConns,
-		"maxConns":        p.MaxConns,
-		"initTimeout":     p.InitTimeout.String(),
-		"getTimeout":      p.GetTimeout.String(),
-		"setTimeout":      p.SetTimeout.String(),
-		"iamAuth":         p.IAMAuth,
-		"skipSchemaSetup": p.SkipSchemaSetup,
+		"connectionUri":          util.RedactEndpoint(p.ConnectionUri),
+		"readonlyConnectionUris": redactEndpoints(p.ReadonlyConnectionUris),
+		"table":                  p.Table,
+		"minConns":               p.MinConns,
+		"maxConns":               p.MaxConns,
+		"initTimeout":            p.InitTimeout.String(),
+		"getTimeout":             p.GetTimeout.String(),
+		"setTimeout":             p.SetTimeout.String(),
+		"iamAuth":                p.IAMAuth,
+		"skipSchemaSetup":        p.SkipSchemaSetup,
 	}, nil
+}
+
+func redactEndpoints(endpoints []string) []string {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	redacted := make([]string, len(endpoints))
+	for i, endpoint := range endpoints {
+		redacted[i] = util.RedactEndpoint(endpoint)
+	}
+	return redacted
 }
 
 type AwsAuthConfig struct {

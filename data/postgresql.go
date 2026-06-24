@@ -9,12 +9,14 @@ import (
 	"hash/fnv"
 	"io"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/jackc/pgconn"
@@ -50,6 +52,10 @@ type PostgreSQLConnector struct {
 	appCtx context.Context
 	conn   *pgxpool.Pool
 	connMu sync.RWMutex
+	// readonlyConns are optional read-replica pools used by Get/List. Writes,
+	// schema setup, locks, pub/sub, and cleanup always use conn (primary).
+	readonlyConns []*pgxpool.Pool
+	readCursor    atomic.Uint64
 	// schemaApplied + schemaMu gate one-time schema setup (CREATE TABLE /
 	// CREATE INDEX / pg_cron). The DDL is mostly idempotent but
 	// (a) re-running on every reconnect adds load to the database and
@@ -181,29 +187,23 @@ func NewPostgreSQLConnector(
 // call). Old pools are closed AFTER releasing the lock so a slow Close
 // (drain of in-flight queries) cannot stall the hot read path.
 func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
-	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
-	if err != nil {
-		return common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
-	}
-	config.MinConns = p.minConns
-	config.MaxConns = p.maxConns
-	config.MaxConnLifetime = 5 * time.Hour
-	config.MaxConnIdleTime = 30 * time.Minute
-
+	var iamSession *session.Session
 	if iam := cfg.IAMAuth; iam != nil && iam.Enabled {
 		sess, err := createAWSSession(iam.Auth, iam.Region)
 		if err != nil {
 			return common.NewTaskFatal(fmt.Errorf("rds iam: failed to create AWS session: %w", err))
 		}
-		// BeforeConnect is called on every new pgxpool connection, ensuring each
-		// connection uses a fresh IAM token (tokens are valid for 15 minutes but
-		// only checked at connection establishment time).
-		config.BeforeConnect = newRDSBeforeConnect(sess, iam)
+		iamSession = sess
 		p.logger.Info().
 			Str("endpoint", iam.Endpoint).
 			Str("region", iam.Region).
 			Str("dbUser", iam.DBUser).
 			Msg("PostgreSQL IAM auth enabled (RDS)")
+	}
+
+	config, err := p.poolConfigForURI(cfg.ConnectionUri, cfg, iamSession, true)
+	if err != nil {
+		return common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
 	}
 
 	connectCtx, cancel := context.WithTimeout(ctx, p.initTimeout)
@@ -235,13 +235,32 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		}
 	}
 
+	newReadonlyConns := make([]*pgxpool.Pool, 0, len(cfg.ReadonlyConnectionUris))
+	for i, connectionURI := range cfg.ReadonlyConnectionUris {
+		readonlyConfig, err := p.poolConfigForURI(connectionURI, cfg, iamSession, false)
+		if err != nil {
+			newConn.Close()
+			closePostgreSQLPools(newReadonlyConns)
+			return common.NewTaskFatal(fmt.Errorf("failed to parse readonly connection URI %d: %w", i, err))
+		}
+		readonlyConn, err := pgxpool.ConnectConfig(connectCtx, readonlyConfig)
+		if err != nil {
+			newConn.Close()
+			closePostgreSQLPools(newReadonlyConns)
+			return fmt.Errorf("failed to connect readonly postgres replica %d: %w", i, err)
+		}
+		newReadonlyConns = append(newReadonlyConns, readonlyConn)
+	}
+
 	// Publish the new pool. This is the only critical section: readers see
 	// a consistent snapshot of (conn, listenerPool) and the swap is
 	// nanoseconds, not seconds.
 	p.connMu.Lock()
 	oldConn := p.conn
+	oldReadonlyConns := p.readonlyConns
 	oldListenerPool := p.listenerPool
 	p.conn = newConn
+	p.readonlyConns = newReadonlyConns
 	// Force lazy re-creation of the listener pool against the fresh main
 	// pool on the next WatchCounterInt64 call.
 	p.listenerPool = nil
@@ -258,11 +277,15 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	if oldConn != nil {
 		oldConn.Close()
 	}
+	closePostgreSQLPools(oldReadonlyConns)
 	if oldListenerPool != nil {
 		oldListenerPool.Close()
 	}
 
-	p.logger.Info().Str("table", p.table).Msg("successfully connected to postgres")
+	p.logger.Info().
+		Str("table", p.table).
+		Int("readonlyReplicaCount", len(newReadonlyConns)).
+		Msg("successfully connected to postgres")
 
 	// Spawn the local expired-items cleanup goroutine at most once per
 	// connector lifetime, regardless of how many times connectTask runs.
@@ -277,6 +300,71 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		}
 	})
 	return nil
+}
+
+func (p *PostgreSQLConnector) poolConfigForURI(
+	connectionURI string,
+	cfg *common.PostgreSQLConnectorConfig,
+	iamSession *session.Session,
+	useConfiguredIAMEndpoint bool,
+) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(connectionURI)
+	if err != nil {
+		return nil, err
+	}
+	config.MinConns = p.minConns
+	config.MaxConns = p.maxConns
+	config.MaxConnLifetime = 5 * time.Hour
+	config.MaxConnIdleTime = 30 * time.Minute
+
+	if iam := cfg.IAMAuth; iam != nil && iam.Enabled {
+		if iamSession == nil {
+			return nil, fmt.Errorf("rds iam: AWS session is required")
+		}
+		iamForURI, err := postgreSQLIAMAuthForURI(connectionURI, iam, useConfiguredIAMEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		// BeforeConnect is called on every new pgxpool connection, ensuring each
+		// connection uses a fresh IAM token (tokens are valid for 15 minutes but
+		// only checked at connection establishment time).
+		config.BeforeConnect = newRDSBeforeConnect(iamSession, iamForURI)
+	}
+
+	return config, nil
+}
+
+func postgreSQLIAMAuthForURI(
+	connectionURI string,
+	iam *common.PostgreSQLIAMAuthConfig,
+	useConfiguredEndpoint bool,
+) (*common.PostgreSQLIAMAuthConfig, error) {
+	iamForURI := *iam
+	parsed, err := url.Parse(connectionURI)
+	if err != nil {
+		return nil, fmt.Errorf("rds iam: parse connection URI: %w", err)
+	}
+	if (!useConfiguredEndpoint || iamForURI.Endpoint == "") && parsed.Host != "" {
+		iamForURI.Endpoint = parsed.Host
+	}
+	if iamForURI.DBUser == "" && parsed.User != nil {
+		iamForURI.DBUser = parsed.User.Username()
+	}
+	if iamForURI.Endpoint == "" {
+		return nil, fmt.Errorf("rds iam: endpoint could not be derived from connection URI")
+	}
+	if iamForURI.DBUser == "" {
+		return nil, fmt.Errorf("rds iam: db user could not be derived from connection URI")
+	}
+	return &iamForURI, nil
+}
+
+func closePostgreSQLPools(pools []*pgxpool.Pool) {
+	for _, pool := range pools {
+		if pool != nil {
+			pool.Close()
+		}
+	}
 }
 
 // ensureSchema runs applySchema at most once successfully per process
@@ -406,11 +494,11 @@ func (p *PostgreSQLConnector) Id() string {
 	return p.id
 }
 
-// acquirePool takes the connMu read lock and returns the live pgxpool
+// acquirePool takes the connMu read lock and returns the live primary pgxpool
 // snapshot together with a release function that the caller MUST defer.
-// It centralises the not-ready check so every entry point (Get/Set/Lock/
-// Delete/List/PublishCounterInt64) emits the same ErrConnectorNotReady
-// sentinel and the same span attribution.
+// It centralises the not-ready check so every primary entry point (Set/Lock/
+// Delete/PublishCounterInt64) emits the same ErrConnectorNotReady sentinel and
+// the same span attribution.
 //
 // If the pool is nil (first init in flight, or reconnect storm has not
 // recovered yet), the read lock is released immediately and the span is
@@ -433,6 +521,23 @@ func (p *PostgreSQLConnector) acquirePool(span trace.Span) (*pgxpool.Pool, func(
 		return nil, nil, ErrConnectorNotReady
 	}
 	return p.conn, p.connMu.RUnlock, nil
+}
+
+// acquireReadPool returns a read-replica pool when readonlyConnectionUris are
+// configured, otherwise the primary. The read lock is held for the caller's
+// query so reconnect swaps cannot close the selected pool mid-call.
+func (p *PostgreSQLConnector) acquireReadPool(span trace.Span) (*pgxpool.Pool, func(), error) {
+	p.connMu.RLock()
+	if p.conn == nil {
+		p.connMu.RUnlock()
+		common.SetTraceSpanError(span, ErrConnectorNotReady)
+		return nil, nil, ErrConnectorNotReady
+	}
+	if len(p.readonlyConns) == 0 {
+		return p.conn, p.connMu.RUnlock, nil
+	}
+	idx := int((p.readCursor.Add(1) - 1) % uint64(len(p.readonlyConns)))
+	return p.readonlyConns[idx], p.connMu.RUnlock, nil
 }
 
 func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
@@ -504,7 +609,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		)
 	}
 
-	pool, release, err := p.acquirePool(span)
+	pool, release, err := p.acquireReadPool(span)
 	if err != nil {
 		return nil, err
 	}
@@ -1202,7 +1307,7 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 		)
 	}
 
-	pool, release, err := p.acquirePool(span)
+	pool, release, err := p.acquireReadPool(span)
 	if err != nil {
 		return nil, "", err
 	}
