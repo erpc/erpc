@@ -2805,6 +2805,9 @@ func (j *JwtStrategyConfig) SetDefaults() error {
 	if j.RateLimitBudgetClaimName == "" {
 		j.RateLimitBudgetClaimName = "rlm"
 	}
+	if j.VerificationJwksUrl != "" && j.VerificationJwksRefreshInterval == 0 {
+		j.VerificationJwksRefreshInterval = Duration(time.Hour)
+	}
 	return nil
 }
 

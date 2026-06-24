@@ -2581,11 +2581,15 @@ type DatabaseFailOpenConfig struct {
 }
 
 type JwtStrategyConfig struct {
-	AllowedIssuers    []string          `yaml:"allowedIssuers" json:"allowedIssuers"`
-	AllowedAudiences  []string          `yaml:"allowedAudiences" json:"allowedAudiences"`
-	AllowedAlgorithms []string          `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
-	RequiredClaims    []string          `yaml:"requiredClaims" json:"requiredClaims"`
-	VerificationKeys  map[string]string `yaml:"verificationKeys" json:"verificationKeys"`
+	AllowedIssuers                        []string            `yaml:"allowedIssuers" json:"allowedIssuers"`
+	AllowedAudiences                      []string            `yaml:"allowedAudiences" json:"allowedAudiences"`
+	AllowedAlgorithms                     []string            `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
+	RequiredClaims                        []string            `yaml:"requiredClaims" json:"requiredClaims"`
+	ClaimMatchers                         map[string][]string `yaml:"claimMatchers,omitempty" json:"claimMatchers,omitempty"`
+	VerificationKeys                      map[string]string   `yaml:"verificationKeys,omitempty" json:"verificationKeys,omitempty"`
+	VerificationJwksUrl                   string              `yaml:"verificationJwksUrl,omitempty" json:"verificationJwksUrl,omitempty"`
+	VerificationJwksRefreshInterval       Duration            `yaml:"verificationJwksRefreshInterval,omitempty" json:"verificationJwksRefreshInterval" tstype:"Duration"`
+	VerificationJwksTlsInsecureSkipVerify bool                `yaml:"verificationJwksTlsInsecureSkipVerify,omitempty" json:"verificationJwksTlsInsecureSkipVerify,omitempty"` //nolint:gosec
 	// RateLimitBudgetClaimName is the JWT claim name that, if present,
 	// will be used to set the per-user RateLimitBudget override.
 	// Defaults to "rlm".
