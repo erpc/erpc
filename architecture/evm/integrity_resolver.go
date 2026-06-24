@@ -19,11 +19,11 @@ type integrityResolver struct {
 	view     *chainView
 }
 
-func newIntegrityResolver(n common.Network, u common.Upstream) integrity.Resolver {
+func newIntegrityResolver(ctx context.Context, n common.Network, u common.Upstream, selector string) integrity.Resolver {
 	if n == nil {
 		return nil
 	}
-	return &integrityResolver{network: n, upstream: u, view: networkChainView(n)}
+	return &integrityResolver{network: n, upstream: u, view: groupChainView(ctx, n, selector)}
 }
 
 func (r *integrityResolver) IsFinalized(ctx context.Context, blockNumber int64) (bool, bool) {

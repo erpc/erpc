@@ -36,6 +36,14 @@ type chainView struct {
 	window        int
 	network       common.Network
 
+	// Group scoping: the integrity state + corroboration fetches are PER node group
+	// (e.g. systx vs standard, flashblocks vs normal) — numbering/tip only agree
+	// within a group. selector is the use-upstream selector to pin force-fetches to
+	// the group ("" = network-wide); group is the human-readable lane for metrics.
+	selector  string
+	group     string
+	finalized func() int64 // best-effort finalized height for the aux finality label
+
 	flightMu  sync.Mutex
 	hInflight map[string]*flight[*integrity.Header]
 	rInflight map[string]*flight[[]integrity.Receipt]
@@ -70,7 +78,7 @@ func doOnce[T any](mu *sync.Mutex, inflight map[string]*flight[T], key string, f
 	return f.val, f.ok
 }
 
-func newChainView(n common.Network, window int) *chainView {
+func newChainView(n common.Network, window int, selector, group string, finalized func() int64) *chainView {
 	if window <= 0 {
 		window = defaultReorgWindow
 	}
@@ -80,6 +88,9 @@ func newChainView(n common.Network, window int) *chainView {
 		receipts:  make(map[string][]integrity.Receipt),
 		window:    window,
 		network:   n,
+		selector:  selector,
+		group:     group,
+		finalized: finalized,
 		hInflight: make(map[string]*flight[*integrity.Header]),
 		rInflight: make(map[string]*flight[[]integrity.Receipt]),
 	}
@@ -203,58 +214,93 @@ func (c *chainView) receiptsByHash(ctx context.Context, blockHash string) ([]int
 	})
 }
 
-// resolveHeader force-fetches a header via the trusted network path (inheriting the
-// network's configured failsafe/consensus) and feeds it back into the view.
+// fetchDirectives marks the force-fetch internal (no recursion into the engine) and
+// pins it to the ChainView's node group, so a systx receipt is only ever
+// corroborated against systx nodes (etc.). Empty selector = network-wide.
+func (c *chainView) fetchDirectives() *common.RequestDirectives {
+	d := &common.RequestDirectives{IsInternal: true}
+	if c.selector != "" {
+		d.UseUpstream = c.selector
+	}
+	return d
+}
+
+// finalityLabel classifies an aux-fetched block: finalized when its number is at or
+// below the group's finalized height, unfinalized when above, unknown otherwise.
+func (c *chainView) finalityLabel(number int64) string {
+	if number < 0 || c.finalized == nil {
+		return "unknown"
+	}
+	fin := c.finalized()
+	if fin <= 0 {
+		return "unknown"
+	}
+	if number <= fin {
+		return "finalized"
+	}
+	return "unfinalized"
+}
+
+// resolveHeader force-fetches a header via the trusted network path (group-scoped,
+// inheriting the network's failsafe/consensus) and feeds it back into the view.
 func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string) (*integrity.Header, bool) {
 	if c.network == nil {
 		return nil, false
 	}
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"%s","params":["%s",false]}`, method, blockRef)))
-	req.SetDirectives(&common.RequestDirectives{IsInternal: true})
+	req.SetDirectives(c.fetchDirectives())
 	req.SetNetwork(c.network)
 
 	resp, err := c.network.Forward(ctx, req)
-	c.emitAux("canonical_header", err == nil && resp != nil)
-	if err != nil || resp == nil {
+	var h *integrity.Header
+	num := int64(-1)
+	if err == nil && resp != nil {
+		if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
+			var hh integrity.Header
+			if common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &hh) == nil && hh.Hash != "" {
+				h = &hh
+				num, _ = common.HexToInt64(hh.Number)
+			}
+		}
+	}
+	c.emitAux("canonical_header", method, c.finalityLabel(num), h != nil)
+	if h == nil {
 		return nil, false
 	}
-	jrr, err := resp.JsonRpcResponse(ctx)
-	if err != nil || jrr == nil {
-		return nil, false
+	if num >= 0 {
+		c.observe(num, h.Hash, h)
 	}
-	var h integrity.Header
-	if common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &h) != nil || h.Hash == "" {
-		return nil, false
-	}
-	if n, err := common.HexToInt64(h.Number); err == nil {
-		c.observe(n, h.Hash, &h)
-	}
-	return &h, true
+	return h, true
 }
 
 // resolveReceipts force-fetches a block's receipts BY HASH (immutable — no reorg
-// race) via the trusted network path and caches them.
+// race), group-scoped, and caches them.
 func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]integrity.Receipt, bool) {
 	if c.network == nil {
 		return nil, false
 	}
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["%s"]}`, blockHash)))
-	req.SetDirectives(&common.RequestDirectives{IsInternal: true})
+	req.SetDirectives(c.fetchDirectives())
 	req.SetNetwork(c.network)
 
 	resp, err := c.network.Forward(ctx, req)
-	c.emitAux("canonical_receipts", err == nil && resp != nil)
-	if err != nil || resp == nil {
-		return nil, false
-	}
-	jrr, err := resp.JsonRpcResponse(ctx)
-	if err != nil || jrr == nil {
-		return nil, false
-	}
 	var receipts []integrity.Receipt
-	if common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &receipts) != nil {
+	num := int64(-1)
+	got := false
+	if err == nil && resp != nil {
+		if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
+			if common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &receipts) == nil {
+				got = true
+				if len(receipts) > 0 {
+					num, _ = common.HexToInt64(receipts[0].BlockNumber)
+				}
+			}
+		}
+	}
+	c.emitAux("canonical_receipts", "eth_getBlockReceipts", c.finalityLabel(num), got)
+	if !got {
 		return nil, false
 	}
 	c.observeReceipts(blockHash, receipts)
@@ -262,36 +308,62 @@ func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]in
 }
 
 // emitAux records an auxiliary (force-fetch) request — NOT part of a user request —
-// only on a ChainView miss, so dedup keeps it rare. Network-scoped: the triggering
-// upstream isn't known at the shared store.
-func (c *chainView) emitAux(kind string, ok bool) {
+// only on a ChainView miss, so dedup keeps it rare. Labeled with the node group, the
+// actual method sent, and the target block's finality.
+func (c *chainView) emitAux(kind, method, finality string, ok bool) {
 	outcome := "error"
 	if ok {
 		outcome = "ok"
 	}
 	telemetry.MetricIntegrityAuxRequest.WithLabelValues(
-		c.network.ProjectId(), "", c.network.Label(), "", kind, outcome,
+		c.network.ProjectId(), "", c.network.Label(), "", c.group, kind, method, finality, outcome,
 	).Inc()
 }
 
-var chainViewStore sync.Map // networkId -> *chainView
+var chainViewStore sync.Map // "networkId\x00groupKey" -> *chainView
 
-// networkChainView returns the per-network ChainView, creating it on first use with
-// the configured reorg window. Returns nil only when the network is nil.
-func networkChainView(n common.Network) *chainView {
+// groupChainView returns the ChainView for a network + node GROUP, deriving the group
+// from the request's use-upstream selector via the SAME mechanism as latest-block
+// tracking (Network.EvmUpstreamGroupForSelector → partitionKeyFor). A selector that
+// doesn't carve out a real sub-group (or "") yields the network-wide view — today's
+// behavior. Per-group isolation is what stops systx↔standard / flashblocks↔normal
+// cross-talk: numbering and tip only agree within a group.
+func groupChainView(ctx context.Context, n common.Network, selector string) *chainView {
 	if n == nil {
 		return nil
 	}
-	if v, ok := chainViewStore.Load(n.Id()); ok {
+	var groupKey, group, fetchSelector string
+	if selector != "" {
+		if gn, ok := n.(interface {
+			EvmUpstreamGroupForSelector(context.Context, string) (string, string)
+		}); ok {
+			if k, lane := gn.EvmUpstreamGroupForSelector(ctx, selector); k != "" {
+				groupKey, group, fetchSelector = k, lane, selector
+			}
+		}
+	}
+	storeKey := n.Id() + "\x00" + groupKey
+	if v, ok := chainViewStore.Load(storeKey); ok {
 		return v.(*chainView)
 	}
 	window := defaultReorgWindow
 	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.ReorgWindow > 0 {
 		window = cfg.Integrity.ReorgWindow
 	}
-	created := newChainView(n, window)
-	actual, _ := chainViewStore.LoadOrStore(n.Id(), created)
+	created := newChainView(n, window, fetchSelector, group, networkFinalized(n))
+	actual, _ := chainViewStore.LoadOrStore(storeKey, created)
 	return actual.(*chainView)
+}
+
+// networkFinalized returns a best-effort finalized-height getter for the aux finality
+// label, or nil when the network can't report one (→ finality "unknown").
+func networkFinalized(n common.Network) func() int64 {
+	if fn, ok := n.(interface {
+		EvmHighestFinalizedBlockNumber(context.Context) int64
+	}); ok {
+		return func() int64 { return fn.EvmHighestFinalizedBlockNumber(context.Background()) }
+	}
+	return nil
 }
 
 func isBlockMethod(methodLower string) bool {

@@ -13,7 +13,7 @@ import (
 
 func TestChainView(t *testing.T) {
 	t.Run("observe and look up the pin", func(t *testing.T) {
-		c := newChainView(nil, 8)
+		c := newChainView(nil, 8, "", "", nil)
 		_, ok := c.HashAt(1)
 		assert.False(t, ok)
 		c.observe(1, "0xa", nil)
@@ -23,7 +23,7 @@ func TestChainView(t *testing.T) {
 	})
 
 	t.Run("reorg adopts the new hash and rolls back descendants", func(t *testing.T) {
-		c := newChainView(nil, 32)
+		c := newChainView(nil, 32, "", "", nil)
 		c.observe(5, "0xa", nil)
 		c.observe(6, "0xb", nil)
 		c.observe(7, "0xc", nil)
@@ -40,7 +40,7 @@ func TestChainView(t *testing.T) {
 	})
 
 	t.Run("re-observing the same hash is a no-op (no rollback)", func(t *testing.T) {
-		c := newChainView(nil, 32)
+		c := newChainView(nil, 32, "", "", nil)
 		c.observe(5, "0xa", nil)
 		c.observe(6, "0xb", nil)
 		c.observe(5, "0xa", nil) // same hash — must NOT roll back 6
@@ -50,7 +50,7 @@ func TestChainView(t *testing.T) {
 	})
 
 	t.Run("ignores empty hash and negative number", func(t *testing.T) {
-		c := newChainView(nil, 8)
+		c := newChainView(nil, 8, "", "", nil)
 		c.observe(3, "", nil)
 		c.observe(-1, "0xa", nil)
 		_, ok := c.HashAt(3)
@@ -58,7 +58,7 @@ func TestChainView(t *testing.T) {
 	})
 
 	t.Run("evicts below tip minus window", func(t *testing.T) {
-		c := newChainView(nil, 2)
+		c := newChainView(nil, 2, "", "", nil)
 		for i := int64(1); i <= 5; i++ {
 			c.observe(i, fmt.Sprintf("0x%d", i), nil)
 		}
@@ -73,14 +73,14 @@ func TestChainView(t *testing.T) {
 	})
 
 	t.Run("zero window falls back to default", func(t *testing.T) {
-		c := newChainView(nil, 0)
+		c := newChainView(nil, 0, "", "", nil)
 		assert.Equal(t, defaultReorgWindow, c.window)
 	})
 
 	// Fetch-once foundation: a cached header is served WITHOUT a fetch. The nil
 	// network proves it — any resolve() would fail, so a hit must come from cache.
 	t.Run("header cache hit serves without fetching", func(t *testing.T) {
-		c := newChainView(nil, 8)
+		c := newChainView(nil, 8, "", "", nil)
 		h := &integrity.Header{Hash: "0xbb", Number: "0x10"}
 		c.observe(0x10, "0xbb", h)
 
@@ -94,7 +94,7 @@ func TestChainView(t *testing.T) {
 	})
 
 	t.Run("cache miss with no network fails closed", func(t *testing.T) {
-		c := newChainView(nil, 8)
+		c := newChainView(nil, 8, "", "", nil)
 		_, ok := c.headerByHash(context.Background(), "0xunknown")
 		assert.False(t, ok)
 	})
@@ -102,7 +102,7 @@ func TestChainView(t *testing.T) {
 
 func TestChainView_Receipts(t *testing.T) {
 	t.Run("receipts cache hit serves without fetching", func(t *testing.T) {
-		c := newChainView(nil, 8) // nil network → any fetch would fail
+		c := newChainView(nil, 8, "", "", nil) // nil network → any fetch would fail
 		c.observeReceipts("0xbb", []integrity.Receipt{{TransactionHash: "0xaa", BlockHash: "0xbb"}})
 		got, ok := c.receiptsByHash(context.Background(), "0xbb")
 		require.True(t, ok)
@@ -111,13 +111,13 @@ func TestChainView_Receipts(t *testing.T) {
 	})
 
 	t.Run("receipts cache miss with no network fails closed", func(t *testing.T) {
-		c := newChainView(nil, 8)
+		c := newChainView(nil, 8, "", "", nil)
 		_, ok := c.receiptsByHash(context.Background(), "0xunknown")
 		assert.False(t, ok)
 	})
 
 	t.Run("receipts evicted with the window", func(t *testing.T) {
-		c := newChainView(nil, 2)
+		c := newChainView(nil, 2, "", "", nil)
 		for i := 0; i < c.window+cacheSlack+2; i++ {
 			c.observeReceipts(fmt.Sprintf("0x%d", i), []integrity.Receipt{{TransactionHash: "0xaa"}})
 		}
@@ -128,7 +128,7 @@ func TestChainView_Receipts(t *testing.T) {
 
 func TestChainView_NarrowAnchors(t *testing.T) {
 	t.Run("finalized block → pinned", func(t *testing.T) {
-		c := newChainView(nil, 32)
+		c := newChainView(nil, 32, "", "", nil)
 		c.observeNarrowAnchors(0x20, []byte(`{"blockNumber":"0x10","blockHash":"0xbb","transactionHash":"0xaa"}`))
 		v, ok := c.HashAt(0x10)
 		require.True(t, ok)
@@ -136,21 +136,21 @@ func TestChainView_NarrowAnchors(t *testing.T) {
 	})
 
 	t.Run("unfinalized block → not pinned (tip-thrash safety)", func(t *testing.T) {
-		c := newChainView(nil, 32)
+		c := newChainView(nil, 32, "", "", nil)
 		c.observeNarrowAnchors(0x20, []byte(`{"blockNumber":"0x30","blockHash":"0xcc"}`)) // 0x30 > fin 0x20
 		_, ok := c.HashAt(0x30)
 		assert.False(t, ok)
 	})
 
 	t.Run("finality unknown (fin<=0) → no-op", func(t *testing.T) {
-		c := newChainView(nil, 32)
+		c := newChainView(nil, 32, "", "", nil)
 		c.observeNarrowAnchors(0, []byte(`{"blockNumber":"0x10","blockHash":"0xbb"}`))
 		_, ok := c.HashAt(0x10)
 		assert.False(t, ok)
 	})
 
 	t.Run("array response (block receipts) → each finalized anchor pinned", func(t *testing.T) {
-		c := newChainView(nil, 32)
+		c := newChainView(nil, 32, "", "", nil)
 		c.observeNarrowAnchors(0x20, []byte(`[{"blockNumber":"0x10","blockHash":"0xbb"},{"blockNumber":"0x11","blockHash":"0xbb"}]`))
 		v, ok := c.HashAt(0x10)
 		require.True(t, ok)
@@ -160,8 +160,34 @@ func TestChainView_NarrowAnchors(t *testing.T) {
 	})
 }
 
+func TestChainView_GroupScoping(t *testing.T) {
+	t.Run("force-fetch is pinned to the group selector", func(t *testing.T) {
+		c := newChainView(nil, 8, "systx*", "systx", nil)
+		d := c.fetchDirectives()
+		require.NotNil(t, d)
+		assert.True(t, d.IsInternal)
+		assert.Equal(t, "systx*", d.UseUpstream, "corroboration must stay in the served group")
+	})
+
+	t.Run("no selector → network-wide (no use-upstream pin)", func(t *testing.T) {
+		c := newChainView(nil, 8, "", "", nil)
+		d := c.fetchDirectives()
+		assert.True(t, d.IsInternal)
+		assert.Equal(t, "", d.UseUpstream)
+	})
+}
+
+func TestChainView_FinalityLabel(t *testing.T) {
+	c := newChainView(nil, 8, "", "", func() int64 { return 100 })
+	assert.Equal(t, "finalized", c.finalityLabel(50))
+	assert.Equal(t, "finalized", c.finalityLabel(100))
+	assert.Equal(t, "unfinalized", c.finalityLabel(150))
+	assert.Equal(t, "unknown", c.finalityLabel(-1))
+	assert.Equal(t, "unknown", newChainView(nil, 8, "", "", nil).finalityLabel(50))
+}
+
 func TestObserveBlockView(t *testing.T) {
-	c := newChainView(nil, 8)
+	c := newChainView(nil, 8, "", "", nil)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`{"number":"0x10","hash":"0xabc","parentHash":"0xdef"}`), nil)
 	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)

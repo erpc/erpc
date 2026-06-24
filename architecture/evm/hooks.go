@@ -150,13 +150,21 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	dirs := rq.Directives()
 	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
 		if cs, policy := resolveIntegrity(n, dirs); len(cs) > 0 {
-			view := networkChainView(n)
+			// Integrity state + corroboration are scoped to the node GROUP the request
+			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
+			// so a systx receipt is only checked against systx, flashblocks against
+			// flashblocks. No selector → network-wide.
+			selector := ""
+			if dirs != nil {
+				selector = dirs.UseUpstream
+			}
+			view := groupChainView(ctx, n, selector)
 			input := integrity.Input{
 				Method:   methodLower,
 				Upstream: u,
 				Response: rs,
 				Checks:   cs,
-				Resolver: newIntegrityResolver(n, u),
+				Resolver: newIntegrityResolver(ctx, n, u, selector),
 				Reorg:    policy,
 			}
 			if view != nil {

@@ -35,6 +35,28 @@ writes, auto-populated from **user requests and the module's own aux fetches**, 
    helpers, but a **dedicated in-memory map** — NOT the shared cache DAL, since many
    users have no cache configured. The module must work standalone.
 
+## Per-group scoping (systx/standard, flashblocks)
+
+Upstreams of one network can disagree on a block's *numbering* or *tip* **by design**:
+HyperEVM `systx` nodes count HyperCore system txs in `txIndex`/`logIndex` while
+`standard` nodes don't; Base `flashblocks` nodes lead the confirmed tip. Corroborating
+*across* these groups is a false positive — the data is fine, only the convention
+differs (verified on the shadow: a `systx` receipt at `logIndex 0x24` vs the `standard`
+canonical's `0x23`, a uniform +1 from the omitted system tx).
+
+So the ChainView and every corroboration fetch are scoped to the **node group** the
+request was pinned to, **reusing erpc's existing served-tip grouping**
+(`Network.EvmUpstreamGroupForSelector` → `partitionKeyFor`): the request's
+`use-upstream` selector (`systx*`, `flashblocks*`, …) resolves to a stable group key
+(deduped by matched-upstream set, bounded, cross-pod stable — the same key latest-block
+tracking uses).
+
+- **ChainView keyed by `(network, group)`** — `groupChainView(ctx, n, selector)`; each
+  group keeps its own pin + header + receipts. No group selector → network-wide (today).
+- **Force-fetch inherits the selector** — `fetchDirectives` sets `UseUpstream` to the
+  group selector, so a `systx` receipt is only ever corroborated against `systx` nodes.
+- **No new config/tagging** — it rides whatever selection the request already carried.
+
 ## Shape
 
 Per network (`sync.Map` keyed by networkId), built only when integrity is enabled

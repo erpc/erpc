@@ -506,6 +506,21 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 	return "grp:" + hex.EncodeToString(sum[:8]), matched
 }
 
+// EvmUpstreamGroupForSelector exposes the served-tip group materialization to the
+// integrity module: given a use-upstream selector it returns a stable group key
+// (for keying per-group state) and the human-readable lane name, or ("","") when
+// the selector doesn't carve out a real sub-group. Reuses partitionKeyFor so the
+// grouping (dedup by matched set, bounds, cross-pod stability) is identical to
+// latest-block tracking — integrity corroborates within the SAME node group a
+// request was pinned to (e.g. systx vs standard, flashblocks vs normal).
+func (n *Network) EvmUpstreamGroupForSelector(ctx context.Context, selector string) (key string, lane string) {
+	k, ids := n.partitionKeyFor(ctx, selector)
+	if k == "" {
+		return "", ""
+	}
+	return k, common.LaneName(ids)
+}
+
 // isSimpleGroupSelector reports whether a selector is a single glob token
 // (optionally negated) rather than a boolean expression — keeping automatic
 // group materialization to simple patterns like `flashblocks*` / `!flashblocks*`

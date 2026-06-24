@@ -351,8 +351,8 @@ var (
 	MetricIntegrityAuxRequest = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "integrity_aux_request_total",
-		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by kind (canonical_header/canonical_receipts) and outcome (ok/error).",
-	}, []string{"project", "vendor", "network", "upstream", "kind", "outcome"})
+		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by node group, kind (canonical_header/canonical_receipts), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error).",
+	}, []string{"project", "vendor", "network", "upstream", "group", "kind", "method", "finality", "outcome"})
 
 	// MetricIntegritySaved counts requests the integrity module SAVED: a check
 	// rejected a bad response, the request failed over, and a good response was
