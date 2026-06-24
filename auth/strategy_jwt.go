@@ -26,11 +26,10 @@ type JwtStrategy struct {
 	keysMu     sync.RWMutex
 	keys       map[string]jwt.Keyfunc
 
-	// refreshMu serializes refreshVerificationKeys so a forced and a scheduled
-	// (ticker) refresh never fetch or swap concurrently. It also guards
-	// nextForcedRefresh, the debounce gate for on-demand (forced) refreshes.
-	refreshMu         sync.Mutex
-	nextForcedRefresh time.Time
+	// refreshMu serializes refreshVerificationKeys so concurrent callers never
+	// fetch or swap keys concurrently. It also guards nextRefresh, the debounce gate.
+	refreshMu   sync.Mutex
+	nextRefresh time.Time
 }
 
 var _ AuthStrategy = &JwtStrategy{}
@@ -45,7 +44,7 @@ func NewJwtStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *common.
 
 	ctx, cancel := context.WithTimeout(appCtx, defaultJwksHTTPTimeout)
 	defer cancel()
-	if _, err := s.refreshVerificationKeys(ctx, false); err != nil {
+	if _, err := s.refreshVerificationKeys(ctx); err != nil {
 		return nil, err
 	}
 
@@ -138,11 +137,10 @@ func (s *JwtStrategy) findVerificationKey(ctx context.Context, token *jwt.Token)
 		// refresh and retry the kid lookup. This must happen before the
 		// compatible-key-type fallback below, which would otherwise return a stale
 		// key of the right type and fail signature verification without ever
-		// refreshing. refreshVerificationKeys debounces the forced path so unknown
-		// kids can't amplify into unbounded upstream fetches.
+		// refreshing. refreshing.
 		if s.cfg.VerificationJwksUrl != "" {
 			refreshCtx, cancel := context.WithTimeout(ctx, defaultJwksHTTPTimeout)
-			refreshed, err := s.refreshVerificationKeys(refreshCtx, true)
+			refreshed, err := s.refreshVerificationKeys(refreshCtx)
 			cancel()
 			if err != nil && s.logger != nil {
 				s.logger.Warn().Err(err).Msg("on-demand JWKS refresh failed, serving stale keys")
