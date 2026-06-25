@@ -221,6 +221,7 @@ YAML prefix: `auth.strategies[*].jwt`
 | `jwt.verificationKeys` | `map[string]string` | `nil` | Map of `kid → keyData`. Value is PEM string, `"file:///path"`, or bare HMAC secret bytes. Empty map = ALL JWTs rejected (deny-all, not allow-all). <SourceLink file="auth/jwks.go" /> |
 | `jwt.verificationJwksUrl` | `string` | `""` | HTTP(S) URL returning a standard JWKS document (`{"keys":[...]}`). Fetched at startup and refreshed in the background. Static `verificationKeys` override JWKS entries with the same `kid`. <SourceLink file="auth/jwks.go" /> |
 | `jwt.verificationJwksRefreshInterval` | `Duration` | `1h` when JWKS URL set | Background JWKS refresh interval. <SourceLink file="common/defaults.go" /> |
+| `jwt.verificationJwksTlsInsecureSkipVerify` | `bool` | `false` | Skip TLS certificate verification when fetching the JWKS URL. **Do not enable in production** — intended for local development with self-signed certificates only. <SourceLink file="auth/jwks.go" /> |
 | `jwt.allowedAlgorithms` | `[]string` | `nil` (any algorithm) | e.g. `["RS256","ES256"]`. Prevents algorithm-confusion attacks. <SourceLink file="auth/strategy_jwt.go" /> |
 | `jwt.allowedIssuers` | `[]string` | `nil` (any issuer) | Exact match against `iss` claim. Non-empty list + missing `iss` → error. <SourceLink file="auth/strategy_jwt.go" /> |
 | `jwt.allowedAudiences` | `[]string` | `nil` (any audience) | Exact match against `aud` claim as scalar string. Array-form `aud` JWT claim always fails the cast. <SourceLink file="auth/strategy_jwt.go" /> |
