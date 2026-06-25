@@ -1503,7 +1503,11 @@ export interface JwtStrategyConfig {
   allowedAudiences: string[];
   allowedAlgorithms: string[];
   requiredClaims: string[];
-  verificationKeys: { [key: string]: string};
+  claimMatchers?: { [key: string]: string[]};
+  verificationKeys?: { [key: string]: string};
+  verificationJwksUrl?: string;
+  verificationJwksRefreshInterval?: Duration;
+  verificationJwksTlsInsecureSkipVerify?: boolean;
   /**
    * RateLimitBudgetClaimName is the JWT claim name that, if present,
    * will be used to set the per-user RateLimitBudget override.

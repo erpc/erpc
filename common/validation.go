@@ -871,10 +871,19 @@ func (s *SecretStrategyConfig) Validate() error {
 }
 
 func (j *JwtStrategyConfig) Validate() error {
-	if len(j.VerificationKeys) == 0 {
-		return fmt.Errorf("auth.*.jwt.verificationKeys is required, add at least one verification key")
+	if len(j.VerificationKeys) == 0 && strings.TrimSpace(j.VerificationJwksUrl) == "" {
+		return fmt.Errorf("auth.*.jwt.verificationKeys or auth.*.jwt.verificationJwksUrl is required")
 	}
-	// No validation required for RateLimitBudgetClaimName; empty is allowed and defaulted in SetDefaults
+	for claim, values := range j.ClaimMatchers {
+		if len(values) == 0 {
+			return fmt.Errorf("auth.*.jwt.claimMatchers.%s: must not be empty", claim)
+		}
+		for _, v := range values {
+			if strings.TrimSpace(v) == "" {
+				return fmt.Errorf("auth.*.jwt.claimMatchers.%s: empty value not allowed", claim)
+			}
+		}
+	}
 	return nil
 }
 
