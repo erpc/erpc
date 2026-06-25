@@ -203,14 +203,6 @@ func (s *JwtStrategy) loadVerificationKeys(ctx context.Context) (map[string]jwt.
 
 	jwksKeys, err := fetchVerificationKeysFromJWKS(ctx, s.httpClient, s.cfg.VerificationJwksUrl, s.logger)
 	if err != nil {
-		if len(keys) > 0 {
-			// Static keys are available; JWKS is additive. Warn and continue so a
-			// transient IdP outage doesn't prevent startup.
-			if s.logger != nil {
-				s.logger.Warn().Err(err).Msg("JWKS fetch failed at startup, serving static keys only")
-			}
-			return keys, nil
-		}
 		return nil, err
 	}
 	for kid, keyFn := range jwksKeys {

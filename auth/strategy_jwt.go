@@ -45,7 +45,18 @@ func NewJwtStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *common.
 	ctx, cancel := context.WithTimeout(appCtx, defaultJwksHTTPTimeout)
 	defer cancel()
 	if _, err := s.refreshVerificationKeys(ctx); err != nil {
-		return nil, err
+		// JWKS unavailable at startup — fall back to static keys if configured,
+		// so a transient IdP outage doesn't block startup.
+		staticKeys, staticErr := s.loadStaticVerificationKeys()
+		if staticErr != nil || len(staticKeys) == 0 {
+			return nil, err
+		}
+		s.keysMu.Lock()
+		s.keys = staticKeys
+		s.keysMu.Unlock()
+		if s.logger != nil {
+			s.logger.Warn().Err(err).Msg("JWKS fetch failed at startup, serving static keys only")
+		}
 	}
 
 	if cfg.VerificationJwksUrl != "" {
