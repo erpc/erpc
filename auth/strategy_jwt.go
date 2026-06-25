@@ -73,7 +73,7 @@ func newJwksHTTPClient(cfg *common.JwtStrategyConfig) *http.Client {
 	return &http.Client{
 		Timeout: defaultJwksHTTPTimeout,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402
 		},
 	}
 }
