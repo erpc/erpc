@@ -7997,7 +7997,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    severity=\"info\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    severity=\"info\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    project=~\"${project:regex}\"\n}[$__interval])) by (project, network, upstream, category, error) > 0",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
               "range": true,
@@ -11412,7 +11412,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_set_success_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[1m])) by (project, network, category, connector)",
+              "expr": "sum(increase(erpc_cache_set_success_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$__interval])) by (project, network, category, connector)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -11627,7 +11627,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_set_error_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[1m])) by (project, network, category, connector, policy, error, ttl)",
+              "expr": "sum(increase(erpc_cache_set_error_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$__interval])) by (project, network, category, connector, policy, error, ttl)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{error}}, {{policy}}, TTL={{ttl}}",
               "range": true,
               "refId": "A"
@@ -11843,7 +11843,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_success_hit_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", cluster=~\"${cluster:regex}\"}[30s])) by (project, network, category, connector)",
+              "expr": "sum(increase(erpc_cache_get_success_hit_total{namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\", cluster=~\"${cluster:regex}\"}[$__interval])) by (project, network, category, connector)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -12065,7 +12065,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_success_miss_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[1m])) by (project, network, category, connector)",
+              "expr": "sum(increase(erpc_cache_get_success_miss_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", project=~\"${project:regex}\"}[$__interval])) by (project, network, category, connector)",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}",
               "range": true,
               "refId": "A"
@@ -12282,7 +12282,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_cache_get_error_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", error!~\".*(ErrRecordNotFound|MissingData).*\", project=~\"${project:regex}\"}[1m])) by (region, project, network, category, connector, error) > 0",
+              "expr": "sum(increase(erpc_cache_get_error_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", network=~\"${network:regex}\", category=~\"${category:regex}\", error!~\".*(ErrRecordNotFound|MissingData).*\", project=~\"${project:regex}\"}[$__interval])) by (region, project, network, category, connector, error) > 0",
               "legendFormat": "{{region}} {{project}}, {{network}}, {{category}}, {{connector}}, {{error}}",
               "range": true,
               "refId": "A"
