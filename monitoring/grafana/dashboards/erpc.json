@@ -7997,7 +7997,7 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    severity=\"info\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    project=~\"${project:regex}\"\n}[1m])) by (project, network, upstream, category, error) > 0",
+              "expr": "sum(increase(erpc_upstream_request_errors_total{\n    cluster=~\"${cluster:regex}\",\n    namespace=~\"${namespace:regex}\",\n    region=~\"${region:regex}\",\n    finality=~\"${finality:regex}\",\n    severity=\"info\",\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    user=~\"${user:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    project=~\"${project:regex}\"\n}[$__interval])) by (project, network, upstream, category, error) > 0",
               "interval": "",
               "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
               "range": true,
