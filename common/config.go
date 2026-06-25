@@ -345,8 +345,15 @@ const (
 )
 
 type ConnectorConfig struct {
-	Id              string                     `yaml:"id,omitempty" json:"id"`
-	Driver          ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
+	Id     string              `yaml:"id,omitempty" json:"id"`
+	Driver ConnectorDriverType `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
+	// Tags label the data source a connector caches, so the `use-upstream`
+	// directive can gate which connector is read/written — e.g. a connector
+	// fed by a system-transaction node tagged `systx` is only used when the
+	// request's selector admits it. Same glob/`!negation` grammar as upstream
+	// tags. Untagged connectors are always eligible (a use-upstream pin meant
+	// for upstreams must not disable a normal cache).
+	Tags            []string                   `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Memory          *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
 	Redis           *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
 	DynamoDB        *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`

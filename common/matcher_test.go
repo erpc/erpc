@@ -210,6 +210,43 @@ func TestMatchesSelector(t *testing.T) {
 	}
 }
 
+func TestSelectorAdmits(t *testing.T) {
+	// id "prism" carrying tag "systx" models a system-transaction cache connector.
+	tests := []struct {
+		name    string
+		pattern string
+		id      string
+		tags    []string
+		want    bool
+	}{
+		// --- positive patterns behave exactly like MatchesSelector ---
+		{name: "positive tag match", pattern: "systx*", id: "prism", tags: []string{"systx"}, want: true},
+		{name: "positive id match", pattern: "prism", id: "prism", tags: []string{"systx"}, want: true},
+		{name: "positive no match", pattern: "alchemy*", id: "prism", tags: []string{"systx"}, want: false},
+
+		// --- negation honors tag-level exclusion (the new capability) ---
+		{name: "negation excludes by tag despite id", pattern: "!systx*", id: "prism", tags: []string{"systx"}, want: false},
+		{name: "negation admits unrelated source", pattern: "!systx*", id: "redis", tags: []string{"clean"}, want: true},
+		{name: "negation: one excluded tag rejects", pattern: "!systx*", id: "prism", tags: []string{"region:us", "systx"}, want: false},
+
+		// --- edge cases ---
+		{name: "empty pattern admits nothing", pattern: "", id: "prism", tags: []string{"systx"}, want: false},
+		{name: "positive, no tags", pattern: "systx*", id: "prism", tags: nil, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SelectorAdmits(tt.pattern, tt.id, tt.tags)
+			if err != nil {
+				t.Fatalf("SelectorAdmits() unexpected error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("SelectorAdmits(%q, %q, %v) = %v, want %v", tt.pattern, tt.id, tt.tags, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidatePattern(t *testing.T) {
 	tests := []struct {
 		name    string

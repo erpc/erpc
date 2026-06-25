@@ -41,12 +41,14 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 
 	// Create connectors map
 	connectors := make(map[string]data.Connector)
+	connectorTags := make(map[string][]string)
 	for _, connCfg := range cfg.Connectors {
 		c, err := data.NewConnector(ctx, logger, connCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connector %s: %w", connCfg.Id, err)
 		}
 		connectors[connCfg.Id] = c
+		connectorTags[connCfg.Id] = connCfg.Tags
 	}
 
 	// Create policies
@@ -61,6 +63,8 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		if err != nil {
 			return nil, fmt.Errorf("failed to create policy: %w", err)
 		}
+		// Connector tags drive use-upstream gating of this policy's cache.
+		policy.SetConnectorTags(connectorTags[policyCfg.Connector])
 		policies = append(policies, policy)
 	}
 
@@ -230,10 +234,15 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	results := make(chan fanResult, len(policies))
 	spawned := 0
 
+	useUpstream := useUpstreamSelector(req)
 	for _, p := range policies {
 		conn := p.GetConnector()
 		if req.ShouldSkipCacheRead(conn.Id()) {
 			c.logger.Debug().Str("connector", conn.Id()).Interface("id", req.ID()).Msg("skipping cache connector due to skip-cache-read directive pattern")
+			continue
+		}
+		if eligible, _ := p.MatchesUpstreamSelector(useUpstream); !eligible {
+			c.logger.Debug().Str("connector", conn.Id()).Str("useUpstream", useUpstream).Interface("id", req.ID()).Msg("skipping cache connector due to use-upstream directive selector")
 			continue
 		}
 		spawned++
@@ -714,7 +723,14 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	wg := sync.WaitGroup{}
 	errs := []error{}
 	errsMu := sync.Mutex{}
+	useUpstream := useUpstreamSelector(req)
 	for _, policy := range policies {
+		// Don't write a response into a cache the request's use-upstream selector
+		// excludes, so a source-tagged connector only stores matching data.
+		if eligible, _ := policy.MatchesUpstreamSelector(useUpstream); !eligible {
+			lg.Debug().Str("connector", policy.GetConnector().Id()).Str("useUpstream", useUpstream).Msg("skipping cache write due to use-upstream directive selector")
+			continue
+		}
 		wg.Add(1)
 		go func(policy *data.CachePolicy) {
 			defer wg.Done()
@@ -1178,6 +1194,15 @@ func shouldCacheResponse(
 	default:
 		return false, fmt.Errorf("unknown cache empty behavior: %s", policy.EmptyState())
 	}
+}
+
+// useUpstreamSelector returns the request's use-upstream directive, used to gate
+// which cache connectors may serve/store it (empty = no gating).
+func useUpstreamSelector(req *common.NormalizedRequest) string {
+	if d := req.Directives(); d != nil {
+		return d.UseUpstream
+	}
+	return ""
 }
 
 func generateKeysForJsonRpcRequest(

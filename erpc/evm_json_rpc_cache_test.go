@@ -143,6 +143,46 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 	return []*data.MockConnector{mockConnector1, mockConnector2}, mockNetwork, upstreams, cache
 }
 
+func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+
+	// connector[0] caches system-transaction data (tagged systx); connector[1] is a neutral cache.
+	systxPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+		Network: "evm:123",
+		Method:  "eth_getBlockByNumber",
+	}, mockConnectors[0])
+	require.NoError(t, err)
+	systxPolicy.SetConnectorTags([]string{"systx"})
+
+	neutralPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+		Network: "evm:123",
+		Method:  "eth_getBlockByNumber",
+	}, mockConnectors[1])
+	require.NoError(t, err)
+
+	cache.SetPolicies([]*data.CachePolicy{systxPolicy, neutralPolicy})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
+	req.SetNetwork(mockNetwork)
+	req.SetCacheDal(cache)
+	// Caller pinned away from systx sources, so the systx-tagged cache must be skipped.
+	req.SetDirectives(&common.RequestDirectives{UseUpstream: "!systx*"})
+	resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
+	resp.SetUpstream(mockUpstreams[0])
+	req.SetLastValidResponse(ctx, resp)
+
+	mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	err = cache.Set(context.Background(), req, resp)
+	assert.NoError(t, err)
+
+	mockConnectors[0].AssertNotCalled(t, "Set")
+	mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

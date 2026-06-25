@@ -10,11 +10,12 @@ import (
 )
 
 type CachePolicy struct {
-	config    *common.CachePolicyConfig
-	connector Connector
-	str       string
-	minSize   *int
-	maxSize   *int
+	config        *common.CachePolicyConfig
+	connector     Connector
+	connectorTags []string
+	str           string
+	minSize       *int
+	maxSize       *int
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
@@ -53,6 +54,25 @@ func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CacheP
 		minSize:   minSize,
 		maxSize:   maxSize,
 	}, nil
+}
+
+// SetConnectorTags records the tags of the policy's connector so the policy can
+// be gated by the use-upstream directive. Tags live on the ConnectorConfig (one
+// connector backs many policies); the cache wires them in at construction.
+func (p *CachePolicy) SetConnectorTags(tags []string) {
+	p.connectorTags = tags
+}
+
+// MatchesUpstreamSelector reports whether this policy's connector is eligible to
+// serve (get) or store (set) a request carrying the given use-upstream selector.
+// An untagged connector — or an empty selector — is always eligible, so an
+// upstream pin never silently disables a normal cache; a tagged connector
+// participates only when the selector admits its id/tags. See SelectorAdmits.
+func (p *CachePolicy) MatchesUpstreamSelector(selector string) (bool, error) {
+	if selector == "" || len(p.connectorTags) == 0 {
+		return true, nil
+	}
+	return common.SelectorAdmits(selector, p.connector.Id(), p.connectorTags)
 }
 
 func (p *CachePolicy) MarshalJSON() ([]byte, error) {
