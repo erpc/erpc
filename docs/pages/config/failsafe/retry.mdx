@@ -184,13 +184,13 @@ The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.m
 | `matchMethod` | string | `"*"` | WildcardMatch pattern against JSON-RPC method. Empty string is a **validation error** after `SetDefaults` — use `"*"` explicitly. Legacy single-object YAML failsafe format forces `"*"` automatically. Source: <SourceLink file="common/validation.go" lines="985-988" /> |
 | `matchFinality` | []string | `[]` (any) | Finality states: `finalized`, `unfinalized`, `realtime`, `unknown`. Empty = wildcard. At defaults-merge time: two arrays match if either is empty OR they share an element. At dispatch time: `slices.Contains`. No glob syntax inside the array. Numeric string values `"0"`–`"3"` are also accepted by YAML unmarshal for backward compatibility; any other string causes an unmarshal error at config load time. Source: <SourceLink file="common/defaults.go" lines="17-34" /> |
 
-**`SelectExecutor` 4-tier priority** (first match wins within each tier):
-1. Specific method + specific finality
-2. Specific method, any finality
-3. Wildcard method, specific finality
-4. Wildcard method, any finality (catch-all)
+**Legacy entry selection** (entries without `matchers`):
+- **Upstream scope** — 4-tier priority (first match wins within each tier): (1) specific method + specific finality, (2) specific method any finality, (3) wildcard method specific finality, (4) wildcard method any finality (catch-all).
+- **Network scope** — first matching entry in config order wins.
 
-Source: <SourceLink file="common/match.go" lines="18-78" />
+Entries that set the unified `matchers` object are selected ahead of legacy entries (see [Failsafe](/config/failsafe) for `matchers` semantics — params/finality/include-exclude).
+
+Source: <SourceLink file="erpc/networks.go" lines="835-873" />, <SourceLink file="upstream/upstream.go" lines="372-433" />
 
 #### `RetryPolicyConfig` fields (`failsafe[i].retry`)
 

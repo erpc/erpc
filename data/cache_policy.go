@@ -2,7 +2,6 @@ package data
 
 import (
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -183,89 +182,21 @@ func (p *CachePolicy) EmptyState() common.CacheEmptyBehavior {
 	return p.config.Empty
 }
 
+// matchParams / matchParam / paramToString delegate to the canonical
+// matcher in the common package. They are kept as thin package-local
+// wrappers so cache code (and the existing cache tests) keep a stable
+// internal API while the matching logic lives in exactly one place,
+// shared with failsafe-policy selection.
 func (p *CachePolicy) matchParams(params []interface{}) (bool, error) {
-	if len(p.config.Params) == 0 {
-		return true, nil
-	}
-
-	for i, pattern := range p.config.Params {
-		var v interface{}
-		if i < len(params) {
-			v = params[i]
-		}
-		match, err := matchParam(pattern, v)
-		if err != nil {
-			return false, err
-		}
-		if !match {
-			return false, nil
-		}
-	}
-	return true, nil
+	return common.MatchParams(p.config.Params, params)
 }
 
 func matchParam(pattern interface{}, param interface{}) (bool, error) {
-	switch p := pattern.(type) {
-	case map[string]interface{}:
-		// For objects, recursively match each field
-		paramMap, ok := param.(map[string]interface{})
-		if !ok {
-			return false, nil
-		}
-		for k, v := range p {
-			paramValue, exists := paramMap[k]
-			match, err := matchParam(v, paramValue)
-			if err != nil {
-				return false, err
-			}
-			if !exists || !match {
-				return false, nil
-			}
-		}
-		return true, nil
-	case []interface{}:
-		// For arrays, match each element
-		paramArray, ok := param.([]interface{})
-		if !ok || len(p) != len(paramArray) {
-			return false, nil
-		}
-		for i, v := range p {
-			match, err := matchParam(v, paramArray[i])
-			if err != nil {
-				return false, err
-			}
-			if !match {
-				return false, nil
-			}
-		}
-		return true, nil
-	case string:
-		match, err := common.WildcardMatch(p, paramToString(param))
-		if err != nil {
-			return false, err
-		}
-		return match, nil
-	default:
-		// For other types, convert both to strings and compare
-		return paramToString(pattern) == paramToString(param), nil
-	}
+	return common.MatchParam(pattern, param)
 }
 
 func paramToString(param interface{}) string {
-	if param == nil {
-		return ""
-	}
-
-	switch v := param.(type) {
-	case string:
-		return v
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
-	case bool:
-		return strconv.FormatBool(v)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
+	return common.ParamToString(param)
 }
 
 func (p *CachePolicy) GetConnector() Connector {
