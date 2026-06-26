@@ -975,7 +975,11 @@ func (s *HttpServer) parseUrlPath(
 		isHealthCheck = true
 		segments = segments[:len(segments)-1] // Remove healthcheck segment
 	} else if len(segments) == 0 || (len(segments) == 1 && segments[0] == "") {
-		if !(isPost || isOptions) {
+		// A bare root path is a healthcheck only when it is not a WebSocket
+		// upgrade. Otherwise wss://host/ (common with domain aliasing) would be
+		// classified as health and 404'd on the projects listener / mis-served
+		// as health on the primary, never reaching the WS dispatch.
+		if !(isPost || isOptions) && !isWebSocketUpgradeRequest(r, s.webSocketEnabled()) {
 			isHealthCheck = true
 			segments = nil
 		}
