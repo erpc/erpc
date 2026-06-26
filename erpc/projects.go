@@ -15,7 +15,12 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+// maxIntegrityTraceResponseBytes caps the served-response body recorded on the
+// Project.Forward span for a saved (integrity-caught) request in detailed tracing.
+const maxIntegrityTraceResponseBytes = 128 * 1024
 
 type PreparedProject struct {
 	Config                      *common.ProjectConfig
@@ -135,6 +140,13 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	resp, err := p.doForward(ctx, network, nq)
 
+	// Per-request integrity latency overhead (data-checks + aux force-fetches the
+	// request waited on, summed across attempts). Recorded for both success and
+	// failure outcomes; excludes failover latency from rejections.
+	if oh := nq.IntegrityOverhead(); oh > 0 {
+		telemetry.ObserverHandle(telemetry.MetricIntegrityOverhead, p.Config.Id, network.Label(), method).Observe(oh.Seconds())
+	}
+
 	shadowUpstreams := network.ShadowUpstreams()
 	if len(shadowUpstreams) > 0 {
 		if resp != nil {
@@ -175,6 +187,26 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 
 	if err == nil && resp != nil {
+		// Saved: an integrity check rejected a bad response earlier in this request
+		// and the failover ultimately returned a good one — without the module the
+		// client would have gotten the wrong/invalid response.
+		if nq.IntegrityCaught() {
+			telemetry.MetricIntegritySaved.WithLabelValues(p.Config.Id, network.Label(), method).Inc()
+			// Record the corrected (served) body once, so a by-hand sanity check can
+			// compare it against the rejected "original" body on the integrity span.
+			// Reliable here (IntegrityCaught is set, the outcome is known) unlike the
+			// racy hedged pass. The IsTracingDetailed gate short-circuits before any
+			// body copy, so it's zero-cost when tracing is off.
+			if common.IsTracingDetailed {
+				if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
+					body := jrr.GetResultBytes()
+					if len(body) > maxIntegrityTraceResponseBytes {
+						body = body[:maxIntegrityTraceResponseBytes]
+					}
+					span.SetAttributes(attribute.String("integrity.served_response", string(body)))
+				}
+			}
+		}
 		upstream := resp.Upstream()
 		vendor := "n/a"
 		upstreamId := "n/a"
@@ -220,6 +252,12 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		).Observe(dur.Seconds())
 		return resp, err
 	} else {
+		// Failed due to integrity: a check rejected a response and no good one was
+		// found (every candidate failed), so the request errored rather than serving
+		// bad data. The rejecting check is the "why".
+		if nq.IntegrityCaught() {
+			telemetry.MetricIntegrityFailed.WithLabelValues(p.Config.Id, network.Label(), method, nq.IntegrityRejectedCheck()).Inc()
+		}
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {

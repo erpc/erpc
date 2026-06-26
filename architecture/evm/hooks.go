@@ -3,9 +3,20 @@ package evm
 import (
 	"context"
 	"strings"
+	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// maxTraceResponseBytes caps the validated-response body recorded on integrity
+// spans in detailed tracing mode (for by-hand sanity checks). Larger bodies are
+// truncated — re-fetch by block number for the full payload.
+const maxTraceResponseBytes = 128 * 1024
 
 // HandleProjectPreForward is the early pre-forward hook executed at project layer
 // before cache and before upstream selection. Use this for transformations that
@@ -129,16 +140,100 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	var validationErr error
 
-	// Always-on integrity check (independent of directives): reject responses
-	// carrying a provably-impossible logIndex/transactionIndex by converting
-	// them into a content-validation error. The existing retry/consensus
-	// machinery then routes around the corrupt upstream — in particular,
-	// consensus already excludes error responses from preferLargerResponses, so
-	// a corrupt-but-larger response can no longer dispute an honest majority.
-	if indexIntegrityMethods[methodLower] {
-		if validationErr = validateIndexIntegrity(ctx, u, rs); validationErr != nil {
-			rq.ClearLastValidResponse()
-			return rs, validationErr
+	// Data-integrity checks. Opt-in: the network's integrity config selects the
+	// checks (empty config → nothing runs). The engine runs them over a single
+	// decode and converts a violation into a content-validation error so
+	// retry/consensus route around the upstream (consensus already excludes
+	// errors from preferLargerResponses, so a corrupt-but-larger response can no
+	// longer dispute an honest majority). Internal requests (e.g. the
+	// corroboration force-fetch) are skipped to avoid recursing into the engine.
+	dirs := rq.Directives()
+	if integrity.HasChecks(methodLower) && (dirs == nil || !dirs.IsInternal) {
+		if cs, policy := resolveIntegrity(n, dirs); len(cs) > 0 {
+			// Integrity state + corroboration are scoped to the node GROUP the request
+			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
+			// so a systx receipt is only checked against systx, flashblocks against
+			// flashblocks. No selector → network-wide.
+			selector := ""
+			if dirs != nil {
+				selector = dirs.UseUpstream
+			}
+			view := groupChainView(ctx, n, selector)
+			input := integrity.Input{
+				Method:   methodLower,
+				Upstream: u,
+				Response: rs,
+				Checks:   cs,
+				Resolver: newIntegrityResolver(ctx, n, u, selector),
+				Reorg:    policy,
+			}
+			if view != nil {
+				input.History = view
+			}
+			// The span wraps Validate so its duration is the integrity overhead and
+			// the aux force-fetches (network.Forward) nest under it. Detailed tracing
+			// adds the actual mismatch values (verbatim) to pinpoint the bad field.
+			vctx, span := common.StartSpan(ctx, "Integrity.Validate",
+				trace.WithAttributes(
+					attribute.String("integrity.method", methodLower),
+					attribute.String("integrity.upstream", u.Id()),
+				))
+			vStart := time.Now()
+			res := integrity.Validate(vctx, input)
+			rq.AddIntegrityOverhead(time.Since(vStart))
+			annotateIntegritySpan(span, res)
+			// Record the rejected/soft-flagged ("original") body on the violating
+			// attempt's span, for a by-hand sanity check. Only on a violation here:
+			// a recovering pass runs concurrently (hedged) so its IntegrityCaught
+			// flag may not be set yet — the "corrected" served body is recorded once
+			// at the request level (project.Forward) instead. The IsTracingDetailed
+			// gate short-circuits before any body copy, so it's zero-cost when
+			// tracing is off.
+			if common.IsTracingDetailed && (res.Err != nil || len(res.Recorded) > 0) {
+				if jrr, jerr := rs.JsonRpcResponse(vctx); jerr == nil && jrr != nil {
+					body := jrr.GetResultBytes()
+					if len(body) > maxTraceResponseBytes {
+						body = body[:maxTraceResponseBytes]
+						span.SetAttributes(attribute.Bool("integrity.response_truncated", true))
+					}
+					span.SetAttributes(attribute.String("integrity.response", string(body)))
+				}
+			}
+			span.End()
+			// Per-check attempts/outcomes (pass/reject/soft_flag/off) — sum = total
+			// attempts. Higher volume than the violation counter below.
+			for _, oc := range res.Outcomes {
+				telemetry.MetricIntegrityCheck.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, oc.CheckID, oc.Outcome,
+				).Inc()
+			}
+			for _, rec := range res.Recorded {
+				telemetry.MetricIntegrityViolation.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, "soft_flag",
+				).Inc()
+				log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).
+					Msg("integrity: recorded reorg-sensitive mismatch on unfinalized block")
+			}
+			if res.Err != nil {
+				telemetry.MetricIntegrityViolation.WithLabelValues(
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject",
+				).Inc()
+				// Remember we caught a bad response (and which check); project.Forward
+				// then counts it as saved (a retry succeeded) or failed (no good
+				// response found) — see integrity_saved_total / integrity_failed_total.
+				rq.MarkIntegrityCaught(res.RejectedCheckID)
+				validationErr = res.Err
+				rq.ClearLastValidResponse()
+				return rs, validationErr
+			}
+			// Feed the ChainView with this validated response: block responses
+			// populate pin+header; narrow responses (receipts/tx) pin the number→hash
+			// for FINALIZED blocks only (tip-thrash safety).
+			if isBlockMethod(methodLower) {
+				observeBlockView(ctx, view, rs)
+			} else if isAnchoredNarrowMethod(methodLower) {
+				observeNarrowView(ctx, view, u, rs)
+			}
 		}
 	}
 
@@ -149,28 +244,6 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	switch methodLower {
 	case "eth_getlogs":
 		rs, validationErr = upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
-
-	case "eth_getblockreceipts":
-		// First check for unexpected empty (if enabled for this method)
-		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-			if validationErr != nil {
-				break
-			}
-		}
-		// Then apply directive-based validation
-		rs, validationErr = upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
-
-	case "eth_getblockbynumber", "eth_getblockbyhash":
-		// First check for unexpected empty (if enabled for this method)
-		if shouldMarkEmpty {
-			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-			if validationErr != nil {
-				break
-			}
-		}
-		// Then apply directive-based validation
-		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
 
 	case "trace_filter", "arbtrace_filter":
 		rs, validationErr = upstreamPostForward_trace_filter(ctx, n, u, rq, rs, re)
@@ -213,4 +286,43 @@ func isMethodInMarkEmptyList(n common.Network, methodLower string) bool {
 		}
 	}
 	return false
+}
+
+// annotateIntegritySpan records the integrity validation outcome on the span.
+// Simple mode: the outcome, how many checks were evaluated, and the rejecting
+// check. Detailed mode additionally records, verbatim and WITHOUT redaction, the
+// reason of every violation (the actual vs expected values) plus each check's
+// outcome — enough to pinpoint exactly which field was wrong/corrupt/missing.
+func annotateIntegritySpan(span trace.Span, res integrity.Result) {
+	outcome := "pass"
+	if res.Err != nil {
+		outcome = "reject"
+	} else if len(res.Recorded) > 0 {
+		outcome = "soft_flag"
+	}
+	span.SetAttributes(
+		attribute.Int("integrity.checks", len(res.Outcomes)),
+		attribute.String("integrity.outcome", outcome),
+	)
+	if res.RejectedCheckID != "" {
+		span.SetAttributes(attribute.String("integrity.rejected_check", res.RejectedCheckID))
+	}
+	if !common.IsTracingDetailed {
+		return
+	}
+	for _, rec := range res.Recorded {
+		span.AddEvent("integrity.soft_flag", trace.WithAttributes(
+			attribute.String("check", rec.CheckID),
+			attribute.String("reason", rec.Reason),
+		))
+	}
+	if res.Err != nil {
+		span.AddEvent("integrity.reject", trace.WithAttributes(
+			attribute.String("check", res.RejectedCheckID),
+			attribute.String("reason", res.Err.Error()),
+		))
+	}
+	for _, oc := range res.Outcomes {
+		span.SetAttributes(attribute.String("integrity.check."+oc.CheckID, oc.Outcome))
+	}
 }

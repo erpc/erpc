@@ -320,6 +320,60 @@ var (
 		Help:      "Total number of times a request was skipped due to requested lower bound block being less than upstream's available block range.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "confidence"})
 
+	// MetricIntegrityViolation counts data-integrity check violations by the
+	// individual check id and the verdict applied. "reject" means the response
+	// was converted to a content-validation error and failed over to another
+	// upstream; "soft_flag" means a reorg-sensitive mismatch on unfinalized data
+	// was recorded but the response was still served. Only fires on a violation
+	// (passes/skips are not counted) so cardinality stays low. The denominator
+	// for a violation rate is the existing per-method request counter.
+	MetricIntegrityViolation = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_violation_total",
+		Help:      "Total data-integrity check violations, by check id and verdict (reject = failed over; soft_flag = recorded but served).",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict"})
+
+	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
+	// pass (ran, no violation), skip (could not evaluate — unmodeled field /
+	// hashes-only response / missing data), reject (failed → response failed
+	// over), soft_flag (reorg-sensitive mismatch recorded but served), off
+	// (disabled for this finality or check). Sum over outcomes = total attempts.
+	// Higher volume than the violation counter (one series per check per request).
+	MetricIntegrityCheck = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_check_total",
+		Help:      "Total integrity check evaluations by outcome (pass/skip/reject/soft_flag/off); the sum across outcomes is total attempts.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "outcome"})
+
+	// MetricIntegrityAuxRequest counts auxiliary requests issued by integrity
+	// checks — force-fetches that are NOT part of the user's request (canonical
+	// header/receipts corroboration), by kind and outcome.
+	MetricIntegrityAuxRequest = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_aux_request_total",
+		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by node group, kind (canonical_header/canonical_receipts), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error).",
+	}, []string{"project", "vendor", "network", "upstream", "group", "kind", "method", "finality", "outcome"})
+
+	// MetricIntegritySaved counts requests the integrity module SAVED: a check
+	// rejected a bad response, the request failed over, and a good response was
+	// ultimately served — i.e. without the module the client would have received
+	// a wrong/invalid response. Incremented once per saved request.
+	MetricIntegritySaved = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_saved_total",
+		Help:      "Total requests where integrity rejected a bad response and a retry returned a good one (a wrong/invalid response prevented).",
+	}, []string{"project", "network", "category"})
+
+	// MetricIntegrityFailed counts requests that FAILED toward the user because of
+	// the integrity module: a check rejected a response and no good response was
+	// found (every candidate failed), so the request errored instead of serving
+	// bad data. The `check` label is the last rejecting check — the "why".
+	MetricIntegrityFailed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "integrity_failed_total",
+		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check.",
+	}, []string{"project", "network", "category", "check"})
+
 	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_split_success_total",
@@ -763,6 +817,7 @@ var (
 	MetricCacheGetErrorDuration               *LabeledHistogram
 	MetricRateLimiterRemoteDuration           *LabeledHistogram
 	MetricUpstreamResponseSizeBytes           *LabeledHistogram
+	MetricIntegrityOverhead                   *LabeledHistogram
 )
 
 // buildFilterAwareHistograms creates every LabeledHistogram using the current
@@ -788,6 +843,18 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
+
+	// Per-request integrity latency overhead — the time a request waited on
+	// integrity data-checks plus aux force-fetches (canonical header/receipts),
+	// summed across attempts; excludes failover latency from rejections. Uses the
+	// same config-driven buckets as the other latency metrics so its quantiles are
+	// consistent and operator-tunable.
+	MetricIntegrityOverhead = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "integrity_overhead_seconds",
+		Help:      "Per-request latency overhead added by integrity checks (data-checks + aux force-fetches the request waited on).",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category"})
 
 	MetricNetworkEvmGetLogsRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -946,6 +1013,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 
 	MetricUpstreamRequestDuration = registerOrReuse(MetricUpstreamRequestDuration)
 	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
+	MetricIntegrityOverhead = registerOrReuse(MetricIntegrityOverhead)
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
 	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
 	MetricNetworkHedgeDelaySeconds = registerOrReuse(MetricNetworkHedgeDelaySeconds)

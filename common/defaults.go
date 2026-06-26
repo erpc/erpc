@@ -1520,9 +1520,9 @@ func (d *DirectiveDefaultsConfig) SetDefaults() error {
 	if d.EnforceNonNullTaggedBlocks == nil {
 		d.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
 	}
-	if d.ValidateTransactionsRoot == nil {
-		d.ValidateTransactionsRoot = util.BoolPtr(true)
-	}
+	// Note: the deprecated data-integrity validation flags are intentionally NOT
+	// defaulted on — data integrity is opt-in via the `integrity` config. An
+	// explicitly-set deprecated flag is translated by migrateLegacyIntegrityChecks.
 	return nil
 }
 
@@ -1616,10 +1616,11 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if u.Grpc == nil && defaults.Grpc != nil {
 		u.Grpc = defaults.Grpc.Copy()
 	}
-	// Integrity moved under Evm.Integrity
+	// Deprecated upstream integrity stub (never read at runtime) — copy from
+	// defaults only so existing YAML keeps parsing.
 	if u.Evm != nil && defaults.Evm != nil {
-		if u.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
-			u.Evm.Integrity = defaults.Evm.Integrity.Copy()
+		if u.Evm.DeprecatedIntegrity == nil && defaults.Evm.DeprecatedIntegrity != nil {
+			u.Evm.DeprecatedIntegrity = defaults.Evm.DeprecatedIntegrity.Copy()
 		}
 	}
 	if u.AllowMethods == nil && defaults.AllowMethods != nil {
@@ -2025,7 +2026,50 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		return err
 	}
 
+	// Backward compatibility: translate the deprecated per-check data-integrity
+	// validation flags (DirectiveDefaults.Validate*/Enforce*) into the integrity
+	// config. They used to enable specific checks; the module now selects checks
+	// via the integrity block. The user's explicit integrity config wins per id.
+	migrateLegacyIntegrityChecks(n)
+
 	return nil
+}
+
+// migrateLegacyIntegrityChecks maps the deprecated DirectiveDefaults validation
+// flags onto the network's integrity check set. This is the only place that
+// knows the old flag→check mapping; the runtime sees only the integrity config.
+func migrateLegacyIntegrityChecks(n *NetworkConfig) {
+	dd := n.DirectiveDefaults
+	if dd == nil {
+		return
+	}
+	legacy := map[string]*bool{
+		"bloomMatch":                  dd.DeprecatedValidateLogsBloomMatch,
+		"bloomEmptiness":              dd.DeprecatedValidateLogsBloomEmptiness,
+		"logIndexContiguity":          dd.DeprecatedEnforceLogIndexStrictIncrements,
+		"transactionsRootConsistency": dd.DeprecatedValidateTransactionsRoot,
+		"headerFieldShapes":           dd.DeprecatedValidateHeaderFieldLengths,
+		"txFieldUniqueness":           dd.DeprecatedValidateTransactionFields,
+		"txBlockInfo":                 dd.DeprecatedValidateTransactionBlockInfo,
+		"txHashUniqueness":            dd.DeprecatedValidateTxHashUniqueness,
+		"transactionIndexConsistency": dd.DeprecatedValidateTransactionIndex,
+		"logFieldShapes":              dd.DeprecatedValidateLogFields,
+	}
+	for id, flag := range legacy {
+		if flag == nil || !*flag {
+			continue
+		}
+		if n.Integrity == nil {
+			n.Integrity = &IntegrityConfig{}
+		}
+		if n.Integrity.Checks == nil {
+			n.Integrity.Checks = map[string]*IntegrityCheckConfig{}
+		}
+		if _, exists := n.Integrity.Checks[id]; !exists { // explicit config wins
+			enabled := true
+			n.Integrity.Checks[id] = &IntegrityCheckConfig{Enabled: &enabled}
+		}
+	}
 }
 
 const DefaultEvmFinalityDepth = 1024

@@ -438,11 +438,11 @@ func requestSelector(ctx context.Context) string {
 }
 
 // servedTipPartitionFor returns the lazily-materialized telemetry lane for a
-// GROUP-scoped request, or nil to signal the unlabeled stateless path. The
-// partition key (and its bounded/DDoS-safe gating) is computed by
-// partitionKeyFor; the count is capped by maxServedTipPartitions.
+// GROUP-scoped request, or nil to signal the unlabeled stateless path. The group
+// identity (key + lane, and its bounded/DDoS-safe gating) comes from
+// EvmUpstreamGroupForSelector; the count is capped by maxServedTipPartitions.
 func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *servedTipPartition {
-	key, ids := n.partitionKeyFor(ctx, selector)
+	key, lane := n.EvmUpstreamGroupForSelector(ctx, selector)
 	if key == "" {
 		return nil
 	}
@@ -454,7 +454,7 @@ func (n *Network) servedTipPartitionFor(ctx context.Context, selector string) *s
 	if n.servedTipPartitionCount.Load() >= maxServedTipPartitions {
 		return nil
 	}
-	p := &servedTipPartition{lane: common.LaneName(ids)}
+	p := &servedTipPartition{lane: lane}
 	actual, loaded := n.servedTipPartitions.LoadOrStore(key, p)
 	if !loaded {
 		n.servedTipPartitionCount.Add(1)
@@ -504,6 +504,21 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 	slices.Sort(matched)
 	sum := sha256.Sum256([]byte(strings.Join(matched, "\x00")))
 	return "grp:" + hex.EncodeToString(sum[:8]), matched
+}
+
+// EvmUpstreamGroupForSelector is the single source of node-GROUP identity: it maps a
+// use-upstream selector to a stable group key (for keying per-group state) and a
+// human-readable lane name, or ("","") when the selector doesn't carve out a real
+// sub-group. partitionKeyFor provides the dedup/bounds/cross-pod-stable key; this adds
+// the lane. Used by served-tip latest-block tracking (servedTipPartitionFor) AND by
+// the integrity module, so both corroborate/track within the SAME group a request was
+// pinned to (systx vs standard, flashblocks vs normal) — one grouping, not two.
+func (n *Network) EvmUpstreamGroupForSelector(ctx context.Context, selector string) (key string, lane string) {
+	k, ids := n.partitionKeyFor(ctx, selector)
+	if k == "" {
+		return "", ""
+	}
+	return k, common.LaneName(ids)
 }
 
 // isSimpleGroupSelector reports whether a selector is a single glob token
