@@ -186,9 +186,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			upstreamId = upstream.Id()
 		}
 
-		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
-			// Record block-range heatmap using dynamic buckets and human-readable labels
-			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+		if network.cfg.Architecture == common.ArchitectureEvm {
+			if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
+				// Record block-range heatmap using dynamic buckets and human-readable labels
+				recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+			}
 		}
 		telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
 			p.Config.Id,
@@ -255,17 +257,20 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	switch network.cfg.Architecture {
-	case common.ArchitectureEvm:
+	h := network.architectureHandler
+	if h != nil {
 		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
-		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
-			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+		if handled, resp, err := h.HandleProjectPreForward(ctx, network, nq); handled {
+			return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
 		}
 	}
 
 	// If not handled, then fallback to the normal forward
 	resp, err := network.Forward(ctx, nq)
-	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	if h != nil {
+		return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	}
+	return resp, err
 }
 
 func (p *PreparedProject) AcquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {

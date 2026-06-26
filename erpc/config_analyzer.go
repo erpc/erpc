@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
@@ -326,7 +325,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 				continue
 			}
 		}
-		clReg := clients.NewClientRegistry(&silent, project.Id, prxPool, evm.NewJsonRpcErrorExtractor())
+		clReg := clients.NewClientRegistry(&silent, project.Id, prxPool, upstream.NewCompositeJsonRpcErrorExtractor())
 		vndReg := thirdparty.NewVendorsRegistry()
 		rlr, err := upstream.NewRateLimitersRegistry(ctx, cfg.RateLimiters, &silent)
 		if err != nil {
@@ -350,6 +349,16 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 				ups, err := upstream.NewUpstream(ctx, prj, uc, clReg, rlr, vndReg, &silent, mt, nil)
 				if err != nil {
 					appendErr(fmt.Sprintf("project=%s upstream=%s failed to create upstream: %v", prj, uc.Id, err))
+					return
+				}
+
+				// Non-EVM upstreams don't answer eth_chainId / eth_getBlockByNumber(0).
+				// Running those probes produces misleading "ErrEndpointUnsupported"
+				// warnings (which are correct — the endpoint *doesn't* support the
+				// method — but are noise for a Solana/SVM config). Per-architecture
+				// validation hooks are a future refactor; for now, skip the EVM
+				// probes for non-EVM upstream types.
+				if uc.Type != "" && uc.Type != common.UpstreamTypeEvm {
 					return
 				}
 
@@ -1001,7 +1010,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 			&logger,
 			project.Id,
 			prxPool,
-			evm.NewJsonRpcErrorExtractor(),
+			upstream.NewCompositeJsonRpcErrorExtractor(),
 		)
 		vndReg := thirdparty.NewVendorsRegistry()
 		rlr, err := upstream.NewRateLimitersRegistry(

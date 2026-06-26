@@ -244,3 +244,98 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, testValueB, gotB)
 }
+
+// TestMemoryConnector_ReverseIndex_SvmPrefix proves that SVM-shaped partition
+// keys now get reverse-index companion entries — the previous hardcoded
+// "evm:" guard silently dropped SVM writes.
+func TestMemoryConnector_ReverseIndex_SvmPrefix(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
+		MaxItems: 1000, MaxTotalSize: "1MB",
+	})
+	require.NoError(t, err)
+
+	// Write with a concrete slot ref.
+	require.NoError(t, connector.Set(ctx, "svm:mainnet-beta:12345", "hash-abc", []byte("payload"), nil))
+	time.Sleep(50 * time.Millisecond) // let ristretto admission drain
+
+	// Wildcard lookup should resolve to the concrete key's value.
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "svm:mainnet-beta:*", "hash-abc", nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("payload"), got, "reverse index must resolve svm:* to the concrete partition key")
+}
+
+// TestMemoryConnector_ReverseIndex_EvmStillWorks guards against regression:
+// the generalization must not drop support for the existing EVM case.
+func TestMemoryConnector_ReverseIndex_EvmStillWorks(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
+		MaxItems: 1000, MaxTotalSize: "1MB",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, connector.Set(ctx, "evm:1:0x42", "hash-abc", []byte("evm-payload"), nil))
+	time.Sleep(50 * time.Millisecond)
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "evm:1:*", "hash-abc", nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("evm-payload"), got)
+}
+
+// TestMemoryConnector_ReverseIndex_SvmDelete guards against the reverse-index
+// leak that shipped with the initial SVM pass: Set() wrote companion entries
+// for any reverse-indexable key, but Delete() only cleared them when the key
+// started with "evm:". SVM (and any future arch) entries accumulated until
+// Ristretto's LRU reclaimed them.
+func TestMemoryConnector_ReverseIndex_SvmDelete(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
+		MaxItems: 1000, MaxTotalSize: "1MB",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, connector.Set(ctx, "svm:mainnet-beta:12345", "hash-abc", []byte("payload"), nil))
+	time.Sleep(50 * time.Millisecond)
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, "svm:mainnet-beta:*", "hash-abc", nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("payload"), got)
+
+	require.NoError(t, connector.Delete(ctx, "svm:mainnet-beta:12345", "hash-abc"))
+	time.Sleep(50 * time.Millisecond)
+
+	_, err = connector.Get(ctx, ConnectorReverseIndex, "svm:mainnet-beta:*", "hash-abc", nil)
+	require.Error(t, err, "reverse-index entry must be cleared when the concrete key is deleted")
+	require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound),
+		"expected ErrRecordNotFound, got %T %v", err, err)
+}
+
+// TestIsReverseIndexable_Filters validates the predicate's rejection rules so
+// single-segment keys (e.g. internal bookkeeping) don't pollute the reverse
+// index and wildcard writes don't recursively index themselves.
+func TestIsReverseIndexable_Filters(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{"svm three segments", "svm:mainnet-beta:12345", true},
+		{"evm three segments", "evm:1:0x42", true},
+		{"future arch three segments", "aptos:mainnet:abc123", true},
+		{"wildcard key rejected", "svm:mainnet-beta:*", false},
+		{"no colons rejected", "singlekey", false},
+		{"one colon rejected", "svm:mainnet-beta", false},
+		{"empty string rejected", "", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isReverseIndexable(tc.key); got != tc.want {
+				t.Fatalf("isReverseIndexable(%q) = %v, want %v", tc.key, got, tc.want)
+			}
+		})
+	}
+}

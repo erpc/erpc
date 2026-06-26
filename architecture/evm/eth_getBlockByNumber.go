@@ -66,7 +66,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 
 					// Calculate block number lag
 					if common.IsTracingDetailed && bnErr == nil && respBlockNumber > 0 {
-						highestBlock := network.EvmHighestLatestBlockNumber(ctx)
+						highestBlock := common.EvmHighestLatestBlockNumber(network, ctx)
 						blockNumberLag := highestBlock - respBlockNumber
 						if blockNumberLag < 0 {
 							blockNumberLag = 0
@@ -158,7 +158,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 	switch bnp {
 	case "latest":
-		highestBlockNumber := network.EvmHighestLatestBlockNumber(tipCtx)
+		highestBlockNumber := common.EvmHighestLatestBlockNumber(network, tipCtx)
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
@@ -219,7 +219,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nr, re
 		}
 	case "finalized":
-		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(tipCtx)
+		highestBlockNumber := common.EvmHighestFinalizedBlockNumber(network, tipCtx)
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err

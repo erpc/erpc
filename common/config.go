@@ -263,6 +263,7 @@ type AliasingRuleConfig struct {
 
 type DatabaseConfig struct {
 	EvmJsonRpcCache *CacheConfig       `yaml:"evmJsonRpcCache,omitempty" json:"evmJsonRpcCache"`
+	SvmJsonRpcCache *CacheConfig       `yaml:"svmJsonRpcCache,omitempty" json:"svmJsonRpcCache"`
 	SharedState     *SharedStateConfig `yaml:"sharedState,omitempty" json:"sharedState"`
 }
 
@@ -796,6 +797,7 @@ type UpstreamConfig struct {
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
+	Svm                          *SvmUpstreamConfig       `yaml:"svm,omitempty" json:"svm"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
 	Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty" json:"grpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
@@ -929,6 +931,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		VendorName                   string                   `yaml:"vendorName,omitempty"`
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
+		Svm                          *SvmUpstreamConfig       `yaml:"svm,omitempty"`
 		JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty"`
 		Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty"`
 		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
@@ -951,6 +954,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.VendorName = old.VendorName
 	u.Endpoint = old.Endpoint
 	u.Evm = old.Evm
+	u.Svm = old.Svm
 	u.JsonRpc = old.JsonRpc
 	u.Grpc = old.Grpc
 	u.IgnoreMethods = old.IgnoreMethods
@@ -2072,6 +2076,7 @@ type NetworkConfig struct {
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
+	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
@@ -2142,6 +2147,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
 		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
 		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
 		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Alias             string                   `yaml:"alias,omitempty"`
@@ -2160,6 +2166,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.Architecture = old.Architecture
 	n.RateLimitBudget = old.RateLimitBudget
 	n.Evm = old.Evm
+	n.Svm = old.Svm
 	n.SelectionPolicy = old.SelectionPolicy
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Alias = old.Alias
@@ -2247,6 +2254,71 @@ func (d *DirectiveDefaultsConfig) UnmarshalJSON(data []byte) error {
 		d.SkipCacheRead = fmt.Sprintf("%v", d.SkipCacheRead)
 	}
 	return nil
+}
+
+// SvmNetworkConfig mirrors EvmNetworkConfig for SVM networks.
+// Most fields are Solana-specific and do not have EVM equivalents.
+type SvmNetworkConfig struct {
+	// Chain identifies which SVM chain this network runs on. Defaults to "solana"
+	// when empty for backward compatibility. Set explicitly for forks/variants
+	// such as "fogo" or "eclipse" so eRPC can host multiple SVM chains side by
+	// side without network-ID or cache-key collisions.
+	//
+	// When Chain is empty or "solana", the derived NetworkId is "svm:<cluster>"
+	// — identical to the pre-multi-chain format. For any other Chain value the
+	// NetworkId is "svm:<chain>:<cluster>".
+	Chain string `yaml:"chain,omitempty" json:"chain"`
+
+	// Cluster the upstreams of this network serve (e.g. "mainnet-beta", "devnet").
+	// The NetworkId is derived from this value together with Chain — see the
+	// Chain field above for the exact format.
+	Cluster string `yaml:"cluster,omitempty" json:"cluster"`
+
+	// Commitment is the default commitment level injected into requests whose params
+	// omit one. One of "finalized", "confirmed", "processed". No default: when unset,
+	// no commitment is injected and each upstream's own server-side default governs
+	// (Solana's is "finalized"). Set this to pin one commitment across all upstreams
+	// so the cache and consensus key on identical data regardless of vendor defaults;
+	// note that doing so makes finality classification track the configured level.
+	Commitment string `yaml:"commitment,omitempty" json:"commitment"`
+
+	// StatePollerDebounce sets the minimum interval between polls of an upstream's
+	// slot/health view. Default: 400ms (one slot).
+	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+
+	// MaxSlotsPerSignaturesQuery caps the slot range a single getSignaturesForAddress
+	// call may span. Requests exceeding this range are rejected pre-forward.
+	// Default: 1000.
+	MaxSlotsPerSignaturesQuery int64 `yaml:"maxSlotsPerSignaturesQuery,omitempty" json:"maxSlotsPerSignaturesQuery"`
+
+	// MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
+	// trail the pool's highest FinalizedSlot before it is excluded from
+	// consensus voting on finalized data. A zero value disables the filter
+	// entirely (every upstream participates regardless of lag). Default: 100.
+	// Only applied when a consensus policy is active AND the request's
+	// resolved finality is Finalized.
+	MaxFinalizedSlotLag int64 `yaml:"maxFinalizedSlotLag,omitempty" json:"maxFinalizedSlotLag"`
+}
+
+// SvmUpstreamConfig carries per-upstream SVM settings.
+type SvmUpstreamConfig struct {
+	// Chain identifies which SVM chain this upstream serves. Must match the
+	// network-level Chain. Empty defaults to "solana" for backward compat.
+	Chain string `yaml:"chain,omitempty" json:"chain"`
+
+	// Cluster this upstream serves. Must match the network-level cluster for the
+	// upstream to be eligible.
+	Cluster string `yaml:"cluster,omitempty" json:"cluster"`
+
+	// CheckGenesisHash opts unknown clusters in to runtime validation via getGenesisHash
+	// at bootstrap. Known clusters (mainnet-beta, devnet, testnet) are always validated
+	// regardless of this flag: a single getGenesisHash RPC runs at bootstrap and is
+	// compared against the hardcoded genesis-hash table — a mismatch OR a fetch failure
+	// fails the upstream, catching nodes mis-pointed at the wrong cluster (and refusing
+	// to register one we could not verify). For unknown clusters the same check (with
+	// no table comparison) runs only when this flag is set; otherwise it is skipped so
+	// private/local clusters with no published genesis hash still work.
+	CheckGenesisHash bool `yaml:"checkGenesisHash,omitempty" json:"checkGenesisHash"`
 }
 
 type EvmNetworkConfig struct {
@@ -2669,13 +2741,21 @@ type RateLimitStoreConfig struct {
 }
 
 func (c *NetworkConfig) NetworkId() string {
-	if c.Architecture == "" || c.Evm == nil {
+	if c.Architecture == "" {
 		return ""
 	}
 
 	switch c.Architecture {
-	case "evm":
+	case ArchitectureEvm:
+		if c.Evm == nil {
+			return ""
+		}
 		return util.EvmNetworkId(c.Evm.ChainId)
+	case ArchitectureSvm:
+		if c.Svm == nil || c.Svm.Cluster == "" {
+			return ""
+		}
+		return util.SvmNetworkId(c.Svm.Chain, c.Svm.Cluster)
 	default:
 		return ""
 	}

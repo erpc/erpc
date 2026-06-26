@@ -107,6 +107,13 @@ func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 
 	return args.Get(0).(int64)
 }
 
+// EvmLeaderUpstream is required by common.EvmNetwork. Tests that don't
+// exercise leader selection leave this unstubbed — returning nil is safe
+// because the helpers only use the leader where it's explicitly configured.
+func (m *mockNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
+	return nil
+}
+
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
 type mockEvmUpstream struct {

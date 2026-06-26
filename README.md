@@ -49,6 +49,21 @@ curl 'http://localhost:4000/main/evm/42161' \
 }'
 ```
 
+#### Send a request against a Solana cluster (SVM):
+
+```bash
+curl 'http://localhost:4000/main/svm/mainnet-beta' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "getSlot",
+    "params": [{"commitment":"confirmed"}],
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+SVM networks identify themselves as `svm:<cluster>` (e.g. `svm:mainnet-beta`, `svm:devnet`, `svm:testnet`). The same failsafe, cache, and hedging machinery EVM uses applies to SVM — commitment-aware finality, `sendTransaction` retry guards, and a per-upstream slot poller are wired automatically. See `erpc.svm.example.yaml` for a full configuration.
+
 #### Next Steps:
 This setup is ideal for development and testing purposes. For production environments, we recommend extending your configuration with dedicated premium providers and advanced failover settings. See our [Configuration Guide](https://docs.erpc.cloud/config/example) for more details.
 
