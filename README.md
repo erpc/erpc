@@ -8,9 +8,9 @@
 [![Contributors](https://img.shields.io/github/contributors/erpc/erpc?style=flat&colorA=000000&colorB=000000)](https://github.com/erpc/erpc/graphs/contributors)
 [![Telegram](https://img.shields.io/endpoint?logo=telegram&url=https%3A%2F%2Ftg.sumanjay.workers.dev%2Ferpc_cloud&style=flat&colorA=000000&colorB=000000&label=telegram)](https://t.me/erpc_cloud)
 
-eRPC is a fault-tolerant EVM RPC proxy and **re-org aware permanent caching solution**. It is built with read-heavy use-cases in mind, such as data indexing and high-load frontend usage.
+eRPC is a fault-tolerant EVM RPC proxy with **re-org-aware permanent caching**. It sits in front of all your upstreams — managed providers and your own nodes — behind a single endpoint, and handles failover, retries, caching, and multi-chain routing automatically. Built for read-heavy workloads such as data indexing and high-load frontends.
 
-<img src="./assets/hla-diagram.svg" alt="Architecture Diagram" width="70%" />
+<img src="./assets/hla-diagram.svg" alt="Architecture Diagram" width="100%" />
 
 ---
 
@@ -56,17 +56,16 @@ This setup is ideal for development and testing purposes. For production environ
 
 ### Key Features
 
-- **Retries, circuit breakers, failovers, and hedged requests**: Ensures the fastest, most reliable upstream is always used  
-- **Configurable rate limits**: Set hourly or daily [rate limits](https://docs.erpc.cloud/config/rate-limiters) per upstream to control usage and costs  
-- **Local re-org aware cache**: Avoid redundant upstream calls and maintain data consistency when blockchain reorgs occur  
-- **Automatic method routing**: No need to worry which provider supports which `eth_*` method  
-- **Unified error handling**: Consistent error codes and detailed messages across multiple providers  
-- **Single dashboard**: Observe throughput (RPS), errors, and average latency across all providers  
-- **Flexible authentication**: Supports [basic auth, secrets, JWT, SIWE](https://docs.erpc.cloud/config/auth) and more  
-- **Smart batching**: [Aggregate multiple RPC or contract calls into one](https://docs.erpc.cloud/operation/batch)
-- **Selection policy**: Allows you to influence how upstreams are selected to serve traffic (or not) w/ [selection policies](https://docs.erpc.cloud/config/projects/selection-policies).
-- **Data integrity**: Ensures accurate, up-to-date responses by levering several [data integrity mechanisms](https://docs.erpc.cloud/config/failsafe/integrity).
-- **Consensus policy**: Compares results from multiple upstreams and punishes nodes that consistently disagree.
+- **Retries, failover, circuit breakers & hedged requests**: every call is routed to the fastest healthy upstream, automatically.
+- **Re-org-aware permanent cache**: serve reads from [cache](https://docs.erpc.cloud/operation/cache), stay consistent across chain reorgs, and eliminate redundant upstream calls.
+- **Automatic method routing**: no need to track which provider supports which `eth_*` method.
+- **Configurable rate limits**: set hourly or daily [rate limits](https://docs.erpc.cloud/config/rate-limiters) and compute-unit budgets per upstream to control usage and cost.
+- **Selection policies**: [influence which upstreams serve traffic](https://docs.erpc.cloud/config/projects/selection-policies) — e.g. cheap-first until error-rate or block-lag thresholds are crossed.
+- **Consensus & data integrity**: [compare results across upstreams](https://docs.erpc.cloud/config/failsafe/integrity), enforce consensus, and penalize nodes that disagree or return stale data.
+- **Unified error handling**: consistent, normalized error codes and messages across every provider.
+- **Flexible authentication**: [basic auth, secrets, JWT, SIWE](https://docs.erpc.cloud/config/auth) and more.
+- **Smart batching**: [aggregate multiple RPC or contract calls into one](https://docs.erpc.cloud/operation/batch).
+- **Observability**: track throughput (RPS), errors, and latency per upstream from a single Grafana dashboard.
 
 ---
 
