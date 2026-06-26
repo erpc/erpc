@@ -63,6 +63,14 @@ func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId str
 		if err != nil {
 			return nil, err
 		}
+	case common.AuthTypeX402:
+		if cfg.X402 == nil {
+			return nil, common.NewErrInvalidConfig("x402 strategy config is nil")
+		}
+		strategy, err = NewX402Strategy(logger, cfg.X402)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, common.NewErrInvalidConfig(fmt.Sprintf("unknown auth strategy type: %s", cfg.Type))
 	}
