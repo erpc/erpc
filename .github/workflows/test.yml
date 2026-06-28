@@ -54,6 +54,6 @@ jobs:
         with:
           go-version: '1.25.x'
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@f1c81de5fcdf7b466b229fb24ca02d1a8406dd09 # master
+        uses: securego/gosec@f88a0781159d73052ba792962e624749904783d6 # master
         with:
           args: -exclude=G115 -exclude-dir=test -tests=false ./...
