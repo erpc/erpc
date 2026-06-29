@@ -321,6 +321,22 @@ func TestClassifySeverity_UpstreamBlockUnavailable(t *testing.T) {
 	})
 }
 
+func TestClassifySeverity_NetworkNotSupported(t *testing.T) {
+	// Either "client requested an unconfigured network" or "upstreams not ready yet
+	// during bootstrap" — a client/transient condition, never a critical infra error.
+	err := NewErrNetworkNotSupported("myproject", "evm:99999")
+
+	t.Run("IsWarningSeverity", func(t *testing.T) {
+		assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+			"network-not-supported is client/transient, not a critical infra error")
+	})
+	t.Run("StaysRetryableTowardsUpstream", func(t *testing.T) {
+		assert.True(t, IsRetryableTowardsUpstream(err),
+			"REGRESSION GUARD: registry.go's network-readiness wait loop returns this as "+
+				"retryable so bootstrap recovery works — it must stay retryable")
+	})
+}
+
 func BenchmarkIsRetryableTowardNetwork(b *testing.B) {
 	missingDataErr := NewErrEndpointMissingData(
 		NewErrJsonRpcExceptionInternal(-32000, -32014, "missing trie node", nil, nil),

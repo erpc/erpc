@@ -2559,6 +2559,16 @@ func ClassifySeverity(err error) Severity {
 	if HasErrorCode(err, ErrCodeUpstreamBlockUnavailable) {
 		return SeverityWarning
 	}
+	// ErrNetworkNotSupported is, like block-unavailable, intentionally retryable —
+	// upstream/registry.go returns it from the network-readiness wait loop so the
+	// auto-retry loop can re-attempt once lazily-registered upstreams warm up. (Do
+	// NOT move it into the no-retry list; that would break bootstrap recovery.)
+	// Whether it means "client requested an unconfigured network" or "upstreams
+	// aren't ready yet", it is a client/transient condition, not a critical infra
+	// failure — so it is a warning.
+	if HasErrorCode(err, ErrCodeNetworkNotSupported) {
+		return SeverityWarning
+	}
 	if !IsRetryableTowardsUpstream(err) {
 		return SeverityWarning
 	}
