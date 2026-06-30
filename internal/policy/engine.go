@@ -2,6 +2,8 @@ package policy
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,10 +112,19 @@ const DefaultEngineIdleEvictionAfter = 1 * time.Hour
 // tick. The legacy `EvalPerMethod` / `EvalPerFinality` config fields
 // are translated into `EvalScope` by `SetDefaults` and never reach the
 // engine — the engine reads `EvalScope` exclusively.
+//
+// The `boundary` dimension is orthogonal to EvalScope and gated by
+// `EvalPerBoundary`. It identifies a block-availability "lane" by the
+// canonical set of upstreams eligible to serve the request's block (see
+// `boundaryKey`) — NOT by a block range, so the key is stable as numeric
+// bounds drift; it only changes when the eligible membership changes.
+// "*" means the full-pool lane (boundary axis off, or a request with no
+// resolvable block number, e.g. by-hash).
 type slotKey struct {
 	network  string
 	method   string
 	finality string
+	boundary string
 }
 
 type networkRegistration struct {
@@ -217,7 +228,7 @@ func (e *Engine) sweepIdleSlots() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for k, slot := range e.slots {
-		if k.method == "*" && k.finality == "*" {
+		if k.method == "*" && k.finality == "*" && k.boundary == "*" {
 			continue // never evict the network's wildcard slot
 		}
 		if slot.lastAccessedAtMs.Load() >= cutoffMs {
@@ -298,8 +309,8 @@ func (e *Engine) RegisterNetwork(networkID, networkLabel string, upstreamsFn fun
 		}
 	}
 
-	wildcard := newSlot(e, networkID, networkLabel, "*", "*", upstreamsFn, cfg)
-	e.slots[slotKey{networkID, "*", "*"}] = wildcard
+	wildcard := newSlot(e, networkID, networkLabel, "*", "*", "*", upstreamsFn, cfg)
+	e.slots[slotKey{networkID, "*", "*", "*"}] = wildcard
 
 	// Initial eval is synchronous so the first request sees a populated cache.
 	wildcard.tickOnce()
@@ -341,7 +352,25 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 // is the SAME backing array the slot stores atomically — callers MUST
 // treat it as read-only.
 func (e *Engine) GetOrdered(networkID, method, finality string) []common.Upstream {
-	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
+	return e.getOrdered(networkID, method, finality, nil)
+}
+
+// GetOrderedInLane is GetOrdered scoped to a block-availability lane.
+// `laneUpstreamIDs` is the set of upstream IDs eligible to serve the
+// request's block, computed by the caller from per-upstream availability
+// bounds. When the boundary axis is off — or the set is empty (no
+// resolvable block number, or every upstream is eligible) — it behaves
+// exactly like GetOrdered against the full-pool wildcard slot. When the
+// set is a proper subset, the policy evaluates against a lane-scoped pool
+// keyed by that set: an upstream that cannot serve the range is absent
+// from the pool (capability), and per-lane health/exclusion state is kept
+// separate from other lanes.
+func (e *Engine) GetOrderedInLane(networkID, method, finality string, laneUpstreamIDs []string) []common.Upstream {
+	return e.getOrdered(networkID, method, finality, laneUpstreamIDs)
+}
+
+func (e *Engine) getOrdered(networkID, method, finality string, laneIDs []string) []common.Upstream {
+	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality, laneIDs)
 	// Refresh both slots' idle timestamps — a request hitting THIS
 	// (method, finality) keeps both the narrow slot AND the wildcard
 	// fallback alive against the engine's sweep.
@@ -422,7 +451,7 @@ func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) 
 // this to know which upstreams are currently "shadow re-probe
 // candidates."
 func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstream {
-	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality)
+	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality, nil)
 	if slot != nil {
 		// Honor the narrow slot whenever it has TICKED (non-nil pointer),
 		// even when its probe-candidate set is empty: with probe-blocking
@@ -549,8 +578,8 @@ func (e *Engine) GetScores(networkID, method, finality string) map[string]float6
 // `EvalScope` and niled the legacy fields. If the engine were to read
 // them again it would risk seeing the post-translation zero values
 // and silently degrade to the wrong grain.
-func effectiveKey(cfg *common.SelectionPolicyConfig, networkID, method, finality string) slotKey {
-	m, f := "*", "*"
+func effectiveKey(cfg *common.SelectionPolicyConfig, networkID, method, finality, boundary string) slotKey {
+	m, f, b := "*", "*", "*"
 	if cfg != nil {
 		perMethod, perFinality := scopeAxes(cfg.EvalScope)
 		if perMethod && method != "" && method != "*" {
@@ -559,8 +588,37 @@ func effectiveKey(cfg *common.SelectionPolicyConfig, networkID, method, finality
 		if perFinality && finality != "" && finality != "*" {
 			f = finality
 		}
+		if perBoundaryEnabled(cfg) && boundary != "" && boundary != "*" {
+			b = boundary
+		}
 	}
-	return slotKey{networkID, m, f}
+	return slotKey{networkID, m, f, b}
+}
+
+// perBoundaryEnabled reports whether the orthogonal block-availability
+// "lane" axis is on for this policy. Unlike the method/finality axes
+// (folded into EvalScope), boundary is read directly off the config so it
+// never touches the health-tracker grain.
+func perBoundaryEnabled(cfg *common.SelectionPolicyConfig) bool {
+	return cfg != nil && cfg.EvalPerBoundary != nil && *cfg.EvalPerBoundary
+}
+
+// boundaryKey canonicalizes a lane's eligible upstream IDs into a stable
+// slot dimension. The key is the sorted IDs joined by "|", so it depends
+// only on WHICH upstreams can serve the block — not on the (drifting)
+// numeric bounds that produced the set. An empty/nil set means "no lane
+// scoping" → the full-pool wildcard ("*"). The caller is expected to pass
+// an empty set when the eligible upstreams equal the whole pool (so an
+// all-eligible request reuses the wildcard slot rather than spawning a
+// redundant lane identical to it).
+func boundaryKey(laneIDs []string) string {
+	if len(laneIDs) == 0 {
+		return "*"
+	}
+	sorted := make([]string, len(laneIDs))
+	copy(sorted, laneIDs)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "|")
 }
 
 // scopeAxes decomposes the `EvalScope` enum back into the two axis
@@ -579,6 +637,20 @@ func scopeAxes(s common.EvalScope) (perMethod, perFinality bool) {
 	}
 }
 
+// PerBoundaryEnabled reports whether the network's selection policy opts
+// into the block-availability lane axis. The request path consults this
+// before doing the (cheap but non-free) per-upstream bounds scan that
+// derives a request's eligible lane — when off, that work is skipped
+// entirely and routing is identical to before this feature.
+func (e *Engine) PerBoundaryEnabled(networkID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if reg := e.networks[networkID]; reg != nil {
+		return perBoundaryEnabled(reg.cfg)
+	}
+	return false
+}
+
 // lookupSlot is the shared resolver used by per-slot accessors that
 // want a single slot to read from (admin endpoints, diagnostics):
 // exact `(network, method, finality)` match falls back to the network's
@@ -591,10 +663,10 @@ func (e *Engine) lookupSlot(networkID, method, finality string) *Slot {
 	if reg != nil {
 		cfg = reg.cfg
 	}
-	if slot, ok := e.slots[effectiveKey(cfg, networkID, method, finality)]; ok {
+	if slot, ok := e.slots[effectiveKey(cfg, networkID, method, finality, "*")]; ok {
 		return slot
 	}
-	return e.slots[slotKey{networkID, "*", "*"}]
+	return e.slots[slotKey{networkID, "*", "*", "*"}]
 }
 
 // lookupSlotWithFallback is the request-path resolver used by
@@ -611,17 +683,17 @@ func (e *Engine) lookupSlot(networkID, method, finality string) *Slot {
 //
 // First call for a fresh bucket pays a brief write-lock; later calls
 // are wait-free RLock reads like the rest of the request path.
-func (e *Engine) lookupSlotWithFallback(networkID, method, finality string) (slot *Slot, wildcard *Slot) {
+func (e *Engine) lookupSlotWithFallback(networkID, method, finality string, laneIDs []string) (slot *Slot, wildcard *Slot) {
 	e.mu.RLock()
 	reg, hasReg := e.networks[networkID]
 	var cfg *common.SelectionPolicyConfig
 	if hasReg {
 		cfg = reg.cfg
 	}
-	wildcard = e.slots[slotKey{networkID, "*", "*"}]
-	key := effectiveKey(cfg, networkID, method, finality)
+	wildcard = e.slots[slotKey{networkID, "*", "*", "*"}]
+	key := effectiveKey(cfg, networkID, method, finality, boundaryKey(laneIDs))
 	// No-narrowing case: key == wildcard, just return.
-	if key.method == "*" && key.finality == "*" {
+	if key.method == "*" && key.finality == "*" && key.boundary == "*" {
 		e.mu.RUnlock()
 		return wildcard, wildcard
 	}
@@ -650,7 +722,31 @@ func (e *Engine) lookupSlotWithFallback(networkID, method, finality string) (slo
 	if label == "" {
 		label = networkID
 	}
-	s := newSlot(e, networkID, label, key.method, key.finality, reg.upstreamsFn, reg.cfg)
+	// For a lane (boundary != "*") the slot's pool is the network's
+	// upstreams filtered to the eligible set. The membership is resolved
+	// at every tick from the LIVE upstreams list, so a restarted upstream
+	// (new pointer, same id) is picked up and a removed one drops out; a
+	// genuinely different membership produces a different boundary key and
+	// therefore a different slot (this one ages out via the idle sweep).
+	upstreamsFn := reg.upstreamsFn
+	if key.boundary != "*" {
+		laneSet := make(map[string]struct{}, len(laneIDs))
+		for _, id := range laneIDs {
+			laneSet[id] = struct{}{}
+		}
+		base := reg.upstreamsFn
+		upstreamsFn = func() []common.Upstream {
+			all := base()
+			out := make([]common.Upstream, 0, len(laneSet))
+			for _, u := range all {
+				if _, ok := laneSet[u.Id()]; ok {
+					out = append(out, u)
+				}
+			}
+			return out
+		}
+	}
+	s := newSlot(e, networkID, label, key.method, key.finality, key.boundary, upstreamsFn, reg.cfg)
 	e.slots[key] = s
 	e.mu.Unlock()
 	// Start the slot's ticker asynchronously so this request-path call

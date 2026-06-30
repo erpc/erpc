@@ -20,7 +20,7 @@ import (
 // SelectionPolicy.
 func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 	e.mu.RLock()
-	slot, ok := e.slots[slotKey{networkID, "*", "*"}]
+	slot, ok := e.slots[slotKey{networkID, "*", "*", "*"}]
 	reg := e.networks[networkID]
 	e.mu.RUnlock()
 	if !ok || reg == nil {
@@ -80,9 +80,9 @@ func OverrideAllForTest(e *Engine, ids ...string) {
 // resulting order without sleeping.
 func TickForTest(e *Engine, networkID, method string) {
 	e.mu.RLock()
-	slot, ok := e.slots[slotKey{networkID, method, "*"}]
+	slot, ok := e.slots[slotKey{networkID, method, "*", "*"}]
 	if !ok {
-		slot = e.slots[slotKey{networkID, "*", "*"}]
+		slot = e.slots[slotKey{networkID, "*", "*", "*"}]
 	}
 	e.mu.RUnlock()
 	if slot != nil {
@@ -132,12 +132,12 @@ func WalkSlotsForTest(e *Engine, fn func(network, method, finality string, cache
 // no exact match exists.
 func TickForTestAtScope(e *Engine, networkID, method, finality string) {
 	e.mu.RLock()
-	slot, ok := e.slots[slotKey{networkID, method, finality}]
+	slot, ok := e.slots[slotKey{networkID, method, finality, "*"}]
 	if !ok {
-		slot, ok = e.slots[slotKey{networkID, method, "*"}]
+		slot, ok = e.slots[slotKey{networkID, method, "*", "*"}]
 	}
 	if !ok {
-		slot = e.slots[slotKey{networkID, "*", "*"}]
+		slot = e.slots[slotKey{networkID, "*", "*", "*"}]
 	}
 	e.mu.RUnlock()
 	if slot != nil {
@@ -216,9 +216,9 @@ func lookupSlotForTest(e *Engine, networkID, method string) *Slot {
 		return nil
 	}
 	e.mu.RLock()
-	slot, ok := e.slots[slotKey{networkID, method, "*"}]
+	slot, ok := e.slots[slotKey{networkID, method, "*", "*"}]
 	if !ok {
-		slot = e.slots[slotKey{networkID, "*", "*"}]
+		slot = e.slots[slotKey{networkID, "*", "*", "*"}]
 	}
 	e.mu.RUnlock()
 	return slot
@@ -231,9 +231,9 @@ func lookupSlotForTest(e *Engine, networkID, method string) *Slot {
 // any persistent ring buffer.
 func LatestDecisionOutputForTest(e *Engine, networkID, method string) (order []string, excluded []string) {
 	e.mu.RLock()
-	slot, ok := e.slots[slotKey{networkID, method, "*"}]
+	slot, ok := e.slots[slotKey{networkID, method, "*", "*"}]
 	if !ok {
-		slot = e.slots[slotKey{networkID, "*", "*"}]
+		slot = e.slots[slotKey{networkID, "*", "*", "*"}]
 	}
 	e.mu.RUnlock()
 	if slot == nil {
