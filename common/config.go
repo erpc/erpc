@@ -2440,7 +2440,19 @@ type SelectionPolicyConfig struct {
 	EvalPerMethod *bool `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty" tstype:"-"`
 	// EvalPerFinality — same shape and translation behavior as
 	// EvalPerMethod, for the finality axis.
-	EvalPerFinality *bool    `yaml:"evalPerFinality,omitempty" json:"evalPerFinality,omitempty" tstype:"-"`
+	EvalPerFinality *bool `yaml:"evalPerFinality,omitempty" json:"evalPerFinality,omitempty" tstype:"-"`
+	// EvalPerBoundary scopes selection-policy evaluation by block-availability
+	// "lane" — the set of upstreams whose configured block range can actually
+	// serve the request's block. Unlike EvalPerMethod / EvalPerFinality this is
+	// deliberately NOT folded into EvalScope: it must not change the
+	// health-tracker grain (boundary is a decision/pool axis, not a metrics
+	// axis), so the engine reads it directly as an orthogonal slot dimension.
+	// When on, a request whose block excludes some upstream is evaluated
+	// against a lane-scoped pool — an upstream that cannot serve the range is
+	// absent from the pool (a capability fact), distinct from the policy's
+	// soft health-based deprioritization. Default off. Pointer-typed so a
+	// future SetDefaults can distinguish "absent" from "explicitly false".
+	EvalPerBoundary *bool    `yaml:"evalPerBoundary,omitempty" json:"evalPerBoundary,omitempty" tstype:"boolean"`
 	EvalTimeout     Duration `yaml:"evalTimeout,omitempty" json:"evalTimeout" tstype:"Duration"`
 	// EvalFunc is the per-tick evaluation function. In YAML it's a JS
 	// source string; in TS configs it's a real arrow function compiled
