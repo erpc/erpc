@@ -512,7 +512,7 @@ func (n *Network) partitionKeyFor(ctx context.Context, selector string) (string,
 // sub-group. partitionKeyFor provides the dedup/bounds/cross-pod-stable key; this adds
 // the lane. Used by served-tip latest-block tracking (servedTipPartitionFor) AND by
 // the integrity module, so both corroborate/track within the SAME group a request was
-// pinned to (systx vs standard, flashblocks vs normal) — one grouping, not two.
+// pinned to (whatever node groups the use-upstream selector carves out) — one grouping, not two.
 func (n *Network) EvmUpstreamGroupForSelector(ctx context.Context, selector string) (key string, lane string) {
 	k, ids := n.partitionKeyFor(ctx, selector)
 	if k == "" {

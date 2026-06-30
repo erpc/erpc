@@ -152,8 +152,8 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		if cs, policy := resolveIntegrity(n, dirs); len(cs) > 0 {
 			// Integrity state + corroboration are scoped to the node GROUP the request
 			// was pinned to (use-upstream selector), reusing erpc's served-tip grouping
-			// so a systx receipt is only checked against systx, flashblocks against
-			// flashblocks. No selector → network-wide.
+			// so a receipt from one group is only checked against same-group
+			// nodes. No selector → network-wide.
 			selector := ""
 			if dirs != nil {
 				selector = dirs.UseUpstream

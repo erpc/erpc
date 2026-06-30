@@ -37,7 +37,7 @@ type chainView struct {
 	network       common.Network
 
 	// Group scoping: the integrity state + corroboration fetches are PER node group
-	// (e.g. systx vs standard, flashblocks vs normal) — numbering/tip only agree
+	// (groups can differ in system-tx index conventions or tip lead) — numbering/tip only agree
 	// within a group. selector is the use-upstream selector to pin force-fetches to
 	// the group ("" = network-wide); group is the human-readable lane for metrics.
 	selector  string
@@ -215,8 +215,8 @@ func (c *chainView) receiptsByHash(ctx context.Context, blockHash string) ([]int
 }
 
 // fetchDirectives marks the force-fetch internal (no recursion into the engine) and
-// pins it to the ChainView's node group, so a systx receipt is only ever
-// corroborated against systx nodes (etc.). Empty selector = network-wide.
+// pins it to the ChainView's node group, so a receipt from one group is only
+// ever corroborated against same-group nodes. Empty selector = network-wide.
 func (c *chainView) fetchDirectives() *common.RequestDirectives {
 	d := &common.RequestDirectives{IsInternal: true}
 	if c.selector != "" {
@@ -326,7 +326,7 @@ var chainViewStore sync.Map // "networkId\x00groupKey" -> *chainView
 // from the request's use-upstream selector via the SAME mechanism as latest-block
 // tracking (Network.EvmUpstreamGroupForSelector → partitionKeyFor). A selector that
 // doesn't carve out a real sub-group (or "") yields the network-wide view — today's
-// behavior. Per-group isolation is what stops systx↔standard / flashblocks↔normal
+// behavior. Per-group isolation is what stops cross-group
 // cross-talk: numbering and tip only agree within a group.
 func groupChainView(ctx context.Context, n common.Network, selector string) *chainView {
 	if n == nil {

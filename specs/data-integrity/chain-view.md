@@ -35,26 +35,26 @@ writes, auto-populated from **user requests and the module's own aux fetches**, 
    helpers, but a **dedicated in-memory map** — NOT the shared cache DAL, since many
    users have no cache configured. The module must work standalone.
 
-## Per-group scoping (systx/standard, flashblocks)
+## Per-group scoping
 
 Upstreams of one network can disagree on a block's *numbering* or *tip* **by design**:
-HyperEVM `systx` nodes count HyperCore system txs in `txIndex`/`logIndex` while
-`standard` nodes don't; Base `flashblocks` nodes lead the confirmed tip. Corroborating
-*across* these groups is a false positive — the data is fine, only the convention
-differs (verified on the shadow: a `systx` receipt at `logIndex 0x24` vs the `standard`
-canonical's `0x23`, a uniform +1 from the omitted system tx).
+some node groups count chain-injected system transactions in `txIndex`/`logIndex`
+while others don't, and some groups lead the confirmed tip. Corroborating *across*
+such groups is a false positive — the data is fine, only the convention differs (e.g.
+a receipt whose `logIndex` is uniformly offset by one because one group counts an
+injected system transaction the other omits).
 
 So the ChainView and every corroboration fetch are scoped to the **node group** the
 request was pinned to, **reusing erpc's existing served-tip grouping**
 (`Network.EvmUpstreamGroupForSelector` → `partitionKeyFor`): the request's
-`use-upstream` selector (`systx*`, `flashblocks*`, …) resolves to a stable group key
+`use-upstream` selector (e.g. `group-a*`, `family:group-b`, …) resolves to a stable group key
 (deduped by matched-upstream set, bounded, cross-pod stable — the same key latest-block
 tracking uses).
 
 - **ChainView keyed by `(network, group)`** — `groupChainView(ctx, n, selector)`; each
   group keeps its own pin + header + receipts. No group selector → network-wide (today).
 - **Force-fetch inherits the selector** — `fetchDirectives` sets `UseUpstream` to the
-  group selector, so a `systx` receipt is only ever corroborated against `systx` nodes.
+  group selector, so a receipt from one group is only ever corroborated against same-group nodes.
 - **No new config/tagging** — it rides whatever selection the request already carried.
 
 ## Shape
@@ -140,7 +140,7 @@ what the network already served.
      (`CanonicalReceipts(receipt.blockHash)`, immutable → no reorg race) and compare
      this tx's logs (count + logIndexes). Catches subtle receipt corruption (the
      Amoy logIndex underflow). Previously fetched **by number**, which raced the tip
-     and produced the false positives we observed on the shadow.
+     and produced cross-group false positives.
 - `receiptsRootRecompute` → `CanonicalHeader(receipt.blockHash).receiptsRoot`, now
   ChainView-backed (deduped + pinned).
 
@@ -160,5 +160,5 @@ of KB/network at default). Built only when integrity is enabled. No shared cache
 
 Replace `blockHistory` + the ad-hoc resolver with `ChainView`. `observeBlock`
 becomes `ChainView.Observe`; `integrity.History`/`Resolver` interfaces back onto the
-ChainView. Delete `integrity_history.go`'s standalone store. Re-run the shadow trace
+ChainView. Delete `integrity_history.go`'s standalone store. Re-run the trace-based
 sanity check — the `receiptVsBlock` rejects should become real (or vanish).

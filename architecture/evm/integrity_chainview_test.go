@@ -162,11 +162,11 @@ func TestChainView_NarrowAnchors(t *testing.T) {
 
 func TestChainView_GroupScoping(t *testing.T) {
 	t.Run("force-fetch is pinned to the group selector", func(t *testing.T) {
-		c := newChainView(nil, 8, "systx*", "systx", nil)
+		c := newChainView(nil, 8, "group-a*", "group-a", nil)
 		d := c.fetchDirectives()
 		require.NotNil(t, d)
 		assert.True(t, d.IsInternal)
-		assert.Equal(t, "systx*", d.UseUpstream, "corroboration must stay in the served group")
+		assert.Equal(t, "group-a*", d.UseUpstream, "corroboration must stay in the served group")
 	})
 
 	t.Run("no selector → network-wide (no use-upstream pin)", func(t *testing.T) {
