@@ -176,9 +176,26 @@ func (b *Breaker) TryAcquirePermit() bool {
 }
 
 // Record applies the given outcome to the breaker's state machine.
-// OutcomeIgnore is a no-op.
+// OutcomeIgnore does not move the success/failure counters, but it MUST still
+// release a HalfOpen trial permit that TryAcquirePermit reserved — otherwise
+// halfOpenInflight leaks. Once it saturates the trial capacity, every
+// TryAcquirePermit in HalfOpen is denied and the breaker wedges open
+// indefinitely, failing real traffic AND the selection-recovery probes until
+// the process is restarted. Ignorable outcomes (timeouts, cancellations, soft
+// errors) are exactly what a transient dependency blip produces during a trial,
+// so this leak is the production "probe/selection wedge" failure mode.
 func (b *Breaker) Record(o Outcome) {
-	if b == nil || o == OutcomeIgnore {
+	if b == nil {
+		return
+	}
+	if o == OutcomeIgnore {
+		b.mu.Lock()
+		if State(b.state.Load()) == StateHalfOpen && b.halfOpenInflight > 0 {
+			// Release the reserved trial permit without counting the outcome as
+			// a success or failure — the trial was inconclusive, not passed.
+			b.halfOpenInflight--
+		}
+		b.mu.Unlock()
 		return
 	}
 	b.mu.Lock()
