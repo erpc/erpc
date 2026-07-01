@@ -10306,7 +10306,6 @@
               "sort": "desc"
             }
           },
-          "description": "Selection-policy eligible upstream count per network. With evalPerBoundary on, a single-block request is scoped to the lane of upstreams whose block-availability bounds can serve its block, so the count varies by block boundary: min = narrowest lane (e.g. an availability-bounded upstream dropped for historical blocks it can't serve), max = full pool. min < max on a network means per-boundary lanes are active.",
           "pluginVersion": "12.3.0",
           "targets": [
             {
@@ -10318,35 +10317,9 @@
               "expr": "topk(20, avg by (network) (\n  erpc_selection_eligible_upstreams{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }\n))",
               "format": "time_series",
               "instant": false,
-              "legendFormat": "{{network}} avg",
+              "legendFormat": "{{network}}",
               "range": true,
               "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(20, min by (network) (\n  erpc_selection_eligible_upstreams{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }\n))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} min (narrowest lane)",
-              "range": true,
-              "refId": "B"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${datasource}"
-              },
-              "editorMode": "code",
-              "expr": "topk(20, max by (network) (\n  erpc_selection_eligible_upstreams{\n      namespace=~\"${namespace:regex}\",\n      cluster=~\"${cluster:regex}\",\n      region=~\"${region:regex}\",\n      project=~\"${project:regex}\",\n      network=~\"${network:regex}\",\n      network!~\"${ignore_network:regex}\"\n  }\n))",
-              "format": "time_series",
-              "instant": false,
-              "legendFormat": "{{network}} max (full pool)",
-              "range": true,
-              "refId": "C"
             }
           ],
           "title": "Eligible Upstreams per Network",
