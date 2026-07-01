@@ -85,7 +85,10 @@ func getLogsConcreteRangeSize(ctx context.Context, rpcReq *common.JsonRpcRequest
 	if err != nil {
 		return 0, false
 	}
-	if fromBlock > 0 && toBlock >= fromBlock {
+	// fromBlock >= 0 admits genesis-anchored ranges (0x0-...). Safe here because this
+	// helper only accepts concrete 0x hex — unlike the block-tag resolver, a 0 lower
+	// bound can only mean genesis, never an unresolved tag.
+	if fromBlock >= 0 && toBlock >= fromBlock {
 		return float64(toBlock - fromBlock + 1), true
 	}
 	return 0, false

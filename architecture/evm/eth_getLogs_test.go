@@ -1461,6 +1461,18 @@ func TestGetLogsConcreteRangeSize(t *testing.T) {
 			expectedOk:   true,
 		},
 		{
+			name:         "genesis single block",
+			filter:       map[string]interface{}{"fromBlock": "0x0", "toBlock": "0x0"},
+			expectedSize: 1,
+			expectedOk:   true,
+		},
+		{
+			name:         "from genesis",
+			filter:       map[string]interface{}{"fromBlock": "0x0", "toBlock": "0x5"},
+			expectedSize: 6,
+			expectedOk:   true,
+		},
+		{
 			name:       "blockHash filter (EIP-234) has no range",
 			filter:     map[string]interface{}{"blockHash": "0xabc"},
 			expectedOk: false,
