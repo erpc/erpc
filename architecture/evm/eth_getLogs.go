@@ -49,6 +49,51 @@ func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, bloc
 	return "", 0
 }
 
+// getLogsConcreteRangeSize returns the block-range size (toBlock-fromBlock+1) for an
+// eth_getLogs request whose bounds are already concrete hex numbers, with ok=true. It
+// returns ok=false when the request carries no numeric range — block tags (e.g. "latest"),
+// an EIP-234 blockHash filter, or malformed params — since those cannot be attributed to a
+// fixed range without network state. Unlike resolveBlockTagForGetLogs it performs no tag
+// resolution and no network I/O, so it is safe to call on hot paths such as cache hits,
+// where a cached getLogs always carries concrete bounds.
+func getLogsConcreteRangeSize(ctx context.Context, rpcReq *common.JsonRpcRequest) (float64, bool) {
+	if rpcReq == nil {
+		return 0, false
+	}
+	rpcReq.RLockWithTrace(ctx)
+	defer rpcReq.RUnlock()
+	if len(rpcReq.Params) < 1 {
+		return 0, false
+	}
+	filter, ok := rpcReq.Params[0].(map[string]interface{})
+	if !ok {
+		return 0, false
+	}
+	if _, ok := filter["blockHash"].(string); ok {
+		return 0, false
+	}
+	fbStr, _ := filter["fromBlock"].(string)
+	tbStr, _ := filter["toBlock"].(string)
+	if !strings.HasPrefix(fbStr, "0x") || !strings.HasPrefix(tbStr, "0x") {
+		return 0, false
+	}
+	fromBlock, err := common.HexToInt64(fbStr)
+	if err != nil {
+		return 0, false
+	}
+	toBlock, err := common.HexToInt64(tbStr)
+	if err != nil {
+		return 0, false
+	}
+	// fromBlock >= 0 admits genesis-anchored ranges (0x0-...). Safe here because this
+	// helper only accepts concrete 0x hex — unlike the block-tag resolver, a 0 lower
+	// bound can only mean genesis, never an unresolved tag.
+	if fromBlock >= 0 && toBlock >= fromBlock {
+		return float64(toBlock - fromBlock + 1), true
+	}
+	return 0, false
+}
+
 func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
 	fb, err := common.NormalizeHex(fromBlock)
 	if err != nil {

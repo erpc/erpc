@@ -1432,6 +1432,84 @@ func createTestRequest(filter interface{}) *common.NormalizedRequest {
 	return common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 }
 
+func TestGetLogsConcreteRangeSize(t *testing.T) {
+	ctx := context.Background()
+	sizeOf := func(filter interface{}) (float64, bool) {
+		jrq, err := createTestRequest(filter).JsonRpcRequest(ctx)
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		return getLogsConcreteRangeSize(ctx, jrq)
+	}
+
+	tests := []struct {
+		name         string
+		filter       interface{}
+		expectedSize float64
+		expectedOk   bool
+	}{
+		{
+			name:         "multi-block concrete range",
+			filter:       map[string]interface{}{"fromBlock": "0x1", "toBlock": "0x4"},
+			expectedSize: 4,
+			expectedOk:   true,
+		},
+		{
+			name:         "single block",
+			filter:       map[string]interface{}{"fromBlock": "0x10", "toBlock": "0x10"},
+			expectedSize: 1,
+			expectedOk:   true,
+		},
+		{
+			name:         "genesis single block",
+			filter:       map[string]interface{}{"fromBlock": "0x0", "toBlock": "0x0"},
+			expectedSize: 1,
+			expectedOk:   true,
+		},
+		{
+			name:         "from genesis",
+			filter:       map[string]interface{}{"fromBlock": "0x0", "toBlock": "0x5"},
+			expectedSize: 6,
+			expectedOk:   true,
+		},
+		{
+			name:       "blockHash filter (EIP-234) has no range",
+			filter:     map[string]interface{}{"blockHash": "0xabc"},
+			expectedOk: false,
+		},
+		{
+			name:       "block tag is not concrete",
+			filter:     map[string]interface{}{"fromBlock": "0x1", "toBlock": "latest"},
+			expectedOk: false,
+		},
+		{
+			name:       "missing toBlock",
+			filter:     map[string]interface{}{"fromBlock": "0x1"},
+			expectedOk: false,
+		},
+		{
+			name:       "inverted range",
+			filter:     map[string]interface{}{"fromBlock": "0x4", "toBlock": "0x1"},
+			expectedOk: false,
+		},
+		{
+			name:       "malformed fromBlock",
+			filter:     map[string]interface{}{"fromBlock": "invalid", "toBlock": "0x4"},
+			expectedOk: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			size, ok := sizeOf(tt.filter)
+			assert.Equal(t, tt.expectedOk, ok)
+			if tt.expectedOk {
+				assert.Equal(t, tt.expectedSize, size)
+			}
+		})
+	}
+}
+
 func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 	ctx := context.Background()
 	i64ptr := func(v int64) *int64 { return &v }
