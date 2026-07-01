@@ -102,30 +102,21 @@ func NewGenericHttpJsonRpcClient(
 		errorExtractor:  extractor,
 	}
 
-	// Default fallback transport (no proxy). Optimized for high-latency,
-	// high-RPS scenarios to prevent connection churn. DialContext via
-	// util.DefaultOutboundDialer enables kernel-level TCP keepalive so
-	// wedged outbound flows are detected within ~45s (3 missed probes)
-	// instead of the OS default tcp_keepalive_time of 2h on Linux.
-	transport := &http.Transport{
-		DialContext:           util.DefaultOutboundDialer().DialContext,
-		MaxIdleConns:          1024,
-		MaxIdleConnsPerHost:   256,
-		MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-
 	if util.IsTest() {
+		// Tests rely on http.DefaultTransport so HTTP mocking (gock/httpmock,
+		// which patch DefaultTransport) can intercept outbound requests.
 		client.httpClient = &http.Client{
 			Transport: http.DefaultTransport,
 		}
 	} else {
+		// Share ONE *http.Transport (connection pool) per unique upstream across
+		// every project. Two projects configuring the identical endpoint reuse the
+		// same pool instead of each holding a full idle-connection set + TLS cache.
+		// Keying by UniqueUpstreamKey preserves per-upstream isolation within a
+		// project and only deduplicates across projects. See transport_pool.go.
 		client.httpClient = &http.Client{
 			Timeout:   60 * time.Second,
-			Transport: transport,
+			Transport: sharedTransportPool.GetOrCreate(common.UniqueUpstreamKey(upstream)),
 		}
 	}
 
