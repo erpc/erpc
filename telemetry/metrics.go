@@ -750,6 +750,7 @@ var (
 	MetricNetworkRequestDuration              *LabeledHistogram
 	MetricNetworkEvmGetLogsRangeRequested     *LabeledHistogram
 	MetricNetworkEvmTraceFilterRangeRequested *LabeledHistogram
+	MetricCacheEvmGetLogsRange                *LabeledHistogram
 	MetricNetworkHedgeDelaySeconds            *LabeledHistogram
 	MetricNetworkTimeoutDurationSeconds       *LabeledHistogram
 	MetricNetworkDataUnavailableWaitSeconds   *LabeledHistogram
@@ -802,6 +803,18 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "trace_filter/arbtrace_filter requested block-range sizes.",
 		Buckets:   EvmGetLogsRangeHistogramBuckets,
 	}, []string{"project", "network", "method", "user", "finality"})
+
+	// Same block-range distribution as MetricNetworkEvmGetLogsRangeRequested but
+	// observed at the cache layer, partitioned by the connector involved and the
+	// hit/miss outcome. This exposes the per-connector served/missed range shape
+	// (e.g. connectors that answer wide ranges in one read vs. those that only
+	// serve narrow/single-block ranges, or the wide ranges a connector misses).
+	MetricCacheEvmGetLogsRange = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_evm_get_logs_range",
+		Help:      "eth_getLogs block-range sizes seen at the cache layer, partitioned by connector and hit/miss outcome.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "connector", "policy", "ttl", "outcome"})
 
 	MetricNetworkHedgeDelaySeconds = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -948,6 +961,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
 	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
+	MetricCacheEvmGetLogsRange = registerOrReuse(MetricCacheEvmGetLogsRange)
 	MetricNetworkHedgeDelaySeconds = registerOrReuse(MetricNetworkHedgeDelaySeconds)
 	MetricNetworkTimeoutDurationSeconds = registerOrReuse(MetricNetworkTimeoutDurationSeconds)
 	MetricNetworkDataUnavailableWaitSeconds = registerOrReuse(MetricNetworkDataUnavailableWaitSeconds)

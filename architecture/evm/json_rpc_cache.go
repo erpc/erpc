@@ -153,6 +153,28 @@ func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 	c.policies = policies
 }
 
+// observeGetLogsRange records the concrete block-range size of an eth_getLogs
+// request into MetricCacheEvmGetLogsRange, tagged by the connector/policy/ttl
+// involved and the hit/miss outcome. It is a no-op for non-getLogs methods and
+// for requests whose range is not concrete (block tags, blockHash, malformed).
+func (c *EvmJsonRpcCache) observeGetLogsRange(ctx context.Context, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest, connectorId, policy, ttl, outcome string) {
+	if rpcReq == nil || rpcReq.Method != "eth_getLogs" {
+		return
+	}
+	rangeSize, ok := getLogsConcreteRangeSize(ctx, rpcReq)
+	if !ok {
+		return
+	}
+	telemetry.MetricCacheEvmGetLogsRange.WithLabelValues(
+		c.projectId,
+		req.NetworkLabel(),
+		connectorId,
+		policy,
+		ttl,
+		outcome,
+	).Observe(rangeSize)
+}
+
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Cache.Get",
 		trace.WithAttributes(
@@ -532,6 +554,7 @@ drain:
 			labelPolicyStr,
 			labelTTL,
 		).Observe(time.Since(start).Seconds())
+		c.observeGetLogsRange(ctx, req, rpcReq, labelConnectorId, labelPolicyStr, labelTTL, "miss")
 		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, nil
 	}
@@ -556,6 +579,7 @@ drain:
 				policy.String(),
 				policy.GetTTL().String(),
 			).Observe(time.Since(start).Seconds())
+			c.observeGetLogsRange(ctx, req, rpcReq, connector.Id(), policy.String(), policy.GetTTL().String(), "miss")
 			span.SetAttributes(attribute.Bool("cache.hit", false))
 			return nil, nil
 		case common.CacheEmptyBehaviorAllow, common.CacheEmptyBehaviorOnly:
@@ -585,6 +609,7 @@ drain:
 		policy.String(),
 		policy.GetTTL().String(),
 	).Observe(time.Since(start).Seconds())
+	c.observeGetLogsRange(ctx, req, rpcReq, connector.Id(), policy.String(), policy.GetTTL().String(), "hit")
 	span.SetAttributes(attribute.Bool("cache.hit", true))
 	if c.logger.GetLevel() <= zerolog.DebugLevel {
 		result := jrr.GetResultBytes()
