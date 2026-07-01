@@ -691,6 +691,9 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.GrpcMaxSendMsgSize == nil {
 		s.GrpcMaxSendMsgSize = util.IntPtr(100 * 1024 * 1024)
 	}
+	if s.GrpcReflection == nil {
+		s.GrpcReflection = util.BoolPtr(true)
+	}
 	if s.MaxTimeout == nil {
 		d := Duration(150 * time.Second)
 		s.MaxTimeout = &d

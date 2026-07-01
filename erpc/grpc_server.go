@@ -19,6 +19,7 @@ import (
 	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -113,6 +114,12 @@ func NewGrpcServer(
 	gs.server = grpc.NewServer(opts...)
 	evm.RegisterRPCQueryServiceServer(gs.server, gs)
 	evm.RegisterQueryServiceServer(gs.server, gs)
+	// Server reflection lets tools (grpcurl, Postman, buf) discover the BDS
+	// services/messages without a local copy of the .proto files. Enabled by
+	// default; set server.grpcReflection=false to turn it off.
+	if cfg.GrpcReflection == nil || *cfg.GrpcReflection {
+		reflection.Register(gs.server)
+	}
 	return gs, nil
 }
 

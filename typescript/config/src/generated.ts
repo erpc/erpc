@@ -182,6 +182,7 @@ export interface ServerConfig {
   grpcPortV6?: number /* int */;
   grpcMaxRecvMsgSize?: number /* int */;
   grpcMaxSendMsgSize?: number /* int */;
+  grpcReflection?: boolean;
   maxTimeout?: Duration;
   readTimeout?: Duration;
   writeTimeout?: Duration;
@@ -544,6 +545,7 @@ export interface ProjectConfig {
    */
   userAgentMode?: UserAgentTrackingMode;
   forwardHeaders?: string[];
+  allowClientDirectives?: string;
   ignoreMethods?: string[];
   allowMethods?: string[];
   /**
