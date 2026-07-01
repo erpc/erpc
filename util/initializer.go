@@ -611,16 +611,39 @@ func (i *Initializer) ensureAutoRetryIfEnabled() {
 	}()
 }
 
-// Continually attempt tasks until all succeed or context is canceled
+// hasPendingWork reports whether any registered task is still in a non-terminal
+// state (pending, running, failed, or timed-out) and could therefore benefit
+// from another attempt. Only succeeded and fatal tasks are terminal.
+//
+// This is the auto-retry loop's stop condition. It deliberately does NOT key off
+// State(): State() returns StateFatal as soon as ANY task is fatal, so keying
+// the loop off it makes a single permanently-failing task (e.g. an upstream with
+// a chainId mismatch) end auto-retry for every sibling task in the same
+// initializer. Because one Initializer is shared across many independent
+// resources (one bootstrap task per network/upstream), that stranded every
+// not-yet-initialized resource until the process restarted.
+func (i *Initializer) hasPendingWork() bool {
+	pending := false
+	i.tasks.Range(func(_, value interface{}) bool {
+		switch TaskState(value.(*BootstrapTask).state.Load()) {
+		case TaskPending, TaskRunning, TaskFailed, TaskTimedOut:
+			pending = true
+			return false // found one; stop iterating
+		}
+		return true
+	})
+	return pending
+}
+
+// Continually attempt tasks until every task is terminal (succeeded or fatal)
+// or the context is canceled.
 func (i *Initializer) autoRetryLoop(ctx context.Context) {
 	if cancel := i.cancelAutoRetry.Load(); cancel != nil {
 		defer cancel.(context.CancelFunc)()
 	}
-	if i.State() == StateReady {
-		i.autoRetryActive.Store(false)
-		return
-	}
-	if i.State() == StateFatal {
+	// Nothing to retry once every task is terminal. A fatal task must not end
+	// the loop on its own — recoverable siblings must keep retrying.
+	if !i.hasPendingWork() {
 		i.autoRetryActive.Store(false)
 		return
 	}
@@ -638,11 +661,11 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		i.attemptRemainingTasks(false)
 		err := i.WaitForTasks(ctx)
 		state := i.State()
-		if state == StateFatal {
-			i.autoRetryActive.Store(false)
-			return
-		}
-		if err == nil && state == StateReady {
+		// Stop only once no task can benefit from another attempt (every task
+		// succeeded or is fatal). Fatal tasks are skipped by
+		// attemptRemainingTasks, so a permanently-failing task cannot wedge the
+		// retries of its still-recoverable siblings.
+		if !i.hasPendingWork() {
 			i.autoRetryActive.Store(false)
 			return
 		}
