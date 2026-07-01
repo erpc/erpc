@@ -28,8 +28,9 @@ type Input struct {
 // (the block was unfinalized, so it may be a benign reorg). Callers emit a
 // metric/log for it.
 type Recorded struct {
-	CheckID string
-	Reason  string
+	CheckID  string
+	Reason   string
+	Finality string // "finalized"/"unfinalized"/"unknown" — for the violation metric
 }
 
 // Result is the outcome of validating a response. Err is non-nil when a check
@@ -40,6 +41,7 @@ type Recorded struct {
 type Result struct {
 	Err             error
 	RejectedCheckID string
+	Finality        string // finality of the rejected block ("finalized"/"unfinalized"/"unknown"); "" if no reject
 	Recorded        []Recorded
 	Outcomes        []CheckOutcome
 }
@@ -112,11 +114,12 @@ func Validate(ctx context.Context, in Input) Result {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reject"})
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID
+			res.Finality = in.finalityOf(ctx, d)
 			return res
 		}
 		// soft-flag: surface the violation but still serve the response.
 		res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "soft_flag"})
-		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason})
+		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Finality: in.finalityOf(ctx, d)})
 	}
 	return res
 }
@@ -136,6 +139,24 @@ func (in Input) verdictFor(ctx context.Context, c *Check, cfg CheckConfig, d *De
 		final, known = in.Resolver.IsFinalized(ctx, d.BlockNumber())
 	}
 	return in.Reorg.behaviorFor(final, known)
+}
+
+// finalityOf returns the target block's finality as an observability label —
+// "finalized" / "unfinalized" / "unknown". Separates genuine (finalized /
+// deterministic) catches from reorg-prone unfinalized ones in metrics/logs.
+// Called only on a reject/record (rare) so the resolver cost is negligible.
+func (in Input) finalityOf(ctx context.Context, d *Decoded) string {
+	if in.Resolver == nil {
+		return "unknown"
+	}
+	final, known := in.Resolver.IsFinalized(ctx, d.BlockNumber())
+	if !known {
+		return "unknown"
+	}
+	if final {
+		return "finalized"
+	}
+	return "unfinalized"
 }
 
 func contentValidation(c *Check, v *Violation, u common.Upstream) error {

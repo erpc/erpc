@@ -93,11 +93,13 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 	})
 
 	t.Run("a rejection increments the integrity_violation metric (check + verdict labels)", func(t *testing.T) {
-		// Unique labels so the delta is isolated from other tests. The same
-		// 7-tuple identifies both the violation series (…, check, verdict) and the
-		// per-check series (…, check, outcome) since the trailing value is "reject".
+		// Unique labels so the delta is isolated from other tests. This 7-tuple
+		// identifies the per-check series (…, check, outcome=reject). The violation
+		// series additionally carries a trailing finality label; no resolver is
+		// wired in this unit path, so a reject records finality "unknown".
 		labels := []string{"test-project", "", "evm:123", "test-upstream", "eth_gettransactionreceipt", "indexMagnitude", "reject"}
-		before := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(labels...))
+		vlabels := append(append([]string{}, labels...), "unknown")
+		before := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(vlabels...))
 		chkBefore := testutil.ToFloat64(telemetry.MetricIntegrityCheck.WithLabelValues(labels...))
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"]}`))
@@ -107,7 +109,7 @@ func TestHandleUpstreamPostForward_LogIndexIntegrity(t *testing.T) {
 		_, err := HandleUpstreamPostForward(ctx, indexMagnitudeNetwork(), u, req, rs, nil, false)
 		require.Error(t, err)
 
-		after := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(labels...))
+		after := testutil.ToFloat64(telemetry.MetricIntegrityViolation.WithLabelValues(vlabels...))
 		assert.Equal(t, before+1, after, "indexMagnitude/reject counter must increment by exactly 1")
 		chkAfter := testutil.ToFloat64(telemetry.MetricIntegrityCheck.WithLabelValues(labels...))
 		assert.Equal(t, chkBefore+1, chkAfter, "integrity_check_total{outcome=reject} must increment by exactly 1")

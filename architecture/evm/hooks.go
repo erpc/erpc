@@ -209,19 +209,25 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			}
 			for _, rec := range res.Recorded {
 				telemetry.MetricIntegrityViolation.WithLabelValues(
-					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, "soft_flag",
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, "soft_flag", rec.Finality,
 				).Inc()
-				log.Warn().Str("check", rec.CheckID).Str("reason", rec.Reason).Str("method", methodLower).
-					Msg("integrity: recorded reorg-sensitive mismatch on unfinalized block")
+				log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
+						Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
+						Str("check", rec.CheckID).Str("finality", rec.Finality).Str("reason", rec.Reason).
+						Msg("integrity: recorded reorg-sensitive mismatch (served, not rejected)")
 			}
 			if res.Err != nil {
 				telemetry.MetricIntegrityViolation.WithLabelValues(
-					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject",
+					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, res.RejectedCheckID, "reject", res.Finality,
 				).Inc()
 				// Remember we caught a bad response (and which check); project.Forward
 				// then counts it as saved (a retry succeeded) or failed (no good
 				// response found) — see integrity_saved_total / integrity_failed_total.
-				rq.MarkIntegrityCaught(res.RejectedCheckID)
+				log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
+						Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
+						Str("check", res.RejectedCheckID).Str("finality", res.Finality).
+						Str("reason", res.Err.Error()).Msg("integrity: rejected response (caught bad data)")
+					rq.MarkIntegrityCaught(res.RejectedCheckID, res.Finality)
 				validationErr = res.Err
 				rq.ClearLastValidResponse()
 				return rs, validationErr

@@ -189,8 +189,9 @@ type NormalizedRequest struct {
 
 	lastValidResponse      atomic.Pointer[NormalizedResponse]
 	integrityCaught        atomic.Bool  // an integrity check rejected a response during this request
-	integrityRejectedCheck atomic.Value // id of the last check that rejected (the "why")
-	integrityOverheadNs    atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
+	integrityRejectedCheck    atomic.Value // id of the last check that rejected (the "why")
+	integrityRejectedFinality atomic.Value // finality of the last rejected block (for saved/failed metric)
+	integrityOverheadNs       atomic.Int64 // ns the request waited on integrity checks + aux force-fetches
 	lastUpstream           atomic.Value
 	evmBlockRef            atomic.Value
 	evmBlockNumber         atomic.Value
@@ -332,11 +333,14 @@ func (r *NormalizedRequest) ClearLastValidResponse() {
 // MarkIntegrityCaught records that integrity check `checkID` rejected a response
 // during this request. Read at the end via IntegrityCaught (saved vs failed) and
 // IntegrityRejectedCheck (the "why").
-func (r *NormalizedRequest) MarkIntegrityCaught(checkID string) {
+func (r *NormalizedRequest) MarkIntegrityCaught(checkID, finality string) {
 	if r != nil {
 		r.integrityCaught.Store(true)
 		if checkID != "" {
 			r.integrityRejectedCheck.Store(checkID)
+		}
+		if finality != "" {
+			r.integrityRejectedFinality.Store(finality)
 		}
 	}
 }
@@ -354,6 +358,19 @@ func (r *NormalizedRequest) IntegrityRejectedCheck() string {
 		return ""
 	}
 	if v := r.integrityRejectedCheck.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// IntegrityRejectedFinality returns the finality ("finalized"/"unfinalized"/
+// "unknown") of the last block an integrity check rejected during this request,
+// or "" if none.
+func (r *NormalizedRequest) IntegrityRejectedFinality() string {
+	if r == nil {
+		return ""
+	}
+	if v := r.integrityRejectedFinality.Load(); v != nil {
 		return v.(string)
 	}
 	return ""

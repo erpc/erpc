@@ -330,8 +330,8 @@ var (
 	MetricIntegrityViolation = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "integrity_violation_total",
-		Help:      "Total data-integrity check violations, by check id and verdict (reject = failed over; soft_flag = recorded but served).",
-	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict"})
+		Help:      "Total data-integrity check violations, by check id, verdict (reject = failed over; soft_flag = recorded but served) and target-block finality (finalized/unfinalized/unknown — separates genuine finalized/deterministic catches from reorg-prone unfinalized ones).",
+	}, []string{"project", "vendor", "network", "upstream", "category", "check", "verdict", "finality"})
 
 	// MetricIntegrityCheck counts EVERY integrity check evaluation by outcome:
 	// pass (ran, no violation), skip (could not evaluate — unmodeled field /
@@ -361,8 +361,8 @@ var (
 	MetricIntegritySaved = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "integrity_saved_total",
-		Help:      "Total requests where integrity rejected a bad response and a retry returned a good one (a wrong/invalid response prevented).",
-	}, []string{"project", "network", "category"})
+		Help:      "Total requests where integrity rejected a bad response and a retry returned a good one (a wrong/invalid response prevented), by target-block finality (finalized/unfinalized/unknown).",
+	}, []string{"project", "network", "category", "finality"})
 
 	// MetricIntegrityFailed counts requests that FAILED toward the user because of
 	// the integrity module: a check rejected a response and no good response was
@@ -371,8 +371,8 @@ var (
 	MetricIntegrityFailed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "integrity_failed_total",
-		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check.",
-	}, []string{"project", "network", "category", "check"})
+		Help:      "Total requests that failed toward the user due to integrity (a check rejected and no good response was found), by the rejecting check and target-block finality (finalized/unfinalized/unknown).",
+	}, []string{"project", "network", "category", "check", "finality"})
 
 	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

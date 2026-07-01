@@ -191,7 +191,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		// and the failover ultimately returned a good one — without the module the
 		// client would have gotten the wrong/invalid response.
 		if nq.IntegrityCaught() {
-			telemetry.MetricIntegritySaved.WithLabelValues(p.Config.Id, network.Label(), method).Inc()
+			telemetry.MetricIntegritySaved.WithLabelValues(p.Config.Id, network.Label(), method, nq.IntegrityRejectedFinality()).Inc()
 			// Record the corrected (served) body once, so a by-hand sanity check can
 			// compare it against the rejected "original" body on the integrity span.
 			// Reliable here (IntegrityCaught is set, the outcome is known) unlike the
@@ -256,7 +256,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		// found (every candidate failed), so the request errored rather than serving
 		// bad data. The rejecting check is the "why".
 		if nq.IntegrityCaught() {
-			telemetry.MetricIntegrityFailed.WithLabelValues(p.Config.Id, network.Label(), method, nq.IntegrityRejectedCheck()).Inc()
+			telemetry.MetricIntegrityFailed.WithLabelValues(p.Config.Id, network.Label(), method, nq.IntegrityRejectedCheck(), nq.IntegrityRejectedFinality()).Inc()
 		}
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
