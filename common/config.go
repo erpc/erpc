@@ -2181,6 +2181,7 @@ type DirectiveDefaultsConfig struct {
 	RetryEmpty        *bool       `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
 	RetryPending      *bool       `yaml:"retryPending,omitempty" json:"retryPending"`
 	SkipCacheRead     interface{} `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	SkipCacheWrite    *bool       `yaml:"skipCacheWrite,omitempty" json:"skipCacheWrite"`
 	UseUpstream       *string     `yaml:"useUpstream,omitempty" json:"useUpstream"`
 	SkipInterpolation *bool       `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
 	SkipConsensus     *bool       `yaml:"skipConsensus,omitempty" json:"skipConsensus"`

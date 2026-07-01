@@ -635,6 +635,14 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	))
 	defer span.End()
 
+	// Skip persisting the response when the request opts out of cache writes.
+	// Co-resident projects share a cache connector and the cache key omits
+	// projectId, so a tier that must not backfill another tier's cache sets this.
+	if req.ShouldSkipCacheWrite() {
+		span.SetAttributes(attribute.Bool("cache.write_skipped", true))
+		return nil
+	}
+
 	if common.IsTracingDetailed {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),

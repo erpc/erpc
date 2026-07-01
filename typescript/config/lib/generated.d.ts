@@ -1141,6 +1141,7 @@ export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
     skipCacheRead?: any;
+    skipCacheWrite?: boolean;
     useUpstream?: string;
     skipInterpolation?: boolean;
     skipConsensus?: boolean;

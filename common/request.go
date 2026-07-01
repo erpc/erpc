@@ -39,6 +39,7 @@ const (
 	headerDirectiveRetryEmpty                 = "X-ERPC-Retry-Empty"
 	headerDirectiveRetryPending               = "X-ERPC-Retry-Pending"
 	headerDirectiveSkipCacheRead              = "X-ERPC-Skip-Cache-Read"
+	headerDirectiveSkipCacheWrite             = "X-ERPC-Skip-Cache-Write"
 	headerDirectiveUseUpstream                = "X-ERPC-Use-Upstream"
 	headerDirectiveSkipInterpolation          = "X-ERPC-Skip-Interpolation"
 	headerDirectiveSkipConsensus              = "X-ERPC-Skip-Consensus"
@@ -65,6 +66,7 @@ const (
 	queryDirectiveRetryEmpty                 = "retry-empty"
 	queryDirectiveRetryPending               = "retry-pending"
 	queryDirectiveSkipCacheRead              = "skip-cache-read"
+	queryDirectiveSkipCacheWrite             = "skip-cache-write"
 	queryDirectiveUseUpstream                = "use-upstream"
 	queryDirectiveSkipInterpolation          = "skip-interpolation"
 	queryDirectiveSkipConsensus              = "skip-consensus"
@@ -91,6 +93,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveRetryEmpty, query: queryDirectiveRetryEmpty},
 	{header: headerDirectiveRetryPending, query: queryDirectiveRetryPending},
 	{header: headerDirectiveSkipCacheRead, query: queryDirectiveSkipCacheRead},
+	{header: headerDirectiveSkipCacheWrite, query: queryDirectiveSkipCacheWrite},
 	{header: headerDirectiveUseUpstream, query: queryDirectiveUseUpstream},
 	{header: headerDirectiveSkipInterpolation, query: queryDirectiveSkipInterpolation},
 	{header: headerDirectiveSkipConsensus, query: queryDirectiveSkipConsensus},
@@ -144,6 +147,14 @@ type RequestDirectives struct {
 	// Accepts "true" to skip all, "false" or "" to skip none,
 	// or a connector ID pattern (e.g. "redis*", "memory*|dynamo*") to skip specific cache drivers.
 	SkipCacheRead string `json:"skipCacheRead"`
+
+	// Instruct the proxy to skip cache writes (Set) for this request, so the
+	// response is not persisted to the shared cache. Useful for co-resident
+	// projects that share a cache connector (the cache key omits projectId): a
+	// tier that must not backfill another tier's cache (e.g. a consensus/integrity
+	// lane that also sets skipCacheRead) sets this so its writes cannot be read by
+	// the other tier. Default false = writes happen as today.
+	SkipCacheWrite bool `json:"skipCacheWrite"`
 
 	// Instruct the proxy to forward the request to a specific upstream(s) only.
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
@@ -254,6 +265,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		RetryEmpty:                      d.RetryEmpty,
 		RetryPending:                    d.RetryPending,
 		SkipCacheRead:                   d.SkipCacheRead,
+		SkipCacheWrite:                  d.SkipCacheWrite,
 		UseUpstream:                     d.UseUpstream,
 		ByPassMethodExclusion:           d.ByPassMethodExclusion,
 		SkipInterpolation:               d.SkipInterpolation,
@@ -615,6 +627,9 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	if directiveDefaults.SkipConsensus != nil {
 		r.directives.SkipConsensus = *directiveDefaults.SkipConsensus
 	}
+	if directiveDefaults.SkipCacheWrite != nil {
+		r.directives.SkipCacheWrite = *directiveDefaults.SkipCacheWrite
+	}
 
 	// Validation: Block Integrity
 	if directiveDefaults.EnforceHighestBlock != nil {
@@ -784,6 +799,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := getHeader(headerDirectiveSkipConsensus); hv != "" {
 		r.directives.SkipConsensus = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
+	if hv := getHeader(headerDirectiveSkipCacheWrite); hv != "" {
+		r.directives.SkipCacheWrite = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
 
 	// Validation Headers
 	if hv := getHeader(headerDirectiveEnforceHighestBlock); hv != "" {
@@ -878,6 +896,10 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		r.directives.SkipConsensus = strings.ToLower(strings.TrimSpace(skipConsensus)) == "true"
 	}
 
+	if skipCacheWrite := getQueryArg(queryDirectiveSkipCacheWrite); skipCacheWrite != "" {
+		r.directives.SkipCacheWrite = strings.ToLower(strings.TrimSpace(skipCacheWrite)) == "true"
+	}
+
 	// Validation query parameters
 	if v := getQueryArg(queryDirectiveEnforceHighestBlock); v != "" {
 		r.directives.EnforceHighestBlock = strings.ToLower(strings.TrimSpace(v)) == "true"
@@ -957,6 +979,15 @@ func (r *NormalizedRequest) ShouldSkipCacheRead(connectorId string) bool {
 	}
 	matched, _ := WildcardMatch(v, connectorId)
 	return matched
+}
+
+// ShouldSkipCacheWrite reports whether the cache write (Set) should be skipped
+// for this request, so its response is not persisted to the shared cache.
+func (r *NormalizedRequest) ShouldSkipCacheWrite() bool {
+	if r == nil || r.directives == nil {
+		return false
+	}
+	return r.directives.SkipCacheWrite
 }
 
 func (r *NormalizedRequest) Directives() *RequestDirectives {
