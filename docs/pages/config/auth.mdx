@@ -218,11 +218,15 @@ YAML prefix: `auth.strategies[*].jwt`
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `jwt.verificationKeys` | `map[string]string` | `nil` | Map of `kid → keyData`. Value is PEM string, `"file:///path"`, or bare HMAC secret bytes. Empty map = ALL JWTs rejected (deny-all, not allow-all). <SourceLink file="auth/strategy_jwt.go" lines="25-42" /> |
-| `jwt.allowedAlgorithms` | `[]string` | `nil` (any algorithm) | e.g. `["RS256","ES256"]`. Prevents algorithm-confusion attacks. <SourceLink file="auth/strategy_jwt.go" lines="54-58" /> |
-| `jwt.allowedIssuers` | `[]string` | `nil` (any issuer) | Exact match against `iss` claim. Non-empty list + missing `iss` → error. <SourceLink file="auth/strategy_jwt.go" lines="123-130" /> |
-| `jwt.allowedAudiences` | `[]string` | `nil` (any audience) | Exact match against `aud` claim as scalar string. Array-form `aud` JWT claim always fails the cast. <SourceLink file="auth/strategy_jwt.go" lines="132-139" /> |
-| `jwt.requiredClaims` | `[]string` | `nil` | Claim names that must be present (any value). <SourceLink file="auth/strategy_jwt.go" lines="143-148" /> |
+| `jwt.verificationKeys` | `map[string]string` | `nil` | Map of `kid → keyData`. Value is PEM string, `"file:///path"`, or bare HMAC secret bytes. Empty map = ALL JWTs rejected (deny-all, not allow-all). <SourceLink file="auth/jwks.go" /> |
+| `jwt.verificationJwksUrl` | `string` | `""` | HTTP(S) URL returning a standard JWKS document (`{"keys":[...]}`). Fetched at startup and refreshed in the background. Static `verificationKeys` override JWKS entries with the same `kid`. <SourceLink file="auth/jwks.go" /> |
+| `jwt.verificationJwksRefreshInterval` | `Duration` | `1h` when JWKS URL set | Background JWKS refresh interval. <SourceLink file="common/defaults.go" /> |
+| `jwt.verificationJwksTlsInsecureSkipVerify` | `bool` | `false` | Skip TLS certificate verification when fetching the JWKS URL. **Do not enable in production** — intended for local development with self-signed certificates only. <SourceLink file="auth/jwks.go" /> |
+| `jwt.allowedAlgorithms` | `[]string` | `nil` (any algorithm) | e.g. `["RS256","ES256"]`. Prevents algorithm-confusion attacks. <SourceLink file="auth/strategy_jwt.go" /> |
+| `jwt.allowedIssuers` | `[]string` | `nil` (any issuer) | Exact match against `iss` claim. Non-empty list + missing `iss` → error. <SourceLink file="auth/strategy_jwt.go" /> |
+| `jwt.allowedAudiences` | `[]string` | `nil` (any audience) | Exact match against `aud` claim as scalar string. Array-form `aud` JWT claim always fails the cast. <SourceLink file="auth/strategy_jwt.go" /> |
+| `jwt.requiredClaims` | `[]string` | `nil` | Claim names that must be present (any value). <SourceLink file="auth/strategy_jwt.go" /> |
+| `jwt.claimMatchers` | `map[string][]string` | `nil` | Map of `claimName → allowedValues`. Every key is an AND condition; within each key's value list any match passes (OR). Claim value may be a string, string array, or SCIM-style `[{"value":"..."}]`. Missing or empty claim → error. Omitting `claimMatchers` skips the check (backward-compatible). <SourceLink file="auth/strategy_jwt.go" /> |
 | `jwt.rateLimitBudgetClaimName` | `string` | `"rlm"` (set by SetDefaults) | JWT claim name from which `User.RateLimitBudget` is extracted. Missing claim → empty budget (no rate-limit). Non-string value → silent no-op. To suppress, use a claim name never present in tokens. <SourceLink file="common/defaults.go" lines="2749-2751" /> |
 
 Supports: `AuthTypeJwt` only. `SetDefaults`: sets `rateLimitBudgetClaimName = "rlm"` if empty.
@@ -610,7 +614,7 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 10. **Connector-down probe is per-process.** One probe/second per replica, no cross-replica coordination.
 11. **type inference conflict.** Setting multiple sub-config blocks (e.g. both `secret:` and `jwt:`) in one strategy entry causes the last-evaluated block to silently overwrite `type`. Evaluation order: `secret → database → jwt → siwe`. Never set multiple sub-config blocks in one strategy entry.
 12. **`Authorization: Basic` username is silently discarded.** Only the password field is used as the secret value. `alice:mysecret` and `bob:mysecret` are treated identically.
-13. **JWT empty `verificationKeys` = deny-all, not allow-all.** There is no pass-through mode. An empty key map rejects every JWT.
+13. **JWT requires keys.** Configure `verificationKeys` and/or `verificationJwksUrl`. With neither, startup validation fails. An empty resolved key map rejects every JWT (deny-all, not allow-all).
 14. **SIWE requires both signature and message together.** Missing either one causes silent fallthrough to network-strategy payload extraction.
 15. **`?token=` query param is deprecated.** Alias for `?secret=`. Continues to work but may be removed; use `?secret=` or `X-ERPC-Secret-Token` header in new implementations.
 16. **Redis `addr`/`username`/`password`/`db` are cleared after `SetDefaults`.** After initialization only `uri` is set. Config exports show only the URI (with credentials URL-encoded in it).

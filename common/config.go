@@ -345,8 +345,15 @@ const (
 )
 
 type ConnectorConfig struct {
-	Id              string                     `yaml:"id,omitempty" json:"id"`
-	Driver          ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
+	Id     string              `yaml:"id,omitempty" json:"id"`
+	Driver ConnectorDriverType `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
+	// Tags label the data source a connector caches, so the `use-upstream`
+	// directive can gate which connector is read/written — e.g. a connector
+	// fed by a system-transaction node tagged `systx` is only used when the
+	// request's selector admits it. Same glob/`!negation` grammar as upstream
+	// tags. Untagged connectors are always eligible (a use-upstream pin meant
+	// for upstreams must not disable a normal cache).
+	Tags            []string                   `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Memory          *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
 	Redis           *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
 	DynamoDB        *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
@@ -2590,11 +2597,15 @@ type DatabaseFailOpenConfig struct {
 }
 
 type JwtStrategyConfig struct {
-	AllowedIssuers    []string          `yaml:"allowedIssuers" json:"allowedIssuers"`
-	AllowedAudiences  []string          `yaml:"allowedAudiences" json:"allowedAudiences"`
-	AllowedAlgorithms []string          `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
-	RequiredClaims    []string          `yaml:"requiredClaims" json:"requiredClaims"`
-	VerificationKeys  map[string]string `yaml:"verificationKeys" json:"verificationKeys"`
+	AllowedIssuers                        []string            `yaml:"allowedIssuers" json:"allowedIssuers"`
+	AllowedAudiences                      []string            `yaml:"allowedAudiences" json:"allowedAudiences"`
+	AllowedAlgorithms                     []string            `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
+	RequiredClaims                        []string            `yaml:"requiredClaims" json:"requiredClaims"`
+	ClaimMatchers                         map[string][]string `yaml:"claimMatchers,omitempty" json:"claimMatchers,omitempty"`
+	VerificationKeys                      map[string]string   `yaml:"verificationKeys,omitempty" json:"verificationKeys,omitempty"`
+	VerificationJwksUrl                   string              `yaml:"verificationJwksUrl,omitempty" json:"verificationJwksUrl,omitempty"`
+	VerificationJwksRefreshInterval       Duration            `yaml:"verificationJwksRefreshInterval,omitempty" json:"verificationJwksRefreshInterval" tstype:"Duration"`
+	VerificationJwksTlsInsecureSkipVerify bool                `yaml:"verificationJwksTlsInsecureSkipVerify,omitempty" json:"verificationJwksTlsInsecureSkipVerify,omitempty"` //nolint:gosec
 	// RateLimitBudgetClaimName is the JWT claim name that, if present,
 	// will be used to set the per-user RateLimitBudget override.
 	// Defaults to "rlm".

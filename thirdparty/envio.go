@@ -71,6 +71,7 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	324:        {}, // ZKsync
 	7777777:    {}, // Zora
 	50:         {}, // Xdc
+	51:         {}, // Xdc Testnet (Apothem)
 	2741:       {}, // Abstract
 	5115:       {}, // Citrea Testnet
 	7560:       {}, // Cyber

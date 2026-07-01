@@ -1,6 +1,7 @@
 package common
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -275,6 +276,64 @@ func TestHasErrorCode_NestedErrors(t *testing.T) {
 
 		assert.True(t, HasErrorCode(missingDataErr, ErrCodeEndpointMissingData))
 		assert.True(t, HasErrorCode(missingDataErr, ErrCodeJsonRpcExceptionInternal))
+	})
+}
+
+func TestClassifySeverity_InvalidRequest(t *testing.T) {
+	// An invalid/malformed request is the caller's fault, not an infra failure:
+	// it must be info severity and must never be retried at either scope.
+	err := NewErrInvalidRequest(errors.New("fromBlock (10) must be <= toBlock (5)"))
+
+	t.Run("IsInfoSeverity", func(t *testing.T) {
+		assert.Equal(t, SeverityInfo, ClassifySeverity(err),
+			"ErrInvalidRequest is a client error and must be info, not critical")
+	})
+	t.Run("IsClientError", func(t *testing.T) {
+		assert.True(t, IsClientError(err))
+	})
+	t.Run("NotRetryableTowardsUpstream", func(t *testing.T) {
+		assert.False(t, IsRetryableTowardsUpstream(err),
+			"no upstream will accept a malformed request — same-upstream retry is pointless")
+	})
+	t.Run("NotRetryableTowardNetwork", func(t *testing.T) {
+		assert.False(t, IsRetryableTowardNetwork(err),
+			"failing over a malformed request to another upstream is pointless")
+	})
+}
+
+func TestClassifySeverity_UpstreamBlockUnavailable(t *testing.T) {
+	// Block-unavailable means an upstream simply hasn't synced the requested block
+	// yet — a warning (self-healing), not a critical infra error. Crucially, its
+	// retry nuance (network_executor's block-time catch-up) must be UNCHANGED.
+	err := NewErrUpstreamBlockUnavailable("upstream1", 1000, 990, 980)
+
+	t.Run("IsWarningSeverity", func(t *testing.T) {
+		assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+			"block-unavailable is an expected catch-up condition, not critical")
+	})
+	t.Run("StaysRetryableTowardsUpstream", func(t *testing.T) {
+		assert.True(t, IsRetryableTowardsUpstream(err),
+			"REGRESSION GUARD: network_executor block-time catch-up retry depends on this staying true")
+	})
+	t.Run("StaysRetryableTowardNetwork", func(t *testing.T) {
+		assert.True(t, IsRetryableTowardNetwork(err),
+			"REGRESSION GUARD: block-unavailable must still fail over across upstreams")
+	})
+}
+
+func TestClassifySeverity_NetworkNotSupported(t *testing.T) {
+	// Either "client requested an unconfigured network" or "upstreams not ready yet
+	// during bootstrap" — a client/transient condition, never a critical infra error.
+	err := NewErrNetworkNotSupported("myproject", "evm:99999")
+
+	t.Run("IsWarningSeverity", func(t *testing.T) {
+		assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+			"network-not-supported is client/transient, not a critical infra error")
+	})
+	t.Run("StaysRetryableTowardsUpstream", func(t *testing.T) {
+		assert.True(t, IsRetryableTowardsUpstream(err),
+			"REGRESSION GUARD: registry.go's network-readiness wait loop returns this as "+
+				"retryable so bootstrap recovery works — it must stay retryable")
 	})
 }
 

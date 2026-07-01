@@ -444,13 +444,20 @@ type ErrInvalidRequest struct{ BaseError }
 const ErrCodeInvalidRequest ErrorCode = "ErrInvalidRequest"
 
 var NewErrInvalidRequest = func(cause error) error {
-	return &ErrInvalidRequest{
+	e := &ErrInvalidRequest{
 		BaseError{
 			Code:    ErrCodeInvalidRequest,
 			Message: "invalid request body or headers",
 			Cause:   cause,
 		},
 	}
+	// An invalid/malformed request is rejected identically by every upstream, so it
+	// must never be retried: not failed-over to another upstream (network scope, set
+	// here) and not re-tried on the same upstream (upstream scope, enforced via
+	// IsRetryableTowardsUpstream). IsClientError additionally makes it info severity
+	// (the caller's fault), not a critical infra error.
+	e.WithRetryableTowardNetwork(false)
+	return e
 }
 
 func (e *ErrInvalidRequest) ErrorStatusCode() int {
@@ -2471,6 +2478,11 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
 		ErrCodeJsonRpcRequestUnmarshal,
 
+		// Invalid/malformed request (e.g. eth_getLogs fromBlock > toBlock, bad
+		// params, missing method) -> No Retry: no upstream will accept it, so
+		// retrying the same upstream is pointless.
+		ErrCodeInvalidRequest,
+
 		// Execution exceptions are not retryable
 		ErrCodeEndpointExecutionException,
 
@@ -2515,6 +2527,7 @@ func IsClientError(err error) bool {
 		err,
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
+		ErrCodeInvalidRequest,
 		ErrCodeGetLogsExceededMaxAllowedRange,
 		ErrCodeGetLogsExceededMaxAllowedAddresses,
 		ErrCodeGetLogsExceededMaxAllowedTopics,
@@ -2536,6 +2549,25 @@ func ClassifySeverity(err error) Severity {
 	}
 	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
 		return SeverityInfo
+	}
+	// ErrUpstreamBlockUnavailable is *intentionally* retryable toward the upstream:
+	// network_executor runs a block-time-aware catch-up retry keyed on this exact
+	// code, and that nuance must not change. But it only means an upstream hasn't
+	// synced the requested block yet — an expected, self-healing condition, not an
+	// infra failure an operator must urgently act on — so it is a warning. Classified
+	// explicitly here, ahead of the retryable->critical fall-through below.
+	if HasErrorCode(err, ErrCodeUpstreamBlockUnavailable) {
+		return SeverityWarning
+	}
+	// ErrNetworkNotSupported is, like block-unavailable, intentionally retryable —
+	// upstream/registry.go returns it from the network-readiness wait loop so the
+	// auto-retry loop can re-attempt once lazily-registered upstreams warm up. (Do
+	// NOT move it into the no-retry list; that would break bootstrap recovery.)
+	// Whether it means "client requested an unconfigured network" or "upstreams
+	// aren't ready yet", it is a client/transient condition, not a critical infra
+	// failure — so it is a warning.
+	if HasErrorCode(err, ErrCodeNetworkNotSupported) {
+		return SeverityWarning
 	}
 	if !IsRetryableTowardsUpstream(err) {
 		return SeverityWarning
