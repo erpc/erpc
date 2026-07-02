@@ -892,7 +892,7 @@ func (c *GenericGrpcBdsClient) handleChainId(ctx context.Context, conn *bdsConn,
 	// loudly instead of propagating another chain's identity (and, through the
 	// state poller, its heads).
 	if expected := c.expectedChainId.Load(); expected > 0 && grpcResp.ChainId != expected {
-		mismatchErr := fmt.Errorf("BDS server reports chainId %d but this upstream is configured for chainId %d (cross-wired endpoint)", grpcResp.ChainId, expected)
+		mismatchErr := common.NewErrEndpointChainIdMismatch(grpcResp.ChainId, expected)
 		c.logger.Error().Err(mismatchErr).Str("target", c.Url.String()).Msg("chainId mismatch from BDS server")
 		return nil, common.NewErrEndpointTransportFailure(c.Url, mismatchErr)
 	}

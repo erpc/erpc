@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -459,6 +460,12 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
+		// A major move must pass a fresh chain-identity check before entering
+		// the shared counter / tracker (see verifyChainIdOnMajorHeadMove).
+		if !e.verifyChainIdOnMajorHeadMove(ctx, "latest", e.latestBlockShared.GetValue(), blockNum) {
+			return 0, nil
+		}
+
 		// Directly update tracker with the correct timestamp for this locally-fetched block
 		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
 		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
@@ -486,7 +493,6 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 			Msg("skipping latest block suggestion as it's not newer")
 		return
 	}
-
 	newValue := e.latestBlockShared.TryUpdate(e.appCtx, blockNumber)
 	e.logger.Trace().
 		Int64("blockNumber", blockNumber).
@@ -497,6 +503,84 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 
 func (e *EvmStatePoller) LatestBlock() int64 {
 	return e.latestBlockShared.GetValue()
+}
+
+// verifyChainIdOnMajorHeadMove gates a polled head sample that moved beyond
+// the shared rollback tolerance (in either direction) behind a fresh chain
+// identity check. Such moves are exactly what a cross-wired endpoint — a DNS
+// record or load balancer briefly answering for another chain — produces, and
+// once a bogus sample enters the shared counters and the tracker, every
+// lag-based routing decision is skewed until corrected. Built from existing
+// primitives only: the shared tolerance constant, EvmGetChainId (always a
+// real upstream call), and Cordon on proven mismatch (the selection policy
+// already excludes cordoned upstreams). Legitimate deep reorgs and
+// post-downtime catch-ups pass the probe and are accepted unchanged; a failed
+// probe drops the sample for this cycle only — the next poll re-observes the
+// same height seconds later.
+//
+// The out-of-band Suggest* paths are deliberately NOT gated: suggestion-driven
+// upward bursts are designed behavior (response enrichment, halted-chain
+// resumes — see networks_served_tip_test.go) and cannot be verified in those
+// hot paths. A bogus suggestion self-heals within one poll cycle: the next
+// verified poll observes the real head and the >tolerance rollback is
+// accepted as a correction by both the shared counter and the tracker.
+func (e *EvmStatePoller) verifyChainIdOnMajorHeadMove(ctx context.Context, tag string, current, polled int64) bool {
+	if current <= 0 || absInt64(polled-current) <= common.DefaultToleratedBlockHeadRollback {
+		return true
+	}
+	cfgChainId := int64(0)
+	if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil {
+		cfgChainId = cfg.Evm.ChainId
+	}
+	if cfgChainId <= 0 {
+		// Chain identity not pinned yet (auto-detection still in flight) —
+		// nothing trustworthy to verify against.
+		return true
+	}
+	eu, ok := e.upstream.(common.EvmUpstream)
+	if !ok {
+		return true
+	}
+	detected, err := eu.EvmGetChainId(ctx)
+	if err != nil {
+		// The gRPC BDS client surfaces a cross-wired server as a typed
+		// mismatch (it compares the ChainId response itself) — treat that as
+		// proof, same as a differing answer below.
+		if common.HasErrorCode(err, common.ErrCodeEndpointChainIdMismatch) {
+			e.cordonForChainIdMismatch(tag, current, polled, err)
+			return false
+		}
+		e.logger.Warn().Err(err).
+			Str("tag", tag).
+			Int64("currentValue", current).
+			Int64("polledValue", polled).
+			Msg("major head move: chainId re-validation failed, dropping sample until next poll")
+		return false
+	}
+	if detected != strconv.FormatInt(cfgChainId, 10) {
+		e.cordonForChainIdMismatch(tag, current, polled, fmt.Errorf("eth_chainId returned %s but upstream is configured for chainId %d", detected, cfgChainId))
+		return false
+	}
+	return true
+}
+
+// cordonForChainIdMismatch fails loud on a proven cross-wired endpoint: the
+// sample is rejected and the upstream is cordoned (admins uncordon via the
+// existing erpc_uncordonUpstream admin method once the endpoint is fixed).
+func (e *EvmStatePoller) cordonForChainIdMismatch(tag string, current, polled int64, cause error) {
+	e.logger.Error().Err(cause).
+		Str("tag", tag).
+		Int64("currentValue", current).
+		Int64("polledValue", polled).
+		Msg("major head move REJECTED: upstream answers for a different chain — cordoning upstream")
+	e.upstream.Cordon("*", fmt.Sprintf("chain identity mismatch on major %s head move: %s", tag, cause.Error()))
+}
+
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
@@ -561,6 +645,11 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		e.finalizedBlockSuccessfulOnce = true
 		e.finalizedBlockFailureCount = 0
 		e.stateMu.Unlock()
+
+		// Same chain-identity gate as the latest ratchet (see there).
+		if !e.verifyChainIdOnMajorHeadMove(ctx, "finalized", e.finalizedBlockShared.GetValue(), blockNum) {
+			return 0, nil
+		}
 
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
