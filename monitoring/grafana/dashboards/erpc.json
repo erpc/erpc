@@ -15608,7 +15608,26 @@
         "type": "datasource"
       },
       {
-        "allValue": ".*",
+        "name": "cluster_group",
+        "label": "cluster group",
+        "description": "Quick scope for the cluster list: All, or all / prod / dev edge-rpc clusters. Pick a group, then 'cluster' lists only those (leave cluster on All to select every cluster in the group).",
+        "type": "custom",
+        "multi": false,
+        "includeAll": false,
+        "query": "All : .*, Edge (all) : edge-rpc-.*, Edge (prod) : edge-rpc-.*-prod, Edge (dev) : edge-rpc-.*-dev",
+        "current": {
+          "text": "All",
+          "value": ".*"
+        },
+        "options": [
+          { "text": "All", "value": ".*", "selected": true },
+          { "text": "Edge (all)", "value": "edge-rpc-.*", "selected": false },
+          { "text": "Edge (prod)", "value": "edge-rpc-.*-prod", "selected": false },
+          { "text": "Edge (dev)", "value": "edge-rpc-.*-dev", "selected": false }
+        ]
+      },
+      {
+        "allValue": "",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -15617,17 +15636,17 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(cluster)",
+        "definition": "label_values({cluster=~\"$cluster_group\"}, cluster)",
         "includeAll": true,
         "multi": true,
         "name": "cluster",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(cluster)",
+          "query": "label_values({cluster=~\"$cluster_group\"}, cluster)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "refresh": 1,
+        "refresh": 2,
         "regex": "",
         "type": "query"
       },

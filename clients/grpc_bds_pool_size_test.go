@@ -18,6 +18,7 @@ func newTestPool(t *testing.T, poolSize int) *bdsPool {
 	t.Helper()
 	logger := zerolog.New(io.Discard)
 	p, err := newBdsPool(
+		context.Background(),
 		&logger,
 		"test-project",
 		"n/a",
@@ -25,6 +26,7 @@ func newTestPool(t *testing.T, poolSize int) *bdsPool {
 		insecure.NewCredentials(),
 		"{}",
 		poolSize,
+		0, // no expected chainId — identity checks stay disarmed in this test
 	)
 	require.NoError(t, err)
 	t.Cleanup(p.Shutdown)
