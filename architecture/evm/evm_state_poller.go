@@ -25,7 +25,9 @@ const FullySyncedThreshold = 4
 // networks (not statically configured in erpc.yaml). at the moment an "evm state poller"
 // might be initiated "before" a network is physically created and configured
 // (e.g. when a new network is lazy-loaded from a Repository Provider)
-const DefaultToleratedBlockHeadRollback = 1024
+// Alias of the shared default so the poller counters and the health tracker
+// apply the same rollback tolerance to block heads.
+const DefaultToleratedBlockHeadRollback = common.DefaultToleratedBlockHeadRollback
 
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
