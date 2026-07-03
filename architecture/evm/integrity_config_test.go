@@ -13,20 +13,20 @@ func TestCompileIntegritySettings(t *testing.T) {
 	tru, fls := true, false
 
 	t.Run("nil → empty set + default policy", func(t *testing.T) {
-		cs, p := compileIntegritySettings(nil)
+		cs, p := compileIntegritySettings(nil, 0)
 		assert.Empty(t, cs)
 		assert.Equal(t, integrity.DefaultReorgPolicy(), p)
 	})
 
 	t.Run("level authoritative enables every tier", func(t *testing.T) {
-		cs, _ := compileIntegritySettings(&common.IntegritySettings{Level: "authoritative"})
+		cs, _ := compileIntegritySettings(&common.IntegritySettings{Level: "authoritative"}, 0)
 		assert.True(t, cs.For("indexMagnitude").Enabled)
 		assert.True(t, cs.For("parentHashLinkage").Enabled)
 		assert.True(t, cs.For("receiptVsBlock").Enabled)
 	})
 
 	t.Run("level intrinsic excludes higher tiers", func(t *testing.T) {
-		cs, _ := compileIntegritySettings(&common.IntegritySettings{Level: "intrinsic"})
+		cs, _ := compileIntegritySettings(&common.IntegritySettings{Level: "intrinsic"}, 0)
 		assert.True(t, cs.For("indexMagnitude").Enabled)
 		assert.False(t, cs.For("receiptVsBlock").Enabled)
 	})
@@ -35,7 +35,7 @@ func TestCompileIntegritySettings(t *testing.T) {
 		cs, _ := compileIntegritySettings(&common.IntegritySettings{
 			Level:  "authoritative",
 			Checks: map[string]*common.IntegrityCheckConfig{"receiptVsBlock": {Enabled: &fls}},
-		})
+		}, 0)
 		assert.False(t, cs.For("receiptVsBlock").Enabled)
 	})
 
@@ -45,7 +45,7 @@ func TestCompileIntegritySettings(t *testing.T) {
 			Checks: map[string]*common.IntegrityCheckConfig{
 				"receiptVsBlock": {Enabled: &tru, Params: map[string]string{"k": "v"}},
 			},
-		})
+		}, 0)
 		assert.True(t, cs.For("receiptVsBlock").Enabled)
 		assert.Equal(t, "v", cs.For("receiptVsBlock").Params["k"])
 	})
@@ -54,7 +54,7 @@ func TestCompileIntegritySettings(t *testing.T) {
 		_, p := compileIntegritySettings(&common.IntegritySettings{
 			Level:           "authoritative",
 			InvalidBehavior: &common.IntegrityInvalidBehaviorConfig{Finalized: "reject", Unfinalized: "off"},
-		})
+		}, 0)
 		assert.Equal(t, integrity.BehaviorError, p.Finalized)
 		assert.Equal(t, integrity.BehaviorIgnore, p.Unfinalized)
 	})
@@ -63,7 +63,7 @@ func TestCompileIntegritySettings(t *testing.T) {
 		cs, _ := compileIntegritySettings(&common.IntegritySettings{
 			Level:  "intrinsic",
 			Checks: map[string]*common.IntegrityCheckConfig{"bloomMatch": {OnFailure: "soft-flag"}},
-		})
+		}, 0)
 		require.NotNil(t, cs.For("bloomMatch").FailOverride)
 		assert.Equal(t, integrity.BehaviorRecord, *cs.For("bloomMatch").FailOverride)
 	})
@@ -121,4 +121,58 @@ func TestParseBehavior(t *testing.T) {
 			assert.Equal(t, exp.want, got, in)
 		}
 	}
+}
+
+// Chain profiles ship the production-learned quirk disables as defaults: on
+// chains whose protocol commits synthetic/system txs into roots but omits
+// them from responses, the root family is protocol-invalid and must not run.
+func TestCompileIntegrity_ChainProfiles(t *testing.T) {
+	authoritative := &common.IntegritySettings{Level: "authoritative"}
+
+	t.Run("hyperevm drops the whole root family", func(t *testing.T) {
+		cs, _ := compileIntegritySettings(authoritative, 999)
+		for _, id := range []string{"transactionsRootRecompute", "receiptsRootRecompute", "transactionsRootConsistency"} {
+			assert.False(t, cs.For(id).Enabled, "%s must be profile-disabled on hyperevm", id)
+		}
+		assert.True(t, cs.For("blockHashRecompute").Enabled, "unrelated checks stay on")
+	})
+
+	t.Run("polygon/arbitrum drop the recompute pair, keep consistency", func(t *testing.T) {
+		for _, chain := range []int64{137, 42161} {
+			cs, _ := compileIntegritySettings(authoritative, chain)
+			assert.False(t, cs.For("transactionsRootRecompute").Enabled)
+			assert.False(t, cs.For("receiptsRootRecompute").Enabled)
+			assert.True(t, cs.For("transactionsRootConsistency").Enabled)
+		}
+	})
+
+	t.Run("unknown chain untouched", func(t *testing.T) {
+		cs, _ := compileIntegritySettings(authoritative, 8453)
+		assert.True(t, cs.For("transactionsRootRecompute").Enabled)
+	})
+
+	t.Run("explicit operator enable wins over the profile", func(t *testing.T) {
+		on := true
+		cs, _ := compileIntegritySettings(&common.IntegritySettings{
+			Level:  "authoritative",
+			Checks: map[string]*common.IntegrityCheckConfig{"transactionsRootRecompute": {Enabled: &on}},
+		}, 999)
+		assert.True(t, cs.For("transactionsRootRecompute").Enabled)
+	})
+
+	t.Run("every profiled id is a real registered check", func(t *testing.T) {
+		for _, chain := range []int64{999, 137, 42161} {
+			for _, id := range integrity.ChainProfileDisables(chain) {
+				cs := integrity.CheckSet{}.Enable(id, nil)
+				assert.True(t, cs.For(id).Enabled)
+				found := false
+				for _, lvl := range []integrity.Level{"intrinsic", "corroborated", "authoritative"} {
+					if integrity.CheckSetForLevel(lvl).For(id).Enabled {
+						found = true
+					}
+				}
+				assert.True(t, found, "profiled id %q must exist in some level", id)
+			}
+		}
+	})
 }

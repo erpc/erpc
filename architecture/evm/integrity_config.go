@@ -13,7 +13,7 @@ import (
 //
 // This is the single bridge from the common config vocabulary to the integrity
 // engine; it keeps the integrity package free of config types.
-func compileIntegritySettings(s *common.IntegritySettings) (integrity.CheckSet, integrity.ReorgPolicy) {
+func compileIntegritySettings(s *common.IntegritySettings, chainId int64) (integrity.CheckSet, integrity.ReorgPolicy) {
 	policy := integrity.DefaultReorgPolicy()
 	if s == nil {
 		return integrity.CheckSet{}, policy
@@ -22,6 +22,10 @@ func compileIntegritySettings(s *common.IntegritySettings) (integrity.CheckSet, 
 	// Normalize: level presets match exact lowercase names, and a non-matching
 	// level silently enables zero checks (validation also rejects unknown ones).
 	cs := integrity.CheckSetForLevel(integrity.Level(strings.ToLower(strings.TrimSpace(s.Level))))
+	// Chain profile: drop checks that are protocol-invalid on this chain
+	// (synthetic/system txs committed in roots but omitted from responses).
+	// Applied before the operator's overrides, so an explicit enable wins.
+	integrity.ApplyChainProfile(cs, chainId)
 	for id, oc := range s.Checks {
 		if oc != nil {
 			applyCheckOverride(cs, id, oc)
@@ -77,7 +81,11 @@ func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integri
 	if dirs != nil {
 		selector = dirs.IntegritySelector
 	}
-	return compileIntegritySettings(resolveRequestSettings(n.Config().Integrity, selector))
+	var chainId int64
+	if evm := n.Config().Evm; evm != nil {
+		chainId = evm.ChainId
+	}
+	return compileIntegritySettings(resolveRequestSettings(n.Config().Integrity, selector), chainId)
 }
 
 // resolveRequestSettings computes the effective settings for one request: the
