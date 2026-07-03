@@ -44,10 +44,10 @@ var levelMembership = map[Level][]string{
 		"bloomEmptiness", "bloomMatch", "logIndexContiguity",
 		"transactionsRootConsistency", "headerFieldShapes", "txFieldUniqueness", "txBlockInfo",
 		"blockHashRecompute", "senderRecovery", "transactionsRootRecompute",
-		"getLogsFilterSanity",
+		"getLogsFilterSanity", "txByHashIdentity", "receiptIdentity",
 	},
 	LevelCorroborated: {
-		"parentHashLinkage", "hashStability", "getLogsCompleteness",
+		"parentHashLinkage", "hashStability", "getLogsCompleteness", "txPinConsistency",
 	},
 	LevelAuthoritative: {
 		"receiptVsBlock", "receiptsRootRecompute",
