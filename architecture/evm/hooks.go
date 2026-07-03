@@ -221,9 +221,10 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, rec.CheckID, "soft_flag", rec.Finality,
 				).Inc()
 				log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
-						Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
-						Str("check", rec.CheckID).Str("finality", rec.Finality).Str("reason", rec.Reason).
-						Msg("integrity: recorded reorg-sensitive mismatch (served, not rejected)")
+					Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
+					Str("check", rec.CheckID).Str("finality", rec.Finality).Str("reason", rec.Reason).
+					Msg("integrity: recorded reorg-sensitive mismatch (served, not rejected)")
+				exportIntegrityCatch(ctx, n, u, rs, methodLower, "soft_flag", rec.CheckID, rec.Class.String(), rec.Finality, rec.Reason)
 			}
 			if res.Err != nil {
 				telemetry.MetricIntegrityViolation.WithLabelValues(
@@ -233,10 +234,11 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				// then counts it as saved (a retry succeeded) or failed (no good
 				// response found) — see integrity_saved_total / integrity_failed_total.
 				log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
-						Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
-						Str("check", res.RejectedCheckID).Str("finality", res.Finality).
-						Str("reason", res.Err.Error()).Msg("integrity: rejected response (caught bad data)")
-					rq.MarkIntegrityCaught(res.RejectedCheckID, res.Finality)
+					Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", methodLower).
+					Str("check", res.RejectedCheckID).Str("finality", res.Finality).
+					Str("reason", res.Err.Error()).Msg("integrity: rejected response (caught bad data)")
+				rq.MarkIntegrityCaught(res.RejectedCheckID, res.Finality)
+				exportIntegrityCatch(ctx, n, u, rs, methodLower, "reject", res.RejectedCheckID, res.RejectedClass.String(), res.Finality, res.Err.Error())
 				// A Deterministic reject is PROVABLE corruption from this upstream —
 				// feed it into misbehavior scoring so routing learns to avoid a
 				// chronically-corrupt node (an upstream once served 158k corrupt

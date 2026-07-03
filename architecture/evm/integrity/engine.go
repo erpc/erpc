@@ -33,6 +33,7 @@ type Input struct {
 type Recorded struct {
 	CheckID  string
 	Reason   string
+	Class    FailureClass
 	Finality string // "finalized"/"unfinalized"/"unknown" — for the violation metric
 }
 
@@ -171,7 +172,7 @@ func Validate(ctx context.Context, in Input) Result {
 		}
 		// soft-flag: surface the violation but still serve the response.
 		res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "soft_flag"})
-		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Finality: in.finalityOf(ctx, d)})
+		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: in.finalityOf(ctx, d)})
 	}
 	return res
 }

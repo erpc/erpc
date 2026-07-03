@@ -30,6 +30,11 @@ type IntegritySettings struct {
 	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
 	// deep-reorg chains (e.g. polygon 256).
 	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
+	// MisbehaviorsDestination durably archives every integrity catch (reject or
+	// soft-flag) as a JSONL record — same file/S3 destination shape as the
+	// consensus policy's misbehaviorsDestination. Catches are rare, so the
+	// volume is low; the archive is the forensic record metrics can't carry.
+	MisbehaviorsDestination *MisbehaviorsDestinationConfig `yaml:"misbehaviorsDestination,omitempty" json:"misbehaviorsDestination,omitempty"`
 }
 
 // IntegrityConfig is an IntegritySettings plus the per-request header-control
@@ -94,6 +99,9 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.ReorgWindow != 0 {
 		out.ReorgWindow = over.ReorgWindow
 	}
+	if over.MisbehaviorsDestination != nil {
+		out.MisbehaviorsDestination = over.MisbehaviorsDestination
+	}
 	for id, c := range over.Checks {
 		if out.Checks == nil {
 			out.Checks = make(map[string]*IntegrityCheckConfig, len(over.Checks))
@@ -124,6 +132,8 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		Budget:          c.Budget.Copy(),
 		InvalidBehavior: c.InvalidBehavior.Copy(),
 		ReorgWindow:     c.ReorgWindow,
+		// Shared, not deep-copied: destination configs are read-only after load.
+		MisbehaviorsDestination: c.MisbehaviorsDestination,
 	}
 	if c.Checks != nil {
 		copied.Checks = make(map[string]*IntegrityCheckConfig, len(c.Checks))

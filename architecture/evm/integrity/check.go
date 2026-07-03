@@ -43,6 +43,14 @@ const (
 	ReorgSensitive
 )
 
+// String is the label used in logs/archives.
+func (c FailureClass) String() string {
+	if c == Deterministic {
+		return "deterministic"
+	}
+	return "reorg-sensitive"
+}
+
 // Violation is a check's verdict that the response is invalid. Reason is a
 // human-readable explanation; the engine prefixes it with the check id.
 type Violation struct {

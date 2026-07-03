@@ -1583,5 +1583,10 @@ func (s *IntegritySettings) validate() error {
 	if s.ReorgWindow < 0 {
 		return fmt.Errorf("integrity.reorgWindow must be >= 0")
 	}
+	if s.MisbehaviorsDestination != nil {
+		if err := s.MisbehaviorsDestination.Validate(); err != nil {
+			return fmt.Errorf("integrity.misbehaviorsDestination: %w", err)
+		}
+	}
 	return nil
 }
