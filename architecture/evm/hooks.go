@@ -251,7 +251,12 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 					}
 				}
 				validationErr = res.Err
-				rq.ClearLastValidResponse()
+				// Mark first (SetLastValidResponse refuses marked responses — an
+				// in-flight hedge could otherwise re-store this body), then drop
+				// the LVR only if it IS this response (an unconditional clear
+				// could lose a concurrent VALID response from another attempt).
+				rs.MarkIntegrityRejected()
+				rq.ClearLastValidResponseIf(rs)
 				return rs, validationErr
 			}
 			// Feed the ChainView with this validated response: block responses
@@ -284,9 +289,12 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	}
 
 	// If validation failed due to content validation error (e.g. bloom inconsistency),
-	// clear the lastValidResponse so retry/consensus doesn't mistakenly use an invalid response.
+	// mark the offending response and drop it from lastValidResponse so
+	// retry/consensus doesn't mistakenly use (or a hedge re-store) an invalid
+	// response — identity-checked so a concurrent valid response isn't lost.
 	if validationErr != nil && common.HasErrorCode(validationErr, common.ErrCodeEndpointContentValidation) {
-		rq.ClearLastValidResponse()
+		rs.MarkIntegrityRejected()
+		rq.ClearLastValidResponseIf(rs)
 	}
 
 	if validationErr != nil {

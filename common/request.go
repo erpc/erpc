@@ -298,6 +298,12 @@ func (r *NormalizedRequest) SetLastValidResponse(ctx context.Context, nrs *Norma
 	if r == nil || nrs == nil {
 		return false
 	}
+	// A response a content-integrity check rejected must never (re-)enter the
+	// slot: attempts store their response here BEFORE post-forward validation,
+	// so without this a hedged corrupt body could be re-served after a reject.
+	if nrs.IsIntegrityRejected() {
+		return false
+	}
 	prevLV := r.lastValidResponse.Load()
 	prevIsEmpty := prevLV == nil || prevLV.IsObjectNull(ctx) || prevLV.IsResultEmptyish(ctx)
 	newIsEmpty := nrs.IsObjectNull(ctx) || nrs.IsResultEmptyish(ctx)
@@ -328,6 +334,17 @@ func (r *NormalizedRequest) ClearLastValidResponse() {
 		return
 	}
 	r.lastValidResponse.Store(nil)
+}
+
+// ClearLastValidResponseIf drops the last-valid-response only when it IS the
+// given (rejected) response. Reject paths must use this instead of the
+// unconditional clear: with hedged attempts in flight, an unconditional clear
+// can drop a concurrently-stored VALID response from another attempt.
+func (r *NormalizedRequest) ClearLastValidResponseIf(rejected *NormalizedResponse) {
+	if r == nil || rejected == nil {
+		return
+	}
+	r.lastValidResponse.CompareAndSwap(rejected, nil)
 }
 
 // MarkIntegrityCaught records that integrity check `checkID` rejected a response
