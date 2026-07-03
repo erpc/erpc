@@ -170,6 +170,13 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			if view != nil {
 				input.History = view
 			}
+			// Request-aware checks (eth_getLogs filter reproduction) need the
+			// original params; read-only access under the request's RLock.
+			if jrq, jerr := rq.JsonRpcRequest(ctx); jerr == nil && jrq != nil {
+				jrq.RLockWithTrace(ctx)
+				input.Params = jrq.Params
+				jrq.RUnlock()
+			}
 			// The span wraps Validate so its duration is the integrity overhead and
 			// the aux force-fetches (network.Forward) nest under it. Detailed tracing
 			// adds the actual mismatch values (verbatim) to pinpoint the bad field.

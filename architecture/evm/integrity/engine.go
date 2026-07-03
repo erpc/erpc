@@ -14,6 +14,9 @@ type Input struct {
 	Upstream common.Upstream
 	Response *common.NormalizedResponse
 	Checks   CheckSet
+	// Params are the originating request's JSON-RPC params, for checks that must
+	// reproduce request semantics (e.g. the eth_getLogs filter). Optional.
+	Params []any
 	// Resolver enables cross-source corroboration checks (finality + force-fetch
 	// of the canonical block). Nil disables them gracefully.
 	Resolver Resolver
@@ -93,6 +96,7 @@ func Validate(ctx context.Context, in Input) Result {
 	ctx = withResolver(ctx, in.Resolver)
 	ctx = withHistory(ctx, in.History)
 	d := newDecoded(method, raw)
+	d.reqParams = in.Params
 
 	var res Result
 	for _, c := range enabled {

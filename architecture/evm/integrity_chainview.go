@@ -261,6 +261,17 @@ func (c *chainView) receiptsByHash(ctx context.Context, blockHash string) ([]int
 	})
 }
 
+// CachedReceipts implements integrity.ReceiptCache: a cache-only read of a
+// block's canonical receipts by hash — never fetches. Opportunistic checks
+// (eth_getLogs completeness) validate when the block is already warm and skip
+// otherwise, adding zero upstream cost.
+func (c *chainView) CachedReceipts(blockHash string) ([]integrity.Receipt, bool) {
+	c.mu.RLock()
+	r, ok := c.receipts[blockHash]
+	c.mu.RUnlock()
+	return r, ok
+}
+
 // fetchDirectives marks the force-fetch internal (no recursion into the engine) and
 // pins it to the ChainView's node group, so a receipt from one group is only
 // ever corroborated against same-group nodes. Empty selector = network-wide.

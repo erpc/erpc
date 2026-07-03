@@ -1,8 +1,16 @@
 # getLogs ↔ receipts cross-check — opportunistic completeness validation
 
-Status: **proposed / not yet implemented.** Captured for later; see the check
-catalog in [feature.md](./feature.md) and the receipts cache in
-[chain-view.md](./chain-view.md).
+Status: **implemented** as two checks in `checks_getlogs.go` —
+`getLogsFilterSanity` (intrinsic: every returned log must match the request's
+filter/range/blockHash) and `getLogsCompleteness` (corroborated: per-block
+hash-anchored comparison against the ChainView's cached canonical receipts +
+finalized absent-block detection, pin-anchored so corroborate-before-verdict
+reconfirm applies). Filter matching is implemented in `logfilter.go` with
+go-ethereum's exact `filterLogs` semantics (the "reuse erpc's existing filter
+code" idea below turned out to be moot — erpc only *splits* getLogs requests
+and never had a log matcher). Known limitation: a fully-empty `[]` response is
+gated out before the engine (emptyish gate), so the everything-dropped case
+remains covered by `retryEmpty`, not these checks.
 
 ## Problem
 

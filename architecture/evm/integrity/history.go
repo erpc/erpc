@@ -23,6 +23,14 @@ type PinReconfirmer interface {
 	ReconfirmPin(ctx context.Context, number int64) (hash string, ok bool)
 }
 
+// ReceiptCache optionally extends History: a CACHE-ONLY read of a block's
+// canonical receipts by hash (immutable content) — never fetches. Checks use it
+// for opportunistic cross-referencing (e.g. eth_getLogs completeness): validate
+// when the data is already warm, skip when it isn't, add zero upstream cost.
+type ReceiptCache interface {
+	CachedReceipts(blockHash string) ([]Receipt, bool)
+}
+
 type historyKey struct{}
 
 func withHistory(ctx context.Context, h History) context.Context {

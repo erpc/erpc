@@ -75,16 +75,34 @@ type Decoded struct {
 	method string
 	raw    []byte
 
+	// reqParams are the originating request's JSON-RPC params, for checks that
+	// must reproduce request semantics (e.g. the eth_getLogs filter). Nil when
+	// the caller didn't provide them.
+	reqParams []any
+
 	header   *Header
 	txs      []Tx
 	receipts []Receipt
 	logs     []Log
+
+	filter     *LogsFilter
+	filterDone bool
 
 	headerDone, txsDone, receiptsDone, logsDone bool
 }
 
 func newDecoded(method string, raw []byte) *Decoded {
 	return &Decoded{method: method, raw: raw}
+}
+
+// LogsFilter returns the parsed eth_getLogs request filter, or nil when the
+// request params are unavailable/unparseable (callers must skip, not reject).
+func (d *Decoded) LogsFilter() *LogsFilter {
+	if !d.filterDone {
+		d.filter = parseLogsFilter(d.reqParams)
+		d.filterDone = true
+	}
+	return d.filter
 }
 
 // BlockNumber returns the response's block number (best-effort, from the header,
