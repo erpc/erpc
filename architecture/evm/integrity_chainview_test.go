@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
@@ -196,4 +197,52 @@ func TestObserveBlockView(t *testing.T) {
 	v, ok := c.HashAt(0x10)
 	require.True(t, ok)
 	assert.Equal(t, "0xabc", v)
+}
+
+// The hash anchor: a by-hash fetch must never trust (or cache) receipts that
+// claim a different block — a group node still on a losing fork answering a
+// by-hash getBlockReceipts with its own fork's receipts was observed live
+// rejecting every honest receipt for the real block for hours.
+func TestReceiptsMatchBlock(t *testing.T) {
+	h := "0x8C242a174154a5b2077aD649c1d8e38A01fa1e93aaaaaaaaaaaaaaaaaaaaaaaa"
+	t.Run("all receipts on the requested hash (case-insensitive) → ok", func(t *testing.T) {
+		assert.True(t, receiptsMatchBlock([]integrity.Receipt{
+			{TransactionHash: "0x1", BlockHash: strings.ToLower(h)},
+			{TransactionHash: "0x2", BlockHash: h},
+		}, h))
+	})
+	t.Run("another fork's receipts → refuse", func(t *testing.T) {
+		assert.False(t, receiptsMatchBlock([]integrity.Receipt{
+			{TransactionHash: "0x1", BlockHash: "0xotherfork"},
+		}, h))
+	})
+	t.Run("mixed set → refuse", func(t *testing.T) {
+		assert.False(t, receiptsMatchBlock([]integrity.Receipt{
+			{TransactionHash: "0x1", BlockHash: h},
+			{TransactionHash: "0x2", BlockHash: "0xotherfork"},
+		}, h))
+	})
+	t.Run("receipts without blockHash can't prove membership → refuse", func(t *testing.T) {
+		assert.False(t, receiptsMatchBlock([]integrity.Receipt{{TransactionHash: "0x1"}}, h))
+	})
+	t.Run("empty set is trivially consistent (emptiness handled by the caller)", func(t *testing.T) {
+		assert.True(t, receiptsMatchBlock(nil, h))
+	})
+}
+
+func TestHeaderMatchesRef(t *testing.T) {
+	t.Run("by-hash must return that hash", func(t *testing.T) {
+		h := &integrity.Header{Hash: "0xAB", Number: "0x10"}
+		assert.True(t, headerMatchesRef(h, 0x10, "eth_getBlockByHash", "0xab"))
+		assert.False(t, headerMatchesRef(h, 0x10, "eth_getBlockByHash", "0xcd"))
+	})
+	t.Run("by-number must return that number", func(t *testing.T) {
+		h := &integrity.Header{Hash: "0xab", Number: "0x10"}
+		assert.True(t, headerMatchesRef(h, 0x10, "eth_getBlockByNumber", "0x10"))
+		assert.False(t, headerMatchesRef(h, 0x11, "eth_getBlockByNumber", "0x10"))
+	})
+	t.Run("tag refs have no anchor to enforce", func(t *testing.T) {
+		h := &integrity.Header{Hash: "0xab", Number: "0x10"}
+		assert.True(t, headerMatchesRef(h, 0x10, "eth_getBlockByNumber", "latest"))
+	})
 }

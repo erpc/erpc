@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -322,6 +323,13 @@ func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string) 
 			}
 		}
 	}
+	// Enforce the request anchor before trusting (and observing!) the answer:
+	// a by-hash fetch must return THAT hash, a by-number fetch THAT number —
+	// otherwise a node answering with a different block would poison the pin
+	// and the header cache under the wrong key.
+	if h != nil && !headerMatchesRef(h, num, method, blockRef) {
+		h = nil
+	}
 	c.emitAux("canonical_header", method, c.finalityLabel(num), h != nil)
 	if h == nil {
 		return nil, false
@@ -330,6 +338,21 @@ func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string) 
 		c.observe(num, h.Hash, h)
 	}
 	return h, true
+}
+
+// headerMatchesRef reports whether a fetched header is the block the request
+// anchored on: same hash for a by-hash fetch, same number for a numeric
+// by-number fetch (tags like "latest" have no anchor to enforce).
+func headerMatchesRef(h *integrity.Header, num int64, method, blockRef string) bool {
+	switch method {
+	case "eth_getBlockByHash":
+		return strings.EqualFold(h.Hash, blockRef)
+	case "eth_getBlockByNumber":
+		if want, err := common.HexToInt64(blockRef); err == nil {
+			return num == want
+		}
+	}
+	return true
 }
 
 // resolveReceipts force-fetches a block's receipts BY HASH (immutable — no reorg
@@ -357,12 +380,38 @@ func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]in
 			}
 		}
 	}
+	// Enforce the hash anchor: a node may answer a by-hash receipts request
+	// with a DIFFERENT block's receipts (still on a losing fork at that height,
+	// or mishandling the hash param). Trusting it corrupts the corroboration
+	// AND poisons the by-hash cache — every honest receipt for the real block
+	// then rejects as "not found in canonical" (observed live: a group node
+	// kept serving another fork's receipts for a reorged block, hours after
+	// the reorg). A mismatched or empty answer is "canonical unavailable",
+	// never evidence.
+	if got && !receiptsMatchBlock(receipts, blockHash) {
+		got = false
+		receipts = nil
+	}
 	c.emitAux("canonical_receipts", "eth_getBlockReceipts", c.finalityLabel(num), got)
-	if !got {
+	if !got || len(receipts) == 0 {
+		// Don't cache empty either: a tip-lagged [] cached under the hash would
+		// permanently blind corroboration for that block.
 		return nil, false
 	}
 	c.observeReceipts(blockHash, receipts)
 	return receipts, true
+}
+
+// receiptsMatchBlock reports whether every receipt claims the expected block
+// hash — the invariant a by-hash fetch is anchored on. Receipts without a
+// blockHash field can't prove membership, so they fail the anchor too.
+func receiptsMatchBlock(receipts []integrity.Receipt, blockHash string) bool {
+	for i := range receipts {
+		if !strings.EqualFold(receipts[i].BlockHash, blockHash) {
+			return false
+		}
+	}
+	return true
 }
 
 // emitAux records an auxiliary (force-fetch) request — NOT part of a user request —
