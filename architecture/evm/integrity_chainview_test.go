@@ -197,3 +197,62 @@ func TestObserveBlockView(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "0xabc", v)
 }
+
+// auxBudget semantics: maxConcurrent is a hard non-blocking cap (over-budget
+// degrades to skip, never queues user latency), maxPerSecond is a token bucket,
+// nil budget is unlimited, and release returns the slot.
+func TestAuxBudget(t *testing.T) {
+	t.Run("nil budget is unlimited", func(t *testing.T) {
+		var b *auxBudget
+		for i := 0; i < 100; i++ {
+			release, ok := b.acquire()
+			require.True(t, ok)
+			release()
+		}
+		assert.Nil(t, newAuxBudget(nil))
+		assert.Nil(t, newAuxBudget(&common.IntegrityBudgetConfig{}))
+	})
+
+	t.Run("maxConcurrent caps without blocking; release frees the slot", func(t *testing.T) {
+		b := newAuxBudget(&common.IntegrityBudgetConfig{MaxConcurrent: 2})
+		r1, ok1 := b.acquire()
+		r2, ok2 := b.acquire()
+		require.True(t, ok1)
+		require.True(t, ok2)
+		_, ok3 := b.acquire()
+		assert.False(t, ok3, "third concurrent acquire must be denied, not queued")
+		r1()
+		r4, ok4 := b.acquire()
+		assert.True(t, ok4, "released slot must be reusable")
+		r4()
+		r2()
+	})
+
+	t.Run("maxPerSecond token bucket denies past the burst", func(t *testing.T) {
+		b := newAuxBudget(&common.IntegrityBudgetConfig{MaxPerSecond: 2})
+		granted := 0
+		for i := 0; i < 10; i++ {
+			if release, ok := b.acquire(); ok {
+				granted++
+				release()
+			}
+		}
+		assert.Equal(t, 2, granted, "only the burst (== maxPerSecond) is granted instantly")
+	})
+
+	t.Run("limiter denial returns the concurrency slot", func(t *testing.T) {
+		b := newAuxBudget(&common.IntegrityBudgetConfig{MaxPerSecond: 1, MaxConcurrent: 1})
+		release, ok := b.acquire()
+		require.True(t, ok)
+		release()
+		// Token bucket now empty; denial must not leak the semaphore slot.
+		_, ok2 := b.acquire()
+		require.False(t, ok2)
+		select {
+		case b.sem <- struct{}{}:
+			<-b.sem // slot was free — correct
+		default:
+			t.Fatal("limiter denial leaked the maxConcurrent slot")
+		}
+	})
+}

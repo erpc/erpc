@@ -49,7 +49,9 @@ type Result struct {
 // CheckOutcome records what one check evaluation did. Outcome is one of:
 // "pass" (ran, no violation — currently also covers a check that could not
 // evaluate the response), "reject" (failed, response rejected), "soft_flag"
-// (reorg-sensitive mismatch recorded but served), "off" (disabled for this
+// (reorg-sensitive mismatch recorded but served), "reconfirmed" (a pin-anchored
+// mismatch cleared once the stale pin was re-confirmed against a fresh
+// canonical fetch — a reorg, not corruption; served), "off" (disabled for this
 // finality or check).
 type CheckOutcome struct {
 	CheckID string
@@ -108,6 +110,28 @@ func Validate(ctx context.Context, in Input) Result {
 		if v == nil {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "pass"})
 			continue
+		}
+
+		// Corroborate-before-verdict: a reorg-sensitive violation anchored to a
+		// CACHED pin may only mean the pin is stale (routine reorg) — acting on
+		// it would flag/reject every honest new-fork response, and since the
+		// pin adopts only from passing responses, it would never recover
+		// (self-inflicted outage). Re-confirm the disputed pin against a fresh
+		// canonical fetch (singleflighted + cooldown-bounded by the History
+		// impl) and re-run the check: the reconfirm adopts the current fork, so
+		// a reorg clears ("reconfirmed") while a mismatch that survives the
+		// fresh pin is genuine and proceeds to the verdict.
+		if v.DisputedPin > 0 && c.Class == ReorgSensitive {
+			if rc, ok := in.History.(PinReconfirmer); ok {
+				if _, confirmed := rc.ReconfirmPin(ctx, v.DisputedPin); confirmed {
+					if v2 := c.Run(ctx, d, cfg); v2 == nil {
+						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reconfirmed"})
+						continue
+					} else {
+						v = v2
+					}
+				}
+			}
 		}
 
 		if behavior == BehaviorError {

@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"golang.org/x/time/rate"
 )
 
 // defaultReorgWindow is how many blocks back from the tip the ChainView keeps a
@@ -18,6 +20,12 @@ const defaultReorgWindow = 32
 // cacheSlack keeps a few extra content entries beyond the pin window so concurrent
 // forks near the tip don't evict something we still need.
 const cacheSlack = 2
+
+// reconfirmCooldown bounds how often one block number's pin is re-confirmed
+// against a fresh canonical fetch: within the cooldown the current pin is
+// trusted as-is. Keeps a fork-flapping tip from re-fetching per request while
+// staying well under a block time, so the pin still adopts a reorg promptly.
+const reconfirmCooldown = time.Second
 
 // chainView is the data-integrity module's central, reorg-aware state for one
 // network: a committed number→hash pin plus content-addressed header and receipts
@@ -43,6 +51,14 @@ type chainView struct {
 	selector  string
 	group     string
 	finalized func() int64 // best-effort finalized height for the aux finality label
+
+	// budget caps the module's canonical force-fetches (integrity.budget) —
+	// shared per NETWORK across group views. Nil = unlimited.
+	budget *auxBudget
+
+	// reconfirmedAt tracks when each number's pin was last re-confirmed against
+	// a fresh canonical fetch (guarded by mu, evicted with the window).
+	reconfirmedAt map[int64]time.Time
 
 	flightMu  sync.Mutex
 	hInflight map[string]*flight[*integrity.Header]
@@ -83,16 +99,17 @@ func newChainView(n common.Network, window int, selector, group string, finalize
 		window = defaultReorgWindow
 	}
 	return &chainView{
-		canonical: make(map[int64]string),
-		headers:   make(map[string]*integrity.Header),
-		receipts:  make(map[string][]integrity.Receipt),
-		window:    window,
-		network:   n,
-		selector:  selector,
-		group:     group,
-		finalized: finalized,
-		hInflight: make(map[string]*flight[*integrity.Header]),
-		rInflight: make(map[string]*flight[[]integrity.Receipt]),
+		canonical:     make(map[int64]string),
+		headers:       make(map[string]*integrity.Header),
+		receipts:      make(map[string][]integrity.Receipt),
+		window:        window,
+		network:       n,
+		selector:      selector,
+		group:         group,
+		finalized:     finalized,
+		reconfirmedAt: make(map[int64]time.Time),
+		hInflight:     make(map[string]*flight[*integrity.Header]),
+		rInflight:     make(map[string]*flight[[]integrity.Receipt]),
 	}
 }
 
@@ -150,11 +167,46 @@ func (c *chainView) observeReceipts(blockHash string, receipts []integrity.Recei
 	c.evictLocked()
 }
 
+// ReconfirmPin implements integrity.PinReconfirmer: force-fetch the block by
+// NUMBER via the trusted network path — bypassing the cached pin — so the pin
+// adopts whatever fork the network currently serves (resolveHeader → observe,
+// which also rolls back stale descendants). This is how a stale pin after a
+// routine reorg gets unstuck: the engine calls it on a pin-anchored violation
+// and re-runs the check against the refreshed pin. Singleflighted per number;
+// within reconfirmCooldown the current pin is returned as-is (already fresh).
+func (c *chainView) ReconfirmPin(ctx context.Context, number int64) (string, bool) {
+	if number < 0 {
+		return "", false
+	}
+	c.mu.RLock()
+	t, recent := c.reconfirmedAt[number]
+	pin, pinned := c.canonical[number]
+	c.mu.RUnlock()
+	if recent && pinned && time.Since(t) < reconfirmCooldown {
+		return pin, true
+	}
+	h, ok := doOnce(&c.flightMu, c.hInflight, fmt.Sprintf("reconfirm:%d", number), func() (*integrity.Header, bool) {
+		return c.resolveHeader(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number))
+	})
+	if !ok || h == nil || h.Hash == "" {
+		return "", false
+	}
+	c.mu.Lock()
+	c.reconfirmedAt[number] = time.Now()
+	c.mu.Unlock()
+	return h.Hash, true
+}
+
 func (c *chainView) evictLocked() {
 	lo := c.tip - int64(c.window)
 	for k := range c.canonical {
 		if k < lo {
 			delete(c.canonical, k)
+		}
+	}
+	for k := range c.reconfirmedAt {
+		if k < lo {
+			delete(c.reconfirmedAt, k)
 		}
 	}
 	max := c.window + cacheSlack
@@ -241,12 +293,89 @@ func (c *chainView) finalityLabel(number int64) string {
 	return "unfinalized"
 }
 
+// auxBudget enforces integrity.budget over the module's canonical force-fetches:
+// maxPerSecond (token bucket) + maxConcurrent (semaphore), shared per NETWORK
+// across every group view so the cap is global. Acquisition is non-blocking —
+// the fetches run inside the request path, so over budget the fetch degrades to
+// a skip (the corroborating check no-ops) instead of queuing user latency.
+type auxBudget struct {
+	lim *rate.Limiter
+	sem chan struct{}
+}
+
+func newAuxBudget(cfg *common.IntegrityBudgetConfig) *auxBudget {
+	if cfg == nil || (cfg.MaxPerSecond <= 0 && cfg.MaxConcurrent <= 0) {
+		return nil
+	}
+	b := &auxBudget{}
+	if cfg.MaxPerSecond > 0 {
+		b.lim = rate.NewLimiter(rate.Limit(cfg.MaxPerSecond), cfg.MaxPerSecond)
+	}
+	if cfg.MaxConcurrent > 0 {
+		b.sem = make(chan struct{}, cfg.MaxConcurrent)
+	}
+	return b
+}
+
+// acquire reserves one fetch slot. ok=false means over budget (skip the fetch);
+// on ok=true the caller must call release when the fetch completes.
+func (b *auxBudget) acquire() (release func(), ok bool) {
+	if b == nil {
+		return func() {}, true
+	}
+	if b.sem != nil {
+		select {
+		case b.sem <- struct{}{}:
+		default:
+			return nil, false
+		}
+	}
+	if b.lim != nil && !b.lim.Allow() {
+		if b.sem != nil {
+			<-b.sem
+		}
+		return nil, false
+	}
+	return func() {
+		if b.sem != nil {
+			<-b.sem
+		}
+	}, true
+}
+
+// auxBudgets holds the per-network shared budget (networkId → *auxBudget, nil
+// when the network has no budget configured).
+var auxBudgets sync.Map
+
+func networkAuxBudget(n common.Network) *auxBudget {
+	if n == nil {
+		return nil
+	}
+	if v, ok := auxBudgets.Load(n.Id()); ok {
+		b, _ := v.(*auxBudget)
+		return b
+	}
+	var b *auxBudget
+	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil {
+		b = newAuxBudget(cfg.Integrity.Budget)
+	}
+	actual, _ := auxBudgets.LoadOrStore(n.Id(), b)
+	got, _ := actual.(*auxBudget)
+	return got
+}
+
 // resolveHeader force-fetches a header via the trusted network path (group-scoped,
 // inheriting the network's failsafe/consensus) and feeds it back into the view.
 func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string) (*integrity.Header, bool) {
 	if c.network == nil {
 		return nil, false
 	}
+	release, ok := c.budget.acquire()
+	if !ok {
+		c.emitAux("canonical_header", method, "unknown", "throttled")
+		return nil, false
+	}
+	defer release()
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"%s","params":["%s",false]}`, method, blockRef)))
 	req.SetDirectives(c.fetchDirectives())
@@ -264,7 +393,7 @@ func (c *chainView) resolveHeader(ctx context.Context, method, blockRef string) 
 			}
 		}
 	}
-	c.emitAux("canonical_header", method, c.finalityLabel(num), h != nil)
+	c.emitAux("canonical_header", method, c.finalityLabel(num), auxOutcome(h != nil))
 	if h == nil {
 		return nil, false
 	}
@@ -280,6 +409,12 @@ func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]in
 	if c.network == nil {
 		return nil, false
 	}
+	release, ok := c.budget.acquire()
+	if !ok {
+		c.emitAux("canonical_receipts", "eth_getBlockReceipts", "unknown", "throttled")
+		return nil, false
+	}
+	defer release()
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["%s"]}`, blockHash)))
 	req.SetDirectives(c.fetchDirectives())
@@ -299,7 +434,7 @@ func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]in
 			}
 		}
 	}
-	c.emitAux("canonical_receipts", "eth_getBlockReceipts", c.finalityLabel(num), got)
+	c.emitAux("canonical_receipts", "eth_getBlockReceipts", c.finalityLabel(num), auxOutcome(got))
 	if !got {
 		return nil, false
 	}
@@ -309,15 +444,19 @@ func (c *chainView) resolveReceipts(ctx context.Context, blockHash string) ([]in
 
 // emitAux records an auxiliary (force-fetch) request — NOT part of a user request —
 // only on a ChainView miss, so dedup keeps it rare. Labeled with the node group, the
-// actual method sent, and the target block's finality.
-func (c *chainView) emitAux(kind, method, finality string, ok bool) {
-	outcome := "error"
-	if ok {
-		outcome = "ok"
-	}
+// actual method sent, the target block's finality, and the outcome
+// (ok | error | throttled — throttled = denied by integrity.budget, no fetch sent).
+func (c *chainView) emitAux(kind, method, finality, outcome string) {
 	telemetry.MetricIntegrityAuxRequest.WithLabelValues(
 		c.network.ProjectId(), "", c.network.Label(), "", c.group, kind, method, finality, outcome,
 	).Inc()
+}
+
+func auxOutcome(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "error"
 }
 
 var chainViewStore sync.Map // "networkId\x00groupKey" -> *chainView
@@ -351,6 +490,7 @@ func groupChainView(ctx context.Context, n common.Network, selector string) *cha
 		window = cfg.Integrity.ReorgWindow
 	}
 	created := newChainView(n, window, fetchSelector, group, networkFinalized(n))
+	created.budget = networkAuxBudget(n) // shared per network, across group views
 	actual, _ := chainViewStore.LoadOrStore(storeKey, created)
 	return actual.(*chainView)
 }

@@ -11,6 +11,18 @@ type History interface {
 	HashAt(number int64) (hash string, known bool)
 }
 
+// PinReconfirmer optionally extends History: re-resolve a block number's
+// canonical hash via a fresh trusted fetch (bypassing the cached pin), adopting
+// whatever the network now returns. The engine uses it to corroborate a
+// reorg-sensitive violation before applying the verdict: after a routine reorg
+// the cached pin is stale, and without re-confirmation every honest new-fork
+// response mismatches it — rejecting them all blocks the pin from ever adopting
+// the new fork (a self-inflicted outage). Only a mismatch that survives the
+// fresh pin is treated as genuine.
+type PinReconfirmer interface {
+	ReconfirmPin(ctx context.Context, number int64) (hash string, ok bool)
+}
+
 type historyKey struct{}
 
 func withHistory(ctx context.Context, h History) context.Context {

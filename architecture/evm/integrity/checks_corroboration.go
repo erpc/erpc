@@ -32,7 +32,9 @@ func init() {
 			// valid receipt look wrong. Only checked once we have a committed view.
 			if hist := historyFrom(ctx); hist != nil {
 				if pin, known := hist.HashAt(d.BlockNumber()); known && !eqHex(want.BlockHash, pin) {
-					return failf("receipt blockHash %s is not the committed block %s for number %d", want.BlockHash, pin, d.BlockNumber())
+					// Anchored to the cached pin — re-confirmed by the engine
+					// before the verdict (a reorg makes the pin stale).
+					return failf("receipt blockHash %s is not the committed block %s for number %d", want.BlockHash, pin, d.BlockNumber()).disputes(d.BlockNumber())
 				}
 			}
 

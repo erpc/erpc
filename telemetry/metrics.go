@@ -342,7 +342,7 @@ var (
 	MetricIntegrityCheck = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "integrity_check_total",
-		Help:      "Total integrity check evaluations by outcome (pass/skip/reject/soft_flag/off); the sum across outcomes is total attempts.",
+		Help:      "Total integrity check evaluations by outcome (pass/skip/reject/soft_flag/reconfirmed/off — reconfirmed = a pin-anchored mismatch that cleared once the stale pin was re-confirmed against a fresh canonical fetch, i.e. a reorg, not corruption); the sum across outcomes is total attempts.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "check", "outcome"})
 
 	// MetricIntegrityAuxRequest counts auxiliary requests issued by integrity
@@ -351,7 +351,7 @@ var (
 	MetricIntegrityAuxRequest = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "integrity_aux_request_total",
-		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by node group, kind (canonical_header/canonical_receipts), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error).",
+		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by node group, kind (canonical_header/canonical_receipts), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error/throttled — throttled = denied by integrity.budget, no fetch sent).",
 	}, []string{"project", "vendor", "network", "upstream", "group", "kind", "method", "finality", "outcome"})
 
 	// MetricIntegritySaved counts requests the integrity module SAVED: a check

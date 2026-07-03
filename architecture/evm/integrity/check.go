@@ -45,11 +45,24 @@ const (
 // human-readable explanation; the engine prefixes it with the check id.
 type Violation struct {
 	Reason string
+	// DisputedPin (>0) names the block number whose CACHED pin the violation is
+	// anchored to. A stale pin after a routine reorg looks identical to
+	// corruption, so before acting on such a violation the engine re-confirms
+	// the pin against a fresh canonical fetch (PinReconfirmer) and re-runs the
+	// check — only a mismatch that survives the fresh pin is genuine.
+	DisputedPin int64
 }
 
 // failf builds a Violation with a formatted reason.
 func failf(format string, args ...any) *Violation {
 	return &Violation{Reason: fmt.Sprintf(format, args...)}
+}
+
+// disputes marks the violation as anchored to the cached pin for `number`,
+// making it eligible for corroborate-before-verdict (see Violation.DisputedPin).
+func (v *Violation) disputes(number int64) *Violation {
+	v.DisputedPin = number
+	return v
 }
 
 // Check is one self-contained integrity validation.

@@ -37,7 +37,10 @@ func init() {
 				return nil // parent not observed yet
 			}
 			if !eqHex(prev, h.ParentHash) {
-				return failf("block %d parentHash %s does not link to observed parent hash %s", n, h.ParentHash, prev)
+				// Anchored to the cached pin for the PARENT — after a reorg the
+				// stale parent pin breaks every honest child, so let the engine
+				// re-confirm it before the verdict.
+				return failf("block %d parentHash %s does not link to observed parent hash %s", n, h.ParentHash, prev).disputes(n - 1)
 			}
 			return nil
 		},
@@ -66,7 +69,9 @@ func init() {
 				return nil
 			}
 			if !eqHex(prev, h.Hash) {
-				return failf("block %d hash %s differs from previously observed hash %s", n, h.Hash, prev)
+				// Anchored to the cached pin for this number — a reorg makes the
+				// pin stale, so the engine re-confirms it before the verdict.
+				return failf("block %d hash %s differs from previously observed hash %s", n, h.Hash, prev).disputes(n)
 			}
 			return nil
 		},
