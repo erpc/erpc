@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/erpc/erpc/telemetry"
@@ -526,9 +527,10 @@ func (e *networkExecutor) runHedge(
 	}
 	// Write methods are not safe to hedge (non-idempotent broadcasts cause
 	// duplicate side-effects). eth_sendRawTransaction has its own consensus
-	// fan-out elsewhere.
+	// fan-out elsewhere. SVM names are bare (sendTransaction, requestAirdrop),
+	// so both architecture sets are checked.
 	if req != nil {
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return inner(ctx, req)
 		}
 	}

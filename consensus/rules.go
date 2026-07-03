@@ -19,16 +19,31 @@ type shortCircuitRule struct {
 	Condition   func(winner *slotResult, a *consensusAnalysis) bool
 }
 
+// isTxBroadcastMethod reports whether a method is a transaction
+// broadcast, where any single valid response (tx hash / signature) is
+// sufficient — the transaction propagates through the network on its
+// own, so waiting for agreement only adds duplicate broadcasts.
+// Covers EVM eth_sendRawTransaction and the SVM equivalents
+// (sendTransaction plus its sendRawTransaction alias).
+func isTxBroadcastMethod(method string) bool {
+	switch method {
+	case "eth_sendRawTransaction", "sendTransaction", "sendRawTransaction":
+		return true
+	}
+	return false
+}
+
 // consensusRules defines all consensus rules in priority order
 // Rules are evaluated from most specific/nuanced to most generic, and ideally those that error must come before those that return a result.
 var consensusRules = []consensusRule{
-	// eth_sendRawTransaction: return first valid tx hash immediately
-	// For transaction broadcasting, we don't need consensus - any single valid response is sufficient
-	// because the transaction will propagate through the network.
+	// Tx broadcasts (eth_sendRawTransaction / SVM sendTransaction): return
+	// first valid tx hash/signature immediately. For transaction
+	// broadcasting, we don't need consensus - any single valid response is
+	// sufficient because the transaction will propagate through the network.
 	{
-		Description: "eth_sendRawTransaction: return first valid tx hash response",
+		Description: "tx broadcast: return first valid tx hash/signature response",
 		Condition: func(a *consensusAnalysis) bool {
-			if a.method != "eth_sendRawTransaction" {
+			if !isTxBroadcastMethod(a.method) {
 				return false
 			}
 			// Check if we have any non-empty response (tx hash)
@@ -841,16 +856,17 @@ var consensusRules = []consensusRule{
 
 var shortCircuitRules = []shortCircuitRule{
 	{
-		Description: "eth_sendRawTransaction: short-circuit on first valid tx hash response",
+		Description: "tx broadcast: short-circuit on first valid tx hash/signature response",
 		Reason:      "sendrawtx_first_success",
 		Condition: func(w *slotResult, a *consensusAnalysis) bool {
-			// Only applies to eth_sendRawTransaction
-			if a.method != "eth_sendRawTransaction" {
+			// Applies to tx broadcasts only (eth_sendRawTransaction and the
+			// SVM sendTransaction/sendRawTransaction pair).
+			if !isTxBroadcastMethod(a.method) {
 				return false
 			}
 			// Short-circuit as soon as we have any valid non-empty response (tx hash)
-			// For eth_sendRawTransaction, once a tx is accepted by any node, it will
-			// propagate through the network, so we don't need to wait for consensus.
+			// Once a tx is accepted by any node, it will propagate through the
+			// network, so we don't need to wait for consensus.
 			for _, g := range a.groups {
 				if g.ResponseType == ResponseTypeNonEmpty && g.Count >= 1 {
 					return true

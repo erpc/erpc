@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/rs/zerolog"
@@ -246,7 +247,7 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 		return false
 	}
 	if req != nil {
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return false
 		}
 	}
@@ -284,7 +285,7 @@ func (e *upstreamExecutor) runHedge(
 		if req.IsCompositeRequest() {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
-		if m, _ := req.Method(); m != "" && evm.IsNonRetryableWriteMethod(m) {
+		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
 	}
