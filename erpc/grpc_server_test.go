@@ -147,6 +147,9 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 	require.NotNil(t, httpServer.sharedGrpcServer)
+	// Reflection is enabled by default, so the reflection service is registered
+	// alongside the BDS services on the shared gRPC server.
+	require.Contains(t, httpServer.sharedGrpcServer.server.GetServiceInfo(), "grpc.reflection.v1.ServerReflection")
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

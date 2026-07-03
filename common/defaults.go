@@ -691,6 +691,9 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.GrpcMaxSendMsgSize == nil {
 		s.GrpcMaxSendMsgSize = util.IntPtr(100 * 1024 * 1024)
 	}
+	if s.GrpcReflection == nil {
+		s.GrpcReflection = util.BoolPtr(true)
+	}
 	if s.MaxTimeout == nil {
 		d := Duration(150 * time.Second)
 		s.MaxTimeout = &d
@@ -2076,6 +2079,14 @@ const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
 const DefaultBlockUnavailableDelayMultiplier = 1.0
+
+// DefaultToleratedBlockHeadRollback is the tolerance (in blocks) applied when a
+// freshly observed block head is behind the stored one: decreases within the
+// tolerance are noise from lagging providers and are ignored, while larger
+// decreases are a genuine correction (a deep reorg, or a previously recorded
+// bogus sample) and are accepted. Shared by the state-poller shared counters
+// and the health tracker so both layers converge on the same head.
+const DefaultToleratedBlockHeadRollback = 1024
 
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and

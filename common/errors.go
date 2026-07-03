@@ -1868,6 +1868,29 @@ func (e *ErrEndpointUnauthorized) ErrorStatusCode() int {
 	return 401
 }
 
+type ErrEndpointChainIdMismatch struct{ BaseError }
+
+const ErrCodeEndpointChainIdMismatch = "ErrEndpointChainIdMismatch"
+
+// NewErrEndpointChainIdMismatch marks a PROVEN cross-wired endpoint: the
+// server answering for this upstream reported a different chainId than the
+// upstream is configured for (e.g. a stale DNS record or reused address
+// pointing at another chain's server). Consumers treat this as strong
+// evidence the endpoint must not be used (see the state poller's major-move
+// guard, which cordons the upstream on this code).
+var NewErrEndpointChainIdMismatch = func(detected, expected uint64) error {
+	return &ErrEndpointChainIdMismatch{
+		BaseError{
+			Code:    ErrCodeEndpointChainIdMismatch,
+			Message: "endpoint answers for a different chainId than configured (cross-wired endpoint)",
+			Details: map[string]interface{}{
+				"detectedChainId": detected,
+				"expectedChainId": expected,
+			},
+		},
+	}
+}
+
 type ErrEndpointUnsupported struct{ BaseError }
 
 const ErrCodeEndpointUnsupported = "ErrEndpointUnsupported"

@@ -182,6 +182,7 @@ export interface ServerConfig {
   grpcPortV6?: number /* int */;
   grpcMaxRecvMsgSize?: number /* int */;
   grpcMaxSendMsgSize?: number /* int */;
+  grpcReflection?: boolean;
   maxTimeout?: Duration;
   readTimeout?: Duration;
   writeTimeout?: Duration;

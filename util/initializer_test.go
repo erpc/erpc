@@ -872,3 +872,196 @@ func BenchmarkInitializer_RangeTaskStates_vs_Status(b *testing.B) {
 		}
 	})
 }
+
+// fatalErr is a task error that reports itself as fatal via the same
+// `IsTaskFatal() bool` interface the Initializer detects with errors.As. It
+// mirrors common.TaskFatalError without importing the common package (which
+// would create an import cycle), so these tests exercise the real fatal path.
+type fatalErr struct{ msg string }
+
+func (e *fatalErr) Error() string     { return e.msg }
+func (e *fatalErr) IsTaskFatal() bool { return true }
+
+// TestInitializer_HasPendingWork exercises the auto-retry loop's stop condition
+// across every task state. Only Succeeded and Fatal are terminal; crucially, a
+// Fatal task mixed with any non-terminal task must still report pending work —
+// that is the whole point of the fix (a fatal task must not make the loop treat
+// the entire shared initializer as done).
+func TestInitializer_HasPendingWork(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cases := []struct {
+		name   string
+		states []TaskState
+		want   bool
+	}{
+		{"empty", nil, false},
+		{"all succeeded", []TaskState{TaskSucceeded, TaskSucceeded}, false},
+		{"all fatal", []TaskState{TaskFatal, TaskFatal}, false},
+		{"succeeded and fatal", []TaskState{TaskSucceeded, TaskFatal}, false},
+		{"one pending", []TaskState{TaskPending}, true},
+		{"one running", []TaskState{TaskRunning}, true},
+		{"one failed", []TaskState{TaskFailed}, true},
+		{"one timed out", []TaskState{TaskTimedOut}, true},
+		{"fatal plus failed (regression)", []TaskState{TaskFatal, TaskFailed}, true},
+		{"succeeded plus fatal plus pending", []TaskState{TaskSucceeded, TaskFatal, TaskPending}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Fresh initializer per case so we never copy a sync.Map.
+			init := setupInitializer(t, appCtx, nil)
+			for idx, st := range tc.states {
+				task := NewBootstrapTask(fmt.Sprintf("t%d", idx), func(ctx context.Context) error { return nil })
+				task.state.Store(int32(st))
+				init.tasks.Store(task.Name, task)
+			}
+			assert.Equal(t, tc.want, init.hasPendingWork())
+		})
+	}
+}
+
+// TestInitializer_FatalTaskDoesNotStrandSiblings is the primary regression test
+// for the shared-initializer wedge: one task returns a permanent (fatal) error
+// while a sibling fails transiently a few times before recovering. Because both
+// tasks live in the same Initializer, the old code flipped State() to
+// StateFatal the moment the fatal task landed and the auto-retry loop exited —
+// stranding the recoverable sibling until process restart. The sibling must now
+// reach Succeeded on its own.
+func TestInitializer_FatalTaskDoesNotStrandSiblings(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: 5 * time.Millisecond,
+		RetryMaxDelay: 20 * time.Millisecond,
+		RetryFactor:   1.5,
+	})
+	defer init.Stop(nil)
+
+	var fatalAttempts atomic.Int32
+	fatalTask := NewBootstrapTask("upstream/permanently-broken", func(ctx context.Context) error {
+		fatalAttempts.Add(1)
+		return &fatalErr{"chain id mismatch"}
+	})
+
+	const recoverAfter = int32(3)
+	var sibAttempts atomic.Int32
+	siblingTask := NewBootstrapTask("upstream/transiently-broken", func(ctx context.Context) error {
+		if sibAttempts.Add(1) < recoverAfter {
+			return errors.New("transient boot failure")
+		}
+		return nil
+	})
+
+	_ = init.ExecuteTasks(appCtx, fatalTask, siblingTask)
+
+	require.Eventually(t, func() bool {
+		return TaskState(siblingTask.state.Load()) == TaskSucceeded
+	}, 2*time.Second, 5*time.Millisecond,
+		"recoverable sibling must reach Succeeded even though a peer task is fatal")
+
+	assert.Equal(t, TaskFatal, TaskState(fatalTask.state.Load()), "fatal task stays fatal")
+	assert.Equal(t, int32(1), fatalAttempts.Load(), "a fatal task must never be retried")
+	assert.GreaterOrEqual(t, sibAttempts.Load(), recoverAfter, "sibling retried until it recovered")
+}
+
+// TestInitializer_FatalTaskKeepsSiblingRetryLoopAlive is the sharper regression
+// guard: even a sibling that NEVER recovers must keep being retried while a
+// fatal peer exists. Before the fix the auto-retry loop exited after the first
+// round (State()==StateFatal), pinning the sibling at a single attempt.
+func TestInitializer_FatalTaskKeepsSiblingRetryLoopAlive(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: 5 * time.Millisecond,
+		RetryMaxDelay: 10 * time.Millisecond,
+		RetryFactor:   1.2,
+	})
+	defer init.Stop(nil)
+
+	fatalTask := NewBootstrapTask("upstream/fatal", func(ctx context.Context) error {
+		return &fatalErr{"permanent"}
+	})
+	var sibAttempts atomic.Int32
+	failingSibling := NewBootstrapTask("upstream/failing", func(ctx context.Context) error {
+		sibAttempts.Add(1)
+		return errors.New("still failing")
+	})
+
+	_ = init.ExecuteTasks(appCtx, fatalTask, failingSibling)
+
+	require.Eventually(t, func() bool {
+		return sibAttempts.Load() >= 5
+	}, 2*time.Second, 5*time.Millisecond,
+		"failing sibling must keep being retried even though a peer task is fatal")
+}
+
+// TestInitializer_AllFatalTasksStopRetrying is the complement: when every task
+// is fatal there is nothing to recover, so the loop must terminate and never
+// re-run a fatal task (no busy-loop, no wasted attempts).
+func TestInitializer_AllFatalTasksStopRetrying(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: 5 * time.Millisecond,
+		RetryMaxDelay: 10 * time.Millisecond,
+		RetryFactor:   1.5,
+	})
+	defer init.Stop(nil)
+
+	var a, b atomic.Int32
+	t1 := NewBootstrapTask("upstream/fatal-1", func(ctx context.Context) error { a.Add(1); return &fatalErr{"boom1"} })
+	t2 := NewBootstrapTask("upstream/fatal-2", func(ctx context.Context) error { b.Add(1); return &fatalErr{"boom2"} })
+
+	_ = init.ExecuteTasks(appCtx, t1, t2)
+
+	// Ample time for any (erroneous) retries to happen.
+	time.Sleep(120 * time.Millisecond)
+
+	assert.Equal(t, TaskFatal, TaskState(t1.state.Load()))
+	assert.Equal(t, TaskFatal, TaskState(t2.state.Load()))
+	assert.Equal(t, int32(1), a.Load(), "fatal task 1 must never be retried")
+	assert.Equal(t, int32(1), b.Load(), "fatal task 2 must never be retried")
+	assert.Equal(t, StateFatal, init.State())
+	assert.False(t, init.hasPendingWork(), "no pending work once every task is terminal")
+}
+
+// TestInitializer_FatalTaskWithSucceededSiblingExits verifies the mixed
+// terminal case: one fatal + one already-succeeded task means no pending work,
+// so the loop exits cleanly (and Stop returns promptly).
+func TestInitializer_FatalTaskWithSucceededSiblingExits(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: 5 * time.Millisecond,
+		RetryMaxDelay: 10 * time.Millisecond,
+		RetryFactor:   1.5,
+	})
+
+	okTask := NewBootstrapTask("upstream/ok", func(ctx context.Context) error { return nil })
+	fatalTask := NewBootstrapTask("upstream/fatal", func(ctx context.Context) error { return &fatalErr{"permanent"} })
+
+	_ = init.ExecuteTasks(appCtx, okTask, fatalTask)
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Equal(t, TaskSucceeded, TaskState(okTask.state.Load()))
+	assert.Equal(t, TaskFatal, TaskState(fatalTask.state.Load()))
+	assert.False(t, init.hasPendingWork())
+
+	done := make(chan struct{})
+	go func() { _ = init.Stop(nil); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return promptly after all tasks reached terminal states")
+	}
+}

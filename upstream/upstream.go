@@ -1457,6 +1457,18 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
 		u.chainIdValidated.Store(true)
 
+		// Arm chain-identity enforcement on clients that support it (the gRPC
+		// BDS client asserts this chainId on every request and keeps verifying
+		// its connections). Clients constructed from a configured chainId are
+		// armed at construction already; this covers the auto-detected case
+		// (config chainId 0), where the chain is only known now. No request
+		// can route to this upstream before detection completes — its
+		// networkId is derived from the chainId — so enforcement is in place
+		// for every served request.
+		if armer, ok := u.Client.(interface{ SetExpectedChainId(uint64) }); ok {
+			armer.SetExpectedChainId(uint64(realChainID))
+		}
+
 		// @deprecated: NodeType-specific logic removed; availability is handled by blockAvailability bounds.
 
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)

@@ -172,6 +172,17 @@ func NewGrpcConnector(
 					gc.logger.Error().Str("server", serverURL).Str("networkId", networkId).Msg("duplicate gRPC server for network detected; ignoring")
 					return nil
 				}
+				// Arm chain-identity enforcement with the probed chainId: from
+				// here on every request to this server carries the chainId
+				// assertion and the client's pool maintainer keeps
+				// re-verifying the connections — the bootstrap probe alone
+				// cannot catch an endpoint that gets cross-wired LATER (stale
+				// DNS / reused address answering for another chain). Narrow
+				// assertion: the method is intentionally not on the
+				// GrpcBdsClient interface.
+				if armer, ok := cli.(interface{ SetExpectedChainId(uint64) }); ok {
+					armer.SetExpectedChainId(uval)
+				}
 				gc.clientByNetwork[networkId] = cli
 				gc.logger.Info().Str("server", serverURL).Str("networkId", networkId).Msg("gRPC client initialized for network")
 				return nil

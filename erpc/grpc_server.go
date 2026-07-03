@@ -6,6 +6,7 @@ import (
 	"net"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
@@ -17,8 +18,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -101,6 +104,23 @@ func NewGrpcServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(gs.panicRecoveryUnary()),
 		grpc.ChainStreamInterceptor(gs.panicRecoveryStream()),
+		// MaxConnectionAge forces long-lived client channels to reconnect
+		// periodically (GOAWAY + grace for in-flight streams). Clients that
+		// dial through DNS re-resolve on reconnect, so a connection pinned to
+		// a stale backend address is bounded to Age+Grace instead of living
+		// until it breaks — the server-side half of the endpoint-freshness
+		// contract (the BDS client's conn max-age is the client-side half).
+		// Jitter (±10%) is added by grpc-go itself.
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionAge:      10 * time.Minute,
+			MaxConnectionAgeGrace: 30 * time.Second,
+		}),
+		// Allow well-behaved clients (our BDS client pings every 30s, also
+		// without active streams) without tripping the server's ping police.
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	}
 	if cfg.TLS != nil && cfg.TLS.Enabled {
 		creds, err := credentials.NewServerTLSFromFile(cfg.TLS.CertFile, cfg.TLS.KeyFile)
@@ -113,6 +133,12 @@ func NewGrpcServer(
 	gs.server = grpc.NewServer(opts...)
 	evm.RegisterRPCQueryServiceServer(gs.server, gs)
 	evm.RegisterQueryServiceServer(gs.server, gs)
+	// Server reflection lets tools (grpcurl, Postman, buf) discover the BDS
+	// services/messages without a local copy of the .proto files. Enabled by
+	// default; set server.grpcReflection=false to turn it off.
+	if cfg.GrpcReflection == nil || *cfg.GrpcReflection {
+		reflection.Register(gs.server)
+	}
 	return gs, nil
 }
 

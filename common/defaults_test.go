@@ -200,6 +200,9 @@ func TestServerConfigSetDefaults_GrpcPortDefaultsToHttpPort(t *testing.T) {
 	assert.Equal(t, "[::1]", *server.GrpcHostV6)
 	assert.Equal(t, 4311, *server.GrpcPortV4)
 	assert.Equal(t, 5311, *server.GrpcPortV6)
+	// gRPC server reflection defaults to enabled.
+	assert.NotNil(t, server.GrpcReflection)
+	assert.True(t, *server.GrpcReflection)
 }
 
 func TestSetDefaults_UpstreamConfig(t *testing.T) {
