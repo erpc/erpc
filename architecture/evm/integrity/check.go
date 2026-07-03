@@ -3,6 +3,8 @@ package integrity
 import (
 	"context"
 	"fmt"
+
+	"github.com/erpc/erpc/common"
 )
 
 // Family groups checks by what kind of guarantee they provide. It is
@@ -103,6 +105,10 @@ func register(c *Check) {
 	for _, m := range c.Methods {
 		registry[m] = append(registry[m], c)
 	}
+	// Feed the config-validation catalog (common can't import this package),
+	// so a typo'd check id in config fails validation instead of silently
+	// doing nothing.
+	common.RegisterIntegrityCheckID(c.ID)
 }
 
 // checksFor returns the checks registered for a lowercased method.

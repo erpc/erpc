@@ -19,7 +19,9 @@ func compileIntegritySettings(s *common.IntegritySettings) (integrity.CheckSet, 
 		return integrity.CheckSet{}, policy
 	}
 
-	cs := integrity.CheckSetForLevel(integrity.Level(s.Level))
+	// Normalize: level presets match exact lowercase names, and a non-matching
+	// level silently enables zero checks (validation also rejects unknown ones).
+	cs := integrity.CheckSetForLevel(integrity.Level(strings.ToLower(strings.TrimSpace(s.Level))))
 	for id, oc := range s.Checks {
 		if oc != nil {
 			applyCheckOverride(cs, id, oc)
