@@ -22,9 +22,11 @@ import (
 //     or content-corrupted logs; plus finalized absent-block detection
 //     (pin-anchored, so the corroborate-before-verdict reconfirm applies).
 //
-// Known limitation (engine-level): a fully-empty `[]` response never reaches
-// the engine (emptyish gate), so the everything-dropped case is guarded by the
-// retryEmpty machinery, not by these checks.
+// getLogsCompleteness also sees fully-empty `[]` responses (AllowEmptyish):
+// an empty result over a range whose cached canonical receipts contain
+// filter-matching logs on finalized, pinned blocks is the everything-dropped
+// corruption — previously invisible (the engine's emptyish gate short-circuited
+// it, leaving only retryEmpty as a guard).
 
 // absentBlockScanCap bounds the absent-block sweep; the ChainView pin window
 // (default 32) is the real bound, this is a guard for misconfigured windows.
@@ -64,6 +66,10 @@ func init() {
 	register(&Check{
 		ID: "getLogsCompleteness", Family: FamilyStructural, Class: ReorgSensitive,
 		Methods: []string{MethodGetLogs},
+		// An empty [] response is the everything-dropped shape — the absent-block
+		// sweep below is exactly the check for it, so opt into emptyish responses
+		// (the engine short-circuits them for every other check).
+		AllowEmptyish: true,
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			f := d.LogsFilter()
 			if f == nil {

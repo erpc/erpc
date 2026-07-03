@@ -82,7 +82,13 @@ func Validate(ctx context.Context, in Input) Result {
 	if len(enabled) == 0 {
 		return Result{}
 	}
-	if in.Response.IsObjectNull() || in.Response.IsResultEmptyish() {
+	// Emptyish responses ("[]"/null) usually mean "nothing there / not yet
+	// available" (retryEmpty's territory), so most checks never see them. But
+	// for eth_getLogs an empty result IS the worst corruption shape — every
+	// log silently dropped — so checks that opt in (AllowEmptyish) still run;
+	// everything else keeps today's short-circuit.
+	emptyish := in.Response.IsObjectNull() || in.Response.IsResultEmptyish()
+	if emptyish && !anyAllowsEmptyish(enabled) {
 		return Result{}
 	}
 	jrr, err := in.Response.JsonRpcResponse(ctx)
@@ -101,6 +107,11 @@ func Validate(ctx context.Context, in Input) Result {
 
 	var res Result
 	for _, c := range enabled {
+		// On an emptyish response only the opted-in checks run; the rest get no
+		// outcome at all (exactly as if the response had short-circuited).
+		if emptyish && !c.AllowEmptyish {
+			continue
+		}
 		cfg := in.Checks.For(c.ID)
 		// Resolve the verdict for this check up front. If it would be ignored
 		// (invalidBehavior unfinalized: off, or a per-check onFailure: off),
@@ -214,6 +225,15 @@ func enabledChecks(checks []*Check, cs CheckSet) []*Check {
 		}
 	}
 	return out
+}
+
+func anyAllowsEmptyish(checks []*Check) bool {
+	for _, c := range checks {
+		if c.AllowEmptyish {
+			return true
+		}
+	}
+	return false
 }
 
 // --- resolver propagation via context (avoids a signature change on Check.Run) ---

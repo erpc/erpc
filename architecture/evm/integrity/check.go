@@ -85,6 +85,11 @@ type Check struct {
 	Class FailureClass
 	// Methods are the lowercased JSON-RPC methods this check applies to.
 	Methods []string
+	// AllowEmptyish opts this check into evaluating emptyish ("[]"/null)
+	// responses, which the engine otherwise short-circuits. For eth_getLogs an
+	// empty result is the everything-dropped corruption shape — exactly what a
+	// completeness check must see.
+	AllowEmptyish bool
 	// Run inspects the decoded response and returns a Violation, nil when the
 	// response was verified and satisfies this check, or the Skipped sentinel
 	// when the check could not evaluate the response at all (absent data,

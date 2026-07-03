@@ -285,3 +285,64 @@ func TestCheck_GetLogsCompleteness_AbsentBlock(t *testing.T) {
 		require.Error(t, res.Err)
 	})
 }
+
+// The everything-dropped shape: an empty [] response over a finalized range
+// whose cached canonical receipts contain filter-matching logs must reject —
+// previously the engine's emptyish gate made this invisible to all checks.
+func TestCheck_GetLogsCompleteness_EmptyResponse(t *testing.T) {
+	cs := only("getLogsCompleteness", nil)
+	warm := histWithReceipts{
+		pins: map[int64]string{0x10: "0xb0"},
+		receipts: map[string][]Receipt{
+			"0xb0": {{BlockHash: "0xb0", TransactionHash: "0xt0", Logs: []Log{
+				{Address: "0xaddr", Topics: []string{"0xa"}, Data: "0xd0", BlockHash: "0xb0", BlockNumber: "0x10", TransactionHash: "0xt0", LogIndex: "0x0"},
+			}}},
+		},
+	}
+	filter := `{"address":"0xaddr","fromBlock":"0x10","toBlock":"0x10"}`
+
+	t.Run("empty response, finalized block has matching canonical logs → reject", func(t *testing.T) {
+		res := validateGetLogs(t, filter, `[]`, cs, warm, mockResolver{finalized: true, known: true})
+		require.Error(t, res.Err)
+		assert.Contains(t, res.Err.Error(), "no logs for finalized block")
+	})
+
+	t.Run("empty response, canonical has no matching logs → pass (verified empty)", func(t *testing.T) {
+		none := histWithReceipts{
+			pins: warm.pins,
+			receipts: map[string][]Receipt{
+				"0xb0": {{BlockHash: "0xb0", TransactionHash: "0xt0", Logs: []Log{
+					{Address: "0xother", Topics: []string{"0xz"}, BlockHash: "0xb0", BlockNumber: "0x10", TransactionHash: "0xt0", LogIndex: "0x0"},
+				}}},
+			},
+		}
+		res := validateGetLogs(t, filter, `[]`, cs, none, mockResolver{finalized: true, known: true})
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "pass", outcomeOf(res, "getLogsCompleteness"))
+	})
+
+	t.Run("empty response, unfinalized → skip (reorg safety)", func(t *testing.T) {
+		res := validateGetLogs(t, filter, `[]`, cs, warm, mockResolver{finalized: false, known: true})
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "skip", outcomeOf(res, "getLogsCompleteness"))
+	})
+
+	t.Run("empty response, cold cache → skip", func(t *testing.T) {
+		cold := histWithReceipts{pins: map[int64]string{}, receipts: map[string][]Receipt{}}
+		res := validateGetLogs(t, filter, `[]`, cs, cold, mockResolver{finalized: true, known: true})
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "skip", outcomeOf(res, "getLogsCompleteness"))
+	})
+
+	t.Run("filterSanity does NOT run on an empty response (no outcome)", func(t *testing.T) {
+		both := CheckSet{}.Enable("getLogsFilterSanity", nil).Enable("getLogsCompleteness", nil)
+		res := validateGetLogs(t, filter, `[]`, both, warm, mockResolver{finalized: true, known: true})
+		assert.Equal(t, "", outcomeOf(res, "getLogsFilterSanity"), "non-opted-in checks keep the emptyish short-circuit")
+	})
+
+	t.Run("empty response on a non-getLogs method still short-circuits entirely", func(t *testing.T) {
+		res := validateBlockPolicy(t, []byte(`null`), only("hashStability", nil), mockHistory{0x10: "0xbb"}, rejectAll)
+		assert.NoError(t, res.Err)
+		assert.Empty(t, res.Outcomes)
+	})
+}
