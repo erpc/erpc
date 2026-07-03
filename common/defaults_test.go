@@ -1493,3 +1493,58 @@ func TestSetDefaults_SvmNetworkConfig_PopulatesGuards(t *testing.T) {
 		}
 	})
 }
+
+func TestSetDefaults_NetworkDefaults_SvmMergesIntoNetwork(t *testing.T) {
+	defaults := &NetworkDefaults{
+		Svm: &SvmNetworkConfig{
+			Commitment:          "confirmed",
+			StatePollerDebounce: Duration(500 * time.Millisecond),
+			Cluster:             "devnet", // must be ignored when merging into network
+		},
+	}
+
+	t.Run("inherits commitment and debounce from networkDefaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Equal(t, "mainnet-beta", n.Svm.Cluster)
+		require.Equal(t, "confirmed", n.Svm.Commitment)
+		require.Equal(t, 500*time.Millisecond, n.Svm.StatePollerDebounce.Duration())
+	})
+
+	t.Run("network override wins over networkDefaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm: &SvmNetworkConfig{
+				Cluster:    "mainnet-beta",
+				Commitment: "finalized",
+			},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Equal(t, "finalized", n.Svm.Commitment)
+	})
+
+	t.Run("cluster never copied from networkDefaults", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Equal(t, "mainnet-beta", n.Svm.Cluster)
+	})
+
+	t.Run("does not auto-create Svm from networkDefaults on non-SVM network", func(t *testing.T) {
+		n := &NetworkConfig{
+			Architecture: ArchitectureEvm,
+			Evm:          &EvmNetworkConfig{ChainId: 1},
+		}
+		require.NoError(t, n.SetDefaults(nil, defaults))
+
+		require.Nil(t, n.Svm)
+	})
+}

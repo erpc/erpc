@@ -1,6 +1,7 @@
 import type {
     DynamoDBConnectorConfig,
     EvmNetworkConfig,
+    SvmNetworkConfig,
     AuthStrategyConfig as GenAuthStrategyConfig,
     JwtStrategyConfig,
     MemoryConnectorConfig,
@@ -145,6 +146,11 @@ import type {
     * Network defaults override (chainId isn't needed for defaults config)
     */
   export type EvmNetworkConfigForDefaults = Omit<EvmNetworkConfig, "chainId">;
+
+  /**
+   * Network defaults override (cluster isn't needed for defaults config)
+   */
+  export type SvmNetworkConfigForDefaults = Omit<SvmNetworkConfig, "cluster">;
 
   /**
    * Accepts both boolean (backward compat) and string (connector ID pattern) values.

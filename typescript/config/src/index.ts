@@ -32,6 +32,7 @@ export type {
   PolicyEvalArrayCondition,
   IncludeIfTarget,
   EvmNetworkConfigForDefaults,
+  SvmNetworkConfigForDefaults,
 } from "./types";
 export {
   // Data finality const exports

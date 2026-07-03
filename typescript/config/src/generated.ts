@@ -10,6 +10,7 @@ import type {
   AuthType as TsAuthType,
   AuthStrategyConfig as TsAuthStrategyConfig,
   EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults,
+  SvmNetworkConfigForDefaults as TsSvmNetworkConfigForDefaults,
   SelectionPolicyEvalFunction,
   BoolOrString
 } from "./types"
@@ -46,6 +47,16 @@ export interface AdaptiveDuration {
   min?: Duration;
   max?: Duration;
 }
+
+//////////
+// source: architecture.go
+
+/**
+ * ArchitectureHandler abstracts all architecture-specific pipeline hooks.
+ * Each architecture (evm, svm, …) registers exactly one handler via its package init().
+ * Pipeline files dispatch through the registry — they never need to change for a new chain.
+ */
+export type ArchitectureHandler = any;
 
 //////////
 // source: architecture_evm.go
@@ -109,6 +120,42 @@ export interface EvmProbeEarliestInfo {
   earliestBlock: number /* int64 */;
   schedulerRunning?: boolean;
 }
+
+//////////
+// source: architecture_svm.go
+
+export const UpstreamTypeSvm: UpstreamType = "svm";
+/**
+ * SlotSharedVariable mirrors the EVM SharedStateVariable pattern for int64 slot numbers.
+ * It lets the state poller publish slot progress to a shared-state backend (memory or Redis)
+ * while keeping callers synchronous via the cached local value.
+ */
+export type SlotSharedVariable = any;
+/**
+ * SvmUpstream narrows common.Upstream to the surface SVM hooks need to reach
+ * into per-upstream state (currently just the state poller). Keeping this a
+ * tiny sub-interface avoids committing the full Upstream struct to common/ and
+ * parallels the existing EvmUpstream pattern.
+ */
+export type SvmUpstream = 
+    Upstream;
+/**
+ * SvmStatePoller is the per-upstream slot/health tracker. Concrete type lives in
+ * architecture/svm to avoid pulling the full implementation into common.
+ */
+export type SvmStatePoller = any;
+/**
+ * MaxShredInsertSlotLagThreshold is the cutoff beyond which an upstream is treated
+ * as degraded for shred-insert lag. Solana nodes with high `latest - maxShredInsertSlot`
+ * are receiving shreds but not processing them; their reads go stale silently.
+ */
+export const MaxShredInsertSlotLagThreshold: number /* int64 */ = 100;
+/**
+ * SvmChainSolana is the canonical Solana chain identifier. Empty Chain values
+ * in SvmNetworkConfig normalize to this constant at NetworkId derivation time
+ * so pre-multi-chain configs keep producing "svm:<cluster>" IDs.
+ */
+export const SvmChainSolana = "solana";
 
 //////////
 // source: blocktime_adaptive_duration.go
@@ -292,6 +339,7 @@ export interface AliasingRuleConfig {
 }
 export interface DatabaseConfig {
   evmJsonRpcCache?: CacheConfig;
+  svmJsonRpcCache?: CacheConfig;
   sharedState?: SharedStateConfig;
 }
 export interface SharedStateConfig {
@@ -579,6 +627,7 @@ export interface NetworkDefaults {
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
+  svm?: TsSvmNetworkConfigForDefaults;
   multiplexing?: boolean;
 }
 export interface CORSConfig {
@@ -623,6 +672,7 @@ export interface UpstreamConfig {
   vendorName?: string;
   endpoint?: string;
   evm?: EvmUpstreamConfig;
+  svm?: SvmUpstreamConfig;
   jsonRpc?: JsonRpcUpstreamConfig;
   grpc?: GrpcUpstreamConfig;
   ignoreMethods?: string[];
@@ -1105,6 +1155,7 @@ export interface NetworkConfig {
   rateLimitBudget?: string;
   failsafe?: (FailsafeConfig | undefined)[];
   evm?: EvmNetworkConfig;
+  svm?: SvmNetworkConfig;
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
@@ -1199,6 +1250,83 @@ export interface DirectiveDefaultsConfig {
    */
   validationExpectedBlockHash?: string;
   validationExpectedBlockNumber?: number /* int64 */;
+}
+/**
+ * SvmNetworkConfig mirrors EvmNetworkConfig for SVM networks.
+ * Most fields are Solana-specific and do not have EVM equivalents.
+ */
+export interface SvmNetworkConfig {
+  /**
+   * Chain identifies which SVM chain this network runs on. Defaults to "solana"
+   * when empty for backward compatibility. Set explicitly for forks/variants
+   * such as "fogo" or "eclipse" so eRPC can host multiple SVM chains side by
+   * side without network-ID or cache-key collisions.
+   * When Chain is empty or "solana", the derived NetworkId is "svm:<cluster>"
+   * — identical to the pre-multi-chain format. For any other Chain value the
+   * NetworkId is "svm:<chain>:<cluster>".
+   */
+  chain?: string;
+  /**
+   * Cluster the upstreams of this network serve (e.g. "mainnet-beta", "devnet").
+   * The NetworkId is derived from this value together with Chain — see the
+   * Chain field above for the exact format.
+   */
+  cluster?: string;
+  /**
+   * Commitment is the default commitment level injected into requests whose params
+   * omit one. One of "finalized", "confirmed", "processed". No default: when unset,
+   * no commitment is injected and each upstream's own server-side default governs
+   * (Solana's is "finalized"). Set this to pin one commitment across all upstreams
+   * so the cache and consensus key on identical data regardless of vendor defaults;
+   * note that doing so makes finality classification track the configured level.
+   */
+  commitment?: string;
+  /**
+   * StatePollerDebounce sets the minimum interval between polls of an upstream's
+   * slot/health view. Default: 400ms (one slot).
+   */
+  statePollerDebounce?: Duration;
+  /**
+   * MaxSlotsPerSignaturesQuery caps the slot range a single getSignaturesForAddress
+   * call may span. Requests exceeding this range are rejected pre-forward.
+   * Default: 1000.
+   */
+  maxSlotsPerSignaturesQuery?: number /* int64 */;
+  /**
+   * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
+   * trail the pool's highest FinalizedSlot before it is excluded from
+   * consensus voting on finalized data. A zero value disables the filter
+   * entirely (every upstream participates regardless of lag). Default: 100.
+   * Only applied when a consensus policy is active AND the request's
+   * resolved finality is Finalized.
+   */
+  maxFinalizedSlotLag?: number /* int64 */;
+}
+/**
+ * SvmUpstreamConfig carries per-upstream SVM settings.
+ */
+export interface SvmUpstreamConfig {
+  /**
+   * Chain identifies which SVM chain this upstream serves. Must match the
+   * network-level Chain. Empty defaults to "solana" for backward compat.
+   */
+  chain?: string;
+  /**
+   * Cluster this upstream serves. Must match the network-level cluster for the
+   * upstream to be eligible.
+   */
+  cluster?: string;
+  /**
+   * CheckGenesisHash opts unknown clusters in to runtime validation via getGenesisHash
+   * at bootstrap. Known clusters (mainnet-beta, devnet, testnet) are always validated
+   * regardless of this flag: a single getGenesisHash RPC runs at bootstrap and is
+   * compared against the hardcoded genesis-hash table — a mismatch OR a fetch failure
+   * fails the upstream, catching nodes mis-pointed at the wrong cluster (and refusing
+   * to register one we could not verify). For unknown clusters the same check (with
+   * no table comparison) runs only when this flag is set; otherwise it is skipped so
+   * private/local clusters with no published genesis hash still work.
+   */
+  checkGenesisHash?: boolean;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
@@ -1748,7 +1876,23 @@ export interface ExecStateSnapshot {
 
 export type NetworkArchitecture = string;
 export const ArchitectureEvm: NetworkArchitecture = "evm";
+export const ArchitectureSvm: NetworkArchitecture = "svm";
 export type Network = any;
+/**
+ * EvmNetwork is the EVM-specific view of a Network. Callers that need
+ * block-number accessors or leader-upstream selection should go through the
+ * EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
+ * helpers below, which type-assert and degrade to zero-value on mismatch.
+ */
+export type EvmNetwork = 
+    Network;
+/**
+ * SvmNetwork is the SVM-specific view of a Network. Production Network
+ * implementations satisfy this automatically when the underlying network is
+ * SVM; EVM networks correctly fail the assertion.
+ */
+export type SvmNetwork = 
+    Network;
 export type QuantileTracker = any;
 export type TrackedMetrics = any;
 

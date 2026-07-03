@@ -32,15 +32,17 @@ metrics:
 # healthiest upstream; errors surface a retry against the next one.
 projects:
   - id: main
+    # Shared SVM tuning for every network in this project. Cluster stays per-network
+    # (network identity — like chainId for EVM). Do not set cluster here.
+    networkDefaults:
+      svm:
+        commitment: confirmed
+        statePollerDebounce: 500ms
+        maxSlotsPerSignaturesQuery: 1000
     networks:
       - architecture: svm
         svm:
           cluster: mainnet-beta
-          # commitment applied when the request omits one; cache finality follows.
-          commitment: confirmed
-          # minimum time between state-poller ticks; ~one Solana slot is 400ms.
-          statePollerDebounce: 500ms
-          maxSlotsPerSignaturesQuery: 1000
         failsafe:
           - matchMethod: "*"
             timeout:
@@ -58,8 +60,6 @@ projects:
       - architecture: svm
         svm:
           cluster: testnet
-          commitment: confirmed
-          statePollerDebounce: 500ms
         failsafe:
           - matchMethod: "*"
             timeout:

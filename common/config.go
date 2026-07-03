@@ -643,6 +643,7 @@ type NetworkDefaults struct {
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm" tstype:"TsSvmNetworkConfigForDefaults"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 }
 
@@ -676,6 +677,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
 	}
 
 	var old oldNetworkDefaults
@@ -690,6 +692,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 	n.SelectionPolicy = old.SelectionPolicy
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Evm = old.Evm
+	n.Svm = old.Svm
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility

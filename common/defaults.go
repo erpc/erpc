@@ -1498,6 +1498,11 @@ func (n *NetworkDefaults) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for evm: %w", err)
 		}
 	}
+	if n.Svm != nil {
+		if err := n.Svm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for svm: %w", err)
+		}
+	}
 	if n.DirectiveDefaults != nil {
 		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for directive defaults: %w", err)
@@ -1947,6 +1952,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
 		}
+		if n.Svm != nil && defaults.Svm != nil {
+			mergeSvmNetworkDefaults(n.Svm, defaults.Svm)
+		}
 		if n.Evm != nil {
 			if err := n.Evm.SetDefaults(); err != nil {
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
@@ -2120,6 +2128,29 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 		"trace_transaction",
 		"trace_block",
 		"trace_get",
+	}
+}
+
+// mergeSvmNetworkDefaults copies project-level SVM defaults into a network config.
+// Cluster is never copied — it is network identity (like chainId for EVM).
+func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
+	if dst == nil || defaults == nil {
+		return
+	}
+	if dst.Chain == "" && defaults.Chain != "" {
+		dst.Chain = defaults.Chain
+	}
+	if dst.Commitment == "" && defaults.Commitment != "" {
+		dst.Commitment = defaults.Commitment
+	}
+	if dst.StatePollerDebounce.Duration() == 0 && defaults.StatePollerDebounce.Duration() != 0 {
+		dst.StatePollerDebounce = defaults.StatePollerDebounce
+	}
+	if dst.MaxSlotsPerSignaturesQuery == 0 && defaults.MaxSlotsPerSignaturesQuery != 0 {
+		dst.MaxSlotsPerSignaturesQuery = defaults.MaxSlotsPerSignaturesQuery
+	}
+	if dst.MaxFinalizedSlotLag == 0 && defaults.MaxFinalizedSlotLag != 0 {
+		dst.MaxFinalizedSlotLag = defaults.MaxFinalizedSlotLag
 	}
 }
 
