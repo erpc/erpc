@@ -153,3 +153,22 @@ func TestSkipOutcome_NeverRejects(t *testing.T) {
 	require.NoError(t, res.Err)
 	assert.Empty(t, res.Recorded)
 }
+
+// A rejecting check's class rides the Result so callers can feed PROVABLE
+// (deterministic) corruption into upstream health scoring while leaving
+// possibly-transient reorg-sensitive rejects out of it.
+func TestResult_RejectedClass(t *testing.T) {
+	t.Run("deterministic reject carries Deterministic", func(t *testing.T) {
+		res := validateGetLogs(t, `{"address":"0xaddr"}`,
+			`[{"address":"0xEVIL","topics":["0xa"],"blockNumber":"0x10","blockHash":"0xbb","logIndex":"0x0","transactionHash":"0xt1"}]`,
+			only("getLogsFilterSanity", nil), nil, nil)
+		require.Error(t, res.Err)
+		assert.Equal(t, Deterministic, res.RejectedClass)
+	})
+	t.Run("reorg-sensitive reject carries ReorgSensitive", func(t *testing.T) {
+		hist := mockHistory{0x10: "0xaa"}
+		res := validateBlockPolicy(t, blockResult("0x10", "0xDIFFERENT", "0xparent"), only("hashStability", nil), hist, rejectAll)
+		require.Error(t, res.Err)
+		assert.Equal(t, ReorgSensitive, res.RejectedClass)
+	})
+}

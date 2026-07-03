@@ -44,9 +44,14 @@ type Recorded struct {
 type Result struct {
 	Err             error
 	RejectedCheckID string
-	Finality        string // finality of the rejected block ("finalized"/"unfinalized"/"unknown"); "" if no reject
-	Recorded        []Recorded
-	Outcomes        []CheckOutcome
+	// RejectedClass is the failing check's FailureClass (meaningful only when
+	// Err != nil). Deterministic = provable corruption — callers may feed it
+	// into upstream health/misbehavior scoring; ReorgSensitive may still be a
+	// transient race, so it should not damage a score.
+	RejectedClass FailureClass
+	Finality      string // finality of the rejected block ("finalized"/"unfinalized"/"unknown"); "" if no reject
+	Recorded      []Recorded
+	Outcomes      []CheckOutcome
 }
 
 // CheckOutcome records what one check evaluation did. Outcome is one of:
@@ -160,6 +165,7 @@ func Validate(ctx context.Context, in Input) Result {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reject"})
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID
+			res.RejectedClass = c.Class
 			res.Finality = in.finalityOf(ctx, d)
 			return res
 		}

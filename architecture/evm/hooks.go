@@ -237,6 +237,17 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 						Str("check", res.RejectedCheckID).Str("finality", res.Finality).
 						Str("reason", res.Err.Error()).Msg("integrity: rejected response (caught bad data)")
 					rq.MarkIntegrityCaught(res.RejectedCheckID, res.Finality)
+				// A Deterministic reject is PROVABLE corruption from this upstream —
+				// feed it into misbehavior scoring so routing learns to avoid a
+				// chronically-corrupt node (an upstream once served 158k corrupt
+				// blocks while keeping a clean score, because content validation
+				// happens after the per-attempt outcome is classified).
+				// Reorg-sensitive rejects may be transient races; they don't score.
+				if res.RejectedClass == integrity.Deterministic {
+					if ht := u.Tracker(); ht != nil {
+						ht.RecordUpstreamMisbehavior(u, methodLower, rs.Finality(ctx))
+					}
+				}
 				validationErr = res.Err
 				rq.ClearLastValidResponse()
 				return rs, validationErr
