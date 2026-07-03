@@ -69,6 +69,13 @@ func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *ze
 		MaxRetries: aws.Int(5),
 	}
 
+	// S3-compatible providers (Tigris, MinIO, R2, …) — path-style keeps bucket
+	// resolution off DNS, which every compatible provider supports.
+	if cfg.S3.Endpoint != "" {
+		awsConfig.Endpoint = aws.String(cfg.S3.Endpoint)
+		awsConfig.S3ForcePathStyle = aws.Bool(true)
+	}
+
 	// Configure credentials if provided
 	if cfg.S3.Credentials != nil {
 		switch cfg.S3.Credentials.Mode {

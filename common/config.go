@@ -1838,6 +1838,10 @@ type S3FlushConfig struct {
 	// AWS region for S3 bucket (defaults to AWS_REGION env var)
 	Region string `yaml:"region,omitempty" json:"region"`
 
+	// Custom S3 endpoint URL for S3-compatible providers (Tigris, MinIO, R2, …).
+	// Empty = real AWS S3. When set, path-style addressing is used.
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint"`
+
 	// AWS credentials config (optional). If not specified, uses standard AWS credential chain:
 	// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
 	// 2. IAM role (for EC2/ECS/EKS)
@@ -1864,6 +1868,7 @@ func (c *MisbehaviorsDestinationConfig) Copy() *MisbehaviorsDestinationConfig {
 			MaxSize:       c.S3.MaxSize,
 			FlushInterval: c.S3.FlushInterval,
 			Region:        c.S3.Region,
+			Endpoint:      c.S3.Endpoint,
 			ContentType:   c.S3.ContentType,
 		}
 		if c.S3.Credentials != nil {

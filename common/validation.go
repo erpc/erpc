@@ -1278,6 +1278,11 @@ func (c *S3FlushConfig) Validate() error {
 	if c.FlushInterval < 0 {
 		return fmt.Errorf("s3.flushInterval must be >= 0")
 	}
+	if c.Endpoint != "" {
+		if u, err := url.Parse(c.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("s3.endpoint must be a valid http(s) URL, got %q", c.Endpoint)
+		}
+	}
 	if c.Credentials != nil {
 		mode := strings.ToLower(strings.TrimSpace(c.Credentials.Mode))
 		switch mode {
