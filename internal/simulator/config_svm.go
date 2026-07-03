@@ -1,6 +1,25 @@
 package simulator
 
-import "github.com/erpc/erpc/internal/policy"
+import (
+	"fmt"
+	"os"
+
+	"github.com/erpc/erpc/internal/policy"
+)
+
+// SeedFromFile loads a seed config from disk (operator-provided YAML,
+// e.g. mirroring a production topology) and expands the
+// {SELECTION_POLICY_FUNC} placeholder the same way the built-in
+// presets do. Endpoints still get rewritten to the synthetic loopback
+// hub at boot — the file only shapes the topology (ids, vendors, tags,
+// networks) and the failsafe/policy config the simulator starts with.
+func SeedFromFile(path string) (string, error) {
+	b, err := os.ReadFile(path) // #nosec G304 — operator-supplied path by design
+	if err != nil {
+		return "", fmt.Errorf("simulator: read seed file: %w", err)
+	}
+	return expandPolicyPlaceholder(string(b), policy.DefaultPolicySource()), nil
+}
 
 // SeedYAMLSvmExpanded mirrors SeedYAMLExpanded for the Solana preset:
 // the `{SELECTION_POLICY_FUNC}` placeholder expanded once at init.

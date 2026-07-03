@@ -101,6 +101,11 @@ func main() {
 	// default eth-mainnet one. Knobs, policy editor, failsafe, charts
 	// all work identically.
 	preset := flag.String("preset", "evm", "seed config preset: evm | svm")
+	// `-seed-file` boots from an operator-provided YAML instead of a
+	// built-in preset — e.g. a copy of a production topology. Endpoints
+	// are still rewritten to the synthetic loopback hub; the file only
+	// shapes topology (upstream ids/vendors/tags, network, failsafe).
+	seedFile := flag.String("seed-file", "", "path to a seed config YAML (overrides -preset)")
 	flag.Parse()
 
 	level, err := zerolog.ParseLevel(*logLevel)
@@ -134,6 +139,13 @@ func main() {
 		seedYAML = simulator.SeedYAMLSvmExpanded
 	default:
 		logger.Fatal().Str("preset", *preset).Msg("erpc-simulator: unknown -preset (want evm or svm)")
+	}
+	if *seedFile != "" {
+		s, serr := simulator.SeedFromFile(*seedFile)
+		if serr != nil {
+			logger.Fatal().Err(serr).Str("path", *seedFile).Msg("erpc-simulator: -seed-file load failed")
+		}
+		seedYAML = s
 	}
 
 	o, err := simulator.New(simulator.Options{
