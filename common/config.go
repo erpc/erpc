@@ -1361,9 +1361,17 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
-	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
+	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	// MatchRequestKind scopes this policy by who issued the request:
+	// "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
+	// the integrity module's canonical corroboration), or ""/"*" for both.
+	// This is what lets an operator give INTERNAL canonical fetches a
+	// consensus policy (quorum-verified ground truth, deduplicated to ~once
+	// per block by the ChainView) while user data methods rely on integrity
+	// validation instead of per-request fan-out.
+	MatchRequestKind string                      `yaml:"matchRequestKind,omitempty" json:"matchRequestKind,omitempty" tstype:"'user' | 'internal' | '*'"`
+	Retry            *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
 	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`

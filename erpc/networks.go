@@ -850,6 +850,14 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
+	// Request kind: "internal" = erpc's own auxiliary fetches (e.g. integrity's
+	// canonical corroboration), "user" = client traffic. Lets a policy give the
+	// deduplicated internal fetches consensus while user methods rely on
+	// integrity validation (matchRequestKind).
+	kind := "user"
+	if dirs := req.Directives(); dirs != nil && dirs.IsInternal {
+		kind = "internal"
+	}
 
 	// Iterate through executors in config order and return the first match.
 	// This respects the user-defined priority order in the config file.
@@ -863,7 +871,10 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		fl := fe.MatchFinality()
 		finalityMatches := len(fl) == 0 || slices.Contains(fl, finality)
 
-		if methodMatches && finalityMatches {
+		mk := fe.MatchRequestKind()
+		kindMatches := mk == "*" || mk == "" || mk == kind
+
+		if methodMatches && finalityMatches && kindMatches {
 			return fe
 		}
 	}

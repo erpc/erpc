@@ -1116,6 +1116,12 @@ func (f *FailsafeConfig) Validate() error {
 		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
 	}
 
+	switch f.MatchRequestKind {
+	case "", "*", "user", "internal":
+	default:
+		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+	}
+
 	if f.Timeout != nil {
 		if err := f.Timeout.Validate(); err != nil {
 			return err
