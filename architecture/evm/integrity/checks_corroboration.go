@@ -1,6 +1,10 @@
 package integrity
 
-import "context"
+import (
+	"context"
+
+	"github.com/erpc/erpc/common"
+)
 
 // Corroboration checks compare a narrow response against the canonical block
 // aggregate, force-fetched through the resolver. They are reorg-sensitive: a
@@ -47,8 +51,13 @@ func init() {
 				return nil // corroboration unavailable — no-op
 			}
 			block, ok := resolver.CanonicalReceipts(ctx, want.BlockHash)
-			if !ok {
-				return nil // couldn't fetch the canonical block — no-op
+			if !ok || len(block) == 0 {
+				// Canonical unavailable OR empty. An empty by-hash receipts response
+				// is what a tip-lagged corroboration node returns for a brand-new
+				// block it doesn't have yet — "corroboration unavailable", NOT
+				// evidence the tx is absent. (This was the hyperevm unfinalized-tip
+				// false positive: valid receipts rejected against an empty canonical.)
+				return nil
 			}
 
 			var match *Receipt
@@ -59,7 +68,16 @@ func init() {
 				}
 			}
 			if match == nil {
-				return failf("transaction %s not found in canonical block %s", want.TransactionHash, want.BlockHash)
+				// The tx isn't in the (by-hash, immutable) canonical block. Before
+				// rejecting, require the canonical fetch to be COMPLETE enough to
+				// contain this receipt's own claimed position: a canonical set shorter
+				// than the receipt's transactionIndex is a partial/tip-lagged fetch
+				// (the node hadn't fully built this brand-new block), not evidence the
+				// tx is absent — so skip rather than false-reject a valid receipt.
+				if ti, err := common.HexToInt64(want.TransactionIndex); err == nil && ti >= int64(len(block)) {
+					return nil
+				}
+				return failf("transaction %s not found in canonical block %s (canonical has %d receipts)", want.TransactionHash, want.BlockHash, len(block))
 			}
 			if len(want.Logs) != len(match.Logs) {
 				return failf("receipt has %d logs but canonical block has %d for this tx", len(want.Logs), len(match.Logs))

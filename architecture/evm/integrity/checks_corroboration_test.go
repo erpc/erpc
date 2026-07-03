@@ -109,6 +109,41 @@ func TestCheck_ReceiptVsBlock(t *testing.T) {
 		assert.Empty(t, res.Recorded)
 		assert.Equal(t, 0, fetches, "an ignored reorg-sensitive check must issue no canonical fetch")
 	})
+
+	// Tip-lag false-positive guard (the real hyperevm incident): the corroboration
+	// node lags the serving node, so a by-hash canonical receipts fetch for a
+	// brand-new block comes back EMPTY (or partial). An empty/partial canonical is
+	// "corroboration unavailable", NOT evidence the tx is absent — must not reject
+	// a valid receipt. The receipt here carries its real transactionIndex.
+	idxReceipt := []byte(`{"blockHash":"0xbb","blockNumber":"0x10","transactionHash":"0xaa","transactionIndex":"0x2","logs":[{"logIndex":"0x5"}]}`)
+
+	t.Run("empty canonical (tip-lagged node) → no-op, not reject", func(t *testing.T) {
+		res := validateReceipt(t, idxReceipt, cs, mockResolver{finalized: true, known: true, receipts: []Receipt{}, have: true})
+		assert.NoError(t, res.Err, "an empty canonical fetch must not reject a valid receipt")
+		assert.Empty(t, res.Recorded)
+	})
+
+	t.Run("partial canonical shorter than the receipt's index → no-op", func(t *testing.T) {
+		// Canonical returned only 1 receipt, but the receipt claims index 0x2 → the
+		// fetch is incomplete (didn't contain this tx's position yet) → skip.
+		partial := []Receipt{{BlockHash: "0xbb", TransactionHash: "0xcc"}}
+		res := validateReceipt(t, idxReceipt, cs, mockResolver{finalized: true, known: true, receipts: partial, have: true})
+		assert.NoError(t, res.Err)
+		assert.Empty(t, res.Recorded)
+	})
+
+	t.Run("complete canonical still missing the tx → genuine reject", func(t *testing.T) {
+		// Canonical has 3 receipts (indexes 0..2 present) and the tx genuinely isn't
+		// among them → the fetch is complete, the absence is real → reject.
+		complete := []Receipt{
+			{BlockHash: "0xbb", TransactionHash: "0xc0"},
+			{BlockHash: "0xbb", TransactionHash: "0xc1"},
+			{BlockHash: "0xbb", TransactionHash: "0xc2"},
+		}
+		res := validateReceipt(t, idxReceipt, cs, mockResolver{finalized: true, known: true, receipts: complete, have: true})
+		require.Error(t, res.Err, "a complete canonical genuinely missing the tx must still reject")
+		assert.True(t, common.HasErrorCode(res.Err, common.ErrCodeEndpointContentValidation))
+	})
 }
 
 func validateReceiptHist(t *testing.T, result []byte, cs CheckSet, r Resolver, hist History) Result {
