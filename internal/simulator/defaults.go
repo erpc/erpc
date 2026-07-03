@@ -27,6 +27,10 @@ func defaultKnobsFor(id UpstreamIdentity) UpstreamKnobs {
 	}
 	for _, t := range id.Tags {
 		switch t {
+		case "arch:svm":
+			// Solana-shaped upstream: 400ms slots. BlockLag then means
+			// "slots behind" and blockNumberLagAbove(...) reads slot lag.
+			k.BlockTimeMs = 400
 		case "premium":
 			k.BaseLatencyMs = 35
 			k.JitterMs = 12

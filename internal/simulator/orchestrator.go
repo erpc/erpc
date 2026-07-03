@@ -271,7 +271,17 @@ func (o *Orchestrator) bootFromYAML(ctx context.Context, yamlSrc string) error {
 		return fmt.Errorf("simulator: NewERPC: %w", err)
 	}
 	e.Bootstrap(ctx)
-	net, err := e.GetNetwork(ctx, "sim", "evm:1")
+	// Resolve the project + network the simulator drives from the YAML
+	// itself rather than hard-coding — non-EVM presets (svm:mainnet-beta)
+	// and operator edits both change the id.
+	if len(cfg.Projects) == 0 || len(cfg.Projects[0].Networks) == 0 {
+		return fmt.Errorf("simulator: config must declare one project with at least one network")
+	}
+	netID := cfg.Projects[0].Networks[0].NetworkId()
+	if netID == "" {
+		return fmt.Errorf("simulator: could not derive network id from the first network in config")
+	}
+	net, err := e.GetNetwork(ctx, cfg.Projects[0].Id, netID)
 	if err != nil {
 		return fmt.Errorf("simulator: GetNetwork: %w", err)
 	}

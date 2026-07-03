@@ -21,6 +21,14 @@ function TopBar({ theme, setTheme }) {
   // Sim-time is a derived stat: ms since boot, formatted M:SS.
   const simTime = formatSimTime(Date.now() - (window.useSimState(s => s.bootedAt) || Date.now()));
 
+  // Network label derived from the applied config rather than
+  // hard-coded — the svm preset (and operator edits) change it.
+  const yamlText = window.useSimState(s => s.yaml) || "";
+  const isSvm = /architecture:\s*svm/.test(yamlText);
+  const netLabel = isSvm
+    ? "solana-mainnet · svm:mainnet-beta"
+    : "eth-mainnet · chainId 1";
+
   return (
     <div className="topbar">
       <div className="tb-logo">
@@ -53,8 +61,8 @@ function TopBar({ theme, setTheme }) {
 
       <span className="tb-spacer" />
 
-      <select className="tb-select" defaultValue="eth-mainnet" onChange={() => {}}>
-        <option>eth-mainnet · chainId 1</option>
+      <select className="tb-select" value={netLabel} onChange={() => {}}>
+        <option>{netLabel}</option>
       </select>
 
       <div className="tb-sep" />
