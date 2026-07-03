@@ -50,12 +50,13 @@ type Result struct {
 }
 
 // CheckOutcome records what one check evaluation did. Outcome is one of:
-// "pass" (ran, no violation — currently also covers a check that could not
-// evaluate the response), "reject" (failed, response rejected), "soft_flag"
-// (reorg-sensitive mismatch recorded but served), "reconfirmed" (a pin-anchored
-// mismatch cleared once the stale pin was re-confirmed against a fresh
-// canonical fetch — a reorg, not corruption; served), "off" (disabled for this
-// finality or check).
+// "pass" (an actual verification ran and found no violation), "skip" (the
+// check could not evaluate this response — missing wiring, cold cache, data
+// not fully modeled; see Skipped), "reject" (failed, response rejected),
+// "soft_flag" (reorg-sensitive mismatch recorded but served), "reconfirmed"
+// (a pin-anchored mismatch cleared once the stale pin was re-confirmed
+// against a fresh canonical fetch — a reorg, not corruption; served), "off"
+// (disabled for this finality or check).
 type CheckOutcome struct {
 	CheckID string
 	Outcome string
@@ -115,6 +116,10 @@ func Validate(ctx context.Context, in Input) Result {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "pass"})
 			continue
 		}
+		if v == Skipped {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "skip"})
+			continue
+		}
 
 		// Corroborate-before-verdict: a reorg-sensitive violation anchored to a
 		// CACHED pin may only mean the pin is stale (routine reorg) — acting on
@@ -128,7 +133,9 @@ func Validate(ctx context.Context, in Input) Result {
 		if v.DisputedPin > 0 && c.Class == ReorgSensitive {
 			if rc, ok := in.History.(PinReconfirmer); ok {
 				if _, confirmed := rc.ReconfirmPin(ctx, v.DisputedPin); confirmed {
-					if v2 := c.Run(ctx, d, cfg); v2 == nil {
+					// Skipped counts as cleared too: the adopted pin resolved the
+					// dispute and the check has nothing left to verify.
+					if v2 := c.Run(ctx, d, cfg); v2 == nil || v2 == Skipped {
 						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reconfirmed"})
 						continue
 					} else {

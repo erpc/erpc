@@ -207,8 +207,10 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 				}
 			}
 			span.End()
-			// Per-check attempts/outcomes (pass/reject/soft_flag/off) — sum = total
-			// attempts. Higher volume than the violation counter below.
+			// Per-check attempts/outcomes (pass/skip/reject/soft_flag/reconfirmed/
+			// off) — sum = total attempts. "pass" means an actual verification ran;
+			// "skip" means the check couldn't evaluate (cold cache, missing wiring).
+			// Higher volume than the violation counter below.
 			for _, oc := range res.Outcomes {
 				telemetry.MetricIntegrityCheck.WithLabelValues(
 					n.ProjectId(), u.VendorName(), n.Label(), u.Id(), methodLower, oc.CheckID, oc.Outcome,

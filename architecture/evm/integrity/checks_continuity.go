@@ -22,19 +22,19 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			hist := historyFrom(ctx)
 			if hist == nil {
-				return nil
+				return Skipped
 			}
 			h := d.Header()
 			if h == nil || h.Number == "" || h.ParentHash == "" {
-				return nil
+				return Skipped
 			}
 			n, err := common.HexToInt64(h.Number)
 			if err != nil || n <= 0 {
-				return nil
+				return Skipped
 			}
 			prev, ok := hist.HashAt(n - 1)
 			if !ok {
-				return nil // parent not observed yet
+				return Skipped // parent not observed yet — nothing to link against
 			}
 			if !eqHex(prev, h.ParentHash) {
 				// Anchored to the cached pin for the PARENT — after a reorg the
@@ -54,19 +54,19 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			hist := historyFrom(ctx)
 			if hist == nil {
-				return nil
+				return Skipped
 			}
 			h := d.Header()
 			if h == nil || h.Number == "" || h.Hash == "" {
-				return nil
+				return Skipped
 			}
 			n, err := common.HexToInt64(h.Number)
 			if err != nil {
-				return nil
+				return Skipped
 			}
 			prev, ok := hist.HashAt(n)
 			if !ok {
-				return nil
+				return Skipped // number not observed yet — no pin to compare
 			}
 			if !eqHex(prev, h.Hash) {
 				// Anchored to the cached pin for this number — a reorg makes the

@@ -23,11 +23,11 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			receipts := d.Receipts()
 			if len(receipts) != 1 {
-				return nil
+				return Skipped
 			}
 			want := receipts[0]
 			if want.BlockHash == "" {
-				return nil
+				return Skipped
 			}
 
 			// 1. Consistency: the receipt's block must be the one we committed to
@@ -48,7 +48,7 @@ func init() {
 			// wrong logIndex) the intrinsic checks can't see.
 			resolver := resolverFrom(ctx)
 			if resolver == nil {
-				return nil // corroboration unavailable — no-op
+				return Skipped // corroboration unavailable — no-op
 			}
 			block, ok := resolver.CanonicalReceipts(ctx, want.BlockHash)
 			if !ok || len(block) == 0 {
@@ -57,7 +57,7 @@ func init() {
 				// block it doesn't have yet — "corroboration unavailable", NOT
 				// evidence the tx is absent. (This was the hyperevm unfinalized-tip
 				// false positive: valid receipts rejected against an empty canonical.)
-				return nil
+				return Skipped
 			}
 
 			var match *Receipt
@@ -75,7 +75,7 @@ func init() {
 				// (the node hadn't fully built this brand-new block), not evidence the
 				// tx is absent — so skip rather than false-reject a valid receipt.
 				if ti, err := common.HexToInt64(want.TransactionIndex); err == nil && ti >= int64(len(block)) {
-					return nil
+					return Skipped
 				}
 				return failf("transaction %s not found in canonical block %s (canonical has %d receipts)", want.TransactionHash, want.BlockHash, len(block))
 			}

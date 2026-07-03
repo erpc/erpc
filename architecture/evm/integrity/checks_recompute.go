@@ -139,35 +139,35 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			resolver := resolverFrom(ctx)
 			if resolver == nil {
-				return nil
+				return Skipped
 			}
 			var rawReceipts []json.RawMessage
 			if err := json.Unmarshal(d.raw, &rawReceipts); err != nil || len(rawReceipts) == 0 {
-				return nil
+				return Skipped
 			}
 			ref := d.BlockRef()
 			if ref == "" {
-				return nil
+				return Skipped
 			}
 			header, ok := resolver.CanonicalHeader(ctx, ref)
 			if !ok || header == nil || header.ReceiptsRoot == "" {
-				return nil
+				return Skipped
 			}
 
 			typed := make(gethtypes.Receipts, 0, len(rawReceipts))
 			for _, rr := range rawReceipts {
 				var fields map[string]json.RawMessage
 				if json.Unmarshal(rr, &fields) != nil {
-					return nil
+					return Skipped
 				}
 				for k := range fields {
 					if _, ok := knownReceiptFields[k]; !ok {
-						return nil // custom receipt field → not fully modeled; skip
+						return Skipped // custom receipt field → not fully modeled
 					}
 				}
 				var rcpt gethtypes.Receipt
 				if rcpt.UnmarshalJSON(rr) != nil {
-					return nil
+					return Skipped
 				}
 				typed = append(typed, &rcpt)
 			}

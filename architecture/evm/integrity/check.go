@@ -53,6 +53,14 @@ type Violation struct {
 	DisputedPin int64
 }
 
+// Skipped is the sentinel a check returns when it could not perform its
+// verification at all — missing wiring (no history/resolver), cold cache,
+// canonical unavailable, or data the check does not fully model. It is not a
+// violation and never affects the verdict; the engine records it as outcome
+// "skip" so that "pass" means an actual verification happened ("N verified,
+// 0 mismatches") rather than folding no-ops into passes.
+var Skipped = &Violation{Reason: "skipped: check could not evaluate this response"}
+
 // failf builds a Violation with a formatted reason.
 func failf(format string, args ...any) *Violation {
 	return &Violation{Reason: fmt.Sprintf(format, args...)}
@@ -75,9 +83,10 @@ type Check struct {
 	Class FailureClass
 	// Methods are the lowercased JSON-RPC methods this check applies to.
 	Methods []string
-	// Run inspects the decoded response and returns a Violation, or nil when
-	// the response satisfies this check (including when the data the check
-	// needs is absent — an absent field is not a violation).
+	// Run inspects the decoded response and returns a Violation, nil when the
+	// response was verified and satisfies this check, or the Skipped sentinel
+	// when the check could not evaluate the response at all (absent data,
+	// missing wiring, cold cache) — an absent field is never a violation.
 	Run func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation
 }
 

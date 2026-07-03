@@ -37,7 +37,7 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			f := d.LogsFilter()
 			if f == nil {
-				return nil // couldn't reproduce the filter — skip, never reject
+				return Skipped // couldn't reproduce the filter — never reject
 			}
 			from, to, concrete := f.ConcreteRange()
 			for i := range d.Logs() {
@@ -67,12 +67,23 @@ func init() {
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			f := d.LogsFilter()
 			if f == nil {
-				return nil
+				return Skipped
 			}
 			hist := historyFrom(ctx)
 			cache, hasCache := hist.(ReceiptCache)
 			if !hasCache {
-				return nil // no receipts cache wired — opportunistic check no-ops
+				return Skipped // no receipts cache wired — opportunistic check no-ops
+			}
+
+			// This check is opportunistic (cache-only), so "pass" is earned: it is
+			// reported only when at least one block was actually compared against
+			// canonical receipts. A run where every block was cold is a "skip".
+			verified := 0
+			done := func() *Violation {
+				if verified == 0 {
+					return Skipped
+				}
+				return nil
 			}
 
 			// Group the response's logs by the block they claim, keyed by the
@@ -100,7 +111,12 @@ func init() {
 				if !ok || len(expected) == 0 {
 					continue // not warm — skip this block
 				}
-				if v := compareBlockLogs(f, h, expected, got); v != nil {
+				switch v := compareBlockLogs(f, h, expected, got); v {
+				case nil:
+					verified++
+				case Skipped:
+					// this block's data wasn't comparable — not a verification
+				default:
 					return v
 				}
 			}
@@ -112,11 +128,11 @@ func init() {
 			// disputes the pin, so a stale pin is re-confirmed before the verdict.
 			from, to, concrete := f.ConcreteRange()
 			if !concrete || to-from >= absentBlockScanCap {
-				return nil
+				return done()
 			}
 			resolver := resolverFrom(ctx)
 			if resolver == nil {
-				return nil
+				return done()
 			}
 			for n := from; n <= to; n++ {
 				pin, known := hist.HashAt(n)
@@ -144,8 +160,9 @@ func init() {
 				if missing > 0 {
 					return failf("response has no logs for finalized block %d (%s) but its canonical receipts contain %d filter-matching logs", n, pin, missing).disputes(n)
 				}
+				verified++ // an absent-block sweep against warm canonical data IS a verification
 			}
-			return nil
+			return done()
 		},
 	})
 }
@@ -153,7 +170,8 @@ func init() {
 // compareBlockLogs cross-references one block's response logs against the
 // block's cached canonical receipts (both hash-anchored to the same immutable
 // block hash): the filter applied to the canonical logs must yield exactly the
-// response's set, with identical content per logIndex.
+// response's set, with identical content per logIndex. Returns Skipped when
+// the data is not comparable (malformed indexes) — never rejects on our own data.
 func compareBlockLogs(f *LogsFilter, blockHash string, canonical []Receipt, got []*Log) *Violation {
 	expected := map[int64]*Log{}
 	for i := range canonical {
@@ -164,7 +182,7 @@ func compareBlockLogs(f *LogsFilter, blockHash string, canonical []Receipt, got 
 			}
 			idx, err := common.HexToInt64(l.LogIndex)
 			if err != nil {
-				return nil // canonical cache not comparable — skip, never reject on our own data
+				return Skipped // canonical cache not comparable
 			}
 			expected[idx] = l
 		}
@@ -174,7 +192,7 @@ func compareBlockLogs(f *LogsFilter, blockHash string, canonical []Receipt, got 
 	for _, l := range got {
 		idx, err := common.HexToInt64(l.LogIndex)
 		if err != nil {
-			return nil // shape checks own malformed indexes
+			return Skipped // shape checks own malformed indexes
 		}
 		if seen[idx] {
 			return failf("block %s: logIndex %d appears more than once in the response", blockHash, idx)
