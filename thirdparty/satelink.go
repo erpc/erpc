@@ -108,7 +108,7 @@ func (v *SatelinkVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Lo
 
 		path, ok := satelinkNetworks[chainID]
 		if !ok {
-			return nil, fmt.Errorf("unsupported network chain ID for Satelink: %d", chainID)
+			return nil, nil
 		}
 
 		satelinkURL := fmt.Sprintf("%s/%s", satelinkBaseURL, path)
