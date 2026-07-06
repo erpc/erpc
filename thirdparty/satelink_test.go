@@ -57,10 +57,10 @@ func TestSatelinkVendor_GenerateConfigs(t *testing.T) {
 		assert.False(t, hasKey)
 	})
 
-	t.Run("rejects unsupported chain", func(t *testing.T) {
+	t.Run("unsupported chain returns empty", func(t *testing.T) {
 		ups := &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{ChainId: 1}}
-		_, err := vendor.GenerateConfigs(ctx, &logger, ups, common.VendorSettings{"apiKey": "sk_test_123"})
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "unsupported network chain ID")
+		cfgs, err := vendor.GenerateConfigs(ctx, &logger, ups, common.VendorSettings{"apiKey": "sk_test_123"})
+		assert.NoError(t, err)
+		assert.Empty(t, cfgs)
 	})
 }
