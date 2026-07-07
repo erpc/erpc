@@ -26,9 +26,13 @@ type QuicknodeVendor struct {
 }
 
 type QuicknodeEndpoint struct {
-	ID      string `json:"id"`
-	HttpUrl string `json:"http_url"`
-	ChainID int64  `json:"-"`
+	ID         string `json:"id"`
+	HttpUrl    string `json:"http_url"`
+	Multichain bool   `json:"is_multichain"`
+	ChainID    int64  `json:"-"`
+	// Slug is populated for derived Chain Prism entries (e.g. "arbitrum-mainnet").
+	// Empty for the original endpoint returned by /v0/endpoints.
+	Slug string `json:"-"`
 }
 
 type QuicknodeEndpointsResponse struct {
@@ -36,12 +40,35 @@ type QuicknodeEndpointsResponse struct {
 	Error string               `json:"error,omitempty"`
 }
 
-type QuicknodeFilterParams struct {
-	TagIDs    []int
-	TagLabels []string
+// QuicknodeUrlsResponse is the wire shape of GET /v0/endpoints/:id/urls.
+// Data is nil-safe: QuickNode returns {"data": null, "error": "..."} for
+// invalid ids, and {"data": {..., "multichain_urls": null}} for single-chain
+// endpoints.
+type QuicknodeUrlsResponse struct {
+	Data  *QuicknodeUrlsData `json:"data"`
+	Error string             `json:"error,omitempty"`
 }
 
-const DefaultQuicknodeRecheckInterval = 1 * time.Hour
+type QuicknodeUrlsData struct {
+	HttpUrl        string                       `json:"http_url"`
+	WssUrl         string                       `json:"wss_url"`
+	MultichainUrls map[string]QuicknodeSlugUrls `json:"multichain_urls"`
+}
+
+type QuicknodeSlugUrls struct {
+	HttpUrl string `json:"http_url"`
+	WssUrl  string `json:"wss_url"`
+}
+
+type QuicknodeFilterParams struct {
+	TagIDs           []int
+	TagLabels        []string
+	EnableMultiChain bool
+}
+
+const (
+	DefaultQuicknodeRecheckInterval = 1 * time.Hour
+)
 
 func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{
@@ -86,6 +113,11 @@ func (v *QuicknodeVendor) extractFilterParams(settings common.VendorSettings) *Q
 				}
 			}
 		}
+	}
+
+	// Opt-in flag for QuickNode Chain Prism (multi-chain) endpoint expansion.
+	if enable, ok := settings["enableMultiChain"].(bool); ok {
+		params.EnableMultiChain = enable
 	}
 
 	return params
@@ -163,10 +195,14 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 		for _, endpoint := range endpoints {
 			if endpoint.ChainID == chainID && endpoint.HttpUrl != "" {
 				upsCopy := upstream.Copy()
+				suffix := endpoint.ID
+				if endpoint.Slug != "" {
+					suffix = fmt.Sprintf("%s-%s", endpoint.ID, endpoint.Slug)
+				}
 				if upstream.Id != "" {
-					upsCopy.Id = fmt.Sprintf("%s-%s", upstream.Id, endpoint.ID)
+					upsCopy.Id = fmt.Sprintf("%s-%s", upstream.Id, suffix)
 				} else {
-					upsCopy.Id = fmt.Sprintf("quicknode-%d-%s", chainID, endpoint.ID)
+					upsCopy.Id = fmt.Sprintf("quicknode-%d-%s", chainID, suffix)
 				}
 				upsCopy.Endpoint = endpoint.HttpUrl
 				upsCopy.Type = common.UpstreamTypeEvm
@@ -195,10 +231,18 @@ func (v *QuicknodeVendor) resolveEndpoints(logger *zerolog.Logger, apiKey string
 				// without invalidating the rest of the data.
 				logger.Warn().Err(err).Msg("some quicknode chain ID fetches failed; continuing with available data")
 			}
+			// If Chain Prism support is opted-in, fetch per-endpoint multichain URLs
+			// from /v0/endpoints/:id/urls and probe each one. The probe is still the
+			// activation gate (Select Access Chains the customer hasn't paid for are
+			// listed in /urls but return 401 at JSON-RPC time).
+			if filterParams != nil && filterParams.EnableMultiChain {
+				extra := v.probeMultiChainExpansions(ctx, logger, fetched, apiKey)
+				fetched = append(fetched, extra...)
+			}
 			return fetched, nil
 		})
 	}
-	if endpoints == nil {
+	if !v.cache.Has(apiKey) {
 		return nil, false
 	}
 	return endpoints, true
@@ -295,7 +339,7 @@ func (v *QuicknodeVendor) fetchChainIDs(ctx context.Context, logger *zerolog.Log
 	}
 
 	for _, endpoint := range endpoints {
-		if endpoint.HttpUrl == "" {
+		if endpoint.HttpUrl == "" || endpoint.ChainID != 0 {
 			continue
 		}
 
@@ -311,59 +355,13 @@ func (v *QuicknodeVendor) fetchChainIDs(ctx context.Context, logger *zerolog.Log
 			}
 			defer sem.Release(1)
 
-			// Make eth_chainId call
-			reqBody := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`)
-			req, err := http.NewRequestWithContext(ctx, "POST", e.HttpUrl, bytes.NewReader(reqBody))
+			chainID, err := probeChainID(ctx, httpClient, e.HttpUrl)
 			if err != nil {
 				mu.Lock()
-				errors = append(errors, fmt.Errorf("failed to create request for endpoint %s: %w", e.ID, err))
+				errors = append(errors, fmt.Errorf("endpoint %s: %w", e.ID, err))
 				mu.Unlock()
 				return
 			}
-
-			req.Header.Set("Content-Type", "application/json")
-
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				mu.Lock()
-				errors = append(errors, fmt.Errorf("failed to fetch chain ID for endpoint %s: %w", e.ID, err))
-				mu.Unlock()
-				return
-			}
-			defer resp.Body.Close()
-
-			var result struct {
-				Result string `json:"result"`
-				Error  *struct {
-					Code    int    `json:"code"`
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-
-			if err := common.SonicCfg.NewDecoder(resp.Body).Decode(&result); err != nil {
-				mu.Lock()
-				errors = append(errors, fmt.Errorf("failed to decode chain ID response for endpoint %s: %w", e.ID, err))
-				mu.Unlock()
-				return
-			}
-
-			if result.Error != nil {
-				mu.Lock()
-				errors = append(errors, fmt.Errorf("RPC error for endpoint %s: %s", e.ID, result.Error.Message))
-				mu.Unlock()
-				return
-			}
-
-			// Parse hex chain ID
-			chainIDStr := strings.TrimPrefix(result.Result, "0x")
-			chainID, err := strconv.ParseInt(chainIDStr, 16, 64)
-			if err != nil {
-				mu.Lock()
-				errors = append(errors, fmt.Errorf("failed to parse chain ID for endpoint %s: %w", e.ID, err))
-				mu.Unlock()
-				return
-			}
-
 			e.ChainID = chainID
 		}(endpoint)
 	}
@@ -375,6 +373,186 @@ func (v *QuicknodeVendor) fetchChainIDs(ctx context.Context, logger *zerolog.Log
 	}
 
 	return nil
+}
+
+// probeChainID sends a JSON-RPC eth_chainId call to httpUrl and returns the
+// resolved chain ID, or an error describing why the probe failed. Used both
+// for root endpoints and for Chain Prism derived URLs.
+func probeChainID(ctx context.Context, httpClient *http.Client, httpUrl string) (int64, error) {
+	reqBody := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`)
+	req, err := http.NewRequestWithContext(ctx, "POST", httpUrl, bytes.NewReader(reqBody))
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch chain ID: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("non-200 status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Result string `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := common.SonicCfg.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("failed to decode chain ID response: %w", err)
+	}
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("RPC error: %s", result.Error.Message)
+	}
+
+	chainIDStr := strings.TrimPrefix(result.Result, "0x")
+	chainID, err := strconv.ParseInt(chainIDStr, 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse chain ID %q: %w", result.Result, err)
+	}
+	return chainID, nil
+}
+
+// fetchEndpointUrls calls GET /v0/endpoints/:id/urls and returns the
+// slug -> http_url map of multichain URLs for the endpoint. Returns
+// (nil, nil) when the endpoint is single-chain (multichain_urls is null)
+// or the endpoint id is no longer valid (HTTP 404).
+func fetchEndpointUrls(ctx context.Context, apiKey, endpointID string) (map[string]string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.quicknode.com/v0/endpoints/"+endpointID+"/urls", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("quicknode urls API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var out QuicknodeUrlsResponse
+	if err := common.SonicCfg.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("failed to decode QuickNode urls response: %w", err)
+	}
+	if out.Error != "" {
+		return nil, fmt.Errorf("quicknode urls API error: %s", out.Error)
+	}
+	if out.Data == nil || out.Data.MultichainUrls == nil {
+		return nil, nil
+	}
+
+	urls := make(map[string]string, len(out.Data.MultichainUrls))
+	for slug, entry := range out.Data.MultichainUrls {
+		if entry.HttpUrl != "" {
+			urls[slug] = entry.HttpUrl
+		}
+	}
+	return urls, nil
+}
+
+// probeMultiChainExpansions fetches /v0/endpoints/:id/urls per multichain
+// endpoint, then probes each listed URL with eth_chainId. Successful probes
+// yield a derived endpoint carrying the probed chain_id; failures (non-EVM
+// slugs, Select Access Chains the customer hasn't paid for, etc.) are
+// dropped at debug level. Single-chain endpoints are skipped entirely.
+func (v *QuicknodeVendor) probeMultiChainExpansions(ctx context.Context, logger *zerolog.Logger, endpoints []*QuicknodeEndpoint, apiKey string) []*QuicknodeEndpoint {
+	// Chain Prism discovery probes ~137 URLs per multichain endpoint and can
+	// take 60-90s end-to-end on a cold account. The caller's context is
+	// typically bound to the triggering HTTP request (default 30s read
+	// timeout), which would cancel probes mid-sweep and leave chains
+	// unregistered. Detach via context.WithoutCancel + our own budget so the
+	// sweep runs to completion; subsequent requests then see a stable set.
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
+	defer cancel()
+
+	type candidate struct {
+		source *QuicknodeEndpoint
+		slug   string
+		url    string
+	}
+
+	var candidates []candidate
+	for _, e := range endpoints {
+		if !e.Multichain {
+			continue
+		}
+		urls, err := fetchEndpointUrls(probeCtx, apiKey, e.ID)
+		if err != nil {
+			logger.Warn().Str("endpoint_id", e.ID).Err(err).Msg("failed to fetch QuickNode endpoint urls; skipping multi-chain expansion for this endpoint")
+			continue
+		}
+		for slug, httpURL := range urls {
+			if httpURL == "" || httpURL == e.HttpUrl {
+				// Skip the endpoint's own root URL to avoid duplicate
+				// registrations; it's already in the endpoints list.
+				continue
+			}
+			candidates = append(candidates, candidate{source: e, slug: slug, url: httpURL})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// /v0/endpoints/:id/urls returns every slug QuickNode supports (~137
+	// including non-EVM like btc/solana), and cold-start latency on
+	// never-touched EVM subdomains routinely reaches 15-25s. Size the
+	// semaphore large enough that all candidates can dispatch in a single
+	// batch even when tens of them run their full 30s HTTP timeout, so slow
+	// probes never starve the queue and block legitimate EVM chains.
+	sem := semaphore.NewWeighted(60)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var successes []*QuicknodeEndpoint
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+
+	for _, c := range candidates {
+		wg.Add(1)
+		go func(c candidate) {
+			defer wg.Done()
+			if err := sem.Acquire(probeCtx, 1); err != nil {
+				return
+			}
+			defer sem.Release(1)
+
+			probed, err := probeChainID(probeCtx, httpClient, c.url)
+			if err != nil {
+				// Expected: non-EVM slugs and un-activated Select chains
+				// return 401/404 or non-JSON-RPC bodies.
+				logger.Debug().Str("endpoint_id", c.source.ID).Str("slug", c.slug).Err(err).Msg("quicknode multi-chain probe failed")
+				return
+			}
+			mu.Lock()
+			successes = append(successes, &QuicknodeEndpoint{
+				ID:      c.source.ID,
+				HttpUrl: c.url,
+				ChainID: probed,
+				Slug:    c.slug,
+			})
+			mu.Unlock()
+		}(c)
+	}
+	wg.Wait()
+
+	return successes
 }
 
 func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {

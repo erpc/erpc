@@ -361,7 +361,7 @@ ERC-4337 bundler/paymaster. **Method allow-list injected**: `ignoreMethods: ["*"
 
 #### quicknode
 
-Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoints?limit=100&offset=N` with `x-api-key` header and optional tag filters; a response-level `error` field aborts the refresh; chain ids discovered by `eth_chainId` probe per endpoint (concurrency-limited, semaphore 10, 10 s timeout). **Cache key is `apiKey` only** — two providers sharing an apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Missing `apiKey` → `(false, nil)`. Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching endpoint; id `{upstreamId}-{endpointID}`. Full error mapping: `-32614` or (`eth_getLogs` + message `"limited to"`) → `ErrEndpointRequestTooLarge`; `-32009`/`-32007` → capacity exceeded; `-32612`/`-32613` → `ErrEndpointUnsupported`; message `"failed to parse"` → client-side, not retryable toward network; `-32010` (tx cost exceeds gas limit) → client-side but network-retryable (per-client gas caps differ); `-32602` + `"cannot unmarshal hex string"` → invalid-argument client-side, not retryable; message `"UNAUTHORIZED"` → unauthorized; code `3` → EVM revert. Note: the error handler builds a fresh local details map, so per-request `details` passed by the caller are not modified.
+Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoints?limit=100&offset=N` with `x-api-key` header and optional tag filters; a response-level `error` field aborts the refresh; chain ids discovered by `eth_chainId` probe per endpoint (concurrency-limited, semaphore 10, 10 s timeout). **Chain Prism (opt-in)**: when `enableMultiChain: true`, each `is_multichain` endpoint triggers `GET /v0/endpoints/:id/urls` and an `eth_chainId` probe per listed slug; activated chains register as derived upstreams with id `{upstreamId}-{endpointID}-{slug}` (e.g. `quicknode-42161-<endpointId>-arbitrum-mainnet`). Unsubscribed Select Access chains are listed in the API but return `401` on probe and are dropped at debug level. **Cache key is `apiKey` only** — two providers sharing an apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Missing `apiKey` → `(false, nil)`. Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching endpoint; id `{upstreamId}-{endpointID}` (or with slug suffix for Chain Prism derivatives). Full error mapping: `-32614` or (`eth_getLogs` + message `"limited to"`) → `ErrEndpointRequestTooLarge`; `-32009`/`-32007` → capacity exceeded; `-32612`/`-32613` → `ErrEndpointUnsupported`; message `"failed to parse"` → client-side, not retryable toward network; `-32010` (tx cost exceeds gas limit) → client-side but network-retryable (per-client gas caps differ); `-32602` + `"cannot unmarshal hex string"` → invalid-argument client-side, not retryable; message `"UNAUTHORIZED"` → unauthorized; code `3` → EVM revert. Note: the error handler builds a fresh local details map, so per-request `details` passed by the caller are not modified.
 
 | key | required | default |
 |---|---|---|
@@ -369,8 +369,9 @@ Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoint
 | `recheckInterval` | no | `1h` |
 | `tagIds` | no | `nil` |
 | `tagLabels` | no | `nil` |
+| `enableMultiChain` | no | `false` |
 
-<SourceLink file="thirdparty/quicknode.go" lines="44-452" />
+<SourceLink file="thirdparty/quicknode.go" lines="23-631" />
 
 #### repository
 
@@ -678,12 +679,44 @@ export default createConfig({
 });`}
 />
 
+**6. QuickNode Chain Prism (multi-chain endpoints).** [Chain Prism](https://www.quicknode.com/guides/quicknode-products/how-to-use-multichain-endpoint) endpoints expose many chains through one QuickNode endpoint. Opt in with `enableMultiChain: true` — eRPC fetches per-chain URLs and probes each with `eth_chainId`, registering every activated chain as its own upstream:
+
+<ConfigTabs
+	path="projects[].providers[]"
+	yaml={`projects:
+  - id: main
+    providers:
+      - id: quicknode-prism
+        vendor: quicknode
+        settings:
+          apiKey: \${QN_KEY}
+          enableMultiChain: true
+          tagLabels: ["production"]`}
+	ts={`import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    providers: [{
+      id: "quicknode-prism",
+      vendor: "quicknode",
+      settings: {
+        apiKey: process.env.QN_KEY,
+        enableMultiChain: true,
+        tagLabels: ["production"],
+      },
+    }],
+  }],
+});`}
+/>
+
 ### Best practices
 
 - Use **URL shorthands** (`alchemy://KEY`) for the common case — they are equivalent to a full `providers[]` entry with a `"*"` override and avoid boilerplate.
 - Use **`onlyNetworks`** to restrict expensive vendors to the chains you actually need; it also prevents the vendor's `SupportsNetwork` from being called for irrelevant chains.
 - Use **exact `evm:<chainId>` keys** in `overrides` — never mix a catch-all `"*"` with more-specific patterns in the same map. Go map iteration is nondeterministic; overlapping keys produce different results across restarts.
 - For **QuickNode** with multiple logical endpoint groups, use a separate `apiKey` per group (provisioned in the QuickNode dashboard). Sharing one `apiKey` with different `tagIds`/`tagLabels` shares one endpoint snapshot due to the apiKey-only cache key.
+- **QuickNode Chain Prism** is off by default (`enableMultiChain: false`). Enable it only when your account uses multi-chain endpoints — the first refresh probes every listed slug and can take 60–90 s on a cold account.
 - **`recheckInterval` cannot be set from YAML or TypeScript config.** The type assertion `.(time.Duration)` fails on YAML strings and JSON numbers. Use programmatic Go config (`common.VendorSettings{"recheckInterval": 12 * time.Hour}`) if you need a custom freshness window.
 - Vendors with no static fallback (conduit, superchain, tenderly, quicknode, chainstack, repository) return `ErrRemoteCacheCold` on cold start. The initializer retries with backoff, but first requests for those networks will see `ErrNetworkInitializing` until the remote catalog fetches. Pair these vendors with a fallback provider that has a static map if cold-start latency matters.
 - **Do not use `providers: []` to "disable" auto-injection** — an explicit empty providers list still triggers default injection if upstreams is also empty. Provide at least one upstream or one provider to take full control.
@@ -698,7 +731,7 @@ export default createConfig({
 6. **Impossible range conditions in alchemy/conduit error mapping**: alchemy's `code >= -32099 && code <= -32599` can never be true; only the message-match and code-3 branches actually fire. <SourceLink file="thirdparty/alchemy.go" lines="275-326" />
 7. **infura's Avalanche `/ext/bc/C/rpc` branch is unreachable** — map keys are `avalanche-mainnet`/`avalanche-fuji` but branch tests `ava-mainnet`/`ava-testnet`. <SourceLink file="thirdparty/infura.go" lines="90-93" />
 8. **`overrides` first-match is Go map-iteration order** (nondeterministic for overlapping patterns). Pattern-match errors are silently skipped. <SourceLink file="thirdparty/provider.go" lines="81-91" />
-9. **quicknode cache key is `apiKey` only** — two providers with the same apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Chainstack includes filters in its cache key and is safe. <SourceLink file="thirdparty/quicknode.go" lines="184-205" />
+9. **quicknode cache key is `apiKey` only** — two providers with the same apiKey but different `tagIds`/`tagLabels` share one endpoint snapshot. Chainstack includes filters in its cache key and is safe. <SourceLink file="thirdparty/quicknode.go" lines="217-248" />
 10. **`erpc://host:8080` shorthand forces HTTPS** — `buildProviderSettings` hardcodes `https://`. Use `providers[].settings.endpoint` with an explicit URL for non-TLS targets. <SourceLink file="common/defaults.go" lines="1389-1404" />
 11. **`onlyNetworks`/`ignoreNetworks` are exact string matches** (not wildcards), require `evm:<positiveInt>`, and are mutually exclusive. `ignoreNetworks` is dropped from `MarshalJSON`. <SourceLink file="thirdparty/provider.go" lines="34-49" />
 12. **`os.ExpandEnv` runs on every provider-generated endpoint** — a literal `$` in an API key is substituted from the environment (often to empty). Static upstreams do not get this treatment. <SourceLink file="thirdparty/provider.go" lines="63-71" />
@@ -712,6 +745,7 @@ export default createConfig({
 20. **`LookupByUpstream` with an explicit but non-existent `vendorName` returns nil** — it does not fall through to `OwnsUpstream` matching. If `upstream.vendorName` is set to an unregistered name, vendor error-mapping is silently lost. Registration order of the 23 vendors determines which vendor wins when multiple `OwnsUpstream` checks return true for the same endpoint. <SourceLink file="thirdparty/vendors_registry.go" lines="54-71" />
 21. **`llama` and `routemesh` `OwnsUpstream` do not check their own scheme prefixes**: `llama.OwnsUpstream` only matches `.llamarpc.com`; `routemesh.OwnsUpstream` only matches `vendorName=="routemesh"` or endpoint containing `routemes.sh`. Both shorthands (`llama://`, `routemesh://`) work only because shorthand conversion in `common/defaults.go` runs before vendor lookup. <SourceLink file="thirdparty/llama.go" lines="95-97" /> <SourceLink file="thirdparty/routemesh.go" lines="135-140" />
 22. **dwellir `SupportsNetwork` returns `(false, nil)` for an unparseable chain id** — unlike every other static-map vendor which propagates the parse error. <SourceLink file="thirdparty/dwellir.go" lines="109-113" />
+23. **quicknode Chain Prism probes are async and slow on cold start** — `enableMultiChain: true` runs `GET /v0/endpoints/:id/urls` plus up to ~137 `eth_chainId` probes per multi-chain endpoint (semaphore 60, 3 min budget detached from the caller context). Expect longer cold-start windows before derived chains appear. <SourceLink file="thirdparty/quicknode.go" lines="477-558" />
 
 ### Observability
 
@@ -734,6 +768,7 @@ Notable log messages:
 - warn `vendor remote-data refresh failed; keeping previous snapshot` with `vendor` + `cacheKey` fields
 - error `panic recovered during vendor remote-data async refresh`
 - warn `some quicknode chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some QuickNode endpoints`
+- warn `failed to fetch QuickNode endpoint urls; skipping multi-chain expansion for this endpoint` / debug `quicknode multi-chain probe failed`
 - warn `some chainstack chain ID fetches failed; continuing with available data` / warn `failed to fetch chain IDs for some Chainstack nodes`
 - info `successfully fetched dRPC network names` (with count + url)
 - debug `generated upstream from alchemy provider` / `generated upstream from conduit provider` / `generated upstreams from repository provider` / `generated upstreams from superchain provider`
