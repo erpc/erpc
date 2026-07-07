@@ -32,6 +32,8 @@ type metricsLabels struct {
 	category    string
 	networkId   string
 	projectId   string
+	userId      string
+	agentName   string
 	finalityStr string
 	// finality is the enum form of `finalityStr` — needed for tracker
 	// writes (RecordUpstreamMisbehavior) which now stratify per
@@ -324,13 +326,13 @@ func (e *executor) handleCallerAbandoned(
 	cancelErr error,
 ) *slotResult {
 	telemetry.MetricConsensusCancellations.
-		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr, labels.userId, labels.agentName).
 		Inc()
 	telemetry.MetricConsensusTotal.
-		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr, labels.userId, labels.agentName).
 		Inc()
 	telemetry.MetricConsensusDuration.
-		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr, labels.userId, labels.agentName).
 		Observe(time.Since(startTime).Seconds())
 	common.SetTraceSpanError(consensusSpan, cancelErr)
 	consensusSpan.SetAttributes(attribute.String("consensus.outcome", "caller_abandoned"))
@@ -387,7 +389,7 @@ func (e *executor) runAnalyzer(
 				Str("stack", string(debug.Stack())).
 				Msg("panic in consensus analyzer")
 			telemetry.MetricConsensusPanics.
-				WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
+				WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).
 				Inc()
 			sendOutcomeOnce(consensusOutcome{
 				winner: &slotResult{Error: errPanicInConsensus},
@@ -582,6 +584,8 @@ func (e *executor) runAnalyzer(
 			strings.Join(vendorNames, ","),
 			strconv.FormatBool(shortCircuited),
 			labels.finalityStr,
+			labels.userId,
+			labels.agentName,
 		).
 		Observe(float64(len(responses)))
 	if shortCircuited {
@@ -590,7 +594,7 @@ func (e *executor) runAnalyzer(
 			reason = "unknown"
 		}
 		telemetry.MetricConsensusShortCircuit.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 	if waitCapped {
@@ -605,7 +609,7 @@ func (e *executor) runAnalyzer(
 			}
 		}
 		telemetry.MetricConsensusWaitCapped.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, trigger, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, trigger, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 
@@ -738,7 +742,7 @@ func (e *executor) executeParticipant(
 				Int("index", index).
 				Str("stack", string(debug.Stack())).
 				Msg("Panic in consensus participant")
-			telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).Inc()
+			telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).Inc()
 			responseChan <- &execResult{Err: errPanicInConsensus}
 		}
 	}()
@@ -746,7 +750,7 @@ func (e *executor) executeParticipant(
 	// Check for cancellation before execution
 	if ctx.Err() != nil {
 		telemetry.MetricConsensusCancellations.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 		responseChan <- nil
 		return
@@ -760,7 +764,7 @@ func (e *executor) executeParticipant(
 	// consensus analysis.
 	if ctx.Err() != nil {
 		telemetry.MetricConsensusCancellations.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 
@@ -1042,6 +1046,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 							labels.finalityStr,
 							group.ResponseType.String(),
 							errorCode,
+							labels.userId,
+							labels.agentName,
 						).Inc()
 				}
 
@@ -1065,6 +1071,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 							labels.finalityStr,
 							group.ResponseType.String(),
 							largerThanConsensusStr,
+							labels.userId,
+							labels.agentName,
 						).Inc()
 
 					// Record misbehavior in tracker for score calculation.
@@ -1080,7 +1088,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					if e.shouldPunishUpstream(lg, consensusGroup, analysis) {
 						limiter := e.createRateLimiter(lg, upstreamId)
 						if !limiter.Allow() {
-							e.handleMisbehavingUpstream(lg, result.Upstream, upstreamId, labels.projectId, labels.networkId)
+							e.handleMisbehavingUpstream(lg, result.Upstream, upstreamId, labels)
 						}
 					}
 				}
@@ -1257,6 +1265,7 @@ func (e *executor) buildMisbehaviorRecord(labels metricsLabels, req *common.Norm
 	rec := misbehaviorRecord{
 		TimestampMs:  time.Now().UnixMilli(),
 		ProjectID:    labels.projectId,
+		UserId:       labels.userId,
 		NetworkID:    labels.networkId,
 		Method:       labels.method,
 		Finality:     labels.finalityStr,
@@ -1287,7 +1296,7 @@ func (e *executor) shouldPunishUpstream(lg *zerolog.Logger, consensusGroup *resp
 	return consensusGroup.Count > analysis.validParticipants/2
 }
 
-func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId, projectId, networkId string) {
+func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId string, labels metricsLabels) {
 	// Create a placeholder value to claim ownership atomically
 	placeholder := &struct{}{}
 
@@ -1304,7 +1313,7 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 		Msg("misbehaviour limit exhausted, punishing upstream")
 
 	// Record punishment metric
-	telemetry.MetricConsensusUpstreamPunished.WithLabelValues(projectId, networkId, upstreamId).Inc()
+	telemetry.MetricConsensusUpstreamPunished.WithLabelValues(labels.projectId, labels.networkId, upstreamId, labels.userId, labels.agentName).Inc()
 
 	// Cordon the upstream first
 	upstream.Cordon("*", "misbehaving in consensus")
@@ -1364,6 +1373,8 @@ func (e *executor) extractMetricsLabels(ctx context.Context, req *common.Normali
 		category:    method,
 		networkId:   req.NetworkLabel(),
 		projectId:   projectId,
+		userId:      req.UserId(),
+		agentName:   req.AgentName(),
 		finalityStr: finality.String(),
 		finality:    finality,
 	}
@@ -1390,13 +1401,13 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 		span.SetAttributes(attribute.String("consensus.outcome", outcome))
 		duration := time.Since(startTime).Seconds()
 		telemetry.MetricConsensusTotal.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 		telemetry.MetricConsensusDuration.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).
 			Observe(duration)
 		telemetry.MetricConsensusErrors.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 		return
 	}
@@ -1433,12 +1444,12 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	)
 
 	duration := time.Since(startTime).Seconds()
-	telemetry.MetricConsensusTotal.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Inc()
-	telemetry.MetricConsensusDuration.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Observe(duration)
+	telemetry.MetricConsensusTotal.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).Inc()
+	telemetry.MetricConsensusDuration.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr, labels.userId, labels.agentName).Observe(duration)
 	// Record agreement count histogram when available
 	if best != nil && best.Count > 0 {
 		telemetry.MetricConsensusAgreementCount.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).
 			Observe(float64(best.Count))
 	}
 	// Record categorized error counters for failure modes, but only for
@@ -1457,7 +1468,7 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 			errLabel = "low_participants"
 		}
 		telemetry.MetricConsensusErrors.
-			WithLabelValues(labels.projectId, labels.networkId, labels.category, errLabel, labels.finalityStr).
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, errLabel, labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
 	}
 }

@@ -349,7 +349,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		if strings.Contains(msg, "insufficient funds") ||
 			strings.Contains(msg, "insufficient balance") {
-			return common.NewErrEndpointExecutionException(
+			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorTransactionRejected,
@@ -358,6 +358,23 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+			// Tracing methods (trace_*, debug_*, eth_trace*) re-execute historical
+			// transactions against the parent block's pre-state. An "insufficient
+			// funds" reply there is a state-reconstruction artifact: the transaction
+			// was mined, so it provably had funds; the tracer simply could not resolve
+			// the exact pre-state. Another upstream that holds the state (e.g. an
+			// archive node) usually traces the same block, so retry toward the network.
+			// Writes (eth_sendRawTransaction) and live simulations (eth_call /
+			// eth_estimateGas) remain deterministic and non-retried.
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.HasPrefix(m, "trace_") ||
+					strings.HasPrefix(m, "debug_") || strings.HasPrefix(m, "eth_trace") {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
 		}
 
 		//----------------------------------------------------------------

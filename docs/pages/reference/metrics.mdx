@@ -338,18 +338,18 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_consensus_total` | counter | project, network, category, outcome, finality | Consensus round completed. `outcome` ∈ `"success"`, `"consensus_on_error"`, `"dispute"`, `"low_participants"`, `"generic_error"`, `"caller_abandoned"`. |
-| `erpc_consensus_misbehavior_detected_total` | counter | project, network, upstream, category, finality, response_type, larger_than_consensus | Upstream returned different data than consensus. `response_type` ∈ `"NonEmpty"`, `"Empty"`, `"ConsensusError"`, `"InfrastructureError"`. |
-| `erpc_consensus_upstream_punished_total` | counter | project, network, upstream | Upstream punished after misbehavior threshold. |
-| `erpc_consensus_short_circuit_total` | counter | project, network, category, reason, finality | Round short-circuited. `reason` ∈ `"sendrawtx_first_success"`, `"consensus_error_threshold"`, `"unassailable_lead"`. |
-| `erpc_consensus_wait_capped_total` | counter | project, network, category, trigger, finality | Round resolved early by `maxWaitOnResult`/`maxWaitOnEmpty`. `trigger` ∈ `"result"`, `"empty"`. |
-| `erpc_consensus_errors_total` | counter | project, network, category, error, finality | Consensus-level error by type. |
-| `erpc_consensus_upstream_errors_total` | counter | project, network, upstream, category, finality, response_type, error_code | Participant upstream errored during consensus. `response_type` same values as misbehavior_detected. |
-| `erpc_consensus_panics_total` | counter | project, network, category, finality | Panic recovered inside consensus. |
-| `erpc_consensus_cancellations_total` | counter | project, network, category, phase, finality | Context cancelled during consensus. `phase` ∈ `"before_execution"`, `"after_execution"`, `"caller_abandoned"`. |
-| `erpc_consensus_duration_seconds` | LabeledHistogram | project, network, category, outcome, finality | Consensus round duration. |
-| `erpc_consensus_responses_collected` | LabeledHistogram | project, network, category, vendors, short_circuited, finality | Responses collected before decision. `vendors` = comma-joined sorted vendor names. `short_circuited` ∈ `"true"`/`"false"`. Linear buckets 1–10. |
-| `erpc_consensus_agreement_count` | LabeledHistogram | project, network, category, finality | Upstreams agreeing on most common result. Linear buckets 1–10. |
+| `erpc_consensus_total` | counter | project, network, category, outcome, finality, user, agent_name | Consensus round completed. `outcome` ∈ `"success"`, `"consensus_on_error"`, `"dispute"`, `"low_participants"`, `"generic_error"`, `"caller_abandoned"`. |
+| `erpc_consensus_misbehavior_detected_total` | counter | project, network, upstream, category, finality, response_type, larger_than_consensus, user, agent_name | Upstream returned different data than consensus. `response_type` ∈ `"NonEmpty"`, `"Empty"`, `"ConsensusError"`, `"InfrastructureError"`. |
+| `erpc_consensus_upstream_punished_total` | counter | project, network, upstream, user, agent_name | Upstream punished after misbehavior threshold. |
+| `erpc_consensus_short_circuit_total` | counter | project, network, category, reason, finality, user, agent_name | Round short-circuited. `reason` ∈ `"sendrawtx_first_success"`, `"consensus_error_threshold"`, `"unassailable_lead"`. |
+| `erpc_consensus_wait_capped_total` | counter | project, network, category, trigger, finality, user, agent_name | Round resolved early by `maxWaitOnResult`/`maxWaitOnEmpty`. `trigger` ∈ `"result"`, `"empty"`. |
+| `erpc_consensus_errors_total` | counter | project, network, category, error, finality, user, agent_name | Consensus-level error by type. |
+| `erpc_consensus_upstream_errors_total` | counter | project, network, upstream, category, finality, response_type, error_code, user, agent_name | Participant upstream errored during consensus. `response_type` same values as misbehavior_detected. |
+| `erpc_consensus_panics_total` | counter | project, network, category, finality, user, agent_name | Panic recovered inside consensus. |
+| `erpc_consensus_cancellations_total` | counter | project, network, category, phase, finality, user, agent_name | Context cancelled during consensus. `phase` ∈ `"before_execution"`, `"after_execution"`, `"caller_abandoned"`. |
+| `erpc_consensus_duration_seconds` | LabeledHistogram | project, network, category, outcome, finality, user, agent_name | Consensus round duration. |
+| `erpc_consensus_responses_collected` | LabeledHistogram | project, network, category, vendors, short_circuited, finality, user, agent_name | Responses collected before decision. `vendors` = comma-joined sorted vendor names. `short_circuited` ∈ `"true"`/`"false"`. Linear buckets 1–10. |
+| `erpc_consensus_agreement_count` | LabeledHistogram | project, network, category, finality, user, agent_name | Upstreams agreeing on most common result. Linear buckets 1–10. |
 
 #### Area 10: Hedging
 
