@@ -659,25 +659,25 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_total",
 		Help:      "Total number of consensus operations attempted.",
-	}, []string{"project", "network", "category", "outcome", "finality"})
+	}, []string{"project", "network", "category", "outcome", "finality", "user", "agent_name"})
 
 	MetricConsensusMisbehaviorDetected = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_misbehavior_detected_total",
 		Help:      "Total number of times an upstream returned different data (not errors) than consensus.",
-	}, []string{"project", "network", "upstream", "category", "finality", "response_type", "larger_than_consensus"})
+	}, []string{"project", "network", "upstream", "category", "finality", "response_type", "larger_than_consensus", "user", "agent_name"})
 
 	MetricConsensusUpstreamPunished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_upstream_punished_total",
 		Help:      "Total number of times upstreams were punished.",
-	}, []string{"project", "network", "upstream"})
+	}, []string{"project", "network", "upstream", "user", "agent_name"})
 
 	MetricConsensusShortCircuit = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_short_circuit_total",
 		Help:      "Total number of consensus rounds that short-circuited.",
-	}, []string{"project", "network", "category", "reason", "finality"})
+	}, []string{"project", "network", "category", "reason", "finality", "user", "agent_name"})
 
 	// MetricConsensusWaitCapped counts consensus rounds resolved early
 	// because maxWaitOnResult / maxWaitOnEmpty fired before every
@@ -688,31 +688,31 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_wait_capped_total",
 		Help:      "Total number of consensus rounds resolved early due to MaxWaitOnResult/MaxWaitOnEmpty firing.",
-	}, []string{"project", "network", "category", "trigger", "finality"})
+	}, []string{"project", "network", "category", "trigger", "finality", "user", "agent_name"})
 
 	MetricConsensusErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_errors_total",
 		Help:      "Total number of consensus errors by type.",
-	}, []string{"project", "network", "category", "error", "finality"})
+	}, []string{"project", "network", "category", "error", "finality", "user", "agent_name"})
 
 	MetricConsensusUpstreamErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_upstream_errors_total",
 		Help:      "Total number of errors from upstreams during consensus operations.",
-	}, []string{"project", "network", "upstream", "category", "finality", "response_type", "error_code"})
+	}, []string{"project", "network", "upstream", "category", "finality", "response_type", "error_code", "user", "agent_name"})
 
 	MetricConsensusPanics = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_panics_total",
 		Help:      "Total number of panic recoveries in consensus.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
 	MetricConsensusCancellations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_cancellations_total",
 		Help:      "Total number of context cancellations during consensus.",
-	}, []string{"project", "network", "category", "phase", "finality"})
+	}, []string{"project", "network", "category", "phase", "finality", "user", "agent_name"})
 
 	MetricNetworkEvmBlockRangeRequested = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -852,21 +852,21 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Name:      "consensus_responses_collected",
 		Help:      "Number of responses collected before consensus decision.",
 		Buckets:   prometheus.LinearBuckets(1, 1, 10),
-	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality"})
+	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality", "user", "agent_name"})
 
 	MetricConsensusAgreementCount = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "consensus_agreement_count",
 		Help:      "Number of upstreams agreeing on the most common result.",
 		Buckets:   prometheus.LinearBuckets(1, 1, 10),
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
 	MetricConsensusDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "consensus_duration_seconds",
 		Help:      "Duration of consensus operations.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "outcome", "finality"})
+	}, []string{"project", "network", "category", "outcome", "finality", "user", "agent_name"})
 
 	MetricCacheSetSuccessDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
