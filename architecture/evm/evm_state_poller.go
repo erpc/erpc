@@ -505,6 +505,20 @@ func (e *EvmStatePoller) LatestBlock() int64 {
 	return e.latestBlockShared.GetValue()
 }
 
+// OnLatestBlock registers cb to fire on every forward advance of the latest block
+// number, regardless of source — a proactive poll, a SuggestLatestBlock
+// write-through from request traffic, or cross-node propagation of the shared
+// counter all flow through the same callback.
+//
+// IMPORTANT: cb runs synchronously inside the shared-variable update path, so it
+// MUST NOT block (do a non-blocking hand-off and return). Callbacks cannot be
+// unregistered, so register once per long-lived consumer, never per request.
+func (e *EvmStatePoller) OnLatestBlock(cb func(int64)) {
+	if e.latestBlockShared != nil {
+		e.latestBlockShared.OnValue(cb)
+	}
+}
+
 // verifyChainIdOnMajorHeadMove gates a polled head sample that moved beyond
 // the shared rollback tolerance (in either direction) behind a fresh chain
 // identity check. Such moves are exactly what a cross-wired endpoint — a DNS

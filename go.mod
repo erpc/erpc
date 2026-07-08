@@ -8,7 +8,7 @@ require (
 	github.com/DataDog/sketches-go v1.4.8
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.1
 	github.com/aws/aws-sdk-go v1.55.8
-	github.com/blockchain-data-standards/manifesto v0.0.0-20260506191942-991c5f924650
+	github.com/blockchain-data-standards/manifesto v0.0.0-20260708135603-35add417e724
 	github.com/bytedance/sonic v1.15.2
 	github.com/coder/websocket v1.8.15
 	github.com/dgraph-io/ristretto/v2 v2.4.0
