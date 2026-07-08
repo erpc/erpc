@@ -40,6 +40,7 @@ type GrpcServer struct {
 
 	evm.UnimplementedRPCQueryServiceServer
 	evm.UnimplementedQueryServiceServer
+	evm.UnimplementedStreamServiceServer
 }
 
 func grpcSharesHttpV4(cfg *common.ServerConfig) bool {
@@ -133,6 +134,7 @@ func NewGrpcServer(
 	gs.server = grpc.NewServer(opts...)
 	evm.RegisterRPCQueryServiceServer(gs.server, gs)
 	evm.RegisterQueryServiceServer(gs.server, gs)
+	evm.RegisterStreamServiceServer(gs.server, gs)
 	// Server reflection lets tools (grpcurl, Postman, buf) discover the BDS
 	// services/messages without a local copy of the .proto files. Enabled by
 	// default; set server.grpcReflection=false to turn it off.
@@ -472,6 +474,16 @@ func (gs *GrpcServer) QueryTransfers(req *evm.QueryTransfersRequest, stream evm.
 	return gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
 		return stream.Send(page.(*evm.QueryTransfersResponse))
 	})
+}
+
+func (gs *GrpcServer) StreamBlocks(req *evm.StreamBlocksRequest, stream evm.StreamService_StreamBlocksServer) error {
+	input, err := gs.extractRequestInput(stream.Context(), "eth_getBlockByNumber")
+	if err != nil {
+		return err
+	}
+	return gs.mapToGRPCStatus(gs.processor.ProcessBlockStream(stream.Context(), input, func(header *evm.BlockHeader) error {
+		return stream.Send(&evm.StreamBlocksResponse{Header: header})
+	}))
 }
 
 func (gs *GrpcServer) panicRecoveryUnary() grpc.UnaryServerInterceptor {

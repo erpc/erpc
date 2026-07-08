@@ -15,8 +15,9 @@ import (
 )
 
 type RequestProcessor struct {
-	erpc   *ERPC
-	logger *zerolog.Logger
+	erpc        *ERPC
+	logger      *zerolog.Logger
+	blockStream *blockStreamManager
 }
 
 type RequestInput struct {
@@ -29,7 +30,7 @@ type RequestInput struct {
 }
 
 func NewRequestProcessor(erpc *ERPC, logger *zerolog.Logger) *RequestProcessor {
-	return &RequestProcessor{erpc: erpc, logger: logger}
+	return &RequestProcessor{erpc: erpc, logger: logger, blockStream: newBlockStreamManager()}
 }
 
 func (rp *RequestProcessor) ProcessUnary(
