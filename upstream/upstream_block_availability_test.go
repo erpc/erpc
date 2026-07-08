@@ -883,6 +883,107 @@ func TestEvmAssertBlockAvailability_ConcurrentAccess(t *testing.T) {
 	})
 }
 
+// TestEvmAssertBlockAvailability_ConfiguredUpperBoundFreshnessEscape covers the
+// freshness escape for a configured blockAvailability.upper bound. On fast
+// chains the bound (derived from the state poller's last-known latest) lags the
+// network tip; when forceFreshIfStale is set, a just-rejected block should be
+// re-evaluated after force-polling the tip once.
+func TestEvmAssertBlockAvailability_ConfiguredUpperBoundFreshnessEscape(t *testing.T) {
+	zero := int64(0)
+
+	newUpstream := func(poller common.EvmStatePoller) *Upstream {
+		return &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &zero,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: poller,
+		}
+	}
+
+	t.Run("forceFresh recovers tip block when poller is stale", func(t *testing.T) {
+		// Cached latest is 1000; a force-poll advances the tip to 1003.
+		poller := &mockEvmStatePollerEnhanced{
+			latestBlock:      1000,
+			finalizedBlock:   900,
+			blockProgression: []int64{1003},
+		}
+		u := newUpstream(poller)
+
+		// Block 1003 is beyond the cached bound (1000) but the force-poll
+		// discovers it, so the request is admitted.
+		canHandle, err := u.EvmAssertBlockAvailability(context.Background(), "eth_getBlockReceipts", common.AvailbilityConfidenceBlockHead, true, 1003)
+		assert.NoError(t, err)
+		assert.True(t, canHandle, "forceFresh should re-evaluate the upper bound after polling the tip")
+	})
+
+	t.Run("without forceFresh a stale bound rejects the tip", func(t *testing.T) {
+		poller := &mockEvmStatePollerEnhanced{
+			latestBlock:    1000,
+			finalizedBlock: 900,
+		}
+		u := newUpstream(poller)
+
+		canHandle, err := u.EvmAssertBlockAvailability(context.Background(), "eth_getBlockReceipts", common.AvailbilityConfidenceBlockHead, false, 1003)
+		assert.NoError(t, err)
+		assert.False(t, canHandle, "a stale cached bound should reject a tip block when forceFresh is not requested")
+	})
+
+	t.Run("forceFresh does not over-admit past the fresh tip", func(t *testing.T) {
+		poller := &mockEvmStatePollerEnhanced{
+			latestBlock:      1000,
+			finalizedBlock:   900,
+			blockProgression: []int64{1003},
+		}
+		u := newUpstream(poller)
+
+		// 1004 is beyond even the fresh tip; it must still be rejected.
+		canHandle, err := u.EvmAssertBlockAvailability(context.Background(), "eth_getBlockReceipts", common.AvailbilityConfidenceBlockHead, true, 1004)
+		assert.NoError(t, err)
+		assert.False(t, canHandle)
+	})
+
+	t.Run("forceFresh honors an explicit LatestBlockMinus margin", func(t *testing.T) {
+		minus := int64(2)
+		poller := &mockEvmStatePollerEnhanced{
+			latestBlock:      1000,
+			finalizedBlock:   900,
+			blockProgression: []int64{1003},
+		}
+		u := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &minus,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: poller,
+		}
+
+		// Fresh tip 1003 with a 2-block margin admits up to 1001.
+		canHandle, err := u.EvmAssertBlockAvailability(context.Background(), "eth_getBlockReceipts", common.AvailbilityConfidenceBlockHead, true, 1001)
+		assert.NoError(t, err)
+		assert.True(t, canHandle)
+
+		// 1002 is within the fresh tip but past the 2-block margin.
+		canHandle, err = u.EvmAssertBlockAvailability(context.Background(), "eth_getBlockReceipts", common.AvailbilityConfidenceBlockHead, true, 1002)
+		assert.NoError(t, err)
+		assert.False(t, canHandle)
+	})
+}
+
 // TestEvmEffectiveLatestBlock tests the EvmEffectiveLatestBlock method
 // which returns latest block adjusted for the upper availability bound.
 func TestEvmEffectiveLatestBlock(t *testing.T) {

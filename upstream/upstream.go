@@ -999,21 +999,36 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		return false, nil
 	}
 	if maxBound != math.MaxInt64 && blockNumber > maxBound {
-		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
-			u.ProjectId,
-			u.VendorName(),
-			u.NetworkLabel(),
-			u.Id(),
-			forMethod,
-			confidence.String(),
-		).Inc()
-		u.logger.Debug().
-			Int64("blockNumber", blockNumber).
-			Int64("maxBound", maxBound).
-			Str("method", forMethod).
-			Str("upstreamId", u.config.Id).
-			Msg("block rejected: above upper availability bound")
-		return false, nil
+		// Freshness escape: a configured upper bound derived from the state
+		// poller's last-known latest can lag the network tip on fast chains (the
+		// bound refreshes only every statePollerInterval). When the caller asks
+		// for fresh data, force-poll the tip once and recompute before rejecting
+		// — mirroring the legacy blockHead path below. Only the upper bound is
+		// re-evaluated; lower bounds can only tighten as latest advances.
+		if forceFreshIfStale && u.evmStatePoller != nil && !u.evmStatePoller.IsObjectNull() {
+			if freshLatest, err := u.evmStatePoller.PollLatestBlockNumber(ctx); err == nil && freshLatest > 0 {
+				if freshMin, freshMax := u.resolveAvailabilityBoundsWithLatest(freshLatest); freshMax != maxBound {
+					minBound, maxBound = freshMin, freshMax
+				}
+			}
+		}
+		if blockNumber > maxBound {
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkLabel(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			u.logger.Debug().
+				Int64("blockNumber", blockNumber).
+				Int64("maxBound", maxBound).
+				Str("method", forMethod).
+				Str("upstreamId", u.config.Id).
+				Msg("block rejected: above upper availability bound")
+			return false, nil
+		}
 	}
 
 	switch confidence {
@@ -1104,6 +1119,13 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 // resolveAvailabilityBounds computes effective [min,max] based on BlockAvailabilityConfig.
 // Returns MinInt64/MaxInt64 when a side is unbounded.
 func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
+	return u.resolveAvailabilityBoundsWithLatest(0)
+}
+
+// resolveAvailabilityBoundsWithLatest is the core resolver. When latest > 0 it
+// is used as the state poller's latest block instead of the cached value, so a
+// force-polled tip can recompute bounds without mutating poller state.
+func (u *Upstream) resolveAvailabilityBoundsWithLatest(latest int64) (int64, int64) {
 	cfg := u.Config()
 	if cfg == nil || cfg.Evm == nil {
 		return math.MinInt64, math.MaxInt64
@@ -1112,8 +1134,7 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 	// MaxAvailableRecentBlocks is set, treat lower bound as latest - N.
 	if cfg.Evm.BlockAvailability == nil {
 		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
-			latest := int64(0)
-			if u.evmStatePoller != nil {
+			if latest == 0 && u.evmStatePoller != nil {
 				latest = u.evmStatePoller.LatestBlock()
 			}
 			if latest > 0 {
@@ -1122,7 +1143,11 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 		}
 		return math.MinInt64, math.MaxInt64
 	}
-	latest := int64(0)
+	// latest carries an optional override (force-polled tip) into the compute
+	// closure; when 0 the closure falls back to the cached poller value.
+	if latest == 0 && u.evmStatePoller != nil {
+		latest = u.evmStatePoller.LatestBlock()
+	}
 
 	compute := func(bound *common.EvmAvailabilityBoundConfig, isLower bool) int64 {
 		if bound == nil {
