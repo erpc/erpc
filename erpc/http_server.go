@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -704,6 +705,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		if isBatch {
+			s.writeBatchExecHeaders(httpCtx, w, responses)
+			s.writeCostHeaders(httpCtx, w, responses)
 			w.WriteHeader(http.StatusOK)
 
 			bw := NewBatchResponseWriter(responses)
@@ -724,6 +727,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		} else {
 			res := responses[0]
 			setResponseHeaders(httpCtx, res, w, s.executionHeadersMode())
+			s.writeCostHeaders(httpCtx, w, responses)
 
 			// Determine HTTP status code - defaults to 200 for JSON-RPC responses,
 			// but transport-level errors (auth, rate limit, etc.) get appropriate status codes
@@ -1277,6 +1281,207 @@ func formatUpstreamAttempt(a common.UpstreamAttempt) string {
 func setInt(w http.ResponseWriter, name string, v int) { w.Header().Set(name, strconv.Itoa(v)) }
 func setInt64(w http.ResponseWriter, name string, v int64) {
 	w.Header().Set(name, strconv.FormatInt(v, 10))
+}
+
+// costHeadersEnabled reports whether the opt-in cost/billing header group
+// (`server.costHeaders`) is on. Off by default.
+func (s *HttpServer) costHeadersEnabled() bool {
+	return s != nil && s.serverCfg != nil &&
+		s.serverCfg.CostHeaders != nil && *s.serverCfg.CostHeaders
+}
+
+// isBillableItem classifies one routed sub-response for X-ERPC-Billable.
+// Billable = the node did real work the caller asked for: successful and
+// empty-but-valid responses bill (cache hits included — served value; their
+// COST is zero, which X-ERPC-Credits reflects, not their billability), and
+// execution reverts bill (the EVM executed the call; vendors charge for
+// it). Protocol, transport, rate-limit and cancellation failures do not.
+func isBillableItem(ctx context.Context, item interface{}) bool {
+	switch v := item.(type) {
+	case *common.NormalizedResponse:
+		return v != nil && !v.IsObjectNull(ctx)
+	case *HttpJsonRpcErrorResponse:
+		return v != nil && common.HasErrorCode(v.Cause, common.ErrCodeEndpointExecutionException)
+	}
+	return false
+}
+
+// writeCostHeaders emits the opt-in cost/billing header group for the
+// routed sub-responses of one HTTP response — the same shape on the single
+// and batch write paths, always before WriteHeader:
+//
+//	X-ERPC-Calls:           routed JSON-RPC sub-calls in this response
+//	X-ERPC-Billable:        how many were billable (isBillableItem)
+//	X-ERPC-Methods:         distinct methods, sorted, comma-joined
+//	X-ERPC-Credits:         `vendor:method=<units>` segments, sorted and
+//	                        ';'-joined — the credit units accrued by every
+//	                        physical upstream attempt (retries, hedges,
+//	                        consensus slots; see UpstreamAttempt.CreditUnits).
+//	                        Omitted when nothing accrued (e.g. pure cache hits).
+//	X-ERPC-Credits-Version: the eRPC version the built-in vendor tables
+//	                        shipped with; only alongside X-ERPC-Credits.
+//
+// Early errors that never routed a request get no cost headers — there is
+// no routed call to account for.
+func (s *HttpServer) writeCostHeaders(ctx context.Context, w http.ResponseWriter, items []interface{}) {
+	if !s.costHeadersEnabled() || len(items) == 0 {
+		return
+	}
+	billable := 0
+	methods := map[string]struct{}{}
+	credits := map[string]int64{} // "vendor:method" → units
+	for _, item := range items {
+		if isBillableItem(ctx, item) {
+			billable++
+		}
+		req := extractRequest(item)
+		if req == nil {
+			continue
+		}
+		method, _ := req.Method()
+		if method != "" {
+			methods[method] = struct{}{}
+		}
+		if st := req.ExecState(); st != nil {
+			for _, attempt := range st.UpstreamAttemptLog() {
+				if attempt.CreditUnits > 0 && attempt.VendorName != "" {
+					credits[attempt.VendorName+":"+method] += attempt.CreditUnits
+				}
+			}
+		}
+	}
+	setInt(w, "X-ERPC-Calls", len(items))
+	setInt(w, "X-ERPC-Billable", billable)
+	if len(methods) > 0 {
+		names := make([]string, 0, len(methods))
+		for m := range methods {
+			names = append(names, m)
+		}
+		sort.Strings(names)
+		w.Header().Set("X-ERPC-Methods", strings.Join(names, ","))
+	}
+	if len(credits) > 0 {
+		keys := make([]string, 0, len(credits))
+		for k := range credits {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		segments := make([]string, len(keys))
+		for i, k := range keys {
+			segments[i] = k + "=" + strconv.FormatInt(credits[k], 10)
+		}
+		w.Header().Set("X-ERPC-Credits", strings.Join(segments, ";"))
+		w.Header().Set("X-ERPC-Credits-Version", common.ErpcVersion)
+	}
+}
+
+// maxBatchTraceSegments caps X-ERPC-Upstreams on batch responses so a huge
+// batch cannot emit an unbounded header; the dropped count is surfaced as
+// X-ERPC-Upstreams-Truncated.
+const maxBatchTraceSegments = 50
+
+// writeBatchExecHeaders is the batch-path counterpart of setResponseHeaders:
+// ONE aggregated diagnostic header set for the whole HTTP response,
+// respecting the same ExecutionHeaders mode. Counters sum across
+// sub-requests; X-ERPC-Cache becomes HIT / MISS / PARTIAL:<n> (n = sub-calls
+// served from cache); X-ERPC-Duration is the slowest sub-call; the
+// per-attempt trace keeps the exact single-response segment format,
+// concatenated in sub-call order and capped. X-ERPC-Upstream (the single
+// winner id) has no batch meaning and is not emitted.
+func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseWriter, items []interface{}) {
+	mode := s.executionHeadersMode()
+	if mode == common.ExecutionHeadersOff || len(items) == 0 {
+		return
+	}
+
+	var total common.ExecStateSnapshot
+	var segments []string
+	truncated := 0
+	withMeta, fromCache := 0, 0
+	var maxDurationMs int64
+
+	for _, item := range items {
+		if req := extractRequest(item); req != nil {
+			if st := req.ExecState(); st != nil {
+				snap := st.Snapshot()
+				total.Attempts += snap.Attempts
+				total.UpstreamAttempts += snap.UpstreamAttempts
+				total.UpstreamRetries += snap.UpstreamRetries
+				total.UpstreamHedges += snap.UpstreamHedges
+				total.NetworkAttempts += snap.NetworkAttempts
+				total.NetworkRetries += snap.NetworkRetries
+				total.NetworkHedges += snap.NetworkHedges
+				total.CacheAttempts += snap.CacheAttempts
+				total.CacheRetries += snap.CacheRetries
+				total.CacheHedges += snap.CacheHedges
+				total.ConsensusSlots += snap.ConsensusSlots
+				total.ConsensusDisputes += snap.ConsensusDisputes
+				total.ConsensusLowParticipants += snap.ConsensusLowParticipants
+				if mode != common.ExecutionHeadersSummary {
+					for _, attempt := range st.UpstreamAttemptLog() {
+						if len(segments) >= maxBatchTraceSegments {
+							truncated++
+							continue
+						}
+						segments = append(segments, formatUpstreamAttempt(attempt))
+					}
+				}
+			}
+		}
+		if rm := lookupResponseMetadata(item); rm != nil && !rm.IsObjectNull(ctx) {
+			withMeta++
+			if rm.FromCache() {
+				fromCache++
+			}
+		}
+		if resp, ok := item.(*common.NormalizedResponse); ok && resp != nil {
+			if ms := resp.Duration().Milliseconds(); ms > maxDurationMs {
+				maxDurationMs = ms
+			}
+		}
+	}
+
+	setInt(w, "X-ERPC-Attempts", total.Attempts)
+	setInt(w, "X-ERPC-Upstream-Attempts", total.UpstreamAttempts)
+	setInt(w, "X-ERPC-Upstream-Retries", total.UpstreamRetries)
+	setInt(w, "X-ERPC-Upstream-Hedges", total.UpstreamHedges)
+	setInt(w, "X-ERPC-Network-Attempts", total.NetworkAttempts)
+	setInt(w, "X-ERPC-Network-Retries", total.NetworkRetries)
+	setInt(w, "X-ERPC-Network-Hedges", total.NetworkHedges)
+	if total.CacheAttempts > 0 || total.CacheRetries > 0 || total.CacheHedges > 0 {
+		setInt(w, "X-ERPC-Cache-Attempts", total.CacheAttempts)
+		setInt(w, "X-ERPC-Cache-Retries", total.CacheRetries)
+		setInt(w, "X-ERPC-Cache-Hedges", total.CacheHedges)
+	}
+	if total.ConsensusSlots > 0 {
+		setInt(w, "X-ERPC-Consensus-Slots", total.ConsensusSlots)
+	}
+	if total.ConsensusDisputes > 0 {
+		setInt(w, "X-ERPC-Consensus-Disputes", total.ConsensusDisputes)
+	}
+	if total.ConsensusLowParticipants > 0 {
+		setInt(w, "X-ERPC-Consensus-Low-Participants", total.ConsensusLowParticipants)
+	}
+
+	if withMeta > 0 {
+		switch fromCache {
+		case 0:
+			w.Header().Set("X-ERPC-Cache", "MISS")
+		case withMeta:
+			w.Header().Set("X-ERPC-Cache", "HIT")
+		default:
+			w.Header().Set("X-ERPC-Cache", "PARTIAL:"+strconv.Itoa(fromCache))
+		}
+	}
+	if maxDurationMs > 0 {
+		setInt64(w, "X-ERPC-Duration", maxDurationMs)
+	}
+	if len(segments) > 0 {
+		w.Header().Set("X-ERPC-Upstreams", strings.Join(segments, ";"))
+		if truncated > 0 {
+			setInt(w, "X-ERPC-Upstreams-Truncated", truncated)
+		}
+	}
 }
 
 // determineResponseStatusCode extracts any error from a response and determines

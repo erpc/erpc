@@ -332,7 +332,7 @@ Retry, hedge, circuit-breaker, and timeout still apply — only the dispute/agre
 | `X-ERPC-Commit` | git commit SHA | [`erpc/http_server.go:261`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L261) |
 | custom `server.responseHeaders` | static values, env-expanded at startup | [`erpc/http_server.go:263-266`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L263-L266) |
 
-**Execution diagnostic headers** (single responses only; controlled by `server.executionHeaders`; never emitted for batch):
+**Execution diagnostic headers** (controlled by `server.executionHeaders`; single responses get the per-response set, batch responses get ONE aggregated set — counters summed across sub-calls, `X-ERPC-Duration` = slowest sub-call, no `X-ERPC-Upstream`):
 
 | Header | Value | When |
 |---|---|---|
@@ -341,12 +341,28 @@ Retry, hedge, circuit-breaker, and timeout still apply — only the dispute/agre
 | `X-ERPC-Network-Attempts` / `X-ERPC-Network-Retries` / `X-ERPC-Network-Hedges` | counters | always |
 | `X-ERPC-Cache-Attempts` / `X-ERPC-Cache-Retries` / `X-ERPC-Cache-Hedges` | counters | only when &gt; 0 |
 | `X-ERPC-Consensus-Slots` / `X-ERPC-Consensus-Disputes` / `X-ERPC-Consensus-Low-Participants` | counters | only when &gt; 0 |
-| `X-ERPC-Cache` | `HIT` or `MISS` | when response metadata present |
-| `X-ERPC-Upstream` | winning upstream id | when known |
-| `X-ERPC-Duration` | milliseconds | NormalizedResponse only |
-| `X-ERPC-Upstreams` | per-attempt trace: `upstreamId=reason:outcome:durationMs[:won]` segments joined by `;`. Known `reason` values: `primary`, `hedge`, `retry`, `consensus_slot`. Known `outcome` values: `success`, `timeout`, `exec_revert`, `rate_limited`. `:won` suffix appended only when the attempt's response contributed to the final answer. | `all` mode only; when `len(attempts) > 0` |
+| `X-ERPC-Cache` | `HIT` or `MISS`; on batch responses also `PARTIAL:<n>` (n sub-calls served from cache) | when response metadata present |
+| `X-ERPC-Upstream` | winning upstream id | single responses only, when known |
+| `X-ERPC-Duration` | milliseconds (batch: the slowest sub-call) | NormalizedResponse only |
+| `X-ERPC-Upstreams` | per-attempt trace: `upstreamId=reason:outcome:durationMs[:won]` segments joined by `;`. Known `reason` values: `primary`, `hedge`, `retry`, `consensus_slot`, `sweep`. Known `outcome` values: `success`, `timeout`, `exec_revert`, `rate_limited`. `:won` suffix appended only when the attempt's response contributed to the final answer (in a batch: to its own sub-call's answer). Batch: segments concatenate in sub-call order, capped at 50 with `X-ERPC-Upstreams-Truncated: <dropped>`. | `all` mode only; when `len(attempts) > 0` |
 
 Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms;drpc=consensus_slot:exec_revert:20ms`.
+
+`reason` precedence when several apply to one attempt: `consensus_slot` &gt; `hedge` &gt; `sweep` &gt; `retry` &gt; `primary` — the outermost fan-out cause wins, so an attempt that hedged or retried *inside* a consensus participant slot still reads `consensus_slot` (the attempt record's `IsHedge`/`IsRetry` fields preserve the inner mechanics).
+
+**Cost / billing headers** (opt-in via `server.costHeaders: true`; emitted on single AND batch responses; omitted on early errors that never routed a call):
+
+| Header | Value |
+|---|---|
+| `X-ERPC-Calls` | routed JSON-RPC sub-calls in this HTTP response (batch size; `1` for a single request) |
+| `X-ERPC-Billable` | how many of them were billable. Successful, empty-but-valid and execution-revert responses bill (cache hits included — their *cost* is zero, not their billability; a revert is real work the node performed); protocol, transport, rate-limit and cancellation failures do not |
+| `X-ERPC-Methods` | distinct JSON-RPC methods, sorted, comma-joined |
+| `X-ERPC-Credits` | `vendor:method=<units>` segments, sorted, `;`-joined — the vendor credit units consumed by **every physical upstream attempt** (retries, hedges and consensus slots included; skipped / breaker-open attempts provably never dialed and cost 0). Omitted when nothing accrued (e.g. pure cache hits). Units come from vendors implementing `CreditUnitsProvider` (built-in tables: Alchemy CUs, QuickNode credits), merged per method with `providers[].settings.creditUnits` overrides; vendors with no table default to a **flat 1 credit per request** (opt out with `creditUnits: {"*": 0}`) |
+| `X-ERPC-Credits-Version` | the eRPC version the built-in vendor tables shipped with; only present alongside `X-ERPC-Credits` |
+
+Example: `X-ERPC-Calls: 5` · `X-ERPC-Billable: 4` · `X-ERPC-Cache: PARTIAL:2` · `X-ERPC-Credits: alchemy:eth_call=52;quicknode:eth_getLogs=40`.
+
+Cost-header gotchas: emitted only for routed requests — early parse/auth errors get none (there is no routed call to account for). Pricing is the **vendor's** logic (`common.CreditUnitsProvider.CreditUnits(req, upstreamCfg)`; nothing is hard-coded in the eRPC layer). A timed-out attempt still accrues credits — it dialed the vendor — while `skipped`/`breaker_open` attempts provably never left the process and cost 0. Vendors without pricing cost a flat 1 credit per request unless opted out (`creditUnits: {"*": 0}`). Source: `writeCostHeaders` in [`erpc/http_server.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go), `attemptCreditUnits` in [`upstream/upstream.go`](https://github.com/erpc/erpc/blob/main/upstream/upstream.go), tests in [`erpc/http_server_cost_test.go`](https://github.com/erpc/erpc/blob/main/erpc/http_server_cost_test.go) and [`upstream/credit_units_test.go`](https://github.com/erpc/erpc/blob/main/upstream/credit_units_test.go).
 
 **Error shapes produced by directive checks.** Failed validation directives return `ErrEndpointContentValidation`. A `UseUpstream` selector that matches no upstream returns `ErrUpstreamsExhausted` (wrapping `ErrUpstreamNotAllowed` per candidate) — there is no distinct "selector matched nothing" error code.
 
@@ -375,7 +391,7 @@ Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=he
 10. **`ReceiptsCountExact` / `ReceiptsCountAtLeast` parse failures are silent.** A non-integer value leaves the pointer nil; no check fires and no warning is logged.
 11. **`ValidateReceiptTransactionMatch` and `ValidateContractCreation` are silently no-ops over HTTP.** `GroundTruthTransactions` cannot be supplied via headers; both directives only activate in Go library mode.
 12. **`ValidateTransactionFields` and `ValidateTransactionBlockInfo` skip hash-only blocks.** When `eth_getBlockByNumber` returns hash-only transactions, the validation loop is entirely bypassed.
-13. **Batch responses never emit `X-ERPC-*` diagnostic headers.** Use per-response `id` fields for batch diagnostics.
+13. **Batch responses emit ONE aggregated `X-ERPC-*` header set.** Counters sum across sub-calls, `X-ERPC-Cache` becomes `PARTIAL:<n>` when mixed, `X-ERPC-Duration` is the slowest sub-call, the trace caps at 50 segments (`X-ERPC-Upstreams-Truncated` carries the overflow count), and the single-winner `X-ERPC-Upstream` is not emitted. Per-sub-call attribution still needs the per-response `id` fields in the body.
 14. **`executionHeaders: summary` removes only `X-ERPC-Upstreams`.** All counter and metadata headers still emit. Use `"off"` to suppress everything.
 15. **Selector-scoped served-tip partitions are capped.** Beyond `maxServedTipPartitions` per network, no partition is created and the stateless fallback is used silently — no error. Source: [`erpc/networks.go:429`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L429).
 16. **`ValidateLogFields` cross-checks log fields against the enclosing receipt, not the block.** Absent log context fields (e.g., `blockHash` missing from a log entry) pass silently even when the receipt's field is set.

@@ -203,6 +203,14 @@ export interface ServerConfig {
    * (useful for low-latency / bandwidth-constrained clients).
    */
   executionHeaders?: ExecutionHeadersMode;
+  /**
+   * CostHeaders opts into the cost/billing response headers
+   * (X-ERPC-Calls, X-ERPC-Billable, X-ERPC-Methods, X-ERPC-Credits,
+   * X-ERPC-Credits-Version) on single and batch responses. Off by
+   * default. Credit-unit pricing is vendor-level configuration — see
+   * CreditUnitsProvider and UpstreamConfig.CreditUnits.
+   */
+  costHeaders?: boolean;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -659,6 +667,14 @@ export interface UpstreamConfig {
   failsafe?: (FailsafeConfig | undefined)[];
   rateLimitBudget?: string;
   rateLimitAutoTune?: RateLimitAutoTuneConfig;
+  /**
+   * CreditUnits overrides the vendor's built-in per-method credit table
+   * (CreditUnitsProvider) for this upstream, merged per method over the
+   * vendor defaults ("*" = fallback for unlisted methods). Normally set
+   * once per provider via `providers[].settings.creditUnits`, which is
+   * copied onto every upstream the provider generates.
+   */
+  creditUnits?: { [key: string]: number /* int64 */};
   shadow?: ShadowUpstreamConfig;
   /**
    * Routing holds per-upstream routing hints consumed by the selection
@@ -1508,8 +1524,7 @@ export interface JwtStrategyConfig {
   verificationKeys?: { [key: string]: string};
   verificationJwksUrl?: string;
   verificationJwksRefreshInterval?: Duration;
-  verificationJwksTlsInsecureSkipVerify?: boolean;
-  /**
+  verificationJwksTlsInsecureSkipVerify?: boolean; //   /**
    * RateLimitBudgetClaimName is the JWT claim name that, if present,
    * will be used to set the per-user RateLimitBudget override.
    * Defaults to "rlm".
@@ -1669,6 +1684,16 @@ export const SelectionReasonHedge: UpstreamSelectionReason = "hedge"; // specula
 export const SelectionReasonConsensusSlot: UpstreamSelectionReason = "consensus_slot"; // one consensus participant
 export const SelectionReasonSweep: UpstreamSelectionReason = "sweep"; // try-all-upstreams iteration
 /**
+ * ConsensusSlotContextKey marks a context executing inside one consensus
+ * participant slot.
+ */
+export const ConsensusSlotContextKey: ContextKey = "consensusSlot";
+/**
+ * SweepIterationContextKey marks a context executing a non-first pick of
+ * the try-all-upstreams sweep within one execution.
+ */
+export const SweepIterationContextKey: ContextKey = "sweepIteration";
+/**
  * UpstreamAttempt is one (upstream, attempt) record. The executors
  * append these as participants come and go so operators can answer
  * "which upstreams were involved in this request, why were they
@@ -1692,6 +1717,13 @@ export interface UpstreamAttempt {
   attemptidx: number /* int */; // 0-based attempt index within the parent loop
   errorcode: string; // ErrorCode string when Outcome is an error variant
   errordetail: string; // free-form short description (truncated)
+  /**
+   * CreditUnits is the vendor credit-unit cost this attempt accrued
+   * (the upstream's resolved table — vendor defaults merged with config
+   * overrides; 0 when the vendor exposes no pricing or the attempt
+   * provably never dialed it, e.g. skipped / breaker-open).
+   */
+  creditunits: number /* int64 */;
 }
 /**
  * ExecState centralizes the per-request execution counters and the

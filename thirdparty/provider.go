@@ -60,6 +60,17 @@ func (p *Provider) GenerateUpstreamConfigs(ctx context.Context, logger *zerolog.
 	if err != nil {
 		return nil, err
 	}
+	// Vendor-level cost config: copy the provider's creditUnits override
+	// onto every generated upstream, so NewUpstream can resolve the
+	// effective table (vendor defaults merged with the override) without
+	// re-reading provider settings.
+	if override := p.config.Settings.CreditUnits(); override != nil {
+		for _, cfg := range upsCfgs {
+			if cfg.CreditUnits == nil {
+				cfg.CreditUnits = override
+			}
+		}
+	}
 	p.expandEnvVars(upsCfgs)
 	return upsCfgs, nil
 }

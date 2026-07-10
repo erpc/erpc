@@ -166,6 +166,13 @@ type ServerConfig struct {
 	// "summary" to keep only counters, or "off" to disable entirely
 	// (useful for low-latency / bandwidth-constrained clients).
 	ExecutionHeaders *ExecutionHeadersMode `yaml:"executionHeaders,omitempty" json:"executionHeaders" tstype:"ExecutionHeadersMode"`
+
+	// CostHeaders opts into the cost/billing response headers
+	// (X-ERPC-Calls, X-ERPC-Billable, X-ERPC-Methods, X-ERPC-Credits,
+	// X-ERPC-Credits-Version) on single and batch responses. Off by
+	// default. Credit-unit pricing is vendor-level configuration — see
+	// CreditUnitsProvider and UpstreamConfig.CreditUnits.
+	CostHeaders *bool `yaml:"costHeaders,omitempty" json:"costHeaders"`
 }
 
 // ExecutionHeadersMode controls how much per-request execution detail is
@@ -737,6 +744,33 @@ type CORSConfig struct {
 
 type VendorSettings map[string]interface{}
 
+// CreditUnits extracts the `creditUnits` override dictionary from vendor
+// settings (`providers[].settings.creditUnits`): JSON-RPC method → credit
+// units, with "*" as the vendor's fallback for unlisted methods. YAML
+// decodes numbers as int or float64 — both normalize to int64. Nil when
+// absent or empty.
+func (s VendorSettings) CreditUnits() map[string]int64 {
+	raw, ok := s["creditUnits"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]int64, len(raw))
+	for method, v := range raw {
+		switch n := v.(type) {
+		case int:
+			out[method] = int64(n)
+		case int64:
+			out[method] = n
+		case float64:
+			out[method] = int64(n)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 type ProviderConfig struct {
 	Id                 string                     `yaml:"id,omitempty" json:"id"`
 	Vendor             string                     `yaml:"vendor" json:"vendor"`
@@ -805,7 +839,13 @@ type UpstreamConfig struct {
 	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
-	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
+	// CreditUnits overrides the vendor's built-in per-method credit table
+	// (CreditUnitsProvider) for this upstream, merged per method over the
+	// vendor defaults ("*" = fallback for unlisted methods). Normally set
+	// once per provider via `providers[].settings.creditUnits`, which is
+	// copied onto every upstream the provider generates.
+	CreditUnits map[string]int64      `yaml:"creditUnits,omitempty" json:"creditUnits,omitempty"`
+	Shadow      *ShadowUpstreamConfig `yaml:"shadow,omitempty" json:"shadow"`
 
 	// Routing holds per-upstream routing hints consumed by the selection
 	// policy. `scoreMultipliers` bias this upstream's rank inside

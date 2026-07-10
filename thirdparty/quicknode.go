@@ -25,6 +25,36 @@ type QuicknodeVendor struct {
 	cache *RemoteDataCache[[]*QuicknodeEndpoint]
 }
 
+// quicknodeCreditUnits is QuickNode's published API-credit model
+// (https://www.quicknode.com/api-credits, 2026-07-10): a base cost per
+// method on EVM chains (20 credits on the Ethereum tier), 2x for Advanced
+// APIs (debug/trace family) and 4x for Large Calls (trace replays). Values
+// are QuickNode credits, not money.
+var quicknodeCreditUnits = map[string]int64{
+	"*":                             20,
+	"debug_traceBlockByHash":        40,
+	"debug_traceBlockByNumber":      40,
+	"debug_traceCall":               40,
+	"debug_traceTransaction":        40,
+	"trace_block":                   40,
+	"trace_call":                    40,
+	"trace_filter":                  40,
+	"trace_transaction":             40,
+	"trace_replayBlockTransactions": 80,
+	"trace_replayTransaction":       80,
+}
+
+// CreditUnits implements common.CreditUnitsProvider: QuickNode's published
+// credit model, overridable per method via `providers[].settings.creditUnits`.
+func (v *QuicknodeVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
+	method, _ := req.Method()
+	var override map[string]int64
+	if upstream != nil {
+		override = upstream.CreditUnits
+	}
+	return common.ResolveCreditUnits(quicknodeCreditUnits, override, method)
+}
+
 type QuicknodeEndpoint struct {
 	ID      string `json:"id"`
 	HttpUrl string `json:"http_url"`

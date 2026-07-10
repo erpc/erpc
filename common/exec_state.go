@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,46 @@ const (
 	SelectionReasonSweep         UpstreamSelectionReason = "sweep"          // try-all-upstreams iteration
 )
 
+// Context markers for selection reasons only the spawning executor knows.
+// The attempt recorder (upstream tryForward's deferred record) runs at the
+// bottom of the failsafe chain and cannot see WHICH executor caused this
+// attempt to exist, so fan-out executors tag the context they hand each
+// attempt: the consensus executor marks every participant slot
+// (consensus_slot) and the network sweep marks its non-first picks (sweep).
+// Keys follow the repo's ContextKey convention (see RequestContextKey).
+
+// ConsensusSlotContextKey marks a context executing inside one consensus
+// participant slot.
+const ConsensusSlotContextKey ContextKey = "consensusSlot"
+
+// SweepIterationContextKey marks a context executing a non-first pick of
+// the try-all-upstreams sweep within one execution.
+const SweepIterationContextKey ContextKey = "sweepIteration"
+
+// WithConsensusSlot returns ctx marked as a consensus participant slot.
+func WithConsensusSlot(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ConsensusSlotContextKey, true)
+}
+
+// IsConsensusSlot reports whether ctx executes inside a consensus
+// participant slot.
+func IsConsensusSlot(ctx context.Context) bool {
+	v, _ := ctx.Value(ConsensusSlotContextKey).(bool)
+	return v
+}
+
+// WithSweepIteration returns ctx marked as a non-first sweep pick.
+func WithSweepIteration(ctx context.Context) context.Context {
+	return context.WithValue(ctx, SweepIterationContextKey, true)
+}
+
+// IsSweepIteration reports whether ctx executes a non-first pick of the
+// try-all-upstreams sweep.
+func IsSweepIteration(ctx context.Context) bool {
+	v, _ := ctx.Value(SweepIterationContextKey).(bool)
+	return v
+}
+
 // UpstreamAttempt is one (upstream, attempt) record. The executors
 // append these as participants come and go so operators can answer
 // "which upstreams were involved in this request, why were they
@@ -67,6 +108,12 @@ type UpstreamAttempt struct {
 	AttemptIdx  int    // 0-based attempt index within the parent loop
 	ErrorCode   string // ErrorCode string when Outcome is an error variant
 	ErrorDetail string // free-form short description (truncated)
+	// CreditUnits is the vendor credit-unit cost this attempt accrued
+	// (the upstream's resolved table — vendor defaults merged with config
+	// overrides; vendors with no table default to a flat 1 credit per
+	// request). 0 when the attempt provably never dialed the vendor
+	// (skipped / breaker-open) or the vendor was opted out ("*": 0).
+	CreditUnits int64
 }
 
 // ExecState centralizes the per-request execution counters and the
