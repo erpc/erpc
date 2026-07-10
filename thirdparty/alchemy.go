@@ -183,6 +183,47 @@ func (v *AlchemyVendor) Name() string {
 	return "alchemy"
 }
 
+// alchemyCreditUnits is Alchemy's publicly documented per-method
+// compute-unit (CU) cost table
+// (https://www.alchemy.com/docs/reference/compute-unit-costs, 2026-07-10).
+// Only commonly relayed EVM methods are listed; "*" approximates the modal
+// standard cost for anything unlisted. Values are Alchemy CUs, not money.
+var alchemyCreditUnits = map[string]int64{
+	"*":                         20,
+	"eth_blockNumber":           10,
+	"eth_call":                  26,
+	"eth_chainId":               0,
+	"eth_estimateGas":           20,
+	"eth_feeHistory":            10,
+	"eth_gasPrice":              20,
+	"eth_getBalance":            20,
+	"eth_getBlockByHash":        20,
+	"eth_getBlockByNumber":      20,
+	"eth_getBlockReceipts":      20,
+	"eth_getCode":               20,
+	"eth_getLogs":               60,
+	"eth_getStorageAt":          20,
+	"eth_getTransactionByHash":  20,
+	"eth_getTransactionCount":   20,
+	"eth_getTransactionReceipt": 20,
+	"eth_maxPriorityFeePerGas":  10,
+	"eth_sendRawTransaction":    40,
+	"net_version":               0,
+	"debug_traceTransaction":    40,
+	"trace_block":               20,
+}
+
+// CreditUnits implements common.CreditUnitsProvider: Alchemy's documented
+// CU table, overridable per method via `providers[].settings.creditUnits`.
+func (v *AlchemyVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
+	method, _ := req.Method()
+	var override map[string]int64
+	if upstream != nil {
+		override = upstream.CreditUnits
+	}
+	return common.ResolveCreditUnits(alchemyCreditUnits, override, method)
+}
+
 func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

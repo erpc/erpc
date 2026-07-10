@@ -108,6 +108,12 @@ type UpstreamAttempt struct {
 	AttemptIdx  int    // 0-based attempt index within the parent loop
 	ErrorCode   string // ErrorCode string when Outcome is an error variant
 	ErrorDetail string // free-form short description (truncated)
+	// CreditUnits is the vendor credit-unit cost this attempt accrued
+	// (the upstream's resolved table — vendor defaults merged with config
+	// overrides; vendors with no table default to a flat 1 credit per
+	// request). 0 when the attempt provably never dialed the vendor
+	// (skipped / breaker-open) or the vendor was opted out ("*": 0).
+	CreditUnits int64
 }
 
 // ExecState centralizes the per-request execution counters and the

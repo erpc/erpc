@@ -724,6 +724,9 @@ func (s *ServerConfig) SetDefaults() error {
 		m := ExecutionHeadersAll
 		s.ExecutionHeaders = &m
 	}
+	if s.CostHeaders == nil {
+		s.CostHeaders = util.BoolPtr(false)
+	}
 
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
