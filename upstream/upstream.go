@@ -77,6 +77,32 @@ func classifyUpstreamOutcome(resp *common.NormalizedResponse, err error) common.
 	return common.UpstreamOutcomeSuccess
 }
 
+// deriveSelectionReason answers "why was this upstream picked for this
+// attempt" for the per-attempt record (UpstreamAttempt.Reason, the
+// X-ERPC-Upstreams trace, and erpc_upstream_selection_total).
+//
+// Precedence is outermost-fan-out-cause first: a consensus participant slot
+// explains the attempt's existence even when the slot internally hedged or
+// retried (the attempt record's IsHedge/IsRetry fields preserve those inner
+// mechanics), and a hedge explains it even when the hedged execution swept
+// past its first upstream. sweep marks the non-first picks of the
+// try-all-upstreams loop within one execution; the first pick of a fresh
+// execution round after a network-scope retry reads retry.
+func deriveSelectionReason(ctx context.Context, isHedge bool, retries int) common.UpstreamSelectionReason {
+	switch {
+	case common.IsConsensusSlot(ctx):
+		return common.SelectionReasonConsensusSlot
+	case isHedge:
+		return common.SelectionReasonHedge
+	case common.IsSweepIteration(ctx):
+		return common.SelectionReasonSweep
+	case retries > 0:
+		return common.SelectionReasonRetry
+	default:
+		return common.SelectionReasonPrimary
+	}
+}
+
 func boolStr(b bool) string {
 	if b {
 		return "true"
@@ -517,12 +543,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					return
 				}
 				outcome := classifyUpstreamOutcome(resp, retErr)
-				reason := common.SelectionReasonPrimary
-				if isHedge {
-					reason = common.SelectionReasonHedge
-				} else if snap.Retries > 0 {
-					reason = common.SelectionReasonRetry
-				}
+				reason := deriveSelectionReason(ctx, isHedge, snap.Retries)
 				errCode := ""
 				errDetail := ""
 				if retErr != nil {

@@ -1167,6 +1167,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
 			loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
+			if loopIteration > 0 {
+				// Non-first picks of this execution are sweep iterations —
+				// tag the context so the attempt record reads sweep instead
+				// of primary/retry (see common.WithSweepIteration).
+				loopCtx = common.WithSweepIteration(loopCtx)
+			}
 			if ctxErr := loopCtx.Err(); ctxErr != nil {
 				cause := context.Cause(loopCtx)
 				if cause == nil {

@@ -344,9 +344,11 @@ Retry, hedge, circuit-breaker, and timeout still apply — only the dispute/agre
 | `X-ERPC-Cache` | `HIT` or `MISS` | when response metadata present |
 | `X-ERPC-Upstream` | winning upstream id | when known |
 | `X-ERPC-Duration` | milliseconds | NormalizedResponse only |
-| `X-ERPC-Upstreams` | per-attempt trace: `upstreamId=reason:outcome:durationMs[:won]` segments joined by `;`. Known `reason` values: `primary`, `hedge`, `retry`, `consensus_slot`. Known `outcome` values: `success`, `timeout`, `exec_revert`, `rate_limited`. `:won` suffix appended only when the attempt's response contributed to the final answer. | `all` mode only; when `len(attempts) > 0` |
+| `X-ERPC-Upstreams` | per-attempt trace: `upstreamId=reason:outcome:durationMs[:won]` segments joined by `;`. Known `reason` values: `primary`, `hedge`, `retry`, `consensus_slot`, `sweep`. Known `outcome` values: `success`, `timeout`, `exec_revert`, `rate_limited`. `:won` suffix appended only when the attempt's response contributed to the final answer. | `all` mode only; when `len(attempts) > 0` |
 
 Example `X-ERPC-Upstreams` value: `alchemy=primary:success:50ms:won;quicknode=hedge:timeout:5000ms;drpc=consensus_slot:exec_revert:20ms`.
+
+`reason` precedence when several apply to one attempt: `consensus_slot` &gt; `hedge` &gt; `sweep` &gt; `retry` &gt; `primary` — the outermost fan-out cause wins, so an attempt that hedged or retried *inside* a consensus participant slot still reads `consensus_slot` (the attempt record's `IsHedge`/`IsRetry` fields preserve the inner mechanics).
 
 **Error shapes produced by directive checks.** Failed validation directives return `ErrEndpointContentValidation`. A `UseUpstream` selector that matches no upstream returns `ErrUpstreamsExhausted` (wrapping `ErrUpstreamNotAllowed` per candidate) — there is no distinct "selector matched nothing" error code.
 

@@ -243,6 +243,10 @@ func (e *executor) executeConsensus(
 	attemptCancels := make([]context.CancelFunc, maxToSpawn)
 	for i := 0; i < maxToSpawn; i++ {
 		slotCtx := context.WithValue(cancellableCtx, common.RequestContextKey, originalReq)
+		// Mark the slot so upstream attempts made under it are attributed to
+		// consensus fan-out (Reason = consensus_slot) in the attempt log,
+		// the X-ERPC-Upstreams trace, and erpc_upstream_selection_total.
+		slotCtx = common.WithConsensusSlot(slotCtx)
 		slotCtx, attemptCancels[i] = context.WithCancel(slotCtx)
 		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan)
 	}
