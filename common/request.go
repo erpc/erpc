@@ -30,6 +30,48 @@ const (
 const RequestContextKey ContextKey = "rq"
 const UpstreamsContextKey ContextKey = "ups"
 
+// Context markers for selection reasons only the spawning executor knows.
+// The attempt recorder (upstream tryForward's deferred record) runs at the
+// bottom of the failsafe chain and cannot see WHICH executor caused this
+// attempt to exist, so fan-out executors tag the context they hand each
+// attempt: the consensus executor marks every participant slot
+// (consensus_slot) and the network sweep marks its non-first picks (sweep).
+// They live here with the other ContextKey constants — request.go is
+// excluded from tygo generation, and these keys are server-internal (the
+// ContextKey type has no TypeScript counterpart).
+
+// ConsensusSlotContextKey marks a context executing inside one consensus
+// participant slot.
+const ConsensusSlotContextKey ContextKey = "consensusSlot"
+
+// SweepIterationContextKey marks a context executing a non-first pick of
+// the try-all-upstreams sweep within one execution.
+const SweepIterationContextKey ContextKey = "sweepIteration"
+
+// WithConsensusSlot returns ctx marked as a consensus participant slot.
+func WithConsensusSlot(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ConsensusSlotContextKey, true)
+}
+
+// IsConsensusSlot reports whether ctx executes inside a consensus
+// participant slot.
+func IsConsensusSlot(ctx context.Context) bool {
+	v, _ := ctx.Value(ConsensusSlotContextKey).(bool)
+	return v
+}
+
+// WithSweepIteration returns ctx marked as a non-first sweep pick.
+func WithSweepIteration(ctx context.Context) context.Context {
+	return context.WithValue(ctx, SweepIterationContextKey, true)
+}
+
+// IsSweepIteration reports whether ctx executes a non-first pick of the
+// try-all-upstreams sweep.
+func IsSweepIteration(ctx context.Context) bool {
+	v, _ := ctx.Value(SweepIterationContextKey).(bool)
+	return v
+}
+
 type directiveKeyNames struct {
 	header string
 	query  string

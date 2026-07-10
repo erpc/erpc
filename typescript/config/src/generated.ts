@@ -1524,7 +1524,12 @@ export interface JwtStrategyConfig {
   verificationKeys?: { [key: string]: string};
   verificationJwksUrl?: string;
   verificationJwksRefreshInterval?: Duration;
-  verificationJwksTlsInsecureSkipVerify?: boolean; //   /**
+  /**
+   * Skipping TLS verification is an explicit operator opt-in for the JWKS
+   * fetch, not a hardcoded bypass.
+   */
+  verificationJwksTlsInsecureSkipVerify?: boolean;
+  /**
    * RateLimitBudgetClaimName is the JWT claim name that, if present,
    * will be used to set the per-user RateLimitBudget override.
    * Defaults to "rlm".
@@ -1684,16 +1689,6 @@ export const SelectionReasonHedge: UpstreamSelectionReason = "hedge"; // specula
 export const SelectionReasonConsensusSlot: UpstreamSelectionReason = "consensus_slot"; // one consensus participant
 export const SelectionReasonSweep: UpstreamSelectionReason = "sweep"; // try-all-upstreams iteration
 /**
- * ConsensusSlotContextKey marks a context executing inside one consensus
- * participant slot.
- */
-export const ConsensusSlotContextKey: ContextKey = "consensusSlot";
-/**
- * SweepIterationContextKey marks a context executing a non-first pick of
- * the try-all-upstreams sweep within one execution.
- */
-export const SweepIterationContextKey: ContextKey = "sweepIteration";
-/**
  * UpstreamAttempt is one (upstream, attempt) record. The executors
  * append these as participants come and go so operators can answer
  * "which upstreams were involved in this request, why were they
@@ -1720,8 +1715,9 @@ export interface UpstreamAttempt {
   /**
    * CreditUnits is the vendor credit-unit cost this attempt accrued
    * (the upstream's resolved table — vendor defaults merged with config
-   * overrides; 0 when the vendor exposes no pricing or the attempt
-   * provably never dialed it, e.g. skipped / breaker-open).
+   * overrides; vendors with no table default to a flat 1 credit per
+   * request). 0 when the attempt provably never dialed the vendor
+   * (skipped / breaker-open) or the vendor was opted out ("*": 0).
    */
   creditunits: number /* int64 */;
 }
