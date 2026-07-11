@@ -31,6 +31,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateBlockPiVendor())
 	r.Register(CreateAnkrVendor())
 	r.Register(CreateRoutemeshVendor())
+	r.Register(CreateSatelinkVendor())
 	r.Register(CreateBlockdaemonVendor())
 	return r
 }
