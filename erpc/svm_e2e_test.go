@@ -85,16 +85,21 @@ func svmUpstreamConfig(id, host string) *common.UpstreamConfig {
 // svmProjectForward reproduces the production project-layer path
 // (PreparedProject.doForward): it runs HandleProjectPreForward — which is where
 // commitment injection and the getGenesisHash short-circuit live — before
-// delegating to network.Forward. Tests must use this instead of calling
-// net.Forward directly; otherwise project-level pre-forward is skipped and the
-// upstream never sees the injected commitment the mocks expect.
+// delegating to network.Forward, and then applies HandleNetworkPostForward
+// (where the getSlot indexing-lag clamp and other network-level hooks live).
+// Tests must use this instead of calling net.Forward directly.
 func svmProjectForward(ctx context.Context, net *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	if h := net.architectureHandler; h != nil {
+	h := net.architectureHandler
+	if h != nil {
 		if handled, resp, err := h.HandleProjectPreForward(ctx, net, req); handled {
-			return resp, err
+			return h.HandleNetworkPostForward(ctx, net, req, resp, err)
 		}
 	}
-	return net.Forward(ctx, req)
+	resp, err := net.Forward(ctx, req)
+	if h != nil {
+		return h.HandleNetworkPostForward(ctx, net, req, resp, err)
+	}
+	return resp, err
 }
 
 // TestSvm_GetSlot_BasicProxy verifies that a getSlot request is forwarded to
@@ -726,4 +731,156 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(jrr.GetResultBytes()), "consensus-block-abc",
 		"consensus payload must match what the fresh upstreams returned")
+}
+
+// TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable is the end-to-end
+// regression guard for the bidirectional indexing-lag clamp on
+// getSlot(finalized). It simulates the production failure mode:
+//
+//  1. The upstream returns the absolute consensus-layer tip (10064) for
+//     getSlot(finalized) — a fresh response, not a stale cache hit.
+//  2. getBlock(10064, finalized) returns -32004 on all upstreams because the
+//     RPC indexing layer hasn't caught up yet.
+//  3. getBlock(10032, finalized) — tip minus the indexing lag (32) — returns
+//     a valid block (the upstream has had time to index it).
+//
+// Without the fix the hook passes 10064 through, getBlock fails, and sol-client
+// enters a -32004 retry loop. With the fix the hook clamps the fresh response
+// down to 10032 and getBlock succeeds on the first attempt.
+func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
+	const (
+		host          = "svm-indexlag-rpc1.localhost"
+		finalizedSlot = int64(10064)
+		safeSlot      = finalizedSlot - 32 // 10032 — indexed, accessible
+	)
+
+	util.ResetGock()
+	defer util.ResetGock()
+	// State poller: latestSlot=10100, finalizedSlot=10064.
+	// This sets SvmHighestFinalizedSlot = 10064 → hook floor = 10032.
+	util.SetupMocksForSvmStatePoller(host, 10100, finalizedSlot)
+
+	// getBlock(safeSlot) — the slot 32 behind tip. The fix routes here.
+	gock.New("http://" + host).
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			if r.URL.Host != host {
+				return false
+			}
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, `"method":"getBlock"`) &&
+				strings.Contains(body, `10032`)
+		}).
+		Reply(200).
+		BodyString(`{"jsonrpc":"2.0","id":1,"result":{"blockhash":"safe-block-10032","parentSlot":10031}}`)
+
+	// getBlock(finalizedSlot) — the raw tip. Should NEVER be called if the fix
+	// works; t.Errorf here fails the test immediately if it is.
+	gock.New("http://" + host).
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			if r.URL.Host != host {
+				return false
+			}
+			body := util.SafeReadBody(r)
+			if strings.Contains(body, `"method":"getBlock"`) &&
+				strings.Contains(body, `10064`) {
+				t.Errorf("hook leaked the raw tip 10064 to getBlock — indexing-lag clamp not applied")
+				return true
+			}
+			return false
+		}).
+		Reply(200).
+		BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32004,"message":"Block not available for slot 10064"}}`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	net, upsReg := setupTestSvmNetworkFinalized(t, ctx, []*common.UpstreamConfig{
+		svmUpstreamConfig("rpc1", host),
+	})
+
+	// Seed SvmHighestFinalizedSlot directly so the hook floor is deterministic
+	// without waiting for the 400ms poller tick.
+	for _, u := range upsReg.GetNetworkUpstreams(ctx, util.SvmNetworkId("", "mainnet-beta")) {
+		if sp := u.SvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			sp.SuggestFinalizedSlot(finalizedSlot)
+		}
+	}
+	time.Sleep(20 * time.Millisecond) // let shared-state counter propagate
+
+	// Step 1: getSlot(finalized). The upstream mock returns the raw tip (10064).
+	// The hook must cap it down to safeSlot (10032).
+	slotResp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)))
+	require.NoError(t, err)
+	slotJrr, err := slotResp.JsonRpcResponse()
+	require.NoError(t, err)
+	slotBytes := string(slotJrr.GetResultBytes())
+	assert.Contains(t, slotBytes, "10032",
+		"getSlot(finalized) must return tip-32 (10032), not the raw tip 10064")
+
+	// Step 2: getBlock(10032, finalized). Must succeed — block is indexed.
+	blockResp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(
+		[]byte(`{"jsonrpc":"2.0","id":2,"method":"getBlock","params":[10032,{"commitment":"finalized","encoding":"jsonParsed","maxSupportedTransactionVersion":0}]}`)))
+	require.NoError(t, err)
+	blockJrr, err := blockResp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Contains(t, string(blockJrr.GetResultBytes()), "safe-block-10032",
+		"getBlock on the clamped slot must succeed")
+}
+
+// setupTestSvmNetworkFinalized is setupTestSvmNetwork with commitment:finalized,
+// matching the production default that causes sol-client's BlockPollingLeader to
+// call getBlock(getSlot(), commitment:finalized).
+// Returns the network and the upstreams registry so callers can seed slot state.
+func setupTestSvmNetworkFinalized(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
+	t.Helper()
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
+		upstreams, ssr, rateLimitersRegistry, vr, pr,
+		nil, metricsTracker, nil,
+	)
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm: &common.SvmNetworkConfig{
+			Cluster:    "mainnet-beta",
+			Commitment: "finalized",
+		},
+	}
+	network, err := NewNetwork(
+		ctx, &log.Logger, "test", networkConfig,
+		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+	)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.SvmNetworkId("", "mainnet-beta")))
+	time.Sleep(150 * time.Millisecond)
+	return network, upstreamsRegistry
 }
