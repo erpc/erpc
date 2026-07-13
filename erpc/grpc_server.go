@@ -182,6 +182,9 @@ func (gs *GrpcServer) extractRequestInput(ctx context.Context, method string) (*
 		AuthPayload:  ap,
 		ClientIP:     gs.grpcClientIP(ctx, md),
 		UserAgent:    firstMD(md, "user-agent"),
+		// Raw trusted user-id metadata (gRPC lowercases header keys); applied only
+		// when the project sets TrustUserIdHeader — see RequestProcessor.
+		TrustedUserId: firstMD(md, "x-erpc-user-id"),
 	}, nil
 }
 

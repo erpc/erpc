@@ -103,6 +103,14 @@ const (
 	headerDirectiveValidateLogFields          = "X-ERPC-Validate-Log-Fields"
 )
 
+// HeaderUserId is the request header erpc reads as the caller's user identity
+// when a project enables ProjectConfig.TrustUserIdHeader. It lets a deployment
+// that authenticates callers *in front of* erpc (e.g. an API gateway) attribute
+// erpc's per-user metrics and logs without erpc performing auth itself. erpc
+// does NOT validate the value — the gateway is trusted to set it and to strip
+// any client-supplied copy. See [NormalizedRequest.SetUserFromTrustedHeader].
+const HeaderUserId = "X-ERPC-User-Id"
+
 const (
 	queryDirectiveRetryEmpty                 = "retry-empty"
 	queryDirectiveRetryPending               = "retry-pending"
@@ -459,6 +467,26 @@ func (r *NormalizedRequest) SetUser(user *User) {
 		return
 	}
 	r.user.Store(user)
+}
+
+// SetUserFromTrustedHeader assigns the request's user identity from a value
+// supplied by a trusted upstream (the [HeaderUserId] header), for deployments
+// that authenticate callers in front of erpc and want per-user metrics/logs
+// without erpc doing auth. It is a no-op when value is empty (after trimming)
+// or when an auth strategy already resolved a user — auth always wins. Only the
+// Id is set; no rate-limit budget is attached, so this never enables user-level
+// rate limiting. erpc does not validate value; gate it behind
+// ProjectConfig.TrustUserIdHeader and only trust the header from a proxy that
+// strips any client-supplied copy.
+func (r *NormalizedRequest) SetUserFromTrustedHeader(value string) {
+	if r == nil || r.User() != nil {
+		return
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	r.user.Store(&User{Id: value})
 }
 
 func (r *NormalizedRequest) User() *User {

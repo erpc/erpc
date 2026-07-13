@@ -27,6 +27,11 @@ type RequestInput struct {
 	AuthPayload  *auth.AuthPayload
 	ClientIP     string
 	UserAgent    string
+	// TrustedUserId is the raw X-ERPC-User-Id header/metadata value extracted at
+	// the transport. It is applied as the user identity only when the project
+	// sets TrustUserIdHeader and auth resolved no user (see
+	// NormalizedRequest.SetUserFromTrustedHeader).
+	TrustedUserId string
 }
 
 func NewRequestProcessor(erpc *ERPC, logger *zerolog.Logger) *RequestProcessor {
@@ -55,6 +60,9 @@ func (rp *RequestProcessor) ProcessUnary(
 		return nil, err
 	}
 	nq.SetUser(user)
+	if project.Config != nil && project.Config.TrustUserIdHeader {
+		nq.SetUserFromTrustedHeader(input.TrustedUserId)
+	}
 
 	networkID := fmt.Sprintf("%s:%s", input.Architecture, input.ChainId)
 	network, err := project.GetNetwork(ctx, networkID)
@@ -117,6 +125,9 @@ func (rp *RequestProcessor) ProcessQueryStream(
 		return err
 	}
 	nq.SetUser(user)
+	if project.Config != nil && project.Config.TrustUserIdHeader {
+		nq.SetUserFromTrustedHeader(input.TrustedUserId)
+	}
 
 	network, err := project.GetNetwork(ctx, networkID)
 	if err != nil {

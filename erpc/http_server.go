@@ -584,6 +584,17 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					nq.SetUser(user)
 				}
 
+				// Trusted upstream identity: when auth resolved no user and the
+				// project opts in, take the user id from the X-ERPC-User-Id header
+				// (set by a trusted gateway that already authenticated the caller)
+				// so per-user metrics/logs stay attributed without erpc doing auth.
+				if project != nil && project.Config != nil && project.Config.TrustUserIdHeader && nq.User() == nil {
+					nq.SetUserFromTrustedHeader(headers.Get(common.HeaderUserId))
+					if user := nq.User(); user != nil {
+						rlg = rlg.With().Str("userId", user.Id).Logger()
+					}
+				}
+
 				if isAdmin {
 					if s.adminCfg != nil {
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)

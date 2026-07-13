@@ -723,3 +723,52 @@ func TestEnrichFromHttp_AllowClientDirectives(t *testing.T) {
 		}
 	})
 }
+
+func newReqForUser() *NormalizedRequest {
+	return NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
+}
+
+func TestSetUserFromTrustedHeader(t *testing.T) {
+	t.Run("sets the user id when none was resolved", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUserFromTrustedHeader("proj_edge_ep1")
+		if u := req.User(); u == nil || u.Id != "proj_edge_ep1" {
+			t.Fatalf("expected user id %q, got %+v", "proj_edge_ep1", u)
+		}
+	})
+
+	t.Run("trims surrounding whitespace", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUserFromTrustedHeader("  proj_edge_ep1\n")
+		if u := req.User(); u == nil || u.Id != "proj_edge_ep1" {
+			t.Fatalf("expected trimmed user id, got %+v", u)
+		}
+	})
+
+	t.Run("is a no-op for an empty or whitespace-only value", func(t *testing.T) {
+		for _, v := range []string{"", "   ", "\t\n"} {
+			req := newReqForUser()
+			req.SetUserFromTrustedHeader(v)
+			if u := req.User(); u != nil {
+				t.Fatalf("expected no user for value %q, got %+v", v, u)
+			}
+		}
+	})
+
+	t.Run("never derives a rate-limit budget", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUserFromTrustedHeader("proj_edge_ep1")
+		if u := req.User(); u == nil || u.RateLimitBudget != "" {
+			t.Fatalf("trusted-header user must carry no budget, got %+v", u)
+		}
+	})
+
+	t.Run("auth wins — does not overwrite an already-resolved user", func(t *testing.T) {
+		req := newReqForUser()
+		req.SetUser(&User{Id: "auth-resolved", RateLimitBudget: "tier-1"})
+		req.SetUserFromTrustedHeader("header-user")
+		if u := req.User(); u == nil || u.Id != "auth-resolved" || u.RateLimitBudget != "tier-1" {
+			t.Fatalf("auth-resolved user must be preserved, got %+v", u)
+		}
+	})
+}

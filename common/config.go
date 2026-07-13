@@ -592,11 +592,21 @@ type ProjectConfig struct {
 	Networks         []*NetworkConfig  `yaml:"networks,omitempty" json:"networks"`
 	RateLimitBudget  string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	// Configure user agent tracking at the project level
-	UserAgentMode         UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
-	ForwardHeaders        []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
-	AllowClientDirectives *string               `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives"`
-	IgnoreMethods         []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
-	AllowMethods          []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
+	UserAgentMode UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
+	// TrustUserIdHeader makes erpc read the caller's user identity from the
+	// X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
+	// `user` metric/log label — but only when no auth strategy resolved a user
+	// (auth wins) and only for attribution (no rate-limit budget is derived).
+	// This is for deployments that authenticate callers in front of erpc (e.g. a
+	// gateway) and want per-user erpc telemetry without erpc performing auth.
+	// erpc does NOT validate the header, so enable this ONLY when erpc is reachable
+	// solely by a trusted proxy that sets the header and strips any client copy —
+	// otherwise callers can spoof their own attribution. Default false.
+	TrustUserIdHeader     bool     `yaml:"trustUserIdHeader,omitempty" json:"trustUserIdHeader"`
+	ForwardHeaders        []string `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
+	AllowClientDirectives *string  `yaml:"allowClientDirectives,omitempty" json:"allowClientDirectives"`
+	IgnoreMethods         []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
+	AllowMethods          []string `yaml:"allowMethods,omitempty" json:"allowMethods"`
 
 	// ScoreMetricsWindowSize is the tumbling window the per-upstream
 	// health tracker uses for its rolling counters (errorRate, p50/p70/
