@@ -2866,6 +2866,59 @@ func (r *RateLimitStoreConfig) SetDefaults() error {
 	return nil
 }
 
+// DefaultRateLimitMethodCosts is the built-in credit-cost table for weighted
+// rate-limit rules. Weights are aligned with published provider "compute unit"
+// pricing (Alchemy's CU table as the primary reference, which QuickNode/Infura
+// broadly track) so that relative costs reflect real node load: trivial
+// memory-served calls are free, standard reads are cheap, and range scans /
+// tracing are expensive. The "*" entry is the fallback for unlisted methods.
+var DefaultRateLimitMethodCosts = map[string]uint32{
+	"*": 20, // fallback for unlisted methods
+
+	"eth_chainId":        0,
+	"net_version":        0,
+	"net_listening":      0,
+	"web3_clientVersion": 0,
+	"eth_syncing":        0,
+
+	"eth_blockNumber":          10,
+	"eth_gasPrice":             20,
+	"eth_maxPriorityFeePerGas": 10,
+	"eth_feeHistory":           10,
+	"eth_subscribe":            10,
+
+	"eth_getBalance":                       20,
+	"eth_getCode":                          20,
+	"eth_getStorageAt":                     20,
+	"eth_getTransactionCount":              20,
+	"eth_getBlockByNumber":                 20,
+	"eth_getBlockByHash":                   20,
+	"eth_getBlockReceipts":                 20,
+	"eth_getTransactionByHash":             20,
+	"eth_getTransactionReceipt":            20,
+	"eth_getBlockTransactionCountByNumber": 20,
+	"eth_getBlockTransactionCountByHash":   20,
+
+	"eth_call":        30,
+	"eth_estimateGas": 20,
+
+	"eth_getLogs": 60,
+
+	"eth_sendRawTransaction": 40,
+
+	"trace_block":                   40,
+	"trace_transaction":             40,
+	"trace_call":                    40,
+	"trace_callMany":                40,
+	"trace_filter":                  40,
+	"trace_replayTransaction":       40,
+	"trace_replayBlockTransactions": 40,
+	"debug_traceTransaction":        40,
+	"debug_traceBlockByNumber":      40,
+	"debug_traceBlockByHash":        40,
+	"debug_traceCall":               40,
+}
+
 func (b *RateLimitBudgetConfig) SetDefaults() error {
 	if len(b.Rules) > 0 {
 		for _, rule := range b.Rules {
@@ -2875,7 +2928,31 @@ func (b *RateLimitBudgetConfig) SetDefaults() error {
 		}
 	}
 
+	// Merge operator overrides on top of built-in defaults per key — partial
+	// override rather than replacement, so a one-entry user table doesn't silently
+	// drop every default it didn't list.
+	if b.hasWeightedRule() {
+		merged := make(map[string]uint32, len(DefaultRateLimitMethodCosts)+len(b.MethodCosts))
+		for method, cost := range DefaultRateLimitMethodCosts {
+			merged[method] = cost
+		}
+		for method, cost := range b.MethodCosts {
+			merged[method] = cost
+		}
+		b.MethodCosts = merged
+	}
+
 	return nil
+}
+
+// hasWeightedRule reports whether any rule in the budget is credit-weighted.
+func (b *RateLimitBudgetConfig) hasWeightedRule() bool {
+	for _, r := range b.Rules {
+		if r != nil && r.Weighted {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *RateLimitRuleConfig) SetDefaults() error {

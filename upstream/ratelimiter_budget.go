@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type RateLimiterBudget struct {
@@ -27,6 +28,10 @@ type RateLimiterBudget struct {
 	registry   *RateLimitersRegistry
 	rulesMu    sync.RWMutex
 	maxTimeout time.Duration
+
+	// methodCosts is the per-method credit cost table used by weighted rules
+	// (see RateLimitBudgetConfig.MethodCosts). Read-only after construction.
+	methodCosts map[string]uint32
 
 	// admission is a buffered semaphore that bounds the number of concurrent
 	// in-flight remote (Redis) DoLimit calls per budget. It exists because the
@@ -245,10 +250,37 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 
 // evaluateRule checks a single rate limit rule against the cache.
 // Returns true if allowed, false if over limit.
+
+// costFor returns the credit cost for method: exact match → "*" default → 1. Zero means exempt.
+func (b *RateLimiterBudget) costFor(method string) uint32 {
+	if b.methodCosts != nil {
+		if cost, ok := b.methodCosts[method]; ok {
+			return cost
+		}
+		if cost, ok := b.methodCosts["*"]; ok {
+			return cost
+		}
+	}
+	return 1
+}
+
 func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string) bool {
 	cache := b.getCache()
 	if cache == nil {
 		return true // Fail-open when no cache is available
+	}
+
+	// Cost-0 methods must return allowed before touching the cache — sending a
+	// 0 addend is "check-only" in the Envoy library and would block once the pool
+	// is exhausted, which is not exempt semantics.
+	cost := uint32(1)
+	var descriptorAddend *wrapperspb.UInt64Value
+	if rule.Config.Weighted {
+		cost = b.costFor(method)
+		if cost == 0 {
+			return true
+		}
+		descriptorAddend = &wrapperspb.UInt64Value{Value: uint64(cost)}
 	}
 
 	// Build descriptor entries
@@ -265,7 +297,7 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 
 	rlReq := &pb.RateLimitRequest{
 		Domain:      b.Id,
-		Descriptors: []*pb_struct.RateLimitDescriptor{{Entries: entries}},
+		Descriptors: []*pb_struct.RateLimitDescriptor{{Entries: entries, HitsAddend: descriptorAddend}},
 		HitsAddend:  1,
 	}
 
@@ -282,6 +314,7 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 			attribute.String("budget", b.Id),
 			attribute.String("method", method),
 			attribute.String("scope", rule.Config.ScopeString()),
+			attribute.Int64("cost", int64(cost)),
 		),
 	)
 

@@ -225,6 +225,12 @@ func (r *RateLimitRuleConfig) Validate() error {
 	default:
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.period must be one of: second, minute, hour, day, week, month, year")
 	}
+
+	// A weighted rule accumulates per-method credit costs against MaxCount, so a
+	// zero ceiling would reject every request whose method has a non-zero cost.
+	if r.Weighted && r.MaxCount == 0 {
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.maxCount must be greater than 0 for a weighted rule")
+	}
 	return nil
 }
 
