@@ -686,10 +686,11 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_UsesFinalizeTip(t *testi
 	}
 }
 
-// TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideWhenCurrent
-// verifies that a finalized response within the indexing lag window is not
-// overridden — it's fresh enough that the block is accessible.
-func TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideWhenCurrent(t *testing.T) {
+// TestNetworkPostForward_GetSlot_FinalizedCommitment_CapsAboveFloor verifies
+// that a fresh finalized response above the indexing-lag floor is capped down
+// to the floor. finalizedSlot=12345000, lag=32 → floor=12344968; upstream
+// returned 12344990 (above floor, block may not be indexed) → capped to 12344968.
+func TestNetworkPostForward_GetSlot_FinalizedCommitment_CapsAboveFloor(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{
 		Architecture: common.ArchitectureSvm,
@@ -698,7 +699,7 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideWhenCurrent(t 
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`
 	req := common.NewNormalizedRequest([]byte(body))
-	// 12344990 > floor (12344968) — fresh enough, no override needed.
+	// 12344990 > floor (12344968): above the safe window, must be capped down.
 	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12344990"), nil)
 	if err != nil {
 		t.Fatalf("build response: %v", err)
@@ -709,8 +710,35 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideWhenCurrent(t 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if slot := readSlot(t, got); slot != 12344968 {
+		t.Fatalf("expected floor 12344968 (cap from above), got %d", slot)
+	}
+}
+
+// TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideAtFloor verifies
+// that a finalized response exactly at the floor is returned unchanged.
+func TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideAtFloor(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
+	}, latestSlot: 12345678, finalizedSlot: 12345000}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`
+	req := common.NewNormalizedRequest([]byte(body))
+	// Exactly at floor (12344968) — pass through unchanged.
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12344968"), nil)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got != resp {
-		t.Fatalf("response within indexing lag must be returned unchanged; got slot %d", readSlot(t, got))
+		t.Fatalf("response exactly at floor must be returned unchanged; got slot %d", readSlot(t, got))
 	}
 }
 

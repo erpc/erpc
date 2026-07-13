@@ -526,7 +526,11 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 	} else {
 		highestSlot = svmNet.SvmHighestLatestSlot(reqCtx)
 	}
-	if highestSlot <= slotNumber {
+	// For finalized: clamp from both directions. Stale cached values are upgraded
+	// to highestSlot; fresh values above highestSlot are capped down. Both prevent
+	// callers from receiving a slot whose block is not yet indexed by RPC nodes.
+	// For non-finalized: only upgrade stale values (no indexing lag concern).
+	if slotNumber == highestSlot || (commitment != "finalized" && slotNumber > highestSlot) {
 		return nr, re
 	}
 
