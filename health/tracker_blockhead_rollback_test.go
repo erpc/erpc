@@ -127,27 +127,34 @@ func TestTrackerLatestBlockRollbackTolerance(t *testing.T) {
 		// upsA delivers a bogus sample far ahead of the real chain.
 		tracker.SetLatestBlockNumber(upsA, 100_000_000, 0)
 
+		// The raw network head still tracks the max (observable via
+		// erpc_upstream_latest_block_number), but the LAG reference is the
+		// corroborated second-highest (32_000_050) — so the lone bogus sample
+		// cannot make the healthy upstreams appear to lag by tens of millions
+		// of blocks.
 		assert.Equal(t, int64(100_000_000), networkLatest(tracker, net))
-		assert.Equal(t, int64(100_000_000-32_000_000), blockHeadLag(tracker, upsB),
-			"healthy upstreams appear to lag the bogus head")
+		assert.Equal(t, int64(50), blockHeadLag(tracker, upsB),
+			"corroborated lag reference ignores the lone bogus head")
 
-		// upsA's next real observation corrects it.
+		// upsA's next real observation corrects it; the network head is then
+		// re-derived from the remaining per-upstream values, and the lag
+		// reference is the corroborated freshest of the corrected heads.
 		tracker.SetLatestBlockNumber(upsA, 32_000_100, 0)
 
 		assert.Equal(t, int64(32_000_100), upstreamLatest(tracker, upsA))
 		assert.Equal(t, int64(32_000_100), networkLatest(tracker, net),
 			"network head re-derived as max over per-upstream values")
 		assert.Equal(t, int64(0), blockHeadLag(tracker, upsA))
-		assert.Equal(t, int64(100), blockHeadLag(tracker, upsB),
-			"healthy upstreams' lag recomputed against the corrected head")
-		assert.Equal(t, int64(50), blockHeadLag(tracker, upsC))
+		assert.Equal(t, int64(50), blockHeadLag(tracker, upsB),
+			"lag measured against the corroborated freshest (32_000_050), not the lone max")
+		assert.Equal(t, int64(0), blockHeadLag(tracker, upsC))
 
 		// Gauges follow the corrected values.
 		assert.Equal(t, float64(32_000_100),
 			promUtil.ToFloat64(tracker.getLatestBlockGauge(tracker.projectId, "*", upsA.NetworkLabel(), "*")))
 		assert.Equal(t, float64(32_000_100),
 			promUtil.ToFloat64(tracker.getLatestBlockGauge(tracker.projectId, upsA.VendorName(), upsA.NetworkLabel(), upsA.Id())))
-		assert.Equal(t, float64(100),
+		assert.Equal(t, float64(50),
 			promUtil.ToFloat64(tracker.getHeadLagGauge(tracker.projectId, upsB.VendorName(), upsB.NetworkLabel(), upsB.Id())))
 	})
 

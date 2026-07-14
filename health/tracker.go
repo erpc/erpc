@@ -56,6 +56,15 @@ type NetworkMetadata struct {
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
+	// Last lag reference applied per axis (see networkLagReference). The
+	// corroborated second-highest head can move while the network max stands
+	// still (the corroborating upstream catches up to the leader); comparing
+	// against the previous reference triggers the same global lag recompute a
+	// max advance does, so no upstream is left holding a lag computed against
+	// a stale reference.
+	evmLatestLagRef    atomic.Int64
+	evmFinalizedLagRef atomic.Int64
+
 	// Dynamic block time via EMA on on-chain block timestamps.
 	// Uses block.timestamp (integer seconds) normalized by block count gap.
 	// For fast chains where consecutive blocks share the same timestamp,
@@ -1181,6 +1190,9 @@ func (t *Tracker) updateNetworkLagMetrics(
 				return true
 			}
 			lag := networkValue - upsValue
+			if lag < 0 {
+				lag = 0
+			}
 			setLag(tm, lag)
 			gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
 			gauge.Set(float64(lag))
@@ -1204,6 +1216,9 @@ func (t *Tracker) updateNetworkLagMetrics(
 					continue
 				}
 				lag := networkValue - upsValue
+				if lag < 0 {
+					lag = 0
+				}
 				setLag(tm, lag)
 				// Block-head/finalization lag is a per-upstream property, but the
 				// (ups,method) dedup index stores a single, arbitrary-finality key
@@ -1311,6 +1326,109 @@ func (t *Tracker) recomputeNetworkBlockHead(net string, getVal func(*NetworkMeta
 	return maxVal
 }
 
+// minLagReferenceUpstreams is the smallest network fan-out at which the
+// block-head lag reference can be the corroborated second-highest head. It is
+// derived, not tuned: the design discounts exactly ONE far-future outlier
+// (the same k=1 hardcoded in evm.ServedTipPick.Freshest), and discounting k
+// outliers takes k+2 upstreams — the (k+1)-th highest as a reference that
+// still tracks the honest fleet's tip, plus at least one node measurable
+// against it. At N=2 the second-highest IS the lower head: both nodes would
+// always read zero lag and blockNumberLagAbove would go structurally dead for
+// every two-upstream network. Below the quorum the raw maximum is kept —
+// preserving the historical single/two-upstream behavior, where a genuinely
+// behind node is still measured against its one peer, and a lone rogue peer
+// remains an accepted, test-pinned exposure: with one vote against one vote,
+// height alone cannot say which side is right.
+const minLagReferenceUpstreams = 3
+
+// networkLagReference returns the block-head value used as the reference for
+// per-upstream lag — and therefore for the blockNumberLagAbove /
+// blockSecondsLagAbove selection-policy predicates. It is the CORROBORATED
+// FRESHEST head: the second-highest positive head across the network's
+// upstreams — the same statistic the served-tip subsystem designates as its
+// lag reference (evm.ServedTipPick.Freshest), so both layers agree on what
+// the trustworthy tip is.
+//
+// The raw maximum let a single most-ahead upstream define the tip. A
+// cross-wired or poisoned endpoint briefly reporting another chain's (much
+// higher) height inflated every honest upstream's lag by millions of blocks,
+// so the lag predicate evicted the whole healthy majority and routing
+// collapsed onto the poisoned node. The second-highest head is by definition
+// corroborated-or-exceeded by at least one other upstream, so no single rogue
+// can move it. The absolute per-upstream maxima remain observable via
+// erpc_upstream_latest_block_number.
+//
+// Semantics: lag measures each upstream's distance to the corroborated tip,
+// not to the single most-ahead node — a lone leader a few blocks ahead no
+// longer counts against its peers. Residual (inherent to height-only
+// corroboration): two or more upstreams agreeing on a bogus far-future head
+// corroborate each other and are not rejected. With fewer than
+// minLagReferenceUpstreams positive heads there is nothing to corroborate, so
+// networkMax is returned unchanged.
+//
+// Computed here — over ALL upstreams the tracker has observed, not the
+// selection-policy-eligible subset — deliberately: the reference FEEDS the
+// policy, so deriving it from the policy's own post-exclusion set would be
+// circular (an eviction removes a head from the input, freezing the state
+// that caused it). It is also independent of the served-tip opt-in, so
+// default max-mode networks get the same protection, and it stays a
+// zero-allocation streaming scan on the per-sample hot path.
+//
+// current is the upstream whose update triggered this recompute; it is always
+// counted (its per-method metrics entry is created only at the END of
+// SetLatestBlockNumber, so it is not yet visible to the index/range below and
+// would otherwise be undercounted on the very update that matters).
+func (t *Tracker) networkLagReference(net string, current common.Upstream, getVal func(*NetworkMetadata) int64, networkMax int64) int64 {
+	t.mu.RLock()
+	relevantKeys := t.upstreamsByNetwork[net]
+	t.mu.RUnlock()
+
+	seen := make(map[common.Upstream]struct{}, len(relevantKeys)+1)
+	var top, second int64 // two highest positive heads seen so far (top >= second)
+	found := 0
+	consider := func(ups common.Upstream) {
+		if ups == nil {
+			return
+		}
+		if _, done := seen[ups]; done {
+			return
+		}
+		seen[ups] = struct{}{}
+		v := getVal(t.getMetadata(metadataKey{ups, net}))
+		if v <= 0 {
+			return
+		}
+		found++
+		if v > top {
+			second = top
+			top = v
+		} else if v > second {
+			second = v
+		}
+	}
+	consider(current) // always count the triggering upstream (may be nil)
+	if len(relevantKeys) == 0 {
+		// Fallback if the index is not ready — mirrors recomputeNetworkBlockHead.
+		t.upsMetrics.Range(func(key, _ any) bool {
+			if k, ok := key.(upstreamKey); ok && k.ups != nil && k.ups.NetworkId() == net {
+				consider(k.ups)
+			}
+			return true
+		})
+	} else {
+		for _, k := range relevantKeys {
+			consider(k.ups)
+		}
+	}
+
+	if found < minLagReferenceUpstreams {
+		return networkMax
+	}
+	// The corroborated freshest: at least one other upstream is at or beyond
+	// this height (see evm.ServedTipPick.Freshest for the served-tip twin).
+	return second
+}
+
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
@@ -1400,14 +1518,28 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		}
 	}
 
-	// 3) Recompute block head lag for this upstream
+	// 3) Recompute block head lag for this upstream. The reference is the
+	// corroborated freshest head (second-highest; see networkLagReference), so
+	// a lone poisoned upstream cannot inflate every other upstream's lag and
+	// get the healthy majority evicted by blockNumberLagAbove.
 	ntwBn := ntwMeta.evmLatestBlockNumber.Load()
 	if ntwBn <= 0 {
 		lg.Warn().Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
 		return
 	}
+	lagRef := t.networkLagReference(net, upstream, func(meta *NetworkMetadata) int64 {
+		return meta.evmLatestBlockNumber.Load()
+	}, ntwBn)
+	if ntwMeta.evmLatestLagRef.Swap(lagRef) != lagRef {
+		// The reference itself moved — every stored lag is now relative to a
+		// stale reference, not just this upstream's. Recompute all.
+		needsGlobalUpdate = true
+	}
 
-	upsLag := ntwBn - upsMeta.evmLatestBlockNumber.Load()
+	upsLag := lagRef - upsMeta.evmLatestBlockNumber.Load()
+	if upsLag < 0 {
+		upsLag = 0
+	}
 	gLag := t.getHeadLagGauge(t.projectId, vendor, netLabel, id)
 	gLag.Set(float64(upsLag))
 
@@ -1416,7 +1548,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		// Recompute for every upstream in the network
 		t.updateNetworkLagMetrics(
 			net,
-			ntwBn,
+			lagRef,
 			func(meta *NetworkMetadata) int64 { return meta.evmLatestBlockNumber.Load() },
 			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
 			t.getHeadLagGauge,
@@ -1611,15 +1743,28 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 		}
 	}
 
-	// Recompute finalization lag for this upstream
+	// Recompute finalization lag for this upstream. Corroborated-freshest
+	// reference, same rationale as SetLatestBlockNumber — a lone far-future
+	// outlier must not inflate finalization lag and evict the healthy majority
+	// via blockSecondsLagAbove. See networkLagReference.
 	ntwVal := ntwMeta.evmFinalizedBlockNumber.Load()
 	if ntwVal <= 0 {
 		lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
 		return
 	}
+	lagRef := t.networkLagReference(net, upstream, func(meta *NetworkMetadata) int64 {
+		return meta.evmFinalizedBlockNumber.Load()
+	}, ntwVal)
+	if ntwMeta.evmFinalizedLagRef.Swap(lagRef) != lagRef {
+		// Same reference-motion trigger as the latest axis.
+		needsGlobalUpdate = true
+	}
 
 	upsVal := upsMeta.evmFinalizedBlockNumber.Load()
-	upsLag := ntwVal - upsVal
+	upsLag := lagRef - upsVal
+	if upsLag < 0 {
+		upsLag = 0
+	}
 
 	// Update Prometheus for this upstream
 	gLag := t.getFinalizationLagGauge(t.projectId, vendor, netLabel, id)
@@ -1630,7 +1775,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 		// Recompute for every upstream in the network
 		t.updateNetworkLagMetrics(
 			net,
-			ntwVal,
+			lagRef,
 			func(meta *NetworkMetadata) int64 { return meta.evmFinalizedBlockNumber.Load() },
 			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
 			t.getFinalizationLagGauge,
