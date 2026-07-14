@@ -409,6 +409,30 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			}
 			return "missing_data"
 		}
+		if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			// ErrUpstreamsExhausted wraps per-upstream errors via a joined
+			// error that HasErrorCode cannot walk (no Unwrap() []error).
+			// When ALL causes are missing-data (e.g. every SVM provider
+			// returns -32004 because the block isn't indexed yet), treat
+			// this the same as a single MissingData — retry with delay so
+			// the block has time to be indexed.
+			if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
+				causes := ue.Errors()
+				allMissing := len(causes) > 0
+				for _, c := range causes {
+					if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) {
+						allMissing = false
+						break
+					}
+				}
+				if allMissing {
+					if e.dataUnavailableCapReached(attempt) {
+						return ""
+					}
+					return "missing_data"
+				}
+			}
+		}
 		if common.IsRetryableTowardNetwork(err) {
 			return "retryable_error"
 		}
