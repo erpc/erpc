@@ -512,23 +512,33 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 	// processed tip. Using the processed tip (~32 slots ahead) would override
 	// finalized responses with a slot whose block is not yet finalized, causing
 	// an immediate -32004 on the subsequent getBlock(commitment:finalized) call.
+	// Back off by one finalization epoch (~32 slots, ~13s) before enforcing for
+	// finalized commitment. getSlot(finalized) returns the consensus-layer tip,
+	// but RPC nodes may not have indexed the block data yet — getBlock on a
+	// just-finalized slot returns -32004 until the node writes it to storage.
+	const finalizedIndexingLag = 32
+
 	commitment, _, _ := resolveCommitment(ctx, network, nq)
 	var highestSlot int64
 	if commitment == "finalized" {
-		// Back off by one finalization epoch (~32 slots, ~13s) before enforcing.
-		// getSlot(finalized) returns the consensus-layer tip, but RPC nodes may not
-		// have indexed the block data yet — getBlock on a just-finalized slot returns
-		// -32004 until the node writes the block to storage. The lag ensures we only
-		// enforce against slots that are accessible, while still correcting cache
-		// entries that are thousands of slots stale (the original problem).
-		const finalizedIndexingLag = 32
 		highestSlot = svmNet.SvmHighestFinalizedSlot(reqCtx) - finalizedIndexingLag
 	} else {
 		highestSlot = svmNet.SvmHighestLatestSlot(reqCtx)
 	}
-	// If the state poller hasn't populated the tip yet, pass through unchanged.
+	// If the state poller hasn't populated the tip yet (e.g. devnet upstreams
+	// rate-limiting the poller), fall back to using the response itself as the
+	// tip estimate and apply the lag directly. This prevents passing the raw
+	// consensus tip to callers when the poller is unavailable — getBlock on an
+	// unindexed tip returns -32004. For non-finalized commitments there is no
+	// indexing-lag concern, so pass through unchanged.
 	if highestSlot <= 0 {
-		return nr, re
+		if commitment != "finalized" {
+			return nr, re
+		}
+		highestSlot = slotNumber - finalizedIndexingLag
+		if highestSlot <= 0 {
+			return nr, re
+		}
 	}
 	// For finalized: clamp from both directions. Stale cached values are upgraded
 	// to highestSlot; fresh values above highestSlot are capped down. Both prevent

@@ -742,12 +742,14 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideAtFloor(t *tes
 	}
 }
 
-// TestNetworkPostForward_GetSlot_FinalizedCommitment_PassThroughWhenTipUnknown verifies
-// that when SvmHighestFinalizedSlot is 0 (state poller not yet populated), the
-// response is passed through unchanged rather than being overridden to slot -32.
-func TestNetworkPostForward_GetSlot_FinalizedCommitment_PassThroughWhenTipUnknown(t *testing.T) {
+// TestNetworkPostForward_GetSlot_FinalizedCommitment_AppliesLagWhenTipUnknown verifies
+// that when SvmHighestFinalizedSlot is 0 (state poller not populated, e.g. devnet
+// upstreams rate-limiting it), the hook applies the indexing lag to the response
+// itself rather than passing the raw consensus tip through. Passing through the
+// raw tip causes getBlock to return -32004 because the block isn't indexed yet.
+func TestNetworkPostForward_GetSlot_FinalizedCommitment_AppliesLagWhenTipUnknown(t *testing.T) {
 	t.Parallel()
-	// finalizedSlot=0 simulates a cold-start pod where the state poller hasn't fired yet.
+	// finalizedSlot=0 simulates a pod where the state poller never fires.
 	net := &fakeNetwork{cfg: &common.NetworkConfig{
 		Architecture: common.ArchitectureSvm,
 		Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
@@ -765,8 +767,9 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_PassThroughWhenTipUnknow
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if slot := readSlot(t, got); slot != 476080663 {
-		t.Fatalf("expected pass-through (476080663) when tip unknown, got %d", slot)
+	// Expect slotNumber - 32 = 476080631, not the raw tip 476080663.
+	if slot := readSlot(t, got); slot != 476080631 {
+		t.Fatalf("expected lag-adjusted slot 476080631, got %d", slot)
 	}
 }
 
