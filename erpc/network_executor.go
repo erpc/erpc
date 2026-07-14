@@ -394,28 +394,14 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			}
 			return "block_unavailable"
 		}
-		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-			// MissingData = "the upstream doesn't have this data".
-			// Respect the EXPLICIT RetryEmpty=false directive (caller
-			// said "don't retry"). When the directive is unset, retry
-			// — another upstream may have the data.
-			if req != nil {
-				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
-					return ""
-				}
-			}
-			if e.dataUnavailableCapReached(attempt) {
-				return ""
-			}
-			return "missing_data"
-		}
 		if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
-			// ErrUpstreamsExhausted wraps per-upstream errors via a joined
-			// error that HasErrorCode cannot walk (no Unwrap() []error).
-			// When ALL causes are missing-data (e.g. every SVM provider
-			// returns -32004 because the block isn't indexed yet), treat
-			// this the same as a single MissingData — retry with delay so
-			// the block has time to be indexed.
+			// ErrUpstreamsExhausted must be checked before ErrCodeEndpointMissingData:
+			// HasErrorCode walks the cause chain and returns true for exhausted errors
+			// where all upstreams returned missing-data, so it would match the block
+			// below and hit the RetryEmpty gate — which should not apply here.
+			// When ALL causes are missing-data (every provider returns -32004 because
+			// the block isn't indexed yet), retry with delay so the block has time to
+			// be indexed.
 			if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
 				causes := ue.Errors()
 				allMissing := len(causes) > 0
@@ -432,6 +418,21 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 					return "missing_data"
 				}
 			}
+		}
+		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			// MissingData = "the upstream doesn't have this data".
+			// Respect the EXPLICIT RetryEmpty=false directive (caller
+			// said "don't retry"). When the directive is unset, retry
+			// — another upstream may have the data.
+			if req != nil {
+				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+					return ""
+				}
+			}
+			if e.dataUnavailableCapReached(attempt) {
+				return ""
+			}
+			return "missing_data"
 		}
 		if common.IsRetryableTowardNetwork(err) {
 			return "retryable_error"
