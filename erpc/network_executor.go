@@ -614,6 +614,21 @@ func (e *networkExecutor) runHedge(
 				if uxe.Upstreams() == nil || len(uxe.Upstreams()) == 0 {
 					return false
 				}
+				// When every upstream returned -32004/missing-data, no sibling
+				// hedge leg can do better — they will all find the same upstreams
+				// consumed. Keep this result so the retry layer (shouldRetryWithReason)
+				// sees ErrUpstreamsExhausted directly and applies the 500ms delay.
+				causes := uxe.Errors()
+				allMissing := len(causes) > 0
+				for _, c := range causes {
+					if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) {
+						allMissing = false
+						break
+					}
+				}
+				if allMissing {
+					return true
+				}
 			}
 			// Underlying-retryable wrapped errors (e.g. ErrUpstreamsExhausted
 			// wrapping a 5xx) should continue racing for a healthier sibling.
