@@ -526,6 +526,10 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 	} else {
 		highestSlot = svmNet.SvmHighestLatestSlot(reqCtx)
 	}
+	// If the state poller hasn't populated the tip yet, pass through unchanged.
+	if highestSlot <= 0 {
+		return nr, re
+	}
 	// For finalized: clamp from both directions. Stale cached values are upgraded
 	// to highestSlot; fresh values above highestSlot are capped down. Both prevent
 	// callers from receiving a slot whose block is not yet indexed by RPC nodes.

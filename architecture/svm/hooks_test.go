@@ -742,6 +742,34 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_NoOverrideAtFloor(t *tes
 	}
 }
 
+// TestNetworkPostForward_GetSlot_FinalizedCommitment_PassThroughWhenTipUnknown verifies
+// that when SvmHighestFinalizedSlot is 0 (state poller not yet populated), the
+// response is passed through unchanged rather than being overridden to slot -32.
+func TestNetworkPostForward_GetSlot_FinalizedCommitment_PassThroughWhenTipUnknown(t *testing.T) {
+	t.Parallel()
+	// finalizedSlot=0 simulates a cold-start pod where the state poller hasn't fired yet.
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
+	}, latestSlot: 0, finalizedSlot: 0}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`
+	req := common.NewNormalizedRequest([]byte(body))
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("476080663"), nil)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slot := readSlot(t, got); slot != 476080663 {
+		t.Fatalf("expected pass-through (476080663) when tip unknown, got %d", slot)
+	}
+}
+
 func TestHandleNetworkPostForward_DispatchesGetSlotAndGetBlockHeight(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 99999}
