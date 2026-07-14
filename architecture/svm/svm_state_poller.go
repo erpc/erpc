@@ -44,6 +44,7 @@ type SvmStatePoller struct {
 	latestSlotShared    data.CounterInt64SharedVariable
 	finalizedSlotShared data.CounterInt64SharedVariable
 
+	shredInsertSlot       atomic.Int64
 	maxShredInsertSlotLag atomic.Int64
 	healthy               atomic.Bool
 
@@ -214,6 +215,7 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 
 	// Safe to read LatestSlot() now — the processed-slot goroutine has joined.
 	if shredSlot > 0 {
+		e.shredInsertSlot.Store(shredSlot)
 		if latest := e.LatestSlot(); latest > 0 {
 			lag := latest - shredSlot
 			if lag < 0 {
@@ -280,6 +282,10 @@ func (e *SvmStatePoller) LatestSlot() int64 {
 
 func (e *SvmStatePoller) FinalizedSlot() int64 {
 	return e.finalizedSlotShared.GetValue()
+}
+
+func (e *SvmStatePoller) ShredInsertSlot() int64 {
+	return e.shredInsertSlot.Load()
 }
 
 func (e *SvmStatePoller) MaxShredInsertSlotLag() int64 {

@@ -28,7 +28,18 @@ const SolanaMainnetBetaGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N
 // A test needing a DIFFERENT genesis hash (e.g. a mismatch test) must register
 // its own getGenesisHash mock BEFORE calling this — gock matches in registration
 // order, so the earlier mock wins.
+//
+// getMaxShredInsertSlot is set to latestSlot (lag = 0). Use
+// SetupMocksForSvmStatePollerWithShred when the test needs a specific shred slot.
 func SetupMocksForSvmStatePoller(host string, latestSlot, finalizedSlot int64) {
+	SetupMocksForSvmStatePollerWithShred(host, latestSlot, finalizedSlot, latestSlot)
+}
+
+// SetupMocksForSvmStatePollerWithShred is like SetupMocksForSvmStatePoller but
+// allows specifying the getMaxShredInsertSlot return value independently. Use
+// shredInsertSlot < finalizedSlot to simulate a provider whose indexer is behind
+// the consensus finalized tip (the devnet scenario that triggers -32004).
+func SetupMocksForSvmStatePollerWithShred(host string, latestSlot, finalizedSlot, shredInsertSlot int64) {
 	// getGenesisHash → mainnet-beta (bootstrap cluster-identity validation)
 	gock.New("http://" + host).
 		Post("").
@@ -61,13 +72,13 @@ func SetupMocksForSvmStatePoller(host string, latestSlot, finalizedSlot int64) {
 		Reply(200).
 		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getSlot(finalized)"}`, finalizedSlot)))
 
-	// getMaxShredInsertSlot — return same as latest to zero out lag.
+	// getMaxShredInsertSlot
 	gock.New("http://" + host).
 		Post("").
 		Persist().
 		Filter(filterByHostAndBody(host, "getMaxShredInsertSlot")).
 		Reply(200).
-		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getMaxShredInsertSlot"}`, latestSlot)))
+		JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d,"_note":"svm state poller expected mock for getMaxShredInsertSlot"}`, shredInsertSlot)))
 }
 
 func filterByHostAndBody(host, needle string) func(*http.Request) bool {

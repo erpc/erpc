@@ -734,19 +734,19 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 }
 
 // TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable is the end-to-end
-// regression guard for the bidirectional indexing-lag clamp on
-// getSlot(finalized). It simulates the production failure mode:
+// regression guard for the indexing-lag clamp on getSlot(finalized). It simulates
+// the production failure mode where the provider's indexer is behind the consensus
+// finalized tip (common on devnet):
 //
 //  1. The upstream returns the absolute consensus-layer tip (10064) for
 //     getSlot(finalized) — a fresh response, not a stale cache hit.
-//  2. getBlock(10064, finalized) returns -32004 on all upstreams because the
-//     RPC indexing layer hasn't caught up yet.
-//  3. getBlock(10032, finalized) — tip minus the indexing lag (32) — returns
-//     a valid block (the upstream has had time to index it).
+//  2. getMaxShredInsertSlot returns 10032 — the indexer is 32 slots behind finalized.
+//  3. getBlock(10064, finalized) returns -32004: block not yet indexed.
+//  4. getBlock(10032, finalized) — the highest indexed slot — returns a valid block.
 //
 // Without the fix the hook passes 10064 through, getBlock fails, and sol-client
-// enters a -32004 retry loop. With the fix the hook clamps the fresh response
-// down to 10032 and getBlock succeeds on the first attempt.
+// enters a -32004 retry loop. With the fix the hook clamps to min(finalizedTip,
+// shredInsertSlot) = min(10064, 10032) = 10032 and getBlock succeeds.
 func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 	const (
 		host          = "svm-indexlag-rpc1.localhost"
@@ -756,9 +756,12 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 
 	util.ResetGock()
 	defer util.ResetGock()
-	// State poller: latestSlot=10100, finalizedSlot=10064.
-	// This sets SvmHighestFinalizedSlot = 10064 → hook floor = 10032.
-	util.SetupMocksForSvmStatePoller(host, 10100, finalizedSlot)
+	// State poller: latestSlot=10100, finalizedSlot=10064, shredInsertSlot=10032.
+	// shredInsertSlot (10032) < finalizedSlot (10064) simulates the devnet case where
+	// the provider's indexer is behind the consensus tip. The hook must use the
+	// shred insert slot as the ceiling so callers don't receive a slot that isn't
+	// yet queryable via getBlock. Floor = min(10064, 10032) = 10032.
+	util.SetupMocksForSvmStatePollerWithShred(host, 10100, finalizedSlot, safeSlot)
 
 	// getBlock(safeSlot) — the slot 32 behind tip. The fix routes here.
 	gock.New("http://" + host).
@@ -812,7 +815,7 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 	time.Sleep(20 * time.Millisecond) // let shared-state counter propagate
 
 	// Step 1: getSlot(finalized). The upstream mock returns the raw tip (10064).
-	// The hook must cap it down to safeSlot (10032).
+	// The hook must cap it to min(finalizedTip=10064, shredInsertSlot=10032) = 10032.
 	slotResp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(
 		[]byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)))
 	require.NoError(t, err)
@@ -820,7 +823,7 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 	require.NoError(t, err)
 	slotBytes := string(slotJrr.GetResultBytes())
 	assert.Contains(t, slotBytes, "10032",
-		"getSlot(finalized) must return tip-32 (10032), not the raw tip 10064")
+		"getSlot(finalized) must return shredInsertSlot (10032), not the raw consensus tip 10064")
 
 	// Step 2: getBlock(10032, finalized). Must succeed — block is indexed.
 	blockResp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(

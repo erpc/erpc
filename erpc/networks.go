@@ -699,6 +699,31 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	return pick.Tip
 }
 
+// SvmHighestIndexedSlot returns the majority-vote maxShredInsertSlot across SVM
+// upstreams. This is the highest slot that the providers' indexers have actually
+// written to storage — getBlock on any slot above this value returns -32004.
+// Uses PickServedTip so a single fast indexer cannot inflate the value.
+func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
+	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestIndexedSlot")
+	defer span.End()
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	out := make([]evm.ServedTipInput, 0, len(upstreams))
+	for _, u := range upstreams {
+		sp := u.SvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		slot := sp.ShredInsertSlot()
+		if slot <= 0 {
+			continue
+		}
+		out = append(out, evm.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
+	}
+	pick := evm.PickServedTip(out)
+	span.SetAttributes(attribute.Int64("highest_indexed_slot", pick.Tip))
+	return pick.Tip
+}
+
 // gatherSvmTipInputs collects slot values from SVM state pollers for
 // majority-tip computation via evm.PickServedTip.
 func (n *Network) gatherSvmTipInputs(ctx context.Context, useFinalized bool) []evm.ServedTipInput {

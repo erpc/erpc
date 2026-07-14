@@ -508,20 +508,30 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 	}
 	reqCtx := context.WithValue(ctx, common.RequestContextKey, nq)
 
-	// For finalized commitment use the finalized tip as the reference, not the
-	// processed tip. Using the processed tip (~32 slots ahead) would override
-	// finalized responses with a slot whose block is not yet finalized, causing
-	// an immediate -32004 on the subsequent getBlock(commitment:finalized) call.
-	// Back off by one finalization epoch (~32 slots, ~13s) before enforcing for
-	// finalized commitment. getSlot(finalized) returns the consensus-layer tip,
-	// but RPC nodes may not have indexed the block data yet — getBlock on a
-	// just-finalized slot returns -32004 until the node writes it to storage.
-	const finalizedIndexingLag = 32
+	// For finalized commitment, cap the response to the highest slot the provider
+	// pool has actually indexed. getSlot(finalized) reflects the consensus layer;
+	// getBlock on a just-finalized slot returns -32004 until the provider's indexer
+	// writes it. We use min(finalizedTip, indexedTip) so that neither a slow
+	// indexer nor a fast one can push callers into the un-indexed window.
+	// When indexedTip is unavailable (poller cold or provider doesn't support
+	// getMaxShredInsertSlot) we fall back to finalizedTip - 32, the fixed
+	// one-epoch lag that has always been safe for mainnet providers.
+	const finalizedIndexingLagFallback = 32
 
 	commitment, _, _ := resolveCommitment(ctx, network, nq)
 	var highestSlot int64
 	if commitment == "finalized" {
-		highestSlot = svmNet.SvmHighestFinalizedSlot(reqCtx) - finalizedIndexingLag
+		finalizedTip := svmNet.SvmHighestFinalizedSlot(reqCtx)
+		indexedTip := svmNet.SvmHighestIndexedSlot(reqCtx)
+		if finalizedTip > 0 && indexedTip > 0 {
+			if indexedTip < finalizedTip {
+				highestSlot = indexedTip
+			} else {
+				highestSlot = finalizedTip
+			}
+		} else if finalizedTip > 0 {
+			highestSlot = finalizedTip - finalizedIndexingLagFallback
+		}
 	} else {
 		highestSlot = svmNet.SvmHighestLatestSlot(reqCtx)
 	}
@@ -535,7 +545,7 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 		if commitment != "finalized" {
 			return nr, re
 		}
-		highestSlot = slotNumber - finalizedIndexingLag
+		highestSlot = slotNumber - finalizedIndexingLagFallback
 		if highestSlot <= 0 {
 			return nr, re
 		}

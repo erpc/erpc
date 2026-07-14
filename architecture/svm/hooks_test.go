@@ -505,6 +505,7 @@ func (r *recordingSvmPoller) IsObjectNull() bool                { return false }
 func (r *recordingSvmPoller) Poll(context.Context) error        { return nil }
 func (r *recordingSvmPoller) LatestSlot() int64                 { return 0 }
 func (r *recordingSvmPoller) FinalizedSlot() int64              { return 0 }
+func (r *recordingSvmPoller) ShredInsertSlot() int64            { return 0 }
 func (r *recordingSvmPoller) MaxShredInsertSlotLag() int64      { return 0 }
 func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
 func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
@@ -770,6 +771,37 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_AppliesLagWhenTipUnknown
 	// Expect slotNumber - 32 = 476080631, not the raw tip 476080663.
 	if slot := readSlot(t, got); slot != 476080631 {
 		t.Fatalf("expected lag-adjusted slot 476080631, got %d", slot)
+	}
+}
+
+// TestNetworkPostForward_GetSlot_FinalizedCommitment_UsesIndexedSlotWhenBehind
+// verifies that when the provider's shred-insert slot is behind the finalized
+// consensus tip, the hook uses the shred-insert slot as the ceiling rather than
+// finalizedTip - 32. This is the devnet scenario: the indexer is slow and the
+// fixed-lag fallback (32 slots) would still be too optimistic.
+func TestNetworkPostForward_GetSlot_FinalizedCommitment_UsesIndexedSlotWhenBehind(t *testing.T) {
+	t.Parallel()
+	// finalizedTip=12345000, indexedSlot=12344500 (500 slots behind — worse than -32).
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
+	}, latestSlot: 12345678, finalizedSlot: 12345000, indexedSlot: 12344500}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`
+	req := common.NewNormalizedRequest([]byte(body))
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12345000"), nil)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Floor = min(12345000, 12344500) = 12344500 (not finalizedTip-32 = 12344968).
+	if slot := readSlot(t, got); slot != 12344500 {
+		t.Fatalf("expected indexed floor 12344500 (shred insert slot), got %d", slot)
 	}
 }
 

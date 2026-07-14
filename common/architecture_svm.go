@@ -42,6 +42,7 @@ type SvmStatePoller interface {
 
 	LatestSlot() int64
 	FinalizedSlot() int64
+	ShredInsertSlot() int64
 	MaxShredInsertSlotLag() int64
 	IsHealthy() bool
 
