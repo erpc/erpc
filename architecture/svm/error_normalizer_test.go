@@ -179,7 +179,7 @@ func TestExtract_LongTermStorage_IsNonRetryableAndPreservesCode(t *testing.T) {
 	}
 }
 
-func TestExtract_BlockNotAvailable_IsRetryableAndNormalizesTo32014(t *testing.T) {
+func TestExtract_BlockNotAvailable_IsRetryableAndPreservesRawCode(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32004, "Block not available", 200)
 	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
@@ -192,8 +192,10 @@ func TestExtract_BlockNotAvailable_IsRetryableAndNormalizesTo32014(t *testing.T)
 	if !errors.As(err, &jre) {
 		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
 	}
-	if jre.NormalizedCode() != common.JsonRpcErrorMissingData {
-		t.Fatalf("wire code must be -32014 (JsonRpcErrorMissingData), got %v", jre.NormalizedCode())
+	// Wire code must preserve raw -32004, NOT normalize to -32014 (JsonRpcErrorMissingData).
+	// Normalizing to -32014 caused sol-client BlockNotAvailableException → infinite retry loop.
+	if jre.NormalizedCode() != common.JsonRpcErrorNumber(-32004) {
+		t.Fatalf("wire code must preserve raw -32004, got %v", jre.NormalizedCode())
 	}
 }
 

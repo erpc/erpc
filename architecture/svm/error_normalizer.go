@@ -124,9 +124,13 @@ func (e *JsonRpcErrorExtractor) Extract(
 		)
 
 	// --- Missing data — transient (retryable: block/slot not yet propagated) -
+	// Preserve the raw Solana code on the wire so callers receive -32004/-32008/-32014
+	// instead of the generic -32014 (JsonRpcErrorMissingData). Normalizing everything
+	// to -32014 caused sol-client to enter an infinite BlockNotAvailableException
+	// retry loop for unindexed finalized slots.
 	case svmCodeBlockNotAvailable, svmCodeNoSnapshot, svmCodeBlockStatusNotAvail:
 		return common.NewErrEndpointMissingData(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorMissingData, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
 			upstream,
 		)
 
