@@ -103,12 +103,10 @@ func TestNetworkExecutor_ShouldRetry_ExhaustedAllMissingDataRetries(t *testing.T
 	assert.Equal(t, "missing_data", e.shouldRetryWithReason(nil, nil, exhausted, 0),
 		"all-missing ErrUpstreamsExhausted must retry as missing_data")
 
-	// With a request carrying default directives (RetryEmpty=false), the retry
-	// must still fire — the RetryEmpty gate must not block the exhausted path.
+	// Production: directiveDefaults is nil for Solana, so directives are never set.
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[]}`))
-	req.ApplyDirectiveDefaults(&common.DirectiveDefaultsConfig{})
 	assert.Equal(t, "missing_data", e.shouldRetryWithReason(req, nil, exhausted, 0),
-		"RetryEmpty gate must not block all-missing ErrUpstreamsExhausted retry")
+		"nil directives must not block all-missing ErrUpstreamsExhausted retry")
 }
 
 func TestNetworkExecutor_ComputeDelay_BlockUnavailableUsesEmptyResultDelay(t *testing.T) {

@@ -412,6 +412,11 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 					}
 				}
 				if allMissing {
+					if req != nil {
+						if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+							return ""
+						}
+					}
 					if e.dataUnavailableCapReached(attempt) {
 						return ""
 					}
