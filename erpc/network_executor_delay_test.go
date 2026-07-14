@@ -86,6 +86,31 @@ func TestNetworkExecutor_ShouldRetry_DataUnavailableSharesOneCap(t *testing.T) {
 
 // The former separate BlockUnavailableDelay was merged into EmptyResultDelay, so a
 // block-unavailable retry falls back to EmptyResultDelay before block-time warms up.
+// ErrUpstreamsExhausted where every cause is -32004 (all providers returned
+// "block not available") must retry as missing_data. Before the fix, HasErrorCode
+// walking the cause chain matched ErrCodeEndpointMissingData first, hit the
+// RetryEmpty=false gate, and returned "" — blocking the retry entirely.
+func TestNetworkExecutor_ShouldRetry_ExhaustedAllMissingDataRetries(t *testing.T) {
+	cfg := &common.NetworkFailsafeConfig{
+		Retry: &common.RetryPolicyConfig{MaxAttempts: 3},
+	}
+	e := &networkExecutor{cfg: cfg, method: "*"}
+
+	md1 := common.NewErrEndpointMissingData(errors.New("-32004 upstream 1"), nil)
+	md2 := common.NewErrEndpointMissingData(errors.New("-32004 upstream 2"), nil)
+	exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(md1, md2))
+
+	assert.Equal(t, "missing_data", e.shouldRetryWithReason(nil, nil, exhausted, 0),
+		"all-missing ErrUpstreamsExhausted must retry as missing_data")
+
+	// With a request carrying default directives (RetryEmpty=false), the retry
+	// must still fire — the RetryEmpty gate must not block the exhausted path.
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[]}`))
+	req.ApplyDirectiveDefaults(&common.DirectiveDefaultsConfig{})
+	assert.Equal(t, "missing_data", e.shouldRetryWithReason(req, nil, exhausted, 0),
+		"RetryEmpty gate must not block all-missing ErrUpstreamsExhausted retry")
+}
+
 func TestNetworkExecutor_ComputeDelay_BlockUnavailableUsesEmptyResultDelay(t *testing.T) {
 	cfg := &common.NetworkFailsafeConfig{
 		Retry: &common.RetryPolicyConfig{
