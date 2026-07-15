@@ -52,8 +52,11 @@ func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, ne
 	if err != nil {
 		return false, nil, err
 	}
-	if method == "getSignaturesForAddress" {
+	switch method {
+	case "getSignaturesForAddress":
 		return networkPreForward_validateSignaturesForAddress(ctx, network, req)
+	case "getBlock", "getConfirmedBlock":
+		return networkPreForward_getBlock(ctx, network, req)
 	}
 	return false, nil, nil
 }

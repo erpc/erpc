@@ -411,6 +411,57 @@ func toInt64(v interface{}) (int64, bool) {
 	return 0, false
 }
 
+// networkPreForward_getBlock short-circuits getBlock/getConfirmedBlock when the
+// requested slot is ahead of what the provider pool has indexed. Solana RPC nodes
+// return -32004 for any slot above their maxShredInsertSlot; hitting all upstreams
+// only to collect N identical -32004s wastes quota and delays the retry.
+//
+// When the guard fires it returns ErrEndpointMissingData — the same error class
+// that shouldRetryWithReason maps to "missing_data" — so the 500ms indexing-lag
+// retry fires immediately without any upstream calls.
+//
+// Stale-tracker false-reject: if the pool's indexedTip is up to 500ms stale and
+// the block was indexed since the last poll, the guard fires incorrectly. The
+// consequence is one extra 500ms retry round, after which the poller will have
+// caught up and the request goes through. Acceptable tradeoff for eliminating the
+// all-upstreams-fail → exhaust → retry cycle on every not-yet-indexed block.
+func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	svmNet, ok := n.(common.SvmNetwork)
+	if !ok {
+		return false, nil, nil
+	}
+
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil {
+		return false, nil, nil
+	}
+	rpcReq.RLock()
+	defer rpcReq.RUnlock()
+
+	if len(rpcReq.Params) == 0 {
+		return false, nil, nil
+	}
+	slot, ok := toInt64(rpcReq.Params[0])
+	if !ok || slot <= 0 {
+		return false, nil, nil
+	}
+
+	indexedTip := svmNet.SvmHighestIndexedSlot(ctx)
+	if indexedTip <= 0 {
+		// maxShredInsertSlot not available (poller cold or provider doesn't support it);
+		// fall back to the finalized tip as a conservative upper bound.
+		indexedTip = svmNet.SvmHighestFinalizedSlot(ctx)
+	}
+	if indexedTip <= 0 || slot <= indexedTip {
+		return false, nil, nil
+	}
+
+	return true, nil, common.NewErrEndpointMissingData(
+		fmt.Errorf("slot %d not yet indexed by provider pool (tip: %d)", slot, indexedTip),
+		nil,
+	)
+}
+
 // upstreamPostForward_trackContextSlot peeks at response.result.context.slot
 // and feeds it into the upstream's SvmStatePoller. Solana RPC responses
 // commonly carry a `context.slot` metadata field that tells us the slot the

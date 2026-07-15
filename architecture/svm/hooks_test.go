@@ -805,6 +805,95 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_UsesIndexedSlotWhenBehin
 	}
 }
 
+// networkPreForward_getBlock: slot ahead of indexedTip → short-circuit missing-data.
+func TestNetworkPreForwardGetBlock_SlotAheadOfIndexedTip_ShortCircuits(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:         &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot: 1000,
+	}
+	for _, method := range []string{"getBlock", "getConfirmedBlock"} {
+		req := newReq(method, `[1001, {"encoding":"jsonParsed"}]`)
+		handled, resp, err := networkPreForward_getBlock(context.Background(), net, req)
+		if !handled {
+			t.Fatalf("%s: expected short-circuit for slot 1001 > indexedTip 1000", method)
+		}
+		if resp != nil {
+			t.Fatalf("%s: expected nil response on short-circuit", method)
+		}
+		if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			t.Fatalf("%s: expected ErrEndpointMissingData, got %T: %v", method, err, err)
+		}
+	}
+}
+
+// slot at or below indexedTip → pass through.
+func TestNetworkPreForwardGetBlock_SlotWithinIndexedTip_PassesThrough(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:         &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot: 1000,
+	}
+	for _, slot := range []int64{999, 1000} {
+		req := newReq("getBlock", fmt.Sprintf(`[%d]`, slot))
+		handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+		if handled || err != nil {
+			t.Fatalf("slot %d: expected pass-through (handled=%v err=%v)", slot, handled, err)
+		}
+	}
+}
+
+// indexedTip unavailable → falls back to finalizedTip.
+func TestNetworkPreForwardGetBlock_NoIndexedTip_FallsBackToFinalizedTip(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:   0, // unavailable
+		finalizedSlot: 1000,
+	}
+	// slot above finalizedTip → short-circuit
+	req := newReq("getBlock", `[1001]`)
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("expected short-circuit via finalizedTip fallback, got handled=%v err=%v", handled, err)
+	}
+
+	// slot within finalizedTip → pass through
+	req2 := newReq("getBlock", `[999]`)
+	handled2, _, err2 := networkPreForward_getBlock(context.Background(), net, req2)
+	if handled2 || err2 != nil {
+		t.Fatalf("slot 999 within finalizedTip 1000: expected pass-through, got handled=%v err=%v", handled2, err2)
+	}
+}
+
+// both tips unavailable (cold poller) → pass through unconditionally.
+func TestNetworkPreForwardGetBlock_BothTipsZero_PassesThrough(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
+	req := newReq("getBlock", `[999999]`)
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+	if handled || err != nil {
+		t.Fatalf("cold poller: expected pass-through for any slot, got handled=%v err=%v", handled, err)
+	}
+}
+
+// handler dispatches getBlock and getConfirmedBlock to the guard.
+func TestHandleNetworkPreForward_DispatchesGetBlockGuard(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:         &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot: 500,
+	}
+	h := &SvmArchitectureHandler{}
+	for _, method := range []string{"getBlock", "getConfirmedBlock"} {
+		req := newReq(method, `[501]`)
+		handled, _, err := h.HandleNetworkPreForward(context.Background(), net, nil, req)
+		if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			t.Fatalf("%s: expected dispatch to guard, got handled=%v err=%v", method, handled, err)
+		}
+	}
+}
+
 func TestHandleNetworkPostForward_DispatchesGetSlotAndGetBlockHeight(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 99999}
