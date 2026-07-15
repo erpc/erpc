@@ -2302,6 +2302,15 @@ type SvmNetworkConfig struct {
 	// Only applied when a consensus policy is active AND the request's
 	// resolved finality is Finalized.
 	MaxFinalizedSlotLag int64 `yaml:"maxFinalizedSlotLag,omitempty" json:"maxFinalizedSlotLag"`
+
+	// EnforceBlockAvailability controls whether the networkPreForward_getBlock
+	// guard is active. When enabled (default), getBlock/getConfirmedBlock
+	// requests for slots above the highest indexed slot known to any upstream
+	// are short-circuited with ErrEndpointMissingData before hitting providers
+	// — saving quota and triggering the 500ms indexing-lag retry immediately.
+	// Set to false to disable the guard when ShredInsertSlot tracking is
+	// unavailable or unreliable on a given deployment.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 // SvmUpstreamConfig carries per-upstream SVM settings.

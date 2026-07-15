@@ -430,6 +430,9 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 	if !ok {
 		return false, nil, nil
 	}
+	if !svmNet.SvmEnforceBlockAvailability() {
+		return false, nil, nil
+	}
 
 	rpcReq, err := r.JsonRpcRequest(ctx)
 	if err != nil {

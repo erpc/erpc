@@ -47,6 +47,7 @@ type SvmNetwork interface {
 	SvmHighestLatestSlot(ctx context.Context) int64
 	SvmHighestFinalizedSlot(ctx context.Context) int64
 	SvmHighestIndexedSlot(ctx context.Context) int64
+	SvmEnforceBlockAvailability() bool
 }
 
 // EvmHighestLatestBlockNumber returns the highest observed "latest" block

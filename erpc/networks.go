@@ -699,29 +699,40 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	return pick.Tip
 }
 
-// SvmHighestIndexedSlot returns the majority-vote maxShredInsertSlot across SVM
-// upstreams. This is the highest slot that the providers' indexers have actually
-// written to storage — getBlock on any slot above this value returns -32004.
-// Uses PickServedTip so a single fast indexer cannot inflate the value.
+// SvmEnforceBlockAvailability reports whether the networkPreForward_getBlock
+// guard is enabled. Defaults to true when unconfigured.
+func (n *Network) SvmEnforceBlockAvailability() bool {
+	if n.cfg == nil || n.cfg.Svm == nil || n.cfg.Svm.EnforceBlockAvailability == nil {
+		return true
+	}
+	return *n.cfg.Svm.EnforceBlockAvailability
+}
+
+// SvmHighestIndexedSlot returns the MAX maxShredInsertSlot across SVM upstreams.
+// This is used only by the networkPreForward_getBlock guard — its job is to
+// avoid short-circuiting requests that ANY upstream can serve. It therefore
+// uses MAX, not the majority (median) tip. This mirrors how EVM's
+// tryShortCircuitFutureBlock uses evmHighestBlockMax (not PickServedTip.Tip):
+// "never null out a block the most-ahead upstream actually has."
+// SvmHighestLatestSlot / SvmHighestFinalizedSlot remain median-based because
+// they advertise the chain head to clients — a different, conservative goal.
 func (n *Network) SvmHighestIndexedSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestIndexedSlot")
 	defer span.End()
 	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	out := make([]evm.ServedTipInput, 0, len(upstreams))
+	var maxSlot int64
 	for _, u := range upstreams {
 		sp := u.SvmStatePoller()
 		if sp == nil || sp.IsObjectNull() {
 			continue
 		}
 		slot := sp.ShredInsertSlot()
-		if slot <= 0 {
-			continue
+		if slot > maxSlot {
+			maxSlot = slot
 		}
-		out = append(out, evm.ServedTipInput{UpstreamID: u.Id(), BlockNumber: slot})
 	}
-	pick := evm.PickServedTip(out)
-	span.SetAttributes(attribute.Int64("highest_indexed_slot", pick.Tip))
-	return pick.Tip
+	span.SetAttributes(attribute.Int64("highest_indexed_slot", maxSlot))
+	return maxSlot
 }
 
 // gatherSvmTipInputs collects slot values from SVM state pollers for

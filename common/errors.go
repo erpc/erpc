@@ -2573,13 +2573,11 @@ func ClassifySeverity(err error) Severity {
 	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
 		return SeverityInfo
 	}
-	// ErrUpstreamBlockUnavailable is *intentionally* retryable toward the upstream:
-	// network_executor runs a block-time-aware catch-up retry keyed on this exact
-	// code, and that nuance must not change. But it only means an upstream hasn't
-	// synced the requested block yet — an expected, self-healing condition, not an
-	// infra failure an operator must urgently act on — so it is a warning. Classified
-	// explicitly here, ahead of the retryable->critical fall-through below.
-	if HasErrorCode(err, ErrCodeUpstreamBlockUnavailable) {
+	// ErrUpstreamBlockUnavailable / ErrEndpointMissingData are both intentionally
+	// retryable (the retry loop is keyed on these codes), but they only mean an
+	// upstream hasn't indexed the requested block yet — expected, self-healing
+	// conditions, not infra failures an operator must urgently act on.
+	if HasErrorCode(err, ErrCodeUpstreamBlockUnavailable, ErrCodeEndpointMissingData) {
 		return SeverityWarning
 	}
 	// ErrNetworkNotSupported is, like block-unavailable, intentionally retryable —

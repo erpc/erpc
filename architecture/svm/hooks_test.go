@@ -894,6 +894,22 @@ func TestHandleNetworkPreForward_DispatchesGetBlockGuard(t *testing.T) {
 	}
 }
 
+// enforceBlockAvailability:false → guard disabled, slot ahead of tip passes through.
+func TestNetworkPreForwardGetBlock_GuardDisabled_PassesThrough(t *testing.T) {
+	t.Parallel()
+	f := false
+	net := &fakeNetwork{
+		cfg:                      &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot:              1000,
+		enforceBlockAvailability: &f,
+	}
+	req := newReq("getBlock", `[9999]`)
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+	if handled || err != nil {
+		t.Fatalf("guard disabled: expected pass-through for slot 9999, got handled=%v err=%v", handled, err)
+	}
+}
+
 func TestHandleNetworkPostForward_DispatchesGetSlotAndGetBlockHeight(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 99999}
