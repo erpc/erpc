@@ -459,8 +459,16 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		return false, nil, nil
 	}
 
+	// Wrap with ErrJsonRpcExceptionInternal(-32014) so TranslateToJsonRpcException
+	// preserves the wire code. Without this, the guard returns -32603 to clients;
+	// sol-client only maps -32004/-32014 to BlockNotAvailableException (wait-retry).
 	return true, nil, common.NewErrEndpointMissingData(
-		fmt.Errorf("slot %d not yet indexed by provider pool (tip: %d)", slot, indexedTip),
+		common.NewErrJsonRpcExceptionInternal(
+			svmCodeBlockStatusNotAvail,
+			common.JsonRpcErrorMissingData,
+			fmt.Sprintf("slot %d not yet indexed by provider pool (tip: %d)", slot, indexedTip),
+			nil, nil,
+		),
 		nil,
 	)
 }

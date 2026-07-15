@@ -824,6 +824,12 @@ func TestNetworkPreForwardGetBlock_SlotAheadOfIndexedTip_ShortCircuits(t *testin
 		if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			t.Fatalf("%s: expected ErrEndpointMissingData, got %T: %v", method, err, err)
 		}
+		// Verify wire code is -32014 so sol-client maps it to BlockNotAvailableException.
+		// Without ErrJsonRpcExceptionInternal in the chain, TranslateToJsonRpcException
+		// falls through to -32603 (ServerSideException) which sol-client doesn't handle.
+		if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
+			t.Fatalf("%s: guard error must carry ErrJsonRpcExceptionInternal for correct wire code, got %T: %v", method, err, err)
+		}
 	}
 }
 
