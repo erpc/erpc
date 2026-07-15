@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	archEvm "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
@@ -350,6 +351,23 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReques
 				),
 			).WithRetryableTowardNetwork(false)
 		} else if code == 3 {
+			// Alchemy uses code 3 both for EVM execution errors (reverts) and for
+			// data-availability errors such as "Unknown block" on near-tip reads.
+			// The latter is missing data that another upstream may have, so it must
+			// remain retryable toward the network instead of being classified as a
+			// deterministic revert.
+			if archEvm.IsMissingDataError(err) {
+				return common.NewErrEndpointMissingData(
+					common.NewErrJsonRpcExceptionInternal(
+						code,
+						common.JsonRpcErrorMissingData,
+						msg,
+						nil,
+						details,
+					),
+					req.LastUpstream(),
+				)
+			}
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					code,
