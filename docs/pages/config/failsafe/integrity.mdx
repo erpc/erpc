@@ -258,8 +258,8 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `blockHashRecompute` | intrinsic | block | `keccak(RLP(header))` ≠ the claimed block hash |
 | `transactionsRootRecompute` | intrinsic | block | the transactions' Merkle-Patricia root ≠ header `transactionsRoot` |
 | `senderRecovery` | intrinsic | txByHash | `ecrecover(signature)` ≠ the reported `from` |
-| `parentHashLinkage` ※ | corroborated | block | block N's `parentHash` ≠ the hash observed for N-1 |
-| `hashStability` ※ | corroborated | block | a block number's hash changed from what was observed |
+| `parentHashLinkage` ※ | corroborated | block | block N's `parentHash` ≠ the hash observed for N-1 (param `byHashRequests: "skip"` exempts explicit by-hash lookups) |
+| `hashStability` ※ | corroborated | block | a block number's hash changed from what was observed (param `byHashRequests: "skip"` exempts explicit by-hash lookups) |
 | `receiptVsBlock` ※ | authoritative | receipt | a single receipt ≠ the force-fetched canonical block |
 | `receiptsRootRecompute` | authoritative | receipts | receipt MPT root ≠ the header's `receiptsRoot` (force-fetched by hash) |
 
@@ -275,6 +275,39 @@ what to do for those, by the block's finality (read from the upstream state poll
 
 - `finalized` → default `reject` (a finalized block can't reorg; a mismatch is corruption).
 - `unfinalized` → default `soft-flag` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
+
+### Explicit by-hash lookups: `byHashRequests`
+
+The continuity checks hold every block response to one consistent fork — including
+`eth_getBlockByHash` responses, whose block-number→hash claim is compared against the
+ChainView pin like any other. That is the strict default, but it has a semantic edge: a
+client that asks for a block **by its exact hash** receives exactly that block (the
+identity checks guarantee response == requested), and whether that hash is *canonical at
+its height* is arguably not the request's question — fetching orphaned-but-real blocks by
+hash is how indexers unwind reorgs. With the strict default, a pool member that retains
+settled orphans fails every such lookup for as long as clients retry it, surfacing as
+persistent `hashStability` rejections on `eth_getBlockByHash` (and `integrity_failed`
+when no upstream can serve the pinned fork — for an orphan hash, none can).
+
+The per-check param `byHashRequests` controls this, per check:
+
+- `validate` (default) — by-hash responses are held to the canonical pin like everything else.
+- `skip` — explicit by-hash lookups are exempt from that check (outcome `skip`, never a
+  violation). By-number traffic is unaffected — continuity stays strict where the client
+  asked "what is the chain at height N".
+
+```yaml
+integrity:
+  level: authoritative
+  checks:
+    hashStability:     { params: { byHashRequests: "skip" } }
+    parentHashLinkage: { params: { byHashRequests: "skip" } }
+```
+
+Config validation rejects any other value (an unknown value would silently keep the
+default). Note the trade-off: with `skip`, a by-hash response is no longer checked for
+fork consistency against the rest of your traffic — the deterministic checks
+(hash recompute, roots, identity) still apply to it.
 
 ### Per-request selection: profiles & headers
 
@@ -499,6 +532,7 @@ integrity:
            receiptsRootRecompute:     { enabled: false }   # same mechanism — disable if you run authoritative receipt corroboration
    ```
    **Diagnostic rule of thumb:** if `erpc_integrity_violation_total{check="…Recompute"}` rejects across *every* upstream of one chain, it's the check, not the data — disable that check for that chain (and consider opening an issue so it can be added to this list).
+7. **A persistent `hashStability` reject stream on `eth_getBlockByHash` usually means one upstream keeps serving settled orphans by hash** — clients (indexers unwinding reorgs) re-request an orphaned hash, that upstream still has the block, and the pin correctly says it is not canonical at its height. Since the request names the orphan hash itself, *no* upstream can satisfy the pinned fork, so most of these rejects become `integrity_failed` client errors. If serving explicitly-requested orphans is acceptable for your traffic, exempt by-hash lookups per check with `byHashRequests: "skip"` (see [Explicit by-hash lookups](#explicit-by-hash-lookups-byhashrequests)); by-number continuity stays strict either way.
 
 ### Source code entry points
 

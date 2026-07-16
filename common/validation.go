@@ -1529,6 +1529,18 @@ func isIntegrityBehavior(s string) bool {
 	return false
 }
 
+// isIntegrityByHashRequestsMode mirrors the runtime vocabulary for the
+// continuity checks' `byHashRequests` param (integrity skipsByHashLookup):
+// an unrecognized value silently keeps the default ("validate"), so the only
+// place a typo can be caught is here.
+func isIntegrityByHashRequestsMode(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "validate", "skip":
+		return true
+	}
+	return false
+}
+
 func (i *IntegrityConfig) Validate() error {
 	if i == nil {
 		return nil
@@ -1578,6 +1590,11 @@ func (s *IntegritySettings) validate() error {
 		}
 		if oc != nil && oc.OnFailure != "" && !isIntegrityBehavior(oc.OnFailure) {
 			return fmt.Errorf("integrity.checks.%s.onFailure '%s' is invalid (an unknown value silently keeps the default), must be one of: reject | soft-flag | off", id, oc.OnFailure)
+		}
+		if oc != nil {
+			if v, ok := oc.Params[IntegrityParamByHashRequests]; ok && !isIntegrityByHashRequestsMode(v) {
+				return fmt.Errorf("integrity.checks.%s.params.%s '%s' is invalid (an unknown value silently keeps the default), must be one of: validate | skip", id, IntegrityParamByHashRequests, v)
+			}
 		}
 	}
 	if ib := s.InvalidBehavior; ib != nil {

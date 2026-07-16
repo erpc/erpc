@@ -2,6 +2,7 @@ package integrity
 
 import (
 	"context"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -12,6 +13,24 @@ import (
 // per-finality invalidBehavior decides reject vs record. On finalized data,
 // where reorgs cannot happen, a disagreement is corruption.
 
+// skipsByHashLookup reports whether this check is configured (param
+// `byHashRequests: skip`) to exempt explicit by-hash lookups
+// (eth_getBlockByHash) from canonical-pin comparison. A client that asks for a
+// block by its exact hash receives exactly that block — the identity checks
+// already pin response == requested — and whether that hash is canonical at
+// its height is not the request's question: fetching orphaned-but-real blocks
+// by hash is how indexers unwind reorgs, and one pool member that retains
+// settled orphans would otherwise fail every such lookup for as long as
+// clients retry it. The default ("validate") keeps the strict behavior:
+// by-hash responses are held to the same one-consistent-fork view as by-number
+// traffic.
+func skipsByHashLookup(d *Decoded, cfg CheckConfig) bool {
+	if d.method != MethodGetBlockByHash {
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(cfg.param(common.IntegrityParamByHashRequests, ""))) == "skip"
+}
+
 func init() {
 	// parentHashLinkage — block N's parentHash must equal the hash observed for
 	// block N-1. A broken link means the chain we are being served does not
@@ -20,6 +39,9 @@ func init() {
 		ID: "parentHashLinkage", Family: FamilyContinuity, Class: ReorgSensitive,
 		Methods: []string{MethodGetBlockByNumber, MethodGetBlockByHash},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
+			if skipsByHashLookup(d, cfg) {
+				return Skipped
+			}
 			hist := historyFrom(ctx)
 			if hist == nil {
 				return Skipped
@@ -52,6 +74,9 @@ func init() {
 		ID: "hashStability", Family: FamilyContinuity, Class: ReorgSensitive,
 		Methods: []string{MethodGetBlockByNumber, MethodGetBlockByHash},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
+			if skipsByHashLookup(d, cfg) {
+				return Skipped
+			}
 			hist := historyFrom(ctx)
 			if hist == nil {
 				return Skipped

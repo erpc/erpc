@@ -10,6 +10,13 @@ const (
 	IntegrityHeaderModeFull = "full"
 )
 
+// IntegrityParamByHashRequests is the continuity-family per-check param key
+// (`checks.<id>.params.byHashRequests`): "validate" (default) evaluates
+// explicit by-hash lookups against the canonical pin like any other request;
+// "skip" exempts them. The key is shared between the integrity runtime and
+// config validation so the two cannot drift.
+const IntegrityParamByHashRequests = "byHashRequests"
+
 // IntegritySettings is the reusable body of an integrity configuration: the
 // front-door level plus the axes (checks / budget) and the per-finality
 // verdict. The top-level/per-network blocks and every named profile share this
