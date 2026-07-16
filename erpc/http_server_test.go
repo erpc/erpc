@@ -8178,6 +8178,14 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 // AWS NLB) never break those pools on their own — without active drain every
 // deploy turns pooled in-flight requests into connection resets (client 502s).
 func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
+	// Bootstrap starts the EVM state poller, which calls the configured upstream
+	// in the background. gock's mock registry is global, so an unmocked poller
+	// consumes mocks belonging to other tests in this package — give it its own
+	// (this also resets gock and re-allows real localhost calls, which the
+	// assertions below depend on).
+	util.SetupMocksForEvmStatePoller()
+	defer util.ResetGock()
+
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -8240,9 +8248,13 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
+	// The assertion is about the HTTP layer (does the response tell the client to
+	// close?), not about routing — so target an unknown project. erpc answers
+	// from the handler without an upstream call, keeping the test independent of
+	// upstream mocks and their consumption ordering.
 	sendRequest := func() *http.Response {
 		body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`)
-		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", body)
+		req, err := http.NewRequest("POST", baseURL+"/no_such_project/evm/123", body)
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
