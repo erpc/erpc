@@ -32,6 +32,8 @@ github.com/bits-and-blooms/bitset v1.24.2 h1:M7/NzVbsytmtfHbumG+K2bremQPMJuqv1JD
 github.com/bits-and-blooms/bitset v1.24.2/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6a/7QIWpPxHddWR8=
 github.com/blockchain-data-standards/manifesto v0.0.0-20260506191942-991c5f924650 h1:1x8E2huS+AGPFxVj2Zt57JygwpBSOKnScsDHp/pqgIo=
 github.com/blockchain-data-standards/manifesto v0.0.0-20260506191942-991c5f924650/go.mod h1:BEP+UJDL+dSqF4UddiHmITKlV2l0aaDEagPS9nbbYIc=
+github.com/blockchain-data-standards/manifesto v0.0.0-20260708135603-35add417e724 h1:sy+SPSOba5HPkQZ0EwgrDtpvM+sRD4cmTFJIDFGpRZo=
+github.com/blockchain-data-standards/manifesto v0.0.0-20260708135603-35add417e724/go.mod h1:BEP+UJDL+dSqF4UddiHmITKlV2l0aaDEagPS9nbbYIc=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=

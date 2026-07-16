@@ -54,6 +54,7 @@ var dwellirNetworkSubdomains = map[int64]string{
 	4202:      "api-lisk-sepolia.n",
 	4217:      "api-tempo-mainnet.n",
 	4326:      "api-megaeth-mainnet.n",
+	4663:      "api-robinhood-mainnet-archive.n",
 	4689:      "api-iotex-mainnet.n",
 	5000:      "api-mantle-mainnet.n",
 	5003:      "api-mantle-sepolia.n",

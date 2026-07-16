@@ -100,6 +100,7 @@ func (e *fileMisbehaviorExporter) Close() error {
 type misbehaviorRecord struct {
 	TimestampMs  int64                 `json:"ts"`
 	ProjectID    string                `json:"projectId"`
+	UserId       string                `json:"userId,omitempty"`
 	NetworkID    string                `json:"networkId"`
 	Method       string                `json:"method"`
 	Finality     string                `json:"finality"`

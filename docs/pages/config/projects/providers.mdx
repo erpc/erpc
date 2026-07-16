@@ -137,6 +137,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | `id` | string | vendor name (`p.Id = p.Vendor`) | Unique handle; appears in `<PROVIDER>` placeholder and bootstrap task names `network/<networkId>/provider/<id>`. Shorthand-converted providers get `<vendor>-<n>` (process-wide counter). No duplicate-id check — two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="common/defaults.go" lines="1474-1476" /> <SourceLink file="util/ids.go" lines="32-41" /> |
 | `vendor` | string | — (required) | Must exactly match one of 23 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-34" /> |
 | `settings` | `map[string]any` (VendorSettings) | `nil` | Free-form, vendor-interpreted. Redacted in JSON/YAML marshaling (never echoed in admin dump). See per-vendor tables below. <SourceLink file="common/config.go" lines="667-700" /> |
+| `settings.creditUnits` | `map[string]int64` | `nil` | Vendor-generic (works for every vendor): per-method **credit-unit** overrides for the cost accounting behind `X-ERPC-Credits` (`server.costHeaders`). Merged per method over the vendor's built-in `CreditUnitsProvider` table (alchemy and quicknode ship their public pricing); `"*"` = the vendor's fallback for unlisted methods. Vendors with no table default to a flat **1 credit per request** — set `"*": 0` to opt a vendor out entirely. Overriding one method keeps the rest; copied onto every upstream the provider generates. <SourceLink file="thirdparty/provider.go" lines="59-77" /> |
 | `onlyNetworks` | `[]string` | `nil` | Exhaustive allow-list (`evm:<positiveInt>` format, validated). If set, vendor's own `SupportsNetwork` is **not** called. Mutually exclusive with `ignoreNetworks` (validation error). <SourceLink file="thirdparty/provider.go" lines="42-49" /> |
 | `ignoreNetworks` | `[]string` | `nil` | Exact-match deny-list checked **before** `onlyNetworks` and before vendor. Same `evm:<positiveInt>` validation. Omitted from `MarshalJSON` (present in YAML marshal). <SourceLink file="thirdparty/provider.go" lines="34-40" /> |
 | `upstreamIdTemplate` | string | `"<PROVIDER>-<NETWORK>"` | Placeholders: `<VENDOR>`, `<PROVIDER>`, `<NETWORK>` (full network id e.g. `evm:1`), `<EVM_CHAIN_ID>` (numeric; `N/A` for non-evm networks). Validation requires non-empty. <SourceLink file="common/defaults.go" lines="1477-1479" /> |
@@ -194,6 +195,9 @@ Chain discovery: remote catalog (default `https://app-api.alchemy.com/trpc/confi
 | `apiKey` | yes | — |
 | `chainsUrl` | no | `https://app-api.alchemy.com/trpc/config.getNetworkConfig` |
 | `recheckInterval` | no | `24h` |
+| `creditUnits` | no | Alchemy's documented CU table |
+
+Cost accounting: implements `CreditUnitsProvider` with Alchemy's [documented compute-unit costs](https://www.alchemy.com/docs/reference/compute-unit-costs) (`eth_call` 26, `eth_getLogs` 60, `eth_blockNumber` 10, `"*"` 20, …); `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/alchemy.go" lines="186-231" />
 
 OwnsUpstream: `alchemy://`/`evm+alchemy://` prefix, `vendorName=="alchemy"`, or endpoint contains `.alchemy.com`/`.alchemyapi.io`. <SourceLink file="thirdparty/alchemy.go" lines="156-326" />
 
@@ -369,6 +373,9 @@ Account endpoint discovery: paginated GET `https://api.quicknode.com/v0/endpoint
 | `recheckInterval` | no | `1h` |
 | `tagIds` | no | `nil` |
 | `tagLabels` | no | `nil` |
+| `creditUnits` | no | QuickNode's published credit model |
+
+Cost accounting: implements `CreditUnitsProvider` with QuickNode's [published API-credit model](https://www.quicknode.com/api-credits) (base 20 on EVM, 2x debug/trace = 40, 4x trace replays = 80); `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/quicknode.go" lines="28-60" />
 
 <SourceLink file="thirdparty/quicknode.go" lines="44-452" />
 
