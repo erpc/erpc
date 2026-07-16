@@ -8170,3 +8170,98 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	require.NoError(t, pprof.Lookup("heap").WriteTo(f, 0))
 	t.Logf("heap profile saved to: %s", heapPath)
 }
+
+// During the waitBeforeShutdown grace window the server must stamp
+// `Connection: close` on responses (SetKeepAlivesEnabled(false)) so pooled
+// keep-alive clients migrate to healthy instances before Shutdown starts
+// closing connections. Load balancers that preserve established flows (e.g.
+// AWS NLB) never break those pools on their own — without active drain every
+// deploy turns pooled in-flight requests into connection resets (client 502s).
+func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout:         common.Duration(2 * time.Second).Ptr(),
+			ListenV4:           util.BoolPtr(true),
+			WaitBeforeShutdown: common.Duration(3 * time.Second).Ptr(),
+			WaitAfterShutdown:  common.Duration(10 * time.Millisecond).Ptr(),
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm:          &common.EvmNetworkConfig{ChainId: 123},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000, MaxTotalSize: "1GB",
+			},
+		},
+	})
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	require.NoError(t, err)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		if err := httpServer.serverV4.Serve(listener); err != nil && err != http.ErrServerClosed {
+			t.Errorf("Server error: %v", err)
+		}
+	}()
+	defer httpServer.serverV4.Shutdown(context.Background()) //nolint:errcheck
+
+	time.Sleep(100 * time.Millisecond)
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+
+	sendRequest := func() *http.Response {
+		body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`)
+		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", body)
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		_, _ = io.ReadAll(resp.Body)
+		return resp
+	}
+
+	// Steady state: keep-alives on, no Connection: close on responses.
+	resp := sendRequest()
+	require.False(t, resp.Close, "steady-state responses must keep connections alive")
+
+	// Enter the drain window.
+	cancel()
+	time.Sleep(300 * time.Millisecond)
+
+	// Still serving (grace window), but every response now tells the client
+	// to reconnect elsewhere.
+	resp = sendRequest()
+	require.True(t, resp.Close, "drain-window responses must carry Connection: close so pooled clients migrate before Shutdown")
+}

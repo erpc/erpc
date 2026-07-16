@@ -209,6 +209,19 @@ func NewHttpServer(
 
 	go func() {
 		<-ctx.Done()
+		// Actively drain keep-alive connections during the grace window: stamp
+		// `Connection: close` on every HTTP/1.1 response (and let Shutdown GOAWAY
+		// tracked HTTP/2 conns) so pooled clients migrate to healthy instances
+		// BEFORE Shutdown starts closing connections. Load balancers that preserve
+		// established flows (e.g. AWS NLB) never break these pools on their own —
+		// without this, a client pushing traffic over kept-alive connections rides
+		// them straight into Shutdown and sees resets (502s) on every deploy.
+		if srv.serverV4 != nil {
+			srv.serverV4.SetKeepAlivesEnabled(false)
+		}
+		if srv.serverV6 != nil {
+			srv.serverV6.SetKeepAlivesEnabled(false)
+		}
 		// wait for readiness probe to mark the pod NotReady
 		// ideally (period_seconds * failure_threshold) + safety margin (1s)
 		if srv.serverCfg.WaitBeforeShutdown != nil {
