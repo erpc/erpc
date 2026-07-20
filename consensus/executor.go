@@ -623,30 +623,26 @@ func (e *executor) runAnalyzer(
 	e.trackAndPunishMisbehavingUpstreams(lg, originalReq, labels, winner, analysis)
 
 	// Release non-winning response objects. Previously inlined in Apply().
-	e.releaseNonWinningResponses(analysis, winner)
+	e.releaseNonWinningResponses(responses, winner)
 }
 
 // releaseNonWinningResponses releases the Result pointers on every non-winning
-// execResult in analysis.groups. Extracted verbatim from the previous inline
-// loop in Apply() so behavior is preserved.
+// execResult collected this round. It iterates the raw responses slice (not
+// analysis.groups) so responses dropped by upstream-deduplication are released
+// too — they never appear in any group.
 func (e *executor) releaseNonWinningResponses(
-	analysis *consensusAnalysis,
+	responses []*execResult,
 	winner *slotResult,
 ) {
-	if analysis == nil {
-		return
-	}
 	var winnerResp *common.NormalizedResponse
 	if winner != nil {
 		if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
 			winnerResp = wr
 		}
 	}
-	for _, group := range analysis.groups {
-		for _, result := range group.Results {
-			if result != nil && result.Result != nil && result.Result != winnerResp {
-				result.Result.Release()
-			}
+	for _, result := range responses {
+		if result != nil && result.Result != nil && result.Result != winnerResp {
+			result.Result.Release()
 		}
 	}
 }
@@ -806,6 +802,14 @@ func (e *executor) executeParticipant(
 // This happens if one group's lead over the second-place group is greater
 // than the number of remaining responses.
 func (e *executor) shouldShortCircuit(winner *slotResult, analysis *consensusAnalysis) (string, bool) {
+	// A composition dispute is provisional while more responses can still
+	// arrive: a later response may join the leading group (or grow another
+	// group) and satisfy the minAgreement quota. Never cancel remaining
+	// participants because of it — the final pass after collection decides.
+	if winner != nil && winner.Error != nil && analysis.hasRemaining() &&
+		common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute) {
+		return "", false
+	}
 	for _, rule := range shortCircuitRules {
 		if rule.Condition(winner, analysis) {
 			return rule.Reason, true
@@ -868,7 +872,7 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 			lg.Debug().
 				Str("rule", rule.Description).
 				Msg("consensus rule matched")
-			return rule.Action(analysis)
+			return e.enforceWinnerComposition(lg, analysis, rule.Action(analysis))
 		}
 	}
 
@@ -876,6 +880,50 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 	lg.Error().Msg("no consensus rule matched - using fallback")
 	return &slotResult{
 		Error: common.NewErrConsensusDispute("no consensus rule matched", nil, nil),
+	}
+}
+
+// enforceWinnerComposition applies the winner-composition quotas
+// (`requiredParticipants[].minAgreement`) to the winner produced by the
+// rules engine. This is the single enforcement point: every rule's output
+// flows through here, so no individual rule needs to be composition-aware.
+//
+//   - Opt-in: no-op unless some entry sets minAgreement > 0.
+//   - eth_sendRawTransaction is exempt: a broadcast accepted by any node
+//     propagates network-wide, so winner composition proves nothing there
+//     (mirrors the dedicated first-success rule/short-circuit).
+//   - Synthesized winners (dispute/low-participants errors) and
+//     infrastructure-error groups pass through: they never assert data
+//     correctness, and converting one error into another would only mask
+//     the original failure.
+//   - A failing winner becomes ErrConsensusCompositionDispute. While
+//     responses are still outstanding the dispute is provisional — see the
+//     guard in shouldShortCircuit — because a later response can still
+//     complete the quota.
+func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consensusAnalysis, winner *slotResult) *slotResult {
+	if winner == nil || !anyAgreementQuota(e.config.requiredParticipants) {
+		return winner
+	}
+	if analysis.method == "eth_sendRawTransaction" {
+		return winner
+	}
+	g := analysis.groupOf(winner)
+	if g == nil || g.ResponseType == ResponseTypeInfrastructureError {
+		return winner
+	}
+	if groupSatisfiesAgreementQuotas(g, e.config.requiredParticipants) {
+		return winner
+	}
+	lg.Debug().
+		Str("hash", g.Hash).
+		Int("count", g.Count).
+		Msg("winning group does not satisfy minAgreement composition quotas")
+	return &slotResult{
+		Error: common.NewErrConsensusCompositionDispute(
+			"winning group does not satisfy requiredParticipants minAgreement quotas",
+			analysis.participants(),
+			nil,
+		),
 	}
 }
 
@@ -1422,9 +1470,17 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	isLowParticipants := analysis.isLowParticipants(e.agreementThreshold)
 	isDispute := !hasConsensus && !isLowParticipants
 
+	// A composition dispute means the count-winner failed the minAgreement
+	// quota — label it distinctly so operators can alert on it and measure
+	// how often composition (not vote count) rejected a winner.
+	isCompositionDispute := result.Error != nil &&
+		common.HasErrorCode(result.Error, common.ErrCodeConsensusCompositionDispute)
+
 	outcome := "success"
 	if result.Error != nil {
-		if hasConsensus {
+		if isCompositionDispute {
+			outcome = "dispute_composition"
+		} else if hasConsensus {
 			outcome = "consensus_on_error"
 		} else if isDispute {
 			outcome = "dispute"
@@ -1464,7 +1520,9 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 	severity := common.ClassifySeverity(result.Error)
 	if result.Error != nil && (severity == common.SeverityWarning || severity == common.SeverityCritical) {
 		errLabel := "generic_error"
-		if hasConsensus {
+		if isCompositionDispute {
+			errLabel = "dispute_composition"
+		} else if hasConsensus {
 			errLabel = "consensus_on_error"
 		} else if isDispute {
 			errLabel = "dispute"

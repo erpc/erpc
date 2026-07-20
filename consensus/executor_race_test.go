@@ -595,19 +595,14 @@ func TestRace_AnalyzerPanic_NilAnalysis_CallerSafe(t *testing.T) {
 			trace.SpanFromContext(context.Background()))
 	}, "recordMetricsAndTracing must handle nil analysis without panicking")
 
-	// Also verify releaseNonWinningResponses handles nil analysis.
+	// Also verify releaseNonWinningResponses handles nil responses.
 	require.NotPanics(t, func() {
 		e.releaseNonWinningResponses(nil, panicResult)
-	}, "releaseNonWinningResponses must handle nil analysis without panicking")
+	}, "releaseNonWinningResponses must handle nil responses without panicking")
 
 	// And nil winner.
 	require.NotPanics(t, func() {
-		e.releaseNonWinningResponses(&consensusAnalysis{
-			config: &config{},
-			groups: map[string]*responseGroup{
-				"hash1": {Results: []*execResult{{Result: validResponse()}}},
-			},
-		}, nil)
+		e.releaseNonWinningResponses([]*execResult{{Result: validResponse()}}, nil)
 	}, "releaseNonWinningResponses must handle nil winner without panicking")
 }
 
