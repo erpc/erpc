@@ -602,7 +602,13 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		}
 		i.attempts.Add(1)
 		i.attemptRemainingTasks()
-		err := i.WaitForTasks(ctx)
+		// Bounded wait: a task hung inside its Fn (e.g. a client dial that
+		// ignores ctx and never returns) stays Running forever; an unbounded
+		// WaitForTasks would then block this loop and stop retries of every
+		// other task.
+		waitCtx, waitCancel := context.WithTimeout(ctx, i.conf.TaskTimeout)
+		err := i.WaitForTasks(waitCtx)
+		waitCancel()
 		state := i.State()
 		// Stop only once no task can benefit from another attempt (every task
 		// succeeded or is fatal). Fatal tasks are skipped by

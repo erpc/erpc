@@ -867,6 +867,44 @@ func TestInitializer_RetryLoopRestartsForNewFailedTasks(t *testing.T) {
 	init.Stop(nil)
 }
 
+// Regression: a task whose Fn hangs (ignores ctx) must not block the
+// auto-retry loop for other, transiently-failing tasks.
+func TestInitializer_HungTaskDoesNotBlockRetryOfOthers(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout:   time.Millisecond * 200,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 20,
+		RetryFactor:   1.2,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	hungRelease := make(chan struct{})
+	hungTask := NewBootstrapTask("hung-task", func(ctx context.Context) error {
+		<-hungRelease // ignores ctx: simulates a client dial with no deadline
+		return nil
+	})
+
+	var attempts atomic.Int32
+	transientTask := NewBootstrapTask("transient-task", func(ctx context.Context) error {
+		if attempts.Add(1) < 3 {
+			return errors.New("transient failure")
+		}
+		return nil
+	})
+
+	go func() { _ = init.ExecuteTasks(appCtx, hungTask, transientTask) }()
+
+	require.Eventually(t, func() bool {
+		return TaskState(transientTask.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 20*time.Millisecond, "transient task should eventually succeed despite the hung sibling")
+
+	close(hungRelease)
+	init.Stop(nil)
+}
+
 type testFatalError struct{ error }
 
 func (e *testFatalError) IsTaskFatal() bool { return true }
