@@ -328,14 +328,14 @@ Retry, hedge, circuit-breaker, and timeout still apply — only the dispute/agre
 | Header | Value | Source |
 |---|---|---|
 | `Content-Type` | `application/json` | [`erpc/http_server.go:259`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L259) |
-| `X-ERPC-Version` | eRPC version string | [`erpc/http_server.go:260`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L260) |
-| `X-ERPC-Commit` | git commit SHA | [`erpc/http_server.go:261`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L261) |
 | custom `server.responseHeaders` | static values, env-expanded at startup | [`erpc/http_server.go:263-266`](https://github.com/erpc/erpc/blob/main/erpc/http_server.go#L263-L266) |
 
 **Execution diagnostic headers** (controlled by `server.executionHeaders`; single responses get the per-response set, batch responses get ONE aggregated set — counters summed across sub-calls, `X-ERPC-Duration` = slowest sub-call, no `X-ERPC-Upstream`):
 
 | Header | Value | When |
 |---|---|---|
+| `X-ERPC-Version` | eRPC version string | always |
+| `X-ERPC-Commit` | git commit SHA | always |
 | `X-ERPC-Attempts` | total physical ops (upstream + cache) | always |
 | `X-ERPC-Upstream-Attempts` / `X-ERPC-Upstream-Retries` / `X-ERPC-Upstream-Hedges` | counters | always |
 | `X-ERPC-Network-Attempts` / `X-ERPC-Network-Retries` / `X-ERPC-Network-Hedges` | counters | always |

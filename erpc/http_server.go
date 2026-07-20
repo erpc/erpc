@@ -271,8 +271,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-ERPC-Version", common.ErpcVersion)
-		w.Header().Set("X-ERPC-Commit", common.ErpcCommitSha)
+		// executionHeaders:"off" suppresses all X-ERPC-* headers, including these.
+		if s.executionHeadersMode() != common.ExecutionHeadersOff {
+			w.Header().Set("X-ERPC-Version", common.ErpcVersion)
+			w.Header().Set("X-ERPC-Commit", common.ErpcCommitSha)
+		}
 
 		// Add custom response headers (resolved at startup with env var expansion)
 		for key, value := range s.resolvedResponseHeaders {
