@@ -62,7 +62,6 @@ func TestRace_SingleParticipant_CancelAfterExecution(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-
 	type result struct {
 		resp *common.NormalizedResponse
 		err  error
@@ -120,7 +119,6 @@ func TestRace_SingleParticipant_CancelBeforeExecution(t *testing.T) {
 	cancel() // cancel before any execution
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-
 	var called atomic.Int32
 	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 		called.Add(1)
@@ -166,7 +164,6 @@ func TestRace_TwoParticipants_CancelBetweenCompletions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -238,7 +235,6 @@ func TestRace_TwoParticipants_BothCompleteBeforeCancel_ThresholdTwo(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	type result struct {
 		resp *common.NormalizedResponse
@@ -348,7 +344,6 @@ func TestRace_ThreeParticipants_OneCancelledBeforeExec_TwoValid(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-
 	type result struct {
 		resp *common.NormalizedResponse
 		err  error
@@ -438,7 +433,6 @@ func TestRace_OutcomeAndCancelSimultaneous(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-		
 			type result struct {
 				resp *common.NormalizedResponse
 				err  error
@@ -633,7 +627,6 @@ func TestRace_ThreeParticipants_CancelAfterFirstComplete(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-
 	type result struct {
 		resp *common.NormalizedResponse
 		err  error
@@ -743,7 +736,6 @@ func TestRace_StressN2Threshold2_NeverFalseLowParticipants(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-		
 			type result struct {
 				resp *common.NormalizedResponse
 				err  error
@@ -818,7 +810,6 @@ func TestRace_ShortCircuitOutcomeRacesCancel(t *testing.T) {
 			defer cancel()
 			ctx = context.WithValue(ctx, common.RequestContextKey, req)
 
-		
 			type result struct {
 				resp *common.NormalizedResponse
 				err  error
@@ -887,7 +878,6 @@ func TestRace_AnalyzerCompletesAfterCallerAbandons(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
 
 	callerReturned := make(chan struct{})
 	go func() {

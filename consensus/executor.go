@@ -15,10 +15,10 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
-	"golang.org/x/time/rate"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -470,6 +470,27 @@ func (e *executor) runAnalyzer(
 		if isNoAttemptResult(resp) {
 			return
 		}
+		// The caps mean "a usable answer is in hand; stragglers get this
+		// much longer". With minAgreement quotas, a response set that
+		// cannot yet satisfy the winner-composition quota is NOT a usable
+		// answer — arming the countdown off it would resolve the round
+		// before the required tagged upstream responds, converting every
+		// such round into a retryable composition dispute. Hold arming
+		// until the collected responses cover every quota tag with
+		// DISTINCT upstreams (resultsSatisfyAgreementQuotas dedupes by ID
+		// — the raw slice may hold the same upstream twice via hedge).
+		// Slot timeouts and the overall request timeout still bound the
+		// round. Deliberate ceiling: an errored or dissenting tagged
+		// response counts as coverage. When several tagged upstreams are
+		// in the round, an early tagged error/dissent can arm the cap and
+		// time out a slower tagged sibling that would have completed the
+		// quota — the failure is a retryable composition dispute, and the
+		// alternative (hold caps until a tagged vote joins the WINNER)
+		// would disable the caps on every genuine-disagreement round.
+		if anyAgreementQuota(e.config.requiredParticipants) &&
+			!resultsSatisfyAgreementQuotas(responses, e.config.requiredParticipants) {
+			return
+		}
 		now := time.Now()
 		// First response from an actual upstream attempt arms maxWaitOnEmpty.
 		if maxWaitOnEmpty > 0 && waitDeadline.IsZero() {
@@ -911,8 +932,40 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	if g == nil || g.ResponseType == ResponseTypeInfrastructureError {
 		return winner
 	}
-	if groupSatisfiesAgreementQuotas(g, e.config.requiredParticipants) {
+	if resultsSatisfyAgreementQuotas(e.agreeingResults(analysis, g), e.config.requiredParticipants) {
 		return winner
+	}
+	// A quota tag matching zero participants in the ENTIRE round (not just
+	// the winning group) means the config is structurally unable to ever
+	// satisfy the quota right now — a typo'd tag or every tagged upstream
+	// down. That is an outage, not a routine dispute: escalate to Warn so
+	// operators see it without debug logging. Only when the round is
+	// complete (nothing can still arrive): this gate also runs on every
+	// mid-collection analysis, where a slower tagged upstream simply hasn't
+	// answered yet — warning there would fire on every healthy
+	// mixed-latency round.
+	for _, req := range e.config.requiredParticipants {
+		if req == nil || req.MinAgreement <= 0 {
+			continue
+		}
+		matchedAnywhere := false
+		for _, og := range analysis.groups {
+			for _, r := range og.Results {
+				if r != nil && r.Upstream != nil && upstreamMatchesTag(r.Upstream, req.Tag) {
+					matchedAnywhere = true
+					break
+				}
+			}
+			if matchedAnywhere {
+				break
+			}
+		}
+		if !matchedAnywhere && !analysis.hasRemaining() {
+			lg.Warn().
+				Str("tag", req.Tag).
+				Int("minAgreement", req.MinAgreement).
+				Msg("minAgreement quota tag matched ZERO participants this round — check for a typo'd tag or unavailable tagged upstreams; consensus cannot succeed while this persists")
+		}
 	}
 	lg.Debug().
 		Str("hash", g.Hash).
@@ -927,11 +980,52 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	}
 }
 
+// agreeingResults returns every result that agrees with the winning group.
+// Normally that is exactly the group's own results, but when
+// preferHighestValueFor is configured for the method, agreement is counted
+// by numeric value — the same value with a different encoding (0x5 vs 0x05)
+// hashes into a different group, and its upstream must still count toward
+// the composition quota.
+func (e *executor) agreeingResults(analysis *consensusAnalysis, g *responseGroup) []*execResult {
+	fields := e.config.preferHighestValueFor[analysis.method]
+	if len(fields) == 0 {
+		return g.Results
+	}
+	winnerValues := extractFieldValues(g.LargestResult, fields)
+	if winnerValues == nil {
+		return g.Results
+	}
+	agreeing := append([]*execResult(nil), g.Results...)
+	for _, og := range analysis.getValidGroups() {
+		if og == g {
+			continue
+		}
+		for _, r := range og.Results {
+			if r == nil || r.Result == nil || r.Err != nil {
+				continue
+			}
+			if v := extractFieldValues(r.Result, fields); v != nil && compareValueChains(v, winnerValues) == 0 {
+				agreeing = append(agreeing, r)
+			}
+		}
+	}
+	return agreeing
+}
+
 // --- Tracing, Metrics, and Punishment ---
 
 func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *common.NormalizedRequest, labels metricsLabels, winner *slotResult, analysis *consensusAnalysis) {
 	// Skip tracking when there are no valid participants (all infra errors)
 	if analysis.validParticipants == 0 {
+		return
+	}
+	// A composition dispute means the count-majority itself was rejected as
+	// untrustworthy (insufficient quota-tagged members). Falling through
+	// would pick that same majority as the "consensus" group and punish the
+	// quota-tagged dissenters — inverting the trust boundary minAgreement
+	// enforces. No one is punishable in this state.
+	if winner != nil && winner.Error != nil &&
+		common.HasErrorCode(winner.Error, common.ErrCodeConsensusCompositionDispute) {
 		return
 	}
 

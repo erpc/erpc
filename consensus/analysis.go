@@ -46,10 +46,15 @@ type consensusAnalysis struct {
 	config            *config
 	groups            map[string]*responseGroup
 	totalParticipants int
-	validParticipants int
-	originalRequest   *common.NormalizedRequest
-	leaderUpstream    common.Upstream
-	method            string // The RPC method being called (e.g., "eth_getTransactionCount")
+	// collectedResponses is the RAW response count before upstream
+	// deduplication — the number of participant slots that have answered.
+	// Use for "how many more can arrive" math; use totalParticipants for
+	// vote counting.
+	collectedResponses int
+	validParticipants  int
+	originalRequest    *common.NormalizedRequest
+	leaderUpstream     common.Upstream
+	method             string // The RPC method being called (e.g., "eth_getTransactionCount")
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -88,6 +93,7 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 	// node must not vote twice toward agreementThreshold. Keep the most
 	// useful response per upstream (see responseTypeVoteRank); participant
 	// counts below reflect distinct upstreams only.
+	analysis.collectedResponses = len(responses)
 	responses = dedupeByUpstream(responses)
 	analysis.totalParticipants = len(responses)
 
@@ -184,8 +190,11 @@ func responseTypeVoteRank(rt ResponseType) int {
 // so a single upstream reselected via hedge/retry counts only once toward
 // consensus. Responses must already be classified. The best-ranked response
 // wins (e.g. a valid result from a later slot replaces an earlier
-// infrastructure error from the same upstream); on equal rank the first
-// arrival wins. The kept entry stays at its first-seen position so arrival
+// infrastructure error from the same upstream); on equal rank the LAST
+// arrival wins — a node answering twice at the chain tip may see advanced
+// state, and its latest answer is its vote (keeping the first would drop a
+// fresher vote that agrees with the eventual winner and manufacture a
+// dispute). The kept entry stays at its first-seen position so arrival
 // order is preserved. Responses without an upstream are kept as-is.
 // Dropped responses are not released here: the executor's release path
 // iterates the raw responses slice and covers them.
@@ -199,7 +208,7 @@ func dedupeByUpstream(responses []*execResult) []*execResult {
 		}
 		id := r.Upstream.Id()
 		if i, seen := byUpstream[id]; seen {
-			if responseTypeVoteRank(r.CachedResponseType) > responseTypeVoteRank(out[i].CachedResponseType) {
+			if responseTypeVoteRank(r.CachedResponseType) >= responseTypeVoteRank(out[i].CachedResponseType) {
 				out[i] = r
 			}
 			continue
@@ -210,8 +219,13 @@ func dedupeByUpstream(responses []*execResult) []*execResult {
 	return out
 }
 
+// hasRemaining reports whether more responses can still arrive this round.
+// It compares against the RAW collected count, not the deduplicated
+// totalParticipants: a deduplicated duplicate consumed a participant slot —
+// counting it as still-arriving capacity would suppress short-circuits (and
+// hold composition-dispute rounds open) after every slot already answered.
 func (a *consensusAnalysis) hasRemaining() bool {
-	return a.config.maxParticipants > a.totalParticipants
+	return a.config.maxParticipants > a.collectedResponses
 }
 
 func (a *consensusAnalysis) participants() []common.ParticipantInfo {

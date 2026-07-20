@@ -933,7 +933,9 @@ var shortCircuitRules = []shortCircuitRule{
 					secondCount = g.Count
 				}
 			}
-			remaining := a.config.maxParticipants - a.totalParticipants
+			// Raw collected count, not deduplicated votes: a deduplicated
+			// duplicate consumed a slot and can no longer arrive.
+			remaining := a.config.maxParticipants - a.collectedResponses
 			// Without size preference, allow potential ties to short-circuit once threshold is met
 			// and the lead is unassailable by the number of remaining responses.
 			leadOverSecond := best.Count - secondCount
