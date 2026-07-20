@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -34,6 +35,13 @@ var _ common.EvmStatePoller = &EvmStatePoller{}
 
 type EvmStatePoller struct {
 	Enabled bool
+
+	// started guards the background ticker goroutine: Bootstrap may be called
+	// more than once on the same poller (upstream bootstrap tasks are retried
+	// and may be re-executed against an already-registered upstream). The
+	// ticker goroutine is bound to appCtx and has no other stop mechanism, so
+	// spawning a duplicate would poll the upstream forever.
+	started atomic.Bool
 
 	projectId    string
 	appCtx       context.Context
@@ -168,11 +176,22 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 
 	if cfg.Evm != nil {
 		if cfg.Evm.StatePollerDebounce != 0 {
+			// Guarded by stateMu: live poll goroutines read this via
+			// resolveDebounce while Bootstrap may run again concurrently.
+			e.stateMu.Lock()
 			e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
+			e.stateMu.Unlock()
 		}
 	}
 
 	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
+
+	if !e.started.CompareAndSwap(false, true) {
+		// A ticker goroutine is already running for this poller. Do not spawn
+		// another one — just refresh the state once so the caller still gets
+		// an up-to-date view.
+		return e.Poll(ctx)
+	}
 	e.Enabled = true
 
 	go (func() {
@@ -374,7 +393,10 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 //
 //	user config → block time → network FallbackStatePollerDebounce → 1s default
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
-	if dbi := e.debounceInterval; dbi != 0 {
+	e.stateMu.RLock()
+	dbi := e.debounceInterval
+	e.stateMu.RUnlock()
+	if dbi != 0 {
 		return dbi
 	}
 	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {

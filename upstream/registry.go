@@ -46,6 +46,14 @@ type UpstreamsRegistry struct {
 
 	providerOnce sync.Map // networkId -> *sync.Once
 
+	// pendingUpstreams holds Upstream instances created by bootstrap task
+	// attempts that have not completed successfully yet, keyed by upstream id.
+	// Retried or concurrent attempts MUST reuse the same instance: creating a
+	// fresh one per attempt duplicates HTTP clients and — once an attempt
+	// reaches Upstream.Bootstrap — state pollers, whose ticker goroutines can
+	// only be stopped by the app context.
+	pendingUpstreams sync.Map // upstreamId -> *Upstream
+
 	onUpstreamRegistered func(ups *Upstream) error
 }
 
@@ -443,12 +451,29 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			}
 			u.upstreamsMu.RUnlock()
 
+			if ups == nil {
+				// Reuse the instance created by a previous failed attempt, if any,
+				// instead of building a new one per retry.
+				if v, ok := u.pendingUpstreams.Load(cfg.Id); ok {
+					ups = v.(*Upstream)
+				}
+			}
+
 			var err error
 			if ups == nil {
-				ups, err = u.NewUpstream(cfg)
+				var created *Upstream
+				// Copy the config per attempt: NewUpstream mutates it (vendor
+				// detection), and concurrent attempts of this task would
+				// otherwise race on the shared task-level copy.
+				created, err = u.NewUpstream(cfg.Copy())
 				if err != nil {
 					return err
 				}
+				// LoadOrStore so concurrent attempts of this task converge on a
+				// single instance; the loser is discarded before it starts any
+				// background work.
+				actual, _ := u.pendingUpstreams.LoadOrStore(cfg.Id, created)
+				ups = actual.(*Upstream)
 			}
 
 			err = ups.Bootstrap(ctx)
@@ -456,6 +481,7 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 				return err
 			}
 			u.doRegisterBootstrappedUpstream(ups)
+			u.pendingUpstreams.Delete(cfg.Id)
 
 			if u.onUpstreamRegistered != nil {
 				// TODO Refactor the upstream<->network relationship to avoid circular dependency. Then we can remove this goroutine.
@@ -568,7 +594,18 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	u.upstreamsMu.Lock()
 	defer u.upstreamsMu.Unlock()
 
-	u.allUpstreams = append(u.allUpstreams, ups)
+	// A bootstrap task may be re-executed against an already-registered
+	// upstream; never register the same instance twice.
+	alreadyInAll := false
+	for _, existing := range u.allUpstreams {
+		if existing == ups {
+			alreadyInAll = true
+			break
+		}
+	}
+	if !alreadyInAll {
+		u.allUpstreams = append(u.allUpstreams, ups)
+	}
 
 	// Add to network upstreams map
 	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
