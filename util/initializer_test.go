@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -791,3 +792,82 @@ func BenchmarkInitializer_RangeTaskStates_vs_Status(b *testing.B) {
 		}
 	})
 }
+
+// Regression (backport of upstream erpc#973): a single fatal task must not
+// stop the auto-retry loop for other, transiently-failing tasks. One
+// misconfigured upstream used to permanently disable bootstrap retries for
+// the whole registry.
+func TestInitializer_FatalTaskDoesNotStopRetryOfOthers(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 20,
+		RetryFactor:   1.2,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	fatalTask := NewBootstrapTask("fatal-task", func(ctx context.Context) error {
+		return &testFatalError{errors.New("permanent misconfiguration")}
+	})
+
+	var attempts atomic.Int32
+	transientTask := NewBootstrapTask("transient-task", func(ctx context.Context) error {
+		if attempts.Add(1) < 3 {
+			return errors.New("transient failure")
+		}
+		return nil
+	})
+
+	_ = init.ExecuteTasks(appCtx, fatalTask, transientTask)
+
+	require.Eventually(t, func() bool {
+		return TaskState(transientTask.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 20*time.Millisecond, "transient task should eventually succeed despite the fatal sibling")
+
+	assert.Equal(t, TaskFatal, TaskState(fatalTask.state.Load()))
+	init.Stop(nil)
+}
+
+// Regression: tasks scheduled after all earlier tasks succeeded must still
+// be retried (the loop must not have wound down for good).
+func TestInitializer_RetryLoopRestartsForNewFailedTasks(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 20,
+		RetryFactor:   1.2,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	ok := NewBootstrapTask("ok-task", func(ctx context.Context) error { return nil })
+	_ = init.ExecuteTasks(appCtx, ok)
+	require.Eventually(t, func() bool {
+		return TaskState(ok.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 10*time.Millisecond, "first task should succeed")
+
+	var attempts atomic.Int32
+	transientTask := NewBootstrapTask("late-transient-task", func(ctx context.Context) error {
+		if attempts.Add(1) < 3 {
+			return errors.New("transient failure")
+		}
+		return nil
+	})
+	_ = init.ExecuteTasks(appCtx, transientTask)
+
+	require.Eventually(t, func() bool {
+		return TaskState(transientTask.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 20*time.Millisecond, "late task should be retried by a (re)started loop")
+
+	init.Stop(nil)
+}
+
+type testFatalError struct{ error }
+
+func (e *testFatalError) IsTaskFatal() bool { return true }
+func (e *testFatalError) Unwrap() error     { return e.error }
