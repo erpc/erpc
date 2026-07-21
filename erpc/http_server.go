@@ -1920,18 +1920,42 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 }
 
 // conditionalGzipWriter wraps ResponseWriter and decides whether to compress
-// based on the first write size. This avoids buffering while still allowing
-// us to skip compression for small responses.
+// once enough body bytes have been observed. Writes (and any explicit status
+// code) are held back until the total body size reaches compressionThreshold,
+// at which point the response is committed as gzip; if the handler finishes or
+// flushes below the threshold, the buffered bytes are sent uncompressed.
+//
+// Buffering across writes (instead of deciding on the first write only) is
+// required because JSON-RPC responses are streamed in multiple small writes:
+// JsonRpcResponse.WriteTo emits the ~22-byte envelope prefix first, so a
+// first-write-only decision would permanently disable compression for every
+// JSON-RPC response regardless of total size (see issue #990).
+//
+// WriteHeader is deferred for the same reason: the JSON-RPC path calls
+// WriteHeader before streaming the body, and Content-Encoding must be set
+// before the header block is flushed to the client.
 type conditionalGzipWriter struct {
 	http.ResponseWriter
 	gzipWriter  *gzip.Writer
 	pool        *util.GzipWriterPool
 	decided     bool
 	compressing bool
+	buf         []byte // body bytes buffered while undecided
+	status      int    // deferred status code from WriteHeader, 0 if none
 }
 
 // Compile-time check that conditionalGzipWriter implements http.Flusher
 var _ http.Flusher = (*conditionalGzipWriter)(nil)
+
+// WriteHeader defers the status code until the compression decision is made,
+// so Content-Encoding can still be set when compression kicks in.
+func (w *conditionalGzipWriter) WriteHeader(statusCode int) {
+	if w.decided {
+		w.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
+	w.status = statusCode
+}
 
 func (w *conditionalGzipWriter) Write(b []byte) (int, error) {
 	// If we've already decided, just pass through
@@ -1942,37 +1966,60 @@ func (w *conditionalGzipWriter) Write(b []byte) (int, error) {
 		return w.ResponseWriter.Write(b)
 	}
 
-	// First write - decide based on size
-	w.decided = true
-
-	// If the first chunk is small, assume the whole response is small
-	// This works well for RPC responses which are typically sent in one write
-	if len(b) < compressionThreshold {
-		// Skip compression for small responses
-		w.compressing = false
-		return w.ResponseWriter.Write(b)
+	// Enough cumulative bytes to justify compression: commit and route this
+	// write through gzip directly (avoids copying large payloads into buf).
+	if len(w.buf)+len(b) >= compressionThreshold {
+		if err := w.decide(true); err != nil {
+			return 0, err
+		}
+		return w.gzipWriter.Write(b)
 	}
 
-	// Large response, enable compression
-	w.compressing = true
-
-	// Set compression headers
-	w.ResponseWriter.Header().Del("Content-Length")
-	w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
-	w.ResponseWriter.Header().Set("Vary", "Accept-Encoding")
-	if ct := w.ResponseWriter.Header().Get("Content-Type"); ct == "" {
-		w.ResponseWriter.Header().Set("Content-Type", "application/json")
+	// Still undecided: buffer and wait for more writes.
+	if w.buf == nil {
+		w.buf = make([]byte, 0, compressionThreshold)
 	}
-
-	// Initialize gzip writer
-	w.gzipWriter = w.pool.Get(w.ResponseWriter)
-
-	// Write the data
-	return w.gzipWriter.Write(b)
+	w.buf = append(w.buf, b...)
+	return len(b), nil
 }
 
-// Flush implements http.Flusher interface to support streaming responses
+// decide commits to compressing or not: it sets the relevant headers, sends
+// the deferred status code, and drains buffered bytes to the chosen sink.
+func (w *conditionalGzipWriter) decide(compress bool) error {
+	w.decided = true
+	w.compressing = compress
+
+	if compress {
+		w.ResponseWriter.Header().Del("Content-Length")
+		w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
+		if ct := w.ResponseWriter.Header().Get("Content-Type"); ct == "" {
+			w.ResponseWriter.Header().Set("Content-Type", "application/json")
+		}
+		w.gzipWriter = w.pool.Get(w.ResponseWriter)
+	}
+	if w.status != 0 {
+		w.ResponseWriter.WriteHeader(w.status)
+	}
+
+	var err error
+	if len(w.buf) > 0 {
+		if compress {
+			_, err = w.gzipWriter.Write(w.buf)
+		} else {
+			_, err = w.ResponseWriter.Write(w.buf)
+		}
+		w.buf = nil
+	}
+	return err
+}
+
+// Flush implements http.Flusher interface to support streaming responses.
+// A flush while undecided means the handler wants the (sub-threshold)
+// buffered bytes on the wire now, so the response commits to passthrough.
 func (w *conditionalGzipWriter) Flush() {
+	if !w.decided {
+		_ = w.decide(false)
+	}
 	if w.compressing && w.gzipWriter != nil {
 		_ = w.gzipWriter.Flush()
 	}
@@ -1982,7 +2029,12 @@ func (w *conditionalGzipWriter) Flush() {
 	}
 }
 
+// Close finalizes the response. If the total body stayed below the threshold,
+// the buffered bytes (and any deferred status code) are sent uncompressed.
 func (w *conditionalGzipWriter) Close() error {
+	if !w.decided {
+		return w.decide(false)
+	}
 	if w.compressing && w.gzipWriter != nil {
 		err := w.gzipWriter.Close()
 		w.pool.Put(w.gzipWriter)
@@ -1996,13 +2048,18 @@ func gzipHandler(next http.Handler) http.Handler {
 	var gzPool = util.NewGzipWriterPool()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The response representation depends on Accept-Encoding, so caches
+		// must be told regardless of whether this response ends up compressed.
+		w.Header().Set("Vary", "Accept-Encoding")
+
 		// Check if client accepts gzip encoding
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Create conditional gzip response writer that decides on first write
+		// Create conditional gzip response writer that decides once enough
+		// body bytes have been seen (or the response completes/flushes).
 		gzw := &conditionalGzipWriter{
 			ResponseWriter: w,
 			pool:           gzPool,
