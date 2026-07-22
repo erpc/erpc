@@ -79,9 +79,8 @@ type Network struct {
 
 // observedLatestHead is the last WS newHeads header we noted before fan-out.
 type observedLatestHead struct {
-	number     int64
-	payload    json.RawMessage
-	upstreamId string // upstream that delivered this tip (e.g. WS ingress source)
+	number  int64
+	payload json.RawMessage
 }
 
 // NoteObservedLatestBlock records that this Network has observed head
@@ -118,56 +117,35 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 }
 
 // NoteObservedLatestHead records a WS newHeads tip together with its header
-// payload and the upstream that delivered it. It advances TipHW via
-// NoteObservedLatestBlock, caches the header for HTTP tip flooring, and
-// records upstreamId so tip re-fetches can pin to that upstream.
+// payload. It advances TipHW via NoteObservedLatestBlock and caches the
+// header so eth_getBlockByNumber("latest", false) can return the same tip
+// when HTTP upstreams are still behind. Tip ownership itself stays on the
+// per-upstream state poller (SuggestLatestBlock → LatestBlock).
 //
 // Callers MUST invoke this before delivering the corresponding newHeads
-// notification to any client. Empty payloads still advance TipHW. When
-// upstreamId is set without a payload, a tip-source marker is stored for
-// UseUpstream pin only if there is no newer cached head (and a prior
-// header at a lower tip is left untouched).
-func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64, payload json.RawMessage, upstreamId string) {
+// notification to any client. Empty payloads still advance TipHW but do
+// not clobber a previously cached header.
+func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64, payload json.RawMessage) {
 	n.NoteObservedLatestBlock(ctx, blockNumber)
-	if n == nil || blockNumber <= 0 {
+	if n == nil || blockNumber <= 0 || len(payload) == 0 {
 		return
 	}
-
-	if len(payload) == 0 {
-		if upstreamId == "" {
-			return
-		}
-		for {
-			cur := n.lastObservedLatestHead.Load()
-			if cur != nil && blockNumber < cur.number {
-				return
-			}
-			if cur != nil && blockNumber > cur.number {
-				// Tip advanced without a header — do not clobber an older cached head.
-				return
-			}
-			stored := observedLatestHead{
-				number:     blockNumber,
-				upstreamId: upstreamId,
-			}
-			if cur != nil && len(cur.payload) > 0 {
-				stored.payload = append(json.RawMessage(nil), cur.payload...)
-			}
-			if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
-				return
-			}
-		}
-	}
-
+	// Copy so callers can reuse/recycle their buffer.
 	stored := observedLatestHead{
-		number:     blockNumber,
-		payload:    append(json.RawMessage(nil), payload...),
-		upstreamId: upstreamId,
+		number:  blockNumber,
+		payload: append(json.RawMessage(nil), payload...),
 	}
 	for {
 		cur := n.lastObservedLatestHead.Load()
 		if cur != nil && blockNumber < cur.number {
 			return
+		}
+		// Same height with a new hash (reorg): replace. Lower heights: reject.
+		if cur != nil && blockNumber == cur.number {
+			if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
+				return
+			}
+			continue
 		}
 		if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
 			return
@@ -175,21 +153,17 @@ func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64,
 	}
 }
 
-// LastObservedLatestHead returns the cached newHeads header and tip-source
-// upstream id for the highest tip we have noted on this pod, or zeros if none.
-func (n *Network) LastObservedLatestHead() (blockNumber int64, payload []byte, upstreamId string) {
+// LastObservedLatestHead returns the cached newHeads header for the highest
+// tip we have noted on this pod, or (0, nil) if none.
+func (n *Network) LastObservedLatestHead() (blockNumber int64, payload []byte) {
 	if n == nil {
-		return 0, nil, ""
+		return 0, nil
 	}
 	cur := n.lastObservedLatestHead.Load()
-	if cur == nil || cur.number <= 0 {
-		return 0, nil, ""
+	if cur == nil || cur.number <= 0 || len(cur.payload) == 0 {
+		return 0, nil
 	}
-	var p []byte
-	if len(cur.payload) > 0 {
-		p = append([]byte(nil), cur.payload...)
-	}
-	return cur.number, p, cur.upstreamId
+	return cur.number, append([]byte(nil), cur.payload...)
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks

@@ -110,10 +110,9 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 
 // observedLatestHeadProvider is implemented by networks that cache the last
 // WS newHeads header before fan-out (erpc.Network). Used to floor HTTP
-// "latest" responses when upstream re-fetch of the tip would fail open, and
-// to pin tip re-fetches to the upstream that delivered the head.
+// "latest" responses when upstream re-fetch of the tip would fail open.
 type observedLatestHeadProvider interface {
-	LastObservedLatestHead() (blockNumber int64, payload []byte, upstreamId string)
+	LastObservedLatestHead() (blockNumber int64, payload []byte)
 }
 
 // responseFromObservedLatestHead builds an eth_getBlockByNumber response from
@@ -124,7 +123,7 @@ func responseFromObservedLatestHead(network common.Network, nq *common.Normalize
 	if !ok || expectedTip <= 0 {
 		return nil, false
 	}
-	cachedNumber, payload, _ := provider.LastObservedLatestHead()
+	cachedNumber, payload := provider.LastObservedLatestHead()
 	if cachedNumber != expectedTip || len(payload) == 0 {
 		return nil, false
 	}
@@ -240,17 +239,10 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			newReq := common.NewNormalizedRequestFromJsonRpcRequest(request)
 			dr := nq.Directives().Clone()
 			dr.SkipCacheRead = "true"
-			// Prefer the upstream that already delivered this tip (typically the
-			// WS ingress). Falling back to excluding the stale responder keeps
-			// prior behaviour when we have no tip-source id.
-			if provider, ok := network.(observedLatestHeadProvider); ok {
-				cachedNum, _, tipSourceId := provider.LastObservedLatestHead()
-				if tipSourceId != "" && cachedNum == highestBlockNumber {
-					dr.UseUpstream = tipSourceId
-				} else if respBlockNumber > 0 {
-					dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
-				}
-			} else if respBlockNumber > 0 {
+			// Exclude the stale responder. Upstreams that already have the tip
+			// (via SuggestLatestBlock → LatestBlock) are preferred by
+			// partitionUpstreamsByLatestBlock on the concrete re-fetch.
+			if respBlockNumber > 0 {
 				dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
 			}
 			newReq.SetDirectives(dr)
