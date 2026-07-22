@@ -8227,7 +8227,7 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
