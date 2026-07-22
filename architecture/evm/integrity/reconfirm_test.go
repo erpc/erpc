@@ -13,25 +13,31 @@ import (
 // fixed "canonical" chain on ReconfirmPin — simulating the ChainView adopting
 // whatever the network currently serves.
 type reconfirmingHistory struct {
-	pins      map[int64]string // the (possibly stale) cached pins the checks read
-	canonical map[int64]string // what a fresh fetch would return
-	calls     int
-	fail      bool // reconfirm fetch unavailable
+	pins        map[int64]string // the (possibly stale) cached pins the checks read
+	canonical   map[int64]string // what a fresh fetch would return
+	calls       int
+	fail        bool // reconfirm fetch unavailable
+	rateLimited bool // re-confirmation suppressed: pin returned, but unverified
 }
 
 func (h *reconfirmingHistory) HashAt(n int64) (string, bool) { v, ok := h.pins[n]; return v, ok }
 
-func (h *reconfirmingHistory) ReconfirmPin(ctx context.Context, n int64) (string, bool) {
+func (h *reconfirmingHistory) ReconfirmPin(ctx context.Context, n int64) (string, PinConfirmation) {
 	h.calls++
+	if h.rateLimited {
+		// Exactly what the ChainView does inside reconfirmCooldown: hand back the
+		// cached pin without re-resolving it.
+		return h.pins[n], PinRateLimited
+	}
 	if h.fail {
-		return "", false
+		return "", PinUnverifiable
 	}
 	c, ok := h.canonical[n]
 	if !ok {
-		return "", false
+		return "", PinUnverifiable
 	}
 	h.pins[n] = c // adopt
-	return c, true
+	return c, PinFresh
 }
 
 // rejectAll mirrors the strict shadow config: reorg-sensitive mismatches reject
@@ -106,6 +112,79 @@ func TestReconfirm_ReorgAdoptsAndPasses(t *testing.T) {
 		hist := mockHistory{0x10: "0xold"}
 		res := validateBlockPolicy(t, blockResult("0x10", "0xnew", "0xparent"), cs, hist, rejectAll)
 		require.Error(t, res.Err)
+	})
+}
+
+// Regression — mainnet 25589196, 2026-07-22. A stale pin was re-confirmed once;
+// for the next second every further dispute at that height hit the cooldown,
+// which handed the SAME unverified pin back as if it were a confirmation. The
+// engine then hard-rejected 24 honest responses from three independent upstreams
+// in ~700ms, erroring 8 client requests with nothing left to fail over to (all
+// upstreams rejected → 0 saves). Canonical later proved the upstreams right and
+// the pin non-canonical. A rate-limited answer carries no evidence, so it must
+// never license a rejection.
+func TestReconfirm_RateLimitedPinNeverRejects(t *testing.T) {
+	cs := only("hashStability", nil)
+
+	newHist := func() *reconfirmingHistory {
+		return &reconfirmingHistory{
+			pins:        map[int64]string{0x10: "0xstalepin"},
+			rateLimited: true,
+		}
+	}
+
+	t.Run("rate-limited reconfirm degrades the reject to a soft-flag", func(t *testing.T) {
+		hist := newHist()
+		res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, rejectAll)
+
+		assert.NoError(t, res.Err, "an unverified pin must not reject an honest response")
+		assert.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+		require.Len(t, res.Recorded, 1, "the mismatch must still be recorded, not swallowed")
+		assert.Equal(t, "hashStability", res.Recorded[0].CheckID)
+		assert.Equal(t, 1, hist.calls)
+		assert.Equal(t, "0xstalepin", hist.pins[0x10], "a rate-limited call must not adopt anything")
+	})
+
+	t.Run("the whole burst is served — no client failures", func(t *testing.T) {
+		// The incident shape: many requests for the same height while the pin is
+		// rate-limited. Every one of them must survive.
+		hist := newHist()
+		for i := 0; i < 24; i++ {
+			res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, rejectAll)
+			require.NoErrorf(t, res.Err, "request %d was rejected on an unverified pin", i)
+			require.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+		}
+		assert.Equal(t, 24, hist.calls)
+	})
+
+	t.Run("soft-flag policy is unaffected (already non-rejecting)", func(t *testing.T) {
+		hist := newHist()
+		policy := ReorgPolicy{Finalized: BehaviorRecord, Unfinalized: BehaviorRecord}
+		res := validateBlockPolicy(t, blockResult("0x10", "0xhonest", "0xparent"), cs, hist, policy)
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "soft_flag", outcomeOf(res, "hashStability"))
+	})
+
+	t.Run("a fresh reconfirm still rejects a genuine mismatch", func(t *testing.T) {
+		// The degrade must not blunt real detection: once the pin IS re-resolved
+		// and the mismatch survives it, the strict verdict stands.
+		hist := &reconfirmingHistory{
+			pins:      map[int64]string{0x10: "0xpin"},
+			canonical: map[int64]string{0x10: "0xpin"},
+		}
+		res := validateBlockPolicy(t, blockResult("0x10", "0xbogus", "0xparent"), cs, hist, rejectAll)
+		require.Error(t, res.Err)
+		assert.Equal(t, "reject", outcomeOf(res, "hashStability"))
+	})
+
+	t.Run("parentHashLinkage is covered too (the check that fired in the incident)", func(t *testing.T) {
+		hist := &reconfirmingHistory{
+			pins:        map[int64]string{0x10: "0xstaleparent"},
+			rateLimited: true,
+		}
+		res := validateBlockPolicy(t, blockResult("0x11", "0xchild", "0xrealparent"), only("parentHashLinkage", nil), hist, rejectAll)
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "soft_flag", outcomeOf(res, "parentHashLinkage"))
 	})
 }
 

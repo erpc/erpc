@@ -189,29 +189,37 @@ func (c *chainView) observeReceipts(blockHash string, receipts []integrity.Recei
 // adopts whatever fork the network currently serves (resolveHeader → observe,
 // which also rolls back stale descendants). This is how a stale pin after a
 // routine reorg gets unstuck: the engine calls it on a pin-anchored violation
-// and re-runs the check against the refreshed pin. Singleflighted per number;
-// within reconfirmCooldown the current pin is returned as-is (already fresh).
-func (c *chainView) ReconfirmPin(ctx context.Context, number int64) (string, bool) {
+// and re-runs the check against the refreshed pin. Singleflighted per number.
+//
+// Returns verified=true ONLY when a fresh fetch actually resolved the pin. A
+// re-confirmation within reconfirmCooldown is rate-limited, so it returns the
+// current pin as PinRateLimited — handed back for context, but carrying NO new
+// evidence. Reporting that as a confirmation made the cooldown window assert
+// whatever the pin already held, so one bad pin hard-rejected every honest
+// response for a full second (mainnet 25589196, 2026-07-22: 24 rejects across 3
+// upstreams in ~700ms, 8 client errors, 0 saves — the pin was the non-canonical
+// one and all three upstreams were right).
+func (c *chainView) ReconfirmPin(ctx context.Context, number int64) (string, integrity.PinConfirmation) {
 	if number < 0 {
-		return "", false
+		return "", integrity.PinUnverifiable
 	}
 	c.mu.RLock()
 	t, recent := c.reconfirmedAt[number]
 	pin, pinned := c.canonical[number]
 	c.mu.RUnlock()
 	if recent && pinned && time.Since(t) < reconfirmCooldown {
-		return pin, true
+		return pin, integrity.PinRateLimited
 	}
 	h, ok := doOnce(&c.flightMu, c.hInflight, fmt.Sprintf("reconfirm:%d", number), func() (*integrity.Header, bool) {
 		return c.resolveHeader(ctx, "eth_getBlockByNumber", fmt.Sprintf("0x%x", number))
 	})
 	if !ok || h == nil || h.Hash == "" {
-		return "", false
+		return "", integrity.PinUnverifiable
 	}
 	c.mu.Lock()
 	c.reconfirmedAt[number] = time.Now()
 	c.mu.Unlock()
-	return h.Hash, true
+	return h.Hash, integrity.PinFresh
 }
 
 func (c *chainView) evictLocked() {
