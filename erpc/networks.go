@@ -62,8 +62,46 @@ type Network struct {
 	// value we WARN with the local/shared inputs so we can see whether the
 	// regression originated in the per-upstream poller max, the cross-cluster
 	// shared counter, or a race between them.
+	//
+	// lastReturnedLatestBlock is ALSO advanced by NoteObservedLatestBlock when
+	// a WS newHeads tip is about to be fan-out to clients — so HTTP "latest"
+	// cannot regress below a head we have already delivered on the same pod.
 	lastReturnedLatestBlock    atomic.Int64
 	lastReturnedFinalizedBlock atomic.Int64
+}
+
+// NoteObservedLatestBlock records that this Network has observed head
+// blockNumber and is about to (or has) delivered it to clients via WS
+// newHeads fan-out. It advances the cross-pod network latest counter and the
+// process-local high-water mark used by EvmHighestLatestBlockNumber.
+//
+// Callers MUST invoke this before delivering the corresponding newHeads
+// notification to any client. Otherwise a concurrent HTTP
+// eth_getBlockByNumber("latest") / eth_blockNumber can race and return a
+// lower tip — Chainlink MultiNode treats that 1-block regression as
+// FinalizedBlockOutOfSync ("No live RPC nodes available").
+func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64) {
+	if n == nil || blockNumber <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = n.appCtx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if n.latestBlockShared != nil {
+		n.latestBlockShared.TryUpdate(ctx, blockNumber)
+	}
+	for {
+		cur := n.lastReturnedLatestBlock.Load()
+		if blockNumber <= cur {
+			return
+		}
+		if n.lastReturnedLatestBlock.CompareAndSwap(cur, blockNumber) {
+			return
+		}
+	}
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks

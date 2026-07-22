@@ -25,9 +25,12 @@ type NetworkHandle interface {
 	// indexer when tagging IndexedEvent.Lifecycle.
 	FinalityDepth() int64
 	// SuggestLatestBlock advances the per-source latest-block tracker
-	// before the indexer dedupes. Preserving "update-before-dedup"
-	// ordering is critical — the state poller needs to see every
-	// observation, even ones we'll drop in the fan-out stage.
+	// (and the network-level latest tip) before the indexer dedupes /
+	// fans out. Preserving "update-before-dedup" and
+	// "tip-before-fanout" ordering is critical — the state poller needs
+	// to see every observation (even ones we drop), and HTTP "latest"
+	// must not be allowed to regress below a head we are about to
+	// deliver on WS.
 	SuggestLatestBlock(sourceId string, blockNumber int64)
 }
 
