@@ -149,6 +149,27 @@ func (c *chainView) observe(number int64, hash string, header *integrity.Header)
 	c.evictLocked()
 }
 
+// observeHeader caches a block's header by hash WITHOUT touching the number→hash
+// pin. This is the by-hash lookup path: the caller named the hash, so the
+// response is not evidence about which hash is canonical at that height — it may
+// legitimately be an orphan (fetching orphans by hash is how indexers unwind
+// reorgs). Pinning from it would adopt the orphan as canonical and roll back the
+// real fork's descendants. The header itself is immutable and content-addressed,
+// so caching it by hash is always safe and still serves the by-hash consumers
+// (receipt/root corroboration).
+func (c *chainView) observeHeader(hash string, header *integrity.Header) {
+	if hash == "" || header == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, seen := c.headers[hash]; !seen {
+		c.headerOrder = append(c.headerOrder, hash)
+	}
+	c.headers[hash] = header
+	c.evictLocked()
+}
+
 // observeReceipts caches a block's canonical receipts by hash (immutable content).
 func (c *chainView) observeReceipts(blockHash string, receipts []integrity.Receipt) {
 	if blockHash == "" || receipts == nil {
@@ -494,7 +515,7 @@ type blockAnchorLite struct {
 
 // observeBlockView records a validated block response into the ChainView (pin +
 // header) so later requests link/anchor against it.
-func observeBlockView(ctx context.Context, c *chainView, rs *common.NormalizedResponse) {
+func observeBlockView(ctx context.Context, c *chainView, rs *common.NormalizedResponse, methodLower string) {
 	if c == nil || rs == nil {
 		return
 	}
@@ -504,6 +525,13 @@ func observeBlockView(ctx context.Context, c *chainView, rs *common.NormalizedRe
 	}
 	var h integrity.Header
 	if common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &h) != nil || h.Hash == "" || h.Number == "" {
+		return
+	}
+	// Only a by-NUMBER lookup answers "what is the chain at height N" — that is
+	// the claim the pin records. A by-hash lookup answers "give me this exact
+	// block", which may be an orphan, so it contributes the header only.
+	if methodLower == "eth_getblockbyhash" {
+		c.observeHeader(h.Hash, &h)
 		return
 	}
 	if n, err := common.HexToInt64(h.Number); err == nil {

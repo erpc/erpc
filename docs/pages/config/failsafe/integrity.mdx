@@ -258,8 +258,8 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `blockHashRecompute` | intrinsic | block | `keccak(RLP(header))` ≠ the claimed block hash |
 | `transactionsRootRecompute` | intrinsic | block | the transactions' Merkle-Patricia root ≠ header `transactionsRoot` |
 | `senderRecovery` | intrinsic | txByHash | `ecrecover(signature)` ≠ the reported `from` |
-| `parentHashLinkage` ※ | corroborated | block | block N's `parentHash` ≠ the hash observed for N-1 |
-| `hashStability` ※ | corroborated | block | a block number's hash changed from what was observed |
+| `parentHashLinkage` ※ | corroborated | `eth_getBlockByNumber` | block N's `parentHash` ≠ the hash observed for N-1 |
+| `hashStability` ※ | corroborated | `eth_getBlockByNumber` | a block number's hash changed from what was observed |
 | `receiptVsBlock` ※ | authoritative | receipt | a single receipt ≠ the force-fetched canonical block |
 | `receiptsRootRecompute` | authoritative | receipts | receipt MPT root ≠ the header's `receiptsRoot` (force-fetched by hash) |
 
@@ -275,6 +275,25 @@ what to do for those, by the block's finality (read from the upstream state poll
 
 - `finalized` → default `reject` (a finalized block can't reorg; a mismatch is corruption).
 - `unfinalized` → default `soft-flag` (record a metric/log, still serve — it may be a reorg). `off` skips the check (and any force-fetch) on the hot tip entirely.
+
+### Why continuity is by-number only
+
+Continuity answers "**what is the chain at height N**", so it runs on
+`eth_getBlockByNumber` and not on `eth_getBlockByHash`. A by-hash lookup asks for one
+named block: its identity is already guaranteed (the caller supplied the hash, and
+`blockHashRecompute` proves the block is real and internally consistent), while its
+*canonicality* was never the question — retrieving orphaned-but-real blocks by hash is
+exactly how indexers unwind a reorg. Rejecting there would discard data the caller
+explicitly asked for, and because an orphan hash does not exist on the canonical fork, no
+failover can produce an alternative: the request simply fails.
+
+Symmetrically, a by-hash response **never moves the number→hash pin** (it only populates
+the content-addressed header cache). If it did, one client fetching an orphan would adopt
+that orphan as canonical at its height and roll back the real fork's descendants, turning
+a private reorg-unwind into mass rejections of everyone else's by-number traffic.
+
+All deterministic checks (hash recompute, roots, field shapes, identity) still apply to
+by-hash responses.
 
 ### Per-request selection: profiles & headers
 
@@ -499,6 +518,7 @@ integrity:
            receiptsRootRecompute:     { enabled: false }   # same mechanism — disable if you run authoritative receipt corroboration
    ```
    **Diagnostic rule of thumb:** if `erpc_integrity_violation_total{check="…Recompute"}` rejects across *every* upstream of one chain, it's the check, not the data — disable that check for that chain (and consider opening an issue so it can be added to this list).
+7. **Continuity does not run on `eth_getBlockByHash`** (see [Why continuity is by-number only](#why-continuity-is-by-number-only)) — and a by-hash response never moves the pin. Earlier builds checked by-hash lookups too, which produced a large stream of rejects (mostly ending as `integrity_failed` client errors) whenever one upstream kept serving settled orphaned blocks to clients unwinding reorgs: the pin correctly said "not canonical", but since the request named the orphan hash, no upstream could satisfy the pinned fork.
 
 ### Source code entry points
 

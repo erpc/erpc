@@ -20,11 +20,16 @@ func blockResult(number, hash, parentHash string) []byte {
 
 func validateBlock(t *testing.T, result []byte, cs CheckSet, hist History, resolver Resolver) Result {
 	t.Helper()
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+	return validateBlockVia(t, "eth_getBlockByNumber", result, cs, hist, resolver)
+}
+
+func validateBlockVia(t *testing.T, method string, result []byte, cs CheckSet, hist History, resolver Resolver) Result {
+	t.Helper()
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":["0x1",false]}`, method)))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
 	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	in := Input{
-		Method:   "eth_getBlockByNumber",
+		Method:   method,
 		Upstream: common.NewFakeUpstream("u"),
 		Response: rs,
 		Checks:   cs,
@@ -89,4 +94,43 @@ func TestCheck_HashStability(t *testing.T) {
 		assert.NoError(t, res.Err)
 		require.Len(t, res.Recorded, 1)
 	})
+}
+
+// Continuity is a by-NUMBER question ("what is the chain at height N"). An
+// explicit by-hash lookup names the block it wants and may legitimately be an
+// orphan (reorg unwinding), so the continuity pair does not apply there at all
+// — not registered, no outcome, nothing to configure.
+func TestCheck_Continuity_ByHashLookupsAreNotSubjectToContinuity(t *testing.T) {
+	hist := mockHistory{0x10: "0xaaa", 0x11: "0xbbb"} // pins: 16→0xaaa, 17→0xbbb
+	// An orphan: both checks would fire on it — hash ≠ pin(17), parent ≠ pin(16).
+	orphan := blockResult("0x11", "0xddd", "0xccc")
+
+	for _, id := range []string{"hashStability", "parentHashLinkage"} {
+		t.Run(id, func(t *testing.T) {
+			t.Run("by-hash lookup of an orphan is served untouched", func(t *testing.T) {
+				res := validateBlockVia(t, "eth_getBlockByHash", orphan, only(id, nil), hist, finalized)
+				assert.NoError(t, res.Err)
+				assert.Empty(t, res.Recorded)
+				assert.Empty(t, outcomeOf(res, id), "the check must not run for eth_getBlockByHash")
+			})
+			t.Run("by-number lookup of the same body still rejects", func(t *testing.T) {
+				res := validateBlockVia(t, "eth_getBlockByNumber", orphan, only(id, nil), hist, finalized)
+				require.Error(t, res.Err)
+				assert.Equal(t, "reject", outcomeOf(res, id))
+			})
+			t.Run("the check is registered for by-number only", func(t *testing.T) {
+				assert.False(t, hasCheckFor(MethodGetBlockByHash, id))
+				assert.True(t, hasCheckFor(MethodGetBlockByNumber, id))
+			})
+		})
+	}
+}
+
+func hasCheckFor(method, id string) bool {
+	for _, c := range checksFor(method) {
+		if c.ID == id {
+			return true
+		}
+	}
+	return false
 }

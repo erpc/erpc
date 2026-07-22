@@ -188,15 +188,51 @@ func TestChainView_FinalityLabel(t *testing.T) {
 }
 
 func TestObserveBlockView(t *testing.T) {
-	c := newChainView(nil, 8, "", "", nil)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
-	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`{"number":"0x10","hash":"0xabc","parentHash":"0xdef"}`), nil)
-	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	blockResponse := func(method, number, hash string) *common.NormalizedResponse {
+		req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":["x",false]}`, method)))
+		body := fmt.Sprintf(`{"number":"%s","hash":"%s","parentHash":"0xdef"}`, number, hash)
+		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(body), nil)
+		return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	}
 
-	observeBlockView(context.Background(), c, rs)
-	v, ok := c.HashAt(0x10)
-	require.True(t, ok)
-	assert.Equal(t, "0xabc", v)
+	t.Run("a by-number response pins number→hash", func(t *testing.T) {
+		c := newChainView(nil, 8, "", "", nil)
+		observeBlockView(context.Background(), c, blockResponse("eth_getBlockByNumber", "0x10", "0xabc"), "eth_getblockbynumber")
+		v, ok := c.HashAt(0x10)
+		require.True(t, ok)
+		assert.Equal(t, "0xabc", v)
+	})
+
+	// Pin-poisoning guard: a by-hash lookup names the block it wants and may
+	// legitimately be an orphan. Pinning from it would adopt the orphan as
+	// canonical at that height and roll back the real fork's descendants,
+	// turning one client's reorg-unwind into mass rejections of honest
+	// by-number traffic.
+	t.Run("a by-hash response caches the header but never moves the pin", func(t *testing.T) {
+		c := newChainView(nil, 8, "", "", nil)
+		observeBlockView(context.Background(), c, blockResponse("eth_getBlockByNumber", "0x10", "0xcanonical"), "eth_getblockbynumber")
+		observeBlockView(context.Background(), c, blockResponse("eth_getBlockByNumber", "0x11", "0xchild"), "eth_getblockbynumber")
+
+		observeBlockView(context.Background(), c, blockResponse("eth_getBlockByHash", "0x10", "0xorphan"), "eth_getblockbyhash")
+
+		v, ok := c.HashAt(0x10)
+		require.True(t, ok)
+		assert.Equal(t, "0xcanonical", v, "the orphan must not become the pin")
+		_, ok = c.HashAt(0x11)
+		assert.True(t, ok, "descendants must not be rolled back by a by-hash lookup")
+
+		c.mu.RLock()
+		_, cached := c.headers["0xorphan"]
+		c.mu.RUnlock()
+		assert.True(t, cached, "the header is still cached by hash (immutable, content-addressed)")
+	})
+
+	t.Run("a by-hash response for an unseen number creates no pin", func(t *testing.T) {
+		c := newChainView(nil, 8, "", "", nil)
+		observeBlockView(context.Background(), c, blockResponse("eth_getBlockByHash", "0x20", "0xsome"), "eth_getblockbyhash")
+		_, ok := c.HashAt(0x20)
+		assert.False(t, ok)
+	})
 }
 
 // The hash anchor: a by-hash fetch must never trust (or cache) receipts that
