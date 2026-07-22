@@ -96,69 +96,41 @@ func TestCheck_HashStability(t *testing.T) {
 	})
 }
 
-// The byHashRequests param exempts explicit by-hash lookups (a client asking
-// for an exact hash may legitimately receive an orphaned block) while keeping
-// by-number continuity strict. Default is byte-identical to prior behavior.
-func TestCheck_Continuity_ByHashRequestsParam(t *testing.T) {
+// Continuity is a by-NUMBER question ("what is the chain at height N"). An
+// explicit by-hash lookup names the block it wants and may legitimately be an
+// orphan (reorg unwinding), so the continuity pair does not apply there at all
+// — not registered, no outcome, nothing to configure.
+func TestCheck_Continuity_ByHashLookupsAreNotSubjectToContinuity(t *testing.T) {
 	hist := mockHistory{0x10: "0xaaa", 0x11: "0xbbb"} // pins: 16→0xaaa, 17→0xbbb
-	orphan := blockResult("0x11", "0xddd", "0xccc")   // both checks would fire: hash≠pin(17), parent≠pin(16)
-	skipParams := map[string]string{common.IntegrityParamByHashRequests: "skip"}
+	// An orphan: both checks would fire on it — hash ≠ pin(17), parent ≠ pin(16).
+	orphan := blockResult("0x11", "0xddd", "0xccc")
 
 	for _, id := range []string{"hashStability", "parentHashLinkage"} {
 		t.Run(id, func(t *testing.T) {
-			t.Run("by-hash lookup with byHashRequests:skip → skipped, served", func(t *testing.T) {
-				res := validateBlockVia(t, "eth_getBlockByHash", orphan, only(id, skipParams), hist, finalized)
+			t.Run("by-hash lookup of an orphan is served untouched", func(t *testing.T) {
+				res := validateBlockVia(t, "eth_getBlockByHash", orphan, only(id, nil), hist, finalized)
 				assert.NoError(t, res.Err)
 				assert.Empty(t, res.Recorded)
-				assert.Equal(t, "skip", outcomeOf(res, id))
+				assert.Empty(t, outcomeOf(res, id), "the check must not run for eth_getBlockByHash")
 			})
-			t.Run("by-number lookup stays strict with byHashRequests:skip", func(t *testing.T) {
-				res := validateBlockVia(t, "eth_getBlockByNumber", orphan, only(id, skipParams), hist, finalized)
+			t.Run("by-number lookup of the same body still rejects", func(t *testing.T) {
+				res := validateBlockVia(t, "eth_getBlockByNumber", orphan, only(id, nil), hist, finalized)
 				require.Error(t, res.Err)
 				assert.Equal(t, "reject", outcomeOf(res, id))
 			})
-			t.Run("by-hash lookup without the param keeps today's strict behavior", func(t *testing.T) {
-				res := validateBlockVia(t, "eth_getBlockByHash", orphan, only(id, nil), hist, finalized)
-				require.Error(t, res.Err)
-				assert.Equal(t, "reject", outcomeOf(res, id))
-			})
-			t.Run("explicit byHashRequests:validate equals the default", func(t *testing.T) {
-				params := map[string]string{common.IntegrityParamByHashRequests: "validate"}
-				res := validateBlockVia(t, "eth_getBlockByHash", orphan, only(id, params), hist, finalized)
-				require.Error(t, res.Err)
-			})
-			t.Run("value is case/space-insensitive", func(t *testing.T) {
-				params := map[string]string{common.IntegrityParamByHashRequests: " Skip "}
-				res := validateBlockVia(t, "eth_getBlockByHash", orphan, only(id, params), hist, finalized)
-				assert.NoError(t, res.Err)
-				assert.Equal(t, "skip", outcomeOf(res, id))
+			t.Run("the check is registered for by-number only", func(t *testing.T) {
+				assert.False(t, hasCheckFor(MethodGetBlockByHash, id))
+				assert.True(t, hasCheckFor(MethodGetBlockByNumber, id))
 			})
 		})
 	}
 }
 
-// Drift guard: config validation (common) must accept exactly the
-// byHashRequests vocabulary the runtime (skipsByHashLookup) normalizes —
-// otherwise validation either rejects working configs or lets a
-// silently-ignored value through.
-func TestByHashRequestsVocabMatchesValidation(t *testing.T) {
-	cfgFor := func(v string) *common.IntegrityConfig {
-		return &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{
-			Checks: map[string]*common.IntegrityCheckConfig{
-				"hashStability": {Params: map[string]string{common.IntegrityParamByHashRequests: v}},
-			},
-		}}
+func hasCheckFor(method, id string) bool {
+	for _, c := range checksFor(method) {
+		if c.ID == id {
+			return true
+		}
 	}
-	hist := mockHistory{0x11: "0xbbb"}
-	orphan := blockResult("0x11", "0xddd", "0xaaa")
-	for _, v := range []string{"validate", "skip", " Skip ", "VALIDATE"} {
-		assert.NoError(t, cfgFor(v).Validate(), "validation must accept %q (runtime understands it)", v)
-	}
-	for _, v := range []string{"reject", "true", "off", "skp"} {
-		assert.Error(t, cfgFor(v).Validate(), "validation must reject %q (runtime silently keeps the default)", v)
-		// And confirm the runtime indeed treats it as the default (validate → strict).
-		params := map[string]string{common.IntegrityParamByHashRequests: v}
-		res := validateBlockVia(t, "eth_getBlockByHash", orphan, only("hashStability", params), hist, finalized)
-		require.Error(t, res.Err, "unknown value %q must keep the strict default at runtime", v)
-	}
+	return false
 }

@@ -263,7 +263,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 			// populate pin+header; narrow responses (receipts/tx) pin the number→hash
 			// for FINALIZED blocks only (tip-thrash safety).
 			if isBlockMethod(methodLower) {
-				observeBlockView(ctx, view, rs)
+				observeBlockView(ctx, view, rs, methodLower)
 			} else if isAnchoredNarrowMethod(methodLower) {
 				observeNarrowView(ctx, view, u, rs)
 			}
