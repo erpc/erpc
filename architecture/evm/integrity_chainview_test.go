@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
@@ -280,5 +281,51 @@ func TestHeaderMatchesRef(t *testing.T) {
 	t.Run("tag refs have no anchor to enforce", func(t *testing.T) {
 		h := &integrity.Header{Hash: "0xab", Number: "0x10"}
 		assert.True(t, headerMatchesRef(h, 0x10, "eth_getBlockByNumber", "latest"))
+	})
+}
+
+// ReconfirmPin must report WHY it is answering, not just what the pin is.
+// Inside the cooldown it returns the cached pin as PinRateLimited — carrying no
+// fresh evidence — so the engine degrades the verdict instead of rejecting on
+// it. Returning that as a confirmation let one stale pin hard-reject 24 honest
+// responses in ~700ms on mainnet 25589196 (2026-07-22).
+func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
+	t.Run("a cooled-down number reports PinRateLimited, not PinFresh", func(t *testing.T) {
+		c := newChainView(nil, 32, "", "", nil)
+		c.observe(0x10, "0xstalepin", nil)
+		c.mu.Lock()
+		c.reconfirmedAt[0x10] = time.Now() // a re-confirmation just happened
+		c.mu.Unlock()
+
+		hash, status := c.ReconfirmPin(context.Background(), 0x10)
+		assert.Equal(t, integrity.PinRateLimited, status,
+			"a rate-limited answer must not be reported as a confirmation")
+		assert.Equal(t, "0xstalepin", hash, "the pin is still returned, for context")
+	})
+
+	t.Run("an expired cooldown is not rate-limited (falls through to a fetch)", func(t *testing.T) {
+		c := newChainView(nil, 32, "", "", nil)
+		c.observe(0x10, "0xstalepin", nil)
+		c.mu.Lock()
+		c.reconfirmedAt[0x10] = time.Now().Add(-2 * reconfirmCooldown)
+		c.mu.Unlock()
+
+		// No network wired, so the fetch cannot resolve — the point is that it
+		// reports PinUnverifiable rather than short-circuiting as rate-limited.
+		_, status := c.ReconfirmPin(context.Background(), 0x10)
+		assert.Equal(t, integrity.PinUnverifiable, status)
+	})
+
+	t.Run("an unfetchable pin is PinUnverifiable, which keeps the strict verdict", func(t *testing.T) {
+		c := newChainView(nil, 32, "", "", nil)
+		c.observe(0x10, "0xpin", nil)
+		_, status := c.ReconfirmPin(context.Background(), 0x10)
+		assert.Equal(t, integrity.PinUnverifiable, status)
+	})
+
+	t.Run("a negative number is unverifiable", func(t *testing.T) {
+		c := newChainView(nil, 32, "", "", nil)
+		_, status := c.ReconfirmPin(context.Background(), -1)
+		assert.Equal(t, integrity.PinUnverifiable, status)
 	})
 }

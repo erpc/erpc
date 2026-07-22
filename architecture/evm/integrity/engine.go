@@ -149,7 +149,8 @@ func Validate(ctx context.Context, in Input) Result {
 		// fresh pin is genuine and proceeds to the verdict.
 		if v.DisputedPin > 0 && c.Class == ReorgSensitive {
 			if rc, ok := in.History.(PinReconfirmer); ok {
-				if _, confirmed := rc.ReconfirmPin(ctx, v.DisputedPin); confirmed {
+				switch _, status := rc.ReconfirmPin(ctx, v.DisputedPin); status {
+				case PinFresh:
 					// Skipped counts as cleared too: the adopted pin resolved the
 					// dispute and the check has nothing left to verify.
 					if v2 := c.Run(ctx, d, cfg); v2 == nil || v2 == Skipped {
@@ -157,6 +158,19 @@ func Validate(ctx context.Context, in Input) Result {
 						continue
 					} else {
 						v = v2
+					}
+				case PinRateLimited:
+					// The pin could not be re-checked right now, so this violation
+					// rests on CACHED state we have no fresh evidence for. Hard
+					// rejection here is the self-block failure itself: while the
+					// rate limit holds, every honest response mismatches the stale
+					// pin, none can be served, and the pin never adopts the real
+					// fork. Degrade to soft-flag so the mismatch is still recorded
+					// and surfaced, without erroring a response that is probably
+					// correct. A genuine problem outlives the rate limit and gets
+					// a fresh verdict on the next request.
+					if behavior == BehaviorError {
+						behavior = BehaviorRecord
 					}
 				}
 			}
