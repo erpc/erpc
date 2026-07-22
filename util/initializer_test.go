@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,7 +259,7 @@ func TestInitializer_TaskTimeout(t *testing.T) {
 	defer init.Stop(nil)
 	require.Error(t, err)
 	assert.Equal(t, StateFailed, init.State())
-	assert.Equal(t, TaskFailed, TaskState(task.state.Load()))
+	assert.Equal(t, TaskTimedOut, TaskState(task.state.Load()))
 	assert.ErrorIs(t, task.Error().Err, context.DeadlineExceeded)
 }
 
@@ -361,11 +362,13 @@ func TestInitializer_MultipleRapidFailures(t *testing.T) {
 	// Check we tried multiple times (rapidly)
 	assert.True(t, attempts > 1, "should attempt multiple times in quick succession")
 
-	// Check final State is either partial or failed
+	// Auto-retry is still armed, so aggregate state is Retrying while the
+	// sole task keeps failing between attempts (Failed only once the loop
+	// has stopped and nothing remains in-flight).
 	state := init.State()
 	assert.True(
 		t,
-		state == StateFailed,
+		state == StateFailed || state == StateRetrying,
 		"final state should reflect the repeated failures, got %v", state,
 	)
 
@@ -403,9 +406,9 @@ func TestInitializer_ForcedCancellationMidTask(t *testing.T) {
 	require.Error(t, err, "should fail or be canceled")
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 
-	// Check task state is failed (or timed out) after forced cancel
+	// ExecuteTasks already ran until TaskTimeout; deadline surfaces as TimedOut.
 	st := TaskState(task.state.Load())
-	assert.True(t, st == TaskFailed, "task should show failed or timed out, got %d", st)
+	assert.True(t, st == TaskFailed || st == TaskTimedOut, "task should show failed or timed out, got %d", st)
 }
 
 func TestInitializer_MarkTaskAsFailedMidRun(t *testing.T) {
@@ -791,3 +794,211 @@ func BenchmarkInitializer_RangeTaskStates_vs_Status(b *testing.B) {
 		}
 	})
 }
+
+// Regression (backport of upstream erpc#973): a single fatal task must not
+// stop the auto-retry loop for other, transiently-failing tasks. One
+// misconfigured upstream used to permanently disable bootstrap retries for
+// the whole registry.
+func TestInitializer_FatalTaskDoesNotStopRetryOfOthers(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 20,
+		RetryFactor:   1.2,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	fatalTask := NewBootstrapTask("fatal-task", func(ctx context.Context) error {
+		return &testFatalError{errors.New("permanent misconfiguration")}
+	})
+
+	var attempts atomic.Int32
+	transientTask := NewBootstrapTask("transient-task", func(ctx context.Context) error {
+		if attempts.Add(1) < 3 {
+			return errors.New("transient failure")
+		}
+		return nil
+	})
+
+	_ = init.ExecuteTasks(appCtx, fatalTask, transientTask)
+
+	require.Eventually(t, func() bool {
+		return TaskState(transientTask.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 20*time.Millisecond, "transient task should eventually succeed despite the fatal sibling")
+
+	assert.Equal(t, TaskFatal, TaskState(fatalTask.state.Load()))
+	// Aggregate state must be Partial (some OK, some permanently dead) — not
+	// Fatal, which would imply the whole shared Initializer is unusable.
+	assert.Equal(t, StatePartial, init.State())
+	init.Stop(nil)
+}
+
+// Regression: tasks scheduled after all earlier tasks succeeded must still
+// be retried (the loop must not have wound down for good).
+func TestInitializer_RetryLoopRestartsForNewFailedTasks(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 20,
+		RetryFactor:   1.2,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	ok := NewBootstrapTask("ok-task", func(ctx context.Context) error { return nil })
+	_ = init.ExecuteTasks(appCtx, ok)
+	require.Eventually(t, func() bool {
+		return TaskState(ok.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 10*time.Millisecond, "first task should succeed")
+
+	var attempts atomic.Int32
+	transientTask := NewBootstrapTask("late-transient-task", func(ctx context.Context) error {
+		if attempts.Add(1) < 3 {
+			return errors.New("transient failure")
+		}
+		return nil
+	})
+	_ = init.ExecuteTasks(appCtx, transientTask)
+
+	require.Eventually(t, func() bool {
+		return TaskState(transientTask.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 20*time.Millisecond, "late task should be retried by a (re)started loop")
+
+	init.Stop(nil)
+}
+
+// Regression: a task whose Fn hangs (ignores ctx) must not block the
+// auto-retry loop for other, transiently-failing tasks.
+func TestInitializer_HungTaskDoesNotBlockRetryOfOthers(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout:   time.Millisecond * 200,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 20,
+		RetryFactor:   1.2,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	hungRelease := make(chan struct{})
+	hungTask := NewBootstrapTask("hung-task", func(ctx context.Context) error {
+		<-hungRelease // ignores ctx: simulates a client dial with no deadline
+		return nil
+	})
+
+	var attempts atomic.Int32
+	transientTask := NewBootstrapTask("transient-task", func(ctx context.Context) error {
+		if attempts.Add(1) < 3 {
+			return errors.New("transient failure")
+		}
+		return nil
+	})
+
+	go func() { _ = init.ExecuteTasks(appCtx, hungTask, transientTask) }()
+
+	require.Eventually(t, func() bool {
+		return TaskState(transientTask.state.Load()) == TaskSucceeded
+	}, 5*time.Second, 20*time.Millisecond, "transient task should eventually succeed despite the hung sibling")
+
+	// Hung attempt must be reaped to TimedOut (retryable), not left Running forever.
+	require.Eventually(t, func() bool {
+		st := TaskState(hungTask.state.Load())
+		return st == TaskTimedOut || st == TaskRunning // Running only during a brief retry window
+	}, 2*time.Second, 20*time.Millisecond)
+
+	// Observe at least one TimedOut transition (reap happened).
+	require.Eventually(t, func() bool {
+		return TaskState(hungTask.state.Load()) == TaskTimedOut ||
+			hungTask.attempts.Load() >= 2 // reaped and retried
+	}, 3*time.Second, 20*time.Millisecond, "hung task should be reaped (TimedOut) and/or retried")
+
+	close(hungRelease)
+	init.Stop(nil)
+}
+
+func TestInitializer_State_FatalSiblingWithSuccessIsPartial(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   false,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	fatalTask := NewBootstrapTask("fatal-task", func(ctx context.Context) error {
+		return &testFatalError{errors.New("permanent misconfiguration")}
+	})
+	okTask := NewBootstrapTask("ok-task", func(ctx context.Context) error { return nil })
+
+	_ = init.ExecuteTasks(appCtx, fatalTask, okTask)
+	require.Equal(t, TaskFatal, TaskState(fatalTask.state.Load()))
+	require.Equal(t, TaskSucceeded, TaskState(okTask.state.Load()))
+	assert.Equal(t, StatePartial, init.State(),
+		"one fatal sibling must not mark the whole initializer Fatal when others succeeded")
+	init.Stop(nil)
+}
+
+func TestInitializer_State_AllFatalIsFatal(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   false,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	a := NewBootstrapTask("fatal-a", func(ctx context.Context) error {
+		return &testFatalError{errors.New("bad a")}
+	})
+	b := NewBootstrapTask("fatal-b", func(ctx context.Context) error {
+		return &testFatalError{errors.New("bad b")}
+	})
+	_ = init.ExecuteTasks(appCtx, a, b)
+	assert.Equal(t, StateFatal, init.State())
+	init.Stop(nil)
+}
+
+func TestInitializer_WaitForTasks_ParallelDoesNotSerializeOnSlowSibling(t *testing.T) {
+	conf := &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   false,
+	}
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, conf)
+
+	slowStarted := make(chan struct{})
+	slow := NewBootstrapTask("slow", func(ctx context.Context) error {
+		close(slowStarted)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+			return nil
+		}
+	})
+	fast := NewBootstrapTask("fast", func(ctx context.Context) error { return nil })
+
+	go func() { _ = init.ExecuteTasks(appCtx, slow, fast) }()
+	<-slowStarted
+
+	// Short wait: with sequential Wait, a slow-first Range order could burn the
+	// whole budget before observing fast. Parallel wait must see fast succeed.
+	waitCtx, waitCancel := context.WithTimeout(appCtx, 100*time.Millisecond)
+	defer waitCancel()
+	_ = init.WaitForTasks(waitCtx)
+
+	assert.Equal(t, TaskSucceeded, TaskState(fast.state.Load()), "fast task must complete even while slow is in-flight")
+	init.Stop(nil)
+}
+
+type testFatalError struct{ error }
+
+func (e *testFatalError) IsTaskFatal() bool { return true }
+func (e *testFatalError) Unwrap() error     { return e.error }
