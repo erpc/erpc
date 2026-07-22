@@ -258,12 +258,18 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `blockHashRecompute` | intrinsic | block | `keccak(RLP(header))` ≠ the claimed block hash |
 | `transactionsRootRecompute` | intrinsic | block | the transactions' Merkle-Patricia root ≠ header `transactionsRoot` |
 | `senderRecovery` | intrinsic | txByHash | `ecrecover(signature)` ≠ the reported `from` |
+| `blockByHashIdentity` | intrinsic | `eth_getBlockByHash` | the returned block isn't the one whose hash was requested |
+| `txByHashIdentity` | intrinsic | txByHash | the returned transaction isn't the one whose hash was requested |
+| `receiptIdentity` | intrinsic | receipt | the returned receipt isn't for the requested transaction |
+| `getLogsFilterSanity` | intrinsic | `eth_getLogs` | a returned log doesn't match the request's own filter/range |
+| `getLogsCompleteness` ※ | corroborated | `eth_getLogs` | logs missing/extra/altered vs the cached canonical receipts for that block |
+| `txPinConsistency` ※ | corroborated | txByHash | a mined tx's claimed block coordinates ≠ the committed pin |
 | `parentHashLinkage` ※ | corroborated | `eth_getBlockByNumber` | block N's `parentHash` ≠ the hash observed for N-1 |
 | `hashStability` ※ | corroborated | `eth_getBlockByNumber` | a block number's hash changed from what was observed |
 | `receiptVsBlock` ※ | authoritative | receipt | a single receipt ≠ the force-fetched canonical block |
 | `receiptsRootRecompute` | authoritative | receipts | receipt MPT root ≠ the header's `receiptsRoot` (force-fetched by hash) |
 
-※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. Both stateful tiers share one **reorg-aware per-network ChainView** — a bounded `number→hash` pin plus a content-addressed header cache (window `reorgWindow`, default 32). `corroborated` populates it passively from blocks your own traffic already pulled (it **never fetches a block sequence**); `authoritative` additionally force-fetches a missing anchor **once** through the normal network path (cache-backed, recursion-guarded, deduped by the ChainView), capped by `budget`. A changed hash for a number is treated as a reorg: the new fork is adopted and its stale descendants are rolled back, so the pin always reflects one consistent fork — block and receipts can't disagree.
+※ = **reorg-sensitive** (governed by `invalidBehavior`). All others are deterministic and always reject on violation. Note the division of labour on `eth_getBlockByHash`: `blockByHashIdentity` enforces that you got **the block you asked for**, while the continuity pair (which judges *canonicality*, a question a by-hash lookup never asked) deliberately does not run there — see [Edge cases](#edge-cases--gotchas) #7. Both stateful tiers share one **reorg-aware per-network ChainView** — a bounded `number→hash` pin plus a content-addressed header cache (window `reorgWindow`, default 32). `corroborated` populates it passively from blocks your own traffic already pulled (it **never fetches a block sequence**); `authoritative` additionally force-fetches a missing anchor **once** through the normal network path (cache-backed, recursion-guarded, deduped by the ChainView), capped by `budget`. A changed hash for a number is treated as a reorg: the new fork is adopted and its stale descendants are rolled back, so the pin always reflects one consistent fork — block and receipts can't disagree.
 
 ### Per-finality verdict: `invalidBehavior`
 
@@ -280,12 +286,16 @@ what to do for those, by the block's finality (read from the upstream state poll
 
 Continuity answers "**what is the chain at height N**", so it runs on
 `eth_getBlockByNumber` and not on `eth_getBlockByHash`. A by-hash lookup asks for one
-named block: its identity is already guaranteed (the caller supplied the hash, and
-`blockHashRecompute` proves the block is real and internally consistent), while its
-*canonicality* was never the question — retrieving orphaned-but-real blocks by hash is
-exactly how indexers unwind a reorg. Rejecting there would discard data the caller
-explicitly asked for, and because an orphan hash does not exist on the canonical fork, no
-failover can produce an alternative: the request simply fails.
+named block: its *canonicality* was never the question — retrieving orphaned-but-real
+blocks by hash is exactly how indexers unwind a reorg. Rejecting there would discard data
+the caller explicitly asked for, and because an orphan hash does not exist on the
+canonical fork, no failover can produce an alternative: the request simply fails.
+
+What a by-hash lookup *does* require is **identity** — that you got the block you named —
+and that is enforced by its own check, `blockByHashIdentity` (intrinsic, deterministic).
+Do not rely on `blockHashRecompute` for this: it proves the returned header hashes to the
+hash it claims, i.e. that the block is real and self-consistent, but a node answering with
+an entirely different valid block satisfies it. Identity is what closes that gap.
 
 Symmetrically, a by-hash response **never moves the number→hash pin** (it only populates
 the content-addressed header cache). If it did, one client fetching an orphan would adopt

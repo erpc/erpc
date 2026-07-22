@@ -2,6 +2,7 @@ package integrity
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -78,6 +79,48 @@ func TestCheck_ReceiptIdentity(t *testing.T) {
 		res := validateByHash(t, "eth_getTransactionReceipt", reqHash,
 			`{"transactionHash":"`+otherHash+`","blockHash":"0xbb","blockNumber":"0x10","logs":[]}`, cs, nil)
 		require.Error(t, res.Err)
+	})
+}
+
+// blockByHashIdentity is the only check that can catch a node answering an
+// eth_getBlockByHash lookup with a different block: continuity deliberately
+// does not judge by-hash lookups, and blockHashRecompute only proves the
+// returned block is self-consistent.
+func TestCheck_BlockByHashIdentity(t *testing.T) {
+	cs := only("blockByHashIdentity", nil)
+	block := func(hash string) string {
+		return `{"number":"0x10","hash":"` + hash + `","parentHash":"0xaa","transactions":[]}`
+	}
+
+	t.Run("the requested block passes", func(t *testing.T) {
+		res := validateByHash(t, "eth_getBlockByHash", reqHash, block(reqHash), cs, nil)
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "pass", outcomeOf(res, "blockByHashIdentity"))
+	})
+
+	t.Run("a different block returned → reject", func(t *testing.T) {
+		res := validateByHash(t, "eth_getBlockByHash", reqHash, block(otherHash), cs, nil)
+		require.Error(t, res.Err)
+		assert.True(t, common.HasErrorCode(res.Err, common.ErrCodeEndpointContentValidation))
+		assert.Equal(t, "reject", outcomeOf(res, "blockByHashIdentity"))
+	})
+
+	t.Run("case-insensitive hash comparison passes", func(t *testing.T) {
+		res := validateByHash(t, "eth_getBlockByHash", reqHash, block(strings.ToUpper(reqHash)), cs, nil)
+		assert.NoError(t, res.Err)
+	})
+
+	t.Run("an orphaned-but-requested block still passes (canonicality is not identity)", func(t *testing.T) {
+		// The caller named this hash; that it lost a reorg is not this check's
+		// business — and continuity no longer judges by-hash lookups either.
+		res := validateByHash(t, "eth_getBlockByHash", reqHash, block(reqHash), cs, mockHistory{0x10: otherHash})
+		assert.NoError(t, res.Err)
+	})
+
+	t.Run("unparseable params → skip, never guess", func(t *testing.T) {
+		res := validateByHash(t, "eth_getBlockByHash", "0xnothash", block(reqHash), cs, nil)
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "skip", outcomeOf(res, "blockByHashIdentity"))
 	})
 }
 

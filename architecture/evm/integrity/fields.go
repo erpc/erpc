@@ -40,7 +40,19 @@ func eqHex(a, b string) bool {
 	if a == "" || b == "" {
 		return true
 	}
-	return strings.EqualFold(strings.TrimPrefix(a, "0x"), strings.TrimPrefix(b, "0x"))
+	return strings.EqualFold(trimHexPrefix(a), trimHexPrefix(b))
+}
+
+// trimHexPrefix removes a leading "0x"/"0X". The prefix must be trimmed
+// case-insensitively: JSON-RPC callers may send "0XABC…" (the identity checks
+// accept that shape from request params) while nodes answer "0xabc…", and
+// comparing one against the other with a case-sensitive trim would reject a
+// perfectly valid response.
+func trimHexPrefix(s string) string {
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		return s[2:]
+	}
+	return s
 }
 
 // isZeroBloomHex reports whether a hex-encoded bloom is all zeros (any width).

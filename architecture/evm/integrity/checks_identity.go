@@ -8,12 +8,13 @@ import (
 
 // Identity checks: the response must be about the ENTITY the request asked
 // for. Nothing else covers this — a mixed-up node returning a perfectly VALID
-// transaction or receipt for the WRONG hash passes every intrinsic check
-// (roots, shapes, signatures all verify; they just belong to another tx).
+// transaction, receipt, or block for the WRONG hash passes every intrinsic
+// check (roots, shapes, signatures all verify; they just belong to another
+// entity).
 
-// requestedTxHash extracts the tx hash a by-hash request asked for. Empty when
-// the params aren't a plausible 32-byte hex hash (never guess).
-func requestedTxHash(d *Decoded) string {
+// requestedHash extracts the 32-byte hash a by-hash request asked for. Empty
+// when the params aren't a plausible 32-byte hex hash (never guess).
+func requestedHash(d *Decoded) string {
 	if len(d.reqParams) == 0 {
 		return ""
 	}
@@ -25,13 +26,43 @@ func requestedTxHash(d *Decoded) string {
 }
 
 func init() {
+	// blockByHashIdentity — eth_getBlockByHash must return the block that was
+	// requested: response.hash == params[0].
+	//
+	// This is the by-hash counterpart of the tx/receipt identity checks, and on
+	// this method it is the ONLY thing standing between a caller and a
+	// wrong-but-valid block: every other check verifies the response against
+	// itself (blockHashRecompute proves the header hashes to its own claimed
+	// hash — of whatever block it happens to be), and the continuity pair
+	// deliberately does not judge by-hash lookups (see checks_continuity.go).
+	// Cheap, deterministic, and it cannot false-positive: the caller named the
+	// hash, so returning a different one is unambiguously wrong.
+	register(&Check{
+		ID: "blockByHashIdentity", Family: FamilyStructural, Class: Deterministic,
+		Methods: []string{MethodGetBlockByHash},
+		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
+			want := requestedHash(d)
+			if want == "" {
+				return Skipped
+			}
+			h := d.Header()
+			if h == nil || h.Hash == "" {
+				return Skipped
+			}
+			if !eqHex(h.Hash, want) {
+				return failf("response block hash %s is not the requested %s", h.Hash, want)
+			}
+			return nil
+		},
+	})
+
 	// txByHashIdentity — eth_getTransactionByHash must return the transaction
 	// that was requested: response.hash == params[0].
 	register(&Check{
 		ID: "txByHashIdentity", Family: FamilyStructural, Class: Deterministic,
 		Methods: []string{MethodGetTransactionByHash},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
-			want := requestedTxHash(d)
+			want := requestedHash(d)
 			if want == "" {
 				return Skipped
 			}
@@ -52,7 +83,7 @@ func init() {
 		ID: "receiptIdentity", Family: FamilyStructural, Class: Deterministic,
 		Methods: []string{MethodGetTransactionReceipt},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
-			want := requestedTxHash(d)
+			want := requestedHash(d)
 			if want == "" {
 				return Skipped
 			}
