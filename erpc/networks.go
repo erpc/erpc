@@ -78,8 +78,7 @@ type Network struct {
 // Callers MUST invoke this before delivering the corresponding newHeads
 // notification to any client. Otherwise a concurrent HTTP
 // eth_getBlockByNumber("latest") / eth_blockNumber can race and return a
-// lower tip — Chainlink MultiNode treats that 1-block regression as
-// FinalizedBlockOutOfSync ("No live RPC nodes available").
+// lower tip than a head already (or about to be) served on WS.
 func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64) {
 	if n == nil || blockNumber <= 0 {
 		return

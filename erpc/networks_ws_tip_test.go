@@ -23,8 +23,7 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// Regression for Chainlink MultiNode FinalizedBlockOutOfSync flaps:
-// once a WS newHeads tip N is observed (and about to be fan-out), HTTP
+// Once a WS newHeads tip N is observed (and about to be fan-out), HTTP
 // tip resolution via EvmHighestLatestBlockNumber must not return < N —
 // even if every local poller still reports N-1.
 func TestNoteObservedLatestBlock_FloorsEvmHighestLatest(t *testing.T) {
