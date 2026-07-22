@@ -26,12 +26,13 @@ type NetworkHandle interface {
 	FinalityDepth() int64
 	// SuggestLatestBlock advances the per-source latest-block tracker
 	// (and the network-level latest tip) before the indexer dedupes /
-	// fans out. Preserving "update-before-dedup" and
-	// "tip-before-fanout" ordering is critical — the state poller needs
-	// to see every observation (even ones we drop), and HTTP "latest"
-	// must not be allowed to regress below a head we are about to
-	// deliver on WS.
-	SuggestLatestBlock(sourceId string, blockNumber int64)
+	// fans out. headPayload is the newHeads eth_subscription result
+	// (block header JSON); it may be nil when the caller only has a
+	// number. Preserving "update-before-dedup" and "tip-before-fanout"
+	// ordering is critical — the state poller needs to see every
+	// observation (even ones we drop), and HTTP "latest" must not be
+	// allowed to regress below a head we are about to deliver on WS.
+	SuggestLatestBlock(sourceId string, blockNumber int64, headPayload []byte)
 }
 
 // EventIngress is an adapter that converts some transport-specific

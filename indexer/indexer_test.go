@@ -31,7 +31,7 @@ func newFakeNetwork(id string, depth int64) *fakeNetwork {
 
 func (n *fakeNetwork) Id() string            { return n.id }
 func (n *fakeNetwork) FinalityDepth() int64  { return n.finalityDepth }
-func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64) {
+func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64, _ []byte) {
 	n.mu.Lock()
 	n.suggestedBy[sourceId] = append(n.suggestedBy[sourceId], block)
 	n.mu.Unlock()

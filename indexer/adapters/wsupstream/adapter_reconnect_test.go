@@ -28,7 +28,7 @@ type fakeNetworkHandle struct{}
 
 func (fakeNetworkHandle) Id() string                       { return "evm:324" }
 func (fakeNetworkHandle) FinalityDepth() int64             { return 0 }
-func (fakeNetworkHandle) SuggestLatestBlock(string, int64) {}
+func (fakeNetworkHandle) SuggestLatestBlock(string, int64, []byte) {}
 
 type fakeSink struct {
 	events chan indexer.StreamEvent

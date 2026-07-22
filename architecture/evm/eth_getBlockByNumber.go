@@ -108,6 +108,39 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 	return enforceNonNullBlock(nq, nr)
 }
 
+// observedLatestHeadProvider is implemented by networks that cache the last
+// WS newHeads header before fan-out (erpc.Network). Used to floor HTTP
+// "latest" responses when upstream re-fetch of the tip would fail open.
+type observedLatestHeadProvider interface {
+	LastObservedLatestHead() (blockNumber int64, payload []byte)
+}
+
+// responseFromObservedLatestHead builds an eth_getBlockByNumber response from
+// the cached WS newHeads header when it matches expectedTip. ok is false when
+// the cache is missing, behind, or the network does not expose a tip cache.
+func responseFromObservedLatestHead(network common.Network, nq *common.NormalizedRequest, expectedTip int64) (*common.NormalizedResponse, bool) {
+	provider, ok := network.(observedLatestHeadProvider)
+	if !ok || expectedTip <= 0 {
+		return nil, false
+	}
+	cachedNumber, payload := provider.LastObservedLatestHead()
+	if cachedNumber != expectedTip || len(payload) == 0 {
+		return nil, false
+	}
+	idBytes, err := common.SonicCfg.Marshal(nq.ID())
+	if err != nil {
+		return nil, false
+	}
+	jrr, err := common.NewJsonRpcResponseFromBytes(idBytes, append([]byte(nil), payload...), nil)
+	if err != nil {
+		return nil, false
+	}
+	resp := common.NewNormalizedResponse().
+		WithRequest(nq).
+		WithJsonRpcResponse(jrr)
+	return resp, true
+}
+
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	if re != nil {
 		return nr, re
@@ -182,6 +215,19 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if len(rqj.Params) > 1 {
 				itx, _ = rqj.Params[1].(bool)
 			}
+
+			// Prefer a cached WS newHeads header when the HTTP tip lags. Re-fetching
+			// the concrete tip often fails when only the WS upstream has seen it yet;
+			// pickHighestBlock would then fail-open to the stale response.
+			if !itx {
+				if cached, ok := responseFromObservedLatestHead(network, nq, highestBlockNumber); ok {
+					if nr != nil {
+						nr.Release()
+					}
+					return cached, nil
+				}
+			}
+
 			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, itx)
 			if err != nil {
 				return nil, err
@@ -208,7 +254,19 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			nnr, err := network.Forward(ctx, newReq)
 			// This is needed in case highest block number is corrupted somehow and for example
 			// it is requesting a very high non-existent block number.
-			return pickHighestBlock(ctx, nnr, nr, err)
+			picked, pickErr := pickHighestBlock(ctx, nnr, nr, err)
+			// If re-fetch still lost to the stale tip, try the WS-cached header once more
+			// (TipHW may have advanced mid-flight after the first cache check).
+			if !itx && pickErr == nil && picked != nil {
+				_, pickedNumber, refErr := ExtractBlockReferenceFromResponse(ctx, picked)
+				if refErr == nil && pickedNumber < highestBlockNumber {
+					if cached, ok := responseFromObservedLatestHead(network, nq, highestBlockNumber); ok {
+						picked.Release()
+						return cached, nil
+					}
+				}
+			}
+			return picked, pickErr
 		} else {
 			return nr, re
 		}

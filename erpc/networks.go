@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -68,6 +69,18 @@ type Network struct {
 	// cannot regress below a head we have already delivered on the same pod.
 	lastReturnedLatestBlock    atomic.Int64
 	lastReturnedFinalizedBlock atomic.Int64
+
+	// lastObservedLatestHead caches the most recent newHeads header payload
+	// (eth_subscription result) whose tip we have already committed to TipHW.
+	// enforceHighestBlock serves this when HTTP upstreams lag the WS tip and
+	// a re-fetch of the concrete tip block would fail open to a stale response.
+	lastObservedLatestHead atomic.Pointer[observedLatestHead]
+}
+
+// observedLatestHead is the last WS newHeads header we noted before fan-out.
+type observedLatestHead struct {
+	number  int64
+	payload json.RawMessage
 }
 
 // NoteObservedLatestBlock records that this Network has observed head
@@ -101,6 +114,54 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 			return
 		}
 	}
+}
+
+// NoteObservedLatestHead records a WS newHeads tip together with its header
+// payload. It advances TipHW via NoteObservedLatestBlock and caches the
+// header so eth_getBlockByNumber("latest", false) can return the same tip
+// when HTTP upstreams are still behind.
+//
+// Callers MUST invoke this before delivering the corresponding newHeads
+// notification to any client. Empty payloads still advance TipHW.
+func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64, payload json.RawMessage) {
+	n.NoteObservedLatestBlock(ctx, blockNumber)
+	if n == nil || blockNumber <= 0 || len(payload) == 0 {
+		return
+	}
+	// Copy so callers can reuse/recycle their buffer.
+	stored := observedLatestHead{
+		number:  blockNumber,
+		payload: append(json.RawMessage(nil), payload...),
+	}
+	for {
+		cur := n.lastObservedLatestHead.Load()
+		if cur != nil && blockNumber < cur.number {
+			return
+		}
+		// Same height with a new hash (reorg): replace. Lower heights: reject.
+		if cur != nil && blockNumber == cur.number {
+			if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
+				return
+			}
+			continue
+		}
+		if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
+			return
+		}
+	}
+}
+
+// LastObservedLatestHead returns the cached newHeads header for the highest
+// tip we have noted on this pod, or (0, nil) if none.
+func (n *Network) LastObservedLatestHead() (blockNumber int64, payload []byte) {
+	if n == nil {
+		return 0, nil
+	}
+	cur := n.lastObservedLatestHead.Load()
+	if cur == nil || cur.number <= 0 || len(cur.payload) == 0 {
+		return 0, nil
+	}
+	return cur.number, append([]byte(nil), cur.payload...)
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
