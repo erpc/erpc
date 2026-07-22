@@ -112,6 +112,10 @@ func Validate(ctx context.Context, in Input) Result {
 	d.reqParams = in.Params
 
 	var res Result
+	// One finality observation for this whole response: every check here judges
+	// the same block, and the verdict and its metric label must not come from
+	// two separate reads of a moving finalized head (see finalityOnce).
+	fin := &finalityOnce{}
 	for _, c := range enabled {
 		// On an emptyish response only the opted-in checks run; the rest get no
 		// outcome at all (exactly as if the response had short-circuited).
@@ -122,7 +126,7 @@ func Validate(ctx context.Context, in Input) Result {
 		// Resolve the verdict for this check up front. If it would be ignored
 		// (invalidBehavior unfinalized: off, or a per-check onFailure: off),
 		// skip the check entirely — and with it any force-fetch it would issue.
-		behavior := in.verdictFor(ctx, c, cfg, d)
+		behavior := in.verdictFor(ctx, c, cfg, d, fin)
 		if behavior == BehaviorIgnore {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "off"})
 			continue
@@ -181,42 +185,50 @@ func Validate(ctx context.Context, in Input) Result {
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID
 			res.RejectedClass = c.Class
-			res.Finality = in.finalityOf(ctx, d)
+			res.Finality = fin.label(ctx, in, d)
 			return res
 		}
 		// soft-flag: surface the violation but still serve the response.
 		res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "soft_flag"})
-		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: in.finalityOf(ctx, d)})
+		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: fin.label(ctx, in, d)})
 	}
 	return res
 }
 
-// verdictFor decides what to do on a violation of check c: a per-check override
-// wins; otherwise deterministic checks reject and reorg-sensitive checks defer
-// to finality (via the resolver) and the ReorgPolicy.
-func (in Input) verdictFor(ctx context.Context, c *Check, cfg CheckConfig, d *Decoded) Behavior {
-	if cfg.FailOverride != nil {
-		return *cfg.FailOverride
-	}
-	if c.Class == Deterministic {
-		return BehaviorError
-	}
-	final, known := false, false
-	if in.Resolver != nil {
-		final, known = in.Resolver.IsFinalized(ctx, d.BlockNumber())
-	}
-	return in.Reorg.behaviorFor(final, known)
+// finalityOnce caches the response block's finality for one Validate call.
+//
+// It MUST be resolved once and reused. The underlying source is the serving
+// upstream's effective finalized head, which moves — and during a reorg it
+// rolls back. Reading it separately for the verdict and for the metric label
+// let a single violation be judged "finalized → reject" by the strict policy
+// and then reported as unfinalized (observed live on mainnet: one
+// parentHashLinkage reject labelled unfinalized alongside five soft-flags of
+// the same check at the same height). Verdict and label must describe the same
+// observation, or the metric misattributes which policy actually fired.
+type finalityOnce struct {
+	done  bool
+	final bool
+	known bool
 }
 
-// finalityOf returns the target block's finality as an observability label —
-// "finalized" / "unfinalized" / "unknown". Separates genuine (finalized /
-// deterministic) catches from reorg-prone unfinalized ones in metrics/logs.
-// Called only on a reject/record (rare) so the resolver cost is negligible.
-func (in Input) finalityOf(ctx context.Context, d *Decoded) string {
-	if in.Resolver == nil {
-		return "unknown"
+// resolve reads finality once and memoizes it (including the "no resolver"
+// case, which is legitimately unknown).
+func (f *finalityOnce) resolve(ctx context.Context, in Input, d *Decoded) (bool, bool) {
+	if !f.done {
+		f.done = true
+		if in.Resolver != nil {
+			f.final, f.known = in.Resolver.IsFinalized(ctx, d.BlockNumber())
+		}
 	}
-	final, known := in.Resolver.IsFinalized(ctx, d.BlockNumber())
+	return f.final, f.known
+}
+
+// label is the observability value — "finalized" / "unfinalized" / "unknown".
+// It resolves on demand so a deterministic check (whose verdict never consults
+// finality) is still labelled, and reuses the memoized value so a
+// reorg-sensitive verdict and its label can never disagree.
+func (f *finalityOnce) label(ctx context.Context, in Input, d *Decoded) string {
+	final, known := f.resolve(ctx, in, d)
 	if !known {
 		return "unknown"
 	}
@@ -224,6 +236,19 @@ func (in Input) finalityOf(ctx context.Context, d *Decoded) string {
 		return "finalized"
 	}
 	return "unfinalized"
+}
+
+// verdictFor decides what to do on a violation of check c: a per-check override
+// wins; otherwise deterministic checks reject and reorg-sensitive checks defer
+// to finality (via the resolver) and the ReorgPolicy.
+func (in Input) verdictFor(ctx context.Context, c *Check, cfg CheckConfig, d *Decoded, fin *finalityOnce) Behavior {
+	if cfg.FailOverride != nil {
+		return *cfg.FailOverride
+	}
+	if c.Class == Deterministic {
+		return BehaviorError
+	}
+	return in.Reorg.behaviorFor(fin.resolve(ctx, in, d))
 }
 
 func contentValidation(c *Check, v *Violation, u common.Upstream) error {
