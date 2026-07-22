@@ -79,8 +79,9 @@ type Network struct {
 
 // observedLatestHead is the last WS newHeads header we noted before fan-out.
 type observedLatestHead struct {
-	number  int64
-	payload json.RawMessage
+	number     int64
+	payload    json.RawMessage
+	upstreamId string // upstream that delivered this tip (e.g. WS ingress source)
 }
 
 // NoteObservedLatestBlock records that this Network has observed head
@@ -117,33 +118,56 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 }
 
 // NoteObservedLatestHead records a WS newHeads tip together with its header
-// payload. It advances TipHW via NoteObservedLatestBlock and caches the
-// header so eth_getBlockByNumber("latest", false) can return the same tip
-// when HTTP upstreams are still behind.
+// payload and the upstream that delivered it. It advances TipHW via
+// NoteObservedLatestBlock, caches the header for HTTP tip flooring, and
+// records upstreamId so tip re-fetches can pin to that upstream.
 //
 // Callers MUST invoke this before delivering the corresponding newHeads
-// notification to any client. Empty payloads still advance TipHW.
-func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64, payload json.RawMessage) {
+// notification to any client. Empty payloads still advance TipHW. When
+// upstreamId is set without a payload, a tip-source marker is stored for
+// UseUpstream pin only if there is no newer cached head (and a prior
+// header at a lower tip is left untouched).
+func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64, payload json.RawMessage, upstreamId string) {
 	n.NoteObservedLatestBlock(ctx, blockNumber)
-	if n == nil || blockNumber <= 0 || len(payload) == 0 {
+	if n == nil || blockNumber <= 0 {
 		return
 	}
-	// Copy so callers can reuse/recycle their buffer.
+
+	if len(payload) == 0 {
+		if upstreamId == "" {
+			return
+		}
+		for {
+			cur := n.lastObservedLatestHead.Load()
+			if cur != nil && blockNumber < cur.number {
+				return
+			}
+			if cur != nil && blockNumber > cur.number {
+				// Tip advanced without a header — do not clobber an older cached head.
+				return
+			}
+			stored := observedLatestHead{
+				number:     blockNumber,
+				upstreamId: upstreamId,
+			}
+			if cur != nil && len(cur.payload) > 0 {
+				stored.payload = append(json.RawMessage(nil), cur.payload...)
+			}
+			if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
+				return
+			}
+		}
+	}
+
 	stored := observedLatestHead{
-		number:  blockNumber,
-		payload: append(json.RawMessage(nil), payload...),
+		number:     blockNumber,
+		payload:    append(json.RawMessage(nil), payload...),
+		upstreamId: upstreamId,
 	}
 	for {
 		cur := n.lastObservedLatestHead.Load()
 		if cur != nil && blockNumber < cur.number {
 			return
-		}
-		// Same height with a new hash (reorg): replace. Lower heights: reject.
-		if cur != nil && blockNumber == cur.number {
-			if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
-				return
-			}
-			continue
 		}
 		if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
 			return
@@ -151,17 +175,21 @@ func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64,
 	}
 }
 
-// LastObservedLatestHead returns the cached newHeads header for the highest
-// tip we have noted on this pod, or (0, nil) if none.
-func (n *Network) LastObservedLatestHead() (blockNumber int64, payload []byte) {
+// LastObservedLatestHead returns the cached newHeads header and tip-source
+// upstream id for the highest tip we have noted on this pod, or zeros if none.
+func (n *Network) LastObservedLatestHead() (blockNumber int64, payload []byte, upstreamId string) {
 	if n == nil {
-		return 0, nil
+		return 0, nil, ""
 	}
 	cur := n.lastObservedLatestHead.Load()
-	if cur == nil || cur.number <= 0 || len(cur.payload) == 0 {
-		return 0, nil
+	if cur == nil || cur.number <= 0 {
+		return 0, nil, ""
 	}
-	return cur.number, append([]byte(nil), cur.payload...)
+	var p []byte
+	if len(cur.payload) > 0 {
+		p = append([]byte(nil), cur.payload...)
+	}
+	return cur.number, p, cur.upstreamId
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -735,7 +763,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// Block-availability-aware routing: when the request targets a specific
-	// block, prefer upstreams whose state poller has already observed it.
+	// block (or tip-tagged "latest" with a TipHW already noted from WS),
+	// prefer upstreams whose state poller has already observed it.
 	// Without this, requests for a block we just delivered to a client via
 	// WS would still get routed to an HTTP-only sibling whose own polling
 	// loop hasn't caught up — checkUpstreamBlockAvailability rejects with
@@ -745,7 +774,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// is stable so it composes with the tier and score orderings layered
 	// on top.
 	if n.Architecture() == common.ArchitectureEvm {
-		if bn := requestBlockNumber(ctx, req); bn > 0 {
+		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
 			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
 		}
 	}
@@ -2233,4 +2262,55 @@ func requestBlockNumber(ctx context.Context, req *common.NormalizedRequest) int6
 		return x
 	}
 	return 0
+}
+
+// routingBlockNumber is the block height used for tip-aware upstream
+// partitioning. Concrete numeric targets use requestBlockNumber; tip-tagged
+// "latest" reads (eth_getBlockByNumber / eth_blockNumber) use TipHW so WS
+// upstreams that already observed the head are tried before lagging HTTP
+// siblings.
+func (n *Network) routingBlockNumber(ctx context.Context, req *common.NormalizedRequest) int64 {
+	if bn := requestBlockNumber(ctx, req); bn > 0 {
+		return bn
+	}
+	if n == nil || req == nil {
+		return 0
+	}
+	method, err := req.Method()
+	if err != nil {
+		return 0
+	}
+	switch method {
+	case "eth_getBlockByNumber", "eth_blockNumber":
+		if !requestTargetsLatestTip(ctx, req, method) {
+			return 0
+		}
+		return n.lastReturnedLatestBlock.Load()
+	default:
+		return 0
+	}
+}
+
+// requestTargetsLatestTip reports whether the request is a tip-tagged
+// "latest" read (as opposed to a concrete hex / finalized / safe tag).
+func requestTargetsLatestTip(ctx context.Context, req *common.NormalizedRequest, method string) bool {
+	if method == "eth_blockNumber" {
+		return true
+	}
+	if ref := req.EvmBlockRef(); ref != nil {
+		if s, ok := ref.(string); ok {
+			return s == "latest"
+		}
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	if len(jrq.Params) == 0 {
+		return false
+	}
+	s, ok := jrq.Params[0].(string)
+	return ok && s == "latest"
 }

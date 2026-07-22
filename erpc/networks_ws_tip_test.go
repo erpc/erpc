@@ -189,9 +189,10 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 		"network tip must advance before any client would see the WS head")
 	assert.GreaterOrEqual(t, network.lastReturnedLatestBlock.Load(), int64(90677359),
 		"process-local high-water mark must cover the delivered WS tip")
-	cachedNum, cachedPayload := network.LastObservedLatestHead()
+	cachedNum, cachedPayload, cachedUps := network.LastObservedLatestHead()
 	assert.Equal(t, int64(90677359), cachedNum)
 	assert.Contains(t, string(cachedPayload), `"0x56789cf"`)
+	assert.Equal(t, "bor-1", cachedUps)
 }
 
 func TestNoteObservedLatestHead_CachesPayloadAndAdvancesTip(t *testing.T) {
@@ -258,23 +259,32 @@ func TestNoteObservedLatestHead_CachesPayloadAndAdvancesTip(t *testing.T) {
 	upsList[0].EvmStatePoller().SuggestLatestBlock(1000)
 	time.Sleep(50 * time.Millisecond)
 
+	// Empty payload + tip-source id with no prior cache stores a pin-only marker.
+	network.NoteObservedLatestHead(ctx, 1000, nil, "rpc2")
+	gotNum, gotPayload, gotUps := network.LastObservedLatestHead()
+	assert.Equal(t, int64(1000), gotNum)
+	assert.Empty(t, gotPayload)
+	assert.Equal(t, "rpc2", gotUps)
+
 	payload := []byte(`{"number":"0x3e9","hash":"0xdead","parentHash":"0xbeef"}`)
-	network.NoteObservedLatestHead(ctx, 1001, payload)
+	network.NoteObservedLatestHead(ctx, 1001, payload, "rpc1")
 
 	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
-	gotNum, gotPayload := network.LastObservedLatestHead()
+	gotNum, gotPayload, gotUps = network.LastObservedLatestHead()
 	assert.Equal(t, int64(1001), gotNum)
 	assert.JSONEq(t, string(payload), string(gotPayload))
+	assert.Equal(t, "rpc1", gotUps)
 
 	// Empty payload still advances tip but does not clobber a good cache.
-	network.NoteObservedLatestHead(ctx, 1002, nil)
+	network.NoteObservedLatestHead(ctx, 1002, nil, "rpc1")
 	assert.Equal(t, int64(1002), network.EvmHighestLatestBlockNumber(ctx))
-	gotNum, gotPayload = network.LastObservedLatestHead()
+	gotNum, gotPayload, gotUps = network.LastObservedLatestHead()
 	assert.Equal(t, int64(1001), gotNum, "empty payload must not replace cached head")
 	assert.JSONEq(t, string(payload), string(gotPayload))
+	assert.Equal(t, "rpc1", gotUps)
 
 	// Lower tip must not regress the cache.
-	network.NoteObservedLatestHead(ctx, 999, []byte(`{"number":"0x3e7","hash":"0xold"}`))
-	gotNum, _ = network.LastObservedLatestHead()
+	network.NoteObservedLatestHead(ctx, 999, []byte(`{"number":"0x3e7","hash":"0xold"}`), "rpc1")
+	gotNum, _, _ = network.LastObservedLatestHead()
 	assert.Equal(t, int64(1001), gotNum)
 }

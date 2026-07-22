@@ -594,7 +594,7 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, h
 		}
 		break
 	}
-	h.nw.NoteObservedLatestHead(h.nw.appCtx, blockNumber, headPayload)
+	h.nw.NoteObservedLatestHead(h.nw.appCtx, blockNumber, headPayload, upstreamID)
 }
 
 // Interface checks: fail the build if either contract drifts.

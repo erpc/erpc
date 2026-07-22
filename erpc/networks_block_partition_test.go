@@ -1,10 +1,12 @@
 package erpc
 
 import (
+	"context"
 	"testing"
 
 	"github.com/erpc/erpc/common"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // upstream helper: a FakeUpstream wired with a FakeEvmStatePoller at the
@@ -98,4 +100,52 @@ func TestPartitionUpstreamsByLatestBlock_SingleUpstreamIsNoOp(t *testing.T) {
 	in := []common.Upstream{upWithLatest("a", 50)}
 	got := partitionUpstreamsByLatestBlock(in, 100)
 	assert.Equal(t, in, got, "no other upstream to prefer; partition is a no-op")
+}
+
+func TestRoutingBlockNumber_LatestUsesTipHW(t *testing.T) {
+	n := &Network{}
+	n.lastReturnedLatestBlock.Store(1001)
+
+	latestReq := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`,
+	))
+	assert.Equal(t, int64(1001), n.routingBlockNumber(context.Background(), latestReq))
+
+	blockNumberReq := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`,
+	))
+	assert.Equal(t, int64(1001), n.routingBlockNumber(context.Background(), blockNumberReq))
+
+	concreteReq := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x64",false]}`,
+	))
+	// ExtractBlockReferenceFromRequest may set EvmBlockNumber during extract;
+	// either way concrete hex must win over TipHW.
+	bn := n.routingBlockNumber(context.Background(), concreteReq)
+	assert.Equal(t, int64(0x64), bn)
+
+	finalizedReq := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`,
+	))
+	assert.Equal(t, int64(0), n.routingBlockNumber(context.Background(), finalizedReq),
+		"finalized tag must not use TipHW partition")
+}
+
+func TestRoutingBlockNumber_LatestPartitionsWsAheadOfHttp(t *testing.T) {
+	n := &Network{}
+	n.lastReturnedLatestBlock.Store(1001)
+
+	latestReq := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`,
+	))
+	bn := n.routingBlockNumber(context.Background(), latestReq)
+	require.Equal(t, int64(1001), bn)
+
+	in := []common.Upstream{
+		upWithLatest("http-lagging", 1000),
+		upWithLatest("ws-tip", 1001),
+	}
+	got := partitionUpstreamsByLatestBlock(in, bn)
+	assert.Equal(t, []string{"ws-tip", "http-lagging"}, ids(got),
+		"WS upstream that already observed TipHW must be tried before lagging HTTP")
 }
