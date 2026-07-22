@@ -569,8 +569,13 @@ func (h *networkHandle) FinalityDepth() int64 {
 }
 
 // SuggestLatestBlock routes a per-source block observation to the
-// upstream's state poller. sourceId is the ingress adapter's Name(),
-// which for wsupstream.Adapter is "ws:<upstreamId>".
+// upstream's state poller, then advances the network-level latest tip.
+// sourceId is the ingress adapter's Name(), which for wsupstream.Adapter
+// is "ws:<upstreamId>".
+//
+// Ordering matters: Indexer.Ingest calls this BEFORE fan-out, so by the
+// time any client sees head N on WS, EvmHighestLatestBlockNumber on this
+// pod is already ≥ N (see Network.NoteObservedLatestBlock).
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) {
 	const prefix = "ws:"
 	if !strings.HasPrefix(sourceId, prefix) {
@@ -582,12 +587,12 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) {
 			continue
 		}
 		poller := u.EvmStatePoller()
-		if poller == nil || poller.IsObjectNull() {
-			return
+		if poller != nil && !poller.IsObjectNull() {
+			poller.SuggestLatestBlock(blockNumber)
 		}
-		poller.SuggestLatestBlock(blockNumber)
-		return
+		break
 	}
+	h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
 }
 
 // Interface checks: fail the build if either contract drifts.
@@ -595,4 +600,3 @@ var (
 	_ wsclient.NotificationWriter = (*WsConnection)(nil)
 	_ indexer.NetworkHandle       = (*networkHandle)(nil)
 )
-
