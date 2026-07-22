@@ -124,6 +124,55 @@ func TestCheck_BlockByHashIdentity(t *testing.T) {
 	})
 }
 
+// blockByNumberIdentity closes the by-number twin of the same gap: Layer-1
+// enforceHighestBlock only guards the latest/finalized TAGS, and continuity
+// anchors on the number the response claims — so a different-but-canonical
+// block returned for an explicit height passes everything and gets cached
+// under the requested key.
+func TestCheck_BlockByNumberIdentity(t *testing.T) {
+	cs := only("blockByNumberIdentity", nil)
+	// validateByHash threads params[0] verbatim, which is what this check reads.
+	call := func(t *testing.T, param, respNumber string) Result {
+		t.Helper()
+		return validateByHash(t, "eth_getBlockByNumber", param,
+			`{"number":"`+respNumber+`","hash":"`+reqHash+`","parentHash":"0xaa"}`, cs, nil)
+	}
+
+	t.Run("the requested height passes", func(t *testing.T) {
+		res := call(t, "0x123", "0x123")
+		assert.NoError(t, res.Err)
+		assert.Equal(t, "pass", outcomeOf(res, "blockByNumberIdentity"))
+	})
+
+	t.Run("a different height → reject", func(t *testing.T) {
+		res := call(t, "0x123", "0x456")
+		require.Error(t, res.Err)
+		assert.True(t, common.HasErrorCode(res.Err, common.ErrCodeEndpointContentValidation))
+	})
+
+	t.Run("off-by-one → reject (the realistic bad-index shape)", func(t *testing.T) {
+		res := call(t, "0x123", "0x124")
+		require.Error(t, res.Err)
+	})
+
+	t.Run("leading zeros are the same height, not a violation", func(t *testing.T) {
+		assert.NoError(t, call(t, "0x0123", "0x123").Err)
+		assert.NoError(t, call(t, "0x123", "0x0123").Err)
+	})
+
+	t.Run("uppercase hex digits are the same height", func(t *testing.T) {
+		assert.NoError(t, call(t, "0x1ab", "0x1AB").Err)
+	})
+
+	for _, tag := range []string{"latest", "finalized", "safe", "pending", "earliest"} {
+		t.Run("tag "+tag+" → skip (no height was named)", func(t *testing.T) {
+			res := call(t, tag, "0x999")
+			assert.NoError(t, res.Err)
+			assert.Equal(t, "skip", outcomeOf(res, "blockByNumberIdentity"))
+		})
+	}
+}
+
 func TestCheck_TxPinConsistency(t *testing.T) {
 	cs := only("txPinConsistency", nil)
 	tx := func(blockHash string) string {

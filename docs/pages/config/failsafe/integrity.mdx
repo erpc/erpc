@@ -259,6 +259,7 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `transactionsRootRecompute` | intrinsic | block | the transactions' Merkle-Patricia root ≠ header `transactionsRoot` |
 | `senderRecovery` | intrinsic | txByHash | `ecrecover(signature)` ≠ the reported `from` |
 | `blockByHashIdentity` | intrinsic | `eth_getBlockByHash` | the returned block isn't the one whose hash was requested |
+| `blockByNumberIdentity` | intrinsic | `eth_getBlockByNumber` | an explicit height was requested and a different one came back (tags skip) |
 | `txByHashIdentity` | intrinsic | txByHash | the returned transaction isn't the one whose hash was requested |
 | `receiptIdentity` | intrinsic | receipt | the returned receipt isn't for the requested transaction |
 | `getLogsFilterSanity` | intrinsic | `eth_getLogs` | a returned log doesn't match the request's own filter/range |

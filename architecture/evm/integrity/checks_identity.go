@@ -25,7 +25,59 @@ func requestedHash(d *Decoded) string {
 	return s
 }
 
+// requestedBlockNumber extracts the block number an eth_getBlockByNumber
+// request explicitly asked for. Returns ok=false for the tag forms
+// ("latest"/"finalized"/"safe"/"pending"/"earliest"), where the caller named no
+// specific height and the answer is whatever the chain currently says — that is
+// the served-tip/enforceHighestBlock layer's question, not identity's.
+func requestedBlockNumber(d *Decoded) (int64, bool) {
+	if len(d.reqParams) == 0 {
+		return 0, false
+	}
+	s, _ := d.reqParams[0].(string)
+	if len(s) < 3 || s[0] != '0' || (s[1] != 'x' && s[1] != 'X') {
+		return 0, false
+	}
+	n, err := common.HexToInt64(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 func init() {
+	// blockByNumberIdentity — eth_getBlockByNumber with an explicit height must
+	// return THAT height. Nothing else covers this: Layer-1 enforceHighestBlock
+	// only inspects the "latest"/"finalized" tags and returns early for explicit
+	// numbers, and continuity anchors on the number the RESPONSE claims — so a
+	// node answering with a different (but genuine and canonical) block passes
+	// every check, and the wrong block then gets cached under the requested key.
+	//
+	// Compared numerically, never as strings: "0x0123" and "0x123" are the same
+	// height, and rejecting that pair would be rejecting valid data.
+	register(&Check{
+		ID: "blockByNumberIdentity", Family: FamilyStructural, Class: Deterministic,
+		Methods: []string{MethodGetBlockByNumber},
+		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
+			want, ok := requestedBlockNumber(d)
+			if !ok {
+				return Skipped // a tag, or params we don't model — never guess
+			}
+			h := d.Header()
+			if h == nil || h.Number == "" {
+				return Skipped
+			}
+			got, err := common.HexToInt64(h.Number)
+			if err != nil {
+				return Skipped
+			}
+			if got != want {
+				return failf("response is block %d but block %d was requested", got, want)
+			}
+			return nil
+		},
+	})
+
 	// blockByHashIdentity — eth_getBlockByHash must return the block that was
 	// requested: response.hash == params[0].
 	//
