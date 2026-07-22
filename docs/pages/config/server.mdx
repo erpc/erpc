@@ -365,7 +365,7 @@ Note: `writeFatalError` (panics, write failures) and the timeout/cancel paths fo
 - Batch responses are always HTTP 200; each element is written as a streaming JSON array. They carry ONE aggregated `X-ERPC-*` diagnostic header set (counters summed, `X-ERPC-Cache` gains `PARTIAL:<n>`, slowest-sub-call duration, trace capped at 50 segments; no single-winner `X-ERPC-Upstream`) under the same `executionHeaders` mode — see [directives](/operation/directives). Source: <SourceLink file="erpc/http_server.go" lines="706-712" />
 
 **Diagnostic response headers** (per-response set on singles via `setResponseHeaders`; aggregated set on batches via `writeBatchExecHeaders`):
-- `X-ERPC-Version`, `X-ERPC-Commit` — emitted on every response (build-time ldflags vars, defaults `"dev"` and `"none"`). <SourceLink file="erpc/http_server.go" lines="260-261" />
+- `X-ERPC-Version`, `X-ERPC-Commit` — build-identity headers (ldflags vars, defaults `"dev"` and `"none"`); emitted unless `executionHeaders: "off"`. <SourceLink file="erpc/http_server.go" lines="275-278" />
 - `X-ERPC-Attempts`, `X-ERPC-Upstream-Attempts/-Retries/-Hedges`, `X-ERPC-Network-Attempts/-Retries/-Hedges` — counters, **zero-filled on early errors** (not omitted; only `mode: off` removes them). <SourceLink file="erpc/http_server.go" lines="1149-1166" />
 - `X-ERPC-Cache-Attempts/-Retries/-Hedges` — emitted only when the cache scope was exercised. <SourceLink file="erpc/http_server.go" lines="1170-1174" />
 - `X-ERPC-Consensus-Slots`, `X-ERPC-Consensus-Disputes`, `X-ERPC-Consensus-Low-Participants` — emitted only when consensus was exercised and the count is > 0. <SourceLink file="erpc/http_server.go" lines="1175-1183" />

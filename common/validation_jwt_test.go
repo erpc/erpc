@@ -39,3 +39,71 @@ func TestJwtStrategyConfigValidateClaimMatchers(t *testing.T) {
 		assert.Contains(t, err.Error(), "empty value not allowed")
 	})
 }
+
+func TestJwtStrategyConfigValidateVerificationJwksUrl(t *testing.T) {
+	t.Run("https URL is accepted", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "https://auth.example.com/.well-known/jwks.json"}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("http URL is accepted", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "http://auth.localhost/jwks"}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("URL with path query and port is accepted", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "https://auth.example.com:8443/keys?format=jwks"}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("jwks URL alone satisfies key requirement", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "https://auth.example.com/jwks"}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("scheme-less host is rejected", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "auth.example.com/jwks"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a valid HTTP or HTTPS URL")
+	})
+
+	t.Run("unsupported scheme is rejected", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "file:///etc/jwks.json"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a valid HTTP or HTTPS URL")
+	})
+
+	t.Run("missing host is rejected", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "https:///jwks"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a valid HTTP or HTTPS URL")
+	})
+
+	t.Run("port-only host is rejected", func(t *testing.T) {
+		// url.Parse sets Host=":443" but Hostname() is empty.
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "https://:443/jwks"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a valid HTTP or HTTPS URL")
+	})
+
+	t.Run("whitespace-only URL falls back to keys requirement", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{VerificationJwksUrl: "   "}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "verificationKeys or auth.*.jwt.verificationJwksUrl is required")
+	})
+
+	t.Run("invalid URL with static keys is still rejected", func(t *testing.T) {
+		cfg := &JwtStrategyConfig{
+			VerificationKeys:    map[string]string{"default": "secret"},
+			VerificationJwksUrl: "not-a-url",
+		}
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a valid HTTP or HTTPS URL")
+	})
+}

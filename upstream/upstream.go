@@ -185,6 +185,7 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	statePollerOnce      sync.Once
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 }
@@ -289,7 +290,14 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 	}
 
 	if u.config.Type == common.UpstreamTypeEvm {
-		u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
+		// Create the poller exactly once per Upstream: Bootstrap can run more
+		// than once (bootstrap tasks are retried, and a retry may re-invoke
+		// Bootstrap on an already-registered upstream). Replacing the poller
+		// would orphan the previous instance while its ticker goroutine keeps
+		// polling the upstream forever (it only stops via appCtx).
+		u.statePollerOnce.Do(func() {
+			u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
+		})
 	}
 
 	if u.evmStatePoller != nil {
