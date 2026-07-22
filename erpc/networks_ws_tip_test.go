@@ -181,7 +181,7 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 
 	handle := &networkHandle{nw: network}
 	// Mirrors indexer.Ingest ordering: SuggestLatestBlock then fan-out.
-	handle.SuggestLatestBlock("ws:bor-1", 90677359, []byte(`{"number":"0x56789cf","hash":"0xabc"}`))
+	handle.SuggestLatestBlock("ws:bor-1", 90677359)
 
 	assert.Equal(t, int64(90677359), upsList[0].EvmStatePoller().LatestBlock(),
 		"per-upstream poller must advance")
@@ -189,92 +189,4 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 		"network tip must advance before any client would see the WS head")
 	assert.GreaterOrEqual(t, network.lastReturnedLatestBlock.Load(), int64(90677359),
 		"process-local high-water mark must cover the delivered WS tip")
-	cachedNum, cachedPayload := network.LastObservedLatestHead()
-	assert.Equal(t, int64(90677359), cachedNum)
-	assert.Contains(t, string(cachedPayload), `"0x56789cf"`)
-}
-
-func TestNoteObservedLatestHead_CachesPayloadAndAdvancesTip(t *testing.T) {
-	util.ResetGock()
-	defer util.ResetGock()
-	util.SetupMocksForEvmStatePoller()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	up := &common.UpstreamConfig{
-		Type:     common.UpstreamTypeEvm,
-		Id:       "rpc1",
-		Endpoint: "http://rpc1.localhost",
-		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
-	}
-
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Persist().
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), `eth_chainId`)
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":"0x7b"}`))
-
-	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
-	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-
-	vr := thirdparty.NewVendorsRegistry()
-	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-	require.NoError(t, err)
-
-	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-		Connector: &common.ConnectorConfig{
-			Driver: "memory",
-			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
-		},
-	})
-	require.NoError(t, err)
-
-	upstreamsRegistry := upstream.NewUpstreamsRegistry(
-		ctx, &log.Logger, "test",
-		[]*common.UpstreamConfig{up}, ssr, rateLimitersRegistry, vr, pr, nil,
-		metricsTracker, nil,
-	)
-
-	networkConfig := &common.NetworkConfig{
-		Architecture: common.ArchitectureEvm,
-		Evm:          &common.EvmNetworkConfig{ChainId: 123},
-	}
-	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
-		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
-	require.NoError(t, err)
-
-	upstreamsRegistry.Bootstrap(ctx)
-	time.Sleep(200 * time.Millisecond)
-	require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
-	require.NoError(t, network.Bootstrap(ctx))
-	time.Sleep(250 * time.Millisecond)
-
-	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-	require.Len(t, upsList, 1)
-	upsList[0].EvmStatePoller().SuggestLatestBlock(1000)
-	time.Sleep(50 * time.Millisecond)
-
-	payload := []byte(`{"number":"0x3e9","hash":"0xdead","parentHash":"0xbeef"}`)
-	network.NoteObservedLatestHead(ctx, 1001, payload)
-
-	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
-	gotNum, gotPayload := network.LastObservedLatestHead()
-	assert.Equal(t, int64(1001), gotNum)
-	assert.JSONEq(t, string(payload), string(gotPayload))
-
-	// Empty payload still advances tip but does not clobber a good cache.
-	network.NoteObservedLatestHead(ctx, 1002, nil)
-	assert.Equal(t, int64(1002), network.EvmHighestLatestBlockNumber(ctx))
-	gotNum, gotPayload = network.LastObservedLatestHead()
-	assert.Equal(t, int64(1001), gotNum, "empty payload must not replace cached head")
-	assert.JSONEq(t, string(payload), string(gotPayload))
-
-	// Lower tip must not regress the cache.
-	network.NoteObservedLatestHead(ctx, 999, []byte(`{"number":"0x3e7","hash":"0xold"}`))
-	gotNum, _ = network.LastObservedLatestHead()
-	assert.Equal(t, int64(1001), gotNum)
 }

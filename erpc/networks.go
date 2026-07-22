@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -69,18 +68,6 @@ type Network struct {
 	// cannot regress below a head we have already delivered on the same pod.
 	lastReturnedLatestBlock    atomic.Int64
 	lastReturnedFinalizedBlock atomic.Int64
-
-	// lastObservedLatestHead caches the most recent newHeads header payload
-	// (eth_subscription result) whose tip we have already committed to TipHW.
-	// enforceHighestBlock serves this when HTTP upstreams lag the WS tip and
-	// a re-fetch of the concrete tip block would fail open to a stale response.
-	lastObservedLatestHead atomic.Pointer[observedLatestHead]
-}
-
-// observedLatestHead is the last WS newHeads header we noted before fan-out.
-type observedLatestHead struct {
-	number  int64
-	payload json.RawMessage
 }
 
 // NoteObservedLatestBlock records that this Network has observed head
@@ -114,56 +101,6 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 			return
 		}
 	}
-}
-
-// NoteObservedLatestHead records a WS newHeads tip together with its header
-// payload. It advances TipHW via NoteObservedLatestBlock and caches the
-// header so eth_getBlockByNumber("latest", false) can return the same tip
-// when HTTP upstreams are still behind. Tip ownership itself stays on the
-// per-upstream state poller (SuggestLatestBlock → LatestBlock).
-//
-// Callers MUST invoke this before delivering the corresponding newHeads
-// notification to any client. Empty payloads still advance TipHW but do
-// not clobber a previously cached header.
-func (n *Network) NoteObservedLatestHead(ctx context.Context, blockNumber int64, payload json.RawMessage) {
-	n.NoteObservedLatestBlock(ctx, blockNumber)
-	if n == nil || blockNumber <= 0 || len(payload) == 0 {
-		return
-	}
-	// Copy so callers can reuse/recycle their buffer.
-	stored := observedLatestHead{
-		number:  blockNumber,
-		payload: append(json.RawMessage(nil), payload...),
-	}
-	for {
-		cur := n.lastObservedLatestHead.Load()
-		if cur != nil && blockNumber < cur.number {
-			return
-		}
-		// Same height with a new hash (reorg): replace. Lower heights: reject.
-		if cur != nil && blockNumber == cur.number {
-			if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
-				return
-			}
-			continue
-		}
-		if n.lastObservedLatestHead.CompareAndSwap(cur, &stored) {
-			return
-		}
-	}
-}
-
-// LastObservedLatestHead returns the cached newHeads header for the highest
-// tip we have noted on this pod, or (0, nil) if none.
-func (n *Network) LastObservedLatestHead() (blockNumber int64, payload []byte) {
-	if n == nil {
-		return 0, nil
-	}
-	cur := n.lastObservedLatestHead.Load()
-	if cur == nil || cur.number <= 0 || len(cur.payload) == 0 {
-		return 0, nil
-	}
-	return cur.number, append([]byte(nil), cur.payload...)
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -737,8 +674,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// Block-availability-aware routing: when the request targets a specific
-	// block (or tip-tagged "latest" with a TipHW already noted from WS),
-	// prefer upstreams whose state poller has already observed it.
+	// block, prefer upstreams whose state poller has already observed it.
 	// Without this, requests for a block we just delivered to a client via
 	// WS would still get routed to an HTTP-only sibling whose own polling
 	// loop hasn't caught up — checkUpstreamBlockAvailability rejects with
@@ -748,7 +684,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// is stable so it composes with the tier and score orderings layered
 	// on top.
 	if n.Architecture() == common.ArchitectureEvm {
-		if bn := n.routingBlockNumber(ctx, req); bn > 0 {
+		if bn := requestBlockNumber(ctx, req); bn > 0 {
 			upsList = partitionUpstreamsByLatestBlock(upsList, bn)
 		}
 	}
@@ -2236,55 +2172,4 @@ func requestBlockNumber(ctx context.Context, req *common.NormalizedRequest) int6
 		return x
 	}
 	return 0
-}
-
-// routingBlockNumber is the block height used for tip-aware upstream
-// partitioning. Concrete numeric targets use requestBlockNumber; tip-tagged
-// "latest" reads (eth_getBlockByNumber / eth_blockNumber) use TipHW so WS
-// upstreams that already observed the head are tried before lagging HTTP
-// siblings.
-func (n *Network) routingBlockNumber(ctx context.Context, req *common.NormalizedRequest) int64 {
-	if bn := requestBlockNumber(ctx, req); bn > 0 {
-		return bn
-	}
-	if n == nil || req == nil {
-		return 0
-	}
-	method, err := req.Method()
-	if err != nil {
-		return 0
-	}
-	switch method {
-	case "eth_getBlockByNumber", "eth_blockNumber":
-		if !requestTargetsLatestTip(ctx, req, method) {
-			return 0
-		}
-		return n.lastReturnedLatestBlock.Load()
-	default:
-		return 0
-	}
-}
-
-// requestTargetsLatestTip reports whether the request is a tip-tagged
-// "latest" read (as opposed to a concrete hex / finalized / safe tag).
-func requestTargetsLatestTip(ctx context.Context, req *common.NormalizedRequest, method string) bool {
-	if method == "eth_blockNumber" {
-		return true
-	}
-	if ref := req.EvmBlockRef(); ref != nil {
-		if s, ok := ref.(string); ok {
-			return s == "latest"
-		}
-	}
-	jrq, err := req.JsonRpcRequest(ctx)
-	if err != nil || jrq == nil {
-		return false
-	}
-	jrq.RLock()
-	defer jrq.RUnlock()
-	if len(jrq.Params) == 0 {
-		return false
-	}
-	s, ok := jrq.Params[0].(string)
-	return ok && s == "latest"
 }

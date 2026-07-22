@@ -361,7 +361,7 @@ func (i *Indexer) Ingest(ev StreamEvent) {
 	// the indexer level — otherwise a lagging source's state poller
 	// stalls on the first dup.
 	if ev.Kind == KindNewHead && !ev.Block.Zero() && ev.SourceId != "" {
-		ns.handle.SuggestLatestBlock(ev.SourceId, ev.Block.Number, ev.Payload)
+		ns.handle.SuggestLatestBlock(ev.SourceId, ev.Block.Number)
 	}
 
 	// Dedup.
