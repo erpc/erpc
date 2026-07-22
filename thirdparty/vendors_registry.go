@@ -30,6 +30,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateErpcVendor())
 	r.Register(CreateBlockPiVendor())
 	r.Register(CreateAnkrVendor())
+	r.Register(CreateSolidrpcVendor())
 	r.Register(CreateRoutemeshVendor())
 	r.Register(CreateBlockdaemonVendor())
 	return r
