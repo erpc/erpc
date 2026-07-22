@@ -250,6 +250,14 @@ export interface ServerConfig {
    * (useful for low-latency / bandwidth-constrained clients).
    */
   executionHeaders?: ExecutionHeadersMode;
+  /**
+   * CostHeaders opts into the cost/billing response headers
+   * (X-ERPC-Calls, X-ERPC-Billable, X-ERPC-Methods, X-ERPC-Credits,
+   * X-ERPC-Credits-Version) on single and batch responses. Off by
+   * default. Credit-unit pricing is vendor-level configuration — see
+   * CreditUnitsProvider and UpstreamConfig.CreditUnits.
+   */
+  costHeaders?: boolean;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -709,6 +717,14 @@ export interface UpstreamConfig {
   failsafe?: (FailsafeConfig | undefined)[];
   rateLimitBudget?: string;
   rateLimitAutoTune?: RateLimitAutoTuneConfig;
+  /**
+   * CreditUnits overrides the vendor's built-in per-method credit table
+   * (CreditUnitsProvider) for this upstream, merged per method over the
+   * vendor defaults ("*" = fallback for unlisted methods). Normally set
+   * once per provider via `providers[].settings.creditUnits`, which is
+   * copied onto every upstream the provider generates.
+   */
+  creditUnits?: { [key: string]: number /* int64 */};
   shadow?: ShadowUpstreamConfig;
   /**
    * Routing holds per-upstream routing hints consumed by the selection
@@ -1636,6 +1652,10 @@ export interface JwtStrategyConfig {
   verificationKeys?: { [key: string]: string};
   verificationJwksUrl?: string;
   verificationJwksRefreshInterval?: Duration;
+  /**
+   * Skipping TLS verification is an explicit operator opt-in for the JWKS
+   * fetch, not a hardcoded bypass.
+   */
   verificationJwksTlsInsecureSkipVerify?: boolean;
   /**
    * RateLimitBudgetClaimName is the JWT claim name that, if present,
@@ -1820,6 +1840,14 @@ export interface UpstreamAttempt {
   attemptidx: number /* int */; // 0-based attempt index within the parent loop
   errorcode: string; // ErrorCode string when Outcome is an error variant
   errordetail: string; // free-form short description (truncated)
+  /**
+   * CreditUnits is the vendor credit-unit cost this attempt accrued
+   * (the upstream's resolved table — vendor defaults merged with config
+   * overrides; vendors with no table default to a flat 1 credit per
+   * request). 0 when the attempt provably never dialed the vendor
+   * (skipped / breaker-open) or the vendor was opted out ("*": 0).
+   */
+  creditunits: number /* int64 */;
 }
 /**
  * ExecState centralizes the per-request execution counters and the

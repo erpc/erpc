@@ -280,7 +280,7 @@ Entry point: <SourceLink file="architecture/evm/error_normalizer.go" lines="20" 
 | 10 | "EVM error: InvalidJump" (Berachain) | `ErrEndpointExecutionException` | 3 | no | no (yes for `eth_sendRawTransaction`) |
 | 11 | Duplicate-tx: "already known", "tx already in mempool", "transaction already exists", etc. — **must precede rule 14** | `ErrEndpointNonceException` (`already_known`) | −32003 | yes | no |
 | 12 | Nonce conflict: "nonce too low", "nonce has already been used" | `ErrEndpointNonceException` (`nonce_too_low`) | −32003 | yes | no |
-| 13 | "insufficient funds", "insufficient balance" — **no** `eth_sendRawTransaction` override | `ErrEndpointExecutionException` | −32003 | no | no |
+| 13 | "insufficient funds", "insufficient balance" | `ErrEndpointExecutionException` | −32003 | no | yes (`trace_*`/`debug_*`/`eth_trace*` only — state-reconstruction artifact; non-retried for writes & live simulations) |
 | 14 | code == −32003, "out of gas", "gas too low", "IntrinsicGas" | `ErrEndpointExecutionException` | −32003 | no | no (yes for `eth_sendRawTransaction`) |
 | 15a | "not found"/"not available" AND ("Method"\|"module") | `ErrEndpointUnsupported` | −32601 | no | yes |
 | 15b | same outer AND ("header"\|"block"\|"transaction"\|"state") | `ErrEndpointMissingData` | −32014 | yes | yes |

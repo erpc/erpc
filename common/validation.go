@@ -871,8 +871,17 @@ func (s *SecretStrategyConfig) Validate() error {
 }
 
 func (j *JwtStrategyConfig) Validate() error {
-	if len(j.VerificationKeys) == 0 && strings.TrimSpace(j.VerificationJwksUrl) == "" {
+	jwksURL := strings.TrimSpace(j.VerificationJwksUrl)
+	if len(j.VerificationKeys) == 0 && jwksURL == "" {
 		return fmt.Errorf("auth.*.jwt.verificationKeys or auth.*.jwt.verificationJwksUrl is required")
+	}
+	if jwksURL != "" {
+		parsed, err := url.Parse(jwksURL)
+		// Prefer Hostname() over Host: values like "https://:443/jwks" parse with
+		// Host=":443" but an empty hostname, which cannot be fetched.
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+			return fmt.Errorf("auth.*.jwt.verificationJwksUrl must be a valid HTTP or HTTPS URL, got: %s", j.VerificationJwksUrl)
+		}
 	}
 	for claim, values := range j.ClaimMatchers {
 		if len(values) == 0 {

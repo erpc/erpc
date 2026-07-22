@@ -219,7 +219,7 @@ YAML prefix: `auth.strategies[*].jwt`
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `jwt.verificationKeys` | `map[string]string` | `nil` | Map of `kid → keyData`. Value is PEM string, `"file:///path"`, or bare HMAC secret bytes. Empty map = ALL JWTs rejected (deny-all, not allow-all). <SourceLink file="auth/jwks.go" /> |
-| `jwt.verificationJwksUrl` | `string` | `""` | HTTP(S) URL returning a standard JWKS document (`{"keys":[...]}`). Fetched at startup and refreshed in the background. Static `verificationKeys` override JWKS entries with the same `kid`. <SourceLink file="auth/jwks.go" /> |
+| `jwt.verificationJwksUrl` | `string` | `""` | Absolute HTTP(S) URL returning a standard JWKS document (`{"keys":[...]}`). Fetched at startup and refreshed in the background. Static `verificationKeys` override JWKS entries with the same `kid`. Non-HTTP(S) or host-less values fail startup validation. <SourceLink file="common/validation.go" /> |
 | `jwt.verificationJwksRefreshInterval` | `Duration` | `1h` when JWKS URL set | Background JWKS refresh interval. <SourceLink file="common/defaults.go" /> |
 | `jwt.verificationJwksTlsInsecureSkipVerify` | `bool` | `false` | Skip TLS certificate verification when fetching the JWKS URL. **Do not enable in production** — intended for local development with self-signed certificates only. <SourceLink file="auth/jwks.go" /> |
 | `jwt.allowedAlgorithms` | `[]string` | `nil` (any algorithm) | e.g. `["RS256","ES256"]`. Prevents algorithm-confusion attacks. <SourceLink file="auth/strategy_jwt.go" /> |
@@ -627,6 +627,7 @@ they naturally expire. Always set `allowedAlgorithms` to prevent algorithm-confu
 23. **`AuthConfig` is shared across all three scopes.** The same `AuthConfig` type is used for `projects[*].auth`, `admin.auth`, and `healthCheck.auth`. All five strategy types can be configured in any scope. The only scope-specific hazard is `healthCheck.auth` — the healthcheck auth registry is created with a nil `rateLimitersRegistry`, so setting `rateLimitBudget` on any healthcheck strategy causes a nil pointer panic.
 24. **Redis `addr`/`username`/`password`/`db` are cleared after `SetDefaults`.** After initialization, only `uri` is set; all discrete fields are zeroed. Config exports show only the URI (with credentials URL-encoded in it). Because `password` has `json:"-"`, a JSON export shows the URI but not the password field. [<SourceLink file="common/defaults.go" lines="1012-1015" />]
 25. **Admin auth registry DOES support rate-limit budgets.** Unlike the healthcheck scope, the admin `AuthRegistry` is created with the same `rateLimitersRegistry` as projects. Rate-limit budgets on admin auth strategies are applied when configured.
+26. **`verificationJwksUrl` must be absolute HTTP(S).** Non-empty values are parsed at startup; scheme must be `http` or `https` and a host is required. Scheme-less hosts, `file://`, and other schemes fail validation even when static `verificationKeys` are also set. [<SourceLink file="common/validation.go" />]
 
 ### Observability
 

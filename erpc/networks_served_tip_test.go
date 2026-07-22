@@ -617,8 +617,13 @@ func TestServedTip_NoNetworkLevelStickiness(t *testing.T) {
 
 	// And no downward stickiness either: the moment the remaining head
 	// advances, the pick follows it up.
+	// (9_000 → 11_000 is a MAJOR jump, so it passes the poller's off-hot-path
+	// chain-identity check — mocked eth_chainId matches — before it applies.)
 	ups[2].EvmStatePoller().SuggestLatestBlock(11_000)
-	assert.Equal(t, int64(11_000), network.EvmHighestLatestBlockNumber(ctx))
+	require.Eventually(t, func() bool {
+		return network.EvmHighestLatestBlockNumber(ctx) == 11_000
+	}, 2*time.Second, 10*time.Millisecond,
+		"the pick must follow the verified major forward jump with no stickiness")
 }
 
 // A halted chain that resumes with a burst (sequencer outage ending, L2 batch

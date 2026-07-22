@@ -43,7 +43,7 @@ jobs:
 
       - name: Generate types
         run: |
-          go install github.com/gzuidhof/tygo@latest
+          go install github.com/gzuidhof/tygo@v0.2.21
           tygo generate
       
       - name: Setup Syft

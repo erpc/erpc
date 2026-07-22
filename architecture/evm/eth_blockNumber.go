@@ -10,12 +10,21 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// networkPostForward_eth_blockNumber enforces the highest-known block on every
-// eth_blockNumber response regardless of its source — a live upstream OR the
-// cache. It compares the returned block number against the network's served
-// tip and, when the response is behind, replaces it with the tip. The
-// correction is a pure in-memory synthesis (poller state), never an extra
-// upstream call.
+// networkPostForward_eth_blockNumber enforces the network's served tip on
+// every eth_blockNumber response regardless of its source — a live upstream OR
+// the cache. The correction is a pure in-memory synthesis (poller state),
+// never an extra upstream call.
+//
+// In the default max mode the served tip is the MAX head across upstreams, so
+// the enforcement is floor-only: a response behind the tip is raised to it and
+// a response at/above it is fresher truth that passes through. In majority
+// served-tip mode (EvmServedTipConfig.EnabledFor "latest") the response is
+// pinned to the tip EXACTLY — above-tip responses are capped too — because
+// "latest" interpolation (resolveBlockTagToHex) anchors block-tagged methods
+// (eth_call, eth_getLogs, ...) to that same majority tip: letting a fresher
+// head, or a cache entry written from one, through the floor-only check makes
+// clients observe eth_blockNumber AHEAD of the block "latest" actually
+// executes at, even when the same upstream serves both calls.
 //
 // Positioning this at the network post-forward layer (it used to be a project
 // pre-forward wrapper that explicitly skipped FromCache responses) is what
@@ -68,12 +77,39 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		)
 	}
 
-	if highestBlock <= blockNumber {
+	if highestBlock <= 0 {
+		// Unknown tip (pollers cold, all upstreams syncing): fail open like
+		// resolveBlockTagToHex — never synthesize a block number from nothing.
+		return nr, re
+	}
+
+	pinToTip := false
+	if cfg := network.Config(); cfg != nil && cfg.Evm != nil {
+		pinToTip = cfg.Evm.ServedTipEnabledFor("latest")
+	}
+	if pinToTip {
+		if blockNumber == highestBlock {
+			return nr, re
+		}
+	} else if highestBlock <= blockNumber {
 		return nr, re
 	}
 
 	ups := nr.Upstream()
-	if ups != nil {
+	if blockNumber > highestBlock {
+		// Pin-down (served-tip mode only): the response is AHEAD of the
+		// majority tip — freshness, not staleness, so the stale-block metric
+		// stays out of it.
+		evt := network.Logger().Debug().
+			Str("method", "eth_blockNumber").
+			Int64("servedTip", highestBlock).
+			Int64("responseBlockNumber", blockNumber).
+			Bool("fromCache", nr.FromCache())
+		if ups != nil {
+			evt = evt.Str("upstreamId", ups.Id())
+		}
+		evt.Msg("response is ahead of the served tip, pinning to the majority tip")
+	} else if ups != nil {
 		telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 			network.ProjectId(),
 			ups.VendorName(),
