@@ -105,6 +105,10 @@ type EvmStatePoller interface {
 	Bootstrap(ctx context.Context) error
 	Poll(ctx context.Context) error
 	PollLatestBlockNumber(ctx context.Context) (int64, error)
+	// PollLatestBlockNumberNow fetches latest ignoring the poller debounce.
+	// Used when a request needs a block ahead of the cached tip — debounce
+	// would otherwise reuse a stale value and falsely reject the upstream.
+	PollLatestBlockNumberNow(ctx context.Context) (int64, error)
 	PollFinalizedBlockNumber(ctx context.Context) (int64, error)
 	PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType, staleness time.Duration) (int64, error)
 	SyncingState() EvmSyncingState

@@ -195,12 +195,19 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			dr.SkipCacheRead = "true"
 			// Prefer the upstream whose poller already owns this tip
 			// (EvmLeaderUpstream — typically the WS ingress that called
-			// SuggestLatestBlock). Fall back to excluding the stale
-			// responder when no local poller has caught up yet.
+			// SuggestLatestBlock). If TipHW advanced via Redis/WS while
+			// local pollers lag inside their debounce window, force-poll
+			// the leader once before deciding. Fall back to excluding the
+			// stale responder when no local poller has caught up yet.
 			if leader := network.EvmLeaderUpstream(ctx); leader != nil {
 				if eu, ok := leader.(common.EvmUpstream); ok {
-					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() && sp.LatestBlock() >= highestBlockNumber {
-						dr.UseUpstream = leader.Id()
+					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+						if sp.LatestBlock() < highestBlockNumber {
+							_, _ = sp.PollLatestBlockNumberNow(ctx)
+						}
+						if sp.LatestBlock() >= highestBlockNumber {
+							dr.UseUpstream = leader.Id()
+						}
 					}
 				}
 			}

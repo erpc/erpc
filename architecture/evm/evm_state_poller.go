@@ -380,21 +380,32 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
+	e.stateMu.RLock()
+	cfg := e.cfg
+	e.stateMu.RUnlock()
+	return e.pollLatestBlockNumber(ctx, e.resolveDebounce(cfg))
+}
+
+// PollLatestBlockNumberNow fetches the latest block number, bypassing debounce.
+func (e *EvmStatePoller) PollLatestBlockNumberNow(ctx context.Context) (int64, error) {
+	return e.pollLatestBlockNumber(ctx, 0)
+}
+
+func (e *EvmStatePoller) pollLatestBlockNumber(ctx context.Context, dbi time.Duration) (int64, error) {
 	if e.shouldSkipLatestBlockCheck() {
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
 	}
 	e.stateMu.RLock()
-	cfg := e.cfg
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
 
-	dbi := e.resolveDebounce(cfg)
 	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
 			attribute.String("upstream.id", e.upstream.Id()),
 			attribute.String("network.id", e.upstream.NetworkId()),
+			attribute.Int64("debounce_ms", dbi.Milliseconds()),
 		),
 	)
 	defer span.End()
