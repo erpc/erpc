@@ -590,20 +590,61 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	return minBlock
 }
 
-func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	var leader common.Upstream
-	var leaderLastBlock int64 = 0
-	upsList := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	for _, u := range upsList {
-		if statePoller := u.EvmStatePoller(); statePoller != nil {
-			lastBlock := statePoller.LatestBlock()
-			if lastBlock > leaderLastBlock {
-				leader = u
-				leaderLastBlock = lastBlock
-			}
+// anyPrimaryUpstreamUp reports whether at least one non-fallback upstream
+// on this network has a closed circuit breaker. Same "up" definition as
+// evmHighestBlockNumber.
+func (n *Network) anyPrimaryUpstreamUp(ctx context.Context) bool {
+	if n == nil || n.upstreamsRegistry == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		if u.Config() != nil && u.Config().HasTag(common.TagTierFallback) {
+			continue
+		}
+		if !u.IsDown() {
+			return true
 		}
 	}
-	return leader
+	return false
+}
+
+// EvmLeaderUpstream returns the upstream whose state poller has the highest
+// latest tip. Fallback-tier upstreams are ignored while any primary is up,
+// matching TipHW aggregation — otherwise tip re-fetch pins UseUpstream to a
+// cordoned fallback that is not in the ordered primary list.
+func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
+	var leader, fallbackLeader common.Upstream
+	var leaderLastBlock, fallbackLastBlock int64
+	anyPrimaryUp := false
+	upsList := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	for _, u := range upsList {
+		statePoller := u.EvmStatePoller()
+		if statePoller == nil {
+			continue
+		}
+		lastBlock := statePoller.LatestBlock()
+		if u.Config() != nil && u.Config().HasTag(common.TagTierFallback) {
+			if lastBlock > fallbackLastBlock {
+				fallbackLeader = u
+				fallbackLastBlock = lastBlock
+			}
+			continue
+		}
+		if !u.IsDown() {
+			anyPrimaryUp = true
+		}
+		if lastBlock > leaderLastBlock {
+			leader = u
+			leaderLastBlock = lastBlock
+		}
+	}
+	if anyPrimaryUp || fallbackLeader == nil {
+		return leader
+	}
+	return fallbackLeader
 }
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
@@ -1075,7 +1116,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
 					bestResp = r
-					loopSpan.SetStatus(codes.Ok, "")
+					if r.IsResultEmptyish() {
+						// Soft miss (e.g. eth_getBlockByNumber null): seed
+						// lastErr so the fallback escape hatch can fire after
+						// primaries are exhausted. Without this, emptyish
+						// responses leave lastErr nil and block escalation.
+						lastErr = common.NewErrEndpointMissingData(
+							fmt.Errorf("upstream responded emptyish"), u,
+						)
+					} else {
+						loopSpan.SetStatus(codes.Ok, "")
+					}
 				}
 				loopSpan.End()
 			}
@@ -1101,14 +1152,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			//
 			// Bounds:
 			//   - At most one escalation per request (MarkEscalatedToFallbacks).
-			//   - bestResp != nil means we have an emptyish response that
-			//     failsafe's emptyResultDelay should evaluate — don't pre-empt it.
+			//   - Emptyish bestResp still escapes: methods like
+			//     eth_getBlockByNumber return null for missing blocks without
+			//     setting err, and that soft miss must escalate to fallbacks
+			//     the same way a gate-reject does. Non-empty bestResp means we
+			//     already have a usable candidate — leave it for failsafe.
 			//   - Deterministic client errors return from the inner loop
 			//     immediately, so any non-nil lastErr here means "this upstream
 			//     couldn't serve; try a different one" — exactly the escape's job.
 			//   - Consensus requires strict per-upstream semantics; don't modify
 			//     the candidate set mid-execution.
-			if bestResp == nil &&
+			bestRespEmptyish := bestResp != nil && bestResp.IsResultEmptyish()
+			if (bestResp == nil || bestRespEmptyish) &&
 				!effectiveReq.HasEscalatedToFallbacks() &&
 				lastErr != nil &&
 				n.cfg.Failover != nil && n.cfg.Failover.Enabled() &&
@@ -1123,6 +1178,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// re-selects them; primaries are removed from upsList so they
 					// won't be picked again, but their state in attempted /
 					// ErrorsByUpstream is preserved for eventual error reporting.
+					if bestRespEmptyish {
+						bestResp.Release()
+						bestResp = nil
+					}
 					fbCommon := make([]common.Upstream, 0, len(fallbacks))
 					for _, fb := range fallbacks {
 						fbCommon = append(fbCommon, fb)

@@ -579,21 +579,35 @@ func (h *networkHandle) FinalityDepth() int64 {
 // time any client sees head N on WS, EvmHighestLatestBlockNumber on this
 // pod is already ≥ N and eth_getBlockByNumber("latest", false) can serve
 // the same header (see Network.NoteObservedLatestHead).
+//
+// TipHW publish mirrors evmHighestBlockNumber: a fallback-tier WS tip must
+// not advance TipHW while any primary is up. Otherwise selection asks
+// healthy-but-lagging primaries for a block only the fallback has, and
+// tip-floor hard-fails before failover can help. The fallback's own poller
+// still advances so partition/escape can prefer it when primaries miss.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, payload json.RawMessage) {
 	const prefix = "ws:"
 	if !strings.HasPrefix(sourceId, prefix) {
 		return
 	}
 	upstreamID := sourceId[len(prefix):]
+	var sourceUp *upstream.Upstream
 	for _, u := range h.nw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), h.nw.networkId) {
 		if u.Id() != upstreamID {
 			continue
 		}
+		sourceUp = u
 		poller := u.EvmStatePoller()
 		if poller != nil && !poller.IsObjectNull() {
 			poller.SuggestLatestBlock(blockNumber)
 		}
 		break
+	}
+	if sourceUp != nil &&
+		sourceUp.Config() != nil &&
+		sourceUp.Config().HasTag(common.TagTierFallback) &&
+		h.nw.anyPrimaryUpstreamUp(context.Background()) {
+		return
 	}
 	h.nw.NoteObservedLatestHead(h.nw.appCtx, blockNumber, payload)
 }

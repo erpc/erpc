@@ -195,6 +195,184 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 	assert.Contains(t, string(cachedPayload), `"0x56789cf"`)
 }
 
+// Fallback WS tips must not inflate TipHW while any primary is up.
+// Poller still advances so failover/partition can prefer the fallback.
+func TestNetworkHandle_SuggestLatestBlock_FallbackDoesNotAdvanceTipHWWhenPrimaryUp(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	primary := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "primary-ws",
+		Endpoint: "http://primary.localhost",
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	}
+	fallback := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "fallback-ws",
+		Endpoint: "http://fallback.localhost",
+		Tags:     []string{common.TagTierFallback},
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	}
+
+	for _, host := range []string{"primary.localhost", "fallback.localhost"} {
+		gock.New("http://" + host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+	}
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+	})
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
+		[]*common.UpstreamConfig{primary, fallback}, ssr, rateLimitersRegistry, vr, pr, nil,
+		metricsTracker, nil,
+	)
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
+		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+	require.NoError(t, network.Bootstrap(ctx))
+	time.Sleep(250 * time.Millisecond)
+
+	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.Len(t, upsList, 2)
+	var primaryUp, fallbackUp *upstream.Upstream
+	for _, u := range upsList {
+		switch u.Id() {
+		case "primary-ws":
+			primaryUp = u
+		case "fallback-ws":
+			fallbackUp = u
+		}
+	}
+	require.NotNil(t, primaryUp)
+	require.NotNil(t, fallbackUp)
+
+	primaryUp.EvmStatePoller().SuggestLatestBlock(1000)
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx))
+
+	handle := &networkHandle{nw: network}
+	wsHeader := []byte(`{"number":"0x3ea","hash":"0xabc","parentHash":"0xdef"}`)
+	handle.SuggestLatestBlock("ws:fallback-ws", 1002, wsHeader)
+
+	assert.Equal(t, int64(1002), fallbackUp.EvmStatePoller().LatestBlock(),
+		"fallback poller must still advance for selection/escape")
+	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
+		"TipHW must stay on primary tip while primaries are up")
+	cachedNum, _ := network.LastObservedLatestHead()
+	assert.Equal(t, int64(0), cachedNum,
+		"must not cache fallback header into TipHW header cache while primaries are up")
+
+	// Primary WS tip still advances TipHW.
+	handle.SuggestLatestBlock("ws:primary-ws", 1001, []byte(`{"number":"0x3e9","hash":"0x1","parentHash":"0x2"}`))
+	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx),
+		"primary WS tip must advance TipHW")
+}
+
+// When every primary is down, fallback WS may advance TipHW (same rule as
+// evmHighestBlockNumber).
+func TestNetworkHandle_SuggestLatestBlock_FallbackAdvancesTipHWWhenNoPrimaryUp(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fallback := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "fallback-only",
+		Endpoint: "http://fallback.localhost",
+		Tags:     []string{common.TagTierFallback},
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	}
+
+	gock.New("http://fallback.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b"}`))
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+	})
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
+		[]*common.UpstreamConfig{fallback}, ssr, rateLimitersRegistry, vr, pr, nil,
+		metricsTracker, nil,
+	)
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
+		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+	require.NoError(t, network.Bootstrap(ctx))
+	time.Sleep(250 * time.Millisecond)
+
+	handle := &networkHandle{nw: network}
+	handle.SuggestLatestBlock("ws:fallback-only", 2005, []byte(`{"number":"0x7d5","hash":"0xabc","parentHash":"0xdef"}`))
+
+	assert.Equal(t, int64(2005), network.EvmHighestLatestBlockNumber(ctx),
+		"fallback WS may advance TipHW when no primary is up")
+	cachedNum, cachedPayload := network.LastObservedLatestHead()
+	assert.Equal(t, int64(2005), cachedNum)
+	assert.Contains(t, string(cachedPayload), `"0x7d5"`)
+}
+
 // EvmRefreshHighestLatestBlockNumber must not regress the tip after
 // NoteObservedLatestBlock (sync publish path) has advanced TipHW.
 func TestEvmRefreshHighestLatestBlockNumber_PreservesObservedTip(t *testing.T) {
