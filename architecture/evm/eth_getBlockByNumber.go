@@ -121,15 +121,22 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 	logger := network.Logger().With().Str("method", "eth_getBlockByNumber").Logger()
 
-	// If response is from cache, skip enforcement otherwise there's no point in caching.
-	// As we'll definetely have higher latest block number vs what we have in cache.
-	// The correct way to deal with this situation is to set proper TTL for "realtime" cache policy.
+	// Cached "latest" can lag TipHW across pods / tip races. Only skip
+	// enforcement when the cached payload already meets the tip floor.
 	if nr.FromCache() {
-		logger.Trace().
-			Object("request", nq).
-			Object("response", nr).
-			Msg("skipping enforcement of highest block number as response is from cache")
-		return nr, re
+		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		_, cachedBN, cerr := ExtractBlockReferenceFromResponse(ctx, nr)
+		if cerr == nil && cachedBN >= highestBlockNumber {
+			logger.Trace().
+				Object("request", nq).
+				Object("response", nr).
+				Msg("skipping enforcement of highest block number as cached response meets tip")
+			return nr, re
+		}
+		logger.Debug().
+			Int64("highestBlockNumber", highestBlockNumber).
+			Int64("cachedBlockNumber", cachedBN).
+			Msg("cached latest lags tip; enforcing highest block")
 	}
 
 	rqj, err := nq.JsonRpcRequest(ctx)
@@ -137,15 +144,21 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nil, err
 	}
 	rqj.RLock()
-	defer rqj.RUnlock()
-
 	if len(rqj.Params) < 1 {
+		rqj.RUnlock()
 		return nr, re
 	}
 	bnp, ok := rqj.Params[0].(string)
 	if !ok {
+		rqj.RUnlock()
 		return nr, re
 	}
+	var itx bool
+	if len(rqj.Params) > 1 {
+		itx, _ = rqj.Params[1].(bool)
+	}
+	rqj.RUnlock()
+
 	if bnp != "latest" && bnp != "finalized" {
 		return nr, re
 	}
@@ -157,135 +170,133 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		if err != nil {
 			return nil, err
 		}
-		if highestBlockNumber > respBlockNumber {
-			logger.Debug().
-				Str("blockTag", bnp).
-				Object("request", nq).
-				Object("response", nr).
-				Interface("highestBlockNumber", highestBlockNumber).
-				Interface("respBlockNumber", respBlockNumber).
-				Interface("err", err).
-				Msg("enforcing highest latest block")
-			if respBlockNumber > 0 {
-				// When extracted block number is 0, it mostly means response is actually a json-rpc error
-				// therefore we better fetch the highest block number again.
-				ups := nr.Upstream()
-				telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
-					network.ProjectId(),
-					ups.VendorName(),
-					network.Label(),
-					ups.Id(),
-					"eth_getBlockByNumber",
-				).Inc()
-			}
-			var itx bool
-			if len(rqj.Params) > 1 {
-				itx, _ = rqj.Params[1].(bool)
-			}
-			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, itx)
-			if err != nil {
-				return nil, err
-			}
-			err = request.SetID(nq.ID())
-			if err != nil {
-				return nil, err
-			}
-			newReq := common.NewNormalizedRequestFromJsonRpcRequest(request)
-			dr := nq.Directives().Clone()
-			dr.SkipCacheRead = "true"
-			// Prefer the upstream whose poller already owns this tip
-			// (EvmLeaderUpstream — typically the WS ingress that called
-			// SuggestLatestBlock). If TipHW advanced via Redis/WS while
-			// local pollers lag inside their debounce window, force-poll
-			// the leader once before deciding. Fall back to excluding the
-			// stale responder when no local poller has caught up yet.
-			if leader := network.EvmLeaderUpstream(ctx); leader != nil {
-				if eu, ok := leader.(common.EvmUpstream); ok {
-					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-						if sp.LatestBlock() < highestBlockNumber {
-							_, _ = sp.PollLatestBlockNumberNow(ctx)
-						}
-						if sp.LatestBlock() >= highestBlockNumber {
-							dr.UseUpstream = leader.Id()
-						}
+		if highestBlockNumber <= respBlockNumber {
+			return nr, re
+		}
+		logger.Debug().
+			Str("blockTag", bnp).
+			Object("request", nq).
+			Object("response", nr).
+			Interface("highestBlockNumber", highestBlockNumber).
+			Interface("respBlockNumber", respBlockNumber).
+			Msg("enforcing highest latest block")
+		if respBlockNumber > 0 {
+			ups := nr.Upstream()
+			telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
+				network.ProjectId(),
+				ups.VendorName(),
+				network.Label(),
+				ups.Id(),
+				"eth_getBlockByNumber",
+			).Inc()
+		}
+
+		// Prefer the upstream whose poller already owns this tip
+		// (EvmLeaderUpstream — typically the WS ingress that called
+		// SuggestLatestBlock). If TipHW advanced via Redis/WS while
+		// local pollers lag inside their debounce window, force-poll
+		// the leader once before deciding. Fall back to excluding the
+		// stale responder when no local poller has caught up yet.
+		useUpstream := ""
+		if leader := network.EvmLeaderUpstream(ctx); leader != nil {
+			if eu, ok := leader.(common.EvmUpstream); ok {
+				if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+					if sp.LatestBlock() < highestBlockNumber {
+						_, _ = sp.PollLatestBlockNumberNow(ctx)
+					}
+					if sp.LatestBlock() >= highestBlockNumber {
+						useUpstream = leader.Id()
 					}
 				}
 			}
-			if dr.UseUpstream == "" && respBlockNumber > 0 {
-				dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
-			}
-			newReq.SetDirectives(dr)
-			newReq.SetNetwork(network)
-
-			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
-			newReq.CopyHttpContextFrom(nq)
-
-			nnr, err := network.Forward(ctx, newReq)
-			// This is needed in case highest block number is corrupted somehow and for example
-			// it is requesting a very high non-existent block number.
-			return pickHighestBlock(ctx, nnr, nr, err)
-		} else {
-			return nr, re
 		}
+		if useUpstream == "" && respBlockNumber > 0 {
+			useUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+		}
+
+		// Do not use pickHighestBlock against the stale "latest" response —
+		// that helper fail-opens to stale when the tip re-fetch misses, which
+		// is exactly the MultiNode FOOS / EnforceRepeatableRead trigger.
+		nnr, ferr := forwardGetBlockByNumber(ctx, network, nq, highestBlockNumber, itx, useUpstream)
+		if meetsTipFloor(ctx, nnr, highestBlockNumber) {
+			if nr != nil {
+				nr.Release()
+			}
+			return nnr, nil
+		}
+		if nnr != nil {
+			nnr.Release()
+		}
+
+		// Pinned / excluded re-fetch missed the tip (sibling fullnode
+		// lag, WS JSON-RPC miss, etc.). Retry with no UseUpstream pin
+		// so every upstream can serve the concrete TipHW block.
+		nnr2, ferr2 := forwardGetBlockByNumber(ctx, network, nq, highestBlockNumber, itx, "")
+		if meetsTipFloor(ctx, nnr2, highestBlockNumber) {
+			if nr != nil {
+				nr.Release()
+			}
+			return nnr2, nil
+		}
+		if nnr2 != nil {
+			nnr2.Release()
+		}
+
+		// NEVER fail-open to a tip below TipHW. Prefer an error over stale.
+		logger.Warn().
+			Int64("highestBlockNumber", highestBlockNumber).
+			Int64("staleBlockNumber", respBlockNumber).
+			Err(ferr2).
+			Msg("tip re-fetch could not reach TipHW; refusing stale latest")
+		if nr != nil {
+			nr.Release()
+		}
+		if ferr2 != nil {
+			return nil, ferr2
+		}
+		if ferr != nil {
+			return nil, ferr
+		}
+		details := map[string]interface{}{"blockNumber": highestBlockNumber}
+		return nil, common.NewErrEndpointMissingData(
+			common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorMissingData,
+				fmt.Sprintf("block not found with number %d", highestBlockNumber),
+				nil,
+				details,
+			),
+			nil,
+		)
 	case "finalized":
 		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx)
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
 		}
-		if highestBlockNumber > respBlockNumber {
-			logger.Debug().
-				Str("blockTag", bnp).
-				Interface("highestBlockNumber", highestBlockNumber).
-				Interface("respBlockNumber", respBlockNumber).
-				Interface("err", err).
-				Msg("enforcing highest finalized block")
-			if respBlockNumber > 0 {
-				// When extracted block number is 0, it mostly means response is actually a json-rpc error
-				// therefore we better fetch the highest block number again.
-				ups := nr.Upstream()
-				telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
-					network.ProjectId(),
-					ups.VendorName(),
-					network.Label(),
-					ups.Id(),
-				).Inc()
-			}
-			var itx bool
-			if len(rqj.Params) > 1 {
-				itx, _ = rqj.Params[1].(bool)
-			}
-			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, itx)
-			if err != nil {
-				return nil, err
-			}
-			err = request.SetID(nq.ID())
-			if err != nil {
-				return nil, err
-			}
-			newReq2 := common.NewNormalizedRequestFromJsonRpcRequest(request)
-			dr := nq.Directives().Clone()
-			dr.SkipCacheRead = "true"
-			if respBlockNumber > 0 {
-				// In case a block number is extracted, it means the node actually has an older latest block.
-				// Therefore we exclude the current upstream from the request (as high likely it doesn't have this block).
-				// Otherwise we still allow the current upstream to be used in case json-rpc error was an intermittent issue.
-				// Also, if response from cache we don't need to exclude the current upstream.
-				dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
-			}
-			newReq2.SetDirectives(dr)
-			newReq2.SetNetwork(network)
-
-			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
-			newReq2.CopyHttpContextFrom(nq)
-
-			nnr, err := network.Forward(ctx, newReq2)
-			// This is needed in case highest block number is corrupted somehow and for example
-			// it is requesting a very high non-existent block number.
-			return pickHighestBlock(ctx, nnr, nr, err)
-		} else {
+		if highestBlockNumber <= respBlockNumber {
 			return nr, re
 		}
+		logger.Debug().
+			Str("blockTag", bnp).
+			Interface("highestBlockNumber", highestBlockNumber).
+			Interface("respBlockNumber", respBlockNumber).
+			Msg("enforcing highest finalized block")
+		if respBlockNumber > 0 {
+			ups := nr.Upstream()
+			telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
+				network.ProjectId(),
+				ups.VendorName(),
+				network.Label(),
+				ups.Id(),
+			).Inc()
+		}
+		useUpstream := ""
+		if respBlockNumber > 0 {
+			useUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+		}
+		nnr, err := forwardGetBlockByNumber(ctx, network, nq, highestBlockNumber, itx, useUpstream)
+		return pickHighestBlock(ctx, nnr, nr, err)
 	default:
 		return nr, re
 	}
@@ -337,6 +348,50 @@ func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResp
 		),
 		nr.Upstream(),
 	)
+}
+
+func forwardGetBlockByNumber(
+	ctx context.Context,
+	network common.Network,
+	original *common.NormalizedRequest,
+	blockNumber int64,
+	includeTx bool,
+	useUpstream string,
+) (*common.NormalizedResponse, error) {
+	request, err := BuildGetBlockByNumberRequest(blockNumber, includeTx)
+	if err != nil {
+		return nil, err
+	}
+	if err := request.SetID(original.ID()); err != nil {
+		return nil, err
+	}
+	newReq := common.NewNormalizedRequestFromJsonRpcRequest(request)
+	dr := original.Directives().Clone()
+	dr.SkipCacheRead = "true"
+	dr.UseUpstream = useUpstream
+	newReq.SetDirectives(dr)
+	newReq.SetNetwork(network)
+	newReq.CopyHttpContextFrom(original)
+	return network.Forward(ctx, newReq)
+}
+
+// meetsTipFloor reports whether resp carries a block number >= minBlock.
+func meetsTipFloor(ctx context.Context, resp *common.NormalizedResponse, minBlock int64) bool {
+	if resp == nil || resp.IsObjectNull() || resp.IsResultEmptyish() || minBlock <= 0 {
+		return false
+	}
+	// Peek number directly — ExtractBlockReferenceFromResponse can fail on
+	// incomplete header fields (hash/parentHash) even when number is present.
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil {
+		return false
+	}
+	numStr, err := jrr.PeekStringByPath(ctx, "number")
+	if err != nil || numStr == "" {
+		return false
+	}
+	bn, err := common.HexToInt64(numStr)
+	return err == nil && bn >= minBlock
 }
 
 func pickHighestBlock(ctx context.Context, x *common.NormalizedResponse, y *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
@@ -761,3 +816,4 @@ func validateBlockTransactions(u common.Upstream, dirs *common.RequestDirectives
 
 	return nil
 }
+

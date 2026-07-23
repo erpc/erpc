@@ -1687,6 +1687,23 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 			finalizedBlock = sp.FinalizedBlock()
 		}
 
+		// Poller lag behind network TipHW (WS/Redis) is not evidence the
+		// upstream node lacks the block — TipHW means some ingress on this
+		// network already observed it. Fail-open so tip eth_call / reads
+		// reach the node instead of cascading ErrUpstreamBlockUnavailable.
+		if bn > latestBlock && latestBlock > 0 {
+			if tip := n.EvmHighestLatestBlockNumber(ctx); tip >= bn {
+				n.logger.Debug().
+					Str("upstreamId", u.Id()).
+					Int64("blockNumber", bn).
+					Int64("pollerLatest", latestBlock).
+					Int64("networkTip", tip).
+					Str("method", method).
+					Msg("poller lags TipHW; failing open block availability gate")
+				return nil, false
+			}
+		}
+
 		blockErr := common.NewErrUpstreamBlockUnavailable(u.Id(), bn, latestBlock, finalizedBlock)
 
 		// Determine if this is retryable based on distance

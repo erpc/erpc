@@ -6235,13 +6235,18 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-
 		var respObject map[string]interface{}
 		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
-		assert.Contains(t, body, "0x123")
+		// Tip re-fetch of TipHW (0x777) misses; must not fail-open to stale 0x123.
+		if result, ok := respObject["result"].(map[string]interface{}); ok {
+			assert.NotEqual(t, "0x123", result["number"],
+				"must not fail-open to stale latest below TipHW; body=%s", body)
+		}
+		_, hasErr := respObject["error"]
+		assert.True(t, hasErr || statusCode >= 400,
+			"expected error when tip re-fetch cannot reach TipHW, got status=%d body=%s", statusCode, body)
 
 	})
 
@@ -6427,13 +6432,18 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
-
 		var respObject map[string]interface{}
 		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
-		assert.Contains(t, body, "0x123")
+		// Tip re-fetch of TipHW (0x777) misses; must not fail-open to stale 0x123.
+		if result, ok := respObject["result"].(map[string]interface{}); ok {
+			assert.NotEqual(t, "0x123", result["number"],
+				"must not fail-open to stale latest below TipHW; body=%s", body)
+		}
+		_, hasErr := respObject["error"]
+		assert.True(t, hasErr || statusCode >= 400,
+			"expected error when tip re-fetch cannot reach TipHW, got status=%d body=%s", statusCode, body)
 
 	})
 
