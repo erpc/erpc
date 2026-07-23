@@ -8487,7 +8487,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		util.ResetGock()
 		selectionPolicy := &common.SelectionPolicyConfig{
 			EvalInterval: common.Duration(100 * time.Millisecond),
-			EvalFunc:         `(upstreams, ctx) => upstreams.filter(u => u.metrics.errorRate < 0.7)`,
+			EvalFunc:     `(upstreams, ctx) => upstreams.filter(u => u.metrics.errorRate < 0.7)`,
 		}
 		selectionPolicy.SetDefaults()
 
@@ -11399,7 +11399,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		selectionPolicy := &common.SelectionPolicyConfig{
 			EvalInterval: common.Duration(50 * time.Millisecond),
-			EvalFunc:         `(upstreams, ctx) => upstreams.filter(u => u.metrics.errorRate < 0.5)`,
+			EvalFunc:     `(upstreams, ctx) => upstreams.filter(u => u.metrics.errorRate < 0.5)`,
 		}
 
 		// Create two upstreams
