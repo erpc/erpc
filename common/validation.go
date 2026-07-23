@@ -980,6 +980,11 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
 		}
 	}
+	switch u.RateLimitCountMode {
+	case "", RateLimitCountModeRequest, RateLimitCountModeCredit:
+	default:
+		return fmt.Errorf("upstream.*.rateLimitCountMode '%s' is invalid, must be one of: %s, %s", u.RateLimitCountMode, RateLimitCountModeRequest, RateLimitCountModeCredit)
+	}
 	return nil
 }
 

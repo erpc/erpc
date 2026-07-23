@@ -47,6 +47,46 @@ func TestAttemptCreditUnits_VendorOwnedPricing(t *testing.T) {
 	assert.Equal(t, int64(0), optedOut.attemptCreditUnits(creditReq(t, "eth_call")))
 }
 
+// dRPC prices flat: 20 CU for every billable method (debug/trace included,
+// no multiplier tier), 0 CU for informational methods, default 20 for
+// unlisted — overridable per method via the config.
+func TestAttemptCreditUnits_Drpc(t *testing.T) {
+	drpc := thirdparty.NewVendorsRegistry().LookupByName("drpc")
+	require.NotNil(t, drpc)
+
+	u := &Upstream{vendor: drpc, config: &common.UpstreamConfig{}}
+	assert.Equal(t, int64(20), u.attemptCreditUnits(creditReq(t, "eth_call")), "flat 20")
+	assert.Equal(t, int64(20), u.attemptCreditUnits(creditReq(t, "eth_getLogs")), "no getLogs surcharge")
+	assert.Equal(t, int64(20), u.attemptCreditUnits(creditReq(t, "debug_traceTransaction")), "no advanced-API multiplier")
+	assert.Equal(t, int64(0), u.attemptCreditUnits(creditReq(t, "eth_chainId")), "informational method is free")
+	assert.Equal(t, int64(0), u.attemptCreditUnits(creditReq(t, "net_version")), "informational method is free")
+	assert.Equal(t, int64(20), u.attemptCreditUnits(creditReq(t, "erpc_totallyUnknown")), "default '*' fallback")
+
+	// Operator override wins per method over the flat table.
+	over := &Upstream{vendor: drpc, config: &common.UpstreamConfig{CreditUnits: map[string]int64{"eth_getLogs": 99}}}
+	assert.Equal(t, int64(99), over.attemptCreditUnits(creditReq(t, "eth_getLogs")))
+	assert.Equal(t, int64(20), over.attemptCreditUnits(creditReq(t, "eth_call")), "unoverridden method keeps the flat table")
+}
+
+// rateLimitHits resolves the per-call budget weight: a flat 1 in the default
+// request-count mode, or the pre-flight estimated CU when the upstream opts
+// into credit counting (0-CU methods consume nothing).
+func TestRateLimitHits_CountMode(t *testing.T) {
+	alchemy := thirdparty.NewVendorsRegistry().LookupByName("alchemy")
+	require.NotNil(t, alchemy)
+
+	// Default (request) mode: always 1, regardless of method cost.
+	reqMode := &Upstream{vendor: alchemy, config: &common.UpstreamConfig{}}
+	assert.Equal(t, uint32(1), reqMode.rateLimitHits(creditReq(t, "eth_getLogs")))
+	assert.Equal(t, uint32(1), reqMode.rateLimitHits(creditReq(t, "eth_chainId")))
+
+	// Credit mode: the pre-flight estimated CU is the hit weight.
+	creditMode := &Upstream{vendor: alchemy, config: &common.UpstreamConfig{RateLimitCountMode: common.RateLimitCountModeCredit}}
+	assert.Equal(t, uint32(60), creditMode.rateLimitHits(creditReq(t, "eth_getLogs")))
+	assert.Equal(t, uint32(26), creditMode.rateLimitHits(creditReq(t, "eth_call")))
+	assert.Equal(t, uint32(0), creditMode.rateLimitHits(creditReq(t, "eth_chainId")), "0-CU method consumes nothing")
+}
+
 func TestResolveCreditUnits_Precedence(t *testing.T) {
 	defaults := map[string]int64{"eth_call": 26, "*": 20}
 	override := map[string]int64{"eth_call": 30, "eth_getLogs": 80}

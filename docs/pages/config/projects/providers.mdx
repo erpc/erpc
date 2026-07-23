@@ -278,8 +278,11 @@ Remote catalog (default `https://lb.drpc.org/networks`) with a 150-chain static 
 | `apiKey` | yes | — |
 | `chainsUrl` | no | `https://lb.drpc.org/networks` |
 | `recheckInterval` | no | `24h` |
+| `creditUnits` | no | dRPC's flat CU table |
 
-<SourceLink file="thirdparty/drpc.go" lines="19-422" />
+Cost accounting: implements `CreditUnitsProvider` with dRPC's [documented compute-unit costs](https://drpc.org/docs/pricing/compute-units) — a **flat 20 CU** for every billable method (debug/trace included, no multiplier tier), `0` for informational methods (`eth_chainId`, `net_version`, `web3_clientVersion`, …), and `"*"` = 20 for anything unlisted; `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/drpc.go" lines="207-240" />
+
+<SourceLink file="thirdparty/drpc.go" lines="19-455" />
 
 #### dwellir
 
