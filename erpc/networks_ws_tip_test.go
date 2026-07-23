@@ -181,7 +181,8 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 
 	handle := &networkHandle{nw: network}
 	// Mirrors indexer.Ingest ordering: SuggestLatestBlock then fan-out.
-	handle.SuggestLatestBlock("ws:bor-1", 90677359)
+	wsHeader := []byte(`{"number":"0x56789cf","hash":"0xabc","parentHash":"0xdef"}`)
+	handle.SuggestLatestBlock("ws:bor-1", 90677359, wsHeader)
 
 	assert.Equal(t, int64(90677359), upsList[0].EvmStatePoller().LatestBlock(),
 		"per-upstream poller must advance")
@@ -189,6 +190,9 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 		"network tip must advance before any client would see the WS head")
 	assert.GreaterOrEqual(t, network.lastReturnedLatestBlock.Load(), int64(90677359),
 		"process-local high-water mark must cover the delivered WS tip")
+	cachedNum, cachedPayload := network.LastObservedLatestHead()
+	assert.Equal(t, int64(90677359), cachedNum)
+	assert.Contains(t, string(cachedPayload), `"0x56789cf"`)
 }
 
 // EvmRefreshHighestLatestBlockNumber must not regress the tip after

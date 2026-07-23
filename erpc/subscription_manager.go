@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -569,14 +570,16 @@ func (h *networkHandle) FinalityDepth() int64 {
 }
 
 // SuggestLatestBlock routes a per-source block observation to the
-// upstream's state poller, then advances the network-level latest tip.
+// upstream's state poller, then advances the network-level latest tip
+// and caches the newHeads header payload when present.
 // sourceId is the ingress adapter's Name(), which for wsupstream.Adapter
 // is "ws:<upstreamId>".
 //
 // Ordering matters: Indexer.Ingest calls this BEFORE fan-out, so by the
 // time any client sees head N on WS, EvmHighestLatestBlockNumber on this
-// pod is already ≥ N (see Network.NoteObservedLatestBlock).
-func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) {
+// pod is already ≥ N and eth_getBlockByNumber("latest", false) can serve
+// the same header (see Network.NoteObservedLatestHead).
+func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, payload json.RawMessage) {
 	const prefix = "ws:"
 	if !strings.HasPrefix(sourceId, prefix) {
 		return
@@ -592,7 +595,7 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64) {
 		}
 		break
 	}
-	h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
+	h.nw.NoteObservedLatestHead(h.nw.appCtx, blockNumber, payload)
 }
 
 // Interface checks: fail the build if either contract drifts.

@@ -26,6 +26,39 @@ func refreshHighestLatestBlockNumber(ctx context.Context, network common.Network
 	return network.EvmHighestLatestBlockNumber(ctx)
 }
 
+// observedLatestHeadProvider is implemented by networks that cache the last
+// WS newHeads header before fan-out (erpc.Network). Used to serve HTTP
+// "latest" when concrete tip re-fetch cannot reach TipHW.
+type observedLatestHeadProvider interface {
+	LastObservedLatestHead() (blockNumber int64, payload []byte)
+}
+
+// responseFromObservedLatestHead builds an eth_getBlockByNumber response from
+// the cached WS newHeads header when it matches expectedTip. ok is false when
+// the cache is missing, behind, or the network does not expose a tip cache.
+func responseFromObservedLatestHead(network common.Network, nq *common.NormalizedRequest, expectedTip int64) (*common.NormalizedResponse, bool) {
+	provider, ok := network.(observedLatestHeadProvider)
+	if !ok || expectedTip <= 0 {
+		return nil, false
+	}
+	cachedNumber, payload := provider.LastObservedLatestHead()
+	if cachedNumber != expectedTip || len(payload) == 0 {
+		return nil, false
+	}
+	idBytes, err := common.SonicCfg.Marshal(nq.ID())
+	if err != nil {
+		return nil, false
+	}
+	jrr, err := common.NewJsonRpcResponseFromBytes(idBytes, append([]byte(nil), payload...), nil)
+	if err != nil {
+		return nil, false
+	}
+	resp := common.NewNormalizedResponse().
+		WithRequest(nq).
+		WithJsonRpcResponse(jrr)
+	return resp, true
+}
+
 func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransactions bool) (*common.JsonRpcRequest, error) {
 	var bkt string
 	var err error
@@ -225,6 +258,18 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			).Inc()
 		}
 
+		// If we already have the TipHW header from WS newHeads on this pod,
+		// serve it for header-only latest. TipHW means we observed the block;
+		// failing the client because HTTP tip re-fetch lags is a bug.
+		if !itx {
+			if cached, ok := responseFromObservedLatestHead(network, nq, highestBlockNumber); ok {
+				if nr != nil {
+					nr.Release()
+				}
+				return cached, nil
+			}
+		}
+
 		// Prefer the upstream whose poller already owns this tip
 		// (EvmLeaderUpstream — typically the WS ingress that called
 		// SuggestLatestBlock). If TipHW advanced via Redis/WS while
@@ -274,6 +319,17 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		}
 		if nnr2 != nil {
 			nnr2.Release()
+		}
+
+		// Tip re-fetch still missed — try the WS-cached header once more
+		// (TipHW may have been noted mid-flight after the early cache check).
+		if !itx {
+			if cached, ok := responseFromObservedLatestHead(network, nq, highestBlockNumber); ok {
+				if nr != nil {
+					nr.Release()
+				}
+				return cached, nil
+			}
 		}
 
 		// NEVER fail-open to a tip below TipHW. Prefer an error over stale.
@@ -850,4 +906,3 @@ func validateBlockTransactions(u common.Upstream, dirs *common.RequestDirectives
 
 	return nil
 }
-

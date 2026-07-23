@@ -2,6 +2,7 @@ package wsupstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,9 +27,9 @@ import (
 
 type fakeNetworkHandle struct{}
 
-func (fakeNetworkHandle) Id() string                       { return "evm:324" }
-func (fakeNetworkHandle) FinalityDepth() int64             { return 0 }
-func (fakeNetworkHandle) SuggestLatestBlock(string, int64) {}
+func (fakeNetworkHandle) Id() string                                        { return "evm:324" }
+func (fakeNetworkHandle) FinalityDepth() int64                              { return 0 }
+func (fakeNetworkHandle) SuggestLatestBlock(string, int64, json.RawMessage) {}
 
 type fakeSink struct {
 	events chan indexer.StreamEvent

@@ -17,8 +17,8 @@ type fakeNetwork struct {
 	id            string
 	finalityDepth int64
 
-	mu            sync.Mutex
-	suggestedBy   map[string][]int64 // sourceId -> block nums seen
+	mu          sync.Mutex
+	suggestedBy map[string][]int64 // sourceId -> block nums seen
 }
 
 func newFakeNetwork(id string, depth int64) *fakeNetwork {
@@ -29,9 +29,9 @@ func newFakeNetwork(id string, depth int64) *fakeNetwork {
 	}
 }
 
-func (n *fakeNetwork) Id() string            { return n.id }
-func (n *fakeNetwork) FinalityDepth() int64  { return n.finalityDepth }
-func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64) {
+func (n *fakeNetwork) Id() string           { return n.id }
+func (n *fakeNetwork) FinalityDepth() int64 { return n.finalityDepth }
+func (n *fakeNetwork) SuggestLatestBlock(sourceId string, block int64, _ json.RawMessage) {
 	n.mu.Lock()
 	n.suggestedBy[sourceId] = append(n.suggestedBy[sourceId], block)
 	n.mu.Unlock()
