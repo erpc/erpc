@@ -532,31 +532,12 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	return minBlock
 }
 
-// anyPrimaryUpstreamUp reports whether at least one non-fallback upstream
-// on this network has a closed circuit breaker. Same "up" definition as
-// evmHighestBlockNumber.
-func (n *Network) anyPrimaryUpstreamUp(ctx context.Context) bool {
-	if n == nil || n.upstreamsRegistry == nil {
-		return false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
-		if u.Config() != nil && u.Config().HasTag(common.TagTierFallback) {
-			continue
-		}
-		if !u.IsDown() {
-			return true
-		}
-	}
-	return false
-}
-
 // EvmLeaderUpstream returns the upstream whose state poller has the highest
-// latest tip. Fallback-tier upstreams are ignored while any primary is up,
-// matching TipHW aggregation — otherwise tip re-fetch pins UseUpstream to a
-// cordoned fallback that is not in the ordered primary list.
+// latest tip. Fallback-tier upstreams are ignored while any primary is up —
+// otherwise tip re-fetch pins UseUpstream to a cordoned fallback that is not
+// in the ordered primary list. TipHW may still advance from fallback WS
+// (fan-out invariant); unconstrained tip re-fetch + emptyish escape reaches
+// those fallbacks when primaries miss.
 func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	var leader, fallbackLeader common.Upstream
 	var leaderLastBlock, fallbackLastBlock int64

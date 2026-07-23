@@ -192,9 +192,9 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 		"process-local high-water mark must cover the delivered WS tip")
 }
 
-// Fallback WS tips must not inflate TipHW while any primary is up.
-// Poller still advances so failover/partition can prefer the fallback.
-func TestNetworkHandle_SuggestLatestBlock_FallbackDoesNotAdvanceTipHWWhenPrimaryUp(t *testing.T) {
+// Fallback WS tips must advance TipHW even while primaries are up: Ingest
+// fans out every source, so TipHW must cover any head a client can see.
+func TestNetworkHandle_SuggestLatestBlock_FallbackAdvancesTipHWEvenWhenPrimaryUp(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -286,13 +286,9 @@ func TestNetworkHandle_SuggestLatestBlock_FallbackDoesNotAdvanceTipHWWhenPrimary
 
 	assert.Equal(t, int64(1002), fallbackUp.EvmStatePoller().LatestBlock(),
 		"fallback poller must still advance for selection/escape")
-	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
-		"TipHW must stay on primary tip while primaries are up")
-
-	// Primary WS tip still advances TipHW.
-	handle.SuggestLatestBlock("ws:primary-ws", 1001, []byte(`{"number":"0x3e9","hash":"0x1","parentHash":"0x2"}`))
-	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx),
-		"primary WS tip must advance TipHW")
+	assert.Equal(t, int64(1002), network.EvmHighestLatestBlockNumber(ctx),
+		"TipHW must cover fallback fan-out tip while primaries are up")
+	_ = primaryUp
 }
 
 // When every primary is down, fallback WS may advance TipHW (same rule as

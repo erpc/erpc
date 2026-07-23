@@ -576,13 +576,12 @@ func (h *networkHandle) FinalityDepth() int64 {
 //
 // Ordering matters: Indexer.Ingest calls this BEFORE fan-out, so by the
 // time any client sees head N on WS, EvmHighestLatestBlockNumber on this
-// pod is already ≥ N.
-//
-// TipHW publish mirrors evmHighestBlockNumber: a fallback-tier WS tip must
-// not advance TipHW while any primary is up. Otherwise selection asks
-// healthy-but-lagging primaries for a block only the fallback has, and
-// tip-floor hard-fails before failover can help. The fallback's own poller
-// still advances so partition/escape can prefer it when primaries miss.
+// pod is already ≥ N. That invariant applies to every ingress source,
+// including tier:fallback: Ingest fans out all sources, so skipping TipHW
+// for fallback heads while still delivering them to clients causes
+// MultiNode FOOS (WS tip ahead of HTTP TipHW). Tip re-fetch of a TipHW
+// that came from a fallback must reach that fallback via the emptyish
+// escape hatch instead.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, payload json.RawMessage) {
 	_ = payload
 	const prefix = "ws:"
@@ -590,23 +589,15 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, p
 		return
 	}
 	upstreamID := sourceId[len(prefix):]
-	var sourceUp *upstream.Upstream
 	for _, u := range h.nw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), h.nw.networkId) {
 		if u.Id() != upstreamID {
 			continue
 		}
-		sourceUp = u
 		poller := u.EvmStatePoller()
 		if poller != nil && !poller.IsObjectNull() {
 			poller.SuggestLatestBlock(blockNumber)
 		}
 		break
-	}
-	if sourceUp != nil &&
-		sourceUp.Config() != nil &&
-		sourceUp.Config().HasTag(common.TagTierFallback) &&
-		h.nw.anyPrimaryUpstreamUp(context.Background()) {
-		return
 	}
 	h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
 }
