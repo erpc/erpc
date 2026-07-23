@@ -190,9 +190,6 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 		"network tip must advance before any client would see the WS head")
 	assert.GreaterOrEqual(t, network.lastReturnedLatestBlock.Load(), int64(90677359),
 		"process-local high-water mark must cover the delivered WS tip")
-	cachedNum, cachedPayload := network.LastObservedLatestHead()
-	assert.Equal(t, int64(90677359), cachedNum)
-	assert.Contains(t, string(cachedPayload), `"0x56789cf"`)
 }
 
 // Fallback WS tips must not inflate TipHW while any primary is up.
@@ -291,9 +288,6 @@ func TestNetworkHandle_SuggestLatestBlock_FallbackDoesNotAdvanceTipHWWhenPrimary
 		"fallback poller must still advance for selection/escape")
 	assert.Equal(t, int64(1000), network.EvmHighestLatestBlockNumber(ctx),
 		"TipHW must stay on primary tip while primaries are up")
-	cachedNum, _ := network.LastObservedLatestHead()
-	assert.Equal(t, int64(0), cachedNum,
-		"must not cache fallback header into TipHW header cache while primaries are up")
 
 	// Primary WS tip still advances TipHW.
 	handle.SuggestLatestBlock("ws:primary-ws", 1001, []byte(`{"number":"0x3e9","hash":"0x1","parentHash":"0x2"}`))
@@ -368,9 +362,6 @@ func TestNetworkHandle_SuggestLatestBlock_FallbackAdvancesTipHWWhenNoPrimaryUp(t
 
 	assert.Equal(t, int64(2005), network.EvmHighestLatestBlockNumber(ctx),
 		"fallback WS may advance TipHW when no primary is up")
-	cachedNum, cachedPayload := network.LastObservedLatestHead()
-	assert.Equal(t, int64(2005), cachedNum)
-	assert.Contains(t, string(cachedPayload), `"0x7d5"`)
 }
 
 // EvmRefreshHighestLatestBlockNumber must not regress the tip after

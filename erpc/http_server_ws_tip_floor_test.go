@@ -18,9 +18,9 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// TipHW advanced via WS newHeads must be serveable on HTTP "latest" even when
-// every HTTP upstream still lags TipHW and concrete tip re-fetch would miss.
-func TestHttpServer_GetBlockByNumberLatest_UsesCachedWsTipWhenHttpLags(t *testing.T) {
+// TipHW advanced via WS must not fail-open to a stale HTTP "latest" when tip
+// re-fetch cannot reach TipHW. Prefer an error over demoting MultiNode FOOS.
+func TestHttpServer_GetBlockByNumberLatest_RefusesStaleWhenTipRefetchMisses(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -73,8 +73,7 @@ func TestHttpServer_GetBlockByNumberLatest_UsesCachedWsTipWhenHttpLags(t *testin
 	require.NoError(t, err)
 
 	const tip = int64(0x11118889)
-	wsHeader := []byte(`{"number":"0x11118889","hash":"0xwshead","parentHash":"0xwsparent","timestamp":"0x6702a8f1"}`)
-	nw.NoteObservedLatestHead(context.Background(), tip, wsHeader)
+	nw.NoteObservedLatestBlock(context.Background(), tip)
 	require.Equal(t, tip, nw.EvmHighestLatestBlockNumber(context.Background()))
 
 	statusCode, _, body := sendRequest(`{
@@ -84,13 +83,18 @@ func TestHttpServer_GetBlockByNumberLatest_UsesCachedWsTipWhenHttpLags(t *testin
 		"params": ["latest", false]
 	}`, nil, nil)
 
-	require.Equal(t, http.StatusOK, statusCode)
-
 	var respObject map[string]interface{}
 	require.NoError(t, sonic.UnmarshalString(body, &respObject))
-	result, ok := respObject["result"].(map[string]interface{})
-	require.True(t, ok, "response should have a result object, got: %s", body)
-	assert.Equal(t, "0x11118889", result["number"],
-		"HTTP latest must serve the WS tip already observed on this pod")
-	assert.Equal(t, "0xwshead", result["hash"])
+
+	// Upstream only has 0x11118888; TipHW is one ahead. Must not return the
+	// stale header as success.
+	if statusCode == http.StatusOK {
+		if result, ok := respObject["result"].(map[string]interface{}); ok {
+			assert.NotEqual(t, "0x11118888", result["number"],
+				"must not fail-open to stale latest below TipHW; body=%s", body)
+		}
+	} else {
+		_, hasErr := respObject["error"]
+		assert.True(t, hasErr, "non-OK response should carry a JSON-RPC error; body=%s", body)
+	}
 }

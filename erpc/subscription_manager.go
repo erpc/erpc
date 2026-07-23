@@ -570,15 +570,13 @@ func (h *networkHandle) FinalityDepth() int64 {
 }
 
 // SuggestLatestBlock routes a per-source block observation to the
-// upstream's state poller, then advances the network-level latest tip
-// and caches the newHeads header payload when present.
+// upstream's state poller, then advances the network-level latest tip.
 // sourceId is the ingress adapter's Name(), which for wsupstream.Adapter
-// is "ws:<upstreamId>".
+// is "ws:<upstreamId>". payload is unused (kept for indexer.NetworkHandle).
 //
 // Ordering matters: Indexer.Ingest calls this BEFORE fan-out, so by the
 // time any client sees head N on WS, EvmHighestLatestBlockNumber on this
-// pod is already ≥ N and eth_getBlockByNumber("latest", false) can serve
-// the same header (see Network.NoteObservedLatestHead).
+// pod is already ≥ N.
 //
 // TipHW publish mirrors evmHighestBlockNumber: a fallback-tier WS tip must
 // not advance TipHW while any primary is up. Otherwise selection asks
@@ -586,6 +584,7 @@ func (h *networkHandle) FinalityDepth() int64 {
 // tip-floor hard-fails before failover can help. The fallback's own poller
 // still advances so partition/escape can prefer it when primaries miss.
 func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, payload json.RawMessage) {
+	_ = payload
 	const prefix = "ws:"
 	if !strings.HasPrefix(sourceId, prefix) {
 		return
@@ -609,7 +608,7 @@ func (h *networkHandle) SuggestLatestBlock(sourceId string, blockNumber int64, p
 		h.nw.anyPrimaryUpstreamUp(context.Background()) {
 		return
 	}
-	h.nw.NoteObservedLatestHead(h.nw.appCtx, blockNumber, payload)
+	h.nw.NoteObservedLatestBlock(h.nw.appCtx, blockNumber)
 }
 
 // Interface checks: fail the build if either contract drifts.
