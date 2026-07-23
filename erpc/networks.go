@@ -79,6 +79,10 @@ type Network struct {
 // notification to any client. Otherwise a concurrent HTTP
 // eth_getBlockByNumber("latest") / eth_blockNumber can race and return a
 // lower tip than a head already (or about to be) served on WS.
+//
+// TipHW is published to Redis synchronously (bounded timeout) so sibling
+// pods can refresh TipHW before serving HTTP latest — closing the
+// cross-pod race that silently demotes MultiNode via FOOS.
 func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64) {
 	if n == nil || blockNumber <= 0 {
 		return
@@ -90,7 +94,7 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 		ctx = context.Background()
 	}
 	if n.latestBlockShared != nil {
-		n.latestBlockShared.TryUpdate(ctx, blockNumber)
+		n.latestBlockShared.TryUpdateAndPublish(ctx, blockNumber)
 	}
 	for {
 		cur := n.lastReturnedLatestBlock.Load()
@@ -101,6 +105,22 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 			return
 		}
 	}
+}
+
+// EvmRefreshHighestLatestBlockNumber pulls TipHW from Redis once and returns
+// the network tip after adopting any higher remote value. Used when the local
+// TipHW cache would otherwise skip EnforceHighestBlock (false-negative under
+// async TipHW pubsub lag).
+func (n *Network) EvmRefreshHighestLatestBlockNumber(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.EvmRefreshHighestLatestBlockNumber")
+	defer span.End()
+
+	if n.latestBlockShared != nil {
+		n.latestBlockShared.RefreshFromRemote(ctx)
+	}
+	result := n.EvmHighestLatestBlockNumber(ctx)
+	span.SetAttributes(attribute.Int64("highest_latest_block", result))
+	return result
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks

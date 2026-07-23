@@ -1835,3 +1835,104 @@ func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
 		setCallMu.Unlock()
 	})
 }
+
+func TestCounterInt64_TryUpdateAndPublish_Sync(t *testing.T) {
+	registry, connector, ctx := setupTest("sync-pub")
+
+	published := make(chan struct{}, 1)
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			select {
+			case published <- struct{}{}:
+			default:
+			}
+		}).
+		Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil)
+	// Background reconcile may also Lock/Get after sync publish.
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(`{"v":10,"t":1,"b":"test"}`), nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+
+	got := counter.TryUpdateAndPublish(ctx, 10)
+	assert.Equal(t, int64(10), got)
+
+	select {
+	case <-published:
+		// sync SET happened before return
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("expected synchronous Set before TryUpdateAndPublish returned")
+	}
+}
+
+func TestCounterInt64_TryUpdateAndPublish_FallsBackOnPublishError(t *testing.T) {
+	registry, connector, ctx := setupTest("sync-pub-fail")
+
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).
+		Return(errors.New("redis down"))
+	// Async fallback still attempts publish/lock.
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(""), errors.New("get failed")).Maybe()
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(errors.New("redis down")).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+
+	got := counter.TryUpdateAndPublish(ctx, 42)
+	assert.Equal(t, int64(42), got, "local tip must advance even when sync publish fails")
+	time.Sleep(50 * time.Millisecond) // allow bg fallback to run
+}
+
+func TestCounterInt64_RefreshFromRemote_AdoptsHigherTip(t *testing.T) {
+	registry, connector, ctx := setupTest("refresh-tip")
+
+	remoteTs := time.Now().UnixMilli() + 60_000
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(fmt.Sprintf(`{"v":1001,"t":%d,"b":"pod-a"}`, remoteTs)), nil)
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(1000)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	got := counter.RefreshFromRemote(ctx)
+	assert.Equal(t, int64(1001), got)
+	assert.Equal(t, int64(1001), counter.GetValue())
+	connector.AssertExpectations(t)
+}
+
+func TestCounterInt64_RefreshFromRemote_KeepsLocalWhenRemoteMissing(t *testing.T) {
+	registry, connector, ctx := setupTest("refresh-missing")
+
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return([]byte(""), common.NewErrRecordNotFound("test", "value", "mock"))
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(777)
+	counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+
+	got := counter.RefreshFromRemote(ctx)
+	assert.Equal(t, int64(777), got)
+}

@@ -13,6 +13,19 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// tipRefresher is implemented by *erpc.Network. Optional so test doubles that
+// only stub EvmHighestLatestBlockNumber keep compiling.
+type tipRefresher interface {
+	EvmRefreshHighestLatestBlockNumber(ctx context.Context) int64
+}
+
+func refreshHighestLatestBlockNumber(ctx context.Context, network common.Network) int64 {
+	if r, ok := network.(tipRefresher); ok {
+		return r.EvmRefreshHighestLatestBlockNumber(ctx)
+	}
+	return network.EvmHighestLatestBlockNumber(ctx)
+}
+
 func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransactions bool) (*common.JsonRpcRequest, error) {
 	var bkt string
 	var err error
@@ -127,6 +140,11 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
 		_, cachedBN, cerr := ExtractBlockReferenceFromResponse(ctx, nr)
 		if cerr == nil && cachedBN >= highestBlockNumber {
+			if refreshed := refreshHighestLatestBlockNumber(ctx, network); refreshed > highestBlockNumber {
+				highestBlockNumber = refreshed
+			}
+		}
+		if cerr == nil && cachedBN >= highestBlockNumber {
 			logger.Trace().
 				Object("request", nq).
 				Object("response", nr).
@@ -171,15 +189,31 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nil, err
 		}
 		if highestBlockNumber <= respBlockNumber {
-			return nr, re
+			// Local TipHW appears caught up — but sibling pods may have
+			// published a higher tip to Redis that this process has not yet
+			// adopted via async pubsub. Refresh once before skipping enforce;
+			// this is the cross-pod race that silently demotes MultiNode FOOS.
+			if refreshed := refreshHighestLatestBlockNumber(ctx, network); refreshed > highestBlockNumber {
+				highestBlockNumber = refreshed
+			}
+			if highestBlockNumber <= respBlockNumber {
+				return nr, re
+			}
+			logger.Debug().
+				Str("blockTag", bnp).
+				Int64("highestBlockNumber", highestBlockNumber).
+				Int64("respBlockNumber", respBlockNumber).
+				Msg("tip refresh from remote raised TipHW; enforcing highest latest block")
+		} else {
+			logger.Debug().
+				Str("blockTag", bnp).
+				Object("request", nq).
+				Object("response", nr).
+				Interface("highestBlockNumber", highestBlockNumber).
+				Interface("respBlockNumber", respBlockNumber).
+				Msg("enforcing highest latest block")
 		}
-		logger.Debug().
-			Str("blockTag", bnp).
-			Object("request", nq).
-			Object("response", nr).
-			Interface("highestBlockNumber", highestBlockNumber).
-			Interface("respBlockNumber", respBlockNumber).
-			Msg("enforcing highest latest block")
+		// fall through to tip re-fetch / refuse-stale (logger already emitted)
 		if respBlockNumber > 0 {
 			ups := nr.Upstream()
 			telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(

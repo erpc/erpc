@@ -190,3 +190,75 @@ func TestNetworkHandle_SuggestLatestBlock_AdvancesNetworkTipBeforeFanOut(t *test
 	assert.GreaterOrEqual(t, network.lastReturnedLatestBlock.Load(), int64(90677359),
 		"process-local high-water mark must cover the delivered WS tip")
 }
+
+// EvmRefreshHighestLatestBlockNumber must not regress the tip after
+// NoteObservedLatestBlock (sync publish path) has advanced TipHW.
+func TestEvmRefreshHighestLatestBlockNumber_PreservesObservedTip(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	up := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	}
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b"}`))
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+	})
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
+		[]*common.UpstreamConfig{up}, ssr, rateLimitersRegistry, vr, pr, nil,
+		metricsTracker, nil,
+	)
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
+		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+	require.NoError(t, network.Bootstrap(ctx))
+	time.Sleep(250 * time.Millisecond)
+
+	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.Len(t, upsList, 1)
+	upsList[0].EvmStatePoller().SuggestLatestBlock(1000)
+	time.Sleep(50 * time.Millisecond)
+
+	network.NoteObservedLatestBlock(ctx, 1001)
+	assert.Equal(t, int64(1001), network.EvmRefreshHighestLatestBlockNumber(ctx),
+		"refresh after sync TipHW publish must keep the observed tip")
+	assert.Equal(t, int64(1001), network.EvmHighestLatestBlockNumber(ctx))
+}
