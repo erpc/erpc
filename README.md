@@ -106,6 +106,12 @@ diff <(erpc dump old-config.yaml) <(erpc dump new-config.yaml)
 
 ---
 
+### Related tools
+
+- [OpenChainBench](https://openchainbench.com/benchmarks/rpc-capabilities): independent open-source benchmarks for public RPC providers across 22 chains (Ethereum, Arbitrum, Base, Optimism, Polygon, BNB, Avalanche, Linea, Scroll, Mantle, Solana and more). Publishes p50/p95/p99 latency, error classification and stale-block detection every minute from three regions. Useful when picking the initial ordering for eRPC upstream `priority` fields or informing `selection-policies` thresholds. Data ships under CC BY 4.0.
+
+---
+
 ### Local Development
 
 1. **Clone this repository:**
