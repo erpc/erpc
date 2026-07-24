@@ -1936,6 +1936,12 @@ type RateLimiterConfig struct {
 type RateLimitBudgetConfig struct {
 	Id    string                 `yaml:"id" json:"id"`
 	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules" tstype:"RateLimitRuleConfig[]"`
+	// MethodCosts assigns a credit cost to each method for weighted rules (rules
+	// with Weighted=true). The special key "*" sets the default cost for methods
+	// not listed explicitly; if "*" is also absent the fallback cost is 1. A cost
+	// of 0 exempts a method from weighted budgets entirely (the weighted rule is
+	// skipped for that method). Non-weighted rules ignore this table.
+	MethodCosts map[string]uint32 `yaml:"methodCosts,omitempty" json:"methodCosts,omitempty"`
 }
 
 type RateLimitRuleConfig struct {
@@ -1947,6 +1953,10 @@ type RateLimitRuleConfig struct {
 	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
 	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
 	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
+	// Weighted turns this rule into a credit budget: each request consumes the method's
+	// cost from MethodCosts instead of a single hit. Methods with cost 0 are exempt —
+	// the rule is skipped for them entirely.
+	Weighted bool `yaml:"weighted,omitempty" json:"weighted,omitempty"`
 }
 
 // ScopeString returns a comma-separated list of enabled scopes in deterministic order.

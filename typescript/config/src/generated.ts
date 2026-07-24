@@ -561,6 +561,18 @@ export interface ProjectConfig {
    * Configure user agent tracking at the project level
    */
   userAgentMode?: UserAgentTrackingMode;
+  /**
+   * TrustUserIdHeader makes erpc read the caller's user identity from the
+   * X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
+   * `user` metric/log label — but only when no auth strategy resolved a user
+   * (auth wins) and only for attribution (no rate-limit budget is derived).
+   * This is for deployments that authenticate callers in front of erpc (e.g. a
+   * gateway) and want per-user erpc telemetry without erpc performing auth.
+   * erpc does NOT validate the header, so enable this ONLY when erpc is reachable
+   * solely by a trusted proxy that sets the header and strips any client copy —
+   * otherwise callers can spoof their own attribution. Default false.
+   */
+  trustUserIdHeader?: boolean;
   forwardHeaders?: string[];
   allowClientDirectives?: string;
   ignoreMethods?: string[];
@@ -1117,6 +1129,14 @@ export interface RateLimiterConfig {
 export interface RateLimitBudgetConfig {
   id: string;
   rules: RateLimitRuleConfig[];
+  /**
+   * MethodCosts assigns a credit cost to each method for weighted rules (rules
+   * with Weighted=true). The special key "*" sets the default cost for methods
+   * not listed explicitly; if "*" is also absent the fallback cost is 1. A cost
+   * of 0 exempts a method from weighted budgets entirely (the weighted rule is
+   * skipped for that method). Non-weighted rules ignore this table.
+   */
+  methodCosts?: { [key: string]: number /* uint32 */};
 }
 export interface RateLimitRuleConfig {
   method: string;
@@ -1129,6 +1149,12 @@ export interface RateLimitRuleConfig {
   perIP?: boolean;
   perUser?: boolean;
   perNetwork?: boolean;
+  /**
+   * Weighted turns this rule into a credit budget: each request consumes the method's
+   * cost from MethodCosts instead of a single hit. Methods with cost 0 are exempt —
+   * the rule is skipped for them entirely.
+   */
+  weighted?: boolean;
 }
 /**
  * RateLimitPeriod enumerates supported periods for rate limiting.

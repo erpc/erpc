@@ -172,11 +172,12 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			admissionCap = remoteAdmissionCap(r.cfg.Store.Redis.ConnPoolSize)
 		}
 		budget := &RateLimiterBudget{
-			Id:         budgetCfg.Id,
-			Rules:      make([]*RateLimitRule, 0),
-			registry:   r,
-			logger:     &lg,
-			maxTimeout: maxTimeout,
+			Id:          budgetCfg.Id,
+			Rules:       make([]*RateLimitRule, 0),
+			registry:    r,
+			logger:      &lg,
+			maxTimeout:  maxTimeout,
+			methodCosts: budgetCfg.MethodCosts,
 		}
 		if admissionCap > 0 {
 			budget.admission = make(chan struct{}, admissionCap)
