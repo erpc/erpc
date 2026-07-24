@@ -1,6 +1,9 @@
 package indexer
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Sink is the interface an ingress uses to push StreamEvents into the
 // indexer pipeline. The indexer itself implements Sink — a pointer to the
@@ -26,12 +29,11 @@ type NetworkHandle interface {
 	FinalityDepth() int64
 	// SuggestLatestBlock advances the per-source latest-block tracker
 	// (and the network-level latest tip) before the indexer dedupes /
-	// fans out. Preserving "update-before-dedup" and
-	// "tip-before-fanout" ordering is critical — the state poller needs
-	// to see every observation (even ones we drop), and HTTP "latest"
-	// must not be allowed to regress below a head we are about to
-	// deliver on WS.
-	SuggestLatestBlock(sourceId string, blockNumber int64)
+	// fans out. payload is the verbatim newHeads header JSON when known
+	// (empty is allowed) so HTTP "latest" can serve the same tip when
+	// concrete tip re-fetch misses. Preserving "update-before-dedup" and
+	// "tip-before-fanout" ordering is critical.
+	SuggestLatestBlock(sourceId string, blockNumber int64, payload json.RawMessage)
 }
 
 // EventIngress is an adapter that converts some transport-specific

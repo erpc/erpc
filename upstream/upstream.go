@@ -1081,10 +1081,14 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		// UPPER BOUND: Check if block is before the latest block
 		//
 		latestBlock := statePoller.LatestBlock()
-		// If the requested block is beyond the current latest block, try force-polling once
+		// If the requested block is beyond the current latest block, force-poll
+		// once with debounce bypassed. A debounced PollLatestBlockNumber can
+		// reuse a tip that is still behind the request (common when network
+		// TipHW advanced via WS/Redis while this upstream's poller has not
+		// refreshed yet) and falsely trip the upper-bound gate.
 		if blockNumber > latestBlock && forceFreshIfStale {
 			var err error
-			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
+			latestBlock, err = statePoller.PollLatestBlockNumberNow(ctx)
 			if err != nil {
 				return false, fmt.Errorf("failed to poll latest block number: %w", err)
 			}

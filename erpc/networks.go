@@ -79,6 +79,10 @@ type Network struct {
 // notification to any client. Otherwise a concurrent HTTP
 // eth_getBlockByNumber("latest") / eth_blockNumber can race and return a
 // lower tip than a head already (or about to be) served on WS.
+//
+// TipHW is published to Redis synchronously (bounded timeout) so sibling
+// pods can refresh TipHW before serving HTTP latest — closing the
+// cross-pod race that silently demotes MultiNode via FOOS.
 func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64) {
 	if n == nil || blockNumber <= 0 {
 		return
@@ -90,7 +94,7 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 		ctx = context.Background()
 	}
 	if n.latestBlockShared != nil {
-		n.latestBlockShared.TryUpdate(ctx, blockNumber)
+		n.latestBlockShared.TryUpdateAndPublish(ctx, blockNumber)
 	}
 	for {
 		cur := n.lastReturnedLatestBlock.Load()
@@ -101,6 +105,22 @@ func (n *Network) NoteObservedLatestBlock(ctx context.Context, blockNumber int64
 			return
 		}
 	}
+}
+
+// EvmRefreshHighestLatestBlockNumber pulls TipHW from Redis once and returns
+// the network tip after adopting any higher remote value. Used when the local
+// TipHW cache would otherwise skip EnforceHighestBlock (false-negative under
+// async TipHW pubsub lag).
+func (n *Network) EvmRefreshHighestLatestBlockNumber(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.EvmRefreshHighestLatestBlockNumber")
+	defer span.End()
+
+	if n.latestBlockShared != nil {
+		n.latestBlockShared.RefreshFromRemote(ctx)
+	}
+	result := n.EvmHighestLatestBlockNumber(ctx)
+	span.SetAttributes(attribute.Int64("highest_latest_block", result))
+	return result
 }
 
 // Bootstrap registers this network with the policy engine. The engine kicks
@@ -512,20 +532,42 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	return minBlock
 }
 
+// EvmLeaderUpstream returns the upstream whose state poller has the highest
+// latest tip. Fallback-tier upstreams are ignored while any primary is up —
+// otherwise tip re-fetch pins UseUpstream to a cordoned fallback that is not
+// in the ordered primary list. TipHW may still advance from fallback WS
+// (fan-out invariant); unconstrained tip re-fetch + emptyish escape reaches
+// those fallbacks when primaries miss.
 func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	var leader common.Upstream
-	var leaderLastBlock int64 = 0
+	var leader, fallbackLeader common.Upstream
+	var leaderLastBlock, fallbackLastBlock int64
+	anyPrimaryUp := false
 	upsList := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 	for _, u := range upsList {
-		if statePoller := u.EvmStatePoller(); statePoller != nil {
-			lastBlock := statePoller.LatestBlock()
-			if lastBlock > leaderLastBlock {
-				leader = u
-				leaderLastBlock = lastBlock
+		statePoller := u.EvmStatePoller()
+		if statePoller == nil {
+			continue
+		}
+		lastBlock := statePoller.LatestBlock()
+		if u.Config() != nil && u.Config().HasTag(common.TagTierFallback) {
+			if lastBlock > fallbackLastBlock {
+				fallbackLeader = u
+				fallbackLastBlock = lastBlock
 			}
+			continue
+		}
+		if !u.IsDown() {
+			anyPrimaryUp = true
+		}
+		if lastBlock > leaderLastBlock {
+			leader = u
+			leaderLastBlock = lastBlock
 		}
 	}
-	return leader
+	if anyPrimaryUp || fallbackLeader == nil {
+		return leader
+	}
+	return fallbackLeader
 }
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *networkExecutor {
@@ -997,7 +1039,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
 					bestResp = r
-					loopSpan.SetStatus(codes.Ok, "")
+					if r.IsResultEmptyish() {
+						// Soft miss (e.g. eth_getBlockByNumber null): seed
+						// lastErr so the fallback escape hatch can fire after
+						// primaries are exhausted. Without this, emptyish
+						// responses leave lastErr nil and block escalation.
+						lastErr = common.NewErrEndpointMissingData(
+							fmt.Errorf("upstream responded emptyish"), u,
+						)
+					} else {
+						loopSpan.SetStatus(codes.Ok, "")
+					}
 				}
 				loopSpan.End()
 			}
@@ -1023,14 +1075,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			//
 			// Bounds:
 			//   - At most one escalation per request (MarkEscalatedToFallbacks).
-			//   - bestResp != nil means we have an emptyish response that
-			//     failsafe's emptyResultDelay should evaluate — don't pre-empt it.
+			//   - Emptyish bestResp still escapes: methods like
+			//     eth_getBlockByNumber return null for missing blocks without
+			//     setting err, and that soft miss must escalate to fallbacks
+			//     the same way a gate-reject does. Non-empty bestResp means we
+			//     already have a usable candidate — leave it for failsafe.
 			//   - Deterministic client errors return from the inner loop
 			//     immediately, so any non-nil lastErr here means "this upstream
 			//     couldn't serve; try a different one" — exactly the escape's job.
 			//   - Consensus requires strict per-upstream semantics; don't modify
 			//     the candidate set mid-execution.
-			if bestResp == nil &&
+			bestRespEmptyish := bestResp != nil && bestResp.IsResultEmptyish()
+			if (bestResp == nil || bestRespEmptyish) &&
 				!effectiveReq.HasEscalatedToFallbacks() &&
 				lastErr != nil &&
 				n.cfg.Failover != nil && n.cfg.Failover.Enabled() &&
@@ -1045,6 +1101,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// re-selects them; primaries are removed from upsList so they
 					// won't be picked again, but their state in attempted /
 					// ErrorsByUpstream is preserved for eventual error reporting.
+					if bestRespEmptyish {
+						bestResp.Release()
+						bestResp = nil
+					}
 					fbCommon := make([]common.Upstream, 0, len(fallbacks))
 					for _, fb := range fallbacks {
 						fbCommon = append(fbCommon, fb)
@@ -1595,7 +1655,7 @@ func (n *Network) handleBlockSkip(
 				go func() {
 					pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					_, _ = sp.PollLatestBlockNumber(pollCtx)
+					_, _ = sp.PollLatestBlockNumberNow(pollCtx)
 				}()
 			}
 		}
@@ -1685,6 +1745,23 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			latestBlock = sp.LatestBlock()
 			finalizedBlock = sp.FinalizedBlock()
+		}
+
+		// Poller lag behind network TipHW (WS/Redis) is not evidence the
+		// upstream node lacks the block — TipHW means some ingress on this
+		// network already observed it. Fail-open so tip eth_call / reads
+		// reach the node instead of cascading ErrUpstreamBlockUnavailable.
+		if bn > latestBlock && latestBlock > 0 {
+			if tip := n.EvmHighestLatestBlockNumber(ctx); tip >= bn {
+				n.logger.Debug().
+					Str("upstreamId", u.Id()).
+					Int64("blockNumber", bn).
+					Int64("pollerLatest", latestBlock).
+					Int64("networkTip", tip).
+					Str("method", method).
+					Msg("poller lags TipHW; failing open block availability gate")
+				return nil, false
+			}
 		}
 
 		blockErr := common.NewErrUpstreamBlockUnavailable(u.Id(), bn, latestBlock, finalizedBlock)

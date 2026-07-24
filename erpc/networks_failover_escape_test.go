@@ -626,4 +626,71 @@ func TestFailover_EscapeHatch(t *testing.T) {
 		assert.Equal(t, before+1, after,
 			"escape hatch must fire exactly once for the non-retryable gate-skip case")
 	})
+
+	t.Run("EscapesOnEmptyishGetBlockByNumber", func(t *testing.T) {
+		defer util.ResetGock()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Primaries and fallbacks both report tip 1002 via poller, so the
+		// availability gate fails open / passes. Primaries return null for
+		// the concrete tip block (missing data); fallbacks return the header.
+		// Before the emptyish-escape fix, bestResp=null blocked escalation.
+		network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
+			primaryLatest:  "0x3ea", // 1002
+			fallbackLatest: "0x3ea", // 1002
+			enableFailover: true,
+		})
+
+		nullBlock := `{"jsonrpc":"2.0","id":1,"result":null}`
+		okBlock := `{"jsonrpc":"2.0","id":1,"result":{"number":"0x3ea","hash":"0xabc","parentHash":"0xdef","timestamp":"0x6702a8f0"}}`
+		for _, host := range []string{"rpc1.localhost", "rpc2.localhost"} {
+			gock.New("http://" + host).
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					b := util.SafeReadBody(r)
+					return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"0x3ea"`)
+				}).
+				Reply(200).
+				JSON([]byte(nullBlock))
+		}
+		for _, host := range []string{"rpc3.localhost", "rpc4.localhost"} {
+			gock.New("http://" + host).
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					b := util.SafeReadBody(r)
+					return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"0x3ea"`)
+				}).
+				Reply(200).
+				JSON([]byte(okBlock))
+		}
+
+		counter := telemetry.MetricNetworkFallbackEscapeTotal.WithLabelValues("main", "evm:999", "eth_getBlockByNumber")
+		before := promUtil.ToFloat64(counter)
+
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x3ea",false]}`,
+		))
+		req.SetNetwork(network)
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err, "null from primaries must escalate to fallbacks on the same request")
+		require.NotNil(t, resp)
+		defer resp.Release()
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		require.False(t, jrr.IsResultEmptyish(), "fallback must return a non-null block header")
+		num, err := jrr.PeekStringByPath(ctx, "number")
+		require.NoError(t, err)
+		assert.Equal(t, "0x3ea", num)
+
+		assert.Contains(t, []string{"fallback-1", "fallback-2"}, resp.UpstreamId(),
+			"emptyish primary miss must be served by a fallback")
+
+		after := promUtil.ToFloat64(counter)
+		assert.Equal(t, before+1, after,
+			"escape hatch must fire for emptyish eth_getBlockByNumber primary misses")
+	})
 }
