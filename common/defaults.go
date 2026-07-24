@@ -1959,7 +1959,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
 			}
-		} else if n.Evm == nil && defaults.Evm != nil {
+		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
+			// Copy EVM defaults only onto networks that are (or can become) EVM.
+			// Without the SVM guard, a mixed project with networkDefaults.evm
+			// would inject an evm block into every svm network — and the
+			// architecture derivation below checks n.Evm BEFORE n.Svm, silently
+			// flipping an `svm:`-authored network to architecture=evm.
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
 		}

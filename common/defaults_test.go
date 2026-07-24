@@ -1600,6 +1600,51 @@ func TestSetDefaults_NetworkDefaults_SvmMergesIntoNetwork(t *testing.T) {
 	})
 }
 
+// TestSetDefaults_SvmNetworkNotPollutedByEvmDefaults regression-locks the fix
+// where networkDefaults.evm was copied into SVM networks. Because architecture
+// derivation checks n.Evm before n.Svm, an `svm:`-authored network without an
+// explicit architecture silently became architecture=evm.
+func TestSetDefaults_SvmNetworkNotPollutedByEvmDefaults(t *testing.T) {
+	newDefaults := func() *NetworkDefaults {
+		return &NetworkDefaults{
+			Evm: &EvmNetworkConfig{GetLogsMaxAllowedRange: 30000},
+		}
+	}
+
+	t.Run("svm network with architecture unset stays svm and gets no evm block", func(t *testing.T) {
+		n := &NetworkConfig{Svm: &SvmNetworkConfig{Cluster: "mainnet-beta"}}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		assert.Nil(t, n.Evm, "networkDefaults.evm must not be injected into an svm network")
+		assert.Equal(t, ArchitectureSvm, n.Architecture, "architecture must derive to svm, not evm")
+	})
+
+	t.Run("explicit architecture=svm stays svm and gets no evm block", func(t *testing.T) {
+		n := &NetworkConfig{Architecture: ArchitectureSvm}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		assert.Nil(t, n.Evm, "networkDefaults.evm must not be injected when architecture=svm")
+		assert.Equal(t, ArchitectureSvm, n.Architecture)
+	})
+
+	t.Run("evm invariance: network with neither evm nor svm still receives evm defaults", func(t *testing.T) {
+		n := &NetworkConfig{}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		require.NotNil(t, n.Evm, "evm defaults must still be copied onto plain networks")
+		assert.Equal(t, ArchitectureEvm, n.Architecture, "architecture must derive to evm")
+		assert.EqualValues(t, 30000, n.Evm.GetLogsMaxAllowedRange, "copied from networkDefaults.evm")
+	})
+
+	t.Run("evm invariance: network with own evm block still field-merges from defaults", func(t *testing.T) {
+		n := &NetworkConfig{Evm: &EvmNetworkConfig{ChainId: 1}}
+		require.NoError(t, n.SetDefaults(nil, newDefaults()))
+
+		assert.EqualValues(t, 30000, n.Evm.GetLogsMaxAllowedRange, "zero field inherited from networkDefaults.evm")
+		assert.EqualValues(t, 1, n.Evm.ChainId, "operator value preserved")
+	})
+}
+
 func TestDatabaseConfig_SetDefaults_SvmJsonRpcCache(t *testing.T) {
 	d := &DatabaseConfig{
 		SvmJsonRpcCache: &CacheConfig{
