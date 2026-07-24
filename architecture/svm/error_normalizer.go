@@ -22,39 +22,47 @@ func NewJsonRpcErrorExtractor() *JsonRpcErrorExtractor {
 //
 // Standard JSON-RPC 2.0 codes (-32600 .. -32700) come from the JSON-RPC spec
 // and are used by solana-validator's rpc crate for malformed-request handling.
-// The -32000 .. -32016 range is Solana-specific; each code below is documented
-// in the validator source at:
+// The -32001 .. -32019 range is Solana-specific; each constant below maps 1:1
+// to the RpcCustomError enum's JSON_RPC_SERVER_ERROR_* assignments in the
+// validator source (names kept aligned so the mapping can be audited):
 //
 //	https://github.com/anza-xyz/agave/blob/master/rpc-client-api/src/custom_error.rs
 //
-// The constant values (-32002, -32004 … -32016) come directly from the
-// RpcCustomError enum's JSON_RPC_SERVER_ERROR_* numeric assignments there.
 // Vendor RPCs (Helius, Triton, QuickNode, PublicNode) faithfully forward these
 // codes — vendor-specific wording variations are disambiguated by message-text
-// matching in the -32000 bucket below.
+// matching in the -32000 bucket below. Codes newer than -32019 (agave keeps
+// appending) intentionally fall to the safe retryable server-side default.
 //
 // The normalized taxonomy is intentionally narrower than EVM: SVM lacks
 // "execution reverted" semantics at the error level, and rate-limit hints are
 // almost always conveyed by HTTP 429 rather than a JSON-RPC code.
 const (
-	svmCodeInvalidRequest       = -32600 // JSON-RPC 2.0 spec
-	svmCodeMethodNotFound       = -32601 // JSON-RPC 2.0 spec
-	svmCodeInvalidParams        = -32602 // JSON-RPC 2.0 spec
-	svmCodeInternalError        = -32603 // JSON-RPC 2.0 spec
-	svmCodeParseError           = -32700 // JSON-RPC 2.0 spec
-	svmCodeServerError          = -32000 // Broad bucket: preflight, blockhash, rate-limit (disambiguated by message)
-	svmCodeTransactionSimFailed = -32002 // SendTransactionPreflightFailure
-	svmCodeTransactionError     = -32003 // TransactionError
-	svmCodeBlockNotAvailable    = -32004 // BlockNotAvailable
-	svmCodeNodeUnhealthy        = -32005 // NodeUnhealthy (a.k.a. NodeBehind)
-	svmCodeNodeTooBehind        = -32006 // TransactionPrecompileVerificationFailure / NodeUnhealthy (legacy)
-	svmCodeSlotSkipped          = -32007 // SlotSkipped
-	svmCodeNoSnapshot           = -32008 // NoSnapshot
-	svmCodeLongTermStorageSlot  = -32009 // LongTermStorageSlotSkipped
-	svmCodeTransactionHistory   = -32013 // TransactionSignatureVerificationFailure / TransactionHistoryNotAvailable
-	svmCodeBlockStatusNotAvail  = -32014 // BlockStatusNotAvailableYet
-	svmCodeNodeTimeout          = -32015 // UnsupportedTransactionVersion / NodeTimeout
-	svmCodeMinContextSlot       = -32016 // MinContextSlotNotReached
+	svmCodeInvalidRequest = -32600 // JSON-RPC 2.0 spec
+	svmCodeMethodNotFound = -32601 // JSON-RPC 2.0 spec
+	svmCodeInvalidParams  = -32602 // JSON-RPC 2.0 spec
+	svmCodeInternalError  = -32603 // JSON-RPC 2.0 spec
+	svmCodeParseError     = -32700 // JSON-RPC 2.0 spec
+	svmCodeServerError    = -32000 // Broad bucket: preflight, blockhash, rate-limit (disambiguated by message)
+
+	svmCodeBlockCleanedUp             = -32001 // BlockCleanedUp: pruned from this node's local ledger
+	svmCodeSendTxPreflightFailure     = -32002 // SendTransactionPreflightFailure
+	svmCodeTxSignatureVerifyFailure   = -32003 // TransactionSignatureVerificationFailure
+	svmCodeBlockNotAvailable          = -32004 // BlockNotAvailable: not yet propagated to this node
+	svmCodeNodeUnhealthy              = -32005 // NodeUnhealthy ("Node is behind by N slots")
+	svmCodeTxPrecompileVerifyFailure  = -32006 // TransactionPrecompileVerificationFailure
+	svmCodeSlotSkipped                = -32007 // SlotSkipped: skipped OR missing from this node's recent ledger
+	svmCodeNoSnapshot                 = -32008 // NoSnapshot
+	svmCodeLongTermStorageSlotSkipped = -32009 // LongTermStorageSlotSkipped: authoritative, checked long-term storage
+	svmCodeKeyExcludedFromIndex       = -32010 // KeyExcludedFromSecondaryIndex: per-node --account-index config
+	svmCodeTxHistoryNotAvailable      = -32011 // TransactionHistoryNotAvailable: no history/bigtable on this node
+	svmCodeScanError                  = -32012 // ScanError: scan aborted by rooted-slot movement (transient)
+	svmCodeTxSignatureLenMismatch     = -32013 // TransactionSignatureLenMismatch
+	svmCodeBlockStatusNotAvail        = -32014 // BlockStatusNotAvailableYet
+	svmCodeUnsupportedTxVersion       = -32015 // UnsupportedTransactionVersion: caller must set maxSupportedTransactionVersion
+	svmCodeMinContextSlotNotReached   = -32016 // MinContextSlotNotReached: node hasn't caught up to minContextSlot yet
+	svmCodeEpochRewardsPeriodActive   = -32017 // EpochRewardsPeriodActive: epoch-global condition, identical on every node
+	svmCodeSlotNotEpochBoundary       = -32018 // SlotNotEpochBoundary: caller-supplied slot invalid for this query
+	svmCodeLongTermStorageUnreachable = -32019 // LongTermStorageUnreachable: this node's bigtable backend is down
 )
 
 func (e *JsonRpcErrorExtractor) Extract(
@@ -123,40 +131,55 @@ func (e *JsonRpcErrorExtractor) Extract(
 			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorUnsupportedException, msg, nil, details),
 		)
 
-	// --- Missing data — transient (retryable: block/slot not yet propagated) -
-	// Preserve the raw Solana code on the wire so callers receive -32004/-32008/-32014
-	// instead of the generic -32014 (JsonRpcErrorMissingData). Normalizing everything
-	// to -32014 caused sol-client to enter an infinite BlockNotAvailableException
-	// retry loop for unindexed finalized slots.
-	case svmCodeBlockNotAvailable, svmCodeNoSnapshot, svmCodeBlockStatusNotAvail:
+	// --- Missing data (retryable across upstreams) ----------------------------
+	//
+	// The raw Solana code is preserved on the wire (JsonRpcErrorNumber(code))
+	// so callers receive -32004/-32008/-32014/… instead of a normalized
+	// -32014 — normalizing everything to JsonRpcErrorMissingData sent
+	// sol-client into an infinite BlockNotAvailableException retry loop for
+	// unindexed finalized slots.
+	//
+	// Another upstream can genuinely have this data:
+	//   -32001: pruned from this node's local ledger; bigtable-backed nodes have it.
+	//   -32004: block exists but hasn't reached this node yet (tip propagation).
+	//   -32007: "skipped OR missing due to ledger jump to recent snapshot" — the
+	//           ledger-jump half is node-local (post-snapshot restart), so another
+	//           provider can serve it; the truly-skipped half is caught upstream
+	//           of retries by the raw wire code reaching the caller. Bounded by
+	//           the retry budget either way.
+	//   -32008: node currently holds no snapshot.
+	//   -32010: key excluded from this node's secondary index; index coverage is
+	//           per-provider (--account-index), so an indexed provider serves it.
+	//           Deliberate divergence from routers that mark this terminal.
+	//   -32011: this node has no transaction history (no bigtable); others do.
+	//   -32014: block status not computed yet on this node.
+	case svmCodeBlockCleanedUp, svmCodeBlockNotAvailable, svmCodeSlotSkipped, svmCodeNoSnapshot,
+		svmCodeKeyExcludedFromIndex, svmCodeTxHistoryNotAvailable, svmCodeBlockStatusNotAvail:
 		return common.NewErrEndpointMissingData(
 			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
 			upstream,
 		)
 
-	// --- Missing data — permanent (slot gone after snapshot jump) -------------
-	// Use the raw Solana code as normalizedCode so callers receive -32007/-32009
-	// on the wire instead of -32014 ("block status not available yet" = transient).
-	// Mark non-retryable: cycling upstreams wastes quota — snapshot jumps are global.
-	case svmCodeSlotSkipped, svmCodeLongTermStorageSlot:
-		md := common.NewErrEndpointMissingData(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
-			upstream,
-		)
-		if re, ok := md.(common.RetryableError); ok {
-			re.WithRetryableTowardNetwork(false)
-		}
-		return md
+	// --- Authoritatively-missing data (do NOT retry other upstreams) ----------
+	//
+	// -32009 is emitted only after the node consulted long-term storage: the
+	// slot was skipped, permanently, cluster-wide. Every upstream returns the
+	// same verdict, so failing over burns the retry budget (latency + quota)
+	// for a deterministic answer. A node whose long-term storage is *down*
+	// emits -32019 instead — that one stays retryable below. The raw -32009
+	// reaches the caller (JsonRpcErrorNumber preservation) so clients can
+	// distinguish the permanent skip from transient -32004/-32014.
+	case svmCodeLongTermStorageSlotSkipped:
+		return newAuthoritativeMissingData(code, msg, details, upstream)
 
 	// --- Node health issues (failover, but treat as server-side) --------------
-	// svmCodeNodeTooBehind (-32006) is TransactionPrecompileVerificationFailure in
-	// the agave validator — a client error (bad ed25519/secp256k1 precompile sig).
-	// Separated here so it is not retried across upstreams.
-	case svmCodeNodeTooBehind:
-		wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
-		return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
-
-	case svmCodeNodeUnhealthy, svmCodeNodeTimeout, svmCodeMinContextSlot:
+	//   -32005: node unhealthy / behind.
+	//   -32012: scan aborted by rooted-slot movement — transient, another node
+	//           (or a plain retry) succeeds.
+	//   -32016: node hasn't reached the request's minContextSlot; a fresher
+	//           upstream satisfies it (selection also pre-filters on this).
+	//   -32019: this node's long-term storage backend is unreachable.
+	case svmCodeNodeUnhealthy, svmCodeScanError, svmCodeMinContextSlotNotReached, svmCodeLongTermStorageUnreachable:
 		return common.NewErrEndpointServerSideException(
 			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
 			details, resp.StatusCode,
@@ -164,14 +187,31 @@ func (e *JsonRpcErrorExtractor) Extract(
 
 	// --- Client-side errors — do NOT retry across upstreams -------------------
 	//
-	// SVM simulation failures, transaction-history misses, and param-validation errors
-	// are fundamentally caller problems. Retrying against another upstream will return
-	// the same answer and waste quota. WithRetryableTowardNetwork(false) scopes the
-	// opt-out to SVM only — EVM ClientSideException still retries (its default).
-	case svmCodeTransactionSimFailed, svmCodeTransactionError, svmCodeTransactionHistory,
+	// The request itself is the problem; every upstream answers identically.
+	//   -32002/-32003/-32006/-32013: the transaction content is invalid
+	//     (preflight, signature verification, precompile verification, signature
+	//     length).
+	//   -32015: caller omitted/undersized maxSupportedTransactionVersion — a
+	//     versioned transaction is present regardless of which node answers.
+	//   -32018: caller-supplied slot is not an epoch boundary.
+	// WithRetryableTowardNetwork(false) scopes the opt-out to SVM only — EVM
+	// ClientSideException still retries (its default).
+	case svmCodeSendTxPreflightFailure, svmCodeTxSignatureVerifyFailure,
+		svmCodeTxPrecompileVerifyFailure, svmCodeTxSignatureLenMismatch,
+		svmCodeUnsupportedTxVersion, svmCodeSlotNotEpochBoundary,
 		svmCodeInvalidRequest, svmCodeInvalidParams, svmCodeParseError:
 		wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
 		return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
+
+	// --- Chain-state condition (non-retryable, not the caller's fault) --------
+	//
+	// -32017: epoch-rewards distribution is in progress for the queried epoch;
+	// the whole cluster reports the same until it completes. Surface unretried —
+	// ExecutionException is eRPC's "the chain said no, retrying won't change it"
+	// class (same treatment as preflight failures in the -32000 bucket).
+	case svmCodeEpochRewardsPeriodActive:
+		wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+		return common.NewErrEndpointExecutionException(wrapped)
 
 	// --- Generic -32000 bucket — disambiguate by message ----------------------
 	case svmCodeServerError:
@@ -180,6 +220,17 @@ func (e *JsonRpcErrorExtractor) Extract(
 		case isRateLimitMessage(low):
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
+			)
+		case strings.Contains(low, "missing in long-term storage"):
+			// Codeless -32009 variant: some vendor proxies strip/rewrite the code
+			// but keep agave's message. Same authoritative-skip treatment.
+			return newAuthoritativeMissingData(code, msg, details, upstream)
+		case strings.Contains(low, "ledger jump"):
+			// Codeless -32007 variant ("missing due to ledger jump to recent
+			// snapshot") — this node lost the slot locally; others have it.
+			return common.NewErrEndpointMissingData(
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
+				upstream,
 			)
 		case strings.Contains(low, "preflight") ||
 			strings.Contains(low, "transaction simulation failed") ||
@@ -236,4 +287,21 @@ func isRateLimitMessage(lowerMsg string) bool {
 		}
 	}
 	return false
+}
+
+// newAuthoritativeMissingData builds a MissingData error that is terminal at
+// network scope: the data is authoritatively absent cluster-wide (e.g. -32009
+// after a long-term-storage check), so failing over to another upstream cannot
+// change the answer. Keeping the MissingData class (rather than ClientSide)
+// preserves metrics/alerting semantics — this is a data-availability verdict,
+// not a malformed request.
+func newAuthoritativeMissingData(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
+	err := common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
+		upstream,
+	)
+	if me, ok := err.(*common.ErrEndpointMissingData); ok {
+		me.WithRetryableTowardNetwork(false)
+	}
+	return err
 }

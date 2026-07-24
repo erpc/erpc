@@ -22,6 +22,14 @@ const DefaultToleratedSlotRollback = 1024
 // upstream RPC quota without materially improving freshness.
 const DefaultPollInterval = 400 * time.Millisecond
 
+// maxConsecutiveSlotPollSkips bounds how many consecutive ticks the traffic
+// gate may skip the two getSlot calls. Live traffic proves freshness, but the
+// poller must periodically observe on its own — a stream of suggestions from a
+// single busy method must never fully starve independent verification.
+// ponytail: fixed bound mirrors the relay-skip cap proven in Lava-derived
+// routers; make it configurable only if a real workload needs it.
+const maxConsecutiveSlotPollSkips = 4
+
 // Static request payloads — avoid allocating on every tick.
 var (
 	reqGetHealth             = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
@@ -58,7 +66,19 @@ type SvmStatePoller struct {
 	// under the interval), halving the effective cadence.
 	debounceInterval atomic.Int64
 	lastPollAt       atomic.Int64
-	pollMu           sync.Mutex
+
+	// lastExternalLatestAt / lastExternalFinalizedAt stamp (UnixMilli) the most
+	// recent EXTERNAL slot observation (live-traffic context.slot harvest or
+	// shared-state suggestion) per commitment view. The poll loop uses them as
+	// the traffic gate: when both views are fresher than the debounce window,
+	// the two getSlot calls are skipped. Only the public Suggest* entry points
+	// stamp these — the poller's own fetches go through the private variants,
+	// so a poll can never satisfy its own gate.
+	lastExternalLatestAt    atomic.Int64
+	lastExternalFinalizedAt atomic.Int64
+	// slotPollSkips counts consecutive traffic-gated skips; guarded by pollMu.
+	slotPollSkips int
+	pollMu        sync.Mutex
 }
 
 func NewSvmStatePoller(
@@ -158,28 +178,57 @@ func (e *SvmStatePoller) loop(interval time.Duration) {
 	}
 }
 
-// Poll fans out four RPC calls in parallel. Each result updates its own field so a
-// single failure doesn't blank the others. Shred-insert lag is computed after
-// the fan-out joins — otherwise the getMaxShredInsertSlot goroutine races
-// against the getSlot goroutine and reads a stale (or zero) latest slot.
+// Poll fans out up to four RPC calls in parallel. Each result updates its own
+// field so a single failure doesn't blank the others. Shred-insert lag is
+// computed after the fan-out joins — otherwise the getMaxShredInsertSlot
+// goroutine races against the getSlot goroutine and reads a stale (or zero)
+// latest slot.
+//
+// Traffic gate: when live traffic has refreshed BOTH the latest and finalized
+// slot views within the debounce window (via SuggestLatestSlot /
+// SuggestFinalizedSlot, fed by upstreamPostForward_trackContextSlot), the two
+// getSlot calls are skipped this tick — traffic already proved slot freshness,
+// and on paid vendor RPCs the poller is the dominant background cost.
+// getHealth and getMaxShredInsertSlot always run: traffic carries neither
+// signal. Bounded by maxConsecutiveSlotPollSkips so suggestions can never
+// fully replace the poller's own observations.
 func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	e.pollMu.Lock()
 	defer e.pollMu.Unlock()
 
-	if d := time.Duration(e.debounceInterval.Load()); d > 0 {
+	d := time.Duration(e.debounceInterval.Load())
+	if d > 0 {
 		last := e.lastPollAt.Load()
 		if last > 0 && time.Since(time.UnixMilli(last)) < d {
 			return nil
 		}
 	}
 
+	skipSlots := false
+	if d > 0 && e.slotPollSkips < maxConsecutiveSlotPollSkips {
+		nowMs := time.Now().UnixMilli()
+		window := d.Milliseconds()
+		latestAt := e.lastExternalLatestAt.Load()
+		finalizedAt := e.lastExternalFinalizedAt.Load()
+		if window > 0 &&
+			latestAt > 0 && nowMs-latestAt < window &&
+			finalizedAt > 0 && nowMs-finalizedAt < window {
+			skipSlots = true
+		}
+	}
+	if skipSlots {
+		e.slotPollSkips++
+	} else {
+		e.slotPollSkips = 0
+	}
+
 	var wg sync.WaitGroup
-	wg.Add(4)
 
 	// Shared variable for shred → filled by the shred goroutine, read after Wait.
 	// Only the shred goroutine writes, so no atomics needed.
 	var shredSlot int64
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer e.recoverPanic("fetchHealth")
@@ -187,22 +236,26 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 		e.healthy.Store(healthy)
 	}()
 
-	go func() {
-		defer wg.Done()
-		defer e.recoverPanic("fetchSlot.processed")
-		if slot, err := e.fetchSlot(ctx, reqGetSlotProcessed); err == nil && slot > 0 {
-			e.SuggestLatestSlot(slot)
-		}
-	}()
+	if !skipSlots {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			defer e.recoverPanic("fetchSlot.processed")
+			if slot, err := e.fetchSlot(ctx, reqGetSlotProcessed); err == nil && slot > 0 {
+				e.suggestLatestSlot(slot)
+			}
+		}()
 
-	go func() {
-		defer wg.Done()
-		defer e.recoverPanic("fetchSlot.finalized")
-		if slot, err := e.fetchSlot(ctx, reqGetSlotFinalized); err == nil && slot > 0 {
-			e.SuggestFinalizedSlot(slot)
-		}
-	}()
+		go func() {
+			defer wg.Done()
+			defer e.recoverPanic("fetchSlot.finalized")
+			if slot, err := e.fetchSlot(ctx, reqGetSlotFinalized); err == nil && slot > 0 {
+				e.suggestFinalizedSlot(slot)
+			}
+		}()
+	}
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer e.recoverPanic("fetchSlot.maxShredInsert")
@@ -213,7 +266,8 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 
 	wg.Wait()
 
-	// Safe to read LatestSlot() now — the processed-slot goroutine has joined.
+	// Safe to read LatestSlot() now — the processed-slot goroutine has joined
+	// (and on a skipped tick the shared value is traffic-fed and current).
 	if shredSlot > 0 {
 		e.shredInsertSlot.Store(shredSlot)
 		if latest := e.LatestSlot(); latest > 0 {
@@ -305,7 +359,20 @@ func (e *SvmStatePoller) IsHealthy() bool {
 	return true
 }
 
+// SuggestLatestSlot ingests an externally-observed processed/latest slot —
+// live-traffic context.slot harvesting (upstreamPostForward_trackContextSlot)
+// or a shared-state neighbor. External observations double as freshness
+// evidence for the poll traffic gate; the poller's own fetches use the private
+// variant so a poll never satisfies its own gate.
 func (e *SvmStatePoller) SuggestLatestSlot(slot int64) {
+	if slot <= 0 {
+		return
+	}
+	e.lastExternalLatestAt.Store(time.Now().UnixMilli())
+	e.suggestLatestSlot(slot)
+}
+
+func (e *SvmStatePoller) suggestLatestSlot(slot int64) {
 	if slot <= 0 {
 		return
 	}
@@ -318,7 +385,17 @@ func (e *SvmStatePoller) SuggestLatestSlot(slot int64) {
 	}
 }
 
+// SuggestFinalizedSlot is the finalized-commitment sibling of
+// SuggestLatestSlot; same external-vs-internal split.
 func (e *SvmStatePoller) SuggestFinalizedSlot(slot int64) {
+	if slot <= 0 {
+		return
+	}
+	e.lastExternalFinalizedAt.Store(time.Now().UnixMilli())
+	e.suggestFinalizedSlot(slot)
+}
+
+func (e *SvmStatePoller) suggestFinalizedSlot(slot int64) {
 	if slot <= 0 {
 		return
 	}

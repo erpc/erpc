@@ -280,6 +280,175 @@ func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
 	}
 }
 
+// scriptAllFour registers healthy canned responses for every poller request so
+// the traffic-gate tests can focus on WHICH calls fire, not what they return.
+func scriptAllFour(up *scriptedUpstream) {
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`1000`))
+	up.script("getSlot:finalized", []byte(`990`))
+	up.script("getMaxShredInsertSlot", []byte(`998`))
+}
+
+// TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions: enabling the
+// debounce gate alone must not suppress anything — without external freshness
+// evidence Poll still fans out all four calls.
+func TestSvmStatePoller_Poll_TrafficGate_ClosedWithoutSuggestions(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllFour(up)
+	p := newPollerWithUpstream(t, up)
+	p.SetDebounceInterval(200 * time.Millisecond)
+
+	// First Poll is never debounce-blocked (no prior poll recorded).
+	require.NoError(t, p.Poll(context.Background()))
+
+	for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
+		if got := up.callCount(key); got != 1 {
+			t.Errorf("%s called %d times, want 1 (gate must stay closed without suggestions)", key, got)
+		}
+	}
+}
+
+// TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh: when live
+// traffic refreshed BOTH slot views within the debounce window, Poll skips the
+// two getSlot calls but still issues getHealth and getMaxShredInsertSlot
+// (traffic carries neither signal), and the slot surface keeps serving the
+// traffic-fed values.
+func TestSvmStatePoller_Poll_TrafficGate_SkipsGetSlotWhenBothViewsFresh(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllFour(up)
+	p := newPollerWithUpstream(t, up)
+	p.SetDebounceInterval(200 * time.Millisecond)
+
+	// External values differ from the scripted getSlot answers (1000/990) so a
+	// sneaky fetch would show up in the slot surface too, not just the counters.
+	p.SuggestLatestSlot(1500)
+	p.SuggestFinalizedSlot(1490)
+	require.NoError(t, p.Poll(context.Background()))
+
+	if got := up.callCount("getSlot:processed"); got != 0 {
+		t.Errorf("getSlot(processed) called %d times, want 0 (gated by fresh traffic)", got)
+	}
+	if got := up.callCount("getSlot:finalized"); got != 0 {
+		t.Errorf("getSlot(finalized) called %d times, want 0 (gated by fresh traffic)", got)
+	}
+	if got := up.callCount("getHealth"); got != 1 {
+		t.Errorf("getHealth called %d times, want 1 (must run on gated ticks)", got)
+	}
+	if got := up.callCount("getMaxShredInsertSlot"); got != 1 {
+		t.Errorf("getMaxShredInsertSlot called %d times, want 1 (must run on gated ticks)", got)
+	}
+	if p.LatestSlot() != 1500 || p.FinalizedSlot() != 1490 {
+		t.Errorf("slot surface must stay traffic-fed on a gated tick: latest=%d finalized=%d, want 1500/1490",
+			p.LatestSlot(), p.FinalizedSlot())
+	}
+}
+
+// TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots: one
+// fresh view is not freshness — the gate requires BOTH latest and finalized
+// observations within the window, else Poll fans out all four calls.
+func TestSvmStatePoller_Poll_TrafficGate_PartialFreshnessStillPollsSlots(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		suggest func(*SvmStatePoller)
+	}{
+		{"only latest fresh", func(p *SvmStatePoller) { p.SuggestLatestSlot(1500) }},
+		{"only finalized fresh", func(p *SvmStatePoller) { p.SuggestFinalizedSlot(1490) }},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			up := newScriptedUpstream()
+			scriptAllFour(up)
+			p := newPollerWithUpstream(t, up)
+			p.SetDebounceInterval(200 * time.Millisecond)
+
+			tc.suggest(p)
+			require.NoError(t, p.Poll(context.Background()))
+
+			for _, key := range []string{"getHealth", "getSlot:processed", "getSlot:finalized", "getMaxShredInsertSlot"} {
+				if got := up.callCount(key); got != 1 {
+					t.Errorf("%s called %d times, want 1 (one fresh view must not gate)", key, got)
+				}
+			}
+		})
+	}
+}
+
+// TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll: continuously fresh
+// traffic may gate at most maxConsecutiveSlotPollSkips consecutive polls; the
+// next poll forces the poller's own getSlot observation, and that forced poll
+// resets the counter so gating resumes afterwards.
+func TestSvmStatePoller_Poll_TrafficGate_SkipCapForcesFullPoll(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllFour(up)
+	p := newPollerWithUpstream(t, up)
+
+	const debounce = 100 * time.Millisecond
+	p.SetDebounceInterval(debounce)
+
+	// Expected cumulative getSlot fetches after the i-th poll: polls 1-4 are
+	// gated, poll 5 hits the skip cap (maxConsecutiveSlotPollSkips=4) and
+	// forces a full poll, poll 6 may gate again (counter reset by poll 5).
+	wantSlotCalls := []int{0, 0, 0, 0, 1, 1}
+
+	for i, want := range wantSlotCalls {
+		if i > 0 {
+			// Clear the whole-poll debounce so every iteration actually polls.
+			time.Sleep(debounce + 40*time.Millisecond)
+		}
+		// Re-stamp external freshness right before each poll so both views are
+		// always well inside the debounce window.
+		p.SuggestLatestSlot(int64(2000 + i))
+		p.SuggestFinalizedSlot(int64(1990 + i))
+		require.NoError(t, p.Poll(context.Background()))
+
+		// Guard against a vacuous pass: getHealth counts every poll that ran,
+		// so a debounce-dropped iteration is caught here, not mistaken for a
+		// gated one.
+		if got := up.callCount("getHealth"); got != i+1 {
+			t.Fatalf("poll %d did not run: getHealth=%d, want %d", i+1, got, i+1)
+		}
+		if got := up.callCount("getSlot:processed"); got != want {
+			t.Fatalf("after poll %d: getSlot(processed)=%d, want %d", i+1, got, want)
+		}
+		if got := up.callCount("getSlot:finalized"); got != want {
+			t.Fatalf("after poll %d: getSlot(finalized)=%d, want %d", i+1, got, want)
+		}
+	}
+}
+
+// TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate: a full poll
+// updates the slot views internally, but the poller's own observations are not
+// traffic — the next eligible poll must still fetch both slots.
+func TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllFour(up)
+	p := newPollerWithUpstream(t, up)
+
+	const debounce = 100 * time.Millisecond
+	p.SetDebounceInterval(debounce)
+
+	require.NoError(t, p.Poll(context.Background())) // full poll: updates slots internally
+	time.Sleep(debounce + 40*time.Millisecond)       // clear the whole-poll debounce
+	require.NoError(t, p.Poll(context.Background()))
+
+	if got := up.callCount("getHealth"); got != 2 {
+		t.Fatalf("second poll did not run: getHealth=%d, want 2", got)
+	}
+	if got := up.callCount("getSlot:processed"); got != 2 {
+		t.Errorf("getSlot(processed)=%d, want 2 (self-observed slots must not gate)", got)
+	}
+	if got := up.callCount("getSlot:finalized"); got != 2 {
+		t.Errorf("getSlot(finalized)=%d, want 2 (self-observed slots must not gate)", got)
+	}
+}
+
 // TestSvmStatePoller_SetDebounceInterval_UpdatesCadence guards the fix for the
 // dead statePollerDebounce config: SetDebounceInterval must update the poll
 // cadence to ANY positive value (the prior bug ignored configured values), and
@@ -338,6 +507,22 @@ func TestSvmStatePoller_SuggestLatestSlot_Monotonic(t *testing.T) {
 	p.SuggestLatestSlot(150)
 	if p.LatestSlot() != 200 {
 		t.Fatalf("expected 200 (no rollback), got %d", p.LatestSlot())
+	}
+}
+
+func TestSvmStatePoller_SuggestFinalizedSlot_Monotonic(t *testing.T) {
+	t.Parallel()
+	p := newTestPoller(t)
+
+	p.SuggestFinalizedSlot(300)
+	p.SuggestFinalizedSlot(400)
+	if p.FinalizedSlot() != 400 {
+		t.Fatalf("expected 400 after advance, got %d", p.FinalizedSlot())
+	}
+	// A lower suggestion must not roll the finalized view back.
+	p.SuggestFinalizedSlot(350)
+	if p.FinalizedSlot() != 400 {
+		t.Fatalf("expected 400 (no rollback), got %d", p.FinalizedSlot())
 	}
 }
 

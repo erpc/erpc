@@ -2565,6 +2565,36 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 				"*.logs.*.blockTimestamp",
 			},
 		}
+		// SVM: RpcResponse-enveloped methods carry {context:{slot,apiVersion},value:…}.
+		// context.slot is the slot the node answered at — it differs across healthy
+		// upstreams on virtually every call, and context.apiVersion differs across
+		// mixed validator versions. Without ignoring them, consensus registers
+		// dissent on identical values and SVM consensus is unusable out of the box.
+		// The value payload itself is still fully compared. Method names are
+		// Solana-only, so these entries are inert for EVM networks.
+		for _, m := range []string{
+			"getAccountInfo",
+			"getBalance",
+			"getBlockProduction",
+			"getFeeForMessage",
+			"getLargestAccounts",
+			"getLatestBlockhash",
+			"getMultipleAccounts",
+			"getProgramAccounts", // enveloped only with withContext:true; ignore paths are no-ops otherwise
+			"getRecentBlockhash", // deprecated but still served by older validators
+			"getSignatureStatuses",
+			"getStakeActivation", // removed in agave v2; harmless for older nodes
+			"getSupply",
+			"getTokenAccountBalance",
+			"getTokenAccountsByDelegate",
+			"getTokenAccountsByOwner",
+			"getTokenLargestAccounts",
+			"getTokenSupply",
+			"isBlockhashValid",
+			"simulateTransaction",
+		} {
+			c.IgnoreFields[m] = []string{"context.slot", "context.apiVersion"}
+		}
 	}
 	if c.PreferNonEmpty == nil {
 		c.PreferNonEmpty = util.BoolPtr(true)

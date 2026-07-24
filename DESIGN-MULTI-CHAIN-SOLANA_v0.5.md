@@ -362,3 +362,64 @@ Honest accounting of what this design does **not** yet do well:
 - Live Fogo mainnet: with `statePollerDebounce: 2s`, measured poll cadence
   ≈ 2.4 s (2 s gate + ≤ one-slot ticker), confirming the config is now honored
   (previously the field had no effect).
+
+## 11. Round-4 hardening deltas (comparative review vs Lava-derived routers)
+
+A structured comparison against Magma-Devs/smart-router (Lava-derived) and the
+agave `RpcCustomError` source produced these deltas — all SVM-scoped; the EVM
+path is untouched:
+
+1. **Error taxonomy corrected & completed** (`architecture/svm/error_normalizer.go`).
+   Constants now map 1:1 to agave `custom_error.rs` (-32001 … -32019).
+   Reclassified: `-32006` (TransactionPrecompileVerificationFailure) and
+   `-32015` (UnsupportedTransactionVersion) are client-side, non-retryable —
+   previously both failed over pointlessly. `-32009`
+   (LongTermStorageSlotSkipped) is now terminal at network scope: it is an
+   authoritative, cluster-wide skip verdict; cross-upstream retries cannot
+   change it (the storage-outage case, `-32019`, stays retryable). Added:
+   `-32001`/`-32010`/`-32011` → missing-data (index/history coverage is
+   per-provider, so failover is correct), `-32012`/`-32019` → server-side,
+   `-32017` → non-retryable chain-state condition, `-32018` → client-side.
+   Codeless vendor variants ("missing in long-term storage", "ledger jump")
+   are matched by message in the `-32000` bucket.
+
+2. **Consensus works on RpcResponse-enveloped methods out of the box**
+   (`common/defaults.go`). Default `ignoreFields` now strip `context.slot` and
+   `context.apiVersion` for the enveloped SVM read methods — previously two
+   healthy upstreams at adjacent slots registered dissent on identical values
+   (the same defect that makes smart-router's cross-validation unusable on
+   Solana). The `value` payload is still fully compared.
+
+3. **Single-liar-safe consensus reference** (`architecture/svm/slot_lag.go`).
+   The slot-lag prefilter's reference is no longer the raw pool max: when the
+   leader outruns the runner-up by more than `maxFinalizedSlotLag`, the
+   runner-up becomes the reference, so one upstream reporting an inflated
+   finalized slot cannot shrink the consensus pool to itself.
+
+4. **`minContextSlot` selection prefilter** (`slot_lag.go` + `erpc/networks.go`).
+   Requests carrying `minContextSlot` skip upstreams whose tracked slot (at
+   the request's commitment) is known to be behind it — avoiding guaranteed
+   `-32016` round-trips. Defensive fallback keeps the pool non-empty.
+   Full per-client monotonic-read injection (router-maintained seen-slot →
+   `minContextSlot` stamping) remains a follow-up: it needs a client-identity
+   store.
+
+5. **Traffic-gated polling** (`svm_state_poller.go`, `hooks.go`). `context.slot`
+   harvested from live responses now also feeds the finalized view (when the
+   request's effective commitment is finalized) and doubles as freshness
+   evidence: when both slot views are traffic-fresh within the debounce
+   window, the poller skips its two `getSlot` calls (bounded at 4 consecutive
+   skips; `getHealth`/`getMaxShredInsertSlot` always run). On busy networks
+   this roughly halves background poll quota on paid vendors.
+
+6. **Example config guidance** (`erpc.svm.example.yaml`): 150 ms initial retry
+   delay for tip-propagation `-32004`s, and notes on the consensus/prefilter
+   defaults above.
+
+Deliberately NOT adopted from the comparison: previous-slot walk-back on
+`-32004` (answering for a different slot than requested is tracker-internal
+semantics, not proxy behavior), marking `-32010` non-retryable (index coverage
+varies per provider — failover is correct), and the reference router's WS
+stack (its Solana notification dispatch, unsubscribe derivation, and id
+rewrite are demonstrably broken; only its edge-case catalog informs our
+Phase-2 WS design).

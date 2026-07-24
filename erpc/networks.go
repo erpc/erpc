@@ -1083,23 +1083,49 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// Architecture-specific pruning of the upstream list. Currently only SVM
-	// uses this hook — it excludes upstreams whose FinalizedSlot trails the
-	// pool by more than MaxFinalizedSlotLag, but only when a consensus policy
-	// is active AND the request's finality is Finalized. For non-consensus
-	// paths the existing score-based retry already handles stale upstreams.
-	if n.cfg.Architecture == common.ArchitectureSvm && n.cfg.Svm != nil && n.cfg.Svm.MaxFinalizedSlotLag > 0 {
-		fe := n.getFailsafeExecutor(ctx, req)
-		if fe != nil && fe.consensus != nil && req.Finality(ctx) == common.DataFinalityStateFinalized {
+	// uses this hook; both filters are gated on ArchitectureSvm so EVM networks
+	// never enter this block.
+	if n.cfg.Architecture == common.ArchitectureSvm && n.cfg.Svm != nil {
+		// (1) Consensus slot-lag prefilter — excludes upstreams whose
+		// FinalizedSlot trails the pool by more than MaxFinalizedSlotLag, but
+		// only when a consensus policy is active AND the request's finality is
+		// Finalized. For non-consensus paths the existing score-based retry
+		// already handles stale upstreams. The reference slot is the
+		// single-liar-safe clamped leader (see ReferenceFinalizedSlot), not the
+		// raw pool max — a lone upstream reporting an inflated finalized slot
+		// must not shrink the pool to itself.
+		if n.cfg.Svm.MaxFinalizedSlotLag > 0 {
+			fe := n.getFailsafeExecutor(ctx, req)
+			if fe != nil && fe.consensus != nil && req.Finality(ctx) == common.DataFinalityStateFinalized {
+				before := len(upsList)
+				reference := svm.ReferenceFinalizedSlot(upsList, n.cfg.Svm.MaxFinalizedSlotLag)
+				upsList = svm.FilterByFinalizedSlotLag(upsList, n.cfg.Svm.MaxFinalizedSlotLag, reference)
+				if len(upsList) != before {
+					lg.Debug().
+						Int("before", before).
+						Int("after", len(upsList)).
+						Int64("maxFinalizedSlotLag", n.cfg.Svm.MaxFinalizedSlotLag).
+						Int64("referenceSlot", reference).
+						Msg("svm: filtered stale upstreams for consensus")
+				}
+			}
+		}
+		// (2) minContextSlot prefilter — an upstream whose tracked slot (at the
+		// request's commitment) is behind the caller's minContextSlot is a
+		// guaranteed -32016 round-trip; skip it before selection. Applies to any
+		// SVM request carrying the param, with or without consensus. Defensive
+		// fallback inside the filter keeps the pool non-empty so the -32016
+		// failover path still reports the truth when every upstream trails.
+		if mcs := svm.MinContextSlotOf(ctx, req); mcs > 0 {
 			before := len(upsList)
-			reference := svm.HighestFinalizedSlot(upsList)
-			upsList = svm.FilterByFinalizedSlotLag(upsList, n.cfg.Svm.MaxFinalizedSlotLag, reference)
+			finalized := req.Finality(ctx) == common.DataFinalityStateFinalized
+			upsList = svm.FilterByMinContextSlot(upsList, mcs, finalized)
 			if len(upsList) != before {
 				lg.Debug().
 					Int("before", before).
 					Int("after", len(upsList)).
-					Int64("maxFinalizedSlotLag", n.cfg.Svm.MaxFinalizedSlotLag).
-					Int64("referenceSlot", reference).
-					Msg("svm: filtered stale upstreams for consensus")
+					Int64("minContextSlot", mcs).
+					Msg("svm: filtered upstreams behind minContextSlot")
 			}
 		}
 	}

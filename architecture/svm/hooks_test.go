@@ -494,10 +494,11 @@ func (s *svmUpstreamStub) Uncordon(string, string)                 {}
 func (s *svmUpstreamStub) IgnoreMethod(string)                     {}
 func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller   { return s.poller }
 
-// recordingSvmPoller captures SuggestLatestSlot calls so the test can assert
-// on what the hook extracted.
+// recordingSvmPoller captures SuggestLatestSlot / SuggestFinalizedSlot calls so
+// the test can assert on what the hook extracted and how it routed it.
 type recordingSvmPoller struct {
-	lastSuggested int64
+	lastSuggested          int64
+	lastFinalizedSuggested int64
 }
 
 func (r *recordingSvmPoller) Bootstrap(context.Context) error   { return nil }
@@ -509,7 +510,7 @@ func (r *recordingSvmPoller) ShredInsertSlot() int64            { return 0 }
 func (r *recordingSvmPoller) MaxShredInsertSlotLag() int64      { return 0 }
 func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
 func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
-func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   {}
+func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   { r.lastFinalizedSuggested = slot }
 func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
 
 func TestUpstreamPostForward_TrackContextSlot_SuggestsFromResponse(t *testing.T) {
@@ -525,7 +526,7 @@ func TestUpstreamPostForward_TrackContextSlot_SuggestsFromResponse(t *testing.T)
 	}
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
-	upstreamPostForward_trackContextSlot(context.Background(), up, resp)
+	upstreamPostForward_trackContextSlot(context.Background(), nil, up, req, resp)
 
 	if poller.lastSuggested != 12345 {
 		t.Fatalf("expected SuggestLatestSlot(12345), got %d", poller.lastSuggested)
@@ -541,7 +542,7 @@ func TestUpstreamPostForward_TrackContextSlot_IgnoresResponseWithoutContext(t *t
 	jrr, _ := common.NewJsonRpcResponseFromBytes(nil, []byte(`{"blockhash":"abc","parentSlot":99}`), nil)
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
-	upstreamPostForward_trackContextSlot(context.Background(), up, resp)
+	upstreamPostForward_trackContextSlot(context.Background(), nil, up, req, resp)
 
 	if poller.lastSuggested != 0 {
 		t.Fatalf("no context.slot in response → poller must be untouched, got %d", poller.lastSuggested)
@@ -558,8 +559,91 @@ func TestUpstreamPostForward_TrackContextSlot_NoOpForNonSvmUpstream(t *testing.T
 
 	// stubSvm defined in error_normalizer_test.go satisfies common.Upstream
 	// but NOT common.SvmUpstream — it has no SvmStatePoller method.
-	upstreamPostForward_trackContextSlot(context.Background(), newSvmStub(), resp)
+	upstreamPostForward_trackContextSlot(context.Background(), nil, newSvmStub(), req, resp)
 	// No assertion — test passes if it doesn't panic and returns cleanly.
+}
+
+// TestUpstreamPostForward_TrackContextSlot_CommitmentRouting locks the
+// commitment-routed harvesting contract: context.slot on a response whose
+// EFFECTIVE commitment (explicit param wins, else network default) is
+// "finalized" feeds BOTH the finalized and latest views; any weaker
+// commitment — or a nil network, which makes the default unresolvable —
+// feeds only the latest view.
+func TestUpstreamPostForward_TrackContextSlot_CommitmentRouting(t *testing.T) {
+	t.Parallel()
+
+	const slot = int64(98765)
+	confirmedNet := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}}
+	finalizedNet := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "finalized"},
+	}}
+
+	cases := []struct {
+		name          string
+		network       common.Network
+		reqBody       string
+		wantFinalized int64
+	}{
+		{
+			// Explicit param beats the weaker network default.
+			name:          "explicit finalized feeds both views",
+			network:       confirmedNet,
+			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"commitment":"finalized"}]}`,
+			wantFinalized: slot,
+		},
+		{
+			// Explicit param beats the stronger network default too.
+			name:          "explicit confirmed feeds latest only",
+			network:       finalizedNet,
+			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"commitment":"confirmed"}]}`,
+			wantFinalized: 0,
+		},
+		{
+			name:          "network default finalized feeds both views",
+			network:       finalizedNet,
+			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`,
+			wantFinalized: slot,
+		},
+		{
+			// Without a network the effective commitment is unknowable, so
+			// even an explicit finalized param must NOT feed the finalized
+			// view — locks the n != nil guard.
+			name:          "nil network feeds latest only",
+			network:       nil,
+			reqBody:       `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey",{"commitment":"finalized"}]}`,
+			wantFinalized: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			poller := &recordingSvmPoller{}
+			up := &svmUpstreamStub{poller: poller}
+
+			req := common.NewNormalizedRequest([]byte(tc.reqBody))
+			jrr, err := common.NewJsonRpcResponseFromBytes(nil,
+				[]byte(fmt.Sprintf(`{"context":{"slot":%d,"apiVersion":"1.18"},"value":{"lamports":42}}`, slot)), nil)
+			if err != nil {
+				t.Fatalf("build response: %v", err)
+			}
+			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+			upstreamPostForward_trackContextSlot(context.Background(), tc.network, up, req, resp)
+
+			if poller.lastSuggested != slot {
+				t.Fatalf("expected SuggestLatestSlot(%d), got %d", slot, poller.lastSuggested)
+			}
+			if poller.lastFinalizedSuggested != tc.wantFinalized {
+				t.Fatalf("expected SuggestFinalizedSlot(%d), got %d", tc.wantFinalized, poller.lastFinalizedSuggested)
+			}
+		})
+	}
 }
 
 func TestHandleUpstreamPostForward_NonSendTransaction_Unchanged(t *testing.T) {

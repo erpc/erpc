@@ -92,9 +92,10 @@ func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 		return upstreamPostForward_sendTransaction(resp, err)
 	}
 	// Opportunistic slot tracking — uses response.context.slot to keep the
-	// upstream's SvmStatePoller fresh between polling ticks. Silent on miss.
+	// upstream's SvmStatePoller fresh between polling ticks (and to feed the
+	// poller's traffic gate). Silent on miss.
 	if err == nil {
-		upstreamPostForward_trackContextSlot(ctx, upstream, resp)
+		upstreamPostForward_trackContextSlot(ctx, network, upstream, req, resp)
 	}
 	return resp, err
 }

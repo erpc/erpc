@@ -476,9 +476,16 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 // upstreamPostForward_trackContextSlot peeks at response.result.context.slot
 // and feeds it into the upstream's SvmStatePoller. Solana RPC responses
 // commonly carry a `context.slot` metadata field that tells us the slot the
-// node was at when it answered — using it updates our latest-slot view
-// without waiting for the next poll tick, which tightens the freshness
-// window for failover decisions.
+// node was at when it answered — using it updates our slot view without
+// waiting for the next poll tick, which tightens the freshness window for
+// failover decisions AND lets the poller's traffic gate skip redundant
+// getSlot calls (see SvmStatePoller.Poll).
+//
+// The observation is routed by the request's EFFECTIVE commitment (the same
+// resolveCommitment predicate injection and finality use): context.slot on a
+// finalized-commitment response is a finalized slot, so it feeds the
+// finalized view too. A finalized slot is always a valid lower bound for the
+// latest view, so it feeds both; weaker commitments feed only latest.
 //
 // Quietly no-ops on:
 //   - nil response / error response
@@ -488,7 +495,7 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 // The assumption is that any slot reported by a successful upstream is
 // usable — we don't try to guard against regressions here; that's the
 // state poller's rollback-tolerance job.
-func upstreamPostForward_trackContextSlot(ctx context.Context, u common.Upstream, rs *common.NormalizedResponse) {
+func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) {
 	if rs == nil || u == nil {
 		return
 	}
@@ -511,6 +518,11 @@ func upstreamPostForward_trackContextSlot(ctx context.Context, u common.Upstream
 	slot, err := strconv.ParseInt(slotStr, 10, 64)
 	if err != nil || slot <= 0 {
 		return
+	}
+	if r != nil && n != nil {
+		if commitment, _, _ := resolveCommitment(ctx, n, r); commitment == "finalized" {
+			poller.SuggestFinalizedSlot(slot)
+		}
 	}
 	poller.SuggestLatestSlot(slot)
 }

@@ -94,25 +94,41 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 		wantErrCode common.ErrorCode
 		nonRetry    bool // true if retryableTowardNetwork:false must be set
 	}{
-		// Missing-data family — transient are retryable, permanent are not.
+		// Missing-data family — retryable across upstreams (another node can have it).
+		{"-32001 block cleaned up", -32001, "Block cleaned up, does not exist on node", common.ErrCodeEndpointMissingData, false},
 		{"-32004 block not available", -32004, "Block not available", common.ErrCodeEndpointMissingData, false},
-		{"-32007 slot skipped", -32007, "Slot was skipped", common.ErrCodeEndpointMissingData, true},
+		{"-32007 slot skipped", -32007, "Slot was skipped", common.ErrCodeEndpointMissingData, false},
 		{"-32008 no snapshot", -32008, "No snapshot available", common.ErrCodeEndpointMissingData, false},
-		{"-32009 long-term storage slot", -32009, "Long-term storage slot not reachable", common.ErrCodeEndpointMissingData, true},
+		{"-32010 key excluded from secondary index", -32010, "Key excluded from secondary index", common.ErrCodeEndpointMissingData, false},
+		{"-32011 transaction history not available", -32011, "Transaction history is not available from this node", common.ErrCodeEndpointMissingData, false},
 		{"-32014 block status not available", -32014, "Block status not available", common.ErrCodeEndpointMissingData, false},
 
-		// Node-health family — retryable (server-side), except -32006 which is
-		// client-side (the request cannot succeed on any upstream in this state).
-		{"-32006 node too behind", -32006, "Node too far behind", common.ErrCodeEndpointClientSideException, true},
-		{"-32015 node timeout", -32015, "RPC node timeout", common.ErrCodeEndpointServerSideException, false},
-		{"-32016 min context slot", -32016, "Min context slot not reached", common.ErrCodeEndpointServerSideException, false},
+		// Authoritatively-missing data — right class (MissingData) but terminal at
+		// network scope: long-term storage was consulted, every upstream agrees.
+		// The MissingData+non-retryable PAIR is the invariant (skip, no failover).
+		{"-32009 long-term storage slot skipped", -32009, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, true},
 
-		// Client-side non-retryable family. Scoped via WithRetryableTowardNetwork(false).
-		{"-32003 transaction error", -32003, "Invalid transaction", common.ErrCodeEndpointClientSideException, true},
-		{"-32013 transaction history", -32013, "Transaction history not available", common.ErrCodeEndpointClientSideException, true},
+		// Node-health family — retryable (server-side); another node succeeds.
+		{"-32005 node unhealthy", -32005, "Node is behind by 42 slots", common.ErrCodeEndpointServerSideException, false},
+		{"-32012 scan error", -32012, "Scan aborted by rooted-slot movement", common.ErrCodeEndpointServerSideException, false},
+		{"-32016 min context slot", -32016, "Min context slot not reached", common.ErrCodeEndpointServerSideException, false},
+		{"-32019 long-term storage unreachable", -32019, "Long-term storage unreachable", common.ErrCodeEndpointServerSideException, false},
+
+		// Client-side non-retryable family — the request/transaction itself is the
+		// problem; every upstream answers identically. Scoped via
+		// WithRetryableTowardNetwork(false).
+		{"-32003 signature verification failure", -32003, "Transaction signature verification failure", common.ErrCodeEndpointClientSideException, true},
+		{"-32006 precompile verification", -32006, "Transaction precompile verification failure", common.ErrCodeEndpointClientSideException, true},
+		{"-32013 signature len mismatch", -32013, "Transaction signature length mismatch", common.ErrCodeEndpointClientSideException, true},
+		{"-32015 unsupported tx version", -32015, "Transaction version (0) is not supported by the requesting client", common.ErrCodeEndpointClientSideException, true},
+		{"-32018 slot not epoch boundary", -32018, "Slot 12345 is not an epoch boundary", common.ErrCodeEndpointClientSideException, true},
 		{"-32600 invalid request", -32600, "Malformed request", common.ErrCodeEndpointClientSideException, true},
 		{"-32602 invalid params", -32602, "Invalid parameters", common.ErrCodeEndpointClientSideException, true},
 		{"-32700 parse error", -32700, "JSON parse error", common.ErrCodeEndpointClientSideException, true},
+
+		// Epoch-global chain-state condition — identical answer cluster-wide, so
+		// ExecutionException (non-retryable by construction in common/errors.go).
+		{"-32017 epoch rewards period active", -32017, "Epoch rewards period still active at slot 12345", common.ErrCodeEndpointExecutionException, true},
 
 		// Internal error (retryable).
 		{"-32603 internal error", -32603, "Internal server error", common.ErrCodeEndpointServerSideException, false},
@@ -121,9 +137,13 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 		// client-side (invalid tx state) with retryableTowardNetwork:false.
 		{"-32000 blockhash not found → execution", -32000, "Blockhash not found in recent list", common.ErrCodeEndpointClientSideException, true},
 		{"-32000 invalid signature → client-side", -32000, "Invalid signature on tx", common.ErrCodeEndpointClientSideException, true},
+		{"-32000 long-term storage → terminal missing-data", -32000, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, true},
+		{"-32000 ledger jump → retryable missing-data", -32000, "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot", common.ErrCodeEndpointMissingData, false},
 		{"-32000 generic → server-side", -32000, "something unexpected happened", common.ErrCodeEndpointServerSideException, false},
 
-		// Unknown codes still funnel to server-side so the network can failover.
+		// Unknown codes still funnel to server-side so the network can failover —
+		// both future agave appends (-32042) and out-of-range vendor codes (-39999).
+		{"-32042 unknown future agave code", -32042, "Brand new solana error", common.ErrCodeEndpointServerSideException, false},
 		{"-39999 unknown code", -39999, "Brand new solana error", common.ErrCodeEndpointServerSideException, false},
 	}
 
@@ -143,14 +163,20 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 	}
 }
 
-func TestExtract_SlotSkipped_IsNonRetryableAndPreservesCode(t *testing.T) {
+// -32007 folds two physical causes: "slot skipped" (global) and "missing due
+// to ledger jump to recent snapshot" (node-local, post-restart). The node-local
+// half means another provider can genuinely serve the slot, so the class stays
+// retryable; the truly-skipped half is bounded by the retry budget, and the raw
+// -32007 reaching the caller lets clients stop on their side. Contrast -32009,
+// which is authoritative (long-term storage consulted) and terminal.
+func TestExtract_SlotSkipped_IsRetryableAndPreservesCode(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32007, "Slot 12345 was skipped", 200)
 	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 		t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
 	}
-	if common.IsRetryableTowardNetwork(err) {
-		t.Fatal("-32007 (permanent) must be non-retryable toward network")
+	if !common.IsRetryableTowardNetwork(err) {
+		t.Fatal("-32007 (ambiguous: ledger-jump half is node-local) must stay retryable toward network")
 	}
 	var jre *common.ErrJsonRpcExceptionInternal
 	if !errors.As(err, &jre) {
@@ -238,6 +264,6 @@ func (s *stubSvm) Forward(_ context.Context, _ *common.NormalizedRequest, _, _ b
 	return nil, nil
 }
 func (s *stubSvm) ShouldHandleMethod(string) (bool, error) { return true, nil }
-func (s *stubSvm) Cordon(string, string)   {}
-func (s *stubSvm) Uncordon(string, string) {}
-func (s *stubSvm) IgnoreMethod(string)     {}
+func (s *stubSvm) Cordon(string, string)                   {}
+func (s *stubSvm) Uncordon(string, string)                 {}
+func (s *stubSvm) IgnoreMethod(string)                     {}

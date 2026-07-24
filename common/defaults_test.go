@@ -1261,6 +1261,58 @@ func TestSetDefaults_ConsensusWaitCaps(t *testing.T) {
 	})
 }
 
+// TestSetDefaults_ConsensusIgnoreFields locks three contracts of the
+// IgnoreFields defaulting added for SVM consensus:
+//
+//  1. EVM invariance — the eth_* entries are byte-for-byte what they were
+//     before the SVM change (a regression guard, not a defaults echo).
+//  2. SVM context-envelope methods each ignore exactly
+//     ["context.slot","context.apiVersion"].
+//  3. Operator-supplied IgnoreFields wins wholesale: SetDefaults must not
+//     inject SVM entries into a non-nil map (nil-check semantics).
+func TestSetDefaults_ConsensusIgnoreFields(t *testing.T) {
+	t.Run("fresh config gets EVM entries unchanged and SVM envelope entries", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{MaxParticipants: 3, AgreementThreshold: 2}
+		require := assert.New(t)
+		require.NoError(c.SetDefaults())
+		require.NotNil(c.IgnoreFields)
+
+		// EVM invariance: exactly the pre-SVM values.
+		assert.Equal(t, []string{"*.blockTimestamp"}, c.IgnoreFields["eth_getLogs"])
+		assert.Equal(t, []string{"blockTimestamp", "logs.*.blockTimestamp"}, c.IgnoreFields["eth_getTransactionReceipt"])
+		assert.Equal(t, []string{"*.blockTimestamp", "*.logs.*.blockTimestamp"}, c.IgnoreFields["eth_getBlockReceipts"])
+
+		// SVM RpcResponse-enveloped methods ignore the context envelope only.
+		for _, m := range []string{
+			"getAccountInfo",
+			"getBalance",
+			"getLatestBlockhash",
+			"getMultipleAccounts",
+			"getSignatureStatuses",
+			"getTokenAccountsByOwner",
+			"simulateTransaction",
+		} {
+			assert.Equal(t, []string{"context.slot", "context.apiVersion"}, c.IgnoreFields[m], "method %s", m)
+		}
+
+		// Scalar / non-enveloped Solana methods are deliberately absent:
+		// their whole result is the payload, so nothing may be ignored.
+		assert.NotContains(t, c.IgnoreFields, "getEpochInfo")
+		assert.NotContains(t, c.IgnoreFields, "getSlot")
+	})
+
+	t.Run("operator-supplied IgnoreFields is left exactly as given", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 2,
+			IgnoreFields:       map[string][]string{"foo": {"bar"}},
+		}
+		require := assert.New(t)
+		require.NoError(c.SetDefaults())
+		assert.Equal(t, map[string][]string{"foo": {"bar"}}, c.IgnoreFields)
+	})
+}
+
 // captureWarnings rebinds the package-level zerolog `log.Logger` to a
 // JSON-encoded buffer for the duration of `fn`, then restores the
 // prior logger. Used to assert that `SetDefaults` emits a deprecation
