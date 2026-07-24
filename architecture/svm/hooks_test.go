@@ -889,18 +889,20 @@ func TestNetworkPostForward_GetSlot_FinalizedCommitment_UsesIndexedSlotWhenBehin
 	}
 }
 
-// networkPreForward_getBlock: slot ahead of indexedTip → short-circuit missing-data.
-func TestNetworkPreForwardGetBlock_SlotAheadOfIndexedTip_ShortCircuits(t *testing.T) {
+// networkPreForward_getBlock: slot beyond indexedTip + staleness margin →
+// short-circuit missing-data. fakeNetwork's config carries no Svm section, so
+// the margin is the floor of 2 slots: tip 1000 → first rejected slot is 1003.
+func TestNetworkPreForwardGetBlock_SlotBeyondStalenessMargin_ShortCircuits(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
 		cfg:         &common.NetworkConfig{Architecture: common.ArchitectureSvm},
 		indexedSlot: 1000,
 	}
 	for _, method := range []string{"getBlock", "getConfirmedBlock"} {
-		req := newReq(method, `[1001, {"encoding":"jsonParsed"}]`)
+		req := newReq(method, `[1003, {"encoding":"jsonParsed"}]`)
 		handled, resp, err := networkPreForward_getBlock(context.Background(), net, req)
 		if !handled {
-			t.Fatalf("%s: expected short-circuit for slot 1001 > indexedTip 1000", method)
+			t.Fatalf("%s: expected short-circuit for slot 1003 > indexedTip 1000 + margin 2", method)
 		}
 		if resp != nil {
 			t.Fatalf("%s: expected nil response on short-circuit", method)
@@ -917,23 +919,27 @@ func TestNetworkPreForwardGetBlock_SlotAheadOfIndexedTip_ShortCircuits(t *testin
 	}
 }
 
-// slot at or below indexedTip → pass through.
-func TestNetworkPreForwardGetBlock_SlotWithinIndexedTip_PassesThrough(t *testing.T) {
+// slot at/below indexedTip, and up to the staleness margin above it, → pass
+// through. The 1-2-slots-ahead rows pin the false-reject fix: a live confirmed
+// head is routinely 1-2 slots above the poll-debounce-stale frontier snapshot.
+func TestNetworkPreForwardGetBlock_SlotWithinStalenessMargin_PassesThrough(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
 		cfg:         &common.NetworkConfig{Architecture: common.ArchitectureSvm},
 		indexedSlot: 1000,
 	}
-	for _, slot := range []int64{999, 1000} {
-		req := newReq("getBlock", fmt.Sprintf(`[%d]`, slot))
-		handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
-		if handled || err != nil {
-			t.Fatalf("slot %d: expected pass-through (handled=%v err=%v)", slot, handled, err)
+	for _, method := range []string{"getBlock", "getConfirmedBlock"} {
+		for _, slot := range []int64{999, 1000, 1001, 1002} {
+			req := newReq(method, fmt.Sprintf(`[%d]`, slot))
+			handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+			if handled || err != nil {
+				t.Fatalf("%s slot %d: expected pass-through (handled=%v err=%v)", method, slot, handled, err)
+			}
 		}
 	}
 }
 
-// indexedTip unavailable → falls back to finalizedTip.
+// indexedTip unavailable → falls back to finalizedTip with the same margin.
 func TestNetworkPreForwardGetBlock_NoIndexedTip_FallsBackToFinalizedTip(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
@@ -941,18 +947,18 @@ func TestNetworkPreForwardGetBlock_NoIndexedTip_FallsBackToFinalizedTip(t *testi
 		indexedSlot:   0, // unavailable
 		finalizedSlot: 1000,
 	}
-	// slot above finalizedTip → short-circuit
-	req := newReq("getBlock", `[1001]`)
+	// slot beyond finalizedTip + margin 2 → short-circuit
+	req := newReq("getBlock", `[1003]`)
 	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
 	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 		t.Fatalf("expected short-circuit via finalizedTip fallback, got handled=%v err=%v", handled, err)
 	}
 
-	// slot within finalizedTip → pass through
-	req2 := newReq("getBlock", `[999]`)
+	// slot within finalizedTip + margin → pass through
+	req2 := newReq("getBlock", `[1002]`)
 	handled2, _, err2 := networkPreForward_getBlock(context.Background(), net, req2)
 	if handled2 || err2 != nil {
-		t.Fatalf("slot 999 within finalizedTip 1000: expected pass-through, got handled=%v err=%v", handled2, err2)
+		t.Fatalf("slot 1002 within finalizedTip 1000 + margin 2: expected pass-through, got handled=%v err=%v", handled2, err2)
 	}
 }
 
@@ -976,7 +982,7 @@ func TestHandleNetworkPreForward_DispatchesGetBlockGuard(t *testing.T) {
 	}
 	h := &SvmArchitectureHandler{}
 	for _, method := range []string{"getBlock", "getConfirmedBlock"} {
-		req := newReq(method, `[501]`)
+		req := newReq(method, `[503]`) // tip 500 + margin 2 → first rejected slot
 		handled, _, err := h.HandleNetworkPreForward(context.Background(), net, nil, req)
 		if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			t.Fatalf("%s: expected dispatch to guard, got handled=%v err=%v", method, handled, err)
@@ -997,6 +1003,53 @@ func TestNetworkPreForwardGetBlock_GuardDisabled_PassesThrough(t *testing.T) {
 	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
 	if handled || err != nil {
 		t.Fatalf("guard disabled: expected pass-through for slot 9999, got handled=%v err=%v", handled, err)
+	}
+}
+
+// margin widens with the configured StatePollerDebounce: 2s → 2+floor(2000/400) = 7.
+func TestNetworkPreForwardGetBlock_MarginDerivesFromDebounce(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureSvm,
+			Svm:          &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(2 * time.Second)},
+		},
+		indexedSlot: 1000,
+	}
+	// tip+7 → within margin, forwards
+	req := newReq("getBlock", `[1007]`)
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+	if handled || err != nil {
+		t.Fatalf("slot 1007 within tip 1000 + margin 7: expected pass-through, got handled=%v err=%v", handled, err)
+	}
+	// tip+8 → beyond margin, short-circuits
+	req2 := newReq("getBlock", `[1008]`)
+	handled2, _, err2 := networkPreForward_getBlock(context.Background(), net, req2)
+	if !handled2 || !common.HasErrorCode(err2, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("slot 1008 beyond tip 1000 + margin 7: expected short-circuit, got handled=%v err=%v", handled2, err2)
+	}
+}
+
+// indexedTipStalenessMargin: 2 base slots + floor(debounce / 400ms).
+func TestIndexedTipStalenessMargin(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cfg  *common.NetworkConfig
+		want int64
+	}{
+		{"nil config", nil, 2},
+		{"no svm section", &common.NetworkConfig{Architecture: common.ArchitectureSvm}, 2},
+		{"svm without debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{}}, 2},
+		{"400ms debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(400 * time.Millisecond)}}, 3},
+		{"1s debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(time.Second)}}, 4},
+		{"2s debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(2 * time.Second)}}, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := indexedTipStalenessMargin(&fakeNetwork{cfg: tc.cfg}); got != tc.want {
+				t.Fatalf("margin = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
