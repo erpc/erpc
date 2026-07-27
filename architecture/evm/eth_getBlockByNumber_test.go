@@ -154,8 +154,8 @@ func TestAllPhantomTransactions(t *testing.T) {
 	t.Run("HyperEVMSystemTxs_SyntheticSignature", func(t *testing.T) {
 		// Real HyperEVM testnet block 57659287 (0x36fcf97): two native/L1
 		// system txs with non-zero gas and real-looking from addresses, but a
-		// synthetic signature where r=0x1 and s == from. The Polygon heuristic
-		// misses these; the signature marker must catch them.
+		// synthetic signature where r=0x1 and gasPrice=0. The Polygon heuristic
+		// misses these; the HyperEVM marker must catch them.
 		txs := []any{
 			map[string]interface{}{
 				"from":     "0xf9b10ef826e9aa275f1813034e3bd9b80224e535",
@@ -175,39 +175,57 @@ func TestAllPhantomTransactions(t *testing.T) {
 		assert.True(t, allPhantomTransactions(txs))
 	})
 
-	t.Run("HyperEVMSystemTx_CaseInsensitive", func(t *testing.T) {
+	t.Run("HyperEVMHypeBridge_SIsOneNotFrom", func(t *testing.T) {
+		// Real HyperEVM testnet block 59707830: HYPE bridge system tx encodes
+		// sender 0x2222… as s=1 (not s==from). r=0x1 + gasPrice=0 must still
+		// classify it as phantom — the old s==from heuristic misses this.
 		txs := []any{
 			map[string]interface{}{
-				"from": "0xF9B10EF826E9AA275F1813034E3BD9B80224E535",
-				"gas":  "0x30d40",
-				"r":    "0x01",
-				"s":    "0xf9b10ef826e9aa275f1813034e3bd9b80224e535",
+				"from":     "0x2222222222222222222222222222222222222222",
+				"gas":      "0x7530",
+				"gasPrice": "0x0",
+				"r":        "0x1",
+				"s":        "0x1",
 			},
 		}
 		assert.True(t, allPhantomTransactions(txs))
 	})
 
-	t.Run("RealTx_ROneButSNotFrom_NotPhantom", func(t *testing.T) {
-		// A signed tx can legitimately have r==1 by chance, but s will not
-		// equal the sender address — must NOT be treated as phantom.
+	t.Run("HyperEVMSystemTx_CaseInsensitive", func(t *testing.T) {
 		txs := []any{
 			map[string]interface{}{
-				"from": "0xdead000000000000000000000000000000000001",
-				"gas":  "0x5208",
-				"r":    "0x1",
-				"s":    "0x8f31c2a0b4e5d6f7089a1b2c3d4e5f60718293a4b5c6d7e8f9012345678990ab",
+				"from":     "0xF9B10EF826E9AA275F1813034E3BD9B80224E535",
+				"gas":      "0x30d40",
+				"gasPrice": "0x00",
+				"r":        "0x01",
+			},
+		}
+		assert.True(t, allPhantomTransactions(txs))
+	})
+
+	t.Run("RealTx_ROneButNonZeroGasPrice_NotPhantom", func(t *testing.T) {
+		// A signed tx can legitimately have r==1 by chance, but gasPrice will
+		// not be zero — must NOT be treated as phantom.
+		txs := []any{
+			map[string]interface{}{
+				"from":     "0xdead000000000000000000000000000000000001",
+				"gas":      "0x5208",
+				"gasPrice": "0x3b9aca00",
+				"r":        "0x1",
+				"s":        "0x8f31c2a0b4e5d6f7089a1b2c3d4e5f60718293a4b5c6d7e8f9012345678990ab",
 			},
 		}
 		assert.False(t, allPhantomTransactions(txs))
 	})
 
-	t.Run("RealTx_SEqualsFromButRNotOne_NotPhantom", func(t *testing.T) {
+	t.Run("RealTx_GasPriceZeroButRNotOne_NotPhantom", func(t *testing.T) {
 		txs := []any{
 			map[string]interface{}{
-				"from": "0xf9b10ef826e9aa275f1813034e3bd9b80224e535",
-				"gas":  "0x5208",
-				"r":    "0x2c9a1f0000000000000000000000000000000000000000000000000000000000",
-				"s":    "0xf9b10ef826e9aa275f1813034e3bd9b80224e535",
+				"from":     "0xf9b10ef826e9aa275f1813034e3bd9b80224e535",
+				"gas":      "0x5208",
+				"gasPrice": "0x0",
+				"r":        "0x2c9a1f0000000000000000000000000000000000000000000000000000000000",
+				"s":        "0xf9b10ef826e9aa275f1813034e3bd9b80224e535",
 			},
 		}
 		assert.False(t, allPhantomTransactions(txs))
@@ -339,7 +357,7 @@ func TestValidateBlock_EmptyRootWithRealTx_Fails(t *testing.T) {
 func TestValidateBlock_HyperEVMSystemTx(t *testing.T) {
 	// Real HyperEVM testnet block 57659287 (0x36fcf97): empty trie root,
 	// gasUsed=0, and two native/L1 system txs with non-zero gas, real-looking
-	// from addresses, and a synthetic signature (r=0x1, s == from). This must
+	// from addresses, and a synthetic signature (r=0x1, gasPrice=0). This must
 	// pass transactions-root validation.
 	hyperEVMBlockJSON := `{
 		"number": "0x36fcf97",
@@ -403,6 +421,57 @@ func TestValidateBlock_HyperEVMSystemTx(t *testing.T) {
 
 	err = validateBlock(ctx, nil, dirs, resp)
 	assert.NoError(t, err, "HyperEVM system-tx block should pass transactions root validation")
+}
+
+func TestValidateBlock_HyperEVMHypeBridgeSystemTx(t *testing.T) {
+	// Real HyperEVM testnet block 59707830 (0x38f1176): empty trie root with a
+	// single HYPE bridge system tx (from=0x2222…, r=0x1, s=0x1, gasPrice=0).
+	// s != from here — gasPrice+r marker must accept this block.
+	hyperEVMBlockJSON := `{
+		"number": "0x38f1176",
+		"hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"parentHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"stateRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+		"receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+		"logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+		"gasUsed": "0x0",
+		"gasLimit": "0x1c9c380",
+		"transactions": [
+			{
+				"blockNumber": "0x38f1176",
+				"from": "0x2222222222222222222222222222222222222222",
+				"gas": "0x7530",
+				"gasPrice": "0x0",
+				"hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+				"nonce": "0x0",
+				"r": "0x1",
+				"s": "0x1",
+				"to": "0xdddddddddddddddddddddddddddddddddddddddd",
+				"transactionIndex": "0x0",
+				"type": "0x0",
+				"v": "0x7f0",
+				"value": "0x0"
+			}
+		],
+		"transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+		"uncles": []
+	}`
+
+	ctx := context.Background()
+
+	jrpcResp, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte(hyperEVMBlockJSON), nil)
+	assert.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrpcResp)
+
+	dirs := &common.RequestDirectives{
+		ValidateTransactionsRoot: true,
+	}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x38f1176",true]}`))
+	req.SetDirectives(dirs)
+	resp.WithRequest(req)
+
+	err = validateBlock(ctx, nil, dirs, resp)
+	assert.NoError(t, err, "HyperEVM HYPE-bridge system-tx block should pass transactions root validation")
 }
 
 func TestNormHexEqHexIsOneHex(t *testing.T) {

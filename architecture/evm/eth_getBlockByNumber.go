@@ -604,12 +604,13 @@ func allPhantomTransactions(txs []any) bool {
 // transactions trie. Two conventions are recognized:
 //
 //   - Polygon PoS / BSC: state-sync system txs carry from=0x0 and gas=0x0.
-//   - HyperEVM: native/L1 system txs carry a synthetic signature where r=0x1
-//     and s equals the sender address (with gasPrice=0). Their from is a real
-//     address and gas is non-zero, so the Polygon heuristic does not catch
-//     them; the signature marker does. A genuinely signed transaction having
-//     r exactly 1 and s exactly equal to its 20-byte sender is cryptographically
-//     negligible, so this marker is safe to apply without chain gating.
+//   - HyperEVM (nanoreth): system txs arrive unsigned and are stamped with a
+//     synthetic signature where r=0x1 and gasPrice=0. The sender is encoded in
+//     s (usually s==from, but HYPE bridge 0x2222… uses s=1), and gas/from are
+//     non-zero — so the Polygon heuristic misses them. Matching r=0x1 and
+//     gasPrice=0 covers the full nanoreth encoding table without chain gating;
+//     a genuinely signed tx with both is cryptographically / economically
+//     negligible.
 func isPhantomTransaction(t map[string]interface{}) bool {
 	from, _ := t["from"].(string)
 	gas, _ := t["gas"].(string)
@@ -618,8 +619,8 @@ func isPhantomTransaction(t map[string]interface{}) bool {
 	}
 
 	r, _ := t["r"].(string)
-	s, _ := t["s"].(string)
-	if isOneHex(r) && from != "" && s != "" && eqHex(s, from) {
+	gasPrice, _ := t["gasPrice"].(string)
+	if isOneHex(r) && isZeroishHex(gasPrice) {
 		return true
 	}
 
