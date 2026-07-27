@@ -289,6 +289,8 @@ export interface ForceTraceMatcher {
 export interface AdminConfig {
   auth?: AuthConfig;
   cors?: CORSConfig;
+  allowMethods?: string[];
+  ignoreMethods?: string[];
 }
 export interface AliasingConfig {
   rules: (AliasingRuleConfig | undefined)[];
@@ -561,6 +563,18 @@ export interface ProjectConfig {
    * Configure user agent tracking at the project level
    */
   userAgentMode?: UserAgentTrackingMode;
+  /**
+   * TrustUserIdHeader makes erpc read the caller's user identity from the
+   * X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
+   * `user` metric/log label — but only when no auth strategy resolved a user
+   * (auth wins) and only for attribution (no rate-limit budget is derived).
+   * This is for deployments that authenticate callers in front of erpc (e.g. a
+   * gateway) and want per-user erpc telemetry without erpc performing auth.
+   * erpc does NOT validate the header, so enable this ONLY when erpc is reachable
+   * solely by a trusted proxy that sets the header and strips any client copy —
+   * otherwise callers can spoof their own attribution. Default false.
+   */
+  trustUserIdHeader?: boolean;
   forwardHeaders?: string[];
   allowClientDirectives?: string;
   ignoreMethods?: string[];
@@ -1042,7 +1056,11 @@ export interface ConsensusPolicyConfig {
  * `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
  * matched against each upstream's `tags`; `MinParticipants` is the minimum
  * number of matching upstreams that must be in the consensus participant
- * set. A single upstream can satisfy multiple entries it matches.
+ * set (pool quota, best-effort). `MinAgreement` is the minimum number of
+ * matching upstreams that must be part of the WINNING response group
+ * (winner-composition quota, hard-enforced: a winner that does not satisfy
+ * it becomes a composition dispute regardless of disputeBehavior). A single
+ * upstream can satisfy multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
   tag: string;

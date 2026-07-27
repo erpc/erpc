@@ -613,6 +613,30 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				if isAdmin {
 					if s.adminCfg != nil {
+						if blocked, berr := isAdminMethodBlocked(s.adminCfg, method); berr != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, berr, &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, berr)
+							return
+						} else if blocked {
+							jrr, _ := nq.JsonRpcRequest()
+							var reqId interface{}
+							jsonrpcVersion := "2.0"
+							if jrr != nil {
+								jsonrpcVersion = jrr.JSONRPC
+								reqId = jrr.ID
+							}
+							responses[index] = &HttpJsonRpcErrorResponse{
+								Jsonrpc: jsonrpcVersion,
+								Id:      reqId,
+								Error: map[string]interface{}{
+									"code":    int(common.JsonRpcErrorUnsupportedException),
+									"message": fmt.Sprintf("method not supported: %s", method),
+								},
+								Request: nq,
+							}
+							common.EndRequestSpan(requestCtx, nil, nil)
+							return
+						}
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
@@ -2196,4 +2220,46 @@ func stripAddrDecorations(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// isAdminMethodBlocked returns true when the admin config's IgnoreMethods/AllowMethods
+// rules prevent the given method from being handled.
+// IgnoreMethods is evaluated first; AllowMethods can re-admit a method that was ignored.
+func isAdminMethodBlocked(cfg *common.AdminConfig, method string) (bool, error) {
+	blocked := false
+	for _, pattern := range cfg.IgnoreMethods {
+		match, err := common.WildcardMatch(pattern, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			blocked = true
+			break
+		}
+	}
+	if blocked {
+		for _, pattern := range cfg.AllowMethods {
+			match, err := common.WildcardMatch(pattern, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	if len(cfg.AllowMethods) > 0 {
+		for _, pattern := range cfg.AllowMethods {
+			match, err := common.WildcardMatch(pattern, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }
