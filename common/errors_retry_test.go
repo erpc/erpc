@@ -363,6 +363,18 @@ func TestClassifySeverity_NetworkNotSupported(t *testing.T) {
 	})
 }
 
+func TestClassifySeverity_NotImplemented(t *testing.T) {
+	// ErrNotImplemented is a deterministic pre-forward rejection — a stateful
+	// method under multiple upstreams, or eth_accounts/eth_sign. No upstream
+	// will ever accept it and no retry or operator action can fix it, so it must
+	// not page: not retryable, warning severity (not the critical fall-through).
+	err := NewErrNotImplemented("stateful method requires a single targeted upstream")
+	assert.False(t, IsRetryableTowardsUpstream(err),
+		"not-implemented is a deterministic rejection — retrying is pointless")
+	assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+		"not-implemented must be warning, not the critical fall-through")
+}
+
 func BenchmarkIsRetryableTowardNetwork(b *testing.B) {
 	missingDataErr := NewErrEndpointMissingData(
 		NewErrJsonRpcExceptionInternal(-32000, -32014, "missing trie node", nil, nil),

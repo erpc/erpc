@@ -734,10 +734,12 @@ func (e *ErrUnknownNetworkArchitecture) ErrorStatusCode() int {
 
 type ErrNotImplemented struct{ BaseError }
 
+const ErrCodeNotImplemented ErrorCode = "ErrNotImplemented"
+
 var NewErrNotImplemented = func(msg string) error {
 	return &ErrNotImplemented{
 		BaseError{
-			Code:    "ErrNotImplemented",
+			Code:    ErrCodeNotImplemented,
 			Message: msg,
 		},
 	}
@@ -2731,6 +2733,11 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeUpstreamRequestSkipped,
 		ErrCodeUpstreamMethodIgnored,
 		ErrCodeEndpointUnsupported,
+
+		// Method the network cannot serve in this configuration (stateful method
+		// under multiple upstreams, eth_accounts/eth_sign) -> No Retry: this is a
+		// deterministic pre-forward rejection, not a transient upstream fault.
+		ErrCodeNotImplemented,
 
 		// Do not try when 3rd-party providers run out of monthly capacity or billing issues
 		ErrCodeEndpointBillingIssue,
