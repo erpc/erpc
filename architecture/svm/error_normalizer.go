@@ -142,23 +142,30 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// Another upstream can genuinely have this data:
 	//   -32001: pruned from this node's local ledger; bigtable-backed nodes have it.
 	//   -32004: block exists but hasn't reached this node yet (tip propagation).
-	//   -32007: "skipped OR missing due to ledger jump to recent snapshot" — the
-	//           ledger-jump half is node-local (post-snapshot restart), so another
-	//           provider can serve it; the truly-skipped half is caught upstream
-	//           of retries by the raw wire code reaching the caller. Bounded by
-	//           the retry budget either way.
 	//   -32008: node currently holds no snapshot.
 	//   -32010: key excluded from this node's secondary index; index coverage is
 	//           per-provider (--account-index), so an indexed provider serves it.
 	//           Deliberate divergence from routers that mark this terminal.
 	//   -32011: this node has no transaction history (no bigtable); others do.
 	//   -32014: block status not computed yet on this node.
-	case svmCodeBlockCleanedUp, svmCodeBlockNotAvailable, svmCodeSlotSkipped, svmCodeNoSnapshot,
+	case svmCodeBlockCleanedUp, svmCodeBlockNotAvailable, svmCodeNoSnapshot,
 		svmCodeKeyExcludedFromIndex, svmCodeTxHistoryNotAvailable, svmCodeBlockStatusNotAvail:
 		return common.NewErrEndpointMissingData(
 			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
 			upstream,
 		)
+
+	// --- Skipped slot (sweep providers once, but do NOT wait-and-retry) -------
+	//
+	// -32007: "skipped OR missing due to ledger jump to recent snapshot". The
+	// ledger-jump half is node-local (post-snapshot restart), so another provider
+	// may still hold the slot — this stays retryable across upstreams and the
+	// sweep tries them all. But a *skipped* slot never materializes, so it is
+	// marked permanent: once every provider has returned it, the network layer
+	// must not run a time-delayed re-sweep (waiting cannot un-skip a slot). The
+	// raw -32007 reaches the caller either way.
+	case svmCodeSlotSkipped:
+		return newSweptSkipMissingData(code, msg, details, upstream)
 
 	// --- Authoritatively-missing data (do NOT retry other upstreams) ----------
 	//
@@ -228,10 +235,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 		case strings.Contains(low, "ledger jump"):
 			// Codeless -32007 variant ("missing due to ledger jump to recent
 			// snapshot") — this node lost the slot locally; others have it.
-			return common.NewErrEndpointMissingData(
-				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
-				upstream,
-			)
+			return newSweptSkipMissingData(code, msg, details, upstream)
 		case strings.Contains(low, "preflight") ||
 			strings.Contains(low, "transaction simulation failed") ||
 			strings.Contains(low, "blockhash not found"):
@@ -302,6 +306,25 @@ func newAuthoritativeMissingData(code int, msg string, details map[string]interf
 	)
 	if me, ok := err.(*common.ErrEndpointMissingData); ok {
 		me.WithRetryableTowardNetwork(false)
+		me.WithPermanentMissingData(true)
+	}
+	return err
+}
+
+// newSweptSkipMissingData builds a MissingData error for a slot the node reports
+// as skipped or lost to a ledger jump (-32007). It stays retryable across
+// upstreams (the default) — a ledger jump is node-local, so another provider may
+// still hold the slot and the sweep tries them all — but is marked permanent: a
+// skipped slot never materializes, so once every provider has been tried the
+// network layer must not run a time-delayed re-sweep. The raw code reaches the
+// caller.
+func newSweptSkipMissingData(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
+	err := common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
+		upstream,
+	)
+	if me, ok := err.(*common.ErrEndpointMissingData); ok {
+		me.WithPermanentMissingData(true)
 	}
 	return err
 }

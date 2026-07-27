@@ -216,6 +216,21 @@ func (e *BaseError) WithRetryableTowardNetwork(r bool) RetryableError {
 	return e
 }
 
+// WithPermanentMissingData marks a MissingData verdict as permanent — the data
+// is skipped/absent, not merely not-yet-indexed — so a time-delayed re-fetch
+// cannot change it. Distinct from retryableTowardNetwork (which governs whether
+// another *upstream* is worth trying): a skipped slot stays retryable across
+// upstreams for one sweep, yet must not trigger a wait-and-retry afterwards.
+func (e *BaseError) WithPermanentMissingData(p bool) *BaseError {
+	if e != nil {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
+		}
+		e.Details["permanentMissingData"] = p
+	}
+	return e
+}
+
 func (e *BaseError) GetCode() ErrorCode {
 	return e.Code
 }
@@ -2465,6 +2480,33 @@ func IsRetryableTowardNetwork(err error) bool {
 	}
 
 	return true
+}
+
+// IsPermanentlyMissingData reports whether a MissingData verdict is permanent —
+// the data is skipped/absent, not merely not-yet-indexed — so a time-delayed
+// re-fetch cannot change it. Mirrors IsRetryableTowardNetwork's single-cause
+// chain walk (never descending into multi-error wrappers). Default false: a
+// plain MissingData error is treated as potentially-transient (a not-yet-indexed
+// block that may appear as the tip advances), preserving existing retry
+// behaviour for every caller that does not set the flag.
+func IsPermanentlyMissingData(err error) bool {
+	for cur := err; cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			break
+		}
+		if base := cse.Base(); base != nil && base.Details != nil {
+			if p, ok := base.Details["permanentMissingData"].(bool); ok && p {
+				return true
+			}
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			break
+		}
+		cur = next
+	}
+	return false
 }
 
 func IsRetryableTowardsUpstream(err error) bool {

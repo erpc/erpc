@@ -417,6 +417,22 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 							return ""
 						}
 					}
+					// A time-delayed re-sweep only helps data that will *appear*
+					// later (a not-yet-indexed block as the tip advances). When
+					// every provider reports the slot permanently skipped/absent
+					// (SVM -32007/-32009), the cross-provider sweep already ran and
+					// waiting cannot change the verdict — surface it now instead of
+					// burning another retry round.
+					permanent := true
+					for _, c := range causes {
+						if !common.IsPermanentlyMissingData(c) {
+							permanent = false
+							break
+						}
+					}
+					if permanent {
+						return ""
+					}
 					if e.dataUnavailableCapReached(attempt) {
 						return ""
 					}
@@ -433,6 +449,11 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
 					return ""
 				}
+			}
+			// A permanently-absent slot (skipped/authoritative) will not appear
+			// on a wait-and-retry — surface it now.
+			if common.IsPermanentlyMissingData(err) {
+				return ""
 			}
 			if e.dataUnavailableCapReached(attempt) {
 				return ""

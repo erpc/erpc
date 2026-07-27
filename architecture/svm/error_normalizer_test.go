@@ -225,6 +225,81 @@ func TestExtract_BlockNotAvailable_IsRetryableAndPreservesRawCode(t *testing.T) 
 	}
 }
 
+// The permanent-flag dimension is orthogonal to retryable-toward-network. A
+// skipped slot (-32007) is permanent — no time-delayed re-fetch can un-skip it —
+// yet the ledger-jump half is node-local, so the class still sweeps every
+// upstream once. Both axes must hold. Pins newSweptSkipMissingData's
+// WithPermanentMissingData(true) in error_normalizer.go.
+func TestExtract_SlotSkipped_IsPermanentButRetryable(t *testing.T) {
+	t.Parallel()
+	err := extract(t, -32007, "Slot 123 was skipped", 200)
+	if !common.IsPermanentlyMissingData(err) {
+		t.Fatal("-32007 (skipped slot) must be permanent: a wait-and-retry cannot un-skip it")
+	}
+	if !common.IsRetryableTowardNetwork(err) {
+		t.Fatal("-32007 must still sweep other upstreams once (ledger-jump half is node-local)")
+	}
+}
+
+// Codeless -32000 variant carrying agave's ledger-jump message: same treatment
+// as -32007 (permanent, but sweeps every upstream once). Pins the
+// strings.Contains(low, "ledger jump") branch → newSweptSkipMissingData.
+func TestExtract_LedgerJump_IsPermanentButRetryable(t *testing.T) {
+	t.Parallel()
+	err := extract(t, -32000, "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot", 200)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
+	}
+	if !common.IsPermanentlyMissingData(err) {
+		t.Fatal("codeless ledger-jump -32000 must be permanent (same class as -32007)")
+	}
+	if !common.IsRetryableTowardNetwork(err) {
+		t.Fatal("codeless ledger-jump -32000 must stay retryable toward network")
+	}
+}
+
+// -32009 (authoritative: long-term storage was consulted) is permanent AND
+// terminal at network scope. Pins newAuthoritativeMissingData's
+// WithPermanentMissingData(true); retryable-false re-asserted for locality.
+func TestExtract_LongTermStorage_IsPermanent(t *testing.T) {
+	t.Parallel()
+	err := extract(t, -32009, "Slot 12345 was skipped, or missing in long-term storage", 200)
+	if !common.IsPermanentlyMissingData(err) {
+		t.Fatal("-32009 (authoritative long-term-storage skip) must be permanent")
+	}
+	if common.IsRetryableTowardNetwork(err) {
+		t.Fatal("-32009 must be non-retryable toward network")
+	}
+}
+
+// Transient missing-data (-32004 block not available, -32014 block status not
+// available) must NOT be permanent: the block may still appear on a wait-retry,
+// so the time-delayed re-sweep is worthwhile. Guards the permanent/transient
+// boundary against over-classifying the whole MissingData family as permanent.
+func TestExtract_Transient_NotPermanent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		code int
+		msg  string
+	}{
+		{"-32004 block not available", -32004, "Block not available"},
+		{"-32014 block status not available", -32014, "Block status not available"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := extract(t, tc.code, tc.msg, 200)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+				t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
+			}
+			if common.IsPermanentlyMissingData(err) {
+				t.Fatalf("%s must stay transient: a not-yet-indexed block can appear on a wait-retry", tc.name)
+			}
+		})
+	}
+}
+
 // ---- helpers ---------------------------------------------------------------
 
 func extract(t *testing.T, code int, msg string, status int) error {
