@@ -15,10 +15,21 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// optionsAppend marks a method whose options object is always the trailing
-// param but whose positional arity varies (only getBlocks: [start] or
-// [start, end]), so the injector locates the slot dynamically.
-const optionsAppend = -1
+// Sentinel commitmentOptionsIndex values for methods whose options object is
+// the TRAILING param while the positional arity varies, so the injector has to
+// locate the slot dynamically instead of at a fixed index.
+const (
+	// optionsTrailing: no positional arg is required, so the options object may
+	// legally be param 0. getLeaderSchedule is the case — its first arg is an
+	// OPTIONAL epoch slot which may be omitted or null, and agave accepts a
+	// config object in its place (RpcLeaderScheduleConfigWrapper is an untagged
+	// SlotOnly|ConfigOnly enum). Shapes: [] | [{cfg}] | [slot] | [slot, {cfg}].
+	optionsTrailing = -1
+	// optionsTrailingAfterOne: at least one positional arg must precede the
+	// options object. getBlocks is the case ([start] | [start, end]); appending
+	// a config object to [] would put it where the required start slot belongs.
+	optionsTrailingAfterOne = -2
+)
 
 // commitmentOptionsIndex maps each commitment-injectable read method to the
 // param index where its options/config object lives, per the Solana JSON-RPC
@@ -54,23 +65,67 @@ var commitmentOptionsIndex = map[string]int{
 	"getAccountInfo":                    1,
 	"getBalance":                        1,
 	"getMinimumBalanceForRentExemption": 1,
-	"getBlock":                1,
-	"getLeaderSchedule":       1,
-	"getMultipleAccounts":     1,
-	"getProgramAccounts":      1,
-	"getSignaturesForAddress": 1,
-	"getStakeActivation":      1,
-	"getTokenAccountBalance":  1,
-	"getTokenLargestAccounts": 1,
-	"getTokenSupply":          1,
-	"getTransaction":          1,
-	"isBlockhashValid":        1,
+	"getBlock":                          1,
+	"getMultipleAccounts":               1,
+	"getProgramAccounts":                1,
+	"getSignaturesForAddress":           1,
+	"getStakeActivation":                1,
+	"getTokenAccountBalance":            1,
+	"getTokenLargestAccounts":           1,
+	"getTokenSupply":                    1,
+	"getTransaction":                    1,
+	"isBlockhashValid":                  1,
 	// two positional args precede the options object
 	"getBlocksWithLimit":         2,
 	"getTokenAccountsByDelegate": 2,
 	"getTokenAccountsByOwner":    2,
 	// variable arity; options is the trailing object
-	"getBlocks": optionsAppend,
+	"getBlocks":         optionsTrailingAfterOne,
+	"getLeaderSchedule": optionsTrailing,
+}
+
+// atLeastConfirmedMethods are the methods whose config rejects
+// commitment=processed outright — agave answers -32602 "Method does not
+// support commitment below `confirmed`". The Solana JSON-RPC reference
+// documents their commitment field as `confirmed | finalized` only
+// (https://solana.com/docs/rpc/http): a processed slot can sit on a minority
+// fork that is later abandoned, so block/transaction lookups refuse it.
+//
+// Deliberately NOT in this set (all three accept processed per the same
+// reference, verified field-by-field): getBlockProduction, getLeaderSchedule,
+// and every write method in writeCommitmentField.
+var atLeastConfirmedMethods = map[string]struct{}{
+	"getBlock":                {},
+	"getBlocks":               {},
+	"getBlocksWithLimit":      {},
+	"getSignaturesForAddress": {},
+	"getTransaction":          {},
+}
+
+// clampCommitmentForMethod narrows the commitment we are about to INJECT to a
+// level the target method actually accepts.
+//
+// Policy: CLAMP, not skip. Skipping injection for these methods would leave
+// each upstream on its own server-side default — precisely the cross-upstream
+// divergence injection exists to eliminate — and would make resolveCommitment
+// report "" so the finality classification and cache key lose the commitment
+// as well. Clamping to the nearest legal level (processed → confirmed) keeps
+// every upstream in lockstep and stays as close as legally possible to the
+// operator's "freshest data" intent.
+//
+// This applies ONLY to the injected network default. A caller-supplied
+// commitment is classified commitmentExplicit and never rewritten: if a client
+// explicitly asks getBlock for processed, the upstream's -32602 is the honest
+// answer and silently upgrading it would hand back data the client did not ask
+// for.
+func clampCommitmentForMethod(method, commitment string) string {
+	if commitment != "processed" {
+		return commitment
+	}
+	if _, narrow := atLeastConfirmedMethods[method]; narrow {
+		return "confirmed"
+	}
+	return commitment
 }
 
 // projectPreForward_getGenesisHash short-circuits getGenesisHash using the
@@ -114,6 +169,13 @@ func projectPreForward_getGenesisHash(ctx context.Context, n common.Network, r *
 // (false, nil, nil) unconditionally; it never short-circuits, only mutates
 // params per the plan from resolveCommitment, then invalidates the memoized
 // CacheHash so the cache keys on the rewritten body.
+//
+// The value injected is never blindly the configured default: methods whose
+// commitment field is narrower than the configured level get the nearest legal
+// level instead (see clampCommitmentForMethod — processed → confirmed for
+// getBlock and friends). Injecting an unaccepted level would turn a valid
+// request into an upstream -32602. Clamping, rather than skipping injection,
+// is the deliberate choice; the rationale is on clampCommitmentForMethod.
 func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	commitment, action, idx := resolveCommitment(ctx, n, r)
 	if action != commitmentSet && action != commitmentAppend {
@@ -168,7 +230,10 @@ const (
 //
 // Returns the effective commitment ("" when unknown — the upstream applies its
 // own server-side default), the action injection should take, and the options
-// index for commitmentSet.
+// index for commitmentSet. The returned default is CLAMPED to a level the
+// method accepts (see clampCommitmentForMethod), so the value reported here is
+// always the one that will really reach the upstream — never one the upstream
+// would answer -32602 to.
 //
 // Shape rules (per commitmentOptionsIndex):
 //   - explicit commitment already present                  → (value, commitmentExplicit)
@@ -178,6 +243,11 @@ const (
 //   - slot occupied by a non-object (legacy encoding form) → ("", commitmentSkip)
 //   - required positional args missing (incl. getBlocks
 //     with no start slot)                                  → ("", commitmentSkip)
+//
+// Trailing-object methods (negative index) resolve the slot from the current
+// arity instead: last param already an object → commitmentSet on it, otherwise
+// commitmentAppend — except getBlocks with empty params, whose required start
+// slot we refuse to displace.
 func resolveCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (string, commitmentAction, int) {
 	method, err := r.Method()
 	if err != nil {
@@ -213,13 +283,18 @@ func resolveCommitment(ctx context.Context, n common.Network, r *common.Normaliz
 	if def != "finalized" && def != "confirmed" && def != "processed" {
 		return "", commitmentSkip, -1
 	}
+	def = clampCommitmentForMethod(method, def)
 
 	// 3. Shape decision at the method's options index.
-	if idx == optionsAppend {
-		// getBlocks: variable arity ([start] or [start,end]); options is the
-		// trailing object. Requires at least the start slot.
+	if idx < 0 {
+		// Trailing-object shape: the options object is always the last param,
+		// but the positional arity varies.
 		if len(rpcReq.Params) == 0 {
-			return "", commitmentSkip, -1
+			if idx == optionsTrailingAfterOne {
+				// Required leading positional arg missing — don't fabricate it.
+				return "", commitmentSkip, -1
+			}
+			return def, commitmentAppend, -1
 		}
 		if _, ok := rpcReq.Params[len(rpcReq.Params)-1].(map[string]interface{}); ok {
 			return def, commitmentSet, len(rpcReq.Params) - 1
@@ -275,8 +350,8 @@ var writeCommitmentField = map[string]writeCommitmentTarget{
 // These methods are never cached (see neverCacheMethods), so the driver here is
 // cross-upstream consistency, not cache-key stability. Like the read path it
 // honors a caller-supplied value, skips when no valid network default is set,
-// and never corrupts a legacy non-object slot or fabricates missing positional
-// args. Non-short-circuiting.
+// clamps to a level the method accepts, and never corrupts a legacy non-object
+// slot or fabricates missing positional args. Non-short-circuiting.
 func networkPreForward_injectWriteCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	method, err := r.Method()
 	if err != nil {
@@ -295,6 +370,11 @@ func networkPreForward_injectWriteCommitment(ctx context.Context, n common.Netwo
 	if def != "finalized" && def != "confirmed" && def != "processed" {
 		return false, nil, nil
 	}
+	// Same clamp as the read path so one predicate governs every injection. No
+	// write method is narrower than processed today, so this is currently a
+	// no-op — it is here so a future entry in writeCommitmentField cannot
+	// silently reintroduce the "-32602 from an injected level" bug.
+	def = clampCommitmentForMethod(method, def)
 
 	rpcReq, err := r.JsonRpcRequest(ctx)
 	if err != nil {
@@ -323,79 +403,6 @@ func networkPreForward_injectWriteCommitment(ctx context.Context, n common.Netwo
 		// Required positional args missing (e.g. requestAirdrop without lamports)
 		// — don't fabricate them; let the upstream report the error.
 		return false, nil, nil
-	}
-	return false, nil, nil
-}
-
-// networkPreForward_validateSignaturesForAddress rejects requests whose slot
-// window exceeds the configured MaxSlotsPerSignaturesQuery. Solana's
-// getSignaturesForAddress has unbounded server cost when the (before, until)
-// signature pair spans a large slot range, and vendor RPCs will either time
-// out or return truncated results silently. Bounding the query client-side
-// gives predictable 400-class failures instead of flaky partial data.
-//
-// This is a whole-request rejection (handled=true, err set) — no upstream call
-// is made. The user is expected to paginate their own signature range.
-func networkPreForward_validateSignaturesForAddress(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
-	cfg := n.Config()
-	if cfg == nil || cfg.Svm == nil || cfg.Svm.MaxSlotsPerSignaturesQuery <= 0 {
-		return false, nil, nil
-	}
-	rpcReq, err := r.JsonRpcRequest(ctx)
-	if err != nil {
-		return false, nil, nil
-	}
-	rpcReq.RLock()
-	defer rpcReq.RUnlock()
-
-	// Params shape: [address, {before?, until?, minContextSlot?, limit?, commitment?}]
-	// Slot-range check requires BOTH minContextSlot and some upper slot hint. In
-	// practice only minContextSlot is slot-indexed; before/until are signatures,
-	// not slots. We only have a meaningful bound when the caller specified a
-	// minContextSlot far below the current latest — then the implicit range is
-	// (minContextSlot, latestSlot]. Reject if that exceeds the cap.
-	if len(rpcReq.Params) < 2 {
-		return false, nil, nil
-	}
-	opts, ok := rpcReq.Params[1].(map[string]interface{})
-	if !ok {
-		return false, nil, nil
-	}
-	minSlotRaw, has := opts["minContextSlot"]
-	if !has {
-		return false, nil, nil
-	}
-	minSlot, ok := toInt64(minSlotRaw)
-	if !ok || minSlot <= 0 {
-		return false, nil, nil
-	}
-
-	// Use the network's highest reported latest slot as the implicit upper
-	// bound. When no upstream has reported a slot yet (bootstrap, test), we
-	// skip the check — better to let the request through than to reject on
-	// missing metadata. The type-assertion is defensive: dispatch guarantees
-	// this handler only fires for SVM networks, so the assertion succeeds in
-	// production; a failure here means a wiring bug, not a hot-path case.
-	svmNet, ok := n.(common.SvmNetwork)
-	if !ok {
-		return false, nil, nil
-	}
-	latest := svmNet.SvmHighestLatestSlot(ctx)
-	if latest <= 0 {
-		return false, nil, nil
-	}
-	window := latest - minSlot
-	if window > cfg.Svm.MaxSlotsPerSignaturesQuery {
-		return true, nil, common.NewErrEndpointClientSideException(
-			common.NewErrJsonRpcExceptionInternal(
-				-32602, common.JsonRpcErrorClientSideException,
-				fmt.Sprintf(
-					"getSignaturesForAddress slot window %d exceeds maxSlotsPerSignaturesQuery=%d (latest=%d, minContextSlot=%d); paginate the query",
-					window, cfg.Svm.MaxSlotsPerSignaturesQuery, latest, minSlot,
-				),
-				nil, nil,
-			),
-		).WithRetryableTowardNetwork(false)
 	}
 	return false, nil, nil
 }
@@ -432,6 +439,11 @@ func toInt64(v interface{}) (int64, bool) {
 // upstream is often the very one that answered the getSlot). Beyond the margin
 // the guard still short-circuits genuinely-future slots, keeping the
 // all-upstreams-fail → exhaust → retry cycle eliminated.
+//
+// Fails OPEN whenever the indexed frontier is unknown. Absence of shred-insert
+// tracking is not evidence of unavailability, so a cold poller (or a vendor
+// that doesn't expose getMaxShredInsertSlot) must not cost us requests every
+// upstream could serve.
 func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	svmNet, ok := n.(common.SvmNetwork)
 	if !ok {
@@ -456,13 +468,22 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		return false, nil, nil
 	}
 
+	// The indexed frontier is the ONLY sound upper bound here, and only when we
+	// actually have it. The finalized tip is not a substitute: maxShredInsertSlot
+	// is structurally at or above the processed slot, which is itself far above
+	// the finalized slot, so falling back to the finalized tip would reject a
+	// wide band of slots that every upstream already holds — the guard would
+	// fail CLOSED exactly when it knows least. Unknown frontier → forward.
 	indexedTip := svmNet.SvmHighestIndexedSlot(ctx)
 	if indexedTip <= 0 {
-		// maxShredInsertSlot not available (poller cold or provider doesn't support it);
-		// fall back to the finalized tip as a conservative upper bound.
-		indexedTip = svmNet.SvmHighestFinalizedSlot(ctx)
+		return false, nil, nil
 	}
-	if indexedTip <= 0 || slot <= indexedTip+indexedTipStalenessMargin(n) {
+	// Overflow-safe form of `slot <= indexedTip + margin`: a hostile or bogus
+	// upstream tip near math.MaxInt64 would wrap that addition negative and turn
+	// the guard into a reject-everything gate. Subtracting from slot instead
+	// cannot wrap — slot is > 0 and the margin is a small positive derived from
+	// the poll debounce.
+	if slot-indexedTipStalenessMargin(n) <= indexedTip {
 		return false, nil, nil
 	}
 
@@ -498,6 +519,43 @@ func indexedTipStalenessMargin(n common.Network) int64 {
 	return margin
 }
 
+// contextSlotMethods are the methods whose result is Solana's `RpcResponse<T>`
+// envelope — `{"context":{"slot":…},"value":…}` — which is the ONLY result
+// shape that carries a context slot. Enumerated from the Solana JSON-RPC
+// reference (https://solana.com/docs/rpc/http).
+//
+// Every other method returns a bare value (getSlot → integer, getBlock →
+// block object, getTransaction → transaction object, ...), so peeking for
+// context.slot there is a guaranteed miss. It is not a free miss: the peek
+// walks the whole result, and full getBlock responses reach multiple megabytes
+// in staging, so the scan was burning CPU proportional to the largest payloads
+// we serve in exchange for nothing. Gating on the envelope methods keeps the
+// opportunistic harvest and drops the pointless walks.
+//
+// getProgramAccounts is included even though it only returns the envelope when
+// the caller passes withContext:true — its non-envelope form is a small array,
+// so the miss is cheap and the hit is worth having.
+var contextSlotMethods = map[string]struct{}{
+	"getAccountInfo":             {},
+	"getBalance":                 {},
+	"getBlockProduction":         {},
+	"getFeeForMessage":           {},
+	"getLargestAccounts":         {},
+	"getLatestBlockhash":         {},
+	"getMultipleAccounts":        {},
+	"getProgramAccounts":         {},
+	"getSignatureStatuses":       {},
+	"getStakeMinimumDelegation":  {},
+	"getSupply":                  {},
+	"getTokenAccountBalance":     {},
+	"getTokenAccountsByDelegate": {},
+	"getTokenAccountsByOwner":    {},
+	"getTokenLargestAccounts":    {},
+	"getTokenSupply":             {},
+	"isBlockhashValid":           {},
+	"simulateTransaction":        {},
+}
+
 // upstreamPostForward_trackContextSlot peeks at response.result.context.slot
 // and feeds it into the upstream's SvmStatePoller. Solana RPC responses
 // commonly carry a `context.slot` metadata field that tells us the slot the
@@ -513,7 +571,9 @@ func indexedTipStalenessMargin(n common.Network) int64 {
 // latest view, so it feeds both; weaker commitments feed only latest.
 //
 // Quietly no-ops on:
-//   - nil response / error response
+//   - nil request / nil response / error response
+//   - methods whose result shape cannot carry context.slot (see
+//     contextSlotMethods) — checked FIRST, before the response is touched
 //   - upstreams without an SvmStatePoller (EVM or early bootstrap)
 //   - responses where the slot field is missing or unparseable
 //
@@ -521,7 +581,16 @@ func indexedTipStalenessMargin(n common.Network) int64 {
 // usable — we don't try to guard against regressions here; that's the
 // state poller's rollback-tolerance job.
 func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) {
-	if rs == nil || u == nil {
+	if rs == nil || u == nil || r == nil {
+		return
+	}
+	// Gate on the method before any response inspection: this is the hot path
+	// for every SVM response, including multi-megabyte getBlock results.
+	method, err := r.Method()
+	if err != nil {
+		return
+	}
+	if _, envelope := contextSlotMethods[method]; !envelope {
 		return
 	}
 	sup, ok := u.(common.SvmUpstream)
@@ -544,7 +613,7 @@ func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network,
 	if err != nil || slot <= 0 {
 		return
 	}
-	if r != nil && n != nil {
+	if n != nil {
 		if commitment, _, _ := resolveCommitment(ctx, n, r); commitment == "finalized" {
 			poller.SuggestFinalizedSlot(slot)
 		}
@@ -552,10 +621,13 @@ func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network,
 	poller.SuggestLatestSlot(slot)
 }
 
-// upstreamPostForward_sendTransaction marks sendTransaction errors as
-// non-retryable across upstreams. Retrying a failed transaction send against a
-// different upstream can produce a double-spend once the original tx propagates
-// through the cluster. EVM has an analogous guard for eth_sendRawTransaction.
+// upstreamPostForward_nonRetryableWrite marks errors from SVM write methods as
+// non-retryable across upstreams. The method set is IsNonRetryableWriteMethod:
+// sendTransaction / sendRawTransaction, where a retry against a second upstream
+// can double-broadcast once the original tx propagates through the cluster; and
+// requestAirdrop, which is genuinely non-idempotent — it MINTS per call, so a
+// failover after an effective first attempt mints twice.
+// EVM has an analogous guard for eth_sendRawTransaction.
 //
 // We always wrap as ClientSideException (not just flip retryableTowardNetwork on
 // the original error) because the network-level upstream loop bails out on
@@ -563,7 +635,7 @@ func upstreamPostForward_trackContextSlot(ctx context.Context, n common.Network,
 // ErrCodeEndpointClientSideException rather than walking retryableTowardNetwork
 // details. Without the wrap, a ServerSideException from the primary would be
 // silently failed over to the secondary.
-func upstreamPostForward_sendTransaction(rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
+func upstreamPostForward_nonRetryableWrite(rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	if re == nil {
 		return rs, nil
 	}
@@ -571,11 +643,21 @@ func upstreamPostForward_sendTransaction(rs *common.NormalizedResponse, re error
 	return rs, wrapped
 }
 
-// networkPostForward_getSlot enforces the highest-known slot on every getSlot
-// and getBlockHeight response, including cache hits. When the upstream (or
-// cache) returns a slot below the majority tip already observed by this
-// instance, the response is replaced with the tip value — ensuring clients
-// never observe the slot number moving backwards through a cache window.
+// networkPostForward_getSlot enforces the highest-known slot on a getSlot
+// response, including cache hits. When the upstream (or cache) returns a slot
+// below the tip already observed by this instance, the response is replaced
+// with the tip value — ensuring clients never observe the slot number moving
+// backwards through a cache window.
+//
+// It handles getSlot ONLY. getBlockHeight is a different counter (block height
+// trails the slot number by every skipped slot) and must never be rewritten to
+// a slot value — see HandleNetworkPostForward.
+//
+// The correction floor is chosen per COMMITMENT, and never exceeds the tip for
+// the commitment the caller actually asked for. Raising a confirmed result to
+// the processed tip would hand back a slot that is not confirmed and may never
+// be (its fork can be abandoned), which is a commitment-contract violation, not
+// a freshness improvement.
 //
 // Unlike EVM eth_blockNumber, SVM getSlot returns a bare integer (not hex) and
 // enforcement is unconditional (no EnforceHighestBlock directive gate needed).
@@ -619,7 +701,8 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 
 	commitment, _, _ := resolveCommitment(ctx, network, nq)
 	var highestSlot int64
-	if commitment == "finalized" {
+	switch commitment {
+	case "finalized":
 		finalizedTip := svmNet.SvmHighestFinalizedSlot(reqCtx)
 		indexedTip := svmNet.SvmHighestIndexedSlot(reqCtx)
 		if finalizedTip > 0 && indexedTip > 0 {
@@ -631,7 +714,26 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 		} else if finalizedTip > 0 {
 			highestSlot = finalizedTip - finalizedIndexingLagFallback
 		}
-	} else {
+	case "confirmed":
+		// No confirmed tip exists to floor against. The poller tracks the
+		// PROCESSED slot in LatestSlot, and processed runs ahead of confirmed —
+		// flooring a confirmed answer with it would return an unconfirmed slot
+		// to a caller who explicitly asked for confirmed. Pass through
+		// uncorrected rather than fabricate a confirmed tip.
+		//
+		// ponytail: no confirmed tip tracked. Upgrade path — have SvmStatePoller
+		// poll getSlot{commitment:confirmed} into its own shared counter and add
+		// a branch here that floors against it.
+		return nr, re
+	default:
+		// "processed", or "" when no network default is configured and the
+		// upstream's own server-side default governs. LatestSlot IS the
+		// processed tip, so the floor is exact for "processed".
+		//
+		// ponytail: for "" the effective level is whatever the upstream defaults
+		// to, which we cannot observe, so we keep the historical processed-tip
+		// floor. Configure svm.commitment (the normal deployment) and the
+		// effective level is always known here.
 		highestSlot = svmNet.SvmHighestLatestSlot(reqCtx)
 	}
 	// If the state poller hasn't populated the tip yet (e.g. devnet upstreams

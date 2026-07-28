@@ -38,7 +38,6 @@ projects:
       svm:
         commitment: confirmed
         statePollerDebounce: 500ms
-        maxSlotsPerSignaturesQuery: 1000
     networks:
       - architecture: svm
         svm:
@@ -68,9 +67,10 @@ projects:
         # context.slot / context.apiVersion are ignored by default (they differ
         # across healthy upstreams on nearly every call). Requests with
         # commitment=finalized additionally pre-filter upstreams trailing the
-        # pool's finalized slot by more than svm.maxFinalizedSlotLag (default
-        # 100), and any request carrying minContextSlot skips upstreams known
-        # to be behind it.
+        # pool's finalized slot by more than svm.maxFinalizedSlotLag (omit for
+        # the default of 100 slots; set it to 0 to disable the filter and let
+        # every upstream vote regardless of lag), and any request carrying
+        # minContextSlot skips upstreams known to be behind it.
 
       - architecture: svm
         svm:

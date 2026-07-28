@@ -314,11 +314,19 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		}
 	}
 	if u.svmStatePoller != nil {
-		if err := u.svmStatePoller.Bootstrap(ctx); err != nil {
-			u.logger.Error().Err(err).Msg("failed on initial bootstrap of svm state poller (will retry in background)")
-		}
+		// Fail-closed genesis validation runs BEFORE the poller starts its
+		// polling loop. A wrong-cluster (or unverifiable) upstream must never
+		// get a loop at all: the initializer reuses this same pending Upstream
+		// and retries the whole bootstrap task on failure, so anything started
+		// ahead of this gate would have to be idempotent on every retry path.
+		// The poller's own CompareAndSwap guard covers the remaining retries
+		// (a later attempt that validates then bootstraps twice); this ordering
+		// covers the "never validates" case, where no loop should exist.
 		if err := u.svmVerifyGenesisHash(ctx); err != nil {
 			return err
+		}
+		if err := u.svmStatePoller.Bootstrap(ctx); err != nil {
+			u.logger.Error().Err(err).Msg("failed on initial bootstrap of svm state poller (will retry in background)")
 		}
 	}
 
@@ -1347,8 +1355,8 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 			)
 		}
 		u.networkId.Store(util.SvmNetworkId(cfg.Svm.Chain, cfg.Svm.Cluster))
-		// Genesis-hash validation runs in Bootstrap (svmVerifyGenesisHash) after
-		// the state poller is in place, so calls there can be made through the
+		// Genesis-hash validation runs in Bootstrap (svmVerifyGenesisHash) once
+		// the client and networkId are in place, so it can go through the
 		// upstream's normal Forward path.
 	} else {
 		return fmt.Errorf("upstream type not supported: %s", cfg.Type)

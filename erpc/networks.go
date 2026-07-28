@@ -1088,23 +1088,33 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if n.cfg.Architecture == common.ArchitectureSvm && n.cfg.Svm != nil {
 		// (1) Consensus slot-lag prefilter — excludes upstreams whose
 		// FinalizedSlot trails the pool by more than MaxFinalizedSlotLag, but
-		// only when a consensus policy is active AND the request's finality is
-		// Finalized. For non-consensus paths the existing score-based retry
-		// already handles stale upstreams. The reference slot is the
-		// single-liar-safe clamped leader (see ReferenceFinalizedSlot), not the
-		// raw pool max — a lone upstream reporting an inflated finalized slot
-		// must not shrink the pool to itself.
-		if n.cfg.Svm.MaxFinalizedSlotLag > 0 {
+		// only when a consensus policy is active AND the request actually reads
+		// at commitment=finalized. For non-consensus paths the existing
+		// score-based retry already handles stale upstreams. The reference slot
+		// is the single-liar-safe clamped leader (see ReferenceFinalizedSlot),
+		// not the raw pool max — a lone upstream reporting an inflated finalized
+		// slot must not shrink the pool to itself.
+		//
+		// The gate is IsFinalizedCommitment, NOT req.Finality()==Finalized:
+		// a moving-head read at commitment=finalized (getBalance and friends)
+		// is classified Realtime because the rooted head advances every ~400ms,
+		// yet it still evaluates against the upstream's ROOTED slot — which is
+		// exactly what this filter compares. The two propositions used to
+		// coincide; they no longer do.
+		//
+		// An explicit 0 disables the filter; nil never reaches here (SetDefaults
+		// is the only place that fills it in).
+		if lag := n.cfg.Svm.MaxFinalizedSlotLag; lag != nil && *lag > 0 {
 			fe := n.getFailsafeExecutor(ctx, req)
-			if fe != nil && fe.consensus != nil && req.Finality(ctx) == common.DataFinalityStateFinalized {
+			if fe != nil && fe.consensus != nil && svm.IsFinalizedCommitment(ctx, n, req) {
 				before := len(upsList)
-				reference := svm.ReferenceFinalizedSlot(upsList, n.cfg.Svm.MaxFinalizedSlotLag)
-				upsList = svm.FilterByFinalizedSlotLag(upsList, n.cfg.Svm.MaxFinalizedSlotLag, reference)
+				reference := svm.ReferenceFinalizedSlot(upsList, *lag)
+				upsList = svm.FilterByFinalizedSlotLag(upsList, *lag, reference)
 				if len(upsList) != before {
 					lg.Debug().
 						Int("before", before).
 						Int("after", len(upsList)).
-						Int64("maxFinalizedSlotLag", n.cfg.Svm.MaxFinalizedSlotLag).
+						Int64("maxFinalizedSlotLag", *lag).
 						Int64("referenceSlot", reference).
 						Msg("svm: filtered stale upstreams for consensus")
 				}
@@ -1118,7 +1128,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// failover path still reports the truth when every upstream trails.
 		if mcs := svm.MinContextSlotOf(ctx, req); mcs > 0 {
 			before := len(upsList)
-			finalized := req.Finality(ctx) == common.DataFinalityStateFinalized
+			// Same commitment-vs-finality distinction as (1): pick the slot
+			// counter the upstream will actually evaluate minContextSlot
+			// against.
+			finalized := svm.IsFinalizedCommitment(ctx, n, req)
 			upsList = svm.FilterByMinContextSlot(upsList, mcs, finalized)
 			if len(upsList) != before {
 				lg.Debug().
@@ -1437,6 +1450,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				loopSpan.SetStatus(codes.Ok, "")
 			}
 			loopSpan.End()
+
+			// An error explicitly marked non-retryable toward the network is
+			// an authoritative answer — a cluster-wide skipped slot, an
+			// OP-Stack sequencer rate limit every provider shares. Every
+			// remaining upstream returns the same verdict, so sweeping them
+			// burns latency and quota for nothing. Same stop condition
+			// shouldRetryWithReason already applies on the retry path.
+			//
+			// Stop by breaking, not returning: the caller then sees exactly
+			// the result a full sweep would have produced (bestResp if one
+			// was collected, otherwise the aggregated ErrUpstreamsExhausted),
+			// just without the wasted round-trips.
+			if err != nil && !common.IsRetryableTowardNetwork(err) {
+				break
+			}
 		}
 
 		// Check context after the loop — handles single-upstream case where

@@ -237,18 +237,167 @@ func TestSvmCache_Get_RespectsSkipCacheReadDirective(t *testing.T) {
 	}
 }
 
+// TestSvmCache_RequestKey_PreservesBase58Case is the regression guard for the
+// cross-account leak: the shared req.CacheHash() lowercases every string param
+// (correct EVM hex normalization), which aliased two DISTINCT Solana accounts
+// whose base58 addresses differ only by letter case onto one cache key — so
+// each could be served the other's balance/account data.
+func TestSvmCache_RequestKey_PreservesBase58Case(t *testing.T) {
+	t.Parallel()
+	// Two well-formed base58 pubkeys differing only in the case of one letter.
+	upper := common.NewJsonRpcRequest("getAccountInfo", []interface{}{"4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"})
+	lower := common.NewJsonRpcRequest("getAccountInfo", []interface{}{"4nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"})
+
+	upperKey, err := svmRequestKey(upper)
+	require.NoError(t, err)
+	lowerKey, err := svmRequestKey(lower)
+	require.NoError(t, err)
+	require.NotEqual(t, upperKey, lowerKey,
+		"base58 pubkeys differing only by case must not share a cache key")
+
+	// Same guard for transaction signatures, which are base58 too.
+	sigA := common.NewJsonRpcRequest("getTransaction", []interface{}{"5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"})
+	sigB := common.NewJsonRpcRequest("getTransaction", []interface{}{"5vERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"})
+	keyA, err := svmRequestKey(sigA)
+	require.NoError(t, err)
+	keyB, err := svmRequestKey(sigB)
+	require.NoError(t, err)
+	require.NotEqual(t, keyA, keyB, "signatures differing only by case must not share a cache key")
+
+	// And identical params still produce a stable key (cache hits still work).
+	again, err := svmRequestKey(common.NewJsonRpcRequest("getAccountInfo", []interface{}{"4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"}))
+	require.NoError(t, err)
+	require.Equal(t, upperKey, again, "identical params must produce an identical key")
+}
+
+// TestSvmCache_RequestKey_IsTypeAndStructureDelimited locks in that structurally
+// different params cannot be concatenated into the same digest.
+func TestSvmCache_RequestKey_IsTypeAndStructureDelimited(t *testing.T) {
+	t.Parallel()
+	keyOf := func(params ...interface{}) string {
+		k, err := svmRequestKey(common.NewJsonRpcRequest("getAccountInfo", params))
+		require.NoError(t, err)
+		return k
+	}
+
+	distinct := map[string]string{
+		`"abc"`:         keyOf("abc"),
+		`["a","bc"]`:    keyOf([]interface{}{"a", "bc"}),
+		`{"a":"bc"}`:    keyOf(map[string]interface{}{"a": "bc"}),
+		`"a","bc"`:      keyOf("a", "bc"),
+		`number 1`:      keyOf(float64(1)),
+		`string "1"`:    keyOf("1"),
+		`bool true`:     keyOf(true),
+		`string "true"`: keyOf("true"),
+	}
+	seen := make(map[string]string, len(distinct))
+	for label, key := range distinct {
+		if other, dup := seen[key]; dup {
+			t.Errorf("cache key collision between %s and %s", label, other)
+		}
+		seen[key] = label
+	}
+
+	// Map iteration order must not leak into the key.
+	multi := map[string]interface{}{"z": 1.0, "a": 2.0, "m": 3.0, "b": 4.0}
+	first := keyOf(multi)
+	for range 20 {
+		require.Equal(t, first, keyOf(multi), "key must be independent of map iteration order")
+	}
+}
+
+// TestSvmCache_CaseDifferingAddressesDoNotShareCachedData walks the full
+// Set→Get path: caching account A must never satisfy a lookup for account a.
+func TestSvmCache_CaseDifferingAddressesDoNotShareCachedData(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	ctx := context.Background()
+
+	const upper = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
+	const lower = "4nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
+
+	setReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["` + upper + `"]}`))
+	setReq.SetNetwork(finalizedNetwork{})
+	jrr, _ := common.NewJsonRpcResponse(1, map[string]interface{}{"lamports": 42}, nil)
+	require.NoError(t, c.Set(ctx, setReq, common.NewNormalizedResponse().WithRequest(setReq).WithJsonRpcResponse(jrr)))
+	time.Sleep(ristrettoSettleDelay)
+
+	getReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"getAccountInfo","params":["` + lower + `"]}`))
+	getReq.SetNetwork(finalizedNetwork{})
+	got, err := c.Get(ctx, getReq)
+	require.NoError(t, err)
+	require.Nil(t, got, "a different account (case-differing base58) must not be served cached data")
+}
+
+// TestSvmCache_CompressionRoundTrip proves the SVM path honors cache.compression
+// the way the EVM path does — Solana getBlock payloads reach megabytes, so
+// ignoring the (default-on) setting silently multiplies storage cost.
+func TestSvmCache_CompressionRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	enabled := true
+	c, err := NewSvmJsonRpcCache(ctx, &log.Logger, &common.CacheConfig{
+		Connectors: []*common.ConnectorConfig{
+			{Id: "mem", Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 1000, MaxTotalSize: "8MB"}},
+		},
+		Policies: []*common.CachePolicyConfig{
+			{Connector: "mem", Network: "*", Method: "*", Finality: common.DataFinalityStateFinalized},
+		},
+		Compression: &common.CompressionConfig{Enabled: &enabled, ZstdLevel: "fastest", Threshold: 512},
+	})
+	require.NoError(t, err)
+
+	// Highly compressible, comfortably over the threshold.
+	blob := strings.Repeat("SolanaBlockPayload", 400)
+	compressed := c.compress([]byte(blob))
+	require.Less(t, len(compressed), len(blob), "large payloads must actually shrink")
+	require.Equal(t, []byte{0x28, 0xB5, 0x2F, 0xFD}, compressed[:4], "stored bytes must carry the zstd magic")
+	back, err := c.decompress(compressed)
+	require.NoError(t, err)
+	require.Equal(t, blob, string(back))
+
+	// Sub-threshold payloads are stored verbatim and read back untouched.
+	small := []byte(`{"lamports":1}`)
+	require.Equal(t, small, c.compress(small))
+	passthrough, err := c.decompress(small)
+	require.NoError(t, err)
+	require.Equal(t, small, passthrough)
+
+	// End-to-end: a compressed entry must decode transparently on Get.
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[7,{"commitment":"finalized"}]}`)
+	req := common.NewNormalizedRequest(body)
+	req.SetNetwork(finalizedNetwork{})
+	jrr, err := common.NewJsonRpcResponse(1, map[string]interface{}{"blockhash": blob}, nil)
+	require.NoError(t, err)
+	require.NoError(t, c.Set(ctx, req, common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)))
+	time.Sleep(ristrettoSettleDelay)
+
+	req2 := common.NewNormalizedRequest(body)
+	req2.SetNetwork(finalizedNetwork{})
+	got, err := c.Get(ctx, req2)
+	require.NoError(t, err)
+	require.NotNil(t, got, "compressed entry must be readable")
+	gotJrr, err := got.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Contains(t, string(gotJrr.GetResultBytes()), blob)
+}
+
 // finalizedNetwork stubs common.Network so req.Finality(ctx) resolves to
 // Finalized in these tests — the real implementation lives in erpc/networks.go
 // but we don't want the test to depend on constructing a full Network+registry.
 type finalizedNetwork struct{}
 
-func (finalizedNetwork) Id() string                                        { return "svm:test" }
-func (finalizedNetwork) Label() string                                     { return "" }
-func (finalizedNetwork) ProjectId() string                                 { return "test" }
-func (finalizedNetwork) Architecture() common.NetworkArchitecture          { return common.ArchitectureSvm }
-func (finalizedNetwork) Config() *common.NetworkConfig                     { return &common.NetworkConfig{Architecture: common.ArchitectureSvm} }
-func (finalizedNetwork) Logger() *zerolog.Logger                           { l := log.Logger; return &l }
-func (finalizedNetwork) GetMethodMetrics(string) common.TrackedMetrics     { return nil }
+func (finalizedNetwork) Id() string                               { return "svm:test" }
+func (finalizedNetwork) Label() string                            { return "" }
+func (finalizedNetwork) ProjectId() string                        { return "test" }
+func (finalizedNetwork) Architecture() common.NetworkArchitecture { return common.ArchitectureSvm }
+func (finalizedNetwork) Config() *common.NetworkConfig {
+	return &common.NetworkConfig{Architecture: common.ArchitectureSvm}
+}
+func (finalizedNetwork) Logger() *zerolog.Logger                       { l := log.Logger; return &l }
+func (finalizedNetwork) GetMethodMetrics(string) common.TrackedMetrics { return nil }
 func (finalizedNetwork) SvmHighestLatestSlot(context.Context) int64    { return 0 }
 func (finalizedNetwork) SvmHighestFinalizedSlot(context.Context) int64 { return 0 }
 func (finalizedNetwork) SvmHighestIndexedSlot(context.Context) int64   { return 0 }

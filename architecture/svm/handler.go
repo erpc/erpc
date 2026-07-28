@@ -53,8 +53,6 @@ func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, ne
 		return false, nil, err
 	}
 	switch method {
-	case "getSignaturesForAddress":
-		return networkPreForward_validateSignaturesForAddress(ctx, network, req)
 	case "getBlock", "getConfirmedBlock":
 		return networkPreForward_getBlock(ctx, network, req)
 	}
@@ -70,7 +68,15 @@ func (h *SvmArchitectureHandler) HandleNetworkPostForward(ctx context.Context, n
 		return resp, err
 	}
 	switch strings.ToLower(method) {
-	case "getslot", "getblockheight":
+	case "getslot":
+		// getBlockHeight is deliberately NOT routed here. Solana's block height
+		// and slot number are different counters — block height trails the slot
+		// number by the count of skipped slots (tens of millions on
+		// mainnet-beta) — so applying the slot-tip floor to a getBlockHeight
+		// response would replace it with a slot number. That breaks the
+		// canonical transaction-expiry check (getBlockHeight vs
+		// lastValidBlockHeight from getLatestBlockhash), which would then see
+		// every transaction as permanently expired.
 		return networkPostForward_getSlot(ctx, network, req, resp, err)
 	}
 	return resp, err
@@ -85,15 +91,20 @@ func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 	if mErr != nil {
 		return resp, err
 	}
-	// Double-spend guard: a failing sendTransaction must not silently be retried
-	// against another upstream, because the transaction may still propagate via
-	// the original node. Strip retryability before returning.
-	if strings.EqualFold(method, "sendTransaction") || strings.EqualFold(method, "sendRawTransaction") {
-		return upstreamPostForward_sendTransaction(resp, err)
+	// Non-idempotent write guard: a failing sendTransaction must not silently be
+	// retried against another upstream, because the transaction may still
+	// propagate via the original node; and requestAirdrop MINTS per call, so a
+	// failover after an effective first attempt mints twice. Both live in
+	// IsNonRetryableWriteMethod — gate on that helper rather than re-listing
+	// method names here, so the set cannot drift between call sites.
+	if IsNonRetryableWriteMethod(method) {
+		return upstreamPostForward_nonRetryableWrite(resp, err)
 	}
 	// Opportunistic slot tracking — uses response.context.slot to keep the
 	// upstream's SvmStatePoller fresh between polling ticks (and to feed the
-	// poller's traffic gate). Silent on miss.
+	// poller's traffic gate). The hook itself filters to the methods whose
+	// result actually carries a context envelope (see contextSlotMethods), so
+	// this never walks a multi-megabyte getBlock payload. Silent on miss.
 	if err == nil {
 		upstreamPostForward_trackContextSlot(ctx, network, upstream, req, resp)
 	}

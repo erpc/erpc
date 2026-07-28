@@ -668,12 +668,13 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 
 	// Consensus policy: require 2-of-3 agreement. Scoped to Finalized finality so
 	// only our target method path activates it.
+	maxFinalizedSlotLag := int64(100)
 	netCfg := &common.NetworkConfig{
 		Architecture: common.ArchitectureSvm,
 		Svm: &common.SvmNetworkConfig{
 			Cluster:             "mainnet-beta",
 			Commitment:          "finalized",
-			MaxFinalizedSlotLag: 100,
+			MaxFinalizedSlotLag: &maxFinalizedSlotLag,
 		},
 		Failsafe: []*common.FailsafeConfig{{
 			MatchMethod:   "*",

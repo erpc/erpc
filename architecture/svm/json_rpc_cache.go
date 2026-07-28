@@ -2,13 +2,17 @@ package svm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/klauspost/compress/zstd"
 	"github.com/rs/zerolog"
 )
 
@@ -18,23 +22,35 @@ import (
 // without worrying about key collisions — the network id ("svm:mainnet-beta"
 // vs "evm:1") forms the partition-key prefix, so the namespaces are disjoint.
 //
-// Compared to EvmJsonRpcCache this implementation is intentionally stripped:
+// Where it diverges from EvmJsonRpcCache, and why:
 //
-//   - No zstd compression. SVM payloads are typically smaller than EVM trace
-//     blobs and compression can be layered in later if the hot connector shows
-//     it in production.
-//   - No block-timestamp age guard. SVM data is immutable by commitment level;
-//     a "finalized" response written yesterday is still finalized today. For
-//     Realtime entries (getLatestBlockhash etc.) the caller should set a short
-//     TTL — the TTL itself bounds staleness.
+//   - The request key comes from svmRequestKey, NOT req.CacheHash(). The shared
+//     hasher lowercases string params, which is right for EVM hex and wrong for
+//     case-sensitive base58 pubkeys/signatures. See svmRequestKey below.
+//   - No block-timestamp age guard. Only genuinely immutable responses are
+//     classified Finalized (see GetFinality in finality.go); everything that
+//     tracks the rooted head is Realtime, so the TTL on the realtime policy is
+//     what bounds staleness — the same lever EVM uses for `latest`.
 //   - The partition key is <networkId>:<slotRef> rather than <networkId>:<blockRef>.
 //     slotRef is derived from the request's minContextSlot (when provided) or
 //     the literal "*" for lookups without slot awareness. Reverse-index lookups
 //     then scan across slots for the same params hash.
+//
+// zstd compression works the same as EvmJsonRpcCache — Solana getBlock payloads
+// routinely exceed a megabyte, so ignoring cache.compression (which defaults to
+// enabled) would silently multiply storage cost.
 type SvmJsonRpcCache struct {
 	projectId string
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
+
+	// compressionThreshold is the minimum payload size (bytes) worth
+	// compressing; 0 means compression is disabled for writes. The decoder is
+	// always present so entries written while compression was enabled stay
+	// readable after an operator turns it off.
+	compressionThreshold int
+	encoder              *zstd.Encoder
+	decoder              *zstd.Decoder
 }
 
 // NewSvmJsonRpcCache constructs the cache from a shared common.CacheConfig.
@@ -65,7 +81,47 @@ func NewSvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		policies = append(policies, policy)
 	}
 
-	return &SvmJsonRpcCache{policies: policies, logger: &lg}, nil
+	cache := &SvmJsonRpcCache{policies: policies, logger: &lg}
+
+	// One stateless encoder/decoder pair is enough: zstd's EncodeAll/DecodeAll
+	// are documented safe for concurrent use and pull from their own internal
+	// worker pools, so the sync.Pool dance EvmJsonRpcCache does for its
+	// *streaming* encoders is unnecessary here.
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zstd decoder: %w", err)
+	}
+	cache.decoder = decoder
+
+	if cfg.Compression != nil && cfg.Compression.Enabled != nil && *cfg.Compression.Enabled {
+		level := zstd.SpeedFastest // optimal for caching workloads; matches EVM's default
+		switch strings.ToLower(cfg.Compression.ZstdLevel) {
+		case "", "fastest":
+		case "default":
+			level = zstd.SpeedDefault
+		case "better":
+			level = zstd.SpeedBetterCompression
+		case "best":
+			level = zstd.SpeedBestCompression
+		default:
+			lg.Warn().Str("level", cfg.Compression.ZstdLevel).Msg("unknown compression level, using 'fastest'")
+		}
+		encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(level))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create zstd encoder: %w", err)
+		}
+		cache.encoder = encoder
+		cache.compressionThreshold = 512
+		if cfg.Compression.Threshold > 0 {
+			cache.compressionThreshold = cfg.Compression.Threshold
+		}
+		lg.Info().
+			Int("threshold", cache.compressionThreshold).
+			Str("level", level.String()).
+			Msg("svm cache compression configured")
+	}
+
+	return cache, nil
 }
 
 // WithProjectId returns a shallow copy tagged with the project id so per-project
@@ -73,9 +129,12 @@ func NewSvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 func (c *SvmJsonRpcCache) WithProjectId(projectId string) *SvmJsonRpcCache {
 	lg := c.logger.With().Str("projectId", projectId).Logger()
 	return &SvmJsonRpcCache{
-		projectId: projectId,
-		policies:  c.policies,
-		logger:    &lg,
+		projectId:            projectId,
+		policies:             c.policies,
+		logger:               &lg,
+		compressionThreshold: c.compressionThreshold,
+		encoder:              c.encoder,
+		decoder:              c.decoder,
 	}
 }
 
@@ -215,7 +274,7 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return nil
 	}
 
-	groupKey, requestKey, err := c.generateKeys(req, rpcReq, ctx)
+	groupKey, requestKey, err := c.generateKeys(req, rpcReq)
 	if err != nil {
 		return err
 	}
@@ -223,6 +282,12 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	if payload == nil {
 		return nil
 	}
+	// Compressed at most once, and only once a policy actually accepts the
+	// payload: every matched connector stores the same bytes, and a multi-MB
+	// getBlock that every policy rejects on size must not pay for zstd first.
+	// Size limits gate on the ORIGINAL payload — they express a response-size
+	// ceiling, not a storage-footprint one.
+	var valueToStore []byte
 
 	for _, policy := range policies {
 		connector := policy.GetConnector()
@@ -235,11 +300,20 @@ func (c *SvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			).Inc()
 			continue
 		}
+		if valueToStore == nil {
+			valueToStore = c.compress(payload)
+		}
 		telemetry.MetricCacheSetOriginalBytes.WithLabelValues(
 			c.projectId, req.NetworkLabel(), rpcReq.Method,
 			connector.Id(), policy.String(), ttlLabel,
 		).Add(float64(len(payload)))
-		if err := connector.Set(ctx, groupKey, requestKey, payload, ttl); err != nil {
+		if len(valueToStore) != len(payload) {
+			telemetry.MetricCacheSetCompressedBytes.WithLabelValues(
+				c.projectId, req.NetworkLabel(), rpcReq.Method,
+				connector.Id(), policy.String(), ttlLabel,
+			).Add(float64(len(valueToStore)))
+		}
+		if err := connector.Set(ctx, groupKey, requestKey, valueToStore, ttl); err != nil {
 			telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 				c.projectId, req.NetworkLabel(), rpcReq.Method,
 				connector.Id(), policy.String(), ttlLabel,
@@ -291,7 +365,7 @@ func (c *SvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	rpcReq.RLockWithTrace(ctx)
 	defer rpcReq.RUnlock()
 
-	groupKey, requestKey, err := c.generateKeys(req, rpcReq, ctx)
+	groupKey, requestKey, err := c.generateKeys(req, rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -309,6 +383,10 @@ func (c *SvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	if len(resultBytes) == 0 {
 		return nil, nil
 	}
+	resultBytes, err = c.decompress(resultBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	jrr, err := common.NewJsonRpcResponseFromBytes(nil, resultBytes, nil)
 	if err != nil {
@@ -318,16 +396,93 @@ func (c *SvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	return jrr, nil
 }
 
-func (c *SvmJsonRpcCache) generateKeys(req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest, ctx context.Context) (string, string, error) {
-	requestKey, err := req.CacheHash(ctx)
+func (c *SvmJsonRpcCache) generateKeys(req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (string, string, error) {
+	requestKey, err := svmRequestKey(rpcReq)
 	if err != nil {
 		return "", "", err
 	}
 	slotRef := extractSlotRef(rpcReq)
 	// Note: rpcReq is already locked by the caller when coming from doGet; Set does
-	// not lock, so CacheHash runs on the whole params slice unlocked. That mirrors
-	// evm.generateKeysForJsonRpcRequest which also takes the caller's locking for granted.
+	// not lock, so the key derivation runs on the whole params slice unlocked. That
+	// mirrors evm.generateKeysForJsonRpcRequest which also takes the caller's
+	// locking for granted.
 	return fmt.Sprintf("%s:%s", req.NetworkId(), slotRef), requestKey, nil
+}
+
+// svmRequestKey derives the per-request cache key for SVM.
+//
+// It deliberately does NOT use req.CacheHash(): the shared hasher
+// (common/json_rpc.go hashValue) lowercases every string param, which is the
+// right normalization for EVM hex but catastrophic here — Solana base58
+// pubkeys and transaction signatures are case-sensitive, so two DISTINCT valid
+// accounts differing only by letter case would collapse onto one key and be
+// served each other's data. This key preserves case exactly.
+//
+// encoding/json is the encoder on purpose (not sonic): the standard library
+// documents that it sorts map keys, which is what makes the key deterministic
+// across runs and across Go map iteration order. Its grammar is also both
+// type- and structure-delimiting, so structurally different params cannot
+// collide: "abc", ["a","bc"] and {"a":"bc"} all encode to distinct bytes, as
+// do the number 1 and the string "1".
+//
+// Not memoized (unlike CacheHash, which caches on the request object): the
+// JsonRpcRequest field that would hold it lives in common/ and is owned by the
+// EVM derivation. Two marshal+hash passes per request (one Get, one Set) over
+// a handful of small params is not worth a second memo field; revisit if a
+// profile says otherwise.
+func svmRequestKey(rpcReq *common.JsonRpcRequest) (string, error) {
+	if rpcReq == nil {
+		return "", fmt.Errorf("cannot derive svm cache key from a nil json-rpc request")
+	}
+	params := rpcReq.Params
+	if params == nil {
+		// Normalize "no params" and "params: []" to the same key — they are the
+		// same call, and json.Marshal would otherwise emit `null` vs `[]`.
+		params = []interface{}{}
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode svm cache key params: %w", err)
+	}
+	h := sha256.New()
+	// Method is hashed as well as prefixed so a method name containing the ':'
+	// separator cannot forge another method's key.
+	_, _ = h.Write([]byte(rpcReq.Method))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(encoded)
+	return fmt.Sprintf("%s:%x", rpcReq.Method, h.Sum(nil)), nil
+}
+
+// compress returns the zstd-compressed payload when compression is enabled and
+// the payload is both over the threshold and actually smaller compressed;
+// otherwise it returns payload unchanged. Callers detect which happened by
+// comparing lengths — the zstd magic number makes reads self-describing.
+func (c *SvmJsonRpcCache) compress(payload []byte) []byte {
+	if c.encoder == nil || len(payload) < c.compressionThreshold {
+		return payload
+	}
+	compressed := c.encoder.EncodeAll(payload, nil)
+	if len(compressed) >= len(payload) {
+		return payload
+	}
+	return compressed
+}
+
+// decompress inflates a stored value when it carries the zstd magic number.
+// The check is on the bytes, not on the current config, so entries written
+// while compression was enabled stay readable after it is turned off.
+func (c *SvmJsonRpcCache) decompress(stored []byte) ([]byte, error) {
+	if len(stored) < 4 || stored[0] != 0x28 || stored[1] != 0xB5 || stored[2] != 0x2F || stored[3] != 0xFD {
+		return stored, nil
+	}
+	if c.decoder == nil {
+		return nil, fmt.Errorf("cached value is zstd-compressed but no decoder is configured")
+	}
+	decompressed, err := c.decoder.DecodeAll(stored, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress cached value: %w", err)
+	}
+	return decompressed, nil
 }
 
 // extractSlotRef returns a stable slot reference for cache partitioning.

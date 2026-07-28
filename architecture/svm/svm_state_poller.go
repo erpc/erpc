@@ -79,6 +79,22 @@ type SvmStatePoller struct {
 	// slotPollSkips counts consecutive traffic-gated skips; guarded by pollMu.
 	slotPollSkips int
 	pollMu        sync.Mutex
+
+	// loopStarted guards the polling goroutine. Bootstrap is retried on the
+	// SAME poller instance (the upstream initializer reuses a pending Upstream
+	// and re-runs the whole bootstrap task after a failed genesis validation),
+	// and every unguarded `go e.loop(...)` leaks a ticker goroutine that only
+	// appCtx cancellation can stop. pollMu and the debounce gate suppress the
+	// duplicate I/O but not the goroutine growth. Mirrors EvmStatePoller.started.
+	loopStarted atomic.Bool
+	// loopsRunning counts LIVE polling goroutines. Invariant: never above 1;
+	// back to 0 once appCtx cancellation tears the loop down.
+	loopsRunning atomic.Int32
+
+	// cordonedByHealth records whether THIS poller took the upstream out of
+	// rotation, making cordon/uncordon edge-triggered and keeping a recovery
+	// from lifting an operator's manual cordon. See applyHealthToRouting.
+	cordonedByHealth atomic.Bool
 }
 
 func NewSvmStatePoller(
@@ -95,17 +111,50 @@ func NewSvmStatePoller(
 	latestKey := fmt.Sprintf("svm/latestSlot/%s", common.UniqueUpstreamKey(up))
 	finalizedKey := fmt.Sprintf("svm/finalizedSlot/%s", common.UniqueUpstreamKey(up))
 
+	latestShared := sharedState.GetCounterInt64(latestKey, DefaultToleratedSlotRollback)
+	finalizedShared := sharedState.GetCounterInt64(finalizedKey, DefaultToleratedSlotRollback)
+
 	e := &SvmStatePoller{
 		projectId:           projectId,
 		appCtx:              appCtx,
 		logger:              &lg,
 		upstream:            up,
 		tracker:             tracker,
-		latestSlotShared:    sharedState.GetCounterInt64(latestKey, DefaultToleratedSlotRollback),
-		finalizedSlotShared: sharedState.GetCounterInt64(finalizedKey, DefaultToleratedSlotRollback),
+		latestSlotShared:    latestShared,
+		finalizedSlotShared: finalizedShared,
 	}
 
-	// Start healthy — flipped to false on first failing getHealth.
+	// Counter callbacks, mirroring EvmStatePoller (evm_state_poller.go:157-171).
+	// OnValue is the ONLY tracker feed for slots: it fires once per ACCEPTED
+	// value whatever the source — this poller's fetch, a live-traffic
+	// context.slot suggestion, or cross-instance propagation of the shared
+	// counter — and stays silent when the counter rejects a lower slot, so the
+	// tracker can never be fed a slot the counter itself refused.
+	if tracker != nil {
+		latestShared.OnValue(func(value int64) {
+			// Processed-slot lag drives score-based upstream selection on every
+			// path, not just the consensus slot-lag pre-filter. Solana slots
+			// carry no block timestamp, so pass 0 (EVM passes 0 here too, to
+			// avoid attributing a remote update's timestamp locally).
+			e.tracker.SetLatestBlockNumber(e.upstream, value, 0)
+		})
+		finalizedShared.OnValue(func(value int64) {
+			e.tracker.SetFinalizedBlockNumber(e.upstream, value)
+		})
+
+		// A slot jump backwards past DefaultToleratedSlotRollback is the
+		// non-canonical / wrong-node signal: a load balancer swapping in a node
+		// on another fork, a snapshot restore, or a cross-wired endpoint.
+		latestShared.OnLargeRollback(func(currentVal, newVal int64) {
+			e.tracker.RecordBlockHeadLargeRollback(e.upstream, "latest", currentVal, newVal)
+		})
+		finalizedShared.OnLargeRollback(func(currentVal, newVal int64) {
+			e.tracker.RecordBlockHeadLargeRollback(e.upstream, "finalized", currentVal, newVal)
+		})
+	}
+
+	// Start healthy — flipped to false on first failing getHealth. "Not yet
+	// observed" must never read as unhealthy (see applyHealthToRouting).
 	e.healthy.Store(true)
 	return e
 }
@@ -142,6 +191,15 @@ func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
 	// The ticker stays at the fixed one-slot cadence (cheap, no I/O); the
 	// debounce gate in Poll throttles the actual network fan-out to the
 	// configured rate.
+	//
+	// Idempotent w.r.t. the loop: at most one goroutine per poller instance no
+	// matter how many times Bootstrap runs. Genesis validation (the caller's
+	// fail-closed gate) may still be retried freely.
+	if !e.loopStarted.CompareAndSwap(false, true) {
+		e.logger.Debug().Msg("svm state poller loop already running; skipping duplicate start")
+		return nil
+	}
+
 	go e.loop(DefaultPollInterval)
 	return nil
 }
@@ -156,6 +214,8 @@ func (e *SvmStatePoller) SetDebounceInterval(d time.Duration) {
 }
 
 func (e *SvmStatePoller) loop(interval time.Duration) {
+	e.loopsRunning.Add(1)
+	defer e.loopsRunning.Add(-1)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -271,13 +331,30 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	if shredSlot > 0 {
 		e.shredInsertSlot.Store(shredSlot)
 		if latest := e.LatestSlot(); latest > 0 {
-			lag := latest - shredSlot
+			// getMaxShredInsertSlot is the BLOCKSTORE-INGESTION watermark and is
+			// structurally >= the replayed (processed) slot, so ingestion lag is
+			// `maxShredInsertSlot - processedSlot` (DESIGN-MULTI-CHAIN-SOLANA.md:531).
+			// That subtraction IS the silent-stale detector: shreds keep arriving
+			// while replay stalls, so the watermark runs away from the processed
+			// slot while the node still answers getHealth "ok". Subtracting the
+			// other way inverts it — a degraded node then yields a negative
+			// number that clamps to zero and the detector can never fire.
+			lag := shredSlot - latest
 			if lag < 0 {
+				// A watermark BEHIND the processed slot is structurally
+				// impossible on one node, so this is a skewed pair of samples:
+				// the processed slot came from a later traffic suggestion, or a
+				// shared-state peer wrote a higher slot for this upstream. Skew
+				// is not evidence of ingestion lag — report none rather than
+				// invent a positive lag out of sampling noise.
 				lag = 0
 			}
 			e.maxShredInsertSlotLag.Store(lag)
 		}
 	}
+
+	// A health verdict nobody routes on is not a defense; publish it.
+	e.applyHealthToRouting()
 
 	e.lastPollAt.Store(time.Now().UnixMilli())
 	return nil
@@ -349,6 +426,9 @@ func (e *SvmStatePoller) MaxShredInsertSlotLag() int64 {
 // IsHealthy reports both getHealth status and shred-insert-lag health. Nodes that
 // receive shreds but don't process them can respond to getHealth while serving
 // stale reads, so both signals are required.
+//
+// Consumed by applyHealthToRouting on every poll tick: a false verdict cordons
+// the upstream out of selection. Do not weaken it into a diagnostic-only flag.
 func (e *SvmStatePoller) IsHealthy() bool {
 	if !e.healthy.Load() {
 		return false
@@ -357,6 +437,57 @@ func (e *SvmStatePoller) IsHealthy() bool {
 		return false
 	}
 	return true
+}
+
+// applyHealthToRouting publishes the poller's verdict to upstream selection.
+// Cordon is the established mechanism — the default selection policy runs
+// `.removeCordoned()`, so a cordoned upstream is dropped from routing for every
+// request until it recovers; EvmStatePoller.cordonForChainIdMismatch is the
+// precedent. Without this, IsHealthy() has no production consumer and neither a
+// failing getHealth nor a runaway shred-insert lag affects where traffic goes.
+//
+// EDGE-TRIGGERED via cordonedByHealth: Cordon/Uncordon fire only on a
+// transition, never once per tick. Re-cordoning every 400ms would restamp the
+// reason (spawning a fresh `erpc_upstream_cordoned` gauge series per tick and
+// resetting the cordon-duration observation), and the flag also means a
+// recovering poller lifts only ITS OWN cordon, never an operator's manual one.
+//
+// A cold poller cannot cordon: healthy starts true and maxShredInsertSlotLag
+// stays 0 until a real getMaxShredInsertSlot sample lands, so "not yet
+// observed" reads as healthy. Unknown != unhealthy.
+//
+// Recovery is observable because Upstream.Forward does not consult cordon state
+// (only the selection policy does), so the poller keeps polling while cordoned.
+func (e *SvmStatePoller) applyHealthToRouting() {
+	if e.upstream == nil {
+		return
+	}
+	if e.IsHealthy() {
+		if e.cordonedByHealth.CompareAndSwap(true, false) {
+			e.logger.Info().
+				Int64("shredInsertSlotLag", e.maxShredInsertSlotLag.Load()).
+				Msg("svm upstream recovered; uncordoning")
+			e.upstream.Uncordon("*", "svm state poller: getHealth ok and shred-insert lag back within threshold")
+		}
+		return
+	}
+	if !e.cordonedByHealth.CompareAndSwap(false, true) {
+		return
+	}
+	reason := "svm state poller: getHealth reported unhealthy"
+	if e.healthy.Load() {
+		reason = fmt.Sprintf(
+			"svm state poller: shred-insert lag %d slots exceeds threshold %d (node ingests shreds but does not replay them)",
+			e.maxShredInsertSlotLag.Load(), common.MaxShredInsertSlotLagThreshold,
+		)
+	}
+	e.logger.Warn().
+		Int64("shredInsertSlot", e.shredInsertSlot.Load()).
+		Int64("shredInsertSlotLag", e.maxShredInsertSlotLag.Load()).
+		Int64("latestSlot", e.LatestSlot()).
+		Str("reason", reason).
+		Msg("svm upstream unhealthy; cordoning out of rotation")
+	e.upstream.Cordon("*", reason)
 }
 
 // SuggestLatestSlot ingests an externally-observed processed/latest slot —
@@ -377,12 +508,9 @@ func (e *SvmStatePoller) suggestLatestSlot(slot int64) {
 		return
 	}
 	e.latestSlotShared.TryUpdate(e.appCtx, slot)
-	// Feed the shared health tracker so processed-slot lag drives score-based
-	// upstream selection on every path — not just the consensus slot-lag
-	// pre-filter (design §8). Solana slots carry no block timestamp, so pass 0.
-	if e.tracker != nil {
-		e.tracker.SetLatestBlockNumber(e.upstream, slot, 0)
-	}
+	// Tracker feed lives in the counter's OnValue callback (NewSvmStatePoller):
+	// it also covers traffic-fed and cross-instance updates, and skips values
+	// the counter rejected.
 }
 
 // SuggestFinalizedSlot is the finalized-commitment sibling of
@@ -400,8 +528,5 @@ func (e *SvmStatePoller) suggestFinalizedSlot(slot int64) {
 		return
 	}
 	e.finalizedSlotShared.TryUpdate(e.appCtx, slot)
-	// Feed finalized-slot lag into the tracker (FinalizationLag) for scoring.
-	if e.tracker != nil {
-		e.tracker.SetFinalizedBlockNumber(e.upstream, slot)
-	}
+	// Tracker feed: see suggestLatestSlot.
 }

@@ -22,6 +22,14 @@ import (
 // surface without spinning up an HTTP mock or waiting on ticks.
 func newTestPoller(t *testing.T) *SvmStatePoller {
 	t.Helper()
+	p, _ := newTestPollerWithCancel(t)
+	return p
+}
+
+// newTestPollerWithCancel additionally hands back the appCtx cancel so a test
+// can assert goroutine teardown, not just startup.
+func newTestPollerWithCancel(t *testing.T) (*SvmStatePoller, context.CancelFunc) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -44,7 +52,7 @@ func newTestPoller(t *testing.T) *SvmStatePoller {
 		&fakeUpstreamForPoller{},
 		health.NewTracker(&log.Logger, "test", time.Minute),
 		ssr,
-	)
+	), cancel
 }
 
 // fakeUpstreamForPoller satisfies common.Upstream for NewSvmStatePoller —
@@ -85,7 +93,18 @@ type scriptedUpstream struct {
 	fakeUpstreamForPoller
 	responses map[string]scriptedResponse // request key → scripted answer
 	calls     map[string]int              // request key → invocation count
-	mu        sync.Mutex
+	// cordonCalls / uncordonCalls record the routing side of the poller's health
+	// verdict: cordon is what actually removes an upstream from selection, so
+	// these counters are how a test proves the verdict is edge-triggered rather
+	// than re-issued on every tick.
+	cordonCalls   []cordonEvent
+	uncordonCalls []cordonEvent
+	mu            sync.Mutex
+}
+
+type cordonEvent struct {
+	method string
+	reason string
 }
 
 func newScriptedUpstream() *scriptedUpstream {
@@ -97,11 +116,15 @@ func newScriptedUpstream() *scriptedUpstream {
 
 // script registers a result-bearing response for the given key.
 func (s *scriptedUpstream) script(key string, resultBody []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.responses[key] = scriptedResponse{result: resultBody}
 }
 
 // scriptError registers a JSON-RPC error response for the given key.
 func (s *scriptedUpstream) scriptError(key string, code int, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.responses[key] = scriptedResponse{errJr: common.NewErrJsonRpcExceptionExternal(code, msg, "")}
 }
 
@@ -154,6 +177,30 @@ func (s *scriptedUpstream) callCount(key string) int {
 	return s.calls[key]
 }
 
+func (s *scriptedUpstream) Cordon(method, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cordonCalls = append(s.cordonCalls, cordonEvent{method, reason})
+}
+
+func (s *scriptedUpstream) Uncordon(method, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.uncordonCalls = append(s.uncordonCalls, cordonEvent{method, reason})
+}
+
+func (s *scriptedUpstream) cordons() []cordonEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]cordonEvent(nil), s.cordonCalls...)
+}
+
+func (s *scriptedUpstream) uncordons() []cordonEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]cordonEvent(nil), s.uncordonCalls...)
+}
+
 // newPollerWithUpstream wires a state poller around a caller-provided Upstream.
 // Mirrors newTestPoller but lets tests observe the scripted upstream's counters.
 func newPollerWithUpstream(t *testing.T, up common.Upstream) *SvmStatePoller {
@@ -188,7 +235,9 @@ func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
 	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`1000`))
 	up.script("getSlot:finalized", []byte(`990`))
-	up.script("getMaxShredInsertSlot", []byte(`998`)) // lag = 1000 - 998 = 2 (healthy)
+	// The shred watermark is structurally AHEAD of the replayed slot, so
+	// ingestion lag = 1002 - 1000 = 2 (healthy).
+	up.script("getMaxShredInsertSlot", []byte(`1002`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
@@ -213,7 +262,7 @@ func TestSvmStatePoller_Poll_FansOutAllFourCalls(t *testing.T) {
 		t.Errorf("FinalizedSlot = %d, want 990", p.FinalizedSlot())
 	}
 	if p.MaxShredInsertSlotLag() != 2 {
-		t.Errorf("MaxShredInsertSlotLag = %d, want 2 (1000 - 998)", p.MaxShredInsertSlotLag())
+		t.Errorf("MaxShredInsertSlotLag = %d, want 2 (maxShredInsertSlot 1002 - processedSlot 1000)", p.MaxShredInsertSlotLag())
 	}
 	if !p.IsHealthy() {
 		t.Error("IsHealthy should be true: getHealth ok + lag within threshold")
@@ -228,7 +277,7 @@ func TestSvmStatePoller_Poll_HealthFailureFlipsHealthy(t *testing.T) {
 	up.scriptError("getHealth", -32000, "degraded")
 	up.script("getSlot:processed", []byte(`2000`))
 	up.script("getSlot:finalized", []byte(`1990`))
-	up.script("getMaxShredInsertSlot", []byte(`1999`))
+	up.script("getMaxShredInsertSlot", []byte(`2001`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
@@ -236,6 +285,11 @@ func TestSvmStatePoller_Poll_HealthFailureFlipsHealthy(t *testing.T) {
 	if p.IsHealthy() {
 		t.Error("IsHealthy should flip to false when getHealth returns a JSON-RPC error")
 	}
+	// The verdict must reach routing, else it changes nothing.
+	cordons := up.cordons()
+	require.Len(t, cordons, 1, "a failing getHealth must cordon the upstream out of rotation")
+	require.Equal(t, "*", cordons[0].method)
+	require.Contains(t, cordons[0].reason, "getHealth")
 	// Slot reads should still succeed even when health fails — the poller must
 	// report each signal independently, not bail on first error.
 	if p.LatestSlot() != 2000 {
@@ -247,18 +301,27 @@ func TestSvmStatePoller_Poll_ExcessiveShredLagFlipsHealthy(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
 	up.script("getHealth", []byte(`"ok"`))
-	// Latest = 10000, shred = 9500 → lag 500 > threshold 100.
+	// Processed = 10000 while the shred watermark has reached 10500 → ingestion
+	// lag 500 > threshold 100. This is the silent-stale signature: shreds keep
+	// arriving while replay is stalled, and getHealth still answers "ok".
 	up.script("getSlot:processed", []byte(`10000`))
 	up.script("getSlot:finalized", []byte(`9990`))
-	up.script("getMaxShredInsertSlot", []byte(`9500`))
+	up.script("getMaxShredInsertSlot", []byte(`10500`))
 
 	p := newPollerWithUpstream(t, up)
 	require.NoError(t, p.Poll(context.Background()))
 
+	if p.MaxShredInsertSlotLag() != 500 {
+		t.Errorf("MaxShredInsertSlotLag = %d, want 500 (maxShredInsertSlot 10500 - processedSlot 10000)", p.MaxShredInsertSlotLag())
+	}
 	if p.IsHealthy() {
 		t.Errorf("IsHealthy should be false when shred lag (%d) exceeds threshold (%d)",
 			p.MaxShredInsertSlotLag(), common.MaxShredInsertSlotLagThreshold)
 	}
+	cordons := up.cordons()
+	require.Len(t, cordons, 1, "excessive shred-insert lag must cordon the upstream out of rotation")
+	require.Equal(t, "*", cordons[0].method)
+	require.Contains(t, cordons[0].reason, "shred-insert lag")
 }
 
 func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
@@ -603,4 +666,112 @@ func TestSvmStatePoller_IsObjectNull_NilReceiver(t *testing.T) {
 	if p2.IsObjectNull() {
 		t.Fatal("non-nil poller must report IsObjectNull()=false")
 	}
+}
+
+// TestSvmStatePoller_Poll_ShredWatermarkBehindProcessedClampsToZero pins the
+// clamp DIRECTION. maxShredInsertSlot below the processed slot is structurally
+// impossible on a single node, so it means the two samples are skewed (a later
+// traffic-fed processed slot, or a shared-state peer writing a higher slot for
+// this upstream) — not ingestion lag. It must report no lag, and must not
+// condemn a node on sampling noise.
+func TestSvmStatePoller_Poll_ShredWatermarkBehindProcessedClampsToZero(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`10000`))
+	up.script("getSlot:finalized", []byte(`9990`))
+	up.script("getMaxShredInsertSlot", []byte(`9000`)) // 1000 slots BEHIND processed
+
+	p := newPollerWithUpstream(t, up)
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Equal(t, int64(9000), p.ShredInsertSlot(), "the raw watermark is still reported as observed")
+	require.Zero(t, p.MaxShredInsertSlotLag(), "a watermark behind the processed slot is skew, not lag")
+	require.True(t, p.IsHealthy(), "skewed samples must not mark an upstream unhealthy")
+	require.Empty(t, up.cordons(), "skewed samples must not cordon")
+}
+
+// TestSvmStatePoller_HealthToRouting_EdgeTriggered: the health verdict must
+// reach upstream selection exactly on TRANSITIONS. A level-triggered cordon
+// would re-stamp the reason every 400ms tick (spawning a fresh
+// erpc_upstream_cordoned gauge series and resetting the cordon-duration
+// observation each time), and a level-triggered uncordon would keep clearing an
+// operator's manual cordon.
+func TestSvmStatePoller_HealthToRouting_EdgeTriggered(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`10000`))
+	up.script("getSlot:finalized", []byte(`9990`))
+	up.script("getMaxShredInsertSlot", []byte(`10500`)) // lag 500 > threshold
+
+	p := newPollerWithUpstream(t, up)
+
+	// Degraded across several ticks → exactly ONE cordon.
+	for range 3 {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+	require.False(t, p.IsHealthy())
+	require.Len(t, up.cordons(), 1, "cordon must fire on the healthy→unhealthy edge only, not every tick")
+	require.Empty(t, up.uncordons())
+
+	// Replay catches up: the watermark is now only 5 slots ahead of processed.
+	up.script("getMaxShredInsertSlot", []byte(`10005`))
+	for range 3 {
+		require.NoError(t, p.Poll(context.Background()))
+	}
+	require.True(t, p.IsHealthy())
+	require.Len(t, up.cordons(), 1, "recovery must not add cordons")
+	require.Len(t, up.uncordons(), 1, "uncordon must fire on the unhealthy→healthy edge only")
+	require.Equal(t, "*", up.uncordons()[0].method)
+
+	// And a second degradation cordons again — the edge detector re-arms.
+	up.script("getMaxShredInsertSlot", []byte(`11000`))
+	require.NoError(t, p.Poll(context.Background()))
+	require.Len(t, up.cordons(), 2, "the edge detector must re-arm after recovery")
+}
+
+// TestSvmStatePoller_ColdPoller_DoesNotCordon: unknown != unhealthy. A poller
+// that has not yet landed a getMaxShredInsertSlot sample has no lag evidence
+// and must leave the upstream in rotation.
+func TestSvmStatePoller_ColdPoller_DoesNotCordon(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	up.script("getHealth", []byte(`"ok"`))
+	up.script("getSlot:processed", []byte(`5000`))
+	up.script("getSlot:finalized", []byte(`4990`))
+	// getMaxShredInsertSlot deliberately unscripted: the upstream errors on it,
+	// so the poller never observes a shred watermark.
+
+	p := newPollerWithUpstream(t, up)
+	require.NoError(t, p.Poll(context.Background()))
+
+	require.Zero(t, p.ShredInsertSlot(), "no shred observation should have landed")
+	require.Zero(t, p.MaxShredInsertSlotLag())
+	require.True(t, p.IsHealthy(), "a missing shred signal must not read as unhealthy")
+	require.Empty(t, up.cordons(), "a poller with no shred observation must never cordon")
+}
+
+// TestSvmStatePoller_Bootstrap_StartsAtMostOneLoop guards the ticker-goroutine
+// leak: the upstream initializer retries the whole bootstrap task on the SAME
+// poller instance after a failed genesis validation, so every extra Bootstrap
+// used to leave behind a ticker goroutine that only process exit could stop.
+func TestSvmStatePoller_Bootstrap_StartsAtMostOneLoop(t *testing.T) {
+	// No t.Parallel: this asserts a goroutine-lifecycle invariant with sleeps.
+	p, cancel := newTestPollerWithCancel(t)
+
+	for range 5 {
+		require.NoError(t, p.Bootstrap(context.Background()))
+	}
+	require.Eventually(t, func() bool { return p.loopsRunning.Load() == 1 },
+		2*time.Second, 5*time.Millisecond, "exactly one poll loop must come up")
+
+	// Give any leaked sibling time to register itself, then re-assert.
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, int32(1), p.loopsRunning.Load(), "Bootstrap leaked one ticker goroutine per retry")
+
+	// appCtx cancellation must still tear the single loop down.
+	cancel()
+	require.Eventually(t, func() bool { return p.loopsRunning.Load() == 0 },
+		2*time.Second, 5*time.Millisecond, "appCtx cancellation must stop the poll loop")
 }

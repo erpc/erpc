@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -159,6 +160,14 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 				t.Fatalf("code %d %q: retryable-opt-out mismatch (got %v, want %v)",
 					tc.code, tc.msg, !common.IsRetryableTowardNetwork(err), tc.nonRetry)
 			}
+			// The wire code is ALWAYS the upstream's native code. eRPC's verdict
+			// lives in wantErrCode above, never in the number the client
+			// dispatches on — @solana/kit maps -32002/-32005/-32016/… to named
+			// error classes, so collapsing them to -32600/-32603 broke every
+			// code-aware Solana client.
+			if got := wireCodeOf(t, err); got != common.JsonRpcErrorNumber(tc.code) {
+				t.Fatalf("code %d %q: wire code must stay native, got %v", tc.code, tc.msg, got)
+			}
 		})
 	}
 }
@@ -300,14 +309,157 @@ func TestExtract_Transient_NotPermanent(t *testing.T) {
 	}
 }
 
+// agave attaches an RpcSimulateTransactionResult to -32002. @solana/web3.js
+// only raises SendTransactionError (exposing .logs) when it sees that exact
+// code, and @solana/kit reads data.err / data.logs off it. The extractor used
+// to rewrite the code to -32600 and never read jr.Error.Data at all, so both
+// libraries saw an opaque "invalid request" with no simulation output.
+func TestExtract_PreflightFailure_PreservesNativeCodeAndData(t *testing.T) {
+	t.Parallel()
+	data := map[string]interface{}{
+		"err":               map[string]interface{}{"InstructionError": []interface{}{float64(0), "InvalidAccountData"}},
+		"logs":              []interface{}{"Program 11111111111111111111111111111111 invoke [1]", "Program failed"},
+		"unitsConsumed":     float64(1234),
+		"accounts":          nil,
+		"innerInstructions": nil,
+	}
+	err := extractWith(t, &common.ErrJsonRpcExceptionExternal{
+		Code:    -32002,
+		Message: "Transaction simulation failed: Error processing Instruction 0",
+		Data:    data,
+	}, 200)
+
+	// Outer taxonomy must be untouched: still client-side, still non-retryable
+	// (retrying a failed preflight on another node risks a double-spend).
+	if !common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+		t.Fatalf("expected ErrEndpointClientSideException, got %T: %v", err, err)
+	}
+	if common.IsRetryableTowardNetwork(err) {
+		t.Fatal("-32002 must stay non-retryable toward network")
+	}
+	if got := wireCodeOf(t, err); got != common.JsonRpcErrorNumber(-32002) {
+		t.Fatalf("wire code must be native -32002, got %v", got)
+	}
+	if got := dataOf(t, err); !reflect.DeepEqual(got, data) {
+		t.Fatalf("error.data must round-trip verbatim\n got: %#v\nwant: %#v", got, data)
+	}
+}
+
+// ParseError synthesizes Data:"" for bodies that carry no data member. That
+// placeholder must not become an empty "data" on the wire, which would shadow
+// http_server's includeErrorDetails fallback.
+func TestExtract_EmptyStringData_IsNotForwarded(t *testing.T) {
+	t.Parallel()
+	err := extract(t, -32002, "Transaction simulation failed", 200)
+	if got := dataOf(t, err); got != nil {
+		t.Fatalf("empty-string data must be dropped, got %#v", got)
+	}
+}
+
+// Helius and QuickNode answer an expired/over-quota API key with HTTP 401/403
+// AND a JSON-RPC error body. Classifying from that body routed the failure to
+// whatever generic class its code mapped to and never reached eRPC's
+// unauthorized/billing handling, so the status has to win.
+func TestExtract_AuthFailure_WithJsonRpcBody_IsUnauthorized(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		status := status
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			err := extractWith(t, &common.ErrJsonRpcExceptionExternal{
+				Code:    -32603,
+				Message: "invalid api key provided",
+				Data:    map[string]interface{}{"plan": "free"},
+			}, status)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized) {
+				t.Fatalf("HTTP %d with a JSON-RPC body must classify as unauthorized, got %T: %v", status, err, err)
+			}
+			// Upstream message and data still ride along (Fix 1 applies here too).
+			var jre *common.ErrJsonRpcExceptionInternal
+			if !errors.As(err, &jre) {
+				t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T", err)
+			}
+			if jre.Message != "invalid api key provided" {
+				t.Fatalf("upstream message must be preserved, got %q", jre.Message)
+			}
+			if got := dataOf(t, err); !reflect.DeepEqual(got, map[string]interface{}{"plan": "free"}) {
+				t.Fatalf("upstream data must be preserved, got %#v", got)
+			}
+		})
+	}
+}
+
+// common.JsonRpcErrorCapacityExceeded is -32005, which Solana assigns to
+// NodeUnhealthy. The invariant that keeps a quota verdict distinguishable from
+// "this validator is behind" is that eRPC never SYNTHESIZES -32005 on an SVM
+// path: a -32005 in an SVM error body always came from the upstream.
+func TestExtract_CapacityExceeded_NeverEmitsSolanaNodeUnhealthyCode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"bare HTTP 429", extractNoJr(t, 429)},
+		{"-32000 rate-limit message", extract(t, -32000, "300/second request limit reached", 200)},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if !common.HasErrorCode(tc.err, common.ErrCodeEndpointCapacityExceeded) {
+				t.Fatalf("expected ErrEndpointCapacityExceeded, got %T: %v", tc.err, tc.err)
+			}
+			if got := wireCodeOf(t, tc.err); got == common.JsonRpcErrorNumber(-32005) {
+				t.Fatal("eRPC capacity verdict must not be emitted as -32005 — an SVM client reads that as NodeUnhealthy")
+			}
+		})
+	}
+
+	// The other half of the invariant: a genuine upstream -32005 reaches the
+	// client as -32005, classified as a node-health problem rather than a quota.
+	unhealthy := extract(t, -32005, "Node is behind by 42 slots", 200)
+	if common.HasErrorCode(unhealthy, common.ErrCodeEndpointCapacityExceeded) {
+		t.Fatalf("upstream -32005 must not be read as a capacity error, got %T", unhealthy)
+	}
+	if got := wireCodeOf(t, unhealthy); got != common.JsonRpcErrorNumber(-32005) {
+		t.Fatalf("upstream -32005 must survive to the client, got %v", got)
+	}
+}
+
 // ---- helpers ---------------------------------------------------------------
 
 func extract(t *testing.T, code int, msg string, status int) error {
 	t.Helper()
+	return extractWith(t, common.NewErrJsonRpcExceptionExternal(code, msg, ""), status)
+}
+
+// extractWith drives the extractor with a fully-formed upstream error object,
+// so tests can supply a structured "data" member.
+func extractWith(t *testing.T, jrErr *common.ErrJsonRpcExceptionExternal, status int) error {
+	t.Helper()
 	e := NewJsonRpcErrorExtractor()
 	r := &http.Response{StatusCode: status, Header: http.Header{}}
-	jr := common.MustNewJsonRpcResponse(1, nil, common.NewErrJsonRpcExceptionExternal(code, msg, ""))
-	return e.Extract(r, nil, jr, newSvmStub())
+	return e.Extract(r, nil, common.MustNewJsonRpcResponse(1, nil, jrErr), newSvmStub())
+}
+
+// wireCodeOf returns the JSON-RPC code the client would see, i.e. exactly what
+// http_server's buildErrorResponseBody writes as error.code.
+func wireCodeOf(t *testing.T, err error) common.JsonRpcErrorNumber {
+	t.Helper()
+	var jre *common.ErrJsonRpcExceptionInternal
+	if !errors.As(err, &jre) {
+		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T: %v", err, err)
+	}
+	return jre.NormalizedCode()
+}
+
+// dataOf returns what buildErrorResponseBody would write as error.data.
+func dataOf(t *testing.T, err error) interface{} {
+	t.Helper()
+	var jre *common.ErrJsonRpcExceptionInternal
+	if !errors.As(err, &jre) {
+		t.Fatalf("expected ErrJsonRpcExceptionInternal in chain, got %T: %v", err, err)
+	}
+	return jre.Details["data"]
 }
 
 func extractNoJr(t *testing.T, status int) error {

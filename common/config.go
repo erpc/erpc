@@ -2345,18 +2345,17 @@ type SvmNetworkConfig struct {
 	// slot/health view. Default: 400ms (one slot).
 	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 
-	// MaxSlotsPerSignaturesQuery caps the slot range a single getSignaturesForAddress
-	// call may span. Requests exceeding this range are rejected pre-forward.
-	// Default: 1000.
-	MaxSlotsPerSignaturesQuery int64 `yaml:"maxSlotsPerSignaturesQuery,omitempty" json:"maxSlotsPerSignaturesQuery"`
-
 	// MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
 	// trail the pool's highest FinalizedSlot before it is excluded from
-	// consensus voting on finalized data. A zero value disables the filter
-	// entirely (every upstream participates regardless of lag). Default: 100.
-	// Only applied when a consensus policy is active AND the request's
-	// resolved finality is Finalized.
-	MaxFinalizedSlotLag int64 `yaml:"maxFinalizedSlotLag,omitempty" json:"maxFinalizedSlotLag"`
+	// consensus voting on finalized data. Only applied when a consensus policy
+	// is active AND the request's resolved finality is Finalized.
+	//
+	// Pointer so an explicit 0 is distinguishable from "unset": nil takes the
+	// 100-slot default (filled by SetDefaults, the only place that materializes
+	// it), an explicit 0 disables the filter entirely. A plain int64 collapses
+	// those two cases and makes the documented disable switch unreachable.
+	// Readers downstream of SetDefaults just check `lag != nil && *lag > 0`.
+	MaxFinalizedSlotLag *int64 `yaml:"maxFinalizedSlotLag,omitempty" json:"maxFinalizedSlotLag,omitempty"`
 
 	// EnforceBlockAvailability controls whether the networkPreForward_getBlock
 	// guard is active. When enabled (default), getBlock/getConfirmedBlock

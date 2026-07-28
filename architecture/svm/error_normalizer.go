@@ -85,13 +85,96 @@ func (e *JsonRpcErrorExtractor) Extract(
 		"headers":    util.ExtractUsefulHeaders(resp),
 	}
 
+	code := 0
+	msg := ""
+	if jr != nil && jr.Error != nil {
+		code = jr.Error.Code
+		msg = jr.Error.Message
+
+		// Carry the upstream's "data" member through verbatim. Solana packs the
+		// actionable half of an error in there — -32002 carries an
+		// RpcSimulateTransactionResult (err, logs, unitsConsumed, accounts),
+		// -32005 carries numSlotsBehind — and buildErrorResponseBody re-emits
+		// details["data"] as the JSON-RPC error's "data" member. Dropping it is
+		// what broke @solana/web3.js SendTransactionError (reads data.logs) and
+		// @solana/kit. Unlike EVM there is no prefix-stripping to do here: SVM
+		// payloads are structured objects, not revert strings.
+		if d := jr.Error.Data; d != nil {
+			// An empty string is ParseError's "no data" placeholder, not a payload.
+			if s, isStr := d.(string); !isStr || s != "" {
+				details["data"] = d
+			}
+		}
+	}
+
+	// wireCode is the JSON-RPC "code" the client ends up seeing (it becomes
+	// ErrJsonRpcExceptionInternal.NormalizedCode, which buildErrorResponseBody
+	// writes as error.code). It is a faithful passthrough of the upstream's own
+	// code, because Solana clients dispatch on the exact number: @solana/kit
+	// maps -32002/-32005/-32016/… to named error classes and reads error.data
+	// alongside, so rewriting the number to an eRPC code silently breaks them.
+	// eRPC's routing verdict lives entirely in the OUTER StandardError class
+	// (retryable / capacity / client-vs-server), never in this number.
+	//
+	// Consequence — the eRPC/Solana code collision: common.JsonRpcErrorNumber
+	// reuses -32005 for CapacityExceeded and -32016 for Unauthorized, while
+	// Solana assigns those to NodeUnhealthy and MinContextSlotNotReached. The
+	// invariant that keeps them apart is that on an SVM path eRPC NEVER
+	// synthesizes either number: -32005/-32016 in an SVM error body always came
+	// from the upstream and always mean the agave semantic. eRPC's own verdicts
+	// are conveyed by the outer class and the HTTP status (capacity → 429), with
+	// the fallbacks below picking collision-free codes.
+	//
+	// fallback applies only when the upstream sent an error object with no
+	// numeric code (agave always sends one; a few vendor proxies do not). It is
+	// required because NewErrJsonRpcExceptionInternal drops a zero normalized
+	// code, which would put "code": 0 on the wire. Only two branches can
+	// actually reach a fallback — the 401/403 handler and the unknown-code
+	// default; each keeps the constant its branch emitted before native-code
+	// preservation, so a codeless upstream sees no change. The rest are
+	// unreachable by construction (their case constants are non-zero) and name
+	// the class they belong to.
+	wireCode := func(fallback common.JsonRpcErrorNumber) common.JsonRpcErrorNumber {
+		if code == 0 {
+			return fallback
+		}
+		return common.JsonRpcErrorNumber(code)
+	}
+
+	// --- HTTP 401/403 outrank the JSON-RPC body -------------------------------
+	//
+	// An auth failure is a verdict about the credential, not about the RPC call,
+	// so it must be classified from the status even when a body is present.
+	// Helius and QuickNode return 401/403 *with* a JSON-RPC error object; reading
+	// that body first sent an expired API key down whichever generic path its
+	// code happened to map to and never reached eRPC's unauthorized/billing
+	// handling. The upstream's own message and data still ride along.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		authMsg := msg
+		if authMsg == "" {
+			authMsg = fmt.Sprintf("svm upstream unauthorized (HTTP %d)", resp.StatusCode)
+		}
+		// The codeless fallback is -32600 and deliberately NOT
+		// common.JsonRpcErrorUnauthorized: that constant is -32016, which an SVM
+		// client decodes as MinContextSlotNotReached and answers by retrying
+		// against a fresher node forever instead of fixing its key.
+		return common.NewErrEndpointUnauthorized(
+			common.NewErrJsonRpcExceptionInternal(code, wireCode(svmCodeInvalidRequest), authMsg, nil, details),
+		)
+	}
+
 	// Prefer JSON-RPC error body; fall back to HTTP status if upstream returned a
 	// bare HTTP failure (no JSON body at all).
 	if jr == nil || jr.Error == nil {
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
+			// -32000 (agave's generic server-error bucket, and what vendors use
+			// when they DO send a body with a 429) rather than
+			// common.JsonRpcErrorCapacityExceeded: that constant is -32005, which
+			// an SVM client decodes as NodeUnhealthy. The 429 status and the outer
+			// ErrEndpointCapacityExceeded already carry the quota verdict.
 			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorCapacityExceeded,
+				common.NewErrJsonRpcExceptionInternal(0, svmCodeServerError,
 					fmt.Sprintf("svm upstream rate limited (HTTP %d)", resp.StatusCode),
 					nil, details),
 			)
@@ -102,17 +185,9 @@ func (e *JsonRpcErrorExtractor) Extract(
 					nil, details),
 				details, resp.StatusCode,
 			)
-		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-			// Surface auth failures as a distinct, actionable class (missing/invalid
-			// API key) rather than a generic client-side error.
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorClientSideException,
-					fmt.Sprintf("svm upstream unauthorized (HTTP %d)", resp.StatusCode),
-					nil, details),
-			)
 		case resp.StatusCode >= 400 && resp.StatusCode <= 499:
 			// 4xx without a JSON body is typically an auth/config issue — treat as client-side,
-			// do not retry across upstreams.
+			// do not retry across upstreams. (401/403 were already handled above.)
 			wrapped := common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorClientSideException,
 				fmt.Sprintf("svm upstream http failure %d", resp.StatusCode),
 				nil, details)
@@ -121,14 +196,11 @@ func (e *JsonRpcErrorExtractor) Extract(
 		return nil
 	}
 
-	code := jr.Error.Code
-	msg := jr.Error.Message
-
 	switch code {
 	// --- Unsupported method ---------------------------------------------------
 	case svmCodeMethodNotFound:
 		return common.NewErrEndpointUnsupported(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorUnsupportedException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorUnsupportedException), msg, nil, details),
 		)
 
 	// --- Missing data (retryable across upstreams) ----------------------------
@@ -151,7 +223,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 	case svmCodeBlockCleanedUp, svmCodeBlockNotAvailable, svmCodeNoSnapshot,
 		svmCodeKeyExcludedFromIndex, svmCodeTxHistoryNotAvailable, svmCodeBlockStatusNotAvail:
 		return common.NewErrEndpointMissingData(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorMissingData), msg, nil, details),
 			upstream,
 		)
 
@@ -180,15 +252,20 @@ func (e *JsonRpcErrorExtractor) Extract(
 		return newAuthoritativeMissingData(code, msg, details, upstream)
 
 	// --- Node health issues (failover, but treat as server-side) --------------
-	//   -32005: node unhealthy / behind.
+	//   -32005: node unhealthy / behind. Reaches the client as a native -32005
+	//           carrying agave's {numSlotsBehind} data; eRPC never synthesizes
+	//           this number itself (see the wireCode note on the collision with
+	//           common.JsonRpcErrorCapacityExceeded).
 	//   -32012: scan aborted by rooted-slot movement — transient, another node
 	//           (or a plain retry) succeeds.
 	//   -32016: node hasn't reached the request's minContextSlot; a fresher
 	//           upstream satisfies it (selection also pre-filters on this).
+	//           Also reaches the client natively — clients back off on this one
+	//           rather than treating it as a hard failure.
 	//   -32019: this node's long-term storage backend is unreachable.
 	case svmCodeNodeUnhealthy, svmCodeScanError, svmCodeMinContextSlotNotReached, svmCodeLongTermStorageUnreachable:
 		return common.NewErrEndpointServerSideException(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorServerSideException), msg, nil, details),
 			details, resp.StatusCode,
 		)
 
@@ -197,17 +274,22 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// The request itself is the problem; every upstream answers identically.
 	//   -32002/-32003/-32006/-32013: the transaction content is invalid
 	//     (preflight, signature verification, precompile verification, signature
-	//     length).
+	//     length). -32002 in particular MUST keep its native code and data: the
+	//     data is an RpcSimulateTransactionResult and @solana/web3.js only
+	//     raises SendTransactionError (with .logs) when it sees code -32002.
 	//   -32015: caller omitted/undersized maxSupportedTransactionVersion — a
 	//     versioned transaction is present regardless of which node answers.
 	//   -32018: caller-supplied slot is not an epoch boundary.
+	//   -32602/-32700: standard JSON-RPC codes; passed through rather than
+	//     collapsed to -32600, which lost the invalid-params/parse-error
+	//     distinction that every JSON-RPC client already understands.
 	// WithRetryableTowardNetwork(false) scopes the opt-out to SVM only — EVM
 	// ClientSideException still retries (its default).
 	case svmCodeSendTxPreflightFailure, svmCodeTxSignatureVerifyFailure,
 		svmCodeTxPrecompileVerifyFailure, svmCodeTxSignatureLenMismatch,
 		svmCodeUnsupportedTxVersion, svmCodeSlotNotEpochBoundary,
 		svmCodeInvalidRequest, svmCodeInvalidParams, svmCodeParseError:
-		wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+		wrapped := common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorClientSideException), msg, nil, details)
 		return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
 
 	// --- Chain-state condition (non-retryable, not the caller's fault) --------
@@ -217,16 +299,21 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// ExecutionException is eRPC's "the chain said no, retrying won't change it"
 	// class (same treatment as preflight failures in the -32000 bucket).
 	case svmCodeEpochRewardsPeriodActive:
-		wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+		wrapped := common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorClientSideException), msg, nil, details)
 		return common.NewErrEndpointExecutionException(wrapped)
 
 	// --- Generic -32000 bucket — disambiguate by message ----------------------
+	//
+	// Every branch here keeps -32000 on the wire. The message-text match changes
+	// eRPC's *routing* verdict, not the upstream's claim about what happened, and
+	// a heuristic on vendor wording is far too weak a basis for rewriting the
+	// code a client dispatches on.
 	case svmCodeServerError:
 		low := strings.ToLower(msg)
 		switch {
 		case isRateLimitMessage(low):
 			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
+				common.NewErrJsonRpcExceptionInternal(code, wireCode(svmCodeServerError), msg, nil, details),
 			)
 		case strings.Contains(low, "missing in long-term storage"):
 			// Codeless -32009 variant: some vendor proxies strip/rewrite the code
@@ -241,31 +328,32 @@ func (e *JsonRpcErrorExtractor) Extract(
 			strings.Contains(low, "blockhash not found"):
 			// Preflight / blockhash failures — the caller's transaction is the problem.
 			// Mark non-retryable to guard against double-spend on retry.
-			wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+			wrapped := common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorClientSideException), msg, nil, details)
 			return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
 		case strings.Contains(low, "invalid") && (strings.Contains(low, "signature") || strings.Contains(low, "transaction") || strings.Contains(low, "instruction")):
-			wrapped := common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details)
+			wrapped := common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorClientSideException), msg, nil, details)
 			return common.NewErrEndpointClientSideException(wrapped).WithRetryableTowardNetwork(false)
 		}
 		// Default bucket — treat as retryable server-side error.
 		return common.NewErrEndpointServerSideException(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorServerSideException), msg, nil, details),
 			details, resp.StatusCode,
 		)
 
 	// --- Internal error (retry across upstreams) ------------------------------
 	case svmCodeInternalError:
 		return common.NewErrEndpointServerSideException(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorServerSideException), msg, nil, details),
 			details, resp.StatusCode,
 		)
 	}
 
 	// Unknown JSON-RPC code — keep the raw code, mark as server-side so the network
 	// can try another upstream. Solana validator adds new codes occasionally; this
-	// makes the default safe rather than surprising.
+	// makes the default safe rather than surprising. This is also the only path a
+	// codeless error object reaches, hence the -32603 fallback.
 	return common.NewErrEndpointServerSideException(
-		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+		common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorServerSideException), msg, nil, details),
 		details, resp.StatusCode,
 	)
 }

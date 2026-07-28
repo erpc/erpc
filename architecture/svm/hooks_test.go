@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -323,6 +324,106 @@ func TestNetworkPreForward_InjectCommitment_ShapeAware(t *testing.T) {
 	if p := paramsOf("getBlocks", `[]`); len(p) != 0 {
 		t.Errorf("getBlocks []: expected params untouched (missing start slot), got %+v", p)
 	}
+
+	// getLeaderSchedule's first arg is an OPTIONAL epoch slot, so its config
+	// object may legally be param 0 — agave parses param 0 as an untagged
+	// SlotOnly|ConfigOnly. All four documented shapes must land the commitment
+	// on the trailing object and never create a second one.
+	if p := paramsOf("getLeaderSchedule", `[]`); len(p) != 1 {
+		t.Errorf("getLeaderSchedule []: expected options appended at index 0, got %+v", p)
+	} else if m, ok := p[0].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
+		t.Errorf("getLeaderSchedule []: expected {commitment} at index 0, got %+v", p[0])
+	}
+	if p := paramsOf("getLeaderSchedule", `[{"identity":"abc"}]`); len(p) != 1 {
+		t.Errorf("getLeaderSchedule [{cfg}]: config is already param 0, expected 1 param, got %+v", p)
+	} else if m, ok := p[0].(map[string]interface{}); !ok || m["commitment"] != "confirmed" || m["identity"] != "abc" {
+		t.Errorf("getLeaderSchedule [{cfg}]: expected commitment merged into param 0, got %+v", p[0])
+	}
+	if p := paramsOf("getLeaderSchedule", `[12345]`); len(p) != 2 {
+		t.Errorf("getLeaderSchedule [slot]: expected options appended at index 1, got %+v", p)
+	} else if m, ok := p[1].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
+		t.Errorf("getLeaderSchedule [slot]: expected {commitment} at index 1, got %+v", p[1])
+	}
+	if p := paramsOf("getLeaderSchedule", `[null, {"identity":"abc"}]`); len(p) != 2 {
+		t.Errorf("getLeaderSchedule [null,{cfg}]: expected 2 params, got %+v", p)
+	} else if m, ok := p[1].(map[string]interface{}); !ok || m["commitment"] != "confirmed" {
+		t.Errorf("getLeaderSchedule [null,{cfg}]: expected commitment merged into param 1, got %+v", p[1])
+	}
+}
+
+// TestNetworkPreForward_InjectCommitment_ClampsToLegalCommitment pins the
+// clamp policy: a network default of "processed" must never be injected into a
+// method whose commitment field only accepts confirmed|finalized, because the
+// upstream answers -32602. The nearest legal level is injected instead, so
+// every upstream still observes the same commitment.
+func TestNetworkPreForward_InjectCommitment_ClampsToLegalCommitment(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "processed"},
+	}}
+	commitmentOf := func(method, params string, idx int) interface{} {
+		t.Helper()
+		req := common.NewNormalizedRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params)))
+		if _, _, err := networkPreForward_injectCommitment(context.Background(), net, req); err != nil {
+			t.Fatalf("%s: unexpected error: %v", method, err)
+		}
+		jrq, _ := req.JsonRpcRequest(context.Background())
+		if idx >= len(jrq.Params) {
+			t.Fatalf("%s: expected a param at index %d, got %+v", method, idx, jrq.Params)
+		}
+		m, ok := jrq.Params[idx].(map[string]interface{})
+		if !ok {
+			t.Fatalf("%s: expected an options object at index %d, got %+v", method, idx, jrq.Params[idx])
+		}
+		return m["commitment"]
+	}
+
+	// Narrow methods: processed is illegal → clamped up to confirmed.
+	for _, tc := range []struct {
+		method string
+		params string
+		idx    int
+	}{
+		{"getBlock", `[123]`, 1},
+		{"getBlocks", `[100, 110]`, 2},
+		{"getBlocksWithLimit", `[100, 10]`, 2},
+		{"getTransaction", `["sig"]`, 1},
+		{"getSignaturesForAddress", `["pubkey"]`, 1},
+	} {
+		if got := commitmentOf(tc.method, tc.params, tc.idx); got != "confirmed" {
+			t.Errorf("%s: processed is not accepted, want clamp to confirmed, got %v", tc.method, got)
+		}
+	}
+
+	// Methods that do accept processed keep the operator's configured level.
+	for _, tc := range []struct {
+		method string
+		params string
+		idx    int
+	}{
+		{"getSlot", `[]`, 0},
+		{"getAccountInfo", `["pubkey"]`, 1},
+		{"getLeaderSchedule", `[]`, 0},
+		{"getBlockProduction", `[]`, 0},
+	} {
+		if got := commitmentOf(tc.method, tc.params, tc.idx); got != "processed" {
+			t.Errorf("%s: accepts processed, want it preserved, got %v", tc.method, got)
+		}
+	}
+
+	// A CALLER's explicit processed is never rewritten — the upstream's -32602
+	// is the honest answer to an illegal request we did not author.
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[123,{"commitment":"processed"}]}`))
+	if _, _, err := networkPreForward_injectCommitment(context.Background(), net, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	jrq, _ := req.JsonRpcRequest(context.Background())
+	if m, ok := jrq.Params[1].(map[string]interface{}); !ok || m["commitment"] != "processed" {
+		t.Errorf("caller-supplied commitment must be honored verbatim, got %+v", jrq.Params[1])
+	}
 }
 
 // TestNetworkPreForward_InjectCommitment_InvalidatesCacheHash guards against
@@ -384,87 +485,29 @@ func TestNetworkPreForward_InjectCommitment_NoopWithoutNetworkDefault(t *testing
 	}
 }
 
-func TestNetworkPreForward_ValidateSignaturesForAddress_RejectsOversizedWindow(t *testing.T) {
-	t.Parallel()
-	net := &fakeNetwork{
-		cfg: &common.NetworkConfig{
-			Architecture: common.ArchitectureSvm,
-			Svm: &common.SvmNetworkConfig{
-				MaxSlotsPerSignaturesQuery: 1000,
-			},
-		},
-		latestSlot: 10_000,
-	}
-	// minContextSlot is 8000 slots behind latest → window = 2000, exceeds cap.
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["pubkey",{"minContextSlot":2000}]}`))
-
-	handled, _, err := networkPreForward_validateSignaturesForAddress(context.Background(), net, req)
-	if !handled {
-		t.Fatal("expected oversized slot window to be rejected (handled=true)")
-	}
-	if err == nil {
-		t.Fatal("expected rejection error, got nil")
-	}
-	if !strings.Contains(err.Error(), "maxSlotsPerSignaturesQuery") {
-		t.Fatalf("error should mention the cap name, got: %v", err)
-	}
-}
-
-func TestNetworkPreForward_ValidateSignaturesForAddress_AllowsWindowAtLimit(t *testing.T) {
-	t.Parallel()
-	net := &fakeNetwork{
-		cfg: &common.NetworkConfig{
-			Architecture: common.ArchitectureSvm,
-			Svm:          &common.SvmNetworkConfig{MaxSlotsPerSignaturesQuery: 1000},
-		},
-		latestSlot: 10_000,
-	}
-	// Window = exactly 1000 (at the cap). Must pass.
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["pubkey",{"minContextSlot":9000}]}`))
-
-	handled, _, err := networkPreForward_validateSignaturesForAddress(context.Background(), net, req)
-	if err != nil {
-		t.Fatalf("at-cap window must not error, got: %v", err)
-	}
-	if handled {
-		t.Fatal("at-cap window must not short-circuit the request")
-	}
-}
-
-func TestNetworkPreForward_ValidateSignaturesForAddress_NoOpWithoutConfig(t *testing.T) {
+// TestHandleNetworkPreForward_OldMinContextSlotForwardsUntouched replaces four
+// tests that pinned the deleted slot-window cap guard. That guard
+// rejected getSignaturesForAddress with -32602 whenever
+// `latestSlot - minContextSlot` exceeded a cap, which inverted the Solana
+// contract: minContextSlot is the minimum bank context at which the node may
+// EVALUATE the request (a node-freshness floor), never a bound on how far back
+// the returned signatures may reach. The rejection also told callers to
+// paginate, which no amount of pagination could satisfy.
+func TestHandleNetworkPreForward_OldMinContextSlotForwardsUntouched(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
 		cfg:        &common.NetworkConfig{Architecture: common.ArchitectureSvm, Svm: &common.SvmNetworkConfig{}},
 		latestSlot: 10_000,
 	}
-	// No cap configured → validator must not reject even obviously huge windows.
+	h := &SvmArchitectureHandler{}
+	// minContextSlot 8000 slots behind the tip, asking for a single row: any
+	// upstream serves this trivially. The old guard answered -32602 here.
 	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["pubkey",{"minContextSlot":1}]}`))
+		`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["pubkey",{"minContextSlot":2000,"limit":1}]}`))
 
-	handled, _, err := networkPreForward_validateSignaturesForAddress(context.Background(), net, req)
-	if handled || err != nil {
-		t.Fatalf("no cap → no rejection; got handled=%v err=%v", handled, err)
-	}
-}
-
-func TestNetworkPreForward_ValidateSignaturesForAddress_SkipsWithoutMinContextSlot(t *testing.T) {
-	t.Parallel()
-	net := &fakeNetwork{
-		cfg: &common.NetworkConfig{
-			Architecture: common.ArchitectureSvm,
-			Svm:          &common.SvmNetworkConfig{MaxSlotsPerSignaturesQuery: 100},
-		},
-		latestSlot: 10_000,
-	}
-	// Caller didn't specify minContextSlot → no slot-window bound to validate.
-	req := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":["pubkey",{"limit":10}]}`))
-
-	handled, _, err := networkPreForward_validateSignaturesForAddress(context.Background(), net, req)
-	if handled || err != nil {
-		t.Fatalf("no minContextSlot → no check; got handled=%v err=%v", handled, err)
+	handled, resp, err := h.HandleNetworkPreForward(context.Background(), net, nil, req)
+	if handled || resp != nil || err != nil {
+		t.Fatalf("getSignaturesForAddress must forward untouched; got handled=%v resp=%v err=%v", handled, resp, err)
 	}
 }
 
@@ -533,19 +576,45 @@ func TestUpstreamPostForward_TrackContextSlot_SuggestsFromResponse(t *testing.T)
 	}
 }
 
+// An envelope method whose result happens to omit the context object (e.g.
+// getProgramAccounts without withContext:true) must leave the poller untouched.
 func TestUpstreamPostForward_TrackContextSlot_IgnoresResponseWithoutContext(t *testing.T) {
 	t.Parallel()
 	poller := &recordingSvmPoller{}
 	up := &svmUpstreamStub{poller: poller}
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100]}`))
-	jrr, _ := common.NewJsonRpcResponseFromBytes(nil, []byte(`{"blockhash":"abc","parentSlot":99}`), nil)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getProgramAccounts","params":["pubkey"]}`))
+	jrr, _ := common.NewJsonRpcResponseFromBytes(nil, []byte(`[{"pubkey":"abc"}]`), nil)
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 
 	upstreamPostForward_trackContextSlot(context.Background(), nil, up, req, resp)
 
 	if poller.lastSuggested != 0 {
 		t.Fatalf("no context.slot in response → poller must be untouched, got %d", poller.lastSuggested)
+	}
+}
+
+// Methods whose result shape cannot carry a context envelope are skipped before
+// the response is inspected at all — getBlock results reach multiple megabytes,
+// so scanning them for a field that is never there is pure waste. Asserted via
+// a getBlock response that DOES contain a context.slot: if the scan ran, the
+// poller would see it.
+func TestUpstreamPostForward_TrackContextSlot_SkipsNonEnvelopeMethods(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"getBlock", "getTransaction", "getSlot", "getBlockHeight"} {
+		poller := &recordingSvmPoller{}
+		up := &svmUpstreamStub{poller: poller}
+
+		req := common.NewNormalizedRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":[100]}`, method)))
+		jrr, _ := common.NewJsonRpcResponseFromBytes(nil, []byte(`{"context":{"slot":12345},"value":1}`), nil)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+		upstreamPostForward_trackContextSlot(context.Background(), nil, up, req, resp)
+
+		if poller.lastSuggested != 0 {
+			t.Fatalf("%s: result cannot carry context.slot → scan must be skipped, got %d", method, poller.lastSuggested)
+		}
 	}
 }
 
@@ -939,26 +1008,41 @@ func TestNetworkPreForwardGetBlock_SlotWithinStalenessMargin_PassesThrough(t *te
 	}
 }
 
-// indexedTip unavailable → falls back to finalizedTip with the same margin.
-func TestNetworkPreForwardGetBlock_NoIndexedTip_FallsBackToFinalizedTip(t *testing.T) {
+// indexedTip unavailable (cold poller, or a vendor without
+// getMaxShredInsertSlot) → the guard FAILS OPEN. It must not substitute the
+// finalized tip: maxShredInsertSlot sits at or above the processed slot, which
+// is itself far above finalized, so a finalized-tip fallback rejected a wide
+// band of slots every upstream already held.
+func TestNetworkPreForwardGetBlock_NoIndexedTip_FailsOpen(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
 		cfg:           &common.NetworkConfig{Architecture: common.ArchitectureSvm},
 		indexedSlot:   0, // unavailable
 		finalizedSlot: 1000,
 	}
-	// slot beyond finalizedTip + margin 2 → short-circuit
-	req := newReq("getBlock", `[1003]`)
-	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
-	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-		t.Fatalf("expected short-circuit via finalizedTip fallback, got handled=%v err=%v", handled, err)
+	// Well beyond finalizedTip + margin — the old fallback short-circuited this.
+	for _, slot := range []int64{1003, 5000, 999999} {
+		req := newReq("getBlock", fmt.Sprintf(`[%d]`, slot))
+		handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+		if handled || err != nil {
+			t.Fatalf("slot %d with no indexed tip: expected fail-open pass-through, got handled=%v err=%v", slot, handled, err)
+		}
 	}
+}
 
-	// slot within finalizedTip + margin → pass through
-	req2 := newReq("getBlock", `[1002]`)
-	handled2, _, err2 := networkPreForward_getBlock(context.Background(), net, req2)
-	if handled2 || err2 != nil {
-		t.Fatalf("slot 1002 within finalizedTip 1000 + margin 2: expected pass-through, got handled=%v err=%v", handled2, err2)
+// A hostile or bogus indexed tip near math.MaxInt64 must not overflow the
+// tip+margin arithmetic into a negative bound, which would turn the guard into
+// a reject-everything gate.
+func TestNetworkPreForwardGetBlock_TipNearMaxInt64_NoOverflow(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{
+		cfg:         &common.NetworkConfig{Architecture: common.ArchitectureSvm},
+		indexedSlot: math.MaxInt64,
+	}
+	req := newReq("getBlock", `[1000]`)
+	handled, _, err := networkPreForward_getBlock(context.Background(), net, req)
+	if handled || err != nil {
+		t.Fatalf("slot far below the tip must forward, got handled=%v err=%v", handled, err)
 	}
 }
 
@@ -1053,11 +1137,17 @@ func TestIndexedTipStalenessMargin(t *testing.T) {
 	}
 }
 
-func TestHandleNetworkPostForward_DispatchesGetSlotAndGetBlockHeight(t *testing.T) {
+// getSlot is corrected against the slot tip; getBlockHeight is NOT. Solana
+// block height trails the slot number by every skipped slot (tens of millions
+// on mainnet-beta), so applying the slot floor to a getBlockHeight response
+// would replace it with a slot number — which exceeds every
+// lastValidBlockHeight and makes clients see all transactions as expired.
+func TestHandleNetworkPostForward_CorrectsGetSlotOnly(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}, latestSlot: 99999}
 	h := &SvmArchitectureHandler{}
-	for _, method := range []string{"getSlot", "getBlockHeight", "GETSLOT", "GetBlockHeight"} {
+
+	for _, method := range []string{"getSlot", "GETSLOT"} {
 		req, resp := slotResponse(t, method, 12345)
 		got, err := h.HandleNetworkPostForward(context.Background(), net, req, resp, nil)
 		if err != nil {
@@ -1066,5 +1156,73 @@ func TestHandleNetworkPostForward_DispatchesGetSlotAndGetBlockHeight(t *testing.
 		if slot := readSlot(t, got); slot != 99999 {
 			t.Fatalf("%s: expected upgraded slot 99999, got %d", method, slot)
 		}
+	}
+
+	for _, method := range []string{"getBlockHeight", "GetBlockHeight", "GETBLOCKHEIGHT"} {
+		req, resp := slotResponse(t, method, 12345)
+		got, err := h.HandleNetworkPostForward(context.Background(), net, req, resp, nil)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", method, err)
+		}
+		if height := readSlot(t, got); height != 12345 {
+			t.Fatalf("%s: block height must pass through untouched, got %d (slot tip was 99999)", method, height)
+		}
+	}
+}
+
+// A caller who asked for commitment=confirmed must never receive a processed
+// slot. The poller's LatestSlot IS the processed tip and processed runs ahead of
+// confirmed (and may never be confirmed at all if its fork is abandoned), so
+// there is no legal floor to apply and the upstream answer passes through.
+func TestNetworkPostForward_GetSlot_ConfirmedCommitment_PassesThrough(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "confirmed"},
+	}, latestSlot: 12345678, finalizedSlot: 12340000}
+
+	// Explicit param and network-default confirmed must behave identically.
+	for _, params := range []string{`[{"commitment":"confirmed"}]`, `[]`} {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":%s}`, params)
+		req := common.NewNormalizedRequest([]byte(body))
+		jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12345000"), nil)
+		if err != nil {
+			t.Fatalf("build response: %v", err)
+		}
+		resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+		got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+		if err != nil {
+			t.Fatalf("params %s: unexpected error: %v", params, err)
+		}
+		if slot := readSlot(t, got); slot != 12345000 {
+			t.Fatalf("params %s: confirmed getSlot must pass through, got %d (processed tip 12345678)", params, slot)
+		}
+	}
+}
+
+// processed keeps the processed-tip floor — the correction still works for the
+// commitment whose tip the poller actually tracks.
+func TestNetworkPostForward_GetSlot_ProcessedCommitment_UsesProcessedTip(t *testing.T) {
+	t.Parallel()
+	net := &fakeNetwork{cfg: &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm:          &common.SvmNetworkConfig{Commitment: "processed"},
+	}, latestSlot: 12345678}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`
+	req := common.NewNormalizedRequest([]byte(body))
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, []byte("12340000"), nil)
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	got, err := networkPostForward_getSlot(context.Background(), net, req, resp, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slot := readSlot(t, got); slot != 12345678 {
+		t.Fatalf("processed getSlot must be floored at the processed tip, got %d", slot)
 	}
 }

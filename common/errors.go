@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -890,6 +891,92 @@ func (e *ErrUpstreamsExhausted) Request() *NormalizedRequest {
 
 const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
+// orderCauses drains a per-upstream error map into a slice with a deterministic,
+// data-safe total order.
+//
+// sync.Map.Range yields Go-map order, which varies run to run. Everything
+// downstream that picks ONE representative cause out of the bundle — most
+// visibly TranslateToJsonRpcException's dominance scan — would then hand the
+// client a different wire code on every request for an identical set of
+// upstream failures. The order imposed here is the single source of
+// determinism for all of them.
+//
+// Two ranks, both architecture-neutral:
+//
+//  1. Retryable-toward-network causes before terminal ones. When upstreams
+//     disagree about the same datum — one says "not available yet", another
+//     says "gone forever" — the retryable verdict is the safe representative.
+//     Reporting "gone forever" can make a consumer permanently skip data that
+//     does exist (unrecoverable); reporting "not yet" merely costs a retry.
+//     This reads the very same flag the retry path consults, so no
+//     chain-specific error code leaks into common/.
+//  2. Then by upstream id, so equally-retryable causes still have exactly one
+//     canonical order. Causes that tie on both ranks fall back to their text;
+//     if that also ties they are indistinguishable to every consumer.
+func orderCauses(ersObj *sync.Map) []error {
+	if ersObj == nil {
+		return nil
+	}
+	type orderedCause struct {
+		err       error
+		key       string
+		retryable bool
+	}
+	ocs := []orderedCause{}
+	ersObj.Range(func(key, value any) bool {
+		err, ok := value.(error)
+		if !ok || err == nil {
+			return true
+		}
+		ocs = append(ocs, orderedCause{
+			err:       err,
+			key:       causeSortKey(key, err),
+			retryable: IsRetryableTowardNetwork(err),
+		})
+		return true
+	})
+	sort.Slice(ocs, func(i, j int) bool {
+		a, b := &ocs[i], &ocs[j]
+		if a.retryable != b.retryable {
+			return a.retryable
+		}
+		if a.key != b.key {
+			return a.key < b.key
+		}
+		// ponytail: Error() only on a key tie (same upstream twice, or
+		// upstream-less causes) — never on the common path.
+		return a.err.Error() < b.err.Error()
+	})
+	ers := make([]error, len(ocs))
+	for i := range ocs {
+		ers[i] = ocs[i].err
+	}
+	return ers
+}
+
+// causeSortKey derives a stable identity for one cause of an exhausted bundle.
+// Callers key the map by the Upstream itself; tests key it by id string. Either
+// way the id is the natural key (at most one cause per upstream). Falls back to
+// the upstream carried on the error, then to the error text — never to the map
+// key's address, which would not be stable across runs.
+func causeSortKey(key any, err error) string {
+	switch k := key.(type) {
+	case Upstream:
+		if k != nil {
+			return k.Id()
+		}
+	case string:
+		return k
+	}
+	var ue interface{ Upstream() Upstream }
+	if errors.As(err, &ue) {
+		if up := ue.Upstream(); up != nil {
+			return up.Id()
+		}
+	}
+	return err.Error()
+}
+
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
 	ersObj *sync.Map,
@@ -897,11 +984,7 @@ var NewErrUpstreamsExhausted = func(
 	duration time.Duration,
 	attempts, retries, hedges, upstreams int,
 ) error {
-	ers := []error{}
-	ersObj.Range(func(key, value any) bool {
-		ers = append(ers, value.(error))
-		return true
-	})
+	ers := orderCauses(ersObj)
 	e := &ErrUpstreamsExhausted{
 		BaseError: BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
