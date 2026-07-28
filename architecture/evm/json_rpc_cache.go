@@ -545,6 +545,7 @@ drain:
 			labelConnectorId,
 			labelPolicyStr,
 			labelTTL,
+			missReason,
 		).Inc()
 		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
@@ -570,6 +571,7 @@ drain:
 				connector.Id(),
 				policy.String(),
 				policy.GetTTL().String(),
+				"empty_result",
 			).Inc()
 			telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 				c.projectId,
