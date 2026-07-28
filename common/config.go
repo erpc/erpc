@@ -2336,8 +2336,15 @@ type SvmNetworkConfig struct {
 	// note that doing so makes finality classification track the configured level.
 	Commitment string `yaml:"commitment,omitempty" json:"commitment"`
 
-	// StatePollerDebounce sets the minimum interval between polls of an upstream's
-	// slot/health view. Default: 400ms (one slot).
+	// StatePollerInterval sets the background ticker cadence for an upstream's
+	// slot/health view (getHealth, getMaxShredInsertSlot, and getSlot when the
+	// traffic gate does not skip). Default: 5s.
+	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+
+	// StatePollerDebounce is the coalesce / traffic-gate window: skip a whole
+	// Poll() if one finished within this window, and skip the two getSlot calls
+	// when live context.slot refreshed both views within it. Should be ≤
+	// statePollerInterval. Default: 400ms (one Solana slot).
 	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 
 	// MaxSlotsPerSignaturesQuery caps the slot range a single getSignaturesForAddress

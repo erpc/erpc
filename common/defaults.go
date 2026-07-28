@@ -2167,6 +2167,9 @@ func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
 	if dst.Commitment == "" && defaults.Commitment != "" {
 		dst.Commitment = defaults.Commitment
 	}
+	if dst.StatePollerInterval.Duration() == 0 && defaults.StatePollerInterval.Duration() != 0 {
+		dst.StatePollerInterval = defaults.StatePollerInterval
+	}
 	if dst.StatePollerDebounce.Duration() == 0 && defaults.StatePollerDebounce.Duration() != 0 {
 		dst.StatePollerDebounce = defaults.StatePollerDebounce
 	}
@@ -2196,9 +2199,13 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 	if s.MaxSlotsPerSignaturesQuery == 0 {
 		s.MaxSlotsPerSignaturesQuery = 1000
 	}
-	// 400ms matches one Solana slot. Polling more often buys no fresher data
-	// and burns upstream quota; polling less often means our state lags the
-	// cluster by more than a slot.
+	// Background health/shred/slot polls: 5s balances quota vs failover lag.
+	// Live traffic still refreshes slot views via context.slot between ticks.
+	if s.StatePollerInterval.Duration() == 0 {
+		s.StatePollerInterval = Duration(5 * time.Second)
+	}
+	// 400ms matches one Solana slot — traffic-gate / coalesce window only.
+	// Should stay ≤ statePollerInterval so ticker polls are not skipped.
 	if s.StatePollerDebounce.Duration() == 0 {
 		s.StatePollerDebounce = Duration(400 * time.Millisecond)
 	}

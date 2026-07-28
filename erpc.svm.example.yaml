@@ -37,7 +37,10 @@ projects:
     networkDefaults:
       svm:
         commitment: confirmed
-        statePollerDebounce: 500ms
+        # Background health/shred polls every 5s; 400ms traffic-gate window
+        # skips redundant getSlot when live context.slot is fresh.
+        statePollerInterval: 5s
+        statePollerDebounce: 400ms
         maxSlotsPerSignaturesQuery: 1000
     networks:
       - architecture: svm
@@ -141,9 +144,8 @@ projects:
   #   POST /main/svm/testnet        → Solana testnet
 
   #
-  # Poller cost note: each SVM upstream is polled every 400ms (getHealth,
-  # getSlot processed+finalized, getMaxShredInsertSlot), throttled by
-  # statePollerDebounce. Under live traffic the poller harvests context.slot
-  # from responses and skips the redundant getSlot calls (bounded, health
-  # checks always run) — so background quota burn drops on busy networks
-  # automatically.
+  # Poller cost note: each SVM upstream is polled every statePollerInterval
+  # (default 5s: getHealth, getSlot processed+finalized, getMaxShredInsertSlot).
+  # statePollerDebounce (default 400ms) coalesces redundant polls and, under
+  # live traffic, skips getSlot when context.slot already refreshed both views
+  # (bounded; health/shred always run on the interval tick).

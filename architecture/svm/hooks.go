@@ -54,17 +54,17 @@ var commitmentOptionsIndex = map[string]int{
 	"getAccountInfo":                    1,
 	"getBalance":                        1,
 	"getMinimumBalanceForRentExemption": 1,
-	"getBlock":                1,
-	"getLeaderSchedule":       1,
-	"getMultipleAccounts":     1,
-	"getProgramAccounts":      1,
-	"getSignaturesForAddress": 1,
-	"getStakeActivation":      1,
-	"getTokenAccountBalance":  1,
-	"getTokenLargestAccounts": 1,
-	"getTokenSupply":          1,
-	"getTransaction":          1,
-	"isBlockhashValid":        1,
+	"getBlock":                          1,
+	"getLeaderSchedule":                 1,
+	"getMultipleAccounts":               1,
+	"getProgramAccounts":                1,
+	"getSignaturesForAddress":           1,
+	"getStakeActivation":                1,
+	"getTokenAccountBalance":            1,
+	"getTokenLargestAccounts":           1,
+	"getTokenSupply":                    1,
+	"getTransaction":                    1,
+	"isBlockhashValid":                  1,
 	// two positional args precede the options object
 	"getBlocksWithLimit":         2,
 	"getTokenAccountsByDelegate": 2,
@@ -422,10 +422,10 @@ func toInt64(v interface{}) (int64, bool) {
 // retry fires immediately without any upstream calls.
 //
 // Stale-tracker false-reject: the pool's indexedTip is a snapshot refreshed at
-// most once per state-poller debounce, while the live confirmed head advances
+// most once per state-poller interval, while the live confirmed head advances
 // ~1 slot per 400ms — so a caller that just learned the head from
 // getSlot(confirmed) is routinely 1..N slots above the snapshot. Measured on
-// staging (debounce 2s): ~30 false -32014/min at the head, always 1-2 slots
+// staging (interval ~2s): ~30 false -32014/min at the head, always 1-2 slots
 // ahead of the tip. The guard therefore allows a staleness margin above the
 // snapshot (see indexedTipStalenessMargin) — within it the request forwards
 // (the pool almost certainly indexed the slot since the last poll; the serving
@@ -482,17 +482,16 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 
 // indexedTipStalenessMargin returns the slot tolerance the getBlock guard adds
 // on top of the pool's indexed frontier. The frontier snapshot is refreshed at
-// most once per StatePollerDebounce while the chain advances one slot per
+// most once per StatePollerInterval while the chain advances one slot per
 // ~400ms, so the maximum legitimate gap between a live confirmed head and the
-// snapshot is roughly debounce/400ms slots; +2 covers tick scheduling and the
+// snapshot is roughly interval/400ms slots; +2 covers tick scheduling and the
 // cross-source skew between getSlot (served by the most-ahead upstream) and
-// the MAX-over-snapshots frontier. Default debounce (400ms) → margin 3;
-// staging's 2s debounce → margin 7.
+// the MAX-over-snapshots frontier. Default interval (5s) → margin 14.
 func indexedTipStalenessMargin(n common.Network) int64 {
 	margin := int64(2)
 	if cfg := n.Config(); cfg != nil && cfg.Svm != nil {
-		if d := time.Duration(cfg.Svm.StatePollerDebounce); d > 0 {
-			margin += int64(d / (400 * time.Millisecond))
+		if d := time.Duration(cfg.Svm.StatePollerInterval); d > 0 {
+			margin += int64(d / SolanaSlotDuration)
 		}
 	}
 	return margin

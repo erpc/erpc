@@ -34,7 +34,11 @@ type SvmStatePoller interface {
 	Bootstrap(ctx context.Context) error
 	IsObjectNull() bool
 
-	// SetDebounceInterval sets the poll cadence; wired from the network-level
+	// SetPollInterval sets the background ticker cadence; wired from the
+	// network-level SvmNetworkConfig.StatePollerInterval via upstream.SetNetworkConfig.
+	SetPollInterval(d time.Duration)
+
+	// SetDebounceInterval sets the coalesce / traffic-gate window; wired from
 	// SvmNetworkConfig.StatePollerDebounce via upstream.SetNetworkConfig.
 	SetDebounceInterval(d time.Duration)
 

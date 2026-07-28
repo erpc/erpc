@@ -18,9 +18,21 @@ import (
 
 const DefaultToleratedSlotRollback = 1024
 
-// DefaultPollInterval matches the Solana block time (~400ms). Ticks any faster burn
-// upstream RPC quota without materially improving freshness.
-const DefaultPollInterval = 400 * time.Millisecond
+// SolanaSlotDuration is the nominal Solana slot time. Used as the default
+// traffic-gate / coalesce window and as the unit for tip-staleness margins.
+const SolanaSlotDuration = 400 * time.Millisecond
+
+// DefaultStatePollerInterval is the background ticker cadence for health/shred
+// (and getSlot when not traffic-gated). Kept well above one slot to limit
+// quota; live traffic still refreshes slot views via context.slot.
+const DefaultStatePollerInterval = 5 * time.Second
+
+// DefaultStatePollerDebounce is the coalesce / traffic-gate window (one slot).
+const DefaultStatePollerDebounce = SolanaSlotDuration
+
+// DefaultPollInterval is kept as an alias of SolanaSlotDuration for older
+// call sites/tests that treated "one slot" as the poller default.
+const DefaultPollInterval = SolanaSlotDuration
 
 // maxConsecutiveSlotPollSkips bounds how many consecutive ticks the traffic
 // gate may skip the two getSlot calls. Live traffic proves freshness, but the
@@ -56,14 +68,17 @@ type SvmStatePoller struct {
 	maxShredInsertSlotLag atomic.Int64
 	healthy               atomic.Bool
 
-	// debounceInterval is the GATE: the minimum wall-clock interval between
-	// network polls (see SvmNetworkConfig.StatePollerDebounce). The ticker fires
-	// at the fixed, cheap DefaultPollInterval; this gate throttles the actual
-	// fan-out. Stored as nanoseconds so SetDebounceInterval can update it
-	// race-free while Poll reads it. NB: it must NOT also drive the ticker period
-	// — a ticker firing at exactly the gate value skips every other tick (the
-	// gate compares against lastPollAt recorded at poll completion, always a hair
-	// under the interval), halving the effective cadence.
+	// pollInterval is the TICKER cadence (see SvmNetworkConfig.StatePollerInterval).
+	// getHealth / getMaxShredInsertSlot run at most once per this period; getSlot
+	// may still be skipped by the traffic gate. Stored as nanoseconds so
+	// SetPollInterval can update it race-free while loop sleeps between ticks.
+	pollInterval atomic.Int64
+
+	// debounceInterval is the GATE: coalesce whole Poll() calls that land
+	// within this window, and skip the two getSlot calls when live traffic
+	// refreshed both views within it (see SvmNetworkConfig.StatePollerDebounce).
+	// Must stay ≤ pollInterval so ticker fires are not skipped. Stored as
+	// nanoseconds for race-free SetDebounceInterval updates.
 	debounceInterval atomic.Int64
 	lastPollAt       atomic.Int64
 
@@ -127,43 +142,72 @@ func (e *SvmStatePoller) recoverPanic(where string) {
 }
 
 func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
-	// The debounce gate defaults to one slot when not configured. It may have
-	// already been set via SetDebounceInterval (config can arrive before
-	// Bootstrap), so only fill the default when still unset.
+	// Interval/debounce may already have been set via SetPollInterval /
+	// SetDebounceInterval (config can arrive before Bootstrap). Only fill
+	// defaults when still unset.
+	if e.pollInterval.Load() <= 0 {
+		e.pollInterval.Store(int64(DefaultStatePollerInterval))
+	}
 	if e.debounceInterval.Load() <= 0 {
-		e.debounceInterval.Store(int64(DefaultPollInterval))
+		e.debounceInterval.Store(int64(DefaultStatePollerDebounce))
 	}
 	e.Enabled = true
 	e.logger.Debug().
-		Dur("tickInterval", DefaultPollInterval).
+		Dur("tickInterval", time.Duration(e.pollInterval.Load())).
 		Dur("debounce", time.Duration(e.debounceInterval.Load())).
 		Msg("bootstrapping svm state poller")
 
-	// The ticker stays at the fixed one-slot cadence (cheap, no I/O); the
-	// debounce gate in Poll throttles the actual network fan-out to the
-	// configured rate.
-	go e.loop(DefaultPollInterval)
+	// Loop reads pollInterval each sleep so SetPollInterval after Bootstrap
+	// (SetNetworkConfig often lands later) takes effect on the next tick.
+	go e.loop()
 	return nil
 }
 
-// SetDebounceInterval wires the configured poll-throttle gate from
+// SetPollInterval wires the configured ticker cadence from
+// SvmNetworkConfig.StatePollerInterval (see upstream.SetNetworkConfig).
+// Callable at any time; takes effect on the next loop sleep.
+func (e *SvmStatePoller) SetPollInterval(d time.Duration) {
+	if d > 0 {
+		e.pollInterval.Store(int64(d))
+	}
+}
+
+// SetDebounceInterval wires the configured coalesce / traffic-gate window from
 // SvmNetworkConfig.StatePollerDebounce (see upstream.SetNetworkConfig). Callable
-// at any time; takes effect on the next ticker fire.
+// at any time; takes effect on the next Poll.
 func (e *SvmStatePoller) SetDebounceInterval(d time.Duration) {
 	if d > 0 {
 		e.debounceInterval.Store(int64(d))
 	}
 }
 
-func (e *SvmStatePoller) loop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+func (e *SvmStatePoller) loop() {
 	for {
+		interval := time.Duration(e.pollInterval.Load())
+		if interval <= 0 {
+			// Not yet configured / disabled — wait and re-check so a late
+			// SetPollInterval can still start polling.
+			select {
+			case <-e.appCtx.Done():
+				e.logger.Debug().Msg("shutting down svm state poller due to app context interruption")
+				return
+			case <-time.After(time.Second):
+				continue
+			}
+		}
+
+		timer := time.NewTimer(interval)
 		select {
 		case <-e.appCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			e.logger.Debug().Msg("shutting down svm state poller due to app context interruption")
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			func() {
 				defer e.recoverPanic("loop")
 				nctx, cancel := context.WithTimeout(e.appCtx, 15*time.Second)

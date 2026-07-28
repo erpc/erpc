@@ -806,7 +806,7 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 	})
 
 	// Seed SvmHighestFinalizedSlot directly so the hook floor is deterministic
-	// without waiting for the 400ms poller tick.
+	// without waiting for the state-poller tick.
 	for _, u := range upsReg.GetNetworkUpstreams(ctx, util.SvmNetworkId("", "mainnet-beta")) {
 		if sp := u.SvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			sp.SuggestFinalizedSlot(finalizedSlot)

@@ -58,11 +58,11 @@ projects:
           # Default commitment injected when a request omits one; cache
           # finality follows it (confirmed → unfinalized, re-org aware).
           commitment: confirmed
-          # Poller cadence: keeps idle/excluded upstreams' slot metrics
-          # fresh (getSlot processed+finalized, getHealth,
-          # getMaxShredInsertSlot) so exclusion and re-admission both
-          # react within a couple of seconds in the simulator.
-          statePollerDebounce: 2s
+          # Poller cadence: interval drives health/shred ticks; debounce is the
+          # traffic-gate window. Keep interval tight in the simulator so
+          # exclusion / re-admission react within a couple of seconds.
+          statePollerInterval: 2s
+          statePollerDebounce: 400ms
         multiplexing: true
         failsafe:
           # sendTransaction is non-retryable toward the network by the

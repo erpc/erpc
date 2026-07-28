@@ -449,18 +449,17 @@ func TestSvmStatePoller_Poll_TrafficGate_SelfSuggestionsDoNotOpenGate(t *testing
 	}
 }
 
-// TestSvmStatePoller_SetDebounceInterval_UpdatesCadence guards the fix for the
-// dead statePollerDebounce config: SetDebounceInterval must update the poll
-// cadence to ANY positive value (the prior bug ignored configured values), and
-// ignore non-positive input.
-func TestSvmStatePoller_SetDebounceInterval_UpdatesCadence(t *testing.T) {
+// TestSvmStatePoller_SetDebounceInterval_UpdatesGate guards the fix for the
+// dead statePollerDebounce config: SetDebounceInterval must update the
+// coalesce / traffic-gate window to ANY positive value, and ignore non-positive.
+func TestSvmStatePoller_SetDebounceInterval_UpdatesGate(t *testing.T) {
 	t.Parallel()
 	p := newTestPoller(t)
 	p.SetDebounceInterval(2 * time.Second)
 	if got := time.Duration(p.debounceInterval.Load()); got != 2*time.Second {
 		t.Fatalf("debounceInterval = %v, want 2s", got)
 	}
-	// A sub-default value (< DefaultPollInterval) must also take effect.
+	// A sub-slot value must also take effect.
 	p.SetDebounceInterval(150 * time.Millisecond)
 	if got := time.Duration(p.debounceInterval.Load()); got != 150*time.Millisecond {
 		t.Fatalf("debounceInterval = %v, want 150ms", got)
@@ -472,22 +471,62 @@ func TestSvmStatePoller_SetDebounceInterval_UpdatesCadence(t *testing.T) {
 	}
 }
 
-// TestSvmStatePoller_Bootstrap_HonorsPresetDebounce verifies Bootstrap preserves
-// a debounce gate set before it runs (config-before-Bootstrap ordering) instead
-// of clobbering it with the default. (The ticker always runs at the fixed
-// DefaultPollInterval; the gate is what the config controls.)
-func TestSvmStatePoller_Bootstrap_HonorsPresetDebounce(t *testing.T) {
+// TestSvmStatePoller_SetPollInterval_UpdatesCadence verifies SetPollInterval
+// stores any positive ticker cadence and ignores non-positive input.
+func TestSvmStatePoller_SetPollInterval_UpdatesCadence(t *testing.T) {
 	t.Parallel()
 	p := newTestPoller(t)
-	p.SetDebounceInterval(30 * time.Second)
-	require.NoError(t, p.Bootstrap(context.Background()))
-	if got := time.Duration(p.debounceInterval.Load()); got != 30*time.Second {
-		t.Fatalf("Bootstrap overwrote preset debounce: got %v, want 30s", got)
+	p.SetPollInterval(5 * time.Second)
+	if got := time.Duration(p.pollInterval.Load()); got != 5*time.Second {
+		t.Fatalf("pollInterval = %v, want 5s", got)
 	}
-	// Updating the gate after Bootstrap is safe and takes effect.
-	p.SetDebounceInterval(25 * time.Second)
-	if got := time.Duration(p.debounceInterval.Load()); got != 25*time.Second {
-		t.Fatalf("post-Bootstrap update ignored: got %v, want 25s", got)
+	p.SetPollInterval(30 * time.Second)
+	if got := time.Duration(p.pollInterval.Load()); got != 30*time.Second {
+		t.Fatalf("pollInterval = %v, want 30s", got)
+	}
+	p.SetPollInterval(0)
+	if got := time.Duration(p.pollInterval.Load()); got != 30*time.Second {
+		t.Fatalf("zero must be ignored, got %v", got)
+	}
+}
+
+// TestSvmStatePoller_Bootstrap_HonorsPresetCadence verifies Bootstrap preserves
+// interval/debounce set before it runs (config-before-Bootstrap ordering)
+// instead of clobbering them with defaults.
+func TestSvmStatePoller_Bootstrap_HonorsPresetCadence(t *testing.T) {
+	t.Parallel()
+	p := newTestPoller(t)
+	p.SetPollInterval(30 * time.Second)
+	p.SetDebounceInterval(1 * time.Second)
+	require.NoError(t, p.Bootstrap(context.Background()))
+	if got := time.Duration(p.pollInterval.Load()); got != 30*time.Second {
+		t.Fatalf("Bootstrap overwrote preset interval: got %v, want 30s", got)
+	}
+	if got := time.Duration(p.debounceInterval.Load()); got != 1*time.Second {
+		t.Fatalf("Bootstrap overwrote preset debounce: got %v, want 1s", got)
+	}
+	// Updating after Bootstrap is safe and takes effect on the next loop sleep / Poll.
+	p.SetPollInterval(10 * time.Second)
+	p.SetDebounceInterval(400 * time.Millisecond)
+	if got := time.Duration(p.pollInterval.Load()); got != 10*time.Second {
+		t.Fatalf("post-Bootstrap interval update ignored: got %v, want 10s", got)
+	}
+	if got := time.Duration(p.debounceInterval.Load()); got != 400*time.Millisecond {
+		t.Fatalf("post-Bootstrap debounce update ignored: got %v, want 400ms", got)
+	}
+}
+
+// TestSvmStatePoller_Bootstrap_DefaultsCadence verifies unset interval/debounce
+// fall back to DefaultStatePollerInterval / DefaultStatePollerDebounce.
+func TestSvmStatePoller_Bootstrap_DefaultsCadence(t *testing.T) {
+	t.Parallel()
+	p := newTestPoller(t)
+	require.NoError(t, p.Bootstrap(context.Background()))
+	if got := time.Duration(p.pollInterval.Load()); got != DefaultStatePollerInterval {
+		t.Fatalf("pollInterval = %v, want %v", got, DefaultStatePollerInterval)
+	}
+	if got := time.Duration(p.debounceInterval.Load()); got != DefaultStatePollerDebounce {
+		t.Fatalf("debounceInterval = %v, want %v", got, DefaultStatePollerDebounce)
 	}
 }
 

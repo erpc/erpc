@@ -1499,6 +1499,9 @@ func TestSetDefaults_SvmNetworkConfig_PopulatesGuards(t *testing.T) {
 		if n.Svm.MaxSlotsPerSignaturesQuery != 1000 {
 			t.Errorf("MaxSlotsPerSignaturesQuery = %d, want 1000", n.Svm.MaxSlotsPerSignaturesQuery)
 		}
+		if n.Svm.StatePollerInterval.Duration() != 5*time.Second {
+			t.Errorf("StatePollerInterval = %v, want 5s", n.Svm.StatePollerInterval.Duration())
+		}
 		if n.Svm.StatePollerDebounce.Duration() != 400*time.Millisecond {
 			t.Errorf("StatePollerDebounce = %v, want 400ms", n.Svm.StatePollerDebounce.Duration())
 		}
@@ -1510,6 +1513,7 @@ func TestSetDefaults_SvmNetworkConfig_PopulatesGuards(t *testing.T) {
 			Svm: &SvmNetworkConfig{
 				Cluster:                    "mainnet-beta",
 				MaxSlotsPerSignaturesQuery: 5000,
+				StatePollerInterval:        Duration(30 * time.Second),
 				StatePollerDebounce:        Duration(750 * time.Millisecond),
 			},
 		}
@@ -1517,6 +1521,9 @@ func TestSetDefaults_SvmNetworkConfig_PopulatesGuards(t *testing.T) {
 
 		if n.Svm.MaxSlotsPerSignaturesQuery != 5000 {
 			t.Errorf("operator value should win, got %d", n.Svm.MaxSlotsPerSignaturesQuery)
+		}
+		if n.Svm.StatePollerInterval.Duration() != 30*time.Second {
+			t.Errorf("operator interval should win, got %v", n.Svm.StatePollerInterval.Duration())
 		}
 		if n.Svm.StatePollerDebounce.Duration() != 750*time.Millisecond {
 			t.Errorf("operator debounce should win, got %v", n.Svm.StatePollerDebounce.Duration())
@@ -1549,12 +1556,13 @@ func TestSetDefaults_NetworkDefaults_SvmMergesIntoNetwork(t *testing.T) {
 	defaults := &NetworkDefaults{
 		Svm: &SvmNetworkConfig{
 			Commitment:          "confirmed",
+			StatePollerInterval: Duration(2 * time.Second),
 			StatePollerDebounce: Duration(500 * time.Millisecond),
 			Cluster:             "devnet", // must be ignored when merging into network
 		},
 	}
 
-	t.Run("inherits commitment and debounce from networkDefaults", func(t *testing.T) {
+	t.Run("inherits commitment and poller cadence from networkDefaults", func(t *testing.T) {
 		n := &NetworkConfig{
 			Architecture: ArchitectureSvm,
 			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
@@ -1563,6 +1571,7 @@ func TestSetDefaults_NetworkDefaults_SvmMergesIntoNetwork(t *testing.T) {
 
 		require.Equal(t, "mainnet-beta", n.Svm.Cluster)
 		require.Equal(t, "confirmed", n.Svm.Commitment)
+		require.Equal(t, 2*time.Second, n.Svm.StatePollerInterval.Duration())
 		require.Equal(t, 500*time.Millisecond, n.Svm.StatePollerDebounce.Duration())
 	})
 

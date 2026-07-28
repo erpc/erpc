@@ -511,6 +511,7 @@ func (r *recordingSvmPoller) MaxShredInsertSlotLag() int64      { return 0 }
 func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
 func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
 func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   { r.lastFinalizedSuggested = slot }
+func (r *recordingSvmPoller) SetPollInterval(time.Duration)     {}
 func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
 
 func TestUpstreamPostForward_TrackContextSlot_SuggestsFromResponse(t *testing.T) {
@@ -1006,13 +1007,13 @@ func TestNetworkPreForwardGetBlock_GuardDisabled_PassesThrough(t *testing.T) {
 	}
 }
 
-// margin widens with the configured StatePollerDebounce: 2s → 2+floor(2000/400) = 7.
-func TestNetworkPreForwardGetBlock_MarginDerivesFromDebounce(t *testing.T) {
+// margin widens with the configured StatePollerInterval: 2s → 2+floor(2000/400) = 7.
+func TestNetworkPreForwardGetBlock_MarginDerivesFromInterval(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureSvm,
-			Svm:          &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(2 * time.Second)},
+			Svm:          &common.SvmNetworkConfig{StatePollerInterval: common.Duration(2 * time.Second)},
 		},
 		indexedSlot: 1000,
 	}
@@ -1030,7 +1031,7 @@ func TestNetworkPreForwardGetBlock_MarginDerivesFromDebounce(t *testing.T) {
 	}
 }
 
-// indexedTipStalenessMargin: 2 base slots + floor(debounce / 400ms).
+// indexedTipStalenessMargin: 2 base slots + floor(interval / 400ms).
 func TestIndexedTipStalenessMargin(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1040,10 +1041,11 @@ func TestIndexedTipStalenessMargin(t *testing.T) {
 	}{
 		{"nil config", nil, 2},
 		{"no svm section", &common.NetworkConfig{Architecture: common.ArchitectureSvm}, 2},
-		{"svm without debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{}}, 2},
-		{"400ms debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(400 * time.Millisecond)}}, 3},
-		{"1s debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(time.Second)}}, 4},
-		{"2s debounce", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerDebounce: common.Duration(2 * time.Second)}}, 7},
+		{"svm without interval", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{}}, 2},
+		{"400ms interval", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerInterval: common.Duration(400 * time.Millisecond)}}, 3},
+		{"1s interval", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerInterval: common.Duration(time.Second)}}, 4},
+		{"2s interval", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerInterval: common.Duration(2 * time.Second)}}, 7},
+		{"5s interval", &common.NetworkConfig{Svm: &common.SvmNetworkConfig{StatePollerInterval: common.Duration(5 * time.Second)}}, 14},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := indexedTipStalenessMargin(&fakeNetwork{cfg: tc.cfg}); got != tc.want {

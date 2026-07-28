@@ -27,6 +27,7 @@ func (p *pollerAtSlot) MaxShredInsertSlotLag() int64      { return 0 }
 func (p *pollerAtSlot) IsHealthy() bool                   { return true }
 func (p *pollerAtSlot) SuggestLatestSlot(int64)           {}
 func (p *pollerAtSlot) SuggestFinalizedSlot(int64)        {}
+func (p *pollerAtSlot) SetPollInterval(time.Duration)     {}
 func (p *pollerAtSlot) SetDebounceInterval(time.Duration) {}
 
 // slotLagUpstream is a per-id SvmUpstream stub — svmUpstreamStub in
