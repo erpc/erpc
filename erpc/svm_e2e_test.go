@@ -695,15 +695,14 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 	upsReg.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 	require.NoError(t, upsReg.PrepareUpstreamsForNetwork(ctx, util.SvmNetworkId("", "mainnet-beta")))
-	time.Sleep(300 * time.Millisecond) // let pollers run at least one tick
+	time.Sleep(50 * time.Millisecond)
 
-	// Seed per-upstream finalized slots. The counter only moves forward
-	// (CounterInt64SharedVariable uses rollback protection), so we advance the
-	// fresh upstreams to a much higher slot instead of trying to pull the stale
-	// one backwards.
+	// Seed per-upstream finalized slots. Bootstrap's synchronous poll already
+	// published ~990 from the state-poller mocks; advance the fresh upstreams
+	// so the stale one trails by more than MaxFinalizedSlotLag.
 	//
 	//   fresh-a, fresh-b: 10_000   (manual advance via SuggestFinalizedSlot)
-	//   stale:            ~990     (poller-published, unchanged)
+	//   stale:            990      (poller-published at bootstrap; re-asserted)
 	//
 	// HighestFinalizedSlot over the pool → 10000.
 	// Lag: fresh=0, stale = 10000 - 990 = 9010 → far beyond MaxFinalizedSlotLag=100.
@@ -713,8 +712,13 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 		if sp == nil || sp.IsObjectNull() {
 			continue
 		}
-		if u.Id() == "fresh-a" || u.Id() == "fresh-b" {
+		switch u.Id() {
+		case "fresh-a", "fresh-b":
 			sp.SuggestFinalizedSlot(10_000)
+		case "stale":
+			// Explicit seed so the filter does not depend on poller timing
+			// (default statePollerInterval is 5s).
+			sp.SuggestFinalizedSlot(990)
 		}
 	}
 	// Give the shared-state counter a moment to persist the writes.

@@ -160,7 +160,11 @@ func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
 	// Loop reads pollInterval each sleep so SetPollInterval after Bootstrap
 	// (SetNetworkConfig often lands later) takes effect on the next tick.
 	go e.loop()
-	return nil
+
+	// Synchronous seed poll so Latest/Finalized/Shred are populated before the
+	// first request — mirrors EvmStatePoller.Bootstrap. Without this, a long
+	// statePollerInterval leaves slots at 0 and slot-lag filters fail-open.
+	return e.Poll(ctx)
 }
 
 // SetPollInterval wires the configured ticker cadence from
