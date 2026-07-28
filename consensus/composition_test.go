@@ -510,4 +510,29 @@ func TestMinAgreement_Validation(t *testing.T) {
 		}
 		require.NoError(t, cfg.Validate())
 	})
+
+	t.Run("agreementThreshold conflicting with sum(minAgreement) is rejected", func(t *testing.T) {
+		cfg := &common.ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 2,
+			RequiredParticipants: []*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:archive", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.ErrorContains(t, cfg.Validate(), "sum(minAgreement)")
+	})
+
+	t.Run("agreementThreshold matching sum(minAgreement) is accepted", func(t *testing.T) {
+		cfg := &common.ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 2,
+			RequiredParticipants: []*common.ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, cfg.Validate())
+	})
 }

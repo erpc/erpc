@@ -1,0 +1,83 @@
+package common
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSetDefaults_AgreementThresholdFromMinAgreement(t *testing.T) {
+	t.Run("derives sum(minAgreement) when agreementThreshold omitted", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants: 3,
+			RequiredParticipants: []*ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, 2, c.AgreementThreshold)
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("does not overwrite matching explicit agreementThreshold", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants:    3,
+			AgreementThreshold: 2,
+			RequiredParticipants: []*ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, 2, c.AgreementThreshold)
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("leaves conflicting explicit agreementThreshold for Validate", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants:    4,
+			AgreementThreshold: 3,
+			RequiredParticipants: []*ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1},
+				{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+			},
+		}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, 3, c.AgreementThreshold, "SetDefaults must not silently overwrite an explicit conflict")
+		require.ErrorContains(t, c.Validate(), "sum(minAgreement)")
+	})
+
+	t.Run("single minAgreement entry derives that value", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants: 3,
+			RequiredParticipants: []*ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 2, MinAgreement: 2},
+			},
+		}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, 2, c.AgreementThreshold)
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("minAgreement zero entries keep default agreementThreshold of 2", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{
+			MaxParticipants: 3,
+			RequiredParticipants: []*ConsensusRequiredParticipant{
+				{Tag: "type:internal", MinParticipants: 1, MinAgreement: 0},
+				{Tag: "type:external", MinParticipants: 1},
+			},
+		}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, 2, c.AgreementThreshold)
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("no requiredParticipants keeps default agreementThreshold of 2", func(t *testing.T) {
+		c := &ConsensusPolicyConfig{MaxParticipants: 3}
+		require.NoError(t, c.SetDefaults())
+		assert.Equal(t, 2, c.AgreementThreshold)
+		require.NoError(t, c.Validate())
+	})
+}

@@ -1238,7 +1238,45 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	// When minAgreement is configured, agreementThreshold is derived as
+	// sum(minAgreement). An explicit value that differs from the derived
+	// sum is a silent conflict — reject so operators omit the field
+	// instead of maintaining two redundant knobs. A matching explicit
+	// value is accepted for migration convenience.
+	if derived, ok := c.agreementThresholdFromMinAgreement(); ok && c.AgreementThreshold != derived {
+		return fmt.Errorf(
+			"consensus.agreementThreshold (%d) conflicts with requiredParticipants[].minAgreement (derived threshold is sum(minAgreement)=%d); omit agreementThreshold when minAgreement is configured — it is derived automatically",
+			c.AgreementThreshold, derived,
+		)
+	}
+
 	return nil
+}
+
+// agreementThresholdFromMinAgreement returns sum(minAgreement) when any
+// requiredParticipants entry sets minAgreement > 0. The sum is the
+// minimum winning-group size that can satisfy every composition quota
+// when tags are disjoint (the common mixed-node case). Overlapping tags
+// may make the derived threshold stricter than strictly necessary — a
+// single upstream matching multiple tags still only counts once toward
+// agreementThreshold — but that is safer than under-requiring agreement.
+func (c *ConsensusPolicyConfig) agreementThresholdFromMinAgreement() (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	sum := 0
+	active := false
+	for _, rp := range c.RequiredParticipants {
+		if rp == nil || rp.MinAgreement <= 0 {
+			continue
+		}
+		active = true
+		sum += rp.MinAgreement
+	}
+	if !active {
+		return 0, false
+	}
+	return sum, true
 }
 
 // Validate validates the MisbehaviorsDestinationConfig

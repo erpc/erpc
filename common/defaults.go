@@ -2460,7 +2460,16 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 	if c.MaxParticipants == 0 {
 		c.MaxParticipants = 5
 	}
-	if c.AgreementThreshold == 0 {
+	// When any requiredParticipants[].minAgreement is set, the count
+	// threshold is fully determined by sum(minAgreement) — the
+	// composition quotas already define how many upstreams must agree.
+	// Derive here when omitted; Validate rejects an explicit value that
+	// conflicts with the derived sum (see #1013 open question 2).
+	if derived, ok := c.agreementThresholdFromMinAgreement(); ok {
+		if c.AgreementThreshold == 0 {
+			c.AgreementThreshold = derived
+		}
+	} else if c.AgreementThreshold == 0 {
 		c.AgreementThreshold = 2
 	}
 	if c.DisputeBehavior == "" {

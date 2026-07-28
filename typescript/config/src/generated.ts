@@ -24,7 +24,7 @@ import type {
  * clamped between min/max" semantics — currently consensus wait caps,
  * with timeout/hedge supporting it as an alternative entry-point.
  * Resolution rules:
- *   final = Base + adaptive
+ * 	final = Base + adaptive
  * where `adaptive` is:
  *   - `qt.GetQuantile(Quantile)` when Quantile > 0 and quantile data exists
  *   - `Min` (the floor) when Quantile > 0 but quantile data is cold (no
@@ -561,6 +561,18 @@ export interface ProjectConfig {
    * Configure user agent tracking at the project level
    */
   userAgentMode?: UserAgentTrackingMode;
+  /**
+   * TrustUserIdHeader makes erpc read the caller's user identity from the
+   * X-ERPC-User-Id request header (see common.HeaderUserId) and use it for the
+   * `user` metric/log label — but only when no auth strategy resolved a user
+   * (auth wins) and only for attribution (no rate-limit budget is derived).
+   * This is for deployments that authenticate callers in front of erpc (e.g. a
+   * gateway) and want per-user erpc telemetry without erpc performing auth.
+   * erpc does NOT validate the header, so enable this ONLY when erpc is reachable
+   * solely by a trusted proxy that sets the header and strips any client copy —
+   * otherwise callers can spoof their own attribution. Default false.
+   */
+  trustUserIdHeader?: boolean;
   forwardHeaders?: string[];
   allowClientDirectives?: string;
   ignoreMethods?: string[];
@@ -976,6 +988,13 @@ export const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBeha
 export const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior = "onlyBlockHeadLeader";
 export interface ConsensusPolicyConfig {
   maxParticipants: number /* int */;
+  /**
+   * AgreementThreshold is the minimum participants that must agree on the
+   * same response hash. Default 2 when no minAgreement is configured.
+   * When any requiredParticipants[].minAgreement > 0 is set, omit this
+   * field — SetDefaults derives it as sum(minAgreement), and Validate
+   * rejects an explicit value that conflicts with that sum.
+   */
   agreementThreshold?: number /* int */;
   disputeBehavior?: ConsensusDisputeBehavior;
   lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
@@ -1034,6 +1053,8 @@ export interface ConsensusPolicyConfig {
    * runs with what it can promote and the resulting participation is
    * handled by `lowParticipantsBehavior` / `agreementThreshold` exactly
    * like any other low-participation tick. Empty (default) = disabled.
+   * When any entry sets minAgreement > 0, omit agreementThreshold —
+   * it is derived as sum(minAgreement).
    */
   requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
 }
@@ -1042,7 +1063,13 @@ export interface ConsensusPolicyConfig {
  * `consensus.requiredParticipants`. `Tag` is a glob pattern (`*`, `?`)
  * matched against each upstream's `tags`; `MinParticipants` is the minimum
  * number of matching upstreams that must be in the consensus participant
- * set. A single upstream can satisfy multiple entries it matches.
+ * set (pool quota, best-effort). `MinAgreement` is the minimum number of
+ * matching upstreams that must be part of the WINNING response group
+ * (winner-composition quota, hard-enforced: a winner that does not satisfy
+ * it becomes a composition dispute regardless of disputeBehavior). When any
+ * entry sets MinAgreement > 0, agreementThreshold is derived as
+ * sum(minAgreement) — omit the top-level field. A single upstream can
+ * satisfy multiple entries it matches.
  */
 export interface ConsensusRequiredParticipant {
   tag: string;
