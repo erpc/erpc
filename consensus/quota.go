@@ -99,3 +99,55 @@ func upstreamMatchesTag(u common.Upstream, pattern string) bool {
 	}
 	return false
 }
+
+// anyAgreementQuota reports whether any requiredParticipants entry carries a
+// winner-composition quota (minAgreement > 0). When false the composition
+// gate is a no-op — the feature is opt-in and off by default.
+func anyAgreementQuota(reqs []*common.ConsensusRequiredParticipant) bool {
+	for _, r := range reqs {
+		if r != nil && r.MinAgreement > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// resultsSatisfyAgreementQuotas reports whether the result set satisfies
+// every minAgreement entry: for each entry, at least minAgreement DISTINCT
+// upstreams must match the entry's tag. Distinctness is enforced here (not
+// assumed from dedupeByUpstream) because the wait-cap arming path passes the
+// raw pre-dedup response slice — a single tagged upstream answering twice
+// via hedge/retry must not satisfy a minAgreement of 2 by itself. Takes a
+// result slice (not a group) because the agreeing set can span multiple
+// hash groups — preferHighestValueFor counts agreement by numeric value,
+// and the same value with different encodings lands in different groups.
+func resultsSatisfyAgreementQuotas(results []*execResult, reqs []*common.ConsensusRequiredParticipant) bool {
+	for _, req := range reqs {
+		if req == nil || req.MinAgreement <= 0 {
+			continue
+		}
+		matched := 0
+		var seen map[string]struct{}
+		for _, r := range results {
+			if r == nil || r.Upstream == nil || !upstreamMatchesTag(r.Upstream, req.Tag) {
+				continue
+			}
+			id := r.Upstream.Id()
+			if seen == nil {
+				seen = make(map[string]struct{}, req.MinAgreement)
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			matched++
+			if matched >= req.MinAgreement {
+				break
+			}
+		}
+		if matched < req.MinAgreement {
+			return false
+		}
+	}
+	return true
+}

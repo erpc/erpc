@@ -1097,6 +1097,7 @@ export interface ConsensusPolicyConfig {
 export interface ConsensusRequiredParticipant {
   tag: string;
   minParticipants: number /* int */;
+  minAgreement?: number /* int */;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";
